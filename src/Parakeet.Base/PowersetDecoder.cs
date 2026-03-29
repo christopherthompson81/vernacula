@@ -107,7 +107,7 @@ public static class PowersetDecoder
     /// <param name="numSpeakers">Number of speakers</param>
     /// <param name="threshold">Binarization threshold</param>
     /// <returns>Array of (frame, List of active speakers)</returns>
-    public static List<int>[][] BinarizePowerset(
+    public static List<int>[] BinarizePowerset(
         float[] powersetScores,
         int numSpeakers,
         float threshold = 0.5f)

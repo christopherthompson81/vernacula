@@ -1,5 +1,6 @@
 using Microsoft.ML.OnnxRuntime;
 using Microsoft.ML.OnnxRuntime.Tensors;
+using Parakeet.Base.Models;
 
 namespace Parakeet.Base;
 
@@ -223,7 +224,7 @@ public sealed class DiariZenDiarizer : IDisposable
         }
 
         // Sort by start time
-        return allRegions.OrderBy(r => r.startFrame).ToList();
+        return allRegions.OrderBy(r => r.Item1).ToList();
     }
 
     private double[][] ExtractRegionFeatures(float[] audio, List<(int startFrame, int endFrame)> regions)
