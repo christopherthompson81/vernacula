@@ -69,9 +69,8 @@ public sealed class DiariZenDiarizer : IDisposable
             chunkResults.Add((scores, startT, endT));
         }
 
-        var aggregatedScores = AggregateSegmentations(chunkResults);
-        var binaryActivity = BinarizeSegmentation(aggregatedScores, threshold);
-        var regions = ExtractSpeakerRegions(binaryActivity);
+        var aggregatedScores = AggregateSegmentations(chunkResults, audio);
+        var regions = ExtractSpeakerRegions(aggregatedScores, threshold);
         
         if (regions.Count == 0)
             return new List<DiarizationSegment>();
@@ -124,66 +123,103 @@ public sealed class DiariZenDiarizer : IDisposable
         return scores;
     }
 
-    private float[] AggregateSegmentations(List<(float[] scores, double startTime, double endTime)> chunkResults)
+    private float[] AggregateSegmentations(
+    List<(float[] scores, double startTime, double endTime)> chunkResults,
+    float[] audio)
     {
         if (chunkResults.Count == 0)
             return Array.Empty<float>();
 
-        int totalLength = chunkResults.Sum(c => c.scores.Length);
-        var aggregated = new float[totalLength];
+        // Estimate total frames based on audio length
+        int totalFrames = (int)(audio.Length / (double)SampleRate * FrameRate);
         
-        int offset = 0;
-        foreach (var (scores, _, _) in chunkResults)
+        // Create aggregated scores and count arrays
+        var aggregated = new float[totalFrames * NumPowersetClasses];
+        var counts = new int[totalFrames * NumPowersetClasses];
+
+        int framesPerChunk = chunkResults[0].scores.Length / NumPowersetClasses;
+        int framesPerSecond = FrameRate;
+        
+        foreach (var (scores, startTime, endTime) in chunkResults)
         {
-            Array.Copy(scores, 0, aggregated, offset, scores.Length);
-            offset += scores.Length;
+            int startFrame = (int)(startTime * framesPerSecond);
+            
+            for (int t = 0; t < framesPerChunk && startFrame + t < totalFrames; t++)
+            {
+                int globalFrame = startFrame + t;
+                for (int c = 0; c < NumPowersetClasses; c++)
+                {
+                    int idx = globalFrame * NumPowersetClasses + c;
+                    int chunkIdx = t * NumPowersetClasses + c;
+                    
+                    if (idx < aggregated.Length && chunkIdx < scores.Length)
+                    {
+                        aggregated[idx] += scores[chunkIdx];
+                        counts[idx]++;
+                    }
+                }
+            }
+        }
+
+        // Normalize by count (overlap-add)
+        for (int i = 0; i < aggregated.Length; i++)
+        {
+            if (counts[i] > 0)
+                aggregated[i] /= counts[i];
         }
 
         return aggregated;
     }
 
-    private bool[] BinarizeSegmentation(float[] scores, float threshold)
+    private List<(int startFrame, int endFrame)> ExtractSpeakerRegions(float[] powersetScores, float threshold)
     {
-        int numFrames = scores.Length / NumPowersetClasses;
-        var binary = new bool[numFrames];
+        // Use proper powerset decoding
+        var activeSpeakersPerFrame = PowersetDecoder.BinarizePowerset(powersetScores, 4, threshold);
+        int numFrames = activeSpeakersPerFrame.Length;
+
+        // Track regions per speaker
+        var speakerRegions = new Dictionary<int, List<(int startFrame, int endFrame)>>();
+
+        const int minDurationFrames = 25; // ~0.5 seconds
         
-        for (int t = 0; t < numFrames; t++)
+        for (int speaker = 0; speaker < 4; speaker++)
         {
-            float maxAct = 0f;
-            for (int c = 0; c < NumPowersetClasses; c++)
+            if (!speakerRegions.ContainsKey(speaker))
+                speakerRegions[speaker] = new List<(int, int)>();
+
+            int? startFrame = null;
+
+            for (int t = 0; t < numFrames; t++)
             {
-                int idx = t * NumPowersetClasses + c;
-                if (idx < scores.Length && scores[idx] > maxAct)
-                    maxAct = scores[idx];
+                bool isActive = activeSpeakersPerFrame[t].Contains(speaker);
+
+                if (isActive && startFrame == null)
+                {
+                    startFrame = t;
+                }
+                else if (!isActive && startFrame.HasValue)
+                {
+                    if (t - startFrame.Value >= minDurationFrames)
+                        speakerRegions[speaker].Add((startFrame.Value, t));
+                    startFrame = null;
+                }
             }
-            binary[t] = maxAct >= threshold;
+
+            // Handle region at end
+            if (startFrame.HasValue && numFrames - startFrame.Value >= minDurationFrames)
+                speakerRegions[speaker].Add((startFrame.Value, numFrames));
         }
 
-        return binary;
-    }
-
-    private List<(int startFrame, int endFrame)> ExtractSpeakerRegions(bool[] binaryActivity)
-    {
-        var regions = new List<(int, int)>();
-        const int minDurationFrames = 25;
-        int? startFrame = null;
-        
-        for (int t = 0; t < binaryActivity.Length; t++)
+        // Flatten all speaker regions into single list
+        var allRegions = new List<(int, int)>();
+        foreach (var (speaker, regions) in speakerRegions)
         {
-            if (binaryActivity[t] && startFrame == null)
-                startFrame = t;
-            else if (!binaryActivity[t] && startFrame.HasValue)
-            {
-                if (t - startFrame.Value >= minDurationFrames)
-                    regions.Add((startFrame.Value, t));
-                startFrame = null;
-            }
+            if (regions.Count > 0)
+                allRegions.AddRange(regions);
         }
-        
-        if (startFrame.HasValue && binaryActivity.Length - startFrame.Value >= minDurationFrames)
-            regions.Add((startFrame.Value, binaryActivity.Length));
 
-        return regions;
+        // Sort by start time
+        return allRegions.OrderBy(r => r.startFrame).ToList();
     }
 
     private double[][] ExtractRegionFeatures(float[] audio, List<(int startFrame, int endFrame)> regions)
