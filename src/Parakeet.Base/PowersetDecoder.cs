@@ -2,36 +2,45 @@ namespace Parakeet.Base;
 
 /// <summary>
 /// Powerset decoder for multi-speaker diarization.
-/// 
-/// The powerset representation encodes all possible speaker combinations as binary masks.
-/// For N speakers, there are 2^N - 1 non-empty combinations.
-/// 
-/// Example with 4 speakers:
-/// - powerset[0] = {0} (speaker 0 only)
-/// - powerset[1] = {1} (speaker 1 only)  
-/// - powerset[2] = {0,1} (speakers 0 and 1 overlapping)
-/// - etc.
-/// 
-/// This decoder converts powerset scores back to per-speaker activity.
+///
+/// DiariZen uses a restricted powerset encoding:
+/// - max 4 unique speakers per chunk
+/// - max 2 simultaneous speakers per frame
+/// - This gives C(4,0) + C(4,1) + C(4,2) = 1 + 4 + 6 = 11 classes
+///
+/// Powerset combinations:
+/// - [0,0,0,0] = silence (class 0)
+/// - [1,0,0,0] = speaker 0 only (class 1)
+/// - [0,1,0,0] = speaker 1 only (class 2)
+/// - [0,0,1,0] = speaker 2 only (class 3)
+/// - [0,0,0,1] = speaker 3 only (class 4)
+/// - [1,1,0,0] = speakers 0+1 (class 5)
+/// - [1,0,1,0] = speakers 0+2 (class 6)
+/// - [1,0,0,1] = speakers 0+3 (class 7)
+/// - [0,1,1,0] = speakers 1+2 (class 8)
+/// - [0,1,0,1] = speakers 1+3 (class 9)
+/// - [0,0,1,1] = speakers 2+3 (class 10)
 /// </summary>
 public static class PowersetDecoder
 {
-    private static Dictionary<int, List<int>[]>? _caches;
+    private static Dictionary<string, List<int>[]>? _caches;
 
     /// <summary>
     /// Get powerset combinations for a given number of speakers.
     /// </summary>
-    /// <param name="numSpeakers">Maximum number of speakers (typically 4)</param>
+    /// <param name="numSpeakers">Maximum number of unique speakers (typically 4)</param>
+    /// <param name="maxSimultaneous">Maximum simultaneous speakers per frame (typically 2)</param>
     /// <returns>Array where index i contains the speaker IDs in combination i</returns>
-    public static List<int>[] GetPowersetCombinations(int numSpeakers)
+    public static List<int>[] GetPowersetCombinations(int numSpeakers, int maxSimultaneous = 2)
     {
-        if (_caches == null || !_caches.ContainsKey(numSpeakers))
+        var cacheKey = $"{numSpeakers}_{maxSimultaneous}";
+        if (_caches == null || !_caches.ContainsKey(cacheKey))
         {
-            var combinations = new List<int>[1 << numSpeakers]; // 2^N
-            int count = 0;
+            var allCombinations = new List<List<int>>();
 
-            // Generate all non-empty subsets
-            for (int mask = 1; mask < (1 << numSpeakers); mask++)
+            // Generate all combinations with up to maxSimultaneous speakers
+            int totalCombos = 1 << numSpeakers; // 2^N
+            for (int mask = 0; mask < totalCombos; mask++)
             {
                 var speakers = new List<int>();
                 for (int s = 0; s < numSpeakers; s++)
@@ -39,31 +48,32 @@ public static class PowersetDecoder
                     if ((mask & (1 << s)) != 0)
                         speakers.Add(s);
                 }
-                combinations[count++] = speakers;
+                
+                // Only include if within maxSimultaneous limit
+                if (speakers.Count <= maxSimultaneous)
+                    allCombinations.Add(speakers);
             }
 
-            // Trim to actual count
-            var trimmed = new List<int>[count];
-            Array.Copy(combinations, trimmed, count);
-            
-            _caches ??= new Dictionary<int, List<int>[]>();
-            _caches[numSpeakers] = trimmed;
+            var combinations = allCombinations.ToArray();
+            _caches ??= new Dictionary<string, List<int>[]>();
+            _caches[cacheKey] = combinations;
         }
 
-        return _caches[numSpeakers];
+        return _caches[cacheKey];
     }
 
     /// <summary>
     /// Decode powerset scores to per-speaker activity probabilities.
-    /// 
+    ///
     /// Uses the "powerset to one-hot" transformation from pyannote.
     /// </summary>
     /// <param name="powersetScores">Scores for each powerset combination (frames x combinations)</param>
     /// <param name="numSpeakers">Number of speakers</param>
+    /// <param name="maxSimultaneous">Maximum simultaneous speakers</param>
     /// <returns>Per-speaker activity probabilities (frames x speakers)</returns>
-    public static float[][] DecodeToSpeakerActivity(float[] powersetScores, int numSpeakers)
+    public static float[][] DecodeToSpeakerActivity(float[] powersetScores, int numSpeakers, int maxSimultaneous = 2)
     {
-        var combinations = GetPowersetCombinations(numSpeakers);
+        var combinations = GetPowersetCombinations(numSpeakers, maxSimultaneous);
         int numFrames = powersetScores.Length / combinations.Length;
         var speakerActivity = new float[numFrames][];
 
@@ -105,14 +115,16 @@ public static class PowersetDecoder
     /// </summary>
     /// <param name="powersetScores">Powerset scores (frames x combinations)</param>
     /// <param name="numSpeakers">Number of speakers</param>
+    /// <param name="maxSimultaneous">Maximum simultaneous speakers</param>
     /// <param name="threshold">Binarization threshold</param>
     /// <returns>Array of (frame, List of active speakers)</returns>
     public static List<int>[] BinarizePowerset(
         float[] powersetScores,
         int numSpeakers,
+        int maxSimultaneous = 2,
         float threshold = 0.5f)
     {
-        var combinations = GetPowersetCombinations(numSpeakers);
+        var combinations = GetPowersetCombinations(numSpeakers, maxSimultaneous);
         int numFrames = powersetScores.Length / combinations.Length;
         var activeSpeakers = new List<int>[numFrames];
 
@@ -138,7 +150,7 @@ public static class PowersetDecoder
             }
 
             // If best combination passes threshold, assign those speakers
-            if (bestScore >= threshold && bestCombo >= 0)
+            if (bestScore >= threshold && bestCombo >= 0 && bestCombo < combinations.Length)
             {
                 activeSpeakers[t] = new List<int>(combinations[bestCombo]);
             }
@@ -150,17 +162,35 @@ public static class PowersetDecoder
     /// <summary>
     /// Count maximum simultaneous speakers from powerset combinations.
     /// </summary>
-    public static int GetMaxSimultaneousSpeakers(int numSpeakers)
+    public static int GetMaxSimultaneousSpeakers(int numSpeakers, int maxSimultaneous = 2)
     {
-        var combinations = GetPowersetCombinations(numSpeakers);
+        var combinations = GetPowersetCombinations(numSpeakers, maxSimultaneous);
         return combinations.Max(c => c.Count);
     }
 
     /// <summary>
     /// Get the number of powerset combinations for N speakers.
     /// </summary>
-    public static int GetNumCombinations(int numSpeakers)
+    public static int GetNumCombinations(int numSpeakers, int maxSimultaneous = 2)
     {
-        return (1 << numSpeakers) - 1; // 2^N - 1
+        // Sum of binomial coefficients: C(N,0) + C(N,1) + ... + C(N,maxSimultaneous)
+        int count = 0;
+        for (int k = 0; k <= maxSimultaneous; k++)
+            count += BinomialCoefficient(numSpeakers, k);
+        return count;
+    }
+
+    private static int BinomialCoefficient(int n, int k)
+    {
+        if (k < 0 || k > n) return 0;
+        if (k == 0 || k == n) return 1;
+        if (k > n / 2) k = n - k;
+        
+        long result = 1;
+        for (int i = 1; i <= k; i++)
+        {
+            result = result * (n - i + 1) / i;
+        }
+        return (int)result;
     }
 }

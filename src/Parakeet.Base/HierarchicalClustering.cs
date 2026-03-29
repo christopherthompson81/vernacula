@@ -23,9 +23,11 @@ public static class HierarchicalClustering
         int d = features[0].Length;
         
         // Initialize distances (pairwise Euclidean)
-        double[][] R = new double[n][];
-        for (int i = 0; i < n; i++)
-            R[i] = new double[n];
+        // R needs to accommodate up to 2*n - 1 clusters (original n + n-1 merges)
+        int maxClusters = 2 * n - 1;
+        double[][] R = new double[maxClusters][];
+        for (int i = 0; i < maxClusters; i++)
+            R[i] = new double[maxClusters];
         
         for (int i = 0; i < n; i++)
         {
@@ -89,7 +91,7 @@ public static class HierarchicalClustering
             // Update distances to new cluster
             for (int i = 0; i < n + k; i++)
             {
-                if (i != iMin && i != jMin)
+                if (i != iMin && i != jMin && clusterCentroid[i] != null)
                 {
                     double dist = EuclideanDistance(clusterCentroid[i], clusterCentroid[newIdx]);
                     R[i][newIdx] = dist;
@@ -124,9 +126,11 @@ public static class HierarchicalClustering
             return Array.Empty<int>();
 
         int n = linkage.Length + 1;
-        int[] labels = new int[n];
-        for (int i = 0; i < n; i++)
-            labels[i] = i; // Each sample starts in its own cluster
+        // Labels array needs to accommodate all cluster indices (original + merged)
+        int maxClusters = 2 * n - 1;
+        int[] labels = new int[maxClusters];
+        for (int i = 0; i < maxClusters; i++)
+            labels[i] = i; // Each cluster starts with its own label
 
         // Process merges in order
         int nextLabel = n;
@@ -146,7 +150,7 @@ public static class HierarchicalClustering
             if (labelI != labelJ)
             {
                 // Reassign all samples in cluster J to cluster I
-                for (int k = 0; k < n; k++)
+                for (int k = 0; k < maxClusters; k++)
                 {
                     if (labels[k] == labelJ)
                         labels[k] = labelI;
