@@ -11,7 +11,7 @@ string? audioPath       = null;
 string? modelDir        = null;
 string? outputPath      = null;
 string  exportFormat    = "md";
-bool    useVad          = false;
+string  diarization     = "sortformer"; // sortformer, diarizen, or vad
 bool    showBenchmark   = false;
 ModelPrecision precision = ModelPrecision.Fp32;
 
@@ -23,7 +23,15 @@ for (int i = 0; i < args.Length; i++)
         case "--model":         modelDir     = args[++i]; break;
         case "--output":        outputPath   = args[++i]; break;
         case "--export-format": exportFormat = args[++i].ToLowerInvariant(); break;
-        case "--vad":           useVad       = true; break;
+        case "--diarization":
+            diarization = args[++i].ToLowerInvariant();
+            if (diarization is not ("sortformer" or "diarizen" or "vad"))
+            {
+                Console.Error.WriteLine($"Unknown diarization backend: {diarization}. Choose: sortformer, diarizen, vad.");
+                return 1;
+            }
+            break;
+        case "--vad":           diarization = "vad"; break; // deprecated but supported
         case "--benchmark":     showBenchmark = true; break;
         case "--precision":
             precision = args[++i].ToLowerInvariant() switch {
@@ -103,7 +111,7 @@ try
     List<(double start, double end, string spkId)> segs;
     var swDiar = Stopwatch.StartNew();
 
-    if (useVad)
+    if (diarization == "vad")
     {
         Console.Write("Detecting speech (VAD)... ");
         using var vad = new VadSegmenter(modelDir);
@@ -112,14 +120,31 @@ try
         swDiar.Stop();
         Console.WriteLine($"{segs.Count} segment(s) ({swDiar.ElapsedMilliseconds}ms)");
     }
-    else
+    else if (diarization == "diarizen")
     {
-        Console.Write("Diarizing... ");
+        Console.Write("Diarizing (DiariZen)... ");
+        string diarizenModel = Path.Combine(modelDir, Config.DiariZenFile);
+        if (!File.Exists(diarizenModel))
+        {
+            Console.Error.WriteLine($"\nError: DiariZen model not found: {diarizenModel}");
+            Console.Error.WriteLine("Run: python scripts/diarizen_export/export_diarizen_onnx.py");
+            return 1;
+        }
+        
+        using var diarizer = new DiariZenDiarizer(diarizenModel);
+        var diarSegments = diarizer.Diarize(audio, minSpeakers: 1, maxSpeakers: 8);
+        segs = diarSegments.Select(s => (s.Start, s.End, s.Speaker)).ToList();
+        swDiar.Stop();
+        Console.WriteLine($"\rDiarizing (DiariZen)... {segs.Count} segment(s) ({swDiar.ElapsedMilliseconds}ms)");
+    }
+    else // sortformer (default)
+    {
+        Console.Write("Diarizing (Sortformer)... ");
         using var sortformer = new SortformerStreamer(modelDir);
         segs = sortformer.Diarize(audio,
             (idx, total) => Console.Write($"\r  Diarizing chunk {idx}/{total}..."));
         swDiar.Stop();
-        Console.WriteLine($"\rDiarizing... {segs.Count} segment(s) ({swDiar.ElapsedMilliseconds}ms)");
+        Console.WriteLine($"\rDiarizing (Sortformer)... {segs.Count} segment(s) ({swDiar.ElapsedMilliseconds}ms)");
     }
 
     cts.Token.ThrowIfCancellationRequested();
@@ -256,7 +281,9 @@ static void PrintUsage()
     Console.WriteLine("Options:");
     Console.WriteLine("  --export-format <md|txt|json|srt>  Output format (default: md)");
     Console.WriteLine("  --output <path>                    Override output file path");
-    Console.WriteLine("  --vad                              Use VAD instead of diarization");
+    Console.WriteLine("  --diarization <backend>            Diarization backend: sortformer, diarizen, vad");
+    Console.WriteLine("                                     (default: sortformer)");
+    Console.WriteLine("  --vad                              Use VAD instead of diarization (deprecated)");
     Console.WriteLine("  --precision <fp32|int8>            Model precision (default: fp32)");
     Console.WriteLine("  --benchmark                        Print timing / RTF after transcription");
     Console.WriteLine("  -h, --help                         Show this help");
