@@ -38,6 +38,9 @@ public static class Config
     public const double MinDurOn        = 0.511;
     public const double MinDurOff       = 0.296;
 
+    // ── Diarization (DiariZen) ───────────────────────────────────────────────
+    public const string DiariZenFile = "diarizen_segmentation.onnx";
+
     // Slaney mel-scale parameters
     public const double FMin      = 0.0;
     public const double FSp       = 200.0 / 3.0;
