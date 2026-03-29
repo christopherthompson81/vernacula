@@ -15,7 +15,7 @@
         dotnet build -c Release -p:EP=Cpu
 
       Then run with:
-        dotnet run -c Release -p:EP=<EP> -p:Platform=x64 - - -audio <file> -model <model-dir>
+        dotnet run -c Release -p:EP=&lt;EP&gt; -p:Platform=x64 - -audio &lt;file&gt; -model &lt;dir&gt;
     -->
     <EP Condition="'$(EP)' == ''">Cuda</EP>
     <DefineConstants Condition="'$(EP)' == 'DirectML'">$(DefineConstants);DIRECTML</DefineConstants>
@@ -38,8 +38,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="NAudio" Version="2.2.1" />
-    <PackageReference Include="MathNet.Numerics" Version="5.0.0" />
+    <ProjectReference Include="..\Parakeet.Base\Parakeet.Base.csproj" />
   </ItemGroup>
 
 </Project>
