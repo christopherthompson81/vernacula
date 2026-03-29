@@ -46,7 +46,7 @@ public static class PowersetDecoder
             var trimmed = new List<int>[count];
             Array.Copy(combinations, trimmed, count);
             
-            _caches ??= new Dictionary<int, List<int][]>();
+            _caches ??= new Dictionary<int, List<int>[]>();
             _caches[numSpeakers] = trimmed;
         }
 

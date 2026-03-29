@@ -24,6 +24,10 @@ public sealed class DiariZenDiarizer : IDisposable
     public const int SampleRate = 16000;
     public const int FrameRate = 50;
     public const int NumPowersetClasses = 11;
+    // Number of simultaneous speakers the model's powerset was trained for.
+    // This is a model architecture constant — changing it requires retraining.
+    // Total unique speakers across a recording is unconstrained; clustering handles that.
+    public const int MaxSimultaneousSpeakersPerChunk = 4;
 
     public DiariZenDiarizer(string modelPath, ExecutionProvider ep = ExecutionProvider.Auto)
     {
@@ -174,7 +178,7 @@ public sealed class DiariZenDiarizer : IDisposable
     private List<(int startFrame, int endFrame)> ExtractSpeakerRegions(float[] powersetScores, float threshold)
     {
         // Use proper powerset decoding
-        var activeSpeakersPerFrame = PowersetDecoder.BinarizePowerset(powersetScores, 4, threshold);
+        var activeSpeakersPerFrame = PowersetDecoder.BinarizePowerset(powersetScores, MaxSimultaneousSpeakersPerChunk, threshold);
         int numFrames = activeSpeakersPerFrame.Length;
 
         // Track regions per speaker
@@ -182,7 +186,7 @@ public sealed class DiariZenDiarizer : IDisposable
 
         const int minDurationFrames = 25; // ~0.5 seconds
         
-        for (int speaker = 0; speaker < 4; speaker++)
+        for (int speaker = 0; speaker < MaxSimultaneousSpeakersPerChunk; speaker++)
         {
             if (!speakerRegions.ContainsKey(speaker))
                 speakerRegions[speaker] = new List<(int, int)>();
@@ -230,8 +234,8 @@ public sealed class DiariZenDiarizer : IDisposable
         for (int i = 0; i < regions.Count; i++)
         {
             var (startFrame, endFrame) = regions[i];
-            int startSample = (int)(startFrame * SampleRate / FrameRate);
-            int endSample = (int)(endFrame * SampleRate / FrameRate);
+            int startSample = Math.Min((int)(startFrame * SampleRate / FrameRate), audio.Length - 1);
+            int endSample = Math.Min((int)(endFrame * SampleRate / FrameRate), audio.Length);
             int regionLen = endSample - startSample;
 
             if (regionLen <= 0)
