@@ -347,17 +347,13 @@ public sealed class DiariZenDiarizer : IDisposable
         var features = ExtractRegionFeatures(audio, regions);
         var linkage = HierarchicalClustering.Linkage(features, "centroid");
 
-        double[] distances = linkage.Select(r => r[2]).ToArray();
-        Array.Sort(distances);
-        double threshold = distances.Length > 0 ? distances[distances.Length / 2] : 1.0;
-
-        int[] labels = HierarchicalClustering.FclusterThreshold(linkage, threshold);
+        // Use FclusterMaxClust to get a specific number of clusters
+        // Use minSpeakers as the target to avoid over-segmentation
+        int targetClusters = minSpeakers;
+        targetClusters = Math.Max(targetClusters, 2);
+        
+        int[] labels = HierarchicalClustering.FclusterMaxClust(linkage, targetClusters);
         int numClusters = labels.Max() + 1;
-
-        if (numClusters < minSpeakers)
-            labels = HierarchicalClustering.FclusterMaxClust(linkage, minSpeakers);
-        else if (numClusters > maxSpeakers)
-            labels = HierarchicalClustering.FclusterMaxClust(linkage, maxSpeakers);
 
         var labeled = new List<(int, int, string)>();
         for (int i = 0; i < regions.Count; i++)
@@ -367,6 +363,113 @@ public sealed class DiariZenDiarizer : IDisposable
         }
 
         return labeled;
+    }
+
+    private int[] MergeSmallClusters(double[][] features, int[] labels, int minClusterSize)
+    {
+        int n = labels.Length;
+        int numClusters = labels.Max() + 1;
+        
+        // Identify large and small clusters
+        var clusterMembers = new System.Collections.Generic.List<int>[numClusters];
+        for (int c = 0; c < numClusters; c++)
+            clusterMembers[c] = new System.Collections.Generic.List<int>();
+        
+        for (int i = 0; i < n; i++)
+            clusterMembers[labels[i]].Add(i);
+        
+        var largeClusters = new System.Collections.Generic.List<int>();
+        var smallClusters = new System.Collections.Generic.List<int>();
+        
+        for (int c = 0; c < numClusters; c++)
+        {
+            if (clusterMembers[c].Count >= minClusterSize)
+                largeClusters.Add(c);
+            else
+                smallClusters.Add(c);
+        }
+        
+        if (smallClusters.Count == 0)
+            return labels;
+        
+        // If no large clusters, just return as-is (all small clusters)
+        if (largeClusters.Count == 0)
+            return labels;
+        
+        // Compute centroids for large clusters
+        var largeCentroids = new double[largeClusters.Count][];
+        int d = features[0].Length;
+        
+        for (int i = 0; i < largeClusters.Count; i++)
+        {
+            int c = largeClusters[i];
+            largeCentroids[i] = new double[d];
+            foreach (int idx in clusterMembers[c])
+            {
+                for (int j = 0; j < d; j++)
+                    largeCentroids[i][j] += features[idx][j];
+            }
+            for (int j = 0; j < d; j++)
+                largeCentroids[i][j] /= clusterMembers[c].Count;
+        }
+        
+        // Merge small clusters to nearest large cluster
+        var newLabels = (int[])labels.Clone();
+        
+        foreach (int smallC in smallClusters)
+        {
+            // Compute centroid of small cluster
+            var smallCentroid = new double[d];
+            foreach (int idx in clusterMembers[smallC])
+            {
+                for (int j = 0; j < d; j++)
+                    smallCentroid[j] += features[idx][j];
+            }
+            for (int j = 0; j < d; j++)
+                smallCentroid[j] /= clusterMembers[smallC].Count;
+            
+            // Find nearest large cluster
+            int nearestLarge = 0;
+            double minDist = double.MaxValue;
+            
+            for (int i = 0; i < largeClusters.Count; i++)
+            {
+                double dist = EuclideanDistance(smallCentroid, largeCentroids[i]);
+                if (dist < minDist)
+                {
+                    minDist = dist;
+                    nearestLarge = i;
+                }
+            }
+            
+            // Reassign all members of small cluster
+            int targetCluster = largeClusters[nearestLarge];
+            foreach (int idx in clusterMembers[smallC])
+                newLabels[idx] = targetCluster;
+        }
+        
+        // Relabel to consecutive integers
+        var labelMap = new System.Collections.Generic.Dictionary<int, int>();
+        int newLabel = 0;
+        for (int i = 0; i < n; i++)
+        {
+            if (!labelMap.ContainsKey(newLabels[i]))
+                labelMap[newLabels[i]] = newLabel++;
+            newLabels[i] = labelMap[newLabels[i]];
+        }
+        
+        return newLabels;
+    }
+
+    private double EuclideanDistance(double[] a, double[] b)
+    {
+        double sum = 0;
+        for (int i = 0; i < a.Length; i++)
+        {
+            double diff = a[i] - b[i];
+            sum += diff * diff;
+        }
+        return Math.Sqrt(sum);
     }
 
     private List<DiarizationSegment> MergeOverlappingSegments(
