@@ -24,11 +24,11 @@ public sealed class SortformerStreamer : IDisposable
 
     // ── Streaming state ───────────────────────────────────────────────────────
 
-    private float[,,]  _spkcache;
+    private float[,,]?  _spkcache;
     private float[,,]? _spkcachePreds;
-    private float[,,]  _fifo;
-    private float[,,]  _fifoPreds;
-    private float[]    _meanSilEmb;
+    private float[,,]?  _fifo;
+    private float[,,]?  _fifoPreds;
+    private float[]?    _meanSilEmb;
     private int        _nSilFrames;
 
     // ── Construction ─────────────────────────────────────────────────────────
@@ -90,8 +90,8 @@ public sealed class SortformerStreamer : IDisposable
                 _nSilFrames++;
                 for (int d = 0; d < Config.EmbeddingDimension; d++)
                 {
-                    double oldSum = _meanSilEmb[d] * (_nSilFrames - 1);
-                    _meanSilEmb[d] = (float)((oldSum + embs[0, t, d]) / _nSilFrames);
+                    double oldSum = _meanSilEmb![d] * (_nSilFrames - 1);
+                    _meanSilEmb![d] = (float)((oldSum + embs[0, t, d]) / _nSilFrames);
                 }
             }
         }
@@ -209,11 +209,11 @@ public sealed class SortformerStreamer : IDisposable
             if (t >= T)
             {
                 for (int d = 0; d < Config.EmbeddingDimension; d++)
-                    newEmbs[0, i, d] = _meanSilEmb[d];
+                    newEmbs[0, i, d] = _meanSilEmb![d];
                 continue;
             }
             for (int d = 0; d < Config.EmbeddingDimension; d++)
-                newEmbs[0, i, d] = _spkcache[0, t, d];
+                newEmbs[0, i, d] = _spkcache![0, t, d];
             for (int s = 0; s < S; s++)
                 newPreds[0, i, s] = _spkcachePreds![0, t, s];
         }
