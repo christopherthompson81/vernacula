@@ -39,7 +39,59 @@ public static class Config
     public const double MinDurOff       = 0.296;
 
     // ── Diarization (DiariZen) ───────────────────────────────────────────────
+    /// <summary>
+    /// DiariZen segmentation model file.
+    /// </summary>
     public const string DiariZenFile = "diarizen_segmentation.onnx";
+
+    /// <summary>
+    /// Maximum number of unique speakers per chunk (default DiariZen configuration).
+    /// </summary>
+    public const int DiariZenMaxSpeakersPerChunk = 4;
+
+    /// <summary>
+    /// Maximum number of simultaneous speakers per frame (default DiariZen configuration).
+    /// </summary>
+    public const int DiariZenMaxSpeakersPerFrame = 2;
+
+    /// <summary>
+    /// Total number of powerset classes: C(4,0) + C(4,1) + C(4,2) = 1 + 4 + 6 = 11.
+    /// </summary>
+    public const int DiariZenNumPowersetClasses = 11;
+
+    /// <summary>
+    /// DiariZen chunk duration in seconds.
+    /// </summary>
+    public const int DiariZenChunkDurationSeconds = 16;
+
+    /// <summary>
+    /// DiariZen chunk overlap in seconds (50% overlap).
+    /// </summary>
+    public const int DiariZenChunkOverlapSeconds = 8;
+
+    /// <summary>
+    /// DiariZen frame rate: 50 frames per second (20ms frames).
+    /// </summary>
+    public const int DiariZenFrameRate = 50;
+
+    /// <summary>
+    /// Default threshold for binarizing powerset probabilities (0.5).
+    /// </summary>
+    public const float DiariZenDefaultThreshold = 0.5f;
+
+    /// <summary>
+    /// Hierarchical clustering parameters for DiariZen.
+    /// </summary>
+    public const string DiariZenClusteringMethod = "centroid";
+    public const int DiariZenMinClusterSize = 13; // ~0.26s at 50Hz
+
+    /// <summary>
+    /// VBx clustering parameters (alternative to HAC).
+    /// </summary>
+    public const float DiariZenVbxFa = 0.07f; // scales sufficient statistics
+    public const float DiariZenVbxFb = 0.8f;  // speaker regularization
+    public const int DiariZenVbxLdaDim = 128; // PLDA dimensionality
+    public const int DiariZenVbxMaxIters = 20;
 
     // Slaney mel-scale parameters
     public const double FMin      = 0.0;

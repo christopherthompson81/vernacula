@@ -7,11 +7,58 @@ namespace Parakeet.Base;
 /// <summary>
 /// DiariZen speaker diarization using ONNX Runtime.
 /// 
-/// Features:
-/// - ONNX-based segmentation (WavLM + Conformer)
-/// - Statistical feature extraction from audio regions
-/// - Agglomerative hierarchical clustering for speaker assignment
-/// - Segment merging for temporal continuity
+/// <para><strong>Overview:</strong></para>
+/// This implementation ported from DiariZen uses a deep learning-based approach
+/// for speaker diarization. The pipeline consists of four main stages:
+/// </para>
+/// 
+/// <para><strong>1. Powerset-based Segmentation (EEND Model):</strong></para>
+/// <list type="number">
+/// <item><description>Audio is chunked into 16s segments with 8s overlap</description></item>
+/// <item><description>WavLM+Conformer model outputs powerset probabilities per frame</description></item>
+/// <item><description>Chunk predictions are aggregated via overlap-add</description></item>
+/// <item><description>Softmax converts logits to probabilities</description></item>
+/// <item><description>Thresholding extracts speaker active regions</description></item>
+/// </list>
+///
+/// <para><strong>2. Powerset Encoding:</strong></para>
+/// The model uses a restricted powerset encoding to handle overlapping speech:
+/// <list type="bullet">
+/// <item><description>max_speakers_per_chunk = 4 (unique speakers per chunk)</description></item>
+/// <item><description>max_speakers_per_frame = 2 (simultaneous speakers)</description></item>
+/// <item><description>Num classes = C(4,0) + C(4,1) + C(4,2) = 1 + 4 + 6 = 11</description></item>
+/// </list>
+/// Powerset classes: silence, 4 single speakers, 6 speaker pairs
+///
+/// <para><strong>3. Region Feature Extraction:</strong></para>
+/// For each speaker-active region, statistical features are computed:
+/// <list type="bullet">
+/// <item><description>Mean, standard deviation, zero-crossing rate</description></item>
+/// <item><description>Energy, duration, temporal position</description></item>
+/// <item><description>10-dimensional feature vector per region</description></item>
+/// </list>
+///
+/// <para><strong>4. Hierarchical Clustering:</strong></para>
+/// <list type="number">
+/// <item><description>Compute linkage dendrogram using centroid method</description></item>
+/// <item><description>Cut tree to get minSpeakers clusters (avoids over-segmentation)</description></item>
+/// <item><description>Small clusters are merged into nearest large cluster</description></item>
+/// <item><description>Temporal merging combines nearby segments of same speaker</description></item>
+/// </list>
+///
+/// <para><strong>Key Parameters:</strong></para>
+/// <list type="bullet">
+/// <item><description>Chunk duration: 16 seconds, overlap: 8 seconds</description></item>
+/// <item><description>Sample rate: 16kHz, frame rate: 50Hz (20ms frames)</description></item>
+/// <item><description>Threshold: 0.5 (default for region extraction)</description></item>
+/// <item><description>Min/Max speakers: controls clustering granularity</description></item>
+/// </list>
+///
+/// <para><strong>Comparison with Sortformer:</strong></para>
+/// Unlike Sortformer's streaming approach with speaker tracking, DiariZen uses
+/// batch processing with post-hoc clustering. This provides better accuracy
+/// for offline diarization at the cost of latency.
+/// </para>
 /// </summary>
 public sealed class DiariZenDiarizer : IDisposable
 {
@@ -56,6 +103,27 @@ public sealed class DiariZenDiarizer : IDisposable
         _session = new InferenceSession(modelPath, opts);
     }
 
+    /// <summary>
+    /// Perform speaker diarization on audio waveform.
+    /// 
+    /// <para><strong>Pipeline:</strong></para>
+    /// <list type="number">
+    /// <item><description>Chunk audio into 16s segments with 8s overlap</description></item>
+    /// <item><description>Run EEND model on each chunk → powerset scores</description></item>
+    /// <item><description>Aggregate chunk predictions via overlap-add</description></item>
+    /// <item><description>Apply softmax to convert logits to probabilities</description></item>
+    /// <item><description>Extract speaker-active regions via thresholding</description></item>
+    /// <item><description>Extract statistical features from regions</description></item>
+    /// <item><description>Cluster regions using hierarchical clustering</description></item>
+    /// <item><description> Merge overlapping segments for temporal continuity</description></item>
+    /// </list>
+    /// </para>
+    /// </summary>
+    /// <param name="audio">Mono audio waveform at 16kHz sample rate</param>
+    /// <param name="minSpeakers">Minimum expected number of speakers. Used to cut clustering dendrogram.</param>
+    /// <param name="maxSpeakers">Maximum expected number of speakers (currently unused, reserved for future constraints)</param>
+    /// <param name="threshold">Binarization threshold for region extraction (default 0.5). Higher values are more conservative.</param>
+    /// <returns>List of diarization segments with start time, end time, and speaker label</returns>
     public List<DiarizationSegment> Diarize(
         float[] audio,
         int minSpeakers = 1,
@@ -219,6 +287,24 @@ public sealed class DiariZenDiarizer : IDisposable
         return probs;
     }
 
+    /// <summary>
+    /// Extract speaker-active regions from powerset probabilities using hysteresis thresholding.
+    /// 
+    /// <para><strong>Process:</strong></para>
+    /// <list type="number">
+    /// <item><description>Decode powerset probabilities to per-speaker activity</description></item>
+    /// <item><description>Find contiguous regions where each speaker is active</description></item>
+    /// <item><description>Filter out regions shorter than minimum duration (~0.5s)</description></item>
+    /// <item><description>Return flattened list of all speaker regions</description></item>
+    /// </list>
+    /// </para>
+    ///
+    /// <para><strong>Region Merging:</strong></para>
+    /// Short gaps between active regions of the same speaker are not automatically
+    /// merged here. This is handled in the final MergeOverlappingSegments step
+    /// with a mergeGap parameter (default 0.5s).
+    /// </para>
+    /// </summary>
     private List<(int startFrame, int endFrame)> ExtractSpeakerRegions(float[] powersetScores, float threshold)
     {
         // Use proper powerset decoding with 4 speakers, max 2 simultaneous
@@ -270,6 +356,29 @@ public sealed class DiariZenDiarizer : IDisposable
         return allRegions.OrderBy(r => r.Item1).ToList();
     }
 
+     /// <summary>
+    /// Extract statistical features from audio regions for clustering.
+    ///
+    /// <para><strong>Feature Vector (10 dimensions):</strong></para>
+    /// <list type="number">
+    /// <item><description>Mean amplitude</description></item>
+    /// <item><description>Standard deviation</description></item>
+    /// <item><description>Zero-crossing rate</description></item>
+    /// <item><description>Log energy</description></item>
+    /// <item><description>Duration in seconds</description></item>
+    /// <item><description>Normalized start position</description></item>
+    /// <item><description>Signal-to-noise ratio proxy (|mean|/std)</description></item>
+    /// <item><description>Normalized zero-crossing rate</description></item>
+    /// <item><description>Sample count normalized</description></item>
+    /// <item><description>Root mean square energy</description></item>
+    /// </list>
+    ///
+    /// <para><strong>Note:</strong></para>
+    /// Unlike x-vector or ECAPA-TDNN embeddings used in production systems,
+    /// this implementation uses simple statistical features for demonstration.
+    /// Production DiariZen uses pre-trained speaker embedding models.
+    /// </para>
+    /// </summary>
     private double[][] ExtractRegionFeatures(float[] audio, List<(int startFrame, int endFrame)> regions)
     {
         const int featureDim = 10;
@@ -328,6 +437,34 @@ public sealed class DiariZenDiarizer : IDisposable
         return features;
     }
 
+      /// <summary>
+    /// Cluster speaker regions using hierarchical agglomerative clustering.
+    ///
+    /// <para><strong>Algorithm:</strong></para>
+    /// <list type="number">
+    /// <item><description>Extract 10-dimensional statistical features from each region</description></item>
+    /// <item><description>Compute linkage matrix using centroid method</description></item>
+    /// <item><description>Cut dendrogram to get minSpeakers clusters</description></item>
+    /// <item><description>Assign speaker labels (speaker_0, speaker_1, etc.)</description></item>
+    /// </list>
+    /// </para>
+    ///
+    /// <para><strong>Clustering Strategy:</strong></para>
+    /// We use FclusterMaxClust with minSpeakers to avoid over-segmentation.
+    /// This ensures we don't create too many speaker clusters when there's
+    /// uncertainty. Post-processing can merge similar speakers if needed.
+    /// </para>
+    ///
+    /// <para><strong>Alternative: VBx Clustering</strong></para>
+    /// DiariZen supports VBx (Variational Bayesian) clustering which uses:
+    /// <list type="bullet">
+    /// <item><description>AHC initialization with centroid linkage (threshold=0.6)</description></item>
+    /// <item><description>PLDA transformation (128-dimensional)</description></item>
+    /// <item><description>Variational Bayesian inference (maxIters=20)</description></item>
+    /// <item><description>Parameters: Fa=0.07, Fb=0.8 for regularization</description></item>
+    /// </list>
+    /// </para>
+    /// </summary>
     private List<(int startFrame, int endFrame, string speakerLabel)> ClusterRegions(
         float[] audio,
         List<(int startFrame, int endFrame)> regions,
@@ -365,6 +502,25 @@ public sealed class DiariZenDiarizer : IDisposable
         return labeled;
     }
 
+    /// <summary>
+    /// Merge small clusters into nearest large cluster based on centroid distance.
+    ///
+    /// <para><strong>Process:</strong></para>
+    /// <list type="number">
+    /// <item><description>Identify large clusters (≥ minClusterSize members)</description></item>
+    /// <item><description>Identify small clusters (< minClusterSize members)</description></item>
+    /// <item><description>Compute centroids for large clusters</description></item>
+    /// <item><description>For each small cluster, find nearest large cluster centroid</description></item>
+    /// <item><description>Reassign all members of small cluster to target</description></item>
+    /// <item><description>Relabel clusters to consecutive integers</description></item>
+    /// </list>
+    /// </para>
+    ///
+    /// <para><strong>DiariZen Default:</strong></para>
+    /// minClusterSize = 13 frames (~0.26 seconds at 50Hz frame rate).
+    /// This prevents tiny spurious clusters from being assigned unique speaker IDs.
+    /// </para>
+    /// </summary>
     private int[] MergeSmallClusters(double[][] features, int[] labels, int minClusterSize)
     {
         int n = labels.Length;
@@ -472,6 +628,23 @@ public sealed class DiariZenDiarizer : IDisposable
         return Math.Sqrt(sum);
     }
 
+     /// <summary>
+    /// Merge temporally overlapping or adjacent segments of the same speaker.
+    ///
+    /// <para><strong>Merging Logic:</strong></para>
+    /// Segments are merged if:
+    /// <list type="bullet">
+    /// <item><description>They belong to the same speaker label</description></item>
+    /// <item><description>The gap between them is ≤ mergeGap (default 0.5s)</description></item>
+    /// </list>
+    /// </para>
+    ///
+    /// <para><strong>Purpose:</strong></para>
+    /// This post-processing step improves temporal continuity by combining
+    /// fragmented segments that likely belong to the same utterance. Short
+    /// gaps may occur due to thresholding artifacts or brief pauses in speech.
+    /// </para>
+    /// </summary>
     private List<DiarizationSegment> MergeOverlappingSegments(
         List<(int startFrame, int endFrame, string speakerLabel)> labeledRegions)
     {
