@@ -13,6 +13,7 @@ string? outputPath      = null;
 string? segmentsPath    = null;
 string  exportFormat    = "md";
 string  diarization     = "sortformer"; // sortformer, diarizen, or vad
+float   ahcThreshold    = Config.DiariZenAhcThreshold;
 bool    showBenchmark   = false;
 ModelPrecision precision = ModelPrecision.Fp32;
 
@@ -34,6 +35,7 @@ for (int i = 0; i < args.Length; i++)
             }
             break;
         case "--vad":           diarization = "vad"; break; // deprecated but supported
+        case "--ahc-threshold": ahcThreshold = float.Parse(args[++i]); break;
         case "--benchmark":     showBenchmark = true; break;
         case "--precision":
             precision = args[++i].ToLowerInvariant() switch {
@@ -154,7 +156,7 @@ try
         string? embedderModel = Path.Combine(modelDir, Config.DiariZenEmbedderFile);
         if (!File.Exists(embedderModel)) embedderModel = null;
         using var diarizer = new DiariZenDiarizer(diarizenModel, embedderModel);
-        var diarSegments = diarizer.Diarize(audio, minSpeakers: 1, maxSpeakers: 8);
+        var diarSegments = diarizer.Diarize(audio, minSpeakers: 1, maxSpeakers: 8, ahcThreshold: ahcThreshold);
         segs = diarSegments.Select(s => (s.Start, s.End, s.Speaker)).ToList();
         swDiar.Stop();
         Console.WriteLine($"\rDiarizing (DiariZen)... {segs.Count} segment(s) ({swDiar.ElapsedMilliseconds}ms)");

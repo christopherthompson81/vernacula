@@ -73,7 +73,17 @@ public sealed class DiariZenDiarizer : IDisposable
         _segSession = new InferenceSession(segmentationModelPath, opts);
 
         if (embeddingModelPath != null && File.Exists(embeddingModelPath))
-            _embedder = new WeSpeakerEmbedder(embeddingModelPath, ep);
+        {
+            // Look for LDA transform in a "plda" sibling directory next to the model file
+            string? ldaDir = null;
+            string? modelDir = Path.GetDirectoryName(embeddingModelPath);
+            if (modelDir != null)
+            {
+                string candidate = Path.Combine(modelDir, Config.DiariZenLdaDir);
+                if (Directory.Exists(candidate)) ldaDir = candidate;
+            }
+            _embedder = new WeSpeakerEmbedder(embeddingModelPath, ldaDir, ep);
+        }
     }
 
     // ── Public API ─────────────────────────────────────────────────────────
@@ -83,9 +93,10 @@ public sealed class DiariZenDiarizer : IDisposable
     /// </summary>
     public List<DiarizationSegment> Diarize(
         float[] audio,
-        int   minSpeakers = 1,
-        int   maxSpeakers = 8,
-        float threshold   = 0.5f)
+        int   minSpeakers  = 1,
+        int   maxSpeakers  = 8,
+        float threshold    = 0.5f,
+        float ahcThreshold = -1f)   // -1 = use Config default
     {
         if (audio.Length == 0)
             return [];
@@ -160,11 +171,16 @@ public sealed class DiariZenDiarizer : IDisposable
             }
             else
             {
+                float activeThreshold = ahcThreshold > 0 ? ahcThreshold : Config.DiariZenAhcThreshold;
                 var linkage = HierarchicalClustering.Linkage(
                     embeddings.ToArray(), Config.DiariZenClusteringMethod);
                 clusterIds = HierarchicalClustering.FclusterThreshold(
-                    linkage, Config.DiariZenAhcThreshold);
+                    linkage, activeThreshold);
             }
+
+            // Post-process: absorb small clusters into nearest large cluster
+            // (mirrors pyannote AgglomerativeClustering min_cluster_size).
+            clusterIds = MergeSmallClusters(clusterIds, embeddings.ToArray(), Config.DiariZenMinClusterSize);
 
             for (int i = 0; i < embedKeys.Count; i++)
                 localToGlobal[embedKeys[i]] = clusterIds[i];
@@ -388,6 +404,83 @@ public sealed class DiariZenDiarizer : IDisposable
                 result[f, spk] = true;
         }
 
+        return result;
+    }
+
+    // ── Small-cluster absorption ───────────────────────────────────────────
+
+    /// <summary>
+    /// Reassigns embeddings in clusters smaller than <paramref name="minClusterSize"/>
+    /// to the nearest large-cluster centroid (Euclidean on L2-normalised vectors).
+    /// Mirrors pyannote's AgglomerativeClustering min_cluster_size post-processing.
+    /// Returns a compact 0-based relabelling.
+    /// </summary>
+    private static int[] MergeSmallClusters(int[] clusterIds, double[][] embeddings, int minClusterSize)
+    {
+        // Count embeddings per cluster
+        var counts = new Dictionary<int, int>();
+        foreach (int id in clusterIds)
+            counts[id] = counts.GetValueOrDefault(id, 0) + 1;
+
+        var largeSet = new HashSet<int>(counts.Where(kv => kv.Value >= minClusterSize).Select(kv => kv.Key));
+        var smallSet = new HashSet<int>(counts.Where(kv => kv.Value <  minClusterSize).Select(kv => kv.Key));
+
+        // Nothing to do if all clusters are large (or there are no large clusters to absorb into)
+        if (smallSet.Count == 0 || largeSet.Count == 0) return CompactIds(clusterIds);
+
+        int dim = embeddings[0].Length;
+
+        // Compute centroid for each large cluster
+        var centroids = new Dictionary<int, double[]>();
+        foreach (int lc in largeSet)
+        {
+            var c = new double[dim];
+            int n = 0;
+            for (int i = 0; i < clusterIds.Length; i++)
+            {
+                if (clusterIds[i] != lc) continue;
+                for (int d = 0; d < dim; d++) c[d] += embeddings[i][d];
+                n++;
+            }
+            for (int d = 0; d < dim; d++) c[d] /= n;
+            centroids[lc] = c;
+        }
+
+        // Reassign small-cluster embeddings to nearest large centroid
+        var result = (int[])clusterIds.Clone();
+        for (int i = 0; i < result.Length; i++)
+        {
+            if (!smallSet.Contains(result[i])) continue;
+
+            double bestDist = double.MaxValue;
+            int    bestId   = largeSet.First();
+            foreach (var (lc, centroid) in centroids)
+            {
+                double dist = 0;
+                for (int d = 0; d < dim; d++)
+                {
+                    double diff = embeddings[i][d] - centroid[d];
+                    dist += diff * diff;
+                }
+                if (dist < bestDist) { bestDist = dist; bestId = lc; }
+            }
+            result[i] = bestId;
+        }
+
+        return CompactIds(result);
+    }
+
+    private static int[] CompactIds(int[] ids)
+    {
+        var map = new Dictionary<int, int>();
+        int next = 0;
+        var result = new int[ids.Length];
+        for (int i = 0; i < ids.Length; i++)
+        {
+            if (!map.TryGetValue(ids[i], out int mapped))
+                map[ids[i]] = mapped = next++;
+            result[i] = mapped;
+        }
         return result;
     }
 

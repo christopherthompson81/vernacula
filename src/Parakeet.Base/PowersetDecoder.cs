@@ -38,20 +38,14 @@ public static class PowersetDecoder
         {
             var allCombinations = new List<List<int>>();
 
-            // Generate all combinations with up to maxSimultaneous speakers
-            int totalCombos = 1 << numSpeakers; // 2^N
-            for (int mask = 0; mask < totalCombos; mask++)
+            // Must match pyannote's ordering: iterate k=0,1,...,maxSimultaneous;
+            // within each k use itertools.combinations order (lexicographic k-subsets).
+            // For N=4, maxSim=2: [], [0],[1],[2],[3], [0,1],[0,2],[0,3],[1,2],[1,3],[2,3]
+            var speakers = Enumerable.Range(0, numSpeakers).ToList();
+            for (int k = 0; k <= maxSimultaneous; k++)
             {
-                var speakers = new List<int>();
-                for (int s = 0; s < numSpeakers; s++)
-                {
-                    if ((mask & (1 << s)) != 0)
-                        speakers.Add(s);
-                }
-                
-                // Only include if within maxSimultaneous limit
-                if (speakers.Count <= maxSimultaneous)
-                    allCombinations.Add(speakers);
+                foreach (var combo in KCombinations(speakers, k))
+                    allCombinations.Add(combo);
             }
 
             var combinations = allCombinations.ToArray();
@@ -60,6 +54,21 @@ public static class PowersetDecoder
         }
 
         return _caches[cacheKey];
+    }
+
+    /// <summary>Generates all k-element subsets of <paramref name="items"/> in lexicographic order.</summary>
+    private static IEnumerable<List<int>> KCombinations(List<int> items, int k)
+    {
+        if (k == 0) { yield return []; yield break; }
+        for (int i = 0; i <= items.Count - k; i++)
+        {
+            foreach (var rest in KCombinations(items.GetRange(i + 1, items.Count - i - 1), k - 1))
+            {
+                var result = new List<int>(k) { items[i] };
+                result.AddRange(rest);
+                yield return result;
+            }
+        }
     }
 
     /// <summary>

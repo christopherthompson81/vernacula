@@ -7,24 +7,24 @@ using Parakeet.Base.Models;
 namespace Parakeet.Base;
 
 /// <summary>
-/// Speaker embedding extraction using the WeSpeaker-ResNet34 ONNX model.
+/// Speaker embedding extraction using the pyannote WeSpeaker-ResNet34-LM ONNX model.
 ///
 /// <para><strong>Pipeline:</strong></para>
 /// <list type="number">
 /// <item><description>Scale audio to int16 range (×32768, Kaldi convention)</description></item>
-/// <item><description>Compute Kaldi Fbank: 40-bin log Mel filterbank, 25ms/10ms window/hop, Hamming window</description></item>
+/// <item><description>Compute Kaldi Fbank: 80-bin log Mel filterbank, 25ms/10ms window/hop, Hamming window</description></item>
 /// <item><description>Subtract per-utterance mean (CMVN-style normalisation)</description></item>
-/// <item><description>Run ResNet34 ONNX inference → 512-dim embedding</description></item>
-/// <item><description>The ONNX wrapper already L2-normalises the output</description></item>
+/// <item><description>Run ResNet34 ONNX inference → 256-dim L2-normalised embedding</description></item>
+/// <item><description>Optionally apply LDA transform (256→128) for PLDA-space clustering</description></item>
 /// </list>
 ///
-/// <para><strong>Fbank parameters (must match the Python training config):</strong></para>
+/// <para><strong>Fbank parameters (matches torchaudio.compliance.kaldi.fbank defaults):</strong></para>
 /// <list type="bullet">
 /// <item><description>sample_rate = 16 000 Hz</description></item>
 /// <item><description>frame_length = 25 ms (400 samples)</description></item>
 /// <item><description>frame_shift = 10 ms (160 samples)</description></item>
-/// <item><description>num_mel_bins = 40, low_freq = 20 Hz, high_freq = 8 000 Hz</description></item>
-/// <item><description>pre_emphasis = 0.97, remove_dc_offset = true, snip_edges = true</description></item>
+/// <item><description>num_mel_bins = 80, low_freq = 20 Hz, high_freq = 8 000 Hz</description></item>
+/// <item><description>preemphasis_coefficient = 0.97, remove_dc_offset = true, snip_edges = true</description></item>
 /// </list>
 /// </summary>
 public sealed class WeSpeakerEmbedder : IDisposable
@@ -34,11 +34,21 @@ public sealed class WeSpeakerEmbedder : IDisposable
     private readonly float[,] _melFilters;
     private bool _disposed;
 
+    // Full PLDA transform parameters (optional, loaded from plda/ directory)
+    private readonly float[]? _ldaMean1;    // (256,) — xvec_transform mean1
+    private readonly float[,]? _ldaMatrix;  // (256, 128) — xvec_transform lda
+    private readonly float[]? _ldaMean2;    // (128,) — xvec_transform mean2
+    private readonly float[,]? _pldaTr;    // (128, 128) — PLDA whitening rows
+    private readonly float[]?  _pldaPsi;   // (128,) — PLDA eigenvalues (Phi for VBx)
+
+    /// <summary>PLDA eigenvalues (Phi) needed by VBx, or null if PLDA not loaded.</summary>
+    public float[]? VbxPhi => _pldaPsi;
+
     // ── Constants ──────────────────────────────────────────────────────────
 
-    public const int EmbeddingDim    = 512;
+    public const int EmbeddingDim    = 256;
     public const int SampleRate      = 16_000;
-    public const int NumMelBins      = 40;
+    public const int NumMelBins      = 80;
     public const int FrameLengthSamples = 400;   // 25 ms × 16 kHz
     public const int FrameShiftSamples  = 160;   // 10 ms × 16 kHz
     public const int FftSize            = 512;   // next power of 2 ≥ 400
@@ -51,10 +61,42 @@ public sealed class WeSpeakerEmbedder : IDisposable
 
     // ── Construction ───────────────────────────────────────────────────────
 
-    public WeSpeakerEmbedder(string modelPath, ExecutionProvider ep = ExecutionProvider.Auto)
+    /// <summary>
+    /// Create a WeSpeaker embedder.
+    /// </summary>
+    /// <param name="modelPath">Path to wespeaker_pyannote.onnx.</param>
+    /// <param name="ldaDir">
+    /// Optional directory containing <c>mean1.bin</c>, <c>lda.bin</c>, <c>mean2.bin</c>
+    /// (exported from plda/xvec_transform.npz by export_lda_transform.py).
+    /// When supplied, embeddings are projected 256→128 before clustering.
+    /// </param>
+    /// <param name="ep">ONNX execution provider.</param>
+    public WeSpeakerEmbedder(string modelPath, string? ldaDir = null,
+        ExecutionProvider ep = ExecutionProvider.Auto)
     {
         _window     = MakeHammingWindow(FrameLengthSamples);
         _melFilters = MakeMelFilters(NumMelBins, FftSize, SampleRate, LowFreqHz, HighFreqHz);
+
+        // Load optional PLDA transform (xvec_tf + plda_tf)
+        if (ldaDir != null && Directory.Exists(ldaDir))
+        {
+            string m1  = Path.Combine(ldaDir, "mean1.bin");
+            string ld  = Path.Combine(ldaDir, "lda.bin");
+            string m2  = Path.Combine(ldaDir, "mean2.bin");
+            string ptr = Path.Combine(ldaDir, "plda_tr.bin");
+            string pps = Path.Combine(ldaDir, "plda_psi.bin");
+            if (File.Exists(m1) && File.Exists(ld) && File.Exists(m2))
+            {
+                _ldaMean1  = ReadFloatBin(m1);               // (256,)
+                _ldaMatrix = ReadFloat2dBin(ld, 256, 128);   // (256, 128)
+                _ldaMean2  = ReadFloatBin(m2);               // (128,)
+            }
+            if (File.Exists(ptr) && File.Exists(pps))
+            {
+                _pldaTr  = ReadFloat2dBin(ptr, 128, 128);    // (128, 128)
+                _pldaPsi = ReadFloatBin(pps);                // (128,)
+            }
+        }
 
         var opts = new SessionOptions();
         opts.IntraOpNumThreads = 2;
@@ -76,8 +118,15 @@ public sealed class WeSpeakerEmbedder : IDisposable
 
     // ── Public API ─────────────────────────────────────────────────────────
 
+    /// <summary>Returns the output dimension: 256 (raw) or 128 (if PLDA transform loaded).</summary>
+    public int OutputDim => _ldaMatrix != null ? 128 : EmbeddingDim;
+
+    /// <summary>Whether the full PLDA transform (xvec_tf + plda_tf) is available.</summary>
+    public bool HasPlda => _ldaMatrix != null && _pldaTr != null;
+
     /// <summary>
-    /// Compute a 512-dim L2-normalised speaker embedding for one audio region.
+    /// Compute a speaker embedding for one audio region.
+    /// Returns 256-dim L2-normalised embedding, or 128-dim LDA-projected if transform is loaded.
     /// </summary>
     /// <param name="audio">Full recording at 16 kHz mono.</param>
     /// <param name="startSample">Inclusive start sample of the region.</param>
@@ -100,13 +149,78 @@ public sealed class WeSpeakerEmbedder : IDisposable
         int regionLen = endSample - startSample;
 
         if (regionLen < FrameLengthSamples)
-            return new float[EmbeddingDim];
+            return new float[OutputDim];
 
         var segment = new float[regionLen];
         Array.Copy(audio, startSample, segment, 0, regionLen);
 
         var fbank = ComputeFbank(segment);
-        return fbank.GetLength(0) == 0 ? new float[EmbeddingDim] : RunInference(fbank);
+        if (fbank.GetLength(0) == 0) return new float[OutputDim];
+
+        float[] raw = RunInference(fbank);
+
+        if (_ldaMatrix != null)
+            return ApplyLda(raw);
+
+        // No LDA: L2-normalise the raw embedding before returning
+        float norm0 = 0f;
+        for (int i = 0; i < raw.Length; i++) norm0 += raw[i] * raw[i];
+        norm0 = MathF.Sqrt(norm0);
+        if (norm0 > 0) for (int i = 0; i < raw.Length; i++) raw[i] /= norm0;
+        return raw;
+    }
+
+    /// <summary>
+    /// Full PLDA transform pipeline: xvec_tf then plda_tf.
+    /// <list type="number">
+    /// <item>centered = l2_norm(raw − mean1)</item>
+    /// <item>lda_normed = l2_norm(centered @ lda − mean2)</item>
+    /// <item>fea = l2_norm(plda_tr @ lda_normed)  — final embedding for VBx</item>
+    /// </list>
+    /// When plda_tr is not loaded, stops after step 2.
+    /// </summary>
+    private float[] ApplyLda(float[] embedding)
+    {
+        int inDim  = _ldaMean1!.Length;   // 256
+        int ldaDim = _ldaMean2!.Length;   // 128
+
+        // Step 1: (raw - mean1) → L2-normalise
+        var centered = new float[inDim];
+        float n1 = 0f;
+        for (int i = 0; i < inDim; i++) { centered[i] = embedding[i] - _ldaMean1[i]; n1 += centered[i] * centered[i]; }
+        n1 = MathF.Sqrt(n1);
+        if (n1 > 0) for (int i = 0; i < inDim; i++) centered[i] /= n1;
+
+        // Step 2: centered @ lda − mean2 → L2-normalise
+        var lda_normed = new float[ldaDim];
+        for (int j = 0; j < ldaDim; j++)
+        {
+            float v = -_ldaMean2[j];
+            for (int i = 0; i < inDim; i++) v += centered[i] * _ldaMatrix![i, j];
+            lda_normed[j] = v;
+        }
+        float n2 = 0f;
+        for (int j = 0; j < ldaDim; j++) n2 += lda_normed[j] * lda_normed[j];
+        n2 = MathF.Sqrt(n2);
+        if (n2 > 0) for (int j = 0; j < ldaDim; j++) lda_normed[j] /= n2;
+
+        if (_pldaTr == null) return lda_normed;
+
+        // Step 3: plda_tr (128×128) @ lda_normed → L2-normalise (plda_tf)
+        int pldaDim = _pldaTr.GetLength(0);
+        var fea = new float[pldaDim];
+        for (int j = 0; j < pldaDim; j++)
+        {
+            float v = 0f;
+            for (int i = 0; i < ldaDim; i++) v += _pldaTr[j, i] * lda_normed[i];
+            fea[j] = v;
+        }
+        float n3 = 0f;
+        for (int j = 0; j < pldaDim; j++) n3 += fea[j] * fea[j];
+        n3 = MathF.Sqrt(n3);
+        if (n3 > 0) for (int j = 0; j < pldaDim; j++) fea[j] /= n3;
+
+        return fea;
     }
 
     // ── Fbank computation ──────────────────────────────────────────────────
@@ -170,15 +284,8 @@ public sealed class WeSpeakerEmbedder : IDisposable
             }
         }
 
-        // Per-utterance mean normalisation (subtract mean per mel bin)
-        for (int m = 0; m < NumMelBins; m++)
-        {
-            float mean = 0f;
-            for (int fi = 0; fi < numFrames; fi++) mean += result[fi, m];
-            mean /= numFrames;
-            for (int fi = 0; fi < numFrames; fi++) result[fi, m] -= mean;
-        }
-
+        // No per-utterance mean normalisation: pyannote's WeSpeakerResNet34 pipeline
+        // (torchaudio.compliance.kaldi.fbank) does not apply CMVN before the ResNet.
         return result;
     }
 
@@ -198,10 +305,33 @@ public sealed class WeSpeakerEmbedder : IDisposable
         using var results = _session.Run(inputs);
         var output = results.First(r => r.Name == "embedding").AsTensor<float>();
 
-        var embedding = new float[EmbeddingDim];
-        for (int i = 0; i < EmbeddingDim; i++)
+        int outSize = output.Dimensions[1];
+        var embedding = new float[outSize];
+        for (int i = 0; i < outSize; i++)
             embedding[i] = output[0, i];
         return embedding;
+    }
+
+    // ── LDA binary file loaders ────────────────────────────────────────────
+
+    private static float[] ReadFloatBin(string path)
+    {
+        var bytes = File.ReadAllBytes(path);
+        var result = new float[bytes.Length / 4];
+        Buffer.BlockCopy(bytes, 0, result, 0, bytes.Length);
+        return result;
+    }
+
+    private static float[,] ReadFloat2dBin(string path, int rows, int cols)
+    {
+        var bytes = File.ReadAllBytes(path);
+        var flat  = new float[rows * cols];
+        Buffer.BlockCopy(bytes, 0, flat, 0, bytes.Length);
+        var result = new float[rows, cols];
+        for (int r = 0; r < rows; r++)
+            for (int c = 0; c < cols; c++)
+                result[r, c] = flat[r * cols + c];
+        return result;
     }
 
     // ── Static DSP helpers ─────────────────────────────────────────────────

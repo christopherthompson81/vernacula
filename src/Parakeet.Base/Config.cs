@@ -43,7 +43,18 @@ public static class Config
     /// DiariZen segmentation model file.
     /// </summary>
     public const string DiariZenFile          = "diarizen_segmentation.onnx";
-    public const string DiariZenEmbedderFile  = "wespeaker_embedding.onnx";
+    /// <summary>
+    /// pyannote/wespeaker-voxceleb-resnet34-LM: 80-bin Fbank input, 256-dim L2-normalised output.
+    /// Export via: python scripts/diarizen_export/export_pyannote_wespeaker_onnx.py
+    /// </summary>
+    public const string DiariZenEmbedderFile  = "wespeaker_pyannote.onnx";
+
+    /// <summary>
+    /// Directory (relative to model dir) containing mean1.bin, lda.bin, mean2.bin
+    /// for the 256→128 LDA transform used by VBx clustering.
+    /// Export via: python scripts/diarizen_export/export_lda_transform.py
+    /// </summary>
+    public const string DiariZenLdaDir       = "plda";
 
     /// <summary>
     /// Maximum number of unique speakers per chunk (default DiariZen configuration).
@@ -98,7 +109,11 @@ public static class Config
     /// Applied on Euclidean distance of L2-normalised 512-dim embeddings;
     /// corresponds roughly to cosine distance ≈ 0.6 (VBx AHC init threshold).
     /// </summary>
-    public const float DiariZenAhcThreshold = 0.23f;
+    /// <summary>
+    /// AHC distance threshold in LDA-projected (128-dim) space with L2-normalised embeddings.
+    /// Matches Python VBxClustering ahc_threshold=0.6 (cosine distance on LDA-projected embeddings).
+    /// </summary>
+    public const float DiariZenAhcThreshold = 0.6f;
 
     /// <summary>
     /// VBx clustering parameters (alternative to HAC).
