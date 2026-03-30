@@ -277,7 +277,10 @@ public sealed class DiariZenDiarizer : IDisposable
             powersetProbs, MaxUniqueSpeakers, MaxSimultaneousPerFrame, threshold);
         int numFrames      = activeSpeakers.Length;
 
-        const int minDurationFrames = 25; // ~0.5 s at 50 Hz
+        // No minimum duration filter here — short regions are kept in the
+        // segmentation map and assigned a speaker label by nearest-anchor
+        // in ClusterRegions, so they don't degrade embedding quality.
+        const int minDurationFrames = 1; // at least 1 frame to be meaningful
         var allRegions     = new List<(int, int)>();
 
         for (int spk = 0; spk < MaxUniqueSpeakers; spk++)
@@ -307,6 +310,14 @@ public sealed class DiariZenDiarizer : IDisposable
 
     // ── Clustering ─────────────────────────────────────────────────────────
 
+    /// <summary>
+    /// Minimum region duration (frames) required to compute a reliable speaker embedding.
+    /// Regions shorter than this are still kept in the output but are labelled by
+    /// proximity to the nearest anchor rather than by their own embedding.
+    /// 25 frames ≈ 0.5 s at 50 Hz — below this WeSpeaker embeddings are noisy.
+    /// </summary>
+    private const int EmbedAnchorMinFrames = 25;
+
     private List<(int startFrame, int endFrame, string speakerLabel)> ClusterRegions(
         float[]                        audio,
         List<(int startFrame, int endFrame)> regions,
@@ -315,39 +326,75 @@ public sealed class DiariZenDiarizer : IDisposable
     {
         if (regions.Count == 0) return [];
 
-        if (regions.Count == 1)
+        // Split into anchor regions (long enough for reliable embeddings) and short ones.
+        var anchorIndices = new List<int>();
+        var shortIndices  = new List<int>();
+        for (int i = 0; i < regions.Count; i++)
         {
-            var (s, e) = regions[0];
-            return [(s, e, "speaker_0")];
+            var (sf, ef) = regions[i];
+            if (ef - sf >= EmbedAnchorMinFrames)
+                anchorIndices.Add(i);
+            else
+                shortIndices.Add(i);
         }
 
-        double[][] features = _embedder != null
-            ? ExtractWeSpeakerEmbeddings(audio, regions)
-            : ExtractStatisticalFeatures(audio, regions);
+        // If every region is short, treat them all as anchors so we still get output.
+        if (anchorIndices.Count == 0)
+            anchorIndices.AddRange(shortIndices.Select((_, idx) => idx));
 
-        var linkage = HierarchicalClustering.Linkage(features, Config.DiariZenClusteringMethod);
+        var anchorRegions = anchorIndices.Select(i => regions[i]).ToList();
 
-        int[] labels;
-        if (_embedder != null)
+        string[] anchorLabels;
+
+        if (anchorRegions.Count == 1)
         {
-            // Threshold-based: let the data decide the number of speakers
-            labels = HierarchicalClustering.FclusterThreshold(linkage, Config.DiariZenAhcThreshold);
+            anchorLabels = ["speaker_0"];
         }
         else
         {
-            // Fallback without embeddings: force at least 2 clusters
-            labels = HierarchicalClustering.FclusterMaxClust(linkage, Math.Max(minSpeakers, 2));
+            double[][] features = _embedder != null
+                ? ExtractWeSpeakerEmbeddings(audio, anchorRegions)
+                : ExtractStatisticalFeatures(audio, anchorRegions);
+
+            var linkage = HierarchicalClustering.Linkage(features, Config.DiariZenClusteringMethod);
+
+            int[] clusterIds = _embedder != null
+                ? HierarchicalClustering.FclusterThreshold(linkage, Config.DiariZenAhcThreshold)
+                : HierarchicalClustering.FclusterMaxClust(linkage, Math.Max(minSpeakers, 2));
+
+            anchorLabels = clusterIds.Select(id => $"speaker_{id}").ToArray();
         }
 
-        // Enforce minSpeakers by splitting the largest cluster if needed
-        // (rarely needed; just ensures we don't under-segment)
-        // For now, trust the threshold result.
+        // Build the full label array: anchors get their cluster label;
+        // short regions get the label of the temporally nearest anchor.
+        var labels = new string[regions.Count];
+        for (int ai = 0; ai < anchorIndices.Count; ai++)
+            labels[anchorIndices[ai]] = anchorLabels[ai];
+
+        foreach (int si in shortIndices)
+        {
+            var (ssf, sef) = regions[si];
+            int shortMid = (ssf + sef) / 2;
+
+            // Find the anchor whose midpoint is closest in time.
+            int bestAnchor = anchorIndices[0];
+            int bestDist   = int.MaxValue;
+            foreach (int ai in anchorIndices)
+            {
+                var (asf, aef) = regions[ai];
+                int anchorMid = (asf + aef) / 2;
+                int dist      = Math.Abs(anchorMid - shortMid);
+                if (dist < bestDist) { bestDist = dist; bestAnchor = ai; }
+            }
+
+            labels[si] = labels[bestAnchor];
+        }
 
         var labeled = new List<(int, int, string)>(regions.Count);
         for (int i = 0; i < regions.Count; i++)
         {
             var (start, end) = regions[i];
-            labeled.Add((start, end, $"speaker_{labels[i]}"));
+            labeled.Add((start, end, labels[i]));
         }
 
         return labeled;
