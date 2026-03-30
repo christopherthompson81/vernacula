@@ -98,7 +98,7 @@ public static class Config
     /// Applied on Euclidean distance of L2-normalised 512-dim embeddings;
     /// corresponds roughly to cosine distance ≈ 0.6 (VBx AHC init threshold).
     /// </summary>
-    public const float DiariZenAhcThreshold = 0.19f;
+    public const float DiariZenAhcThreshold = 0.23f;
 
     /// <summary>
     /// VBx clustering parameters (alternative to HAC).

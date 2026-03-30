@@ -7,22 +7,17 @@ namespace Parakeet.Base;
 /// <summary>
 /// DiariZen speaker diarization using ONNX Runtime.
 ///
-/// <para><strong>Pipeline:</strong></para>
+/// <para><strong>Pipeline (matching pyannote/DiariZen):</strong></para>
 /// <list type="number">
-/// <item><description>Audio is chunked into 16 s segments with 1.6 s stride (segmentation_step=0.1, matching Python)</description></item>
-/// <item><description>WavLM+Conformer model outputs powerset probabilities per frame (batch=32)</description></item>
-/// <item><description>Chunk predictions are aggregated via overlap-add and softmax</description></item>
-/// <item><description>Median filter (7 frames) smooths frame-level noise</description></item>
-/// <item><description>Thresholding extracts speaker-active regions</description></item>
-/// <item><description>WeSpeaker-ResNet34 extracts 512-dim speaker embeddings per region</description></item>
-/// <item><description>HAC (centroid, distance threshold 0.9) clusters regions into speakers</description></item>
+/// <item><description>Audio is chunked into 16 s segments with 1.6 s stride (segmentation_step=0.1)</description></item>
+/// <item><description>WavLM+Conformer model outputs powerset logits per frame (batch=1)</description></item>
+/// <item><description>Per chunk: softmax → argmax → powerset-to-multilabel → binary (T×4)</description></item>
+/// <item><description>Per chunk: 11-frame median filter per speaker channel</description></item>
+/// <item><description>Per (chunk, local_speaker) with enough active frames: extract WeSpeaker embedding</description></item>
+/// <item><description>HAC (centroid linkage, distance threshold) clusters all embeddings globally</description></item>
+/// <item><description>Reconstruct timeline: remap local→global speakers, overlap-add, normalise</description></item>
+/// <item><description>Per global speaker: binarize at 0.5, extract active regions</description></item>
 /// <item><description>Temporal merging combines near-adjacent same-speaker segments</description></item>
-/// </list>
-///
-/// <para><strong>Segmentation parameters:</strong></para>
-/// <list type="bullet">
-/// <item><description>Chunk duration: 16 s, stride: 1.6 s (10% step), 90% overlap</description></item>
-/// <item><description>Frame rate: 50 Hz (20 ms frames), powerset classes: 11</description></item>
 /// </list>
 /// </summary>
 public sealed class DiariZenDiarizer : IDisposable
@@ -40,7 +35,12 @@ public sealed class DiariZenDiarizer : IDisposable
     public const int    NumPowersetClasses    = 11;
     public const int    MaxUniqueSpeakers     = 4;
     public const int    MaxSimultaneousPerFrame = 2;
-    public const int    InferenceBatchSize    = 32;
+
+    /// <summary>
+    /// Minimum active frames a local speaker must have in a chunk to warrant
+    /// computing an embedding for it. 10 frames ≈ 200 ms at 50 Hz.
+    /// </summary>
+    private const int MinActiveFramesForEmbed = 10;
 
     // ── Construction ───────────────────────────────────────────────────────
 
@@ -91,16 +91,159 @@ public sealed class DiariZenDiarizer : IDisposable
             return [];
 
         var (chunks, startTimes) = ChunkAudio(audio);
-        var chunkScores          = SegmentBatched(chunks);
 
-        var aggregated   = AggregateSegmentations(chunkScores, startTimes, audio.Length);
-        var probabilities = ApplySoftmax(aggregated);
-        var filtered      = ApplyMedianFilter(probabilities, Config.DiariZenMedianFilterSize);
+        // ── Step 1: Per-chunk powerset inference ──────────────────────────
+        var chunkScores = SegmentBatched(chunks);
 
-        var regions = ExtractSpeakerRegions(filtered, threshold);
-        if (regions.Count == 0) return [];
+        // ── Step 2: Per-chunk decode → binary multilabel (T × 4) ─────────
+        // Matches pyannote's Inference.infer with soft=False + to_multilabel,
+        // followed by median_filter(size=(1,11,1)).
+        var perChunkMultilabel = new List<bool[,]>(chunks.Count);
+        foreach (var scores in chunkScores)
+        {
+            var probs    = ApplySoftmaxSingle(scores);
+            var filtered = ApplyMedianFilterSingle(probs, Config.DiariZenMedianFilterSize);
+            perChunkMultilabel.Add(DecodePowersetToMultilabel(filtered));
+        }
 
-        var labeled = ClusterRegions(audio, regions, minSpeakers, maxSpeakers);
+        // ── Step 3: Extract per-(chunk, local_speaker) embeddings ─────────
+        // Matches pyannote's get_embeddings: one embedding per (chunk, speaker) pair.
+        var embeddings   = new List<double[]>();
+        var embedKeys    = new List<(int chunkIdx, int speakerIdx)>();
+
+        if (_embedder != null)
+        {
+            for (int ci = 0; ci < perChunkMultilabel.Count; ci++)
+            {
+                var multilabel = perChunkMultilabel[ci];
+                int numFrames  = multilabel.GetLength(0);
+
+                for (int spk = 0; spk < MaxUniqueSpeakers; spk++)
+                {
+                    // Count active frames and locate first/last
+                    int activeCount = 0, firstActive = -1, lastActive = -1;
+                    for (int t = 0; t < numFrames; t++)
+                    {
+                        if (!multilabel[t, spk]) continue;
+                        activeCount++;
+                        if (firstActive < 0) firstActive = t;
+                        lastActive = t;
+                    }
+
+                    if (activeCount < MinActiveFramesForEmbed) continue;
+
+                    // Use the span from first to last active frame as the audio window
+                    int chunkStartSample = (int)(startTimes[ci] * SampleRate);
+                    int startSample = Math.Clamp(chunkStartSample + firstActive * SampleRate / FrameRate, 0, audio.Length);
+                    int endSample   = Math.Clamp(chunkStartSample + (lastActive + 1) * SampleRate / FrameRate, 0, audio.Length);
+
+                    float[] raw = _embedder.ComputeEmbedding(audio, startSample, endSample);
+                    var emb = new double[raw.Length];
+                    for (int d = 0; d < raw.Length; d++) emb[d] = raw[d];
+
+                    embeddings.Add(emb);
+                    embedKeys.Add((ci, spk));
+                }
+            }
+        }
+
+        // ── Step 4: Cluster embeddings ────────────────────────────────────
+        // Build (chunkIdx, speakerIdx) → global speaker ID lookup.
+        var localToGlobal = new Dictionary<(int, int), int>();
+
+        if (embeddings.Count > 0 && _embedder != null)
+        {
+            int[] clusterIds;
+            if (embeddings.Count == 1)
+            {
+                clusterIds = [0];
+            }
+            else
+            {
+                var linkage = HierarchicalClustering.Linkage(
+                    embeddings.ToArray(), Config.DiariZenClusteringMethod);
+                clusterIds = HierarchicalClustering.FclusterThreshold(
+                    linkage, Config.DiariZenAhcThreshold);
+            }
+
+            for (int i = 0; i < embedKeys.Count; i++)
+                localToGlobal[embedKeys[i]] = clusterIds[i];
+        }
+        else
+        {
+            // No embedder — assign all local speakers in each chunk to
+            // their local index (will produce up to 4 "speakers")
+            for (int ci = 0; ci < perChunkMultilabel.Count; ci++)
+                for (int spk = 0; spk < MaxUniqueSpeakers; spk++)
+                    localToGlobal[(ci, spk)] = spk;
+        }
+
+        int numGlobalSpeakers = localToGlobal.Count > 0
+            ? localToGlobal.Values.Max() + 1
+            : MaxUniqueSpeakers;
+
+        // ── Step 5: Reconstruct global timeline ───────────────────────────
+        // For each chunk frame, map active local speakers → global speakers
+        // and accumulate into a global (totalFrames × numGlobalSpeakers) array.
+        // Normalise by overlap count to get a probability in [0,1].
+        int totalFrames = (int)(audio.Length / (double)SampleRate * FrameRate);
+        var accumulator  = new float[totalFrames * numGlobalSpeakers];
+        var overlapCount = new int[totalFrames];
+
+        for (int ci = 0; ci < perChunkMultilabel.Count; ci++)
+        {
+            var multilabel = perChunkMultilabel[ci];
+            int numFrames  = multilabel.GetLength(0);
+            int startFrame = (int)(startTimes[ci] * FrameRate);
+
+            for (int t = 0; t < numFrames; t++)
+            {
+                int gf = startFrame + t;
+                if (gf >= totalFrames) break;
+
+                overlapCount[gf]++;
+
+                for (int spk = 0; spk < MaxUniqueSpeakers; spk++)
+                {
+                    if (!multilabel[t, spk]) continue;
+                    if (!localToGlobal.TryGetValue((ci, spk), out int gs)) continue;
+                    accumulator[gf * numGlobalSpeakers + gs] += 1f;
+                }
+            }
+        }
+
+        // Normalise
+        for (int f = 0; f < totalFrames; f++)
+        {
+            if (overlapCount[f] <= 0) continue;
+            for (int gs = 0; gs < numGlobalSpeakers; gs++)
+                accumulator[f * numGlobalSpeakers + gs] /= overlapCount[f];
+        }
+
+        // ── Step 6: Binarise per speaker and extract regions ──────────────
+        var labeled = new List<(int startFrame, int endFrame, string speaker)>();
+
+        for (int gs = 0; gs < numGlobalSpeakers; gs++)
+        {
+            int? regionStart = null;
+            for (int f = 0; f < totalFrames; f++)
+            {
+                bool active = accumulator[f * numGlobalSpeakers + gs] >= 0.5f;
+
+                if (active && regionStart == null)
+                    regionStart = f;
+                else if (!active && regionStart.HasValue)
+                {
+                    labeled.Add((regionStart.Value, f, $"speaker_{gs}"));
+                    regionStart = null;
+                }
+            }
+            if (regionStart.HasValue)
+                labeled.Add((regionStart.Value, totalFrames, $"speaker_{gs}"));
+        }
+
+        if (labeled.Count == 0) return [];
+
         return MergeAdjacentSegments(labeled);
     }
 
@@ -131,7 +274,6 @@ public sealed class DiariZenDiarizer : IDisposable
 
     private List<float[]> SegmentBatched(List<float[]> chunks)
     {
-        // The exported ONNX model uses batch=1 (WavLM attention is shape-static).
         var results = new List<float[]>(chunks.Count);
         foreach (var chunk in chunks)
             results.Add(SegmentSingle(chunk));
@@ -156,92 +298,38 @@ public sealed class DiariZenDiarizer : IDisposable
         return scores;
     }
 
-    // ── Aggregation ────────────────────────────────────────────────────────
+    // ── Per-chunk softmax ──────────────────────────────────────────────────
 
-    private float[] AggregateSegmentations(
-        List<float[]> chunkScores,
-        List<double>  startTimes,
-        int           audioLength)
+    private static float[] ApplySoftmaxSingle(float[] logits)
     {
-        if (chunkScores.Count == 0) return [];
-
-        int totalFrames    = (int)(audioLength / (double)SampleRate * FrameRate);
-        var aggregated     = new float[totalFrames * NumPowersetClasses];
-        var counts         = new int[totalFrames];
-        int framesPerChunk = chunkScores[0].Length / NumPowersetClasses;
-
-        for (int ci = 0; ci < chunkScores.Count; ci++)
-        {
-            int startFrame = (int)(startTimes[ci] * FrameRate);
-            var scores     = chunkScores[ci];
-
-            for (int t = 0; t < framesPerChunk; t++)
-            {
-                int gf = startFrame + t;
-                if (gf >= totalFrames) break;
-
-                int gIdx = gf * NumPowersetClasses;
-                int lIdx = t  * NumPowersetClasses;
-                for (int c = 0; c < NumPowersetClasses; c++)
-                    aggregated[gIdx + c] += scores[lIdx + c];
-                counts[gf]++;
-            }
-        }
-
-        // Overlap-add normalisation
-        for (int f = 0; f < totalFrames; f++)
-        {
-            if (counts[f] <= 0) continue;
-            int gIdx = f * NumPowersetClasses;
-            for (int c = 0; c < NumPowersetClasses; c++)
-                aggregated[gIdx + c] /= counts[f];
-        }
-
-        return aggregated;
-    }
-
-    // ── Softmax ────────────────────────────────────────────────────────────
-
-    private float[] ApplySoftmax(float[] logits)
-    {
-        if (logits.Length == 0) return logits;
-
         int numFrames = logits.Length / NumPowersetClasses;
         var probs     = new float[logits.Length];
 
         for (int f = 0; f < numFrames; f++)
         {
             int b = f * NumPowersetClasses;
-
             float maxVal = logits[b];
             for (int c = 1; c < NumPowersetClasses; c++)
-                maxVal = Math.Max(maxVal, logits[b + c]);
+                if (logits[b + c] > maxVal) maxVal = logits[b + c];
 
             double sum = 0;
-            var exps = new float[NumPowersetClasses];
             for (int c = 0; c < NumPowersetClasses; c++)
             {
-                exps[c] = (float)Math.Exp(logits[b + c] - maxVal);
-                sum += exps[c];
+                probs[b + c] = (float)Math.Exp(logits[b + c] - maxVal);
+                sum += probs[b + c];
             }
-
             for (int c = 0; c < NumPowersetClasses; c++)
-                probs[b + c] = exps[c] / (float)sum;
+                probs[b + c] /= (float)sum;
         }
 
         return probs;
     }
 
-    // ── Median filtering ───────────────────────────────────────────────────
+    // ── Per-chunk median filter (per powerset class, within chunk) ─────────
 
-    /// <summary>
-    /// Apply a 1-D median filter of the given window size to each powerset class
-    /// independently across the time axis.  This matches pyannote's
-    /// apply_median_filtering=True and smooths brief spurious activations.
-    /// </summary>
-    private static float[] ApplyMedianFilter(float[] probs, int windowSize)
+    private static float[] ApplyMedianFilterSingle(float[] probs, int windowSize)
     {
-        if (windowSize <= 1 || probs.Length == 0) return probs;
+        if (windowSize <= 1) return probs;
 
         int numFrames = probs.Length / NumPowersetClasses;
         var filtered  = new float[probs.Length];
@@ -256,8 +344,11 @@ public sealed class DiariZenDiarizer : IDisposable
                 for (int k = -half; k <= half; k++)
                 {
                     int fk = f + k;
-                    if (fk >= 0 && fk < numFrames)
-                        window[count++] = probs[fk * NumPowersetClasses + c];
+                    // "reflect" padding
+                    if (fk < 0)           fk = -fk;
+                    if (fk >= numFrames)  fk = 2 * numFrames - 2 - fk;
+                    fk = Math.Clamp(fk, 0, numFrames - 1);
+                    window[count++] = probs[fk * NumPowersetClasses + c];
                 }
                 Array.Sort(window, 0, count);
                 filtered[f * NumPowersetClasses + c] = window[count / 2];
@@ -267,221 +358,37 @@ public sealed class DiariZenDiarizer : IDisposable
         return filtered;
     }
 
-    // ── Region extraction ──────────────────────────────────────────────────
-
-    private List<(int startFrame, int endFrame)> ExtractSpeakerRegions(
-        float[] powersetProbs,
-        float   threshold)
-    {
-        var activeSpeakers = PowersetDecoder.BinarizePowerset(
-            powersetProbs, MaxUniqueSpeakers, MaxSimultaneousPerFrame, threshold);
-        int numFrames      = activeSpeakers.Length;
-
-        // No minimum duration filter here — short regions are kept in the
-        // segmentation map and assigned a speaker label by nearest-anchor
-        // in ClusterRegions, so they don't degrade embedding quality.
-        const int minDurationFrames = 1; // at least 1 frame to be meaningful
-        var allRegions     = new List<(int, int)>();
-
-        for (int spk = 0; spk < MaxUniqueSpeakers; spk++)
-        {
-            int? regionStart = null;
-
-            for (int t = 0; t < numFrames; t++)
-            {
-                bool active = activeSpeakers[t].Contains(spk);
-
-                if (active && regionStart == null)
-                    regionStart = t;
-                else if (!active && regionStart.HasValue)
-                {
-                    if (t - regionStart.Value >= minDurationFrames)
-                        allRegions.Add((regionStart.Value, t));
-                    regionStart = null;
-                }
-            }
-
-            if (regionStart.HasValue && numFrames - regionStart.Value >= minDurationFrames)
-                allRegions.Add((regionStart.Value, numFrames));
-        }
-
-        return allRegions.OrderBy(r => r.Item1).ToList();
-    }
-
-    // ── Clustering ─────────────────────────────────────────────────────────
+    // ── Powerset → per-speaker binary multilabel ──────────────────────────
 
     /// <summary>
-    /// Minimum region duration (frames) required to compute a reliable speaker embedding.
-    /// Regions shorter than this are still kept in the output but are labelled by
-    /// proximity to the nearest anchor rather than by their own embedding.
-    /// 25 frames ≈ 0.5 s at 50 Hz — below this WeSpeaker embeddings are noisy.
+    /// Replicates pyannote's Powerset.to_multilabel(soft=False):
+    /// argmax over powerset classes → one-hot → mapping matrix multiply.
+    /// Returns bool[numFrames, MaxUniqueSpeakers].
     /// </summary>
-    private const int EmbedAnchorMinFrames = 25;
-
-    private List<(int startFrame, int endFrame, string speakerLabel)> ClusterRegions(
-        float[]                        audio,
-        List<(int startFrame, int endFrame)> regions,
-        int                            minSpeakers,
-        int                            maxSpeakers)
+    private static bool[,] DecodePowersetToMultilabel(float[] probs)
     {
-        if (regions.Count == 0) return [];
+        var combinations = PowersetDecoder.GetPowersetCombinations(
+            MaxUniqueSpeakers, MaxSimultaneousPerFrame);
+        int numFrames    = probs.Length / NumPowersetClasses;
+        var result       = new bool[numFrames, MaxUniqueSpeakers];
 
-        // Split into anchor regions (long enough for reliable embeddings) and short ones.
-        var anchorIndices = new List<int>();
-        var shortIndices  = new List<int>();
-        for (int i = 0; i < regions.Count; i++)
+        for (int f = 0; f < numFrames; f++)
         {
-            var (sf, ef) = regions[i];
-            if (ef - sf >= EmbedAnchorMinFrames)
-                anchorIndices.Add(i);
-            else
-                shortIndices.Add(i);
-        }
-
-        // If every region is short, treat them all as anchors so we still get output.
-        if (anchorIndices.Count == 0)
-            anchorIndices.AddRange(shortIndices.Select((_, idx) => idx));
-
-        var anchorRegions = anchorIndices.Select(i => regions[i]).ToList();
-
-        string[] anchorLabels;
-
-        if (anchorRegions.Count == 1)
-        {
-            anchorLabels = ["speaker_0"];
-        }
-        else
-        {
-            double[][] features = _embedder != null
-                ? ExtractWeSpeakerEmbeddings(audio, anchorRegions)
-                : ExtractStatisticalFeatures(audio, anchorRegions);
-
-            var linkage = HierarchicalClustering.Linkage(features, Config.DiariZenClusteringMethod);
-
-            int[] clusterIds = _embedder != null
-                ? HierarchicalClustering.FclusterThreshold(linkage, Config.DiariZenAhcThreshold)
-                : HierarchicalClustering.FclusterMaxClust(linkage, Math.Max(minSpeakers, 2));
-
-            anchorLabels = clusterIds.Select(id => $"speaker_{id}").ToArray();
-        }
-
-        // Build the full label array: anchors get their cluster label;
-        // short regions get the label of the temporally nearest anchor.
-        var labels = new string[regions.Count];
-        for (int ai = 0; ai < anchorIndices.Count; ai++)
-            labels[anchorIndices[ai]] = anchorLabels[ai];
-
-        foreach (int si in shortIndices)
-        {
-            var (ssf, sef) = regions[si];
-            int shortMid = (ssf + sef) / 2;
-
-            // Find the anchor whose midpoint is closest in time.
-            int bestAnchor = anchorIndices[0];
-            int bestDist   = int.MaxValue;
-            foreach (int ai in anchorIndices)
+            // Argmax over powerset classes for this frame
+            int bestClass = 0;
+            float bestProb = probs[f * NumPowersetClasses];
+            for (int c = 1; c < NumPowersetClasses; c++)
             {
-                var (asf, aef) = regions[ai];
-                int anchorMid = (asf + aef) / 2;
-                int dist      = Math.Abs(anchorMid - shortMid);
-                if (dist < bestDist) { bestDist = dist; bestAnchor = ai; }
+                float p = probs[f * NumPowersetClasses + c];
+                if (p > bestProb) { bestProb = p; bestClass = c; }
             }
 
-            labels[si] = labels[bestAnchor];
+            // Map to active speakers
+            foreach (int spk in combinations[bestClass])
+                result[f, spk] = true;
         }
 
-        var labeled = new List<(int, int, string)>(regions.Count);
-        for (int i = 0; i < regions.Count; i++)
-        {
-            var (start, end) = regions[i];
-            labeled.Add((start, end, labels[i]));
-        }
-
-        return labeled;
-    }
-
-    // ── WeSpeaker embedding extraction ─────────────────────────────────────
-
-    private double[][] ExtractWeSpeakerEmbeddings(
-        float[] audio,
-        List<(int startFrame, int endFrame)> regions)
-    {
-        var embeddings = new double[regions.Count][];
-
-        for (int i = 0; i < regions.Count; i++)
-        {
-            var (sf, ef) = regions[i];
-            int startSample = (int)((long)sf * SampleRate / FrameRate);
-            int endSample   = (int)((long)ef * SampleRate / FrameRate);
-
-            startSample = Math.Clamp(startSample, 0, audio.Length);
-            endSample   = Math.Clamp(endSample,   0, audio.Length);
-
-            float[] raw = _embedder!.ComputeEmbedding(audio, startSample, endSample);
-            embeddings[i] = new double[raw.Length];
-            for (int d = 0; d < raw.Length; d++)
-                embeddings[i][d] = raw[d];
-        }
-
-        return embeddings;
-    }
-
-    // ── Statistical feature fallback ───────────────────────────────────────
-
-    private static double[][] ExtractStatisticalFeatures(
-        float[] audio,
-        List<(int startFrame, int endFrame)> regions)
-    {
-        const int dim = 10;
-        var features  = new double[regions.Count][];
-
-        for (int i = 0; i < regions.Count; i++)
-        {
-            var (sf, ef)    = regions[i];
-            int startSample = Math.Min((int)((long)sf * WeSpeakerEmbedder.SampleRate / FrameRate), audio.Length - 1);
-            int endSample   = Math.Min((int)((long)ef * WeSpeakerEmbedder.SampleRate / FrameRate), audio.Length);
-            int regionLen   = endSample - startSample;
-
-            if (regionLen <= 0)
-            {
-                features[i] = new double[dim];
-                continue;
-            }
-
-            double sum = 0, sumSq = 0;
-            int zeroCrossings = 0;
-            float prev = audio[startSample];
-            sum += prev; sumSq += prev * prev;
-
-            for (int j = startSample + 1; j < endSample; j++)
-            {
-                float curr = audio[j];
-                sum   += curr;
-                sumSq += curr * curr;
-                if ((prev >= 0 && curr < 0) || (prev < 0 && curr >= 0)) zeroCrossings++;
-                prev = curr;
-            }
-
-            double mean   = sum / regionLen;
-            double std    = Math.Sqrt(Math.Max(0, sumSq / regionLen - mean * mean));
-            double energy = sumSq / regionLen;
-
-            features[i] = new double[dim]
-            {
-                mean,
-                std,
-                zeroCrossings / (double)regionLen,
-                Math.Log(energy + 1e-10),
-                (ef - sf) / (double)FrameRate,
-                sf / (double)(audio.Length * 1.0 / FrameRate),
-                Math.Abs(mean) / (std + 1e-10),
-                zeroCrossings / (std + 1e-10),
-                regionLen / (double)WeSpeakerEmbedder.SampleRate,
-                Math.Sqrt(energy),
-            };
-        }
-
-        return features;
+        return result;
     }
 
     // ── Temporal merging ───────────────────────────────────────────────────
@@ -491,7 +398,7 @@ public sealed class DiariZenDiarizer : IDisposable
     {
         if (labeled.Count == 0) return [];
 
-        const double mergeGap = 0.5;
+        const double mergeGap = 0.0;
         var sorted = labeled.OrderBy(r => r.startFrame).ToList();
         var merged = new List<DiarizationSegment>();
 

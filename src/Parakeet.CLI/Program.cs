@@ -10,6 +10,7 @@ using ParakeetAsr = Parakeet.Base.Parakeet;
 string? audioPath       = null;
 string? modelDir        = null;
 string? outputPath      = null;
+string? segmentsPath    = null;
 string  exportFormat    = "md";
 string  diarization     = "sortformer"; // sortformer, diarizen, or vad
 bool    showBenchmark   = false;
@@ -22,6 +23,7 @@ for (int i = 0; i < args.Length; i++)
         case "--audio":         audioPath    = args[++i]; break;
         case "--model":         modelDir     = args[++i]; break;
         case "--output":        outputPath   = args[++i]; break;
+        case "--segments":      segmentsPath = args[++i]; break;
         case "--export-format": exportFormat = args[++i].ToLowerInvariant(); break;
         case "--diarization":
             diarization = args[++i].ToLowerInvariant();
@@ -111,7 +113,25 @@ try
     List<(double start, double end, string spkId)> segs;
     var swDiar = Stopwatch.StartNew();
 
-    if (diarization == "vad")
+    if (segmentsPath is not null)
+    {
+        // Load pre-computed segments from JSON — skips diarization entirely.
+        // Expected format: [{start, end, speaker}, ...]
+        Console.Write($"Loading segments from {segmentsPath}... ");
+        var json = File.ReadAllText(segmentsPath);
+        using var doc = JsonDocument.Parse(json);
+        segs = doc.RootElement.EnumerateArray()
+            .Select(el => (
+                el.GetProperty("start").GetDouble(),
+                el.GetProperty("end").GetDouble(),
+                el.GetProperty("speaker").GetString() ?? "speaker_0"
+            ))
+            .OrderBy(s => s.Item1)
+            .ToList();
+        swDiar.Stop();
+        Console.WriteLine($"{segs.Count} segment(s) ({swDiar.ElapsedMilliseconds}ms)");
+    }
+    else if (diarization == "vad")
     {
         Console.Write("Detecting speech (VAD)... ");
         using var vad = new VadSegmenter(modelDir);
@@ -281,6 +301,7 @@ static void PrintUsage()
     Console.WriteLine("Usage: parakeet-cli --audio <file> --model <dir> [options]");
     Console.WriteLine();
     Console.WriteLine("Options:");
+    Console.WriteLine("  --segments <path>                  Load pre-computed segments JSON, skip diarization");
     Console.WriteLine("  --export-format <md|txt|json|srt>  Output format (default: md)");
     Console.WriteLine("  --output <path>                    Override output file path");
     Console.WriteLine("  --diarization <backend>            Diarization backend: sortformer, diarizen, vad");
