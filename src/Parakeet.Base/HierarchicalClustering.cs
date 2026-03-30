@@ -202,44 +202,51 @@ public static class HierarchicalClustering
 
         int n = linkage.Length + 1;
         int maxClusters = 2 * n - 1;
-        int[] labels = new int[maxClusters];
-        for (int i = 0; i < maxClusters; i++)
-            labels[i] = i;
 
-        foreach (var row in linkage)
+        // Union-find (parent chain) approach — matches scipy.cluster.hierarchy.fcluster
+        // with criterion="distance".  The label-replacement approach is incorrect because
+        // intermediate cluster nodes (n+k) in the dendrogram never get their labels updated,
+        // so later rows that reference those nodes see stale labels.
+        int[] parent = new int[maxClusters];
+        Array.Fill(parent, -1);
+
+        for (int k = 0; k < linkage.Length; k++)
         {
-            int i = (int)row[0];
-            int j = (int)row[1];
+            var row = linkage[k];
+            if (row == null) continue;
+
+            int i    = (int)row[0];
+            int j    = (int)row[1];
             double dist = row[2];
+            int newIdx  = n + k;
 
-            if (dist > threshold)
-                break;
+            if (dist > threshold) continue;   // cut here — don't merge
 
-            int labelI = labels[i];
-            int labelJ = labels[j];
-            
-            if (labelI != labelJ)
-            {
-                for (int k = 0; k < maxClusters; k++)
-                {
-                    if (labels[k] == labelJ)
-                        labels[k] = labelI;
-                }
-            }
+            parent[i] = newIdx;
+            parent[j] = newIdx;
         }
 
-        var labelMap = new System.Collections.Generic.Dictionary<int, int>();
-        int newLabel = 0;
+        // For each leaf, follow the parent chain to find its root
+        int[] labels = new int[n];
         for (int i = 0; i < n; i++)
         {
-            if (!labelMap.ContainsKey(labels[i]))
-                labelMap[labels[i]] = newLabel++;
-            labels[i] = labelMap[labels[i]];
+            int root = i;
+            while (parent[root] != -1)
+                root = parent[root];
+            labels[i] = root;
         }
 
-        var result = new int[n];
-        Array.Copy(labels, result, n);
-        return result;
+        var rootToLabel = new System.Collections.Generic.Dictionary<int, int>();
+        int nextLabel = 0;
+        for (int i = 0; i < n; i++)
+        {
+            int root = labels[i];
+            if (!rootToLabel.ContainsKey(root))
+                rootToLabel[root] = nextLabel++;
+            labels[i] = rootToLabel[root];
+        }
+
+        return labels;
     }
 
     /// <summary>

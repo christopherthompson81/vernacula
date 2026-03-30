@@ -42,7 +42,8 @@ public static class Config
     /// <summary>
     /// DiariZen segmentation model file.
     /// </summary>
-    public const string DiariZenFile = "diarizen_segmentation.onnx";
+    public const string DiariZenFile          = "diarizen_segmentation.onnx";
+    public const string DiariZenEmbedderFile  = "wespeaker_embedding.onnx";
 
     /// <summary>
     /// Maximum number of unique speakers per chunk (default DiariZen configuration).
@@ -65,9 +66,10 @@ public static class Config
     public const int DiariZenChunkDurationSeconds = 16;
 
     /// <summary>
-    /// DiariZen chunk overlap in seconds (50% overlap).
+    /// Fraction of chunk duration to advance each step (0.1 = 10%, matching Python segmentation_step).
+    /// stride = DiariZenChunkDurationSeconds * DiariZenSegmentationStep = 1.6 s
     /// </summary>
-    public const int DiariZenChunkOverlapSeconds = 8;
+    public const double DiariZenSegmentationStep = 0.1;
 
     /// <summary>
     /// DiariZen frame rate: 50 frames per second (20ms frames).
@@ -80,10 +82,23 @@ public static class Config
     public const float DiariZenDefaultThreshold = 0.5f;
 
     /// <summary>
+    /// Median filter half-width (frames) applied to powerset probabilities before binarisation.
+    /// 7 frames ≈ 140 ms at 50 Hz, matching pyannote's apply_median_filtering=True.
+    /// </summary>
+    public const int DiariZenMedianFilterSize = 7;
+
+    /// <summary>
     /// Hierarchical clustering parameters for DiariZen.
     /// </summary>
     public const string DiariZenClusteringMethod = "centroid";
     public const int DiariZenMinClusterSize = 13; // ~0.26s at 50Hz
+
+    /// <summary>
+    /// AHC distance threshold used when WeSpeaker embeddings are available.
+    /// Applied on Euclidean distance of L2-normalised 512-dim embeddings;
+    /// corresponds roughly to cosine distance ≈ 0.6 (VBx AHC init threshold).
+    /// </summary>
+    public const float DiariZenAhcThreshold = 0.19f;
 
     /// <summary>
     /// VBx clustering parameters (alternative to HAC).

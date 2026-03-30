@@ -131,7 +131,9 @@ try
             return 1;
         }
         
-        using var diarizer = new DiariZenDiarizer(diarizenModel);
+        string? embedderModel = Path.Combine(modelDir, Config.DiariZenEmbedderFile);
+        if (!File.Exists(embedderModel)) embedderModel = null;
+        using var diarizer = new DiariZenDiarizer(diarizenModel, embedderModel);
         var diarSegments = diarizer.Diarize(audio, minSpeakers: 1, maxSpeakers: 8);
         segs = diarSegments.Select(s => (s.Start, s.End, s.Speaker)).ToList();
         swDiar.Stop();
