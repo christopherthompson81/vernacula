@@ -43,7 +43,7 @@
                    HorizontalAlignment="Right"
                    VerticalAlignment="Center"
                    Margin="0,0,0,8"
-                   Visibility="{Binding IsIndeterminate, Converter={StaticResource InverseBoolToVis}}" />
+                   IsVisible="{Binding IsIndeterminate, Converter={StaticResource InverseBoolToVis}}" />
 
         <!-- Status message + copyable error details -->
         <StackPanel Grid.Row="2" Margin="0,0,0,12">
@@ -63,7 +63,7 @@
                      Margin="0,8,0,0"
                      MaxHeight="160"
                      
-                     Visibility="{Binding HasError, Converter={StaticResource BoolToVis}}" />
+                     IsVisible="{Binding HasError, Converter={StaticResource BoolToVis}}" />
         </StackPanel>
 
         <!-- Live segments table -->
@@ -98,12 +98,6 @@
                     <DataGridTextColumn.Header>
                         <TextBlock Text="{Binding Source={x:Static local:Loc.Instance}, Path=[segments_col_content]}" />
                     </DataGridTextColumn.Header>
-                    <DataGridTextColumn.CellStyle>
-                        <Style>
-                            <Setter Property="TextWrapping" Value="Wrap" />
-                            <Setter Property="Padding"      Value="4,2"  />
-                        </Style>
-                    </DataGridTextColumn.CellStyle>
                 </DataGridTextColumn>
             </DataGrid.Columns>
         </DataGrid>
@@ -111,12 +105,12 @@
         <!-- Action buttons -->
         <StackPanel Grid.Row="4" Orientation="Horizontal" HorizontalAlignment="Right">
             <Button Content="{local:Loc btn_pause}"
-                    Style="{StaticResource PrimaryButton}"
+                    Classes="primary-button"
                     Command="{Binding CancelCommand}"
-                    Visibility="{Binding IsRunning, Converter={StaticResource BoolToVis}}"
+                    IsVisible="{Binding IsRunning, Converter={StaticResource BoolToVis}}"
                     Margin="0,0,8,0" />
             <Button Content="{local:Loc btn_back_home}"
-                    Style="{StaticResource SecondaryButton}"
+                    Classes="secondary-button"
                     Command="{Binding GoBackCommand}" />
         </StackPanel>
     </Grid>

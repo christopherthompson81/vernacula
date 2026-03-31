@@ -37,7 +37,7 @@
                              Margin="0,0,8,0" />
                     <Button Grid.Column="1"
                             Content="{local:Loc btn_browse}"
-                            Style="{StaticResource SecondaryButton}"
+                            Classes="secondary-button"
                             Command="{Binding SelectAudioFileCommand}" />
                 </Grid>
 
@@ -56,7 +56,7 @@
         <StackPanel Orientation="Horizontal" HorizontalAlignment="Right"
                     Margin="0,0,0,12">
             <Button Content="{local:Loc btn_back}"
-                    Style="{StaticResource SecondaryButton}"
+                    Classes="secondary-button"
                     Command="{Binding BackCommand}"
                     Margin="0,0,8,0" />
             <Button Content="{local:Loc btn_start}"

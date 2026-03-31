@@ -39,7 +39,7 @@
                     Click="Save_Click"
                     Margin="0,0,8,0" />
             <Button Content="{local:Loc btn_cancel}"
-                    Style="{StaticResource SecondaryButton}"
+                    Classes="secondary-button"
                     Click="Cancel_Click" />
         </StackPanel>
     </Grid>

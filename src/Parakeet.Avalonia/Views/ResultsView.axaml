@@ -65,12 +65,6 @@
                     <DataGridTextColumn.Header>
                         <TextBlock Text="{Binding Source={x:Static local:Loc.Instance}, Path=[segments_col_content]}" />
                     </DataGridTextColumn.Header>
-                    <DataGridTextColumn.CellStyle>
-                        <Style>
-                            <Setter Property="TextWrapping" Value="Wrap" />
-                            <Setter Property="Padding"      Value="4,2"  />
-                        </Style>
-                    </DataGridTextColumn.CellStyle>
                 </DataGridTextColumn>
             </DataGrid.Columns>
         </DataGrid>
@@ -79,19 +73,19 @@
         <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Right">
             <!-- TODO: Enable when TranscriptEditorWindow is ported -->
             <Button Content="{local:Loc btn_edit_transcript}"
-                    Style="{StaticResource SecondaryButton}"
+                    Classes="secondary-button"
                     Command="{Binding EditTranscriptCommand}"
                     IsEnabled="False"
                     Margin="0,0,8,0" />
             <Button Content="{local:Loc btn_edit_speakers}"
-                    Style="{StaticResource SecondaryButton}"
+                    Classes="secondary-button"
                     Command="{Binding EditSpeakerNamesCommand}"
                     Margin="0,0,8,0" />
             <Button Content="{local:Loc btn_export}"
                     Command="{Binding ExportCommand}"
                     Margin="0,0,8,0" />
             <Button Content="{local:Loc btn_back_history}"
-                    Style="{StaticResource SecondaryButton}"
+                    Classes="secondary-button"
                     Command="{Binding BackCommand}" />
         </StackPanel>
     </Grid>

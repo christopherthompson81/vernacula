@@ -1,7 +1,7 @@
 <ResourceDictionary xmlns="https://github.com/avaloniaui"
                     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
 
-    <!-- ── Button (base) ── -->
+    <!-- Button (base) -->
     <Style Selector="Button">
         <Setter Property="Background"      Value="{DynamicResource ButtonBgBrush}"   />
         <Setter Property="Foreground"      Value="{DynamicResource ButtonTextBrush}" />
@@ -38,7 +38,7 @@
         <Setter Property="Opacity" Value="0.45" />
     </Style>
 
-    <!-- ── Sidebar topic button ── -->
+    <!-- Sidebar topic button -->
     <Style Selector="Button.sidebar-topic-button">
         <Setter Property="Background" Value="Transparent" />
         <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
@@ -52,7 +52,7 @@
         <Setter Property="Background" Value="{DynamicResource OverlayBrush}" />
     </Style>
 
-    <!-- ── Named button variants (using Classes) ── -->
+    <!-- Named button variants (using Classes) -->
     <Style Selector="Button.primary-button">
         <Setter Property="Background" Value="{DynamicResource ButtonBgBrush}" />
         <Setter Property="Foreground" Value="{DynamicResource ButtonTextBrush}" />
@@ -84,18 +84,18 @@
         <Setter Property="Opacity" Value="0.85" />
     </Style>
 
-    <!-- ── TextBlock ── -->
+    <!-- TextBlock -->
     <Style Selector="TextBlock">
         <Setter Property="FontSize" Value="13" />
     </Style>
 
-    <!-- ── Label ── -->
+    <!-- Label -->
     <Style Selector="Label">
         <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
         <Setter Property="Padding" Value="0" />
     </Style>
 
-    <!-- ── TextBox ── -->
+    <!-- TextBox -->
     <Style Selector="TextBox">
         <Setter Property="Background" Value="{DynamicResource SurfaceBrush}" />
         <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
@@ -110,13 +110,13 @@
         <Setter Property="BorderThickness" Value="2" />
     </Style>
 
-    <!-- ── ProgressBar ── -->
+    <!-- ProgressBar -->
     <Style Selector="ProgressBar">
         <Setter Property="Height" Value="10" />
         <Setter Property="Foreground" Value="{DynamicResource AccentBrush}" />
     </Style>
 
-    <!-- ── DataGrid ── -->
+    <!-- DataGrid -->
     <Style Selector="DataGrid">
         <Setter Property="Background" Value="{DynamicResource SurfaceBrush}" />
         <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
@@ -125,10 +125,9 @@
         <Setter Property="HorizontalGridLinesBrush" Value="{DynamicResource OverlayBrush}" />
         <Setter Property="VerticalGridLinesBrush" Value="{DynamicResource OverlayBrush}" />
         <Setter Property="RowBackground" Value="{DynamicResource SurfaceBrush}" />
-        <Setter Property="AlternatingRowBackground" Value="{DynamicResource BgBrush}" />
     </Style>
 
-    <!-- ── DataGridColumnHeader ── -->
+    <!-- DataGridColumnHeader -->
     <Style Selector="DataGridColumnHeader">
         <Setter Property="Background" Value="{DynamicResource SurfaceBrush}" />
         <Setter Property="Foreground" Value="{DynamicResource SubtextBrush}" />
@@ -143,7 +142,7 @@
         <Setter Property="Background" Value="{DynamicResource OverlayBrush}" />
     </Style>
 
-    <!-- ── DataGridRow ── -->
+    <!-- DataGridRow -->
     <Style Selector="DataGridRow">
         <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
         <Setter Property="Background" Value="{DynamicResource SurfaceBrush}" />
@@ -158,10 +157,9 @@
         <Setter Property="Foreground" Value="White" />
     </Style>
 
-    <!-- ── DataGridCell ── -->
+    <!-- DataGridCell -->
     <Style Selector="DataGridCell">
         <Setter Property="BorderThickness" Value="0" />
-        <Setter Property="FocusVisualStyle" Value="{x:Null}" />
     </Style>
 
     <Style Selector="DataGridCell:focus">
@@ -169,7 +167,7 @@
         <Setter Property="BorderBrush" Value="{DynamicResource AccentBrush}" />
     </Style>
 
-    <!-- ── Window ── -->
+    <!-- Window -->
     <Style Selector="Window">
         <Setter Property="Background" Value="{DynamicResource BgBrush}" />
         <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
@@ -177,7 +175,7 @@
         <Setter Property="FontSize" Value="13" />
     </Style>
 
-    <!-- ── Menu ── -->
+    <!-- Menu -->
     <Style Selector="Menu">
         <Setter Property="Background" Value="{DynamicResource SurfaceBrush}" />
         <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
@@ -185,7 +183,7 @@
         <Setter Property="UseLayoutRounding" Value="True" />
     </Style>
 
-    <!-- ── ContextMenu ── -->
+    <!-- ContextMenu -->
     <Style Selector="ContextMenu">
         <Setter Property="Background" Value="{DynamicResource BgBrush}" />
         <Setter Property="BorderBrush" Value="{DynamicResource AccentBrush}" />
@@ -193,7 +191,7 @@
         <Setter Property="Padding" Value="4" />
     </Style>
 
-    <!-- ── MenuItem ── -->
+    <!-- MenuItem -->
     <Style Selector="MenuItem">
         <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
         <Setter Property="Background" Value="Transparent" />
@@ -208,15 +206,7 @@
         <Setter Property="Foreground" Value="{DynamicResource AccentBrush}" />
     </Style>
 
-    <!-- ── GroupBox ── -->
-    <Style Selector="GroupBox">
-        <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
-        <Setter Property="BorderBrush" Value="{DynamicResource OverlayBrush}" />
-        <Setter Property="BorderThickness" Value="1" />
-        <Setter Property="Padding" Value="8" />
-    </Style>
-
-    <!-- ── RadioButton ── -->
+    <!-- RadioButton -->
     <Style Selector="RadioButton">
         <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
     </Style>
@@ -225,7 +215,7 @@
         <Setter Property="Foreground" Value="{DynamicResource AccentBrush}" />
     </Style>
 
-    <!-- ── CheckBox ── -->
+    <!-- CheckBox -->
     <Style Selector="CheckBox">
         <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
     </Style>
@@ -234,7 +224,7 @@
         <Setter Property="Foreground" Value="{DynamicResource AccentBrush}" />
     </Style>
 
-    <!-- ── ComboBox ── -->
+    <!-- ComboBox -->
     <Style Selector="ComboBox">
         <Setter Property="Background" Value="{DynamicResource SurfaceBrush}" />
         <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
@@ -253,7 +243,7 @@
         <Setter Property="BorderThickness" Value="2" />
     </Style>
 
-    <!-- ── ComboBoxItem ── -->
+    <!-- ComboBoxItem -->
     <Style Selector="ComboBoxItem">
         <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
         <Setter Property="Background" Value="Transparent" />
@@ -269,7 +259,7 @@
         <Setter Property="Foreground" Value="White" />
     </Style>
 
-    <!-- ── ScrollBar Thumb ── -->
+    <!-- ScrollBar Thumb -->
     <Style Selector="ScrollBar Thumb">
         <Setter Property="Background" Value="{DynamicResource OverlayBrush}" />
     </Style>

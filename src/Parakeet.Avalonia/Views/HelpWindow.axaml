@@ -7,9 +7,7 @@
         Width="900" Height="620"
         MinWidth="600" MinHeight="400"
         WindowStartupLocation="CenterOwner"
-        Background="{DynamicResource BgBrush}"
-        SourceInitialized="Window_SourceInitialized"
-        Closing="Window_Closing">
+        Background="{DynamicResource BgBrush}">
 
     <Grid>
         <Grid.ColumnDefinitions>

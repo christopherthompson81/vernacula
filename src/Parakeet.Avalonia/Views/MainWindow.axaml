@@ -9,8 +9,7 @@
         Icon="avares://Parakeet.Avalonia/Assets/icon.ico"
         Width="920" Height="840"
         MinWidth="700" MinHeight="500"
-        Background="{DynamicResource BgBrush}"
-        Closing="Window_Closing">
+        Background="{DynamicResource BgBrush}">
 
     <Window.Resources>
         <!-- Panel → UserControl DataTemplates -->
