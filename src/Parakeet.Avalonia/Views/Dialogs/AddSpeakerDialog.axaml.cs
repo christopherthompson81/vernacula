@@ -38,7 +38,7 @@ public partial class AddSpeakerDialog : Window
 
     private void TryConfirm()
     {
-        string name = NameBox.Text.Trim();
+        string name = NameBox!.Text!.Trim();
         if (string.IsNullOrEmpty(name)) return;
         SpeakerName  = name;
         Close();

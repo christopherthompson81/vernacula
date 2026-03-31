@@ -238,7 +238,7 @@ internal partial class SettingsViewModel : ObservableObject
     internal async Task CheckModelsAsync()
     {
         ModelStatusText  = Loc.Instance["model_status_checking"];
-        ModelStatusBrush = Application.Current.Resources["SubtextBrush"] as IBrush ?? Brushes.Gray;
+        ModelStatusBrush = Application.Current!.Resources["SubtextBrush"] as IBrush ?? Brushes.Gray;
 
         IReadOnlyList<string> missing = [], present = [];
         await Task.Run(() =>

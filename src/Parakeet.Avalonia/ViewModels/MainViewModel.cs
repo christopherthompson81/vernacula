@@ -59,7 +59,7 @@ internal partial class MainViewModel : ObservableObject
                 DataContext = Config,
             };
             Config.NavigateBack = win.Close;
-            win.ShowDialog(_mainWindow);
+            win.ShowDialog(_mainWindow!);
         };
 
         // Home → Requeue (resume a failed / cancelled job)

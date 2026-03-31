@@ -22,6 +22,12 @@ public partial class MainWindow : Window
 
     private void MainWindow_Loaded(object? sender, RoutedEventArgs e)
     {
+        // Set the main window reference in the view model
+        if (DataContext is MainViewModel vm)
+        {
+            vm.SetMainWindow(this);
+        }
+
         WindowHelper.SetDarkMode(this, App.Current.Settings.Current.Theme == AppTheme.Dark);
 
         var s = App.Current.Settings.Current;

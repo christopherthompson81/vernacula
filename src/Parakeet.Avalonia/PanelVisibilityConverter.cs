@@ -24,6 +24,6 @@ public class PanelVisibilityConverter : IValueConverter
 
     public object ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture)
     {
-        return null;
+        return BindingOperations.DoNothing;
     }
 }

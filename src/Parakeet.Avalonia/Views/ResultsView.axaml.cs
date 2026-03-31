@@ -16,7 +16,7 @@ public partial class ResultsView : UserControl
         Unloaded += OnUnloaded;
     }
 
-    private void OnLoaded(object sender, RoutedEventArgs e)
+    private void OnLoaded(object? sender, RoutedEventArgs e)
     {
         var s = App.Current.Settings.Current;
         if (s.ResultsColSpeakerWidth > 0)
@@ -38,7 +38,7 @@ public partial class ResultsView : UserControl
     private void OnWindowClosing(object? sender, System.ComponentModel.CancelEventArgs e)
         => SaveColumnWidths();
 
-    private void OnUnloaded(object sender, RoutedEventArgs e)
+    private void OnUnloaded(object? sender, RoutedEventArgs e)
         => SaveColumnWidths();
 
     private void SaveColumnWidths()

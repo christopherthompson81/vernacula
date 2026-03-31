@@ -85,7 +85,7 @@ internal partial class HomeViewModel : ObservableObject
     internal async Task CheckModelsAsync()
     {
         ModelStatusText  = Loc.Instance["model_status_checking"];
-        ModelStatusBrush = Application.Current.Resources["SubtextBrush"] as IBrush ?? Brushes.Gray;
+        ModelStatusBrush = Application.Current!.Resources["SubtextBrush"] as IBrush ?? Brushes.Gray;
 
         IReadOnlyList<string> missing = [];
         await Task.Run(() => missing = _modelMgr.GetMissingFiles());

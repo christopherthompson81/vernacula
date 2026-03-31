@@ -20,7 +20,7 @@ public partial class HomeView : UserControl
         Unloaded += OnUnloaded;
     }
 
-    private void OnLoaded(object sender, RoutedEventArgs e)
+    private void OnLoaded(object? sender, RoutedEventArgs e)
     {
         var s = App.Current.Settings.Current;
         if (s.HomeColAudioWidth > 0)
@@ -41,7 +41,7 @@ public partial class HomeView : UserControl
         => SaveColumnWidths();
 
     // Fired during navigation (Home → Results). Visual still intact here.
-    private void OnUnloaded(object sender, RoutedEventArgs e)
+    private void OnUnloaded(object? sender, RoutedEventArgs e)
         => SaveColumnWidths();
 
     private void SaveColumnWidths()
@@ -113,7 +113,7 @@ public partial class HomeView : UserControl
 
         _shouldSaveTitle = false;
 
-        var newTitle = tb.Text.Trim();
+        var newTitle = tb.Text!.Trim();
         if (string.IsNullOrEmpty(newTitle))
         {
             tb.Text = _originalTitle ?? job.JobTitle; // revert

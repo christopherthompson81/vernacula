@@ -179,9 +179,9 @@ public partial class HelpWindow : Window
 
     private void UpdateSidebarSelection(string topicId)
     {
-        var overlayBrush = (IBrush)Application.Current.Resources["OverlayBrush"];
-        var accentBrush  = (IBrush)Application.Current.Resources["AccentBrush"];
-        var textBrush    = (IBrush)Application.Current.Resources["TextBrush"];
+        var overlayBrush = (IBrush)Application.Current!.Resources["OverlayBrush"]!;
+        var accentBrush  = (IBrush)Application.Current.Resources["AccentBrush"]!;
+        var textBrush    = (IBrush)Application.Current.Resources["TextBrush"]!;
 
         foreach (var (id, btn) in _sidebarButtons)
         {

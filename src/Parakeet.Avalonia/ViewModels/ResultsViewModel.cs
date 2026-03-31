@@ -70,7 +70,7 @@ internal partial class ResultsViewModel : ObservableObject
     {
         if (_dbPath is null) return;
         var dlg = new Views.Dialogs.SpeakerNamesDialog(_dbPath);
-        await dlg.ShowDialog(_ownerWindow);
+        await dlg.ShowDialog(_ownerWindow!);
         if (!dlg.DialogResult) return;
         // Reload segments to reflect updated speaker names
         Segments.Clear();
@@ -85,7 +85,7 @@ internal partial class ResultsViewModel : ObservableObject
     {
         if (_dbPath is null) return;
         var fmtDlg = new Views.Dialogs.ExportDialog();
-        await fmtDlg.ShowDialog(_ownerWindow);
+        await fmtDlg.ShowDialog(_ownerWindow!);
         if (!fmtDlg.DialogResult) return;
 
         var fmt = fmtDlg.SelectedFormat;

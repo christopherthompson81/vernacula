@@ -36,8 +36,8 @@ public partial class SplitSegmentDialog : Window
 
     private void BuildTokenButtons()
     {
-        var surfaceBrush = (IBrush)Resources["SurfaceBrush"];
-        var textBrush    = (IBrush)Resources["TextBrush"];
+        var surfaceBrush = (IBrush)Resources["SurfaceBrush"]!;
+        var textBrush    = (IBrush)Resources["TextBrush"]!;
 
         for (int i = 0; i < _tokenTexts.Count; i++)
         {
@@ -77,10 +77,10 @@ public partial class SplitSegmentDialog : Window
         SplitTokenIndex = index;
         OkBtn.IsEnabled = true;
 
-        var accentColor  = ((SolidColorBrush)Resources["AccentBrush"]).Color;
-        var surfaceBrush = (IBrush)Resources["SurfaceBrush"];
-        var textBrush    = (IBrush)Resources["TextBrush"];
-        var subtextBrush = (IBrush)Resources["SubtextBrush"];
+        var accentColor  = ((SolidColorBrush)Resources["AccentBrush"]!).Color;
+        var surfaceBrush = (IBrush)Resources["SurfaceBrush"]!;
+        var textBrush    = (IBrush)Resources["TextBrush"]!;
+        var subtextBrush = (IBrush)Resources["SubtextBrush"]!;
 
         for (int i = 0; i < _tokenBtns.Count; i++)
         {
