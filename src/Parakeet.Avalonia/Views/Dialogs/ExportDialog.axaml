@@ -5,7 +5,7 @@
         Title="{local:Loc modal_export_heading}"
         Width="300" Height="180"
         WindowStartupLocation="CenterOwner"
-        ResizeMode="NoResize"
+        CanResize="False"
         Background="{DynamicResource BgBrush}">
 
     <Grid Margin="16">

@@ -6,7 +6,7 @@
         Icon="avares://Parakeet.Avalonia/Assets/icon.ico"
         MinWidth="480" MinHeight="220" SizeToContent="WidthAndHeight"
         WindowStartupLocation="CenterOwner"
-        ResizeMode="NoResize"
+        CanResize="False"
         Background="{DynamicResource BgBrush}">
 
     <Grid Margin="24">
@@ -21,7 +21,7 @@
                Height="140"
                VerticalAlignment="Center"
                Margin="0,0,20,0"
-               RenderOptions.BitmapScalingMode="HighQuality" />
+               ImageScaling="HighQuality" />
 
         <!-- Text + OK button -->
         <Grid Grid.Column="1" VerticalAlignment="Center">

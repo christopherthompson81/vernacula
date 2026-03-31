@@ -7,7 +7,7 @@
         Width="540"
         SizeToContent="Height"
         WindowStartupLocation="CenterOwner"
-        ResizeMode="NoResize"
+        CanResize="False"
         ShowInTaskbar="False"
         Icon="avares://Parakeet.Avalonia/Assets/icon.ico"
         Background="{DynamicResource BgBrush}">

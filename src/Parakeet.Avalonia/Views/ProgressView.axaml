@@ -3,7 +3,9 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:local="using:ParakeetCSharp"
              xmlns:conv="using:ParakeetCSharp.Converters"
-             xmlns:beh="using:ParakeetCSharp.Behaviors">
+             xmlns:beh="using:ParakeetCSharp.Behaviors"
+             xmlns:vm="using:ParakeetCSharp.ViewModels"
+             x:DataType="vm:ProgressViewModel">
 
     <UserControl.Resources>
         <conv:BoolToVisibilityConverter x:Key="BoolToVis" />
@@ -60,7 +62,7 @@
                      Padding="6"
                      Margin="0,8,0,0"
                      MaxHeight="160"
-                     VerticalScrollBarVisibility="Auto"
+                     
                      Visibility="{Binding HasError, Converter={StaticResource BoolToVis}}" />
         </StackPanel>
 
@@ -71,7 +73,7 @@
                   AutoGenerateColumns="False"
                   IsReadOnly="True"
                   CanUserReorderColumns="False"
-                  CanUserResizeRows="False"
+                  
                   SelectionMode="Single"
                   GridLinesVisibility="Horizontal"
                   HeadersVisibility="Column"
@@ -96,12 +98,12 @@
                     <DataGridTextColumn.Header>
                         <TextBlock Text="{Binding Source={x:Static local:Loc.Instance}, Path=[segments_col_content]}" />
                     </DataGridTextColumn.Header>
-                    <DataGridTextColumn.ElementStyle>
-                        <Style TargetType="TextBlock">
+                    <DataGridTextColumn.CellStyle>
+                        <Style>
                             <Setter Property="TextWrapping" Value="Wrap" />
                             <Setter Property="Padding"      Value="4,2"  />
                         </Style>
-                    </DataGridTextColumn.ElementStyle>
+                    </DataGridTextColumn.CellStyle>
                 </DataGridTextColumn>
             </DataGrid.Columns>
         </DataGrid>

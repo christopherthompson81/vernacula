@@ -4,6 +4,7 @@
         xmlns:vm="using:ParakeetCSharp.ViewModels"
         xmlns:v="using:ParakeetCSharp.Views"
         xmlns:local="using:ParakeetCSharp"
+        x:DataType="vm:MainViewModel"
         Title="Parakeet Transcription"
         Icon="avares://Parakeet.Avalonia/Assets/icon.ico"
         Width="920" Height="840"

@@ -1,7 +1,9 @@
 <UserControl x:Class="ParakeetCSharp.Views.ConfigView"
              xmlns="https://github.com/avaloniaui"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-             xmlns:local="using:ParakeetCSharp">
+             xmlns:local="using:ParakeetCSharp"
+             xmlns:vm="using:ParakeetCSharp.ViewModels"
+             x:DataType="vm:ConfigViewModel">
 
     <StackPanel HorizontalAlignment="Center"
                 VerticalAlignment="Center"

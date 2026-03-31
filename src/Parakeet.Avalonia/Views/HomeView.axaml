@@ -3,7 +3,9 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:local="using:ParakeetCSharp"
              xmlns:conv="using:ParakeetCSharp.Converters"
-             xmlns:models="using:ParakeetCSharp.Models">
+             xmlns:models="using:ParakeetCSharp.Models"
+             xmlns:vm="using:ParakeetCSharp.ViewModels"
+             x:DataType="vm:HomeViewModel">
 
     <UserControl.Resources>
         <conv:BoolToVisibilityConverter x:Key="BoolToVis" />
@@ -11,7 +13,7 @@
         <conv:StatusToBrushConverter    x:Key="StatusToBrush" />
     </UserControl.Resources>
 
-    <Grid PreviewMouseDown="OnViewPreviewMouseDown">
+    <Grid>
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />   <!-- Model status -->
             <RowDefinition Height="Auto" />   <!-- Update banner -->
@@ -117,7 +119,7 @@
                           AutoGenerateColumns="False"
                           IsReadOnly="True"
                           CanUserReorderColumns="False"
-                          CanUserResizeRows="False"
+                          
                           CanUserSortColumns="False"
                           SelectionMode="Single"
                           GridLinesVisibility="Horizontal"
@@ -147,23 +149,23 @@
                             <DataGridTextColumn.Header>
                                 <TextBlock Text="{Binding Source={x:Static local:Loc.Instance}, Path=[history_col_audio]}" />
                             </DataGridTextColumn.Header>
-                            <DataGridTextColumn.ElementStyle>
-                                <Style TargetType="TextBlock">
+                            <DataGridTextColumn.CellStyle>
+                                <Style>
                                     <Setter Property="VerticalAlignment" Value="Center" />
                                     <Setter Property="Padding" Value="4,0" />
                                 </Style>
-                            </DataGridTextColumn.ElementStyle>
+                            </DataGridTextColumn.CellStyle>
                         </DataGridTextColumn>
                         <DataGridTextColumn Binding="{Binding DisplayDate}"  Width="140" CanUserResize="False">
                             <DataGridTextColumn.Header>
                                 <TextBlock Text="{Binding Source={x:Static local:Loc.Instance}, Path=[history_col_date]}" />
                             </DataGridTextColumn.Header>
-                            <DataGridTextColumn.ElementStyle>
-                                <Style TargetType="TextBlock">
+                            <DataGridTextColumn.CellStyle>
+                                <Style>
                                     <Setter Property="VerticalAlignment" Value="Center" />
                                     <Setter Property="Padding" Value="4,0" />
                                 </Style>
-                            </DataGridTextColumn.ElementStyle>
+                            </DataGridTextColumn.CellStyle>
                         </DataGridTextColumn>
 
                         <!-- Run time column — shown for completed jobs -->
@@ -192,8 +194,7 @@
                                 <DataTemplate>
                                     <Border Background="{Binding Status, Converter={StaticResource StatusToBrush}}"
                                             HorizontalAlignment="Left"
-                                            MouseLeftButtonUp="OnStatusBadgeClicked"
-                                            ToolTipService.IsEnabled="{Binding HasError}">
+                                            PointerReleased="OnStatusBadgeClicked">
                                         <Border.ToolTip>
                                             <ToolTip MaxWidth="500">
                                                 <TextBlock Text="{Binding ErrorMessage}"
@@ -205,9 +206,9 @@
                                         <Border.Style>
                                             <Style TargetType="Border" BasedOn="{StaticResource StatusBadge}">
                                                 <Style.Triggers>
-                                                    <DataTrigger Binding="{Binding HasError}" Value="True">
+                                                    <Trigger Binding="{Binding HasError}" Value="True">
                                                         <Setter Property="Cursor" Value="Hand" />
-                                                    </DataTrigger>
+                                                    </Trigger>
                                                 </Style.Triggers>
                                             </Style>
                                         </Border.Style>

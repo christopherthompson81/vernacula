@@ -20,7 +20,7 @@ public static class ThemeManager
         if (app == null) return;
 
         var dicts = app.Resources.MergedDictionaries;
-        // Index 0 is always the theme dictionary (see App.axaml)
+        // Index 0 is the theme dictionary, Index 1 is CommonStyles
         if (dicts.Count > 0)
         {
             var resourceDict = (ResourceDictionary)AvaloniaXamlLoader.Load(new Uri(uri));

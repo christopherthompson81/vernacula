@@ -57,12 +57,6 @@ public partial class HomeView : UserControl
     private string? _originalTitle;
     private bool _shouldSaveTitle;
 
-    private void OnViewPreviewMouseDown(object sender, object e)
-    {
-        // Simplified - removed keyboard focus check for now
-        JobsGrid.Focus();
-    }
-
       // TODO: Port to Avalonia - Parent property not available on AvaloniaObject
     // private static bool IsDescendantOrSelf(AvaloniaObject ancestor, AvaloniaObject element)
     // {

@@ -5,7 +5,7 @@
         Title="{local:Loc modal_speakers_heading}"
         Width="400" Height="300"
         WindowStartupLocation="CenterOwner"
-        ResizeMode="NoResize"
+        CanResize="False"
         Background="{DynamicResource BgBrush}">
 
     <Grid Margin="16">
@@ -23,15 +23,11 @@
         <DataGrid Grid.Row="1"
                   x:Name="SpeakersGrid"
                   AutoGenerateColumns="False"
-                  CanUserAddRows="False"
-                  CanUserDeleteRows="False"
                   CanUserSortColumns="False"
                   GridLinesVisibility="Horizontal"
                   HeadersVisibility="Column"
                   Margin="0,0,0,12"
-                  PreviewKeyDown="SpeakersGrid_PreviewKeyDown"
-                  BeginningEdit="SpeakersGrid_BeginningEdit"
-                  CellEditEnding="SpeakersGrid_CellEditEnding">
+                  KeyDown="SpeakersGrid_PreviewKeyDown">
             <DataGrid.Columns>
                 <DataGridTextColumn Binding="{Binding SpeakerTag}"
                                     IsReadOnly="True"

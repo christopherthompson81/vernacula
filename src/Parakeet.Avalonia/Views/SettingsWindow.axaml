@@ -3,13 +3,14 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:local="using:ParakeetCSharp"
         xmlns:conv="using:ParakeetCSharp.Converters"
+        xmlns:vm="using:ParakeetCSharp.ViewModels"
+        x:DataType="vm:SettingsViewModel"
         Title="{local:Loc settings_window_title}"
         Icon="avares://Parakeet.Avalonia/Assets/icon.ico"
         Width="580" Height="720"
         MinWidth="480" MinHeight="500"
         WindowStartupLocation="CenterOwner"
         Background="{DynamicResource BgBrush}"
-        SourceInitialized="Window_SourceInitialized"
         Loaded="Window_Loaded">
 
     <Window.Resources>
@@ -77,14 +78,14 @@
                                 </Grid.ColumnDefinitions>
                                 <TextBlock Grid.Column="0" FontSize="14" VerticalAlignment="Center">
                                     <TextBlock.Style>
-                                        <Style TargetType="TextBlock">
+                                        <Style>
                                             <Setter Property="Text"       Value="○" />
                                             <Setter Property="Foreground" Value="{DynamicResource SubtextBrush}" />
                                             <Style.Triggers>
-                                                <DataTrigger Binding="{Binding GpuDetected}" Value="True">
+                                                <Trigger Binding="{Binding GpuDetected}" Value="True">
                                                     <Setter Property="Text"       Value="✓" />
                                                     <Setter Property="Foreground" Value="{DynamicResource GreenBrush}" />
-                                                </DataTrigger>
+                                                </Trigger>
                                             </Style.Triggers>
                                         </Style>
                                     </TextBlock.Style>
@@ -109,14 +110,14 @@
                                     </Grid.ColumnDefinitions>
                                     <TextBlock Grid.Column="0" FontSize="14" VerticalAlignment="Center">
                                         <TextBlock.Style>
-                                            <Style TargetType="TextBlock">
+                                            <Style>
                                                 <Setter Property="Text"       Value="✗" />
                                                 <Setter Property="Foreground" Value="{DynamicResource YellowBrush}" />
                                                 <Style.Triggers>
-                                                    <DataTrigger Binding="{Binding CudaToolkitInstalled}" Value="True">
+                                                    <Trigger Binding="{Binding CudaToolkitInstalled}" Value="True">
                                                         <Setter Property="Text"       Value="✓" />
                                                         <Setter Property="Foreground" Value="{DynamicResource GreenBrush}" />
-                                                    </DataTrigger>
+                                                    </Trigger>
                                                 </Style.Triggers>
                                             </Style>
                                         </TextBlock.Style>
@@ -140,14 +141,14 @@
                                     </Grid.ColumnDefinitions>
                                     <TextBlock Grid.Column="0" FontSize="14" VerticalAlignment="Center">
                                         <TextBlock.Style>
-                                            <Style TargetType="TextBlock">
+                                            <Style>
                                                 <Setter Property="Text"       Value="✗" />
                                                 <Setter Property="Foreground" Value="{DynamicResource YellowBrush}" />
                                                 <Style.Triggers>
-                                                    <DataTrigger Binding="{Binding CudnnInstalled}" Value="True">
+                                                    <Trigger Binding="{Binding CudnnInstalled}" Value="True">
                                                         <Setter Property="Text"       Value="✓" />
                                                         <Setter Property="Foreground" Value="{DynamicResource GreenBrush}" />
-                                                    </DataTrigger>
+                                                    </Trigger>
                                                 </Style.Triggers>
                                             </Style>
                                         </TextBlock.Style>
@@ -170,14 +171,14 @@
                                     </Grid.ColumnDefinitions>
                                     <TextBlock Grid.Column="0" FontSize="14" VerticalAlignment="Center">
                                         <TextBlock.Style>
-                                            <Style TargetType="TextBlock">
+                                            <Style>
                                                 <Setter Property="Text"       Value="✗" />
                                                 <Setter Property="Foreground" Value="{DynamicResource SubtextBrush}" />
                                                 <Style.Triggers>
-                                                    <DataTrigger Binding="{Binding CudaEpWorking}" Value="True">
+                                                    <Trigger Binding="{Binding CudaEpWorking}" Value="True">
                                                         <Setter Property="Text"       Value="✓" />
                                                         <Setter Property="Foreground" Value="{DynamicResource GreenBrush}" />
-                                                    </DataTrigger>
+                                                    </Trigger>
                                                 </Style.Triggers>
                                             </Style>
                                         </TextBlock.Style>
