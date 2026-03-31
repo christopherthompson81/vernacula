@@ -182,9 +182,7 @@
                                 <DataTemplate>
                                     <Border Background="{Binding Status, Converter={StaticResource StatusToBrush}}"
                                             Classes="status-badge"
-                                            HorizontalAlignment="Left"
-                                            Cursor="{Binding HasError, Converter={local:BoolToCursorConverter}}"
-                                            PointerReleased="OnStatusBadgeClicked">
+                                            HorizontalAlignment="Left">
                                     <ToolTip.Tip>
                                         <Border MaxWidth="500">
                                             <TextBlock Text="{Binding ErrorMessage}"

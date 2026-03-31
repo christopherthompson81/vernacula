@@ -12,24 +12,7 @@
         Background="{DynamicResource BgBrush}">
 
     <Window.Resources>
-        <!-- Panel → UserControl DataTemplates -->
-        <DataTemplate x:Key="HomeTemplate">
-            <v:HomeView DataContext="{Binding DataContext.Home,
-                         RelativeSource={RelativeSource AncestorType=Window}}" />
-        </DataTemplate>
-        <DataTemplate x:Key="ProgressTemplate">
-            <v:ProgressView DataContext="{Binding DataContext.Progress,
-                             RelativeSource={RelativeSource AncestorType=Window}}" />
-        </DataTemplate>
-        <DataTemplate x:Key="ResultsTemplate">
-            <v:ResultsView DataContext="{Binding DataContext.Results,
-                            RelativeSource={RelativeSource AncestorType=Window}}" />
-        </DataTemplate>
-
-        <local:PanelTemplateSelector x:Key="PanelSelector"
-            HomeTemplate="{StaticResource HomeTemplate}"
-            ProgressTemplate="{StaticResource ProgressTemplate}"
-            ResultsTemplate="{StaticResource ResultsTemplate}" />
+        <local:PanelVisibilityConverter x:Key="PanelVisibilityConverter" />
     </Window.Resources>
 
     <DockPanel>
@@ -55,8 +38,10 @@
         </Menu>
 
         <!-- ── Panel content ── -->
-        <ContentControl Content="{Binding CurrentPanel}"
-                        ContentTemplateSelector="{StaticResource PanelSelector}"
-                        Margin="16" />
+        <StackPanel Margin="16">
+            <v:HomeView IsVisible="{Binding CurrentPanel, Converter={StaticResource PanelVisibilityConverter}, ConverterParameter=Home}" />
+            <v:ProgressView IsVisible="{Binding CurrentPanel, Converter={StaticResource PanelVisibilityConverter}, ConverterParameter=Progress}" />
+            <v:ResultsView IsVisible="{Binding CurrentPanel, Converter={StaticResource PanelVisibilityConverter}, ConverterParameter=Results}" />
+        </StackPanel>
     </DockPanel>
 </Window>

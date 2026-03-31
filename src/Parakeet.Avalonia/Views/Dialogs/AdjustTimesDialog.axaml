@@ -46,7 +46,7 @@
         <TextBlock x:Name="ErrorLabel"
                    Foreground="{DynamicResource RedBrush}"
                    FontSize="11"
-                   IsVisible="Collapsed"
+                   IsVisible="False"
                    Margin="0,0,0,8"/>
 
         <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,8,0,0">

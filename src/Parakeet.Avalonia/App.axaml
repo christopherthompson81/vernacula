@@ -4,6 +4,13 @@
              x:Class="ParakeetCSharp.App"
              RequestedThemeVariant="Default">
     <Application.Resources>
-        <ResourceDictionary />
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <ResourceInclude Source="avares://Parakeet.Avalonia/Themes/MochaTheme.axaml" />
+            </ResourceDictionary.MergedDictionaries>
+        </ResourceDictionary>
     </Application.Resources>
+    <Application.Styles>
+        <StyleInclude Source="avares://Parakeet.Avalonia/Themes/CommonStyles.axaml" />
+    </Application.Styles>
 </Application>

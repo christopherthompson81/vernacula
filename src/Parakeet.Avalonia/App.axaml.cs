@@ -1,6 +1,5 @@
 using System.Globalization;
 using Avalonia;
-using Avalonia.Controls;
 using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Markup.Xaml;
 using ParakeetCSharp.Services;
@@ -31,16 +30,7 @@ public partial class App : Application
     public override void Initialize()
     {
         AvaloniaXamlLoader.Load(this);
-        
-        // Load theme resources
-        var mochaUri = new Uri("avares://Parakeet.Avalonia/Themes/MochaTheme.axaml");
-        var commonStylesUri = new Uri("avares://Parakeet.Avalonia/Themes/CommonStyles.axaml");
-        
-        var mochaTheme = (ResourceDictionary)AvaloniaXamlLoader.Load(mochaUri);
-        var commonStyles = (ResourceDictionary)AvaloniaXamlLoader.Load(commonStylesUri);
-        
-        Resources.MergedDictionaries.Add(mochaTheme);
-        Resources.MergedDictionaries.Add(commonStyles);
+        // Theme resources and styles are loaded via App.axaml
     }
 
     public override void OnFrameworkInitializationCompleted()

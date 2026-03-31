@@ -16,27 +16,32 @@
     <Window.Resources>
         <conv:BoolToVisibilityConverter x:Key="BoolToVis" />
         <conv:BoolToVisibilityConverter x:Key="InvBoolToVis" Invert="True" />
+        <conv:BoolToStatusIconConverter x:Key="BoolToStatusIcon" />
+        <conv:BoolToStatusBrushConverter x:Key="BoolToStatusBrush" />
+        <conv:BoolToStatusBrushConverter x:Key="BoolToStatusBrushYellow" FalseBrushKey="YellowBrush" />
+        <conv:BoolToStatusBrushConverter x:Key="BoolToStatusBrushSubtext" FalseBrushKey="SubtextBrush" />
+    </Window.Resources>
 
-        <Style x:Key="SectionHeading" TargetType="TextBlock">
+    <Window.Styles>
+        <Style Selector="TextBlock.section-heading">
             <Setter Property="FontSize"   Value="11" />
             <Setter Property="FontWeight" Value="SemiBold" />
             <Setter Property="Foreground" Value="{DynamicResource SubtextBrush}" />
             <Setter Property="Margin"     Value="0,20,0,6" />
         </Style>
 
-        <Style x:Key="CheckLabel" TargetType="TextBlock">
+        <Style Selector="TextBlock.check-label">
             <Setter Property="Foreground"        Value="{DynamicResource TextBrush}" />
             <Setter Property="VerticalAlignment" Value="Center" />
         </Style>
 
-        <Style x:Key="LinkButton" TargetType="Button"
-               BasedOn="{StaticResource {x:Type Button}}">
+        <Style Selector="Button.link-button">
             <Setter Property="Background"      Value="Transparent" />
             <Setter Property="Foreground"      Value="{DynamicResource AccentBrush}" />
             <Setter Property="BorderThickness" Value="0" />
             <Setter Property="Padding"         Value="4,2" />
         </Style>
-    </Window.Resources>
+    </Window.Styles>
 
     <Grid>
         <Grid.RowDefinitions>
@@ -76,20 +81,11 @@
                                     <ColumnDefinition Width="*"  />
                                     <ColumnDefinition Width="Auto" />
                                 </Grid.ColumnDefinitions>
-                                <TextBlock Grid.Column="0" FontSize="14" VerticalAlignment="Center">
-                                    <TextBlock.Style>
-                                        <Style>
-                                            <Setter Property="Text"       Value="○" />
-                                            <Setter Property="Foreground" Value="{DynamicResource SubtextBrush}" />
-                                            <Style.Triggers>
-                                                <Trigger Binding="{Binding GpuDetected}" Value="True">
-                                                    <Setter Property="Text"       Value="✓" />
-                                                    <Setter Property="Foreground" Value="{DynamicResource GreenBrush}" />
-                                                </Trigger>
-                                            </Style.Triggers>
-                                        </Style>
-                                    </TextBlock.Style>
-                                </TextBlock>
+                                <TextBlock Grid.Column="0"
+                                           FontSize="14"
+                                           VerticalAlignment="Center"
+                                           Text="{Binding GpuDetected, Converter={StaticResource BoolToStatusIcon}}"
+                                           Foreground="{Binding GpuDetected, Converter={StaticResource BoolToStatusBrushSubtext}}" />
                                 <TextBlock Grid.Column="1" Text="NVIDIA GPU"
                                            Classes="check-label" />
                                 <TextBlock Grid.Column="2" Text="{Binding GpuVramText}"
@@ -108,20 +104,11 @@
                                         <ColumnDefinition Width="*"  />
                                         <ColumnDefinition Width="Auto" />
                                     </Grid.ColumnDefinitions>
-                                    <TextBlock Grid.Column="0" FontSize="14" VerticalAlignment="Center">
-                                        <TextBlock.Style>
-                                            <Style>
-                                                <Setter Property="Text"       Value="✗" />
-                                                <Setter Property="Foreground" Value="{DynamicResource YellowBrush}" />
-                                                <Style.Triggers>
-                                                    <Trigger Binding="{Binding CudaToolkitInstalled}" Value="True">
-                                                        <Setter Property="Text"       Value="✓" />
-                                                        <Setter Property="Foreground" Value="{DynamicResource GreenBrush}" />
-                                                    </Trigger>
-                                                </Style.Triggers>
-                                            </Style>
-                                        </TextBlock.Style>
-                                    </TextBlock>
+                                    <TextBlock Grid.Column="0"
+                                               FontSize="14"
+                                               VerticalAlignment="Center"
+                                               Text="{Binding CudaToolkitInstalled, Converter={StaticResource BoolToStatusIcon}}"
+                                               Foreground="{Binding CudaToolkitInstalled, Converter={StaticResource BoolToStatusBrushYellow}}" />
                                     <TextBlock Grid.Column="1" Text="{local:Loc settings_hw_cuda_toolkit}"
                                                Classes="check-label" />
                                     <Button Grid.Column="2"
@@ -139,20 +126,11 @@
                                         <ColumnDefinition Width="*"  />
                                         <ColumnDefinition Width="Auto" />
                                     </Grid.ColumnDefinitions>
-                                    <TextBlock Grid.Column="0" FontSize="14" VerticalAlignment="Center">
-                                        <TextBlock.Style>
-                                            <Style>
-                                                <Setter Property="Text"       Value="✗" />
-                                                <Setter Property="Foreground" Value="{DynamicResource YellowBrush}" />
-                                                <Style.Triggers>
-                                                    <Trigger Binding="{Binding CudnnInstalled}" Value="True">
-                                                        <Setter Property="Text"       Value="✓" />
-                                                        <Setter Property="Foreground" Value="{DynamicResource GreenBrush}" />
-                                                    </Trigger>
-                                                </Style.Triggers>
-                                            </Style>
-                                        </TextBlock.Style>
-                                    </TextBlock>
+                                    <TextBlock Grid.Column="0"
+                                               FontSize="14"
+                                               VerticalAlignment="Center"
+                                               Text="{Binding CudnnInstalled, Converter={StaticResource BoolToStatusIcon}}"
+                                               Foreground="{Binding CudnnInstalled, Converter={StaticResource BoolToStatusBrushYellow}}" />
                                     <TextBlock Grid.Column="1" Text="{local:Loc settings_hw_cudnn}"
                                                Classes="check-label" />
                                     <Button Grid.Column="2"
@@ -169,20 +147,11 @@
                                         <ColumnDefinition Width="22" />
                                         <ColumnDefinition Width="*"  />
                                     </Grid.ColumnDefinitions>
-                                    <TextBlock Grid.Column="0" FontSize="14" VerticalAlignment="Center">
-                                        <TextBlock.Style>
-                                            <Style>
-                                                <Setter Property="Text"       Value="✗" />
-                                                <Setter Property="Foreground" Value="{DynamicResource SubtextBrush}" />
-                                                <Style.Triggers>
-                                                    <Trigger Binding="{Binding CudaEpWorking}" Value="True">
-                                                        <Setter Property="Text"       Value="✓" />
-                                                        <Setter Property="Foreground" Value="{DynamicResource GreenBrush}" />
-                                                    </Trigger>
-                                                </Style.Triggers>
-                                            </Style>
-                                        </TextBlock.Style>
-                                    </TextBlock>
+                                    <TextBlock Grid.Column="0"
+                                               FontSize="14"
+                                               VerticalAlignment="Center"
+                                               Text="{Binding CudaEpWorking, Converter={StaticResource BoolToStatusIcon}}"
+                                               Foreground="{Binding CudaEpWorking, Converter={StaticResource BoolToStatusBrushSubtext}}" />
                                     <TextBlock Grid.Column="1" Text="{local:Loc settings_hw_cuda_ep}"
                                                Classes="check-label" />
                                 </Grid>
@@ -445,12 +414,16 @@
                         CornerRadius="8" Padding="16"
                         Margin="0,0,0,16">
                     <ComboBox ItemsSource="{x:Static local:Loc.Languages}"
-                              SelectedValuePath="Code"
-                              SelectedValue="{Binding SelectedLanguage}"
-                              DisplayMemberPath="DisplayName"
+                              SelectedItem="{Binding SelectedLanguage}"
                               Background="{DynamicResource OverlayBrush}"
                               Foreground="{DynamicResource TextBrush}"
-                              BorderBrush="{DynamicResource OverlayBrush}" />
+                              BorderBrush="{DynamicResource OverlayBrush}">
+                        <ComboBox.ItemTemplate>
+                            <DataTemplate>
+                                <TextBlock Text="{Binding DisplayName}" />
+                            </DataTemplate>
+                        </ComboBox.ItemTemplate>
+                    </ComboBox>
                 </Border>
 
             </StackPanel>
