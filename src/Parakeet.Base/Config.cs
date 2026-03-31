@@ -105,13 +105,8 @@ public static class Config
     public const int DiariZenMinClusterSize = 13; // ~0.26s at 50Hz
 
     /// <summary>
-    /// AHC distance threshold used when WeSpeaker embeddings are available.
-    /// Applied on Euclidean distance of L2-normalised 512-dim embeddings;
-    /// corresponds roughly to cosine distance ≈ 0.6 (VBx AHC init threshold).
-    /// </summary>
-    /// <summary>
-    /// AHC distance threshold in LDA-projected (128-dim) space with L2-normalised embeddings.
-    /// Matches Python VBxClustering ahc_threshold=0.6 (cosine distance on LDA-projected embeddings).
+    /// AHC distance threshold used to initialise VBx.
+    /// In PLDA-projected 128-dim space; matches Python VBxClustering ahc_threshold=0.6.
     /// </summary>
     public const float DiariZenAhcThreshold = 0.6f;
 

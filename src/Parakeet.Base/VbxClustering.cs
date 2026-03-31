@@ -46,28 +46,25 @@ public static class VbxClustering
         if (k == 1)           return initLabels;
 
         // ── Initialise gamma (N×K soft assignments) from hard AHC labels ─
+        // Matches Python: softmax(onehot * init_smoothing, axis=1)
         var gamma = new double[n, k];
         const double smoothing = 7.0;
+        double expSmoothing = Math.Exp(smoothing);
+        double Z = expSmoothing + (k - 1);  // partition function: exp(7) + (K-1)*exp(0)
+        double pCorrect = expSmoothing / Z;
+        double pOther   = 1.0 / Z;
         for (int i = 0; i < n; i++)
         {
             int lbl = initLabels[i];
             if (lbl < 0 || lbl >= k) continue;
             for (int j = 0; j < k; j++)
-                gamma[i, j] = smoothing / (k - 1 + smoothing);
-            gamma[i, lbl] += 1.0 - smoothing / (k - 1 + smoothing) * k;
-            if (gamma[i, lbl] < 0) gamma[i, lbl] = 0;
-            // Re-normalise row
-            double rowSum = 0;
-            for (int j = 0; j < k; j++) rowSum += gamma[i, j];
-            if (rowSum > 0) for (int j = 0; j < k; j++) gamma[i, j] /= rowSum;
+                gamma[i, j] = pOther;
+            gamma[i, lbl] = pCorrect;
         }
 
-        // ── Speaker priors ────────────────────────────────────────────────
+        // ── Speaker priors: uniform init, matching Python np.ones(K)/K ──
         var pi = new double[k];
-        for (int i = 0; i < n; i++)
-            for (int j = 0; j < k; j++) pi[j] += gamma[i, j];
-        double piSum = pi.Sum();
-        for (int j = 0; j < k; j++) pi[j] /= piSum;
+        for (int j = 0; j < k; j++) pi[j] = 1.0 / k;
 
         // ── Pre-compute constants ─────────────────────────────────────────
         // G[i] = -0.5 * (||x_i||² + D*ln(2π))   (per-frame log-const, shape N)

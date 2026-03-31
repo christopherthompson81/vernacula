@@ -38,11 +38,18 @@ public sealed class WeSpeakerEmbedder : IDisposable
     private readonly float[]? _ldaMean1;    // (256,) — xvec_transform mean1
     private readonly float[,]? _ldaMatrix;  // (256, 128) — xvec_transform lda
     private readonly float[]? _ldaMean2;    // (128,) — xvec_transform mean2
-    private readonly float[,]? _pldaTr;    // (128, 128) — PLDA whitening rows
+    private readonly float[]?  _pldaMu;    // (128,) — PLDA mean (subtract before plda_tr)
+    private readonly float[,]? _pldaTr;    // (128, 128) — PLDA eigenspace matrix
     private readonly float[]?  _pldaPsi;   // (128,) — PLDA eigenvalues (Phi for VBx)
 
     /// <summary>PLDA eigenvalues (Phi) needed by VBx, or null if PLDA not loaded.</summary>
     public float[]? VbxPhi => _pldaPsi;
+
+    /// <summary>PLDA mean vector (128-dim), subtract from xvec before plda_tr projection.</summary>
+    public float[]? PldaMu => _pldaMu;
+
+    /// <summary>PLDA eigenspace matrix (128×128), needed for batch plda_tf, or null.</summary>
+    public float[,]? PldaTr => _pldaTr;
 
     // ── Constants ──────────────────────────────────────────────────────────
 
@@ -83,6 +90,7 @@ public sealed class WeSpeakerEmbedder : IDisposable
             string m1  = Path.Combine(ldaDir, "mean1.bin");
             string ld  = Path.Combine(ldaDir, "lda.bin");
             string m2  = Path.Combine(ldaDir, "mean2.bin");
+            string pmu = Path.Combine(ldaDir, "plda_mu.bin");
             string ptr = Path.Combine(ldaDir, "plda_tr.bin");
             string pps = Path.Combine(ldaDir, "plda_psi.bin");
             if (File.Exists(m1) && File.Exists(ld) && File.Exists(m2))
@@ -91,8 +99,9 @@ public sealed class WeSpeakerEmbedder : IDisposable
                 _ldaMatrix = ReadFloat2dBin(ld, 256, 128);   // (256, 128)
                 _ldaMean2  = ReadFloatBin(m2);               // (128,)
             }
-            if (File.Exists(ptr) && File.Exists(pps))
+            if (File.Exists(pmu) && File.Exists(ptr) && File.Exists(pps))
             {
+                _pldaMu  = ReadFloatBin(pmu);                // (128,)
                 _pldaTr  = ReadFloat2dBin(ptr, 128, 128);    // (128, 128)
                 _pldaPsi = ReadFloatBin(pps);                // (128,)
             }
@@ -118,110 +127,138 @@ public sealed class WeSpeakerEmbedder : IDisposable
 
     // ── Public API ─────────────────────────────────────────────────────────
 
-    /// <summary>Returns the output dimension: 256 (raw) or 128 (if PLDA transform loaded).</summary>
-    public int OutputDim => _ldaMatrix != null ? 128 : EmbeddingDim;
-
     /// <summary>Whether the full PLDA transform (xvec_tf + plda_tf) is available.</summary>
-    public bool HasPlda => _ldaMatrix != null && _pldaTr != null;
+    public bool HasPlda => _ldaMatrix != null && _pldaTr != null && _pldaMu != null;
 
     /// <summary>
-    /// Compute a speaker embedding for one audio region.
-    /// Returns 256-dim L2-normalised embedding, or 128-dim LDA-projected if transform is loaded.
+    /// Compute embeddings for one audio region.
     /// </summary>
     /// <param name="audio">Full recording at 16 kHz mono.</param>
-    /// <param name="startSample">Inclusive start sample of the region.</param>
-    /// <param name="endSample">Exclusive end sample of the region.</param>
-    public float[] ComputeEmbedding(float[] audio, int startSample, int endSample)
+    /// <param name="startSample">Inclusive start sample.</param>
+    /// <param name="endSample">Exclusive end sample.</param>
+    /// <param name="rawEmbedding">
+    /// Output: raw un-normalised 256-dim ONNX output, needed for <see cref="TransformToPlda"/>.
+    /// </param>
+    /// <returns>L2-normalised 256-dim embedding (for AHC initialisation).</returns>
+    public float[] ComputeEmbedding(float[] audio, int startSample, int endSample,
+        out float[] rawEmbedding)
     {
         int maxSamples = SampleRate * MaxEmbedWindowSec;
         int len = endSample - startSample;
-
-        // If region is longer than the cap, take the centre window
         if (len > maxSamples)
         {
             int centre = startSample + len / 2;
             startSample = centre - maxSamples / 2;
             endSample   = startSample + maxSamples;
         }
-
         startSample = Math.Max(0, startSample);
         endSample   = Math.Min(audio.Length, endSample);
         int regionLen = endSample - startSample;
-
         if (regionLen < FrameLengthSamples)
-            return new float[OutputDim];
+        {
+            rawEmbedding = new float[EmbeddingDim];
+            return new float[EmbeddingDim];
+        }
 
         var segment = new float[regionLen];
         Array.Copy(audio, startSample, segment, 0, regionLen);
 
         var fbank = ComputeFbank(segment);
-        if (fbank.GetLength(0) == 0) return new float[OutputDim];
+        if (fbank.GetLength(0) == 0)
+        {
+            rawEmbedding = new float[EmbeddingDim];
+            return new float[EmbeddingDim];
+        }
 
-        float[] raw = RunInference(fbank);
+        rawEmbedding = RunInference(fbank);  // raw un-normalised 256-dim
 
-        if (_ldaMatrix != null)
-            return ApplyLda(raw);
-
-        // No LDA: L2-normalise the raw embedding before returning
-        float norm0 = 0f;
-        for (int i = 0; i < raw.Length; i++) norm0 += raw[i] * raw[i];
-        norm0 = MathF.Sqrt(norm0);
-        if (norm0 > 0) for (int i = 0; i < raw.Length; i++) raw[i] /= norm0;
-        return raw;
+        // L2-normalise for AHC (matches Python: train_embeddings_normed = emb / ||emb||)
+        float[] l2 = (float[])rawEmbedding.Clone();
+        float norm = 0f;
+        for (int i = 0; i < l2.Length; i++) norm += l2[i] * l2[i];
+        norm = MathF.Sqrt(norm);
+        if (norm > 0) for (int i = 0; i < l2.Length; i++) l2[i] /= norm;
+        return l2;
     }
 
     /// <summary>
-    /// Full PLDA transform pipeline: xvec_tf then plda_tf.
-    /// <list type="number">
-    /// <item>centered = l2_norm(raw − mean1)</item>
-    /// <item>lda_normed = l2_norm(centered @ lda − mean2)</item>
-    /// <item>fea = l2_norm(plda_tr @ lda_normed)  — final embedding for VBx</item>
-    /// </list>
-    /// When plda_tr is not loaded, stops after step 2.
+    /// Apply xvec_tf to a raw un-normalised 256-dim embedding → 128-dim xvec.
+    /// Must then pass the full batch through <see cref="ApplyPldaTfBatch"/> for VBx.
+    /// Returns null if PLDA files were not loaded.
     /// </summary>
-    private float[] ApplyLda(float[] embedding)
+    public float[]? ComputeXvec(float[] rawEmbedding)
+    {
+        if (_ldaMatrix == null) return null;
+        return ApplyXvecTf(rawEmbedding);
+    }
+
+    /// <summary>
+    /// xvec_tf: transforms one raw un-normalised 256-dim embedding to 128-dim xvec space.
+    /// Matches Python:
+    ///   sqrt(128) * l2_norm( lda.T @ (sqrt(256) * l2_norm(x - mean1).T).T - mean2 )
+    /// </summary>
+    private float[] ApplyXvecTf(float[] raw)
     {
         int inDim  = _ldaMean1!.Length;   // 256
         int ldaDim = _ldaMean2!.Length;   // 128
+        double sqrtIn  = Math.Sqrt(inDim);   // sqrt(256)
+        double sqrtOut = Math.Sqrt(ldaDim);  // sqrt(128)
 
-        // Step 1: (raw - mean1) → L2-normalise
-        var centered = new float[inDim];
-        float n1 = 0f;
-        for (int i = 0; i < inDim; i++) { centered[i] = embedding[i] - _ldaMean1[i]; n1 += centered[i] * centered[i]; }
-        n1 = MathF.Sqrt(n1);
-        if (n1 > 0) for (int i = 0; i < inDim; i++) centered[i] /= n1;
+        // Step 1: l2_norm(raw - mean1) * sqrt(256)
+        double n1 = 0;
+        var c = new double[inDim];
+        for (int i = 0; i < inDim; i++) { c[i] = raw[i] - _ldaMean1[i]; n1 += c[i]*c[i]; }
+        n1 = Math.Sqrt(n1);
+        for (int i = 0; i < inDim; i++) c[i] = n1 > 0 ? c[i] / n1 * sqrtIn : 0;
 
-        // Step 2: centered @ lda − mean2 → L2-normalise
-        var lda_normed = new float[ldaDim];
+        // Step 2: lda.T @ c − mean2 = c @ lda − mean2  (lda is inDim×ldaDim)
+        var v2 = new double[ldaDim];
         for (int j = 0; j < ldaDim; j++)
         {
-            float v = -_ldaMean2[j];
-            for (int i = 0; i < inDim; i++) v += centered[i] * _ldaMatrix![i, j];
-            lda_normed[j] = v;
+            double v = -_ldaMean2[j];
+            for (int i = 0; i < inDim; i++) v += c[i] * _ldaMatrix![i, j];
+            v2[j] = v;
         }
-        float n2 = 0f;
-        for (int j = 0; j < ldaDim; j++) n2 += lda_normed[j] * lda_normed[j];
-        n2 = MathF.Sqrt(n2);
-        if (n2 > 0) for (int j = 0; j < ldaDim; j++) lda_normed[j] /= n2;
 
-        if (_pldaTr == null) return lda_normed;
+        // Step 3: l2_norm(v2) * sqrt(128)
+        double n2 = 0;
+        for (int j = 0; j < ldaDim; j++) n2 += v2[j]*v2[j];
+        n2 = Math.Sqrt(n2);
+        var xvec = new float[ldaDim];
+        for (int j = 0; j < ldaDim; j++) xvec[j] = n2 > 0 ? (float)(v2[j] / n2 * sqrtOut) : 0f;
+        return xvec;
+    }
 
-        // Step 3: plda_tr (128×128) @ lda_normed → L2-normalise (plda_tf)
-        int pldaDim = _pldaTr.GetLength(0);
-        var fea = new float[pldaDim];
-        for (int j = 0; j < pldaDim; j++)
+    /// <summary>
+    /// plda_tf applied to a batch. Matches Python:
+    ///   (xvecs - plda_mu) @ plda_tr.T
+    /// No normalization — output norms are ~19 (PLDA eigenspace scale).
+    /// </summary>
+    public static double[][] ApplyPldaTfBatch(float[,] pldaTr, float[] pldaMu, float[][] xvecs)
+    {
+        int n   = xvecs.Length;
+        int dim = pldaTr.GetLength(0);  // 128
+
+        // fea[i] = (xvecs[i] - pldaMu) @ pldaTr.T
+        var fea = new double[n][];
+        for (int i = 0; i < n; i++)
         {
-            float v = 0f;
-            for (int i = 0; i < ldaDim; i++) v += _pldaTr[j, i] * lda_normed[i];
-            fea[j] = v;
+            fea[i] = new double[dim];
+            for (int d = 0; d < dim; d++)
+            {
+                double v = 0;
+                for (int j = 0; j < dim; j++) v += pldaTr[d, j] * (xvecs[i][j] - pldaMu[j]);
+                fea[i][d] = v;
+            }
         }
-        float n3 = 0f;
-        for (int j = 0; j < pldaDim; j++) n3 += fea[j] * fea[j];
-        n3 = MathF.Sqrt(n3);
-        if (n3 > 0) for (int j = 0; j < pldaDim; j++) fea[j] /= n3;
-
         return fea;
     }
+
+    /// <summary>
+    /// Convenience: apply xvec_tf to a single raw embedding.
+    /// Use <see cref="ApplyPldaTfBatch"/> on the full batch for plda_tf.
+    /// </summary>
+    private float[] ApplyLda(float[] rawEmbedding) => ApplyXvecTf(rawEmbedding);
 
     // ── Fbank computation ──────────────────────────────────────────────────
 
@@ -284,8 +321,17 @@ public sealed class WeSpeakerEmbedder : IDisposable
             }
         }
 
-        // No per-utterance mean normalisation: pyannote's WeSpeakerResNet34 pipeline
-        // (torchaudio.compliance.kaldi.fbank) does not apply CMVN before the ResNet.
+        // Per-utterance mean normalisation: subtract mean per mel bin across all frames.
+        // Matches pyannote WeSpeakerResNet34.compute_fbank:
+        //   features = features - features.mean(dim=1, keepdim=True)
+        for (int m = 0; m < NumMelBins; m++)
+        {
+            float mean = 0f;
+            for (int fi = 0; fi < numFrames; fi++) mean += result[fi, m];
+            mean /= numFrames;
+            for (int fi = 0; fi < numFrames; fi++) result[fi, m] -= mean;
+        }
+
         return result;
     }
 

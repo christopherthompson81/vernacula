@@ -118,9 +118,11 @@ public sealed class DiariZenDiarizer : IDisposable
         }
 
         // ── Step 3: Extract per-(chunk, local_speaker) embeddings ─────────
-        // Matches pyannote's get_embeddings: one embedding per (chunk, speaker) pair.
-        var embeddings   = new List<double[]>();
-        var embedKeys    = new List<(int chunkIdx, int speakerIdx)>();
+        // embeddings — L2-normed 256-dim, used for AHC initialisation
+        // xvecs      — 128-dim xvec (after xvec_tf but before batch plda_tf), collected for VBx
+        var embeddings = new List<double[]>();
+        var xvecs      = new List<float[]>();   // raw xvec before batch plda_tf
+        var embedKeys  = new List<(int chunkIdx, int speakerIdx)>();
 
         if (_embedder != null)
         {
@@ -131,7 +133,6 @@ public sealed class DiariZenDiarizer : IDisposable
 
                 for (int spk = 0; spk < MaxUniqueSpeakers; spk++)
                 {
-                    // Count active frames and locate first/last
                     int activeCount = 0, firstActive = -1, lastActive = -1;
                     for (int t = 0; t < numFrames; t++)
                     {
@@ -143,16 +144,21 @@ public sealed class DiariZenDiarizer : IDisposable
 
                     if (activeCount < MinActiveFramesForEmbed) continue;
 
-                    // Use the span from first to last active frame as the audio window
                     int chunkStartSample = (int)(startTimes[ci] * SampleRate);
                     int startSample = Math.Clamp(chunkStartSample + firstActive * SampleRate / FrameRate, 0, audio.Length);
                     int endSample   = Math.Clamp(chunkStartSample + (lastActive + 1) * SampleRate / FrameRate, 0, audio.Length);
 
-                    float[] raw = _embedder.ComputeEmbedding(audio, startSample, endSample);
-                    var emb = new double[raw.Length];
-                    for (int d = 0; d < raw.Length; d++) emb[d] = raw[d];
-
+                    // L2-normed 256-dim for AHC
+                    float[] l2emb = _embedder.ComputeEmbedding(audio, startSample, endSample,
+                        out float[] rawEmb);
+                    var emb = new double[l2emb.Length];
+                    for (int d = 0; d < l2emb.Length; d++) emb[d] = l2emb[d];
                     embeddings.Add(emb);
+
+                    // xvec_tf for VBx (batch plda_tf applied after all are collected)
+                    float[]? xv = _embedder.ComputeXvec(rawEmb);
+                    if (xv != null) xvecs.Add(xv);
+
                     embedKeys.Add((ci, spk));
                 }
             }
@@ -171,16 +177,33 @@ public sealed class DiariZenDiarizer : IDisposable
             }
             else
             {
+                // AHC initialisation on L2-normed 256-dim (matches Python VBxClustering)
                 float activeThreshold = ahcThreshold > 0 ? ahcThreshold : Config.DiariZenAhcThreshold;
                 var linkage = HierarchicalClustering.Linkage(
                     embeddings.ToArray(), Config.DiariZenClusteringMethod);
-                clusterIds = HierarchicalClustering.FclusterThreshold(
-                    linkage, activeThreshold);
-            }
+                clusterIds = HierarchicalClustering.FclusterThreshold(linkage, activeThreshold);
+                int ahcClusters = clusterIds.Max() + 1;
 
-            // Post-process: absorb small clusters into nearest large cluster
-            // (mirrors pyannote AgglomerativeClustering min_cluster_size).
-            clusterIds = MergeSmallClusters(clusterIds, embeddings.ToArray(), Config.DiariZenMinClusterSize);
+                // VBx refinement: apply batch plda_tf then run VBx
+                if (_embedder != null && _embedder.HasPlda && _embedder.VbxPhi != null
+                    && xvecs.Count == embeddings.Count
+                    && _embedder.PldaTr != null && _embedder.PldaMu != null)
+                {
+                    // plda_tf: (xvecs - plda_mu) @ plda_tr.T  (no normalization)
+                    double[][] feaBatch = WeSpeakerEmbedder.ApplyPldaTfBatch(
+                        _embedder.PldaTr, _embedder.PldaMu, xvecs.ToArray());
+
+                    var phi = Array.ConvertAll(_embedder.VbxPhi, x => (double)x);
+                    clusterIds = VbxClustering.Cluster(
+                        feaBatch, phi, clusterIds,
+                        fa: Config.DiariZenVbxFa, fb: Config.DiariZenVbxFb,
+                        maxIters: Config.DiariZenVbxMaxIters);
+                }
+                else
+                {
+                    clusterIds = MergeSmallClusters(clusterIds, embeddings.ToArray(), Config.DiariZenMinClusterSize);
+                }
+            }
 
             for (int i = 0; i < embedKeys.Count; i++)
                 localToGlobal[embedKeys[i]] = clusterIds[i];
