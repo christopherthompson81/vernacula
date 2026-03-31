@@ -11,8 +11,7 @@ namespace Parakeet.Base;
 /// <list type="number">
 /// <item><description>Audio is chunked into 16 s segments with 1.6 s stride (segmentation_step=0.1)</description></item>
 /// <item><description>WavLM+Conformer model outputs powerset logits per frame (batch=1)</description></item>
-/// <item><description>Per chunk: softmax → argmax → powerset-to-multilabel → binary (T×4)</description></item>
-/// <item><description>Per chunk: 11-frame median filter per speaker channel</description></item>
+/// <item><description>Per chunk: softmax → median filter → soft per-speaker scores (T×4) by summing powerset class probabilities</description></item>
 /// <item><description>Per (chunk, local_speaker) with enough active frames: extract WeSpeaker embedding</description></item>
 /// <item><description>HAC (centroid linkage, distance threshold) clusters all embeddings globally</description></item>
 /// <item><description>Reconstruct timeline: remap local→global speakers, overlap-add, normalise</description></item>
@@ -106,15 +105,16 @@ public sealed class DiariZenDiarizer : IDisposable
         // ── Step 1: Per-chunk powerset inference ──────────────────────────
         var chunkScores = SegmentBatched(chunks);
 
-        // ── Step 2: Per-chunk decode → binary multilabel (T × 4) ─────────
-        // Matches pyannote's Inference.infer with soft=False + to_multilabel,
-        // followed by median_filter(size=(1,11,1)).
-        var perChunkMultilabel = new List<bool[,]>(chunks.Count);
-        foreach (var scores in chunkScores)
+        // ── Step 2: Per-chunk decode → soft per-speaker scores (T × 4) ──
+        // Matches pyannote's Inference.infer with soft=True + to_multilabel:
+        // score[t, spk] = Σ_c p(c|t)  for all powerset classes c containing spk.
+        // Followed by median_filter(size=(1,11,1)).
+        var perChunkScores = new List<float[,]>(chunks.Count);
+        foreach (var rawScores in chunkScores)
         {
-            var probs    = ApplySoftmaxSingle(scores);
+            var probs    = ApplySoftmaxSingle(rawScores);
             var filtered = ApplyMedianFilterSingle(probs, Config.DiariZenMedianFilterSize);
-            perChunkMultilabel.Add(DecodePowersetToMultilabel(filtered));
+            perChunkScores.Add(ComputePerSpeakerScores(filtered));
         }
 
         // ── Step 3: Extract per-(chunk, local_speaker) embeddings ─────────
@@ -126,17 +126,17 @@ public sealed class DiariZenDiarizer : IDisposable
 
         if (_embedder != null)
         {
-            for (int ci = 0; ci < perChunkMultilabel.Count; ci++)
+            for (int ci = 0; ci < perChunkScores.Count; ci++)
             {
-                var multilabel = perChunkMultilabel[ci];
-                int numFrames  = multilabel.GetLength(0);
+                var chunkScore = perChunkScores[ci];
+                int numFrames  = chunkScore.GetLength(0);
 
                 for (int spk = 0; spk < MaxUniqueSpeakers; spk++)
                 {
                     int activeCount = 0, firstActive = -1, lastActive = -1;
                     for (int t = 0; t < numFrames; t++)
                     {
-                        if (!multilabel[t, spk]) continue;
+                        if (chunkScore[t, spk] < 0.5f) continue;
                         activeCount++;
                         if (firstActive < 0) firstActive = t;
                         lastActive = t;
@@ -212,7 +212,7 @@ public sealed class DiariZenDiarizer : IDisposable
         {
             // No embedder — assign all local speakers in each chunk to
             // their local index (will produce up to 4 "speakers")
-            for (int ci = 0; ci < perChunkMultilabel.Count; ci++)
+            for (int ci = 0; ci < perChunkScores.Count; ci++)
                 for (int spk = 0; spk < MaxUniqueSpeakers; spk++)
                     localToGlobal[(ci, spk)] = spk;
         }
@@ -229,10 +229,10 @@ public sealed class DiariZenDiarizer : IDisposable
         var accumulator  = new float[totalFrames * numGlobalSpeakers];
         var overlapCount = new int[totalFrames];
 
-        for (int ci = 0; ci < perChunkMultilabel.Count; ci++)
+        for (int ci = 0; ci < perChunkScores.Count; ci++)
         {
-            var multilabel = perChunkMultilabel[ci];
-            int numFrames  = multilabel.GetLength(0);
+            var chunkScore = perChunkScores[ci];
+            int numFrames  = chunkScore.GetLength(0);
             int startFrame = (int)(startTimes[ci] * FrameRate);
 
             for (int t = 0; t < numFrames; t++)
@@ -244,9 +244,10 @@ public sealed class DiariZenDiarizer : IDisposable
 
                 for (int spk = 0; spk < MaxUniqueSpeakers; spk++)
                 {
-                    if (!multilabel[t, spk]) continue;
+                    float s = chunkScore[t, spk];
+                    if (s <= 0f) continue;
                     if (!localToGlobal.TryGetValue((ci, spk), out int gs)) continue;
-                    accumulator[gf * numGlobalSpeakers + gs] += 1f;
+                    accumulator[gf * numGlobalSpeakers + gs] += s;
                 }
             }
         }
@@ -267,7 +268,7 @@ public sealed class DiariZenDiarizer : IDisposable
             int? regionStart = null;
             for (int f = 0; f < totalFrames; f++)
             {
-                bool active = accumulator[f * numGlobalSpeakers + gs] >= 0.5f;
+                bool active = accumulator[f * numGlobalSpeakers + gs] >= threshold;
 
                 if (active && regionStart == null)
                     regionStart = f;
@@ -397,34 +398,32 @@ public sealed class DiariZenDiarizer : IDisposable
         return filtered;
     }
 
-    // ── Powerset → per-speaker binary multilabel ──────────────────────────
+    // ── Powerset → soft per-speaker scores ────────────────────────────────
 
     /// <summary>
-    /// Replicates pyannote's Powerset.to_multilabel(soft=False):
-    /// argmax over powerset classes → one-hot → mapping matrix multiply.
-    /// Returns bool[numFrames, MaxUniqueSpeakers].
+    /// Replicates pyannote's Powerset.to_multilabel(soft=True):
+    /// for each speaker s, score[t, s] = Σ_c p(c|t) for all powerset classes c where s is active.
+    /// Returns float[numFrames, MaxUniqueSpeakers] with values in [0, 1].
+    /// Using soft scores (rather than hard argmax) allows overlap regions where multiple
+    /// speakers each exceed the binarization threshold simultaneously.
     /// </summary>
-    private static bool[,] DecodePowersetToMultilabel(float[] probs)
+    private static float[,] ComputePerSpeakerScores(float[] probs)
     {
         var combinations = PowersetDecoder.GetPowersetCombinations(
             MaxUniqueSpeakers, MaxSimultaneousPerFrame);
         int numFrames    = probs.Length / NumPowersetClasses;
-        var result       = new bool[numFrames, MaxUniqueSpeakers];
+        var result       = new float[numFrames, MaxUniqueSpeakers];
 
         for (int f = 0; f < numFrames; f++)
         {
-            // Argmax over powerset classes for this frame
-            int bestClass = 0;
-            float bestProb = probs[f * NumPowersetClasses];
-            for (int c = 1; c < NumPowersetClasses; c++)
+            int b = f * NumPowersetClasses;
+            for (int c = 0; c < NumPowersetClasses; c++)
             {
-                float p = probs[f * NumPowersetClasses + c];
-                if (p > bestProb) { bestProb = p; bestClass = c; }
+                float p = probs[b + c];
+                if (p == 0f) continue;
+                foreach (int spk in combinations[c])
+                    result[f, spk] += p;
             }
-
-            // Map to active speakers
-            foreach (int spk in combinations[bestClass])
-                result[f, spk] = true;
         }
 
         return result;
