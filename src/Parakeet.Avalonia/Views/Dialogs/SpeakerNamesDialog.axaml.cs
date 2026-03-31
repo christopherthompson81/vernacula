@@ -11,6 +11,8 @@ public partial class SpeakerNamesDialog : Window
     private readonly List<SpeakerEntry> _entries = new();
     private bool _isEditing;
 
+    public bool DialogResult { get; private set; }
+
     public SpeakerNamesDialog(string dbPath)
     {
         _dbPath = dbPath;
@@ -40,11 +42,13 @@ public partial class SpeakerNamesDialog : Window
             int speakerId = int.Parse(entry.SpeakerTag.Replace("speaker_", "")) + 1;
             db.UpdateSpeaker(speakerId, entry.Name);
         }
+        DialogResult = true;
         Close();
     }
 
     private void Cancel_Click(object sender, RoutedEventArgs e)
     {
+        DialogResult = false;
         Close();
     }
 

@@ -75,9 +75,11 @@
 
         <!-- Action buttons -->
         <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Right">
+            <!-- TODO: Enable when TranscriptEditorWindow is ported -->
             <Button Content="{local:Loc btn_edit_transcript}"
                     Style="{StaticResource SecondaryButton}"
                     Command="{Binding EditTranscriptCommand}"
+                    IsEnabled="False"
                     Margin="0,0,8,0" />
             <Button Content="{local:Loc btn_edit_speakers}"
                     Style="{StaticResource SecondaryButton}"

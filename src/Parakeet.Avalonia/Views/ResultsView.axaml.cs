@@ -1,5 +1,8 @@
+using System.ComponentModel;
+using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Interactivity;
+using ParakeetCSharp.Extensions;
 using ParakeetCSharp.Models;
 
 namespace ParakeetCSharp.Views;
@@ -23,12 +26,13 @@ public partial class ResultsView : UserControl
         if (s.ResultsColEndWidth > 0)
             SegmentsGrid.Columns[2].Width = new DataGridLength(s.ResultsColEndWidth);
 
-        var window = Window.GetWindow(this);
-        if (window != null)
-        {
-            window.Closing -= OnWindowClosing;
-            window.Closing += OnWindowClosing;
-        }
+        // TODO: Port GetVisualParent to Avalonia
+        // var window = this.GetVisualParent<Window>();
+        // if (window != null)
+        // {
+        //     window.Closing -= OnWindowClosing;
+        //     window.Closing += OnWindowClosing;
+        // }
     }
 
     private void OnWindowClosing(object? sender, System.ComponentModel.CancelEventArgs e)

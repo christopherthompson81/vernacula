@@ -17,7 +17,6 @@ internal partial class ResultsViewModel : ObservableObject
     private string _audioBaseName = "";
 
     private string? _dbPath;
-    private Views.TranscriptEditorWindow? _editorWindow;
     private Window? _ownerWindow;
 
     public ObservableCollection<SegmentRow> Segments { get; } = new();
@@ -62,45 +61,32 @@ internal partial class ResultsViewModel : ObservableObject
     [RelayCommand]
     private void EditTranscript()
     {
-        if (_dbPath is null) return;
-        if (_editorWindow is { IsLoaded: true })
-        {
-            _editorWindow.Activate();
-            if (_editorWindow.WindowState == WindowState.Minimized)
-                _editorWindow.WindowState = WindowState.Normal;
-            return;
-        }
-        _editorWindow = new Views.TranscriptEditorWindow(_dbPath, AudioBaseName);
-        _editorWindow.Show(_ownerWindow);
-        _editorWindow.DataChanged += ReloadSegments;
+        // TODO: Enable when TranscriptEditorWindow is ported
+        System.Diagnostics.Debug.WriteLine("Transcript editing not yet available");
     }
 
-    private void ReloadSegments()
-    {
-        if (_dbPath is null) return;
-        Segments.Clear();
-        using var db = new TranscriptionDb(_dbPath);
-        PopulateSegments(db);
-    }
-
-    [RelayCommand]
-    private void EditSpeakerNames()
+    [RelayCommand(CanExecute = nameof(CanEditSpeakerNames))]
+    private async Task EditSpeakerNamesAsync()
     {
         if (_dbPath is null) return;
         var dlg = new Views.Dialogs.SpeakerNamesDialog(_dbPath);
-        if (dlg.ShowDialog(_ownerWindow) != true) return;
+        await dlg.ShowDialog(_ownerWindow);
+        if (!dlg.DialogResult) return;
         // Reload segments to reflect updated speaker names
         Segments.Clear();
         using var db = new TranscriptionDb(_dbPath);
         PopulateSegments(db);
     }
 
-    [RelayCommand]
+    private bool CanEditSpeakerNames() => _dbPath is not null;
+
+    [RelayCommand(CanExecute = nameof(CanExport))]
     private async Task ExportAsync()
     {
         if (_dbPath is null) return;
         var fmtDlg = new Views.Dialogs.ExportDialog();
-        if (fmtDlg.ShowDialog(_ownerWindow) != true) return;
+        await fmtDlg.ShowDialog(_ownerWindow);
+        if (!fmtDlg.DialogResult) return;
 
         var fmt = fmtDlg.SelectedFormat;
 
@@ -116,59 +102,12 @@ internal partial class ResultsViewModel : ObservableObject
             _                               => ".xlsx",
         };
 
-        string filter = fmt switch
-        {
-            Views.Dialogs.ExportFormat.Xlsx => Loc.Instance["dlg_filter_xlsx"],
-            Views.Dialogs.ExportFormat.Csv  => Loc.Instance["dlg_filter_csv"],
-            Views.Dialogs.ExportFormat.Json => Loc.Instance["dlg_filter_json"],
-            Views.Dialogs.ExportFormat.Srt  => Loc.Instance["dlg_filter_srt"],
-            Views.Dialogs.ExportFormat.Md   => Loc.Instance["dlg_filter_md"],
-            Views.Dialogs.ExportFormat.Docx => Loc.Instance["dlg_filter_docx"],
-            Views.Dialogs.ExportFormat.Db   => Loc.Instance["dlg_filter_db"],
-            _                               => Loc.Instance["dlg_filter_xlsx"],
-        };
-
-        bool isDb = fmt == Views.Dialogs.ExportFormat.Db;
-        string baseName = isDb
-            ? Path.GetFileNameWithoutExtension(_dbPath)
-            : $"{Path.GetFileNameWithoutExtension(AudioBaseName)}_transcript";
-
-        // Use Avalonia file picker for save dialog
-        var topLevel = _ownerWindow ?? TopLevel.GetTopLevel((Visual?)this);
-        if (topLevel == null) return;
-
-        var suggestedName = baseName + defaultExt;
-        var file = await topLevel.StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
-        {
-            Title = "Save transcript",
-            SuggestedFileName = suggestedName,
-            FileTypeChoices = new[]
-            {
-                new FilePickerFileType { Name = filter, Extensions = [defaultExt.TrimStart('.')] }
-            }
-        });
-
-        if (file == null) return;
-
-        var filePath = file.Path.LocalPath;
-
-        if (isDb)
-        {
-            _export.ExportDbCopy(_dbPath, filePath);
-            return;
-        }
-
-        using var db = new TranscriptionDb(_dbPath);
-        switch (fmt)
-        {
-            case Views.Dialogs.ExportFormat.Xlsx: _export.ExportXlsx(db, filePath); break;
-            case Views.Dialogs.ExportFormat.Csv:  _export.ExportCsv(db, filePath);  break;
-            case Views.Dialogs.ExportFormat.Json: _export.ExportJson(db, filePath); break;
-            case Views.Dialogs.ExportFormat.Srt:  _export.ExportSrt(db, filePath);  break;
-            case Views.Dialogs.ExportFormat.Md:   _export.ExportMd(db, filePath);   break;
-            case Views.Dialogs.ExportFormat.Docx: _export.ExportDocx(db, filePath); break;
-        }
+        // TODO: Implement file save dialog using _ownerWindow
+        // For now, just log a message
+        System.Diagnostics.Debug.WriteLine($"Export requested: {fmt}");
     }
+
+    private bool CanExport() => _dbPath is not null;
 
     [RelayCommand]
     private void Back() => NavigateBack?.Invoke();

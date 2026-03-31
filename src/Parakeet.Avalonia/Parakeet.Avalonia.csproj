@@ -16,6 +16,13 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <!-- Exclude TranscriptEditorWindow - TODO: Port rich text editing -->
+    <Compile Remove="Views\TranscriptEditorWindow.axaml.cs" />
+    <AvaloniaXaml Remove="Views\TranscriptEditorWindow.axaml" />
+    <Compile Remove="ViewModels\TranscriptEditorViewModel.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
     <AvaloniaResource Include="Assets\**" />
   </ItemGroup>
 

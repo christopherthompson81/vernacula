@@ -9,6 +9,7 @@ public enum ExportFormat { Xlsx, Csv, Json, Srt, Md, Docx, Db }
 public partial class ExportDialog : Window
 {
     public ExportFormat SelectedFormat { get; private set; } = ExportFormat.Xlsx;
+    public bool DialogResult { get; private set; }
 
     public ExportDialog()
     {
@@ -30,11 +31,13 @@ public partial class ExportDialog : Window
             6 => ExportFormat.Db,
             _ => ExportFormat.Xlsx,
         };
+        DialogResult = true;
         Close();
     }
 
     private void Cancel_Click(object sender, RoutedEventArgs e)
     {
+        DialogResult = false;
         Close();
     }
 }

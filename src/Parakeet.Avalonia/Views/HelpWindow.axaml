@@ -39,11 +39,12 @@
                       ShowsPreview="False" />
 
         <!-- ── Content ── -->
-        <FlowDocumentScrollViewer x:Name="ContentViewer"
-                                  Grid.Column="2"
-                                  VerticalScrollBarVisibility="Auto"
-                                  IsToolBarVisible="False"
-                                  Background="{DynamicResource BgBrush}"
-                                  PreviewMouseWheel="ContentViewer_PreviewMouseWheel" />
+        <ScrollViewer x:Name="ContentViewer"
+                      Grid.Column="2"
+                      VerticalScrollBarVisibility="Auto"
+                      HorizontalScrollBarVisibility="Disabled"
+                      Background="{DynamicResource BgBrush}">
+            <Panel x:Name="ContentPanel" />
+        </ScrollViewer>
     </Grid>
 </Window>

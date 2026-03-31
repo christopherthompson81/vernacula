@@ -15,7 +15,7 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
-        
+
         // Set up window state restoration in Loaded event
         Loaded += MainWindow_Loaded;
     }
@@ -44,7 +44,7 @@ public partial class MainWindow : Window
 
         if (s.WindowMaximized)
         {
-            BeginMaximize();
+            WindowState = WindowState.Maximized;
         }
     }
 
@@ -53,39 +53,31 @@ public partial class MainWindow : Window
         // If any job is running or queued, prompt the user before closing
         if (DataContext is MainViewModel vm && vm.IsAnyJobRunning)
         {
-            var result = MessageBox.Show(
-                Loc.Instance["confirm_exit_message"],
-                Loc.Instance["confirm_exit_title"],
-                MessageBoxButtons.YesNo,
-                MessageBoxImage.Warning);
-
-            if (result == MessageBoxResult.No)
-            {
-                e.Cancel = true;
-                return;
-            }
-
-            vm.CancelAllJobs();
+            // Simple confirmation - for now just cancel if jobs are running
+            // TODO: Replace with proper Avalonia dialog
+            e.Cancel = true;
+            return;
         }
 
         var s = App.Current.Settings.Current;
-        
+
         // Get current window bounds
         double left = Position.X;
         double top = Position.Y;
         double width = Width;
         double height = Height;
-        
+
         // If maximized, use restore bounds
-        if (WindowState == WindowState.Maximized)
-        {
-            var restoreBounds = GetRestoreBounds();
-            left = restoreBounds.X;
-            top = restoreBounds.Y;
-            width = restoreBounds.Width;
-            height = restoreBounds.Height;
-        }
-        
+        // TODO: Avalonia doesn't have GetRestoreBounds - use current position when maximized
+        // if (WindowState == WindowState.Maximized)
+        // {
+        //     var restoreBounds = GetRestoreBounds();
+        //     left = restoreBounds.X;
+        //     top = restoreBounds.Y;
+        //     width = restoreBounds.Width;
+        //     height = restoreBounds.Height;
+        // }
+
         s.WindowLeft      = left;
         s.WindowTop       = top;
         s.WindowWidth     = width;
@@ -111,10 +103,9 @@ public partial class MainWindow : Window
         if (DataContext is not MainViewModel vm) return;
         _settingsWindow = new SettingsWindow
         {
-            Owner       = this,
             DataContext = vm.Settings,
         };
-        _settingsWindow.Show();
+        _settingsWindow.Show(this);
     }
 
     private void Exit_Click(object? sender, RoutedEventArgs e) => Close();
@@ -134,10 +125,10 @@ public partial class MainWindow : Window
                 _helpWindow.WindowState = WindowState.Normal;
             return;
         }
-        _helpWindow = new HelpWindow(topicId) { Owner = this };
-        _helpWindow.Show();
+        _helpWindow = new HelpWindow(topicId);
+        _helpWindow.Show(this);
     }
 
     private void About_Click(object? sender, RoutedEventArgs e) =>
-        new Dialogs.AboutDialog { Owner = this }.ShowDialog();
+        new Dialogs.AboutDialog().ShowDialog(this);
 }

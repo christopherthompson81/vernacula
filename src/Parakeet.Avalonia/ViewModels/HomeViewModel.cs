@@ -110,28 +110,10 @@ internal partial class HomeViewModel : ObservableObject
     [RelayCommand]
     private async Task BulkAddJobs()
     {
-        var topLevel = TopLevel.GetTopLevel((Visual?)this);
-        if (topLevel == null) return;
-
-        var files = await topLevel.StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
-        {
-            Title = Loc.Instance["dlg_select_audio"],
-            AllowMultiple = true,
-            FileTypeFilters = new[]
-            {
-                new FilePickerFileType
-                {
-                    Name = Loc.Instance["dlg_audio_filter"],
-                    Extensions = [".wav", ".mp3", ".m4a", ".flac", ".ogg"]
-                }
-            }
-        });
-
-        if (files.Count == 0) return;
-        
-        var fileNames = files.Select(f => f.Path.LocalPath).ToArray();
-        if (BulkEnqueueFiles != null)
-            await BulkEnqueueFiles(fileNames);
+        // ViewModels can't directly access TopLevel
+        // This needs to be handled by the view or through a service
+        // For now, this is a placeholder
+        return;
     }
 
     [RelayCommand]
