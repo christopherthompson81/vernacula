@@ -1,0 +1,470 @@
+<Window x:Class="ParakeetCSharp.Views.SettingsWindow"
+        xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:local="using:ParakeetCSharp"
+        xmlns:conv="using:ParakeetCSharp.Converters"
+        Title="{local:Loc settings_window_title}"
+        Icon="avares://Parakeet.Avalonia/Assets/icon.ico"
+        Width="580" Height="720"
+        MinWidth="480" MinHeight="500"
+        WindowStartupLocation="CenterOwner"
+        Background="{DynamicResource BgBrush}"
+        SourceInitialized="Window_SourceInitialized"
+        Loaded="Window_Loaded">
+
+    <Window.Resources>
+        <conv:BoolToVisibilityConverter x:Key="BoolToVis" />
+        <conv:BoolToVisibilityConverter x:Key="InvBoolToVis" Invert="True" />
+
+        <Style x:Key="SectionHeading" TargetType="TextBlock">
+            <Setter Property="FontSize"   Value="11" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="Foreground" Value="{DynamicResource SubtextBrush}" />
+            <Setter Property="Margin"     Value="0,20,0,6" />
+        </Style>
+
+        <Style x:Key="CheckLabel" TargetType="TextBlock">
+            <Setter Property="Foreground"        Value="{DynamicResource TextBrush}" />
+            <Setter Property="VerticalAlignment" Value="Center" />
+        </Style>
+
+        <Style x:Key="LinkButton" TargetType="Button"
+               BasedOn="{StaticResource {x:Type Button}}">
+            <Setter Property="Background"      Value="Transparent" />
+            <Setter Property="Foreground"      Value="{DynamicResource AccentBrush}" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Padding"         Value="4,2" />
+        </Style>
+    </Window.Resources>
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <ScrollViewer Grid.Row="0"
+                      VerticalScrollBarVisibility="Auto"
+                      HorizontalScrollBarVisibility="Disabled"
+                      Padding="20,4,20,4">
+            <StackPanel MaxWidth="540">
+
+                <!-- ─── Hardware & Performance ──────────────────────────────── -->
+                <TextBlock Text="{local:Loc settings_section_hardware}"
+                           Style="{StaticResource SectionHeading}" />
+
+                <Border Background="{DynamicResource SurfaceBrush}"
+                        CornerRadius="8" Padding="16">
+                    <StackPanel>
+
+                        <!-- Checking spinner (visible while running) -->
+                        <TextBlock Text="{local:Loc settings_hw_checking}"
+                                   Foreground="{DynamicResource SubtextBrush}"
+                                   Margin="0,0,0,8"
+                                   Visibility="{Binding IsCheckingHardware,
+                                                        Converter={StaticResource BoolToVis}}" />
+
+                        <!-- Hardware rows (hidden while checking) -->
+                        <StackPanel Visibility="{Binding IsCheckingHardware,
+                                                         Converter={StaticResource InvBoolToVis}}">
+
+                            <!-- NVIDIA GPU -->
+                            <Grid Margin="0,0,0,6">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="22" />
+                                    <ColumnDefinition Width="*"  />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Grid.Column="0" FontSize="14" VerticalAlignment="Center">
+                                    <TextBlock.Style>
+                                        <Style TargetType="TextBlock">
+                                            <Setter Property="Text"       Value="○" />
+                                            <Setter Property="Foreground" Value="{DynamicResource SubtextBrush}" />
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding GpuDetected}" Value="True">
+                                                    <Setter Property="Text"       Value="✓" />
+                                                    <Setter Property="Foreground" Value="{DynamicResource GreenBrush}" />
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </TextBlock.Style>
+                                </TextBlock>
+                                <TextBlock Grid.Column="1" Text="NVIDIA GPU"
+                                           Style="{StaticResource CheckLabel}" />
+                                <TextBlock Grid.Column="2" Text="{Binding GpuVramText}"
+                                           Foreground="{DynamicResource SubtextBrush}"
+                                           VerticalAlignment="Center" FontSize="12" />
+                            </Grid>
+
+                            <!-- CUDA checks — only shown when an NVIDIA GPU is present -->
+                            <StackPanel Visibility="{Binding GpuDetected,
+                                                             Converter={StaticResource BoolToVis}}">
+
+                                <!-- CUDA Toolkit -->
+                                <Grid Margin="0,0,0,6">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="22" />
+                                        <ColumnDefinition Width="*"  />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0" FontSize="14" VerticalAlignment="Center">
+                                        <TextBlock.Style>
+                                            <Style TargetType="TextBlock">
+                                                <Setter Property="Text"       Value="✗" />
+                                                <Setter Property="Foreground" Value="{DynamicResource YellowBrush}" />
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding CudaToolkitInstalled}" Value="True">
+                                                        <Setter Property="Text"       Value="✓" />
+                                                        <Setter Property="Foreground" Value="{DynamicResource GreenBrush}" />
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </TextBlock.Style>
+                                    </TextBlock>
+                                    <TextBlock Grid.Column="1" Text="{local:Loc settings_hw_cuda_toolkit}"
+                                               Style="{StaticResource CheckLabel}" />
+                                    <Button Grid.Column="2"
+                                            Content="{local:Loc settings_hw_download_cuda}"
+                                            Style="{StaticResource LinkButton}"
+                                            Command="{Binding OpenCudaDownloadPageCommand}"
+                                            Visibility="{Binding CudaToolkitInstalled,
+                                                                 Converter={StaticResource InvBoolToVis}}" />
+                                </Grid>
+
+                                <!-- cuDNN -->
+                                <Grid Margin="0,0,0,6">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="22" />
+                                        <ColumnDefinition Width="*"  />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0" FontSize="14" VerticalAlignment="Center">
+                                        <TextBlock.Style>
+                                            <Style TargetType="TextBlock">
+                                                <Setter Property="Text"       Value="✗" />
+                                                <Setter Property="Foreground" Value="{DynamicResource YellowBrush}" />
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding CudnnInstalled}" Value="True">
+                                                        <Setter Property="Text"       Value="✓" />
+                                                        <Setter Property="Foreground" Value="{DynamicResource GreenBrush}" />
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </TextBlock.Style>
+                                    </TextBlock>
+                                    <TextBlock Grid.Column="1" Text="{local:Loc settings_hw_cudnn}"
+                                               Style="{StaticResource CheckLabel}" />
+                                    <Button Grid.Column="2"
+                                            Content="{local:Loc settings_hw_download_cudnn}"
+                                            Style="{StaticResource LinkButton}"
+                                            Command="{Binding OpenCudnnDownloadPageCommand}"
+                                            Visibility="{Binding CudnnInstalled,
+                                                                 Converter={StaticResource InvBoolToVis}}" />
+                                </Grid>
+
+                                <!-- CUDA EP active -->
+                                <Grid Margin="0,0,0,6">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="22" />
+                                        <ColumnDefinition Width="*"  />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0" FontSize="14" VerticalAlignment="Center">
+                                        <TextBlock.Style>
+                                            <Style TargetType="TextBlock">
+                                                <Setter Property="Text"       Value="✗" />
+                                                <Setter Property="Foreground" Value="{DynamicResource SubtextBrush}" />
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding CudaEpWorking}" Value="True">
+                                                        <Setter Property="Text"       Value="✓" />
+                                                        <Setter Property="Foreground" Value="{DynamicResource GreenBrush}" />
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </TextBlock.Style>
+                                    </TextBlock>
+                                    <TextBlock Grid.Column="1" Text="{local:Loc settings_hw_cuda_ep}"
+                                               Style="{StaticResource CheckLabel}" />
+                                </Grid>
+
+                            </StackPanel>
+
+                            <!-- No GPU message — shown when no acceleratable GPU is present -->
+                            <TextBlock Text="{local:Loc settings_hw_no_gpu}"
+                                       Foreground="{DynamicResource SubtextBrush}"
+                                       FontSize="12"
+                                       TextWrapping="Wrap"
+                                       Margin="0,4,0,0"
+                                       Visibility="{Binding GpuDetected,
+                                                            Converter={StaticResource InvBoolToVis}}" />
+
+                            <!-- Batch ceiling -->
+                            <TextBlock Text="{Binding BatchCeilingText}"
+                                       Foreground="{DynamicResource SubtextBrush}"
+                                       FontSize="12"
+                                       TextWrapping="Wrap"
+                                       Margin="0,0,0,12" />
+
+                        </StackPanel>
+
+                        <!-- Re-check button (always shown) -->
+                        <Button Content="{local:Loc settings_hw_recheck}"
+                                Style="{StaticResource SecondaryButton}"
+                                Command="{Binding RecheckHardwareCommand}"
+                                HorizontalAlignment="Left"
+                                IsEnabled="{Binding IsCheckingHardware,
+                                                    Converter={StaticResource InvBoolToVis}}" />
+                    </StackPanel>
+                </Border>
+
+                <!-- ─── Models ───────────────────────────────────────────────── -->
+                <TextBlock Text="{local:Loc settings_section_models}"
+                           Style="{StaticResource SectionHeading}" />
+
+                <Border Background="{DynamicResource SurfaceBrush}"
+                        CornerRadius="8" Padding="16">
+                    <StackPanel>
+
+                        <!-- Model status -->
+                        <TextBlock Text="{Binding ModelStatusText}"
+                                   Foreground="{Binding ModelStatusBrush}"
+                                   TextWrapping="Wrap"
+                                   Margin="0,0,0,10" />
+
+                        <!-- Update / hash-check banner -->
+                        <Border Visibility="{Binding UpdateBannerVisible,
+                                                     Converter={StaticResource BoolToVis}}"
+                                Background="{DynamicResource OverlayBrush}"
+                                CornerRadius="4"
+                                Padding="10,8"
+                                Margin="0,0,0,10">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"    />
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Grid.Column="0"
+                                           Text="{Binding UpdateBannerText}"
+                                           Foreground="{DynamicResource TextBrush}"
+                                           TextWrapping="Wrap"
+                                           VerticalAlignment="Center" />
+                                <Button Grid.Column="1"
+                                        Content="{local:Loc btn_update_models}"
+                                        Command="{Binding UpdateModelsCommand}"
+                                        Margin="8,0,4,0"
+                                        Visibility="{Binding HasOutdatedFiles,
+                                                             Converter={StaticResource BoolToVis}}" />
+                                <Button Grid.Column="2"
+                                        Content="{local:Loc btn_dismiss}"
+                                        Style="{StaticResource SecondaryButton}"
+                                        Command="{Binding DismissUpdateBannerCommand}" />
+                            </Grid>
+                        </Border>
+
+                        <!-- Download progress bar + status text -->
+                        <StackPanel Visibility="{Binding IsDownloading,
+                                                         Converter={StaticResource BoolToVis}}"
+                                    Margin="0,0,0,10">
+                            <ProgressBar Value="{Binding DownloadPercent}"
+                                         Minimum="0" Maximum="100"
+                                         Margin="0,0,0,4" />
+                            <TextBlock Text="{Binding DownloadStatusText}"
+                                       Foreground="{DynamicResource SubtextBrush}"
+                                       FontSize="11"
+                                       TextWrapping="Wrap" />
+                        </StackPanel>
+
+                        <!-- Action buttons -->
+                        <StackPanel Orientation="Horizontal" Margin="0,0,0,16">
+                            <Button Content="{local:Loc btn_download_models}"
+                                    Command="{Binding DownloadModelsCommand}"
+                                    Margin="0,0,8,0"
+                                    Visibility="{Binding DownloadVisible,
+                                                         Converter={StaticResource BoolToVis}}"
+                                    IsEnabled="{Binding IsDownloading,
+                                                        Converter={StaticResource InvBoolToVis}}" />
+                            <Button Content="{local:Loc btn_cancel}"
+                                    Style="{StaticResource SecondaryButton}"
+                                    Command="{Binding CancelDownloadCommand}"
+                                    Margin="0,0,8,0"
+                                    Visibility="{Binding IsDownloading,
+                                                         Converter={StaticResource BoolToVis}}" />
+                            <Button Content="{local:Loc btn_check_updates}"
+                                    Style="{StaticResource SecondaryButton}"
+                                    Command="{Binding CheckForUpdatesCommand}"
+                                    IsEnabled="{Binding IsCheckingUpdates,
+                                                        Converter={StaticResource InvBoolToVis}}"
+                                    Visibility="{Binding ModelsReady,
+                                                         Converter={StaticResource BoolToVis}}" />
+                        </StackPanel>
+
+                        <!-- Precision -->
+                        <Separator Background="{DynamicResource OverlayBrush}" Margin="0,0,0,12" />
+                        <TextBlock Text="{local:Loc menu_model_precision}"
+                                   Foreground="{DynamicResource TextBrush}"
+                                   FontWeight="SemiBold"
+                                   Margin="0,0,0,8" />
+                        <StackPanel Orientation="Horizontal">
+                            <RadioButton Content="{local:Loc menu_precision_fp16}"
+                                         Foreground="{DynamicResource TextBrush}"
+                                         GroupName="Precision"
+                                         IsChecked="{Binding IsFp32, Mode=OneWay}"
+                                         Command="{Binding SetPrecisionCommand}"
+                                         CommandParameter="Fp32"
+                                         Margin="0,0,20,0" />
+                            <RadioButton Content="{local:Loc menu_precision_int8}"
+                                         Foreground="{DynamicResource TextBrush}"
+                                         GroupName="Precision"
+                                         IsChecked="{Binding IsInt8, Mode=OneWay}"
+                                         Command="{Binding SetPrecisionCommand}"
+                                         CommandParameter="Int8" />
+                        </StackPanel>
+
+                    </StackPanel>
+                </Border>
+
+                <!-- ─── Segmentation ────────────────────────────────────────── -->
+                <TextBlock Text="{local:Loc settings_section_segmentation}"
+                           Style="{StaticResource SectionHeading}" />
+
+                <Border Background="{DynamicResource SurfaceBrush}"
+                        CornerRadius="8" Padding="16">
+                    <StackPanel>
+
+                        <!-- VAD option -->
+                        <RadioButton GroupName="Segmentation"
+                                     IsChecked="{Binding IsVoiceActivity, Mode=OneWay}"
+                                     Command="{Binding SetSegmentationCommand}"
+                                     CommandParameter="VoiceActivity"
+                                     Foreground="{DynamicResource TextBrush}"
+                                     Margin="0,0,0,4">
+                            <StackPanel>
+                                <TextBlock Text="{local:Loc settings_segmentation_vad}"
+                                           FontWeight="SemiBold"
+                                           Foreground="{DynamicResource TextBrush}" />
+                                <TextBlock Text="{local:Loc settings_segmentation_vad_desc}"
+                                           Foreground="{DynamicResource SubtextBrush}"
+                                           FontSize="11"
+                                           TextWrapping="Wrap" />
+                            </StackPanel>
+                        </RadioButton>
+
+                        <Separator Background="{DynamicResource OverlayBrush}" Margin="0,8,0,8" />
+
+                        <!-- Diarization option -->
+                        <RadioButton GroupName="Segmentation"
+                                     IsChecked="{Binding IsDiarization, Mode=OneWay}"
+                                     Command="{Binding SetSegmentationCommand}"
+                                     CommandParameter="Diarization"
+                                     Foreground="{DynamicResource TextBrush}">
+                            <StackPanel>
+                                <TextBlock Text="{local:Loc settings_segmentation_diarization}"
+                                           FontWeight="SemiBold"
+                                           Foreground="{DynamicResource TextBrush}" />
+                                <TextBlock Text="{local:Loc settings_segmentation_diarization_desc}"
+                                           Foreground="{DynamicResource SubtextBrush}"
+                                           FontSize="11"
+                                           TextWrapping="Wrap" />
+                            </StackPanel>
+                        </RadioButton>
+
+                    </StackPanel>
+                </Border>
+
+                <!-- ─── Transcript Editor ───────────────────────────────────── -->
+                <TextBlock Text="{local:Loc settings_section_editor}"
+                           Style="{StaticResource SectionHeading}" />
+
+                <Border Background="{DynamicResource SurfaceBrush}"
+                        CornerRadius="8" Padding="16">
+                    <StackPanel>
+                        <TextBlock Text="{local:Loc settings_editor_playback_mode}"
+                                   Foreground="{DynamicResource TextBrush}"
+                                   FontWeight="SemiBold"
+                                   Margin="0,0,0,8" />
+                        <StackPanel Orientation="Horizontal">
+                            <RadioButton Content="{local:Loc editor_mode_continuous}"
+                                         Foreground="{DynamicResource TextBrush}"
+                                         GroupName="EditorPlayback"
+                                         IsChecked="{Binding IsEditorContinuous, Mode=OneWay}"
+                                         Command="{Binding SetEditorPlaybackModeCommand}"
+                                         CommandParameter="Continuous"
+                                         Margin="0,0,20,0" />
+                            <RadioButton Content="{local:Loc editor_mode_single}"
+                                         Foreground="{DynamicResource TextBrush}"
+                                         GroupName="EditorPlayback"
+                                         IsChecked="{Binding IsEditorSingle, Mode=OneWay}"
+                                         Command="{Binding SetEditorPlaybackModeCommand}"
+                                         CommandParameter="Single"
+                                         Margin="0,0,20,0" />
+                            <RadioButton Content="{local:Loc editor_auto_advance}"
+                                         Foreground="{DynamicResource TextBrush}"
+                                         GroupName="EditorPlayback"
+                                         IsChecked="{Binding IsEditorAutoAdvance, Mode=OneWay}"
+                                         Command="{Binding SetEditorPlaybackModeCommand}"
+                                         CommandParameter="AutoAdvance" />
+                        </StackPanel>
+                    </StackPanel>
+                </Border>
+
+                <!-- ─── Appearance ───────────────────────────────────────────── -->
+                <TextBlock Text="{local:Loc settings_section_appearance}"
+                           Style="{StaticResource SectionHeading}" />
+
+                <Border Background="{DynamicResource SurfaceBrush}"
+                        CornerRadius="8" Padding="16">
+                    <StackPanel>
+                        <TextBlock Text="{local:Loc menu_theme}"
+                                   Foreground="{DynamicResource TextBrush}"
+                                   FontWeight="SemiBold"
+                                   Margin="0,0,0,8" />
+                        <StackPanel Orientation="Horizontal">
+                            <RadioButton Content="{local:Loc menu_theme_dark}"
+                                         Foreground="{DynamicResource TextBrush}"
+                                         GroupName="Theme"
+                                         IsChecked="{Binding IsDark, Mode=OneWay}"
+                                         Command="{Binding SetThemeCommand}"
+                                         CommandParameter="Dark"
+                                         Margin="0,0,20,0" />
+                            <RadioButton Content="{local:Loc menu_theme_light}"
+                                         Foreground="{DynamicResource TextBrush}"
+                                         GroupName="Theme"
+                                         IsChecked="{Binding IsLight, Mode=OneWay}"
+                                         Command="{Binding SetThemeCommand}"
+                                         CommandParameter="Light" />
+                        </StackPanel>
+                    </StackPanel>
+                </Border>
+
+                <!-- ─── Language ─────────────────────────────────────────────── -->
+                <TextBlock Text="{local:Loc settings_section_language}"
+                           Style="{StaticResource SectionHeading}" />
+
+                <Border Background="{DynamicResource SurfaceBrush}"
+                        CornerRadius="8" Padding="16"
+                        Margin="0,0,0,16">
+                    <ComboBox ItemsSource="{x:Static local:Loc.Languages}"
+                              SelectedValuePath="Code"
+                              SelectedValue="{Binding SelectedLanguage}"
+                              DisplayMemberPath="DisplayName"
+                              Background="{DynamicResource OverlayBrush}"
+                              Foreground="{DynamicResource TextBrush}"
+                              BorderBrush="{DynamicResource OverlayBrush}" />
+                </Border>
+
+            </StackPanel>
+        </ScrollViewer>
+
+        <!-- ─── Footer ───────────────────────────────────────────────────────── -->
+        <Border Grid.Row="1"
+                Background="{DynamicResource SurfaceBrush}"
+                BorderBrush="{DynamicResource OverlayBrush}"
+                BorderThickness="0,1,0,0"
+                Padding="16,10">
+            <Button Content="{local:Loc btn_ok}"
+                    Style="{StaticResource SecondaryButton}"
+                    HorizontalAlignment="Right"
+                    Click="Close_Click" />
+        </Border>
+    </Grid>
+</Window>

@@ -1,0 +1,37 @@
+<ResourceDictionary xmlns="https://github.com/avaloniaui"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <!-- Catppuccin Latte (light) -->
+    <Color x:Key="BgColor"      >#EFF1F5</Color>
+    <Color x:Key="SurfaceColor" >#E6E9EF</Color>
+    <Color x:Key="OverlayColor" >#DCE0E8</Color>
+    <Color x:Key="TextColor"    >#121217</Color>
+    <Color x:Key="SubtextColor" >#6C6F85</Color>
+    <Color x:Key="AccentColor"  >#1E66F5</Color>
+    <Color x:Key="GreenColor"   >#2ea125</Color>
+    <Color x:Key="RedColor"     >#D20F39</Color>
+    <Color x:Key="YellowColor"  >#DF8E1D</Color>
+    <Color x:Key="WhiteColor"   >#FFFFFF</Color>
+    <Color x:Key="BlackColor"   >#000000</Color>
+    <Color x:Key="GrayColor"    >#758094</Color>
+    <!-- Low-confidence text colour for transcript editor ASR panel -->
+    <Color x:Key="ConfidenceLowColor">#FF0000</Color>
+
+    <SolidColorBrush x:Key="BgBrush"        Color="{StaticResource BgColor}"      />
+    <SolidColorBrush x:Key="SurfaceBrush"   Color="{StaticResource SurfaceColor}" />
+    <SolidColorBrush x:Key="SecondaryBrush" Color="{StaticResource GrayColor}" />
+    <SolidColorBrush x:Key="OverlayBrush"   Color="{StaticResource OverlayColor}" />
+    <SolidColorBrush x:Key="TextBrush"      Color="{StaticResource TextColor}"     />
+    <SolidColorBrush x:Key="SubtextBrush"   Color="{StaticResource SubtextColor}" />
+    <SolidColorBrush x:Key="AccentBrush"    Color="{StaticResource AccentColor}"  />
+    <SolidColorBrush x:Key="GreenBrush"     Color="{StaticResource GreenColor}"   />
+    <SolidColorBrush x:Key="RedBrush"       Color="{StaticResource RedColor}"     />
+    <SolidColorBrush x:Key="YellowBrush"         Color="{StaticResource YellowColor}"        />
+    <SolidColorBrush x:Key="ConfidenceLowBrush"  Color="{StaticResource ConfidenceLowColor}" />
+    <!-- Latte accents are vivid/deep → white text gives best contrast -->
+    <SolidColorBrush x:Key="ButtonTextBrush"     Color="{StaticResource WhiteColor}"/>
+    <!-- Button backgrounds alias the accent colors (already dark enough for white text) -->
+    <SolidColorBrush x:Key="ButtonBgBrush"       Color="{StaticResource AccentColor}"  />
+    <SolidColorBrush x:Key="DangerButtonBgBrush" Color="{StaticResource RedColor}"     />
+
+</ResourceDictionary>

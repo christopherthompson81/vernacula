@@ -1,0 +1,62 @@
+<Window x:Class="ParakeetCSharp.Views.Dialogs.SpeakerNamesDialog"
+        xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:local="using:ParakeetCSharp"
+        Title="{local:Loc modal_speakers_heading}"
+        Width="400" Height="300"
+        WindowStartupLocation="CenterOwner"
+        ResizeMode="NoResize"
+        Background="{DynamicResource BgBrush}">
+
+    <Grid Margin="16">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*"    />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <TextBlock Grid.Row="0"
+                   Text="{local:Loc modal_speakers_heading}"
+                   Foreground="{DynamicResource SubtextBrush}"
+                   Margin="0,0,0,12" />
+
+        <DataGrid Grid.Row="1"
+                  x:Name="SpeakersGrid"
+                  AutoGenerateColumns="False"
+                  CanUserAddRows="False"
+                  CanUserDeleteRows="False"
+                  CanUserSortColumns="False"
+                  GridLinesVisibility="Horizontal"
+                  HeadersVisibility="Column"
+                  Margin="0,0,0,12"
+                  PreviewKeyDown="SpeakersGrid_PreviewKeyDown"
+                  BeginningEdit="SpeakersGrid_BeginningEdit"
+                  CellEditEnding="SpeakersGrid_CellEditEnding">
+            <DataGrid.Columns>
+                <DataGridTextColumn Binding="{Binding SpeakerTag}"
+                                    IsReadOnly="True"
+                                    Width="100">
+                    <DataGridTextColumn.Header>
+                        <TextBlock Text="{Binding Source={x:Static local:Loc.Instance}, Path=[modal_speakers_col_id]}" />
+                    </DataGridTextColumn.Header>
+                </DataGridTextColumn>
+                <DataGridTextColumn Binding="{Binding Name, UpdateSourceTrigger=PropertyChanged}"
+                                    Width="*">
+                    <DataGridTextColumn.Header>
+                        <TextBlock Text="{Binding Source={x:Static local:Loc.Instance}, Path=[modal_speakers_col_name]}" />
+                    </DataGridTextColumn.Header>
+                </DataGridTextColumn>
+            </DataGrid.Columns>
+        </DataGrid>
+
+        <StackPanel Grid.Row="2" Orientation="Horizontal"
+                    HorizontalAlignment="Right">
+            <Button Content="{local:Loc btn_save}"
+                    Click="Save_Click"
+                    Margin="0,0,8,0" />
+            <Button Content="{local:Loc btn_cancel}"
+                    Style="{StaticResource SecondaryButton}"
+                    Click="Cancel_Click" />
+        </StackPanel>
+    </Grid>
+</Window>

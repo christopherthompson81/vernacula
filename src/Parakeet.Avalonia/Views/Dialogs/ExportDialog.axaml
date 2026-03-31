@@ -1,0 +1,46 @@
+<Window x:Class="ParakeetCSharp.Views.Dialogs.ExportDialog"
+        xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:local="using:ParakeetCSharp"
+        Title="{local:Loc modal_export_heading}"
+        Width="300" Height="180"
+        WindowStartupLocation="CenterOwner"
+        ResizeMode="NoResize"
+        Background="{DynamicResource BgBrush}">
+
+    <Grid Margin="16">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*"    />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <TextBlock Grid.Row="0"
+                   Text="{local:Loc label_format}"
+                   Foreground="{DynamicResource SubtextBrush}"
+                   Margin="0,0,0,12" />
+
+        <ComboBox x:Name="FormatCombo"
+                  Grid.Row="1"
+                  SelectedIndex="0"
+                  Margin="0,0,0,16">
+            <ComboBoxItem Content="{local:Loc format_excel}" />
+            <ComboBoxItem Content="{local:Loc format_csv}" />
+            <ComboBoxItem Content="{local:Loc format_json}" />
+            <ComboBoxItem Content="{local:Loc format_srt}" />
+            <ComboBoxItem Content="{local:Loc format_md}" />
+            <ComboBoxItem Content="{local:Loc format_docx}" />
+            <ComboBoxItem Content="{local:Loc format_db}" />
+        </ComboBox>
+
+        <StackPanel Grid.Row="2" Orientation="Horizontal"
+                    HorizontalAlignment="Right">
+            <Button Content="{local:Loc btn_save}"
+                    Click="Save_Click"
+                    Margin="0,0,8,0" />
+            <Button Content="{local:Loc btn_cancel}"
+                    Style="{StaticResource SecondaryButton}"
+                    Click="Cancel_Click" />
+        </StackPanel>
+    </Grid>
+</Window>

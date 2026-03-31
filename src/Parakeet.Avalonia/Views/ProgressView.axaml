@@ -1,0 +1,121 @@
+<UserControl x:Class="ParakeetCSharp.Views.ProgressView"
+             xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:local="using:ParakeetCSharp"
+             xmlns:conv="using:ParakeetCSharp.Converters"
+             xmlns:beh="using:ParakeetCSharp.Behaviors">
+
+    <UserControl.Resources>
+        <conv:BoolToVisibilityConverter x:Key="BoolToVis" />
+        <conv:BoolToVisibilityConverter x:Key="InverseBoolToVis" Invert="True" />
+        <conv:SecondsToTimeConverter    x:Key="SecondsToTime" />
+    </UserControl.Resources>
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />   <!-- Header -->
+            <RowDefinition Height="Auto" />   <!-- Progress bar -->
+            <RowDefinition Height="Auto" />   <!-- Status text -->
+            <RowDefinition Height="*"    />   <!-- Segments table -->
+            <RowDefinition Height="Auto" />   <!-- Action buttons -->
+        </Grid.RowDefinitions>
+
+        <TextBlock Grid.Row="0"
+                   Foreground="{DynamicResource TextBrush}"
+                   Text="{local:Loc progress_heading}"
+                   FontSize="20" FontWeight="SemiBold"
+                   Margin="0,0,0,16" />
+
+        <!-- Progress bar (indeterminate during loading/start) -->
+        <ProgressBar Grid.Row="1"
+                     Value="{Binding ProgressPercent}"
+                     IsIndeterminate="{Binding IsIndeterminate}"
+                     Minimum="0" Maximum="100"
+                     Margin="0,0,0,8" />
+
+        <!-- Percentage label -->
+        <TextBlock Grid.Row="1"
+                   Text="{Binding ProgressPercent, StringFormat={}{0:F0}%}"
+                   Foreground="{DynamicResource BlackBrush}"
+                   FontSize="11"
+                   HorizontalAlignment="Right"
+                   VerticalAlignment="Center"
+                   Margin="0,0,0,8"
+                   Visibility="{Binding IsIndeterminate, Converter={StaticResource InverseBoolToVis}}" />
+
+        <!-- Status message + copyable error details -->
+        <StackPanel Grid.Row="2" Margin="0,0,0,12">
+            <TextBlock Text="{Binding StatusMessage}"
+                       Foreground="{DynamicResource SubtextBrush}"
+                       TextWrapping="Wrap" />
+            <TextBox Text="{Binding ErrorMessage, Mode=OneWay}"
+                     IsReadOnly="True"
+                     TextWrapping="Wrap"
+                     FontFamily="Consolas"
+                     FontSize="11"
+                     Background="{DynamicResource SurfaceBrush}"
+                     Foreground="{DynamicResource RedBrush}"
+                     BorderBrush="{DynamicResource RedBrush}"
+                     BorderThickness="1"
+                     Padding="6"
+                     Margin="0,8,0,0"
+                     MaxHeight="160"
+                     VerticalScrollBarVisibility="Auto"
+                     Visibility="{Binding HasError, Converter={StaticResource BoolToVis}}" />
+        </StackPanel>
+
+        <!-- Live segments table -->
+        <DataGrid Grid.Row="3"
+                  Margin="0,0,0,12"
+                  ItemsSource="{Binding Segments}"
+                  AutoGenerateColumns="False"
+                  IsReadOnly="True"
+                  CanUserReorderColumns="False"
+                  CanUserResizeRows="False"
+                  SelectionMode="Single"
+                  GridLinesVisibility="Horizontal"
+                  HeadersVisibility="Column"
+                  beh:DataGridBehaviors.AutoScroll="True">
+            <DataGrid.Columns>
+                <DataGridTextColumn Binding="{Binding SpeakerDisplayName}" Width="110">
+                    <DataGridTextColumn.Header>
+                        <TextBlock Text="{Binding Source={x:Static local:Loc.Instance}, Path=[segments_col_speaker]}" />
+                    </DataGridTextColumn.Header>
+                </DataGridTextColumn>
+                <DataGridTextColumn Binding="{Binding StartTime, Converter={StaticResource SecondsToTime}}" Width="70">
+                    <DataGridTextColumn.Header>
+                        <TextBlock Text="{Binding Source={x:Static local:Loc.Instance}, Path=[segments_col_start]}" />
+                    </DataGridTextColumn.Header>
+                </DataGridTextColumn>
+                <DataGridTextColumn Binding="{Binding EndTime, Converter={StaticResource SecondsToTime}}" Width="70">
+                    <DataGridTextColumn.Header>
+                        <TextBlock Text="{Binding Source={x:Static local:Loc.Instance}, Path=[segments_col_end]}" />
+                    </DataGridTextColumn.Header>
+                </DataGridTextColumn>
+                <DataGridTextColumn Binding="{Binding Text}" Width="*">
+                    <DataGridTextColumn.Header>
+                        <TextBlock Text="{Binding Source={x:Static local:Loc.Instance}, Path=[segments_col_content]}" />
+                    </DataGridTextColumn.Header>
+                    <DataGridTextColumn.ElementStyle>
+                        <Style TargetType="TextBlock">
+                            <Setter Property="TextWrapping" Value="Wrap" />
+                            <Setter Property="Padding"      Value="4,2"  />
+                        </Style>
+                    </DataGridTextColumn.ElementStyle>
+                </DataGridTextColumn>
+            </DataGrid.Columns>
+        </DataGrid>
+
+        <!-- Action buttons -->
+        <StackPanel Grid.Row="4" Orientation="Horizontal" HorizontalAlignment="Right">
+            <Button Content="{local:Loc btn_pause}"
+                    Style="{StaticResource PrimaryButton}"
+                    Command="{Binding CancelCommand}"
+                    Visibility="{Binding IsRunning, Converter={StaticResource BoolToVis}}"
+                    Margin="0,0,8,0" />
+            <Button Content="{local:Loc btn_back_home}"
+                    Style="{StaticResource SecondaryButton}"
+                    Command="{Binding GoBackCommand}" />
+        </StackPanel>
+    </Grid>
+</UserControl>

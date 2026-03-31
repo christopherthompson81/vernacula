@@ -1,0 +1,62 @@
+<Window x:Class="ParakeetCSharp.Views.MainWindow"
+        xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:ParakeetCSharp.ViewModels"
+        xmlns:v="using:ParakeetCSharp.Views"
+        xmlns:local="using:ParakeetCSharp"
+        Title="Parakeet Transcription"
+        Icon="avares://Parakeet.Avalonia/Assets/icon.ico"
+        Width="920" Height="840"
+        MinWidth="700" MinHeight="500"
+        Background="{DynamicResource BgBrush}"
+        Closing="Window_Closing">
+
+    <Window.Resources>
+        <!-- Panel → UserControl DataTemplates -->
+        <DataTemplate x:Key="HomeTemplate">
+            <v:HomeView DataContext="{Binding DataContext.Home,
+                         RelativeSource={RelativeSource AncestorType=Window}}" />
+        </DataTemplate>
+        <DataTemplate x:Key="ProgressTemplate">
+            <v:ProgressView DataContext="{Binding DataContext.Progress,
+                             RelativeSource={RelativeSource AncestorType=Window}}" />
+        </DataTemplate>
+        <DataTemplate x:Key="ResultsTemplate">
+            <v:ResultsView DataContext="{Binding DataContext.Results,
+                            RelativeSource={RelativeSource AncestorType=Window}}" />
+        </DataTemplate>
+
+        <local:PanelTemplateSelector x:Key="PanelSelector"
+            HomeTemplate="{StaticResource HomeTemplate}"
+            ProgressTemplate="{StaticResource ProgressTemplate}"
+            ResultsTemplate="{StaticResource ResultsTemplate}" />
+    </Window.Resources>
+
+    <DockPanel>
+        <!-- ── Menu bar ── -->
+        <Menu DockPanel.Dock="Top"
+              Background="{DynamicResource SurfaceBrush}"
+              Foreground="{DynamicResource TextBrush}">
+            <MenuItem Header="{local:Loc menu_file}">
+                <MenuItem Header="{local:Loc menu_new_transcription}"
+                          Command="{Binding Home.NewTranscriptionCommand}" />
+                <Separator />
+                <MenuItem Header="{local:Loc menu_exit}" Click="Exit_Click" />
+            </MenuItem>
+
+            <MenuItem Header="{local:Loc menu_settings}"
+                      Click="Settings_Click" />
+
+            <MenuItem Header="{local:Loc menu_help}">
+                <MenuItem Header="{local:Loc menu_help_contents}" Click="HelpContents_Click" />
+                <Separator />
+                <MenuItem Header="{local:Loc menu_about}" Click="About_Click" />
+            </MenuItem>
+        </Menu>
+
+        <!-- ── Panel content ── -->
+        <ContentControl Content="{Binding CurrentPanel}"
+                        ContentTemplateSelector="{StaticResource PanelSelector}"
+                        Margin="16" />
+    </DockPanel>
+</Window>

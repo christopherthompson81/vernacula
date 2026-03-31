@@ -1,0 +1,105 @@
+<Window x:Class="ParakeetCSharp.Views.TranscriptEditorWindow"
+        xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:local="using:ParakeetCSharp"
+        Title="{local:Loc editor_heading}"
+        Width="900" Height="700"
+        MinWidth="700" MinHeight="500"
+        WindowStartupLocation="CenterOwner"
+        Background="{DynamicResource BgBrush}">
+
+    <DockPanel>
+
+        <!-- ── Header ─────────────────────────────────────────────────────────── -->
+        <Border DockPanel.Dock="Top"
+                Background="{DynamicResource SurfaceBrush}"
+                Padding="16,10">
+            <DockPanel>
+                <TextBlock x:Name="HeaderSubtext"
+                           DockPanel.Dock="Right"
+                           Foreground="{DynamicResource SubtextBrush}"
+                           VerticalAlignment="Center"
+                           Margin="12,0,0,0" />
+                <TextBlock x:Name="HeaderTitle"
+                           Foreground="{DynamicResource TextBrush}"
+                           FontSize="16" FontWeight="SemiBold"
+                           VerticalAlignment="Center"
+                           TextTrimming="CharacterEllipsis" />
+            </DockPanel>
+        </Border>
+
+        <!-- ── Audio controls bar ─────────────────────────────────────────────── -->
+        <Border x:Name="AudioBar"
+                DockPanel.Dock="Bottom"
+                Background="{DynamicResource SurfaceBrush}"
+                BorderBrush="{DynamicResource OverlayBrush}"
+                BorderThickness="0,1,0,0"
+                Padding="12,8">
+            <DockPanel>
+
+                <!-- Left: transport + checkboxes -->
+                <StackPanel DockPanel.Dock="Left" Orientation="Horizontal"
+                            VerticalAlignment="Center">
+                    <Button x:Name="PlayPauseBtn"
+                            Content="▶"
+                            FontFamily="Segoe UI Symbol"
+                            Width="36" Height="36"
+                            Margin="0,0,4,0" />
+                    <Button x:Name="PrevBtn"
+                            Content="⏮"
+                            FontFamily="Segoe UI Symbol"
+                            Width="36" Height="36"
+                            Margin="0,0,2,0" />
+                    <Button x:Name="NextBtn"
+                            Content="⏭"
+                            FontFamily="Segoe UI Symbol"
+                            Width="36" Height="36"
+                            Margin="2,0,8,0" />
+                    <ComboBox x:Name="PlayModeCombo"
+                              VerticalAlignment="Center"
+                              Margin="0,0,8,0"
+                              MinWidth="100" />
+                    <CheckBox x:Name="VerifiedChk"
+                              Foreground="{DynamicResource TextBrush}"
+                              VerticalAlignment="Center"
+                              IsChecked="{Binding FocusedSegment.Verified, Mode=OneWay}" />
+                </StackPanel>
+
+                <!-- Right: speed -->
+                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal"
+                            VerticalAlignment="Center">
+                    <TextBlock x:Name="SpeedLabel"
+                               VerticalAlignment="Center"
+                               Foreground="{DynamicResource TextBrush}"
+                               MinWidth="30"
+                               Margin="0,0,2,0" />
+                    <Slider x:Name="SpeedSlider"
+                            Minimum="0.2" Maximum="2.0"
+                            SmallChange="0.1" LargeChange="0.2"
+                            TickFrequency="0.1" IsSnapToTickEnabled="True"
+                            Width="80"
+                            Margin="4,0,0,0" />
+                </StackPanel>
+
+                <!-- Center: seek slider (fills remaining space) -->
+                <Slider x:Name="SeekSlider"
+                        Minimum="0" Maximum="1"
+                        SmallChange="0.01"
+                        VerticalAlignment="Center"
+                        Margin="8,0" />
+
+            </DockPanel>
+        </Border>
+
+        <!-- ── Segment scroll area ─────────────────────────────────────────────── -->
+        <ScrollViewer x:Name="Scroller"
+                      VerticalScrollBarVisibility="Auto"
+                      HorizontalScrollBarVisibility="Disabled"
+                      PanningMode="VerticalOnly"
+                      Focusable="False">
+            <StackPanel x:Name="SegmentStack"
+                        Margin="16,8" />
+        </ScrollViewer>
+
+    </DockPanel>
+</Window>
