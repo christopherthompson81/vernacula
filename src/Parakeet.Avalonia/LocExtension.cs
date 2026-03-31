@@ -1,5 +1,3 @@
-using Avalonia.Data;
-using Avalonia.Markup;
 using Avalonia.Markup.Xaml;
 
 namespace ParakeetCSharp;
@@ -7,8 +5,7 @@ namespace ParakeetCSharp;
 /// <summary>
 /// XAML markup extension for localized strings.
 /// Usage:  Text="{local:Loc some_key}"
-/// Produces a OneWay Binding to Loc.Instance["some_key"].
-/// All bindings refresh automatically when Loc.Instance.SetLanguage() is called.
+/// Returns the localized string directly.
 /// </summary>
 public class LocExtension : MarkupExtension
 {
@@ -18,11 +15,7 @@ public class LocExtension : MarkupExtension
 
     public override object ProvideValue(IServiceProvider serviceProvider)
     {
-        var binding = new Binding($"[{Key}]")
-        {
-            Source = Loc.Instance,
-            Mode   = BindingMode.OneWay,
-        };
-        return binding;
+        // Return the localized string directly
+        return Loc.Instance[Key];
     }
 }

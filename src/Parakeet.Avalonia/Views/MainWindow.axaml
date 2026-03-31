@@ -9,7 +9,8 @@
         Icon="avares://Parakeet.Avalonia/Assets/icon.ico"
         Width="920" Height="840"
         MinWidth="700" MinHeight="500"
-        Background="{DynamicResource BgBrush}">
+        Background="{DynamicResource BgBrush}"
+        SystemDecorations="Full">
 
     <Window.Resources>
         <local:PanelVisibilityConverter x:Key="PanelVisibilityConverter" />
@@ -17,9 +18,7 @@
 
     <DockPanel>
         <!-- ── Menu bar ── -->
-        <Menu DockPanel.Dock="Top"
-              Background="{DynamicResource SurfaceBrush}"
-              Foreground="{DynamicResource TextBrush}">
+        <Menu DockPanel.Dock="Top">
             <MenuItem Header="{local:Loc menu_file}">
                 <MenuItem Header="{local:Loc menu_new_transcription}"
                           Command="{Binding Home.NewTranscriptionCommand}" />

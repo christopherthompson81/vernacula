@@ -11,7 +11,11 @@ namespace ParakeetCSharp;
 public sealed class Loc : INotifyPropertyChanged
 {
     public static readonly Loc Instance = new();
-    private Loc() { }
+    private Loc() 
+    {
+        // Initialize with English as default
+        SetLanguage("en");
+    }
 
     public event PropertyChangedEventHandler? PropertyChanged;
 

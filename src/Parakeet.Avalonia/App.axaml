@@ -1,6 +1,7 @@
 <Application xmlns="https://github.com/avaloniaui"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:local="using:ParakeetCSharp"
+             xmlns:fluent="clr-namespace:Avalonia.Themes.Fluent;assembly=Avalonia.Themes.Fluent"
              x:Class="ParakeetCSharp.App"
              RequestedThemeVariant="Default">
     <Application.Resources>
@@ -11,6 +12,7 @@
         </ResourceDictionary>
     </Application.Resources>
     <Application.Styles>
+        <fluent:FluentTheme />
         <StyleInclude Source="avares://Parakeet.Avalonia/Themes/CommonStyles.axaml" />
     </Application.Styles>
 </Application>

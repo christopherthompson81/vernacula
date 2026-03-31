@@ -114,10 +114,10 @@
   "error_loading_job": "Error loading job: {error}",
   "error_generic": "Error: {error}",
 
-  "menu_file": "_File",
-  "menu_new_transcription": "_New Transcription",
-  "menu_exit": "_Exit",
-  "menu_settings": "_Settings",
+  "menu_file": "File",
+  "menu_new_transcription": "New Transcription",
+  "menu_exit": "Exit",
+  "menu_settings": "Settings",
   "menu_theme": "Theme",
   "menu_theme_dark": "Dark",
   "menu_theme_light": "Light",
@@ -125,8 +125,8 @@
   "menu_precision_int8": "INT8 (smaller download)",
   "menu_precision_fp16": "FP32 (more accurate)",
   "menu_language": "Language",
-  "menu_help": "_Help",
-  "menu_about": "_About",
+  "menu_help": "Help",
+  "menu_about": "About",
 
   "btn_ok": "OK",
   "format_excel": "Excel (.xlsx)",
@@ -165,7 +165,7 @@
   "dlg_filter_docx": "Word Document|*.docx",
   "dlg_filter_db": "SQLite Database|*.db",
 
-  "menu_help_contents": "_Help Contents",
+  "menu_help_contents": "Help Contents",
   "help_window_title": "Parakeet Transcription — Help",
 
   "help_group_first_steps": "First Steps",

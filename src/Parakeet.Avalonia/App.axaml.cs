@@ -30,7 +30,6 @@ public partial class App : Application
     public override void Initialize()
     {
         AvaloniaXamlLoader.Load(this);
-        // Theme resources and styles are loaded via App.axaml
     }
 
     public override void OnFrameworkInitializationCompleted()
@@ -38,11 +37,8 @@ public partial class App : Application
         base.OnFrameworkInitializationCompleted();
 
         Settings.Load();
-        ThemeManager.Apply(Settings.Current.Theme);
-
-        // If no language preference has been saved yet, try to match the system
-        // UI language; fall back to English if no supported locale matches.
-        // Persist the resolved value so subsequent launches skip detection.
+        
+        // Initialize localization BEFORE creating any windows
         var lang = Settings.Current.Language;
         if (string.IsNullOrEmpty(lang))
         {
@@ -52,6 +48,8 @@ public partial class App : Application
             Settings.Save();
         }
         Loc.Instance.SetLanguage(lang);
+
+        ThemeManager.Apply(Settings.Current.Theme);
 
         FFmpegDecoder.Initialize(AppContext.BaseDirectory);
 
