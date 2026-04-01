@@ -31,40 +31,40 @@
   </ItemGroup>
 
   <ItemGroup>
-    <EmbeddedResource Include="Help\en\**\*.md" />
-    <EmbeddedResource Include="Help\de\**\*.md" />
-    <EmbeddedResource Include="Help\es\**\*.md" />
-    <EmbeddedResource Include="Help\fr\**\*.md" />
-    <EmbeddedResource Include="Help\it\**\*.md" />
-    <EmbeddedResource Include="Help\pl\**\*.md" />
-    <EmbeddedResource Include="Help\pt\**\*.md" />
-    <EmbeddedResource Include="Help\ru\**\*.md" />
-    <EmbeddedResource Include="Help\sv\**\*.md" />
-    <EmbeddedResource Include="Help\bg\**\*.md" />
-    <EmbeddedResource Include="Help\cs\**\*.md" />
-    <EmbeddedResource Include="Help\da\**\*.md" />
-    <EmbeddedResource Include="Help\el\**\*.md" />
-    <EmbeddedResource Include="Help\et\**\*.md" />
-    <EmbeddedResource Include="Help\fi\**\*.md" />
-    <EmbeddedResource Include="Help\hr\**\*.md" />
-    <EmbeddedResource Include="Help\hu\**\*.md" />
-    <EmbeddedResource Include="Help\lt\**\*.md" />
-    <EmbeddedResource Include="Help\lv\**\*.md" />
-    <EmbeddedResource Include="Help\mt\**\*.md" />
-    <EmbeddedResource Include="Help\nl\**\*.md" />
-    <EmbeddedResource Include="Help\ro\**\*.md" />
-    <EmbeddedResource Include="Help\sk\**\*.md" />
-    <EmbeddedResource Include="Help\sl\**\*.md" />
-    <EmbeddedResource Include="Help\uk\**\*.md" />
-    <EmbeddedResource Include="Help\ja\**\*.md" />
-    <EmbeddedResource Include="Help\ko\**\*.md" />
-    <EmbeddedResource Include="Help\tr\**\*.md" />
-    <EmbeddedResource Include="Help\zh\**\*.md" />
+    <AvaloniaResource Include="Help\en\**\*.md" />
+    <AvaloniaResource Include="Help\de\**\*.md" />
+    <AvaloniaResource Include="Help\es\**\*.md" />
+    <AvaloniaResource Include="Help\fr\**\*.md" />
+    <AvaloniaResource Include="Help\it\**\*.md" />
+    <AvaloniaResource Include="Help\pl\**\*.md" />
+    <AvaloniaResource Include="Help\pt\**\*.md" />
+    <AvaloniaResource Include="Help\ru\**\*.md" />
+    <AvaloniaResource Include="Help\sv\**\*.md" />
+    <AvaloniaResource Include="Help\bg\**\*.md" />
+    <AvaloniaResource Include="Help\cs\**\*.md" />
+    <AvaloniaResource Include="Help\da\**\*.md" />
+    <AvaloniaResource Include="Help\el\**\*.md" />
+    <AvaloniaResource Include="Help\et\**\*.md" />
+    <AvaloniaResource Include="Help\fi\**\*.md" />
+    <AvaloniaResource Include="Help\hr\**\*.md" />
+    <AvaloniaResource Include="Help\hu\**\*.md" />
+    <AvaloniaResource Include="Help\lt\**\*.md" />
+    <AvaloniaResource Include="Help\lv\**\*.md" />
+    <AvaloniaResource Include="Help\mt\**\*.md" />
+    <AvaloniaResource Include="Help\nl\**\*.md" />
+    <AvaloniaResource Include="Help\ro\**\*.md" />
+    <AvaloniaResource Include="Help\sk\**\*.md" />
+    <AvaloniaResource Include="Help\sl\**\*.md" />
+    <AvaloniaResource Include="Help\uk\**\*.md" />
+    <AvaloniaResource Include="Help\ja\**\*.md" />
+    <AvaloniaResource Include="Help\ko\**\*.md" />
+    <AvaloniaResource Include="Help\tr\**\*.md" />
+    <AvaloniaResource Include="Help\zh\**\*.md" />
   </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="Avalonia" Version="11.3.9" />
-    <PackageReference Include="Markdown.Avalonia" Version="11.0.3-a1" />
+    <PackageReference Include="Markdown.Avalonia" Version="11.0.2" />
     <PackageReference Include="Markdig" Version="0.34.0" />
     <PackageReference Include="Avalonia.Desktop" Version="11.3.9" />
     <PackageReference Include="Avalonia.Themes.Fluent" Version="11.3.9" />

@@ -147,8 +147,10 @@ public partial class HelpWindow : Window
 
         try
         {
-            string markdown = HelpService.LoadMarkdown(topic);
-            ContentMarkdown.Markdown = markdown;
+            string lang = Loc.Instance.CurrentLanguage;
+            if (lang == "en")
+                lang = "en";
+            ContentMarkdown.Source = new Uri($"avares://Parakeet.Avalonia/Help/{lang}/{topic.ResourcePath}");
         }
         catch (Exception ex)
         {
