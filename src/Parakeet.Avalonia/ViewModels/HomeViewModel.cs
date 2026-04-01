@@ -21,6 +21,7 @@ internal partial class HomeViewModel : ObservableObject
     [ObservableProperty] private bool   _modelsReady      = false;
     [ObservableProperty] private bool   _modelsWarning    = false;
     [ObservableProperty] private bool   _updateAvailable  = false;
+    [ObservableProperty] private bool   _hasOutdatedFiles = false;
 
     public ObservableCollection<JobRecord> Jobs { get; } = new();
 
@@ -53,7 +54,7 @@ internal partial class HomeViewModel : ObservableObject
             ModelStatusText = Loc.Instance["settings_model_warning"];
     }
 
-    public async Task InitializeAsync()
+      public async Task InitializeAsync()
     {
         RefreshJobs();
 

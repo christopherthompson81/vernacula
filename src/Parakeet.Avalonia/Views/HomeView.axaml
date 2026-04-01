@@ -53,7 +53,7 @@
                 CornerRadius="8"
                 Padding="14,10"
                 Margin="0,0,0,10"
-                IsVisible="{Binding UpdateAvailable, Converter={StaticResource BoolToVis}}">
+                IsVisible="{Binding HasOutdatedFiles, Converter={StaticResource BoolToVis}}">
             <Grid>
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*" />
@@ -68,11 +68,13 @@
                 <Button Grid.Column="1"
                         Content="{local:Loc btn_open_settings}"
                         Command="{Binding OpenSettingsWindowCommand}"
-                        Margin="10,0,6,0" />
+                        Margin="10,0,6,0"
+                        IsEnabled="{Binding HasOutdatedFiles}" />
                 <Button Grid.Column="2"
                         Content="{local:Loc btn_dismiss}"
                         Classes="secondary-button"
-                        Command="{Binding DismissUpdateBannerCommand}" />
+                        Command="{Binding DismissUpdateBannerCommand}"
+                        IsEnabled="{Binding HasOutdatedFiles}" />
             </Grid>
         </Border>
 

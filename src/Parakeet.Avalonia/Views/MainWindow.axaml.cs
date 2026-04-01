@@ -26,6 +26,8 @@ public partial class MainWindow : Window
         if (DataContext is MainViewModel vm)
         {
             vm.SetMainWindow(this);
+            // Start initialization now that the window is loaded and bindings are active
+            _ = vm.StartAsync();
         }
 
         WindowHelper.SetDarkMode(this, App.Current.Settings.Current.Theme == AppTheme.Dark);

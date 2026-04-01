@@ -43,6 +43,8 @@ internal partial class SettingsViewModel : ObservableObject
     public Action? AfterDownload       { get; set; }
     /// <summary>Called when the update check finds outdated files.</summary>
     public Action? OnUpdateAvailable   { get; set; }
+    /// <summary>Called when the update check completes and no outdated files are found.</summary>
+    public Action? OnUpdateCheckComplete { get; set; }
 
     public bool IsDark              => SelectedTheme == AppTheme.Dark;
     public bool IsLight             => SelectedTheme == AppTheme.Light;
@@ -365,6 +367,7 @@ internal partial class SettingsViewModel : ObservableObject
             HasOutdatedFiles    = false;
             UpdateBannerText    = Loc.Instance["settings_models_up_to_date"];
             UpdateBannerVisible = true;
+            OnUpdateCheckComplete?.Invoke();
         }
 
         IsCheckingUpdates = false;

@@ -132,14 +132,27 @@ internal partial class MainViewModel : ObservableObject
         Settings.AfterDownload      = () => _ = Home.CheckModelsAsync();
 
         // Propagate update-available signal to the Home banner
-        Settings.OnUpdateAvailable  = () => Home.UpdateAvailable = true;
+        Settings.OnUpdateAvailable  = () =>
+        {
+            Home.UpdateAvailable  = true;
+            Home.HasOutdatedFiles = true;
+        };
+        
+        // Reset Home banner when update check completes with no outdated files
+        Settings.OnUpdateCheckComplete = () =>
+        {
+            Home.UpdateAvailable  = false;
+            Home.HasOutdatedFiles = false;
+        };
 
-        // Wire Home's "Open Settings" button to open the Settings window
+     // Wire Home's "Open Settings" button to open the Settings window
         Home.OpenSettings = () =>
         {
             if (_mainWindow is Views.MainWindow mw)
                 mw.OpenSettingsWindow();
         };
+
+        // Startup will be triggered when MainWindow is loaded
 
         // ── Queue event wiring ────────────────────────────────────────────────
 
@@ -155,13 +168,15 @@ internal partial class MainViewModel : ObservableObject
             Dispatcher.UIThread.InvokeAsync(() =>
                 ApplyJobPhase(jobId, progress));
 
-        // Start background model check + job load, then update check
-        _ = StartupAsync();
+         // Startup will be triggered when MainWindow is loaded via StartAsync()
     }
 
     // ── Startup ───────────────────────────────────────────────────────────────
 
-    private async Task StartupAsync()
+    /// <summary>
+    /// Call this after the MainWindow has been loaded to ensure UI bindings are active.
+    /// </summary>
+    public async Task StartAsync()
     {
         await Home.InitializeAsync();
         if (Home.ModelsReady)
