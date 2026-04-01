@@ -15,13 +15,15 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
-
-        // Set up window state restoration in Loaded event
+        Console.WriteLine("[MainWindow] Constructor called");
         Loaded += MainWindow_Loaded;
+        Closing += Window_Closing;
+        Closed += (_, _) => Console.WriteLine("[MainWindow] Closed event fired!");
     }
 
     private void MainWindow_Loaded(object? sender, RoutedEventArgs e)
     {
+        Console.WriteLine("[MainWindow] MainWindow_Loaded");
         // Set the main window reference in the view model
         if (DataContext is MainViewModel vm)
         {
@@ -58,8 +60,10 @@ public partial class MainWindow : Window
 
     private void Window_Closing(object? sender, CancelEventArgs e)
     {
+        bool isAnyJobRunning = DataContext is MainViewModel vm && vm.IsAnyJobRunning;
+        Console.WriteLine($"[MainWindow] Closing event fired! IsAnyJobRunning={isAnyJobRunning}");
         // If any job is running or queued, prompt the user before closing
-        if (DataContext is MainViewModel vm && vm.IsAnyJobRunning)
+        if (isAnyJobRunning)
         {
             // Simple confirmation - for now just cancel if jobs are running
             // TODO: Replace with proper Avalonia dialog

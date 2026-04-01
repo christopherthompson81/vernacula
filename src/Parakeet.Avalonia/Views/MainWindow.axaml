@@ -12,9 +12,17 @@
         Background="{DynamicResource BgBrush}"
         SystemDecorations="Full">
 
-    <Window.Resources>
-        <local:PanelVisibilityConverter x:Key="PanelVisibilityConverter" />
-    </Window.Resources>
+    <Window.DataTemplates>
+        <DataTemplate DataType="vm:HomeViewModel">
+            <v:HomeView />
+        </DataTemplate>
+        <DataTemplate DataType="vm:ProgressViewModel">
+            <v:ProgressView />
+        </DataTemplate>
+        <DataTemplate DataType="vm:ResultsViewModel">
+            <v:ResultsView />
+        </DataTemplate>
+    </Window.DataTemplates>
 
     <DockPanel>
         <!-- ── Menu bar ── -->
@@ -37,24 +45,7 @@
         </Menu>
 
         <!-- ── Panel content ── -->
-        <!-- DataContext on each view is scoped to its own ViewModel.
-             IsVisible must reach back to MainViewModel.CurrentPanel via RelativeSource. -->
-        <Grid Margin="16">
-            <v:HomeView     DataContext="{Binding Home}"
-                            IsVisible="{Binding DataContext.CurrentPanel,
-                                        RelativeSource={RelativeSource AncestorType=Window},
-                                        Converter={StaticResource PanelVisibilityConverter},
-                                        ConverterParameter=Home}" />
-            <v:ProgressView DataContext="{Binding Progress}"
-                            IsVisible="{Binding DataContext.CurrentPanel,
-                                        RelativeSource={RelativeSource AncestorType=Window},
-                                        Converter={StaticResource PanelVisibilityConverter},
-                                        ConverterParameter=Progress}" />
-            <v:ResultsView  DataContext="{Binding Results}"
-                            IsVisible="{Binding DataContext.CurrentPanel,
-                                        RelativeSource={RelativeSource AncestorType=Window},
-                                        Converter={StaticResource PanelVisibilityConverter},
-                                        ConverterParameter=Results}" />
-        </Grid>
+        <ContentControl Content="{Binding CurrentPanelViewModel}"
+                        Margin="16" />
     </DockPanel>
 </Window>

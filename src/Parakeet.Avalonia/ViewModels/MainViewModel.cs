@@ -22,6 +22,19 @@ internal partial class MainViewModel : ObservableObject
     public ResultsViewModel  Results  { get; }
     public SettingsViewModel Settings { get; }
 
+    public object? CurrentPanelViewModel => CurrentPanel switch
+    {
+        AppPanel.Home     => Home,
+        AppPanel.Progress => Progress,
+        AppPanel.Results  => Results,
+        _                 => null,
+    };
+
+    partial void OnCurrentPanelChanged(AppPanel value)
+    {
+        OnPropertyChanged(nameof(CurrentPanelViewModel));
+    }
+
     private readonly JobQueueService _queue;
     private Window? _mainWindow;
 
@@ -96,7 +109,7 @@ internal partial class MainViewModel : ObservableObject
         {
             foreach (var path in paths)
                 await queue.EnqueueFileAsync(path, Path.GetFileNameWithoutExtension(path));
-            RefreshJobsAndSync();
+            await Dispatcher.UIThread.InvokeAsync(RefreshJobsAndSync);
         };
 
         // Home → Bulk file picker (multi-select)
@@ -144,8 +157,16 @@ internal partial class MainViewModel : ObservableObject
         // Config → Enqueue (window closes via NavigateBack after enqueue)
         Config.EnqueueJob = async (audioPath, jobTitle) =>
         {
-            await queue.EnqueueFileAsync(audioPath, jobTitle);
-            RefreshJobsAndSync();
+            Console.WriteLine($"[MainVM] EnqueueJob called with audioPath='{audioPath}', jobTitle='{jobTitle}'");
+            try
+            {
+                await queue.EnqueueFileAsync(audioPath, jobTitle);
+                await Dispatcher.UIThread.InvokeAsync(RefreshJobsAndSync);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[MainVM] EnqueueJob EXCEPTION: {ex}");
+            }
         };
 
         // Progress → Results (completed — kept for any direct Progress usage)
@@ -200,8 +221,14 @@ internal partial class MainViewModel : ObservableObject
         // ── Queue event wiring ────────────────────────────────────────────────
 
         queue.JobStatusChanged += (jobId, status, error, runTimeSecs) =>
+        {
+            Console.WriteLine($"[MainVM] JobStatusChanged event: jobId={jobId} status={status}");
             Dispatcher.UIThread.InvokeAsync(() =>
-                ApplyJobStatus(jobId, status, error, runTimeSecs));
+            {
+                Console.WriteLine($"[MainVM] ApplyJobStatus on UI thread: jobId={jobId} status={status}");
+                ApplyJobStatus(jobId, status, error, runTimeSecs);
+            });
+        };
 
         queue.JobProgressUpdated += (jobId, percent) =>
             Dispatcher.UIThread.InvokeAsync(() =>
@@ -235,7 +262,9 @@ internal partial class MainViewModel : ObservableObject
     /// </summary>
     private void RefreshJobsAndSync()
     {
+        Console.WriteLine("[MainVM] RefreshJobsAndSync called");
         Home.RefreshJobs();
+        Console.WriteLine($"[MainVM] Home.Jobs count after RefreshJobs: {Home.Jobs.Count}");
         foreach (var job in Home.Jobs)
         {
             if (_queue.IsJobActivelyRunning(job.JobId))
@@ -254,8 +283,9 @@ internal partial class MainViewModel : ObservableObject
     private void ApplyJobStatus(int jobId, JobStatus status, string? error = null,
                                 int? runTimeSeconds = null)
     {
+        Console.WriteLine($"[MainVM] ApplyJobStatus jobId={jobId} status={status}");
         var job = Home.Jobs.FirstOrDefault(j => j.JobId == jobId);
-        if (job == null) return; // will be picked up on next RefreshJobsAndSync
+        if (job == null) { Console.WriteLine($"[MainVM] ApplyJobStatus: job not found in Home.Jobs (count={Home.Jobs.Count})"); return; } // will be picked up on next RefreshJobsAndSync
 
         job.Status            = status;
         job.IsActivelyRunning = status == JobStatus.Running;

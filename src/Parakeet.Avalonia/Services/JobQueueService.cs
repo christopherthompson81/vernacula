@@ -85,24 +85,31 @@ internal sealed class JobQueueService
     public async Task<int> EnqueueNewJobAsync(
         string audioPath, string jobTitle, int streamIndex = -1)
     {
+        Console.WriteLine($"[Queue] EnqueueNewJobAsync starting for '{audioPath}'");
         string sha256 = await Task.Run(() => AudioUtils.Sha256Checksum(audioPath));
+        Console.WriteLine($"[Queue] SHA256 computed: {sha256[..8]}...");
 
         // Each stream from the same file gets its own results database
         string dbName = streamIndex >= 0
             ? $"{sha256[..16]}_s{streamIndex}_results.sqlite3"
             : $"{sha256[..16]}_results.sqlite3";
         string dbPath = Path.Combine(_settings.GetJobsDir(), dbName);
+        Console.WriteLine($"[Queue] DB path: {dbPath}");
 
         string fileDateStamp = File.GetLastWriteTime(audioPath)
             .ToString("yyyy-MM-dd HH:mm:ss");
 
+        Console.WriteLine("[Queue] Inserting job into database...");
         int jobId = _controlDb.InsertNewJob(
             jobTitle, dbPath, audioPath, sha256, fileDateStamp, streamIndex);
+        Console.WriteLine($"[Queue] Job inserted with ID: {jobId}");
 
         Enqueue(new QueueEntry(jobId, audioPath, dbPath, streamIndex));
         JobStatusChanged?.Invoke(jobId, JobStatus.Queued, null, null);
+        Console.WriteLine("[Queue] Firing JobStatusChanged (Queued) and TryStartNextAsync");
         _ = TryStartNextAsync();
 
+        Console.WriteLine("[Queue] EnqueueNewJobAsync complete");
         return jobId;
     }
 
@@ -194,37 +201,49 @@ internal sealed class JobQueueService
 
     private async Task TryStartNextAsync()
     {
-        if (!_slots.Wait(0)) return; // No slot available right now
+        Console.WriteLine("[Queue] TryStartNextAsync called");
+        if (!_slots.Wait(0)) { Console.WriteLine("[Queue] TryStartNextAsync: no slot available"); return; }
+        Console.WriteLine("[Queue] TryStartNextAsync: acquired slot");
 
         QueueEntry? entry;
         lock (_lock)
         {
             if (!_pendingQueue.TryDequeue(out entry))
             {
+                Console.WriteLine("[Queue] TryStartNextAsync: queue empty");
                 _slots.Release();
                 return;
             }
+            Console.WriteLine($"[Queue] TryStartNextAsync: dequeued job {entry.JobId}");
         }
 
         try
         {
             await RunJobAsync(entry);
         }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[Queue] RunJobAsync EXCEPTION: {ex}");
+        }
         finally
         {
             _slots.Release();
-            _ = TryStartNextAsync(); // Immediately try to start the next queued job
+            Console.WriteLine("[Queue] TryStartNextAsync: slot released, recursing");
+            _ = TryStartNextAsync();
         }
     }
 
     private async Task RunJobAsync(QueueEntry entry)
     {
+        Console.WriteLine($"[Queue] RunJobAsync starting for job {entry.JobId}");
         var cts   = new CancellationTokenSource();
         var state = new JobUiState();
         lock (_lock) { _activeCts[entry.JobId] = cts; _jobUiStates[entry.JobId] = state; }
 
         string runStamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
+        Console.WriteLine($"[Queue] Calling SetJobRunning for job {entry.JobId}");
         _controlDb.SetJobRunning(entry.JobId, runStamp);
+        Console.WriteLine($"[Queue] Firing JobStatusChanged (Running) for job {entry.JobId}");
         JobStatusChanged?.Invoke(entry.JobId, JobStatus.Running, null, null);
 
         var sw = System.Diagnostics.Stopwatch.StartNew();

@@ -115,17 +115,17 @@
                            VerticalAlignment="Center"
                            IsVisible="{Binding Jobs.Count, Converter={StaticResource InvBoolToVis}}" />
 
-                <DataGrid x:Name="JobsGrid"
-                          Grid.Row="1"
-                          ItemsSource="{Binding Jobs}"
-                          AutoGenerateColumns="False"
-                          IsReadOnly="True"
-                          CanUserReorderColumns="False"
-                          
-                          CanUserSortColumns="False"
-                          SelectionMode="Single"
-                          GridLinesVisibility="Horizontal"
-                          HeadersVisibility="Column">
+                 <DataGrid x:Name="JobsGrid"
+                           Grid.Row="1"
+                           ItemsSource="{Binding Jobs}"
+                           AutoGenerateColumns="False"
+                           IsReadOnly="True"
+                           CanUserReorderColumns="False"
+                           RowHeight="32"
+                           CanUserSortColumns="False"
+                           SelectionMode="Single"
+                           GridLinesVisibility="Horizontal"
+                           HeadersVisibility="Column">
                     <DataGrid.Columns>
                         <!-- Title column — TextBox styled as plain text; saves on focus loss -->
                         <DataGridTemplateColumn Width="*" IsReadOnly="True" CanUserResize="True">

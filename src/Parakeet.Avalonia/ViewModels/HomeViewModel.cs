@@ -31,7 +31,6 @@ internal partial class HomeViewModel : ObservableObject
     public Action<JobRecord>?    MonitorJob        { get; set; }
     public Func<string[], Task>?        BulkEnqueueFiles        { get; set; }
     public Action?                      OpenSettings            { get; set; }
-    /// <summary>Opens a multi-select audio file picker. Returns paths, or null if cancelled.</summary>
     public Func<Task<string[]?>>?       PickMultipleAudioFiles  { get; set; }
 
     public HomeViewModel(ModelManagerService modelMgr, ControlDb controlDb)
@@ -39,6 +38,14 @@ internal partial class HomeViewModel : ObservableObject
         _modelMgr  = modelMgr;
         _controlDb = controlDb;
         ModelStatusText = Loc.Instance["model_status_checking"];
+
+        Jobs.CollectionChanged += (_, e) =>
+        {
+            Console.WriteLine($"[HomeVM] Jobs.CollectionChanged: {e.Action}, Count={Jobs.Count}");
+            if (e.NewItems != null)
+                foreach (JobRecord j in e.NewItems)
+                    Console.WriteLine($"[HomeVM]   + job {j.JobId} '{j.JobTitle}' status={j.Status}");
+        };
 
         Loc.Instance.PropertyChanged += (_, e) =>
         {
@@ -57,7 +64,9 @@ internal partial class HomeViewModel : ObservableObject
 
       public async Task InitializeAsync()
     {
+        Console.WriteLine("[HomeVM] InitializeAsync starting");
         RefreshJobs();
+        Console.WriteLine($"[HomeVM] InitializeAsync: Jobs count after RefreshJobs: {Jobs.Count}");
 
         foreach (var job in Jobs.ToList())
         {
@@ -78,9 +87,13 @@ internal partial class HomeViewModel : ObservableObject
 
     public void RefreshJobs()
     {
+        Console.WriteLine("[HomeVM] RefreshJobs called");
         Jobs.Clear();
-        foreach (var job in _controlDb.GetJobs())
+        var dbJobs = _controlDb.GetJobs();
+        Console.WriteLine($"[HomeVM] RefreshJobs: got {dbJobs.Count} jobs from DB");
+        foreach (var job in dbJobs)
             Jobs.Add(job);
+        Console.WriteLine($"[HomeVM] RefreshJobs: Jobs count now {Jobs.Count}");
     }
 
     [RelayCommand]

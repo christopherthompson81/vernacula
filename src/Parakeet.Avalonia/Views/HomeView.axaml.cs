@@ -22,6 +22,12 @@ public partial class HomeView : UserControl
 
     private void OnLoaded(object? sender, RoutedEventArgs e)
     {
+        Console.WriteLine("[HomeView] OnLoaded called");
+        Console.WriteLine($"[HomeView] DataContext type: {DataContext?.GetType().Name}");
+        Console.WriteLine($"[HomeView] JobsGrid.ItemsSource: {JobsGrid.ItemsSource}");
+        Console.WriteLine($"[HomeView] JobsGrid.RowCount: {(JobsGrid.ItemsSource as System.Collections.ICollection)?.Count}");
+        Console.WriteLine($"[HomeView] JobsGrid.Bounds: {JobsGrid.Bounds}");
+
         var s = App.Current.Settings.Current;
         if (s.HomeColAudioWidth > 0)
             JobsGrid.Columns[1].Width = new DataGridLength(s.HomeColAudioWidth);

@@ -16,7 +16,7 @@ public class BoolToVisibilityConverter : IValueConverter
             _       => false,
         };
         if (Invert) v = !v;
-        return v;
+        return (bool?)v;
     }
 
     public object? ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture)

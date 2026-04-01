@@ -19,13 +19,27 @@ public partial class App : Application
     internal JobQueueService      JobQueue      { get; private set; } = null!;
     internal ExportService        Export        { get; } = new();
 
-    public static void Main(string[] args) => BuildAvaloniaApp().StartWithClassicDesktopLifetime(args);
+    public static void Main(string[] args)
+    {
+        SetupGlobalExceptionHandlers();
+        BuildAvaloniaApp().StartWithClassicDesktopLifetime(args);
+        Console.WriteLine("[App] StartWithClassicDesktopLifetime returned");
+    }
 
     public static AppBuilder BuildAvaloniaApp()
         => AppBuilder.Configure<App>()
             .UsePlatformDetect()
             .WithInterFont()
             .LogToTrace();
+
+    private static void SetupGlobalExceptionHandlers()
+    {
+        AppDomain.CurrentDomain.UnhandledException += (_, e) =>
+            Console.WriteLine($"[UNHANDLED] AppDomain exception: {e.ExceptionObject}");
+
+        TaskScheduler.UnobservedTaskException += (_, e) =>
+            Console.WriteLine($"[UNHANDLED] Unobserved task exception: {e.Exception}");
+    }
 
     public override void Initialize()
     {
@@ -78,8 +92,10 @@ public partial class App : Application
 
         if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
         {
+            desktop.Exit += (_, e) => Console.WriteLine($"[App] Desktop Exit event! ExitCode={e.ApplicationExitCode}");
             var mainVm = new MainViewModel(Settings, ControlDb, ModelManager, Transcription, JobQueue, Export);
             desktop.MainWindow = new MainWindow { DataContext = mainVm };
+            Console.WriteLine("[App] MainWindow set");
         }
         else if (ApplicationLifetime is ISingleViewApplicationLifetime singleView)
         {

@@ -256,6 +256,13 @@
         <Setter Property="Foreground" Value="White" />
     </Style>
 
+    <!-- Status badge (used in HomeView) -->
+    <Style Selector="Border.status-badge">
+        <Setter Property="CornerRadius" Value="4" />
+        <Setter Property="Padding" Value="8,4" />
+        <Setter Property="VerticalAlignment" Value="Center" />
+    </Style>
+
     <!-- ScrollBar Thumb -->
     <Style Selector="ScrollBar Thumb">
         <Setter Property="Background" Value="{DynamicResource OverlayBrush}" />

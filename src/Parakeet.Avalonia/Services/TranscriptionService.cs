@@ -41,8 +41,15 @@ internal class TranscriptionService
             async () =>
             {
                 Thread.CurrentThread.Priority = ThreadPriority.BelowNormal;
-                await RunPipelineAsync(audioPath, streamIndex, resultsDbPath,
-                    progress, onSegmentAdded, onSegmentText, ct);
+                try
+                {
+                    await RunPipelineAsync(audioPath, streamIndex, resultsDbPath,
+                        progress, onSegmentAdded, onSegmentText, ct);
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[Transcription] RunPipelineAsync EXCEPTION: {ex}");
+                }
             },
             ct, TaskCreationOptions.LongRunning, TaskScheduler.Default).Unwrap();
     }
@@ -56,6 +63,7 @@ internal class TranscriptionService
         Action<int, string> onSegmentText,
         CancellationToken   ct)
     {
+        Console.WriteLine($"[Transcription] RunPipelineAsync starting for '{audioPath}'");
         string modelsDir = _settings.GetModelsDir();
 
         // ── Phase 1: Load audio ───────────────────────────────────────────────
