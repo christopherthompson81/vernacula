@@ -10,9 +10,13 @@ public partial class AdjustTimesDialog : Window
     public double NewStartTime { get; private set; }
     public double NewEndTime   { get; private set; }
 
-    public AdjustTimesDialog(double currentStart, double currentEnd)
+    public AdjustTimesDialog()
     {
         InitializeComponent();
+    }
+
+    public AdjustTimesDialog(double currentStart, double currentEnd) : this()
+    {
         Loaded += (_, _) =>
             WindowHelper.SetDarkMode(this, App.Current.Settings.Current.Theme == AppTheme.Dark);
 

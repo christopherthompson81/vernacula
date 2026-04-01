@@ -414,7 +414,7 @@
                         CornerRadius="8" Padding="16"
                         Margin="0,0,0,16">
                     <ComboBox ItemsSource="{x:Static local:Loc.Languages}"
-                              SelectedItem="{Binding SelectedLanguage}"
+                              SelectedItem="{Binding SelectedLanguageInfo}"
                               Background="{DynamicResource OverlayBrush}"
                               Foreground="{DynamicResource TextBrush}"
                               BorderBrush="{DynamicResource OverlayBrush}">

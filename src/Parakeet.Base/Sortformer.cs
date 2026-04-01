@@ -88,10 +88,11 @@ public sealed class SortformerStreamer : IDisposable
             if (probSum < Config.SilThreshold)
             {
                 _nSilFrames++;
+                var meanSilEmb = _meanSilEmb!;
                 for (int d = 0; d < Config.EmbeddingDimension; d++)
                 {
-                    double oldSum = _meanSilEmb![d] * (_nSilFrames - 1);
-                    _meanSilEmb![d] = (float)((oldSum + embs[0, t, d]) / _nSilFrames);
+                    double oldSum = meanSilEmb[d] * (_nSilFrames - 1);
+                    meanSilEmb[d] = (float)((oldSum + embs[0, t, d]) / _nSilFrames);
                 }
             }
         }
@@ -165,10 +166,13 @@ public sealed class SortformerStreamer : IDisposable
     {
         if (_spkcachePreds is null) return;
 
-        int T = _spkcache.GetLength(1);
+        var spkcache = _spkcache!;
+        var spkcachePreds = _spkcachePreds;
+
+        int T = spkcache.GetLength(1);
         int S = Config.NumSpeakers;
 
-        var preds2d = Slice3DTo2D(_spkcachePreds, T, S);
+        var preds2d = Slice3DTo2D(spkcachePreds, T, S);
 
         int cachePerSpk       = Config.SpeakerCacheLength / S - 3;
         int strongBoostPerSpk = (int)(cachePerSpk * 0.75);
@@ -202,6 +206,7 @@ public sealed class SortformerStreamer : IDisposable
 
         var newEmbs  = new float[1, keep, Config.EmbeddingDimension];
         var newPreds = new float[1, keep, S];
+        var meanSilEmb = _meanSilEmb!;
 
         for (int i = 0; i < keep; i++)
         {
@@ -209,13 +214,13 @@ public sealed class SortformerStreamer : IDisposable
             if (t >= T)
             {
                 for (int d = 0; d < Config.EmbeddingDimension; d++)
-                    newEmbs[0, i, d] = _meanSilEmb![d];
+                    newEmbs[0, i, d] = meanSilEmb[d];
                 continue;
             }
             for (int d = 0; d < Config.EmbeddingDimension; d++)
-                newEmbs[0, i, d] = _spkcache![0, t, d];
+                newEmbs[0, i, d] = spkcache[0, t, d];
             for (int s = 0; s < S; s++)
-                newPreds[0, i, s] = _spkcachePreds![0, t, s];
+                newPreds[0, i, s] = spkcachePreds[0, t, s];
         }
 
         _spkcache      = newEmbs;
@@ -249,8 +254,10 @@ public sealed class SortformerStreamer : IDisposable
                     chunkData[t * Config.NMels + m] = melSpec[0, srcRow, m];
         }
 
-        int cacheT = _spkcache.GetLength(1);
-        int fifoT  = _fifo.GetLength(1);
+        var spkcache = _spkcache!;
+        var fifo = _fifo!;
+        int cacheT = spkcache.GetLength(1);
+        int fifoT  = fifo.GetLength(1);
 
         var inputs = new List<NamedOnnxValue>
         {
@@ -260,12 +267,12 @@ public sealed class SortformerStreamer : IDisposable
             NamedOnnxValue.CreateFromTensor("chunk_lengths",
                 new DenseTensor<long>(new long[] { currentLen }, new[] { 1 })),
             NamedOnnxValue.CreateFromTensor("spkcache",
-                new DenseTensor<float>(Flatten3D(_spkcache, 1, cacheT, D),
+                new DenseTensor<float>(Flatten3D(spkcache, 1, cacheT, D),
                     new[] { 1, cacheT, D })),
             NamedOnnxValue.CreateFromTensor("spkcache_lengths",
                 new DenseTensor<long>(new long[] { cacheT }, new[] { 1 })),
             NamedOnnxValue.CreateFromTensor("fifo",
-                new DenseTensor<float>(Flatten3D(_fifo, 1, fifoT, D),
+                new DenseTensor<float>(Flatten3D(fifo, 1, fifoT, D),
                     new[] { 1, fifoT, D })),
             NamedOnnxValue.CreateFromTensor("fifo_lengths",
                 new DenseTensor<long>(new long[] { fifoT }, new[] { 1 })),
@@ -314,10 +321,12 @@ public sealed class SortformerStreamer : IDisposable
             for (int s = 0; s < S; s++)
                 fp[t, s] = predsFlat[(fpStart + t) * S + s];
 
-        _fifo = Concat3DAxis1(_fifo, Wrap2DIn3D(chunkEmbs, ceLen, D));
+        var fifoCurrent = _fifo!;
+        var fifoPredsCurrent = _fifoPreds!;
+        _fifo = Concat3DAxis1(fifoCurrent, Wrap2DIn3D(chunkEmbs, ceLen, D));
 
         if (fpLen > 0)
-            _fifoPreds = Concat3DAxis1(_fifoPreds, Wrap2DIn3D(fp, fpLen, S));
+            _fifoPreds = Concat3DAxis1(fifoPredsCurrent, Wrap2DIn3D(fp, fpLen, S));
         else
             _fifoPreds = Wrap2DIn3D(chunkPreds, cpLen, S);
 
@@ -336,7 +345,8 @@ public sealed class SortformerStreamer : IDisposable
             _fifo      = SliceTail3D(_fifo,     popLen, D);
             _fifoPreds = SliceTail3D(_fifoPreds, popLen, S);
 
-            _spkcache = Concat3DAxis1(_spkcache, popEmbs);
+            var spkcacheCurrent = _spkcache!;
+            _spkcache = Concat3DAxis1(spkcacheCurrent, popEmbs);
 
             if (_spkcachePreds is null)
                 _spkcachePreds = popPreds;

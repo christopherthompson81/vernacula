@@ -36,8 +36,15 @@ public partial class App : Application
     {
         base.OnFrameworkInitializationCompleted();
 
-        Settings.Load();
-        
+        try
+        {
+            Settings.Load();
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"Failed to load settings: {ex}");
+        }
+
         // Initialize localization BEFORE creating any windows
         var lang = Settings.Current.Language;
         if (string.IsNullOrEmpty(lang))
@@ -47,7 +54,16 @@ public partial class App : Application
             Settings.Current.Language = lang;
             Settings.Save();
         }
-        Loc.Instance.SetLanguage(lang);
+        
+        try
+        {
+            Loc.Instance.SetLanguage(lang);
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"Failed to set language {lang}: {ex}");
+            Loc.Instance.SetLanguage("en");
+        }
 
         ThemeManager.Apply(Settings.Current.Theme);
 

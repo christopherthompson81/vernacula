@@ -39,9 +39,13 @@ public partial class HelpWindow : Window
     private string? _currentTopicId;
     private readonly Dictionary<string, Button> _sidebarButtons = new();
 
-    public HelpWindow(string? topicId = null)
+    public HelpWindow()
     {
         InitializeComponent();
+    }
+
+    public HelpWindow(string? topicId) : this()
+    {
         _currentTopicId = topicId;
     }
 

@@ -15,19 +15,22 @@ namespace ParakeetCSharp.Views.Dialogs;
 /// </summary>
 public partial class SplitSegmentDialog : Window
 {
-    private readonly IReadOnlyList<string> _tokenTexts;
+    private IReadOnlyList<string>? _tokenTexts;
     private readonly List<Button>          _tokenBtns = [];
 
     /// <summary>Index of the first token that belongs to the second (new) segment.</summary>
     public int SplitTokenIndex { get; private set; } = -1;
 
-    /// <param name="tokenTexts">One decoded string per token, in order.</param>
-    public SplitSegmentDialog(IReadOnlyList<string> tokenTexts)
+    public SplitSegmentDialog()
     {
         InitializeComponent();
+    }
 
+    /// <param name="tokenTexts">One decoded string per token, in order.</param>
+    public SplitSegmentDialog(IReadOnlyList<string> tokenTexts) : this()
+    {
         _tokenTexts = tokenTexts;
-        Loaded += (_, _) => 
+        Loaded += (_, _) =>
         {
             WindowHelper.SetDarkMode(this, App.Current.Settings.Current.Theme == AppTheme.Dark);
             BuildTokenButtons();
@@ -36,6 +39,8 @@ public partial class SplitSegmentDialog : Window
 
     private void BuildTokenButtons()
     {
+        if (_tokenTexts is null) return;
+
         var surfaceBrush = (IBrush)Resources["SurfaceBrush"]!;
         var textBrush    = (IBrush)Resources["TextBrush"]!;
 
@@ -91,8 +96,8 @@ public partial class SplitSegmentDialog : Window
             _tokenBtns[i].Foreground = isSecond ? textBrush : subtextBrush;
         }
 
-        FirstPreview.Text  = string.Concat(_tokenTexts.Take(index)).Trim();
-        SecondPreview.Text = string.Concat(_tokenTexts.Skip(index)).Trim();
+        FirstPreview.Text  = string.Concat(_tokenTexts!.Take(index)).Trim();
+        SecondPreview.Text = string.Concat(_tokenTexts!.Skip(index)).Trim();
     }
 
     private void OkBtn_Click(object sender, RoutedEventArgs e)

@@ -7,16 +7,20 @@ namespace ParakeetCSharp.Views.Dialogs;
 
 public partial class SpeakerNamesDialog : Window
 {
-    private readonly string _dbPath;
+    private string? _dbPath;
     private readonly List<SpeakerEntry> _entries = new();
     private bool _isEditing;
 
     public bool DialogResult { get; private set; }
 
-    public SpeakerNamesDialog(string dbPath)
+    public SpeakerNamesDialog()
+    {
+        InitializeComponent();
+    }
+
+    public SpeakerNamesDialog(string dbPath) : this()
     {
         _dbPath = dbPath;
-        InitializeComponent();
         Loaded += (_, _) =>
             WindowHelper.SetDarkMode(this, App.Current.Settings.Current.Theme == AppTheme.Dark);
 
@@ -35,6 +39,8 @@ public partial class SpeakerNamesDialog : Window
 
     private void Save_Click(object sender, RoutedEventArgs e)
     {
+        if (_dbPath is null) return;
+
         using var db = new TranscriptionDb(_dbPath);
         foreach (var entry in _entries)
         {

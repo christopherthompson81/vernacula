@@ -34,7 +34,8 @@ internal partial class SettingsViewModel : ObservableObject
     [NotifyPropertyChangedFor(nameof(IsEditorSingle), nameof(IsEditorAutoAdvance), nameof(IsEditorContinuous))]
     private PlaybackMode _selectedEditorPlaybackMode;
 
-    [ObservableProperty] private string            _selectedLanguage;
+    [ObservableProperty] private string             _selectedLanguage;
+    [ObservableProperty] private Loc.LanguageInfo?  _selectedLanguageInfo;
 
     /// <summary>Called after precision changes so callers can re-check model file lists.</summary>
     public Action? OnPrecisionChanged  { get; set; }
@@ -96,6 +97,8 @@ internal partial class SettingsViewModel : ObservableObject
         _selectedSegmentation         = svc.Current.Segmentation;
         _selectedEditorPlaybackMode   = svc.Current.EditorPlaybackMode;
         _selectedLanguage             = svc.Current.Language;
+        _selectedLanguageInfo         = Loc.Languages.FirstOrDefault(l => l.Code == svc.Current.Language) 
+                                        ?? Loc.Languages.FirstOrDefault(l => l.Code == "en")!;
         ModelStatusText    = Loc.Instance["model_status_checking"];
 
         Loc.Instance.PropertyChanged += (_, e) =>
@@ -142,9 +145,34 @@ internal partial class SettingsViewModel : ObservableObject
 
     partial void OnSelectedLanguageChanged(string value)
     {
-        _svc.Current.Language = value;
-        _svc.Save();
-        Loc.Instance.SetLanguage(value);
+        try
+        {
+            _svc.Current.Language = value;
+            _svc.Save();
+            Loc.Instance.SetLanguage(value);
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"Failed to set language {value}: {ex}");
+        }
+    }
+
+    partial void OnSelectedLanguageInfoChanged(Loc.LanguageInfo? value)
+    {
+        if (value is not null)
+        {
+            try
+            {
+                _svc.Current.Language = value.Code;
+                _svc.Save();
+                SelectedLanguage = value.Code;
+                Loc.Instance.SetLanguage(value.Code);
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"Failed to set language {value.Code}: {ex}");
+            }
+        }
     }
 
     [RelayCommand] private void SetTheme(string n)              { if (Enum.TryParse<AppTheme>(n,         out var t)) SelectedTheme              = t; }
