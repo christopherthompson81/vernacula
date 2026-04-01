@@ -99,7 +99,7 @@
             <Grid>
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto" />
-                    <RowDefinition Height="*"    />
+                    <RowDefinition Height="*" />
                 </Grid.RowDefinitions>
 
                 <TextBlock Grid.Row="0"
@@ -108,194 +108,151 @@
                            FontSize="15" FontWeight="SemiBold"
                            Margin="0,0,0,8" />
 
-                <TextBlock Grid.Row="1"
-                           Text="{local:Loc history_empty}"
-                           Foreground="{DynamicResource SubtextBrush}"
-                           HorizontalAlignment="Center"
-                           VerticalAlignment="Center"
-                           IsVisible="{Binding Jobs.Count, Converter={StaticResource InvBoolToVis}}" />
+                <Grid Grid.Row="1">
+                    <TextBlock Text="{local:Loc history_empty}"
+                               Foreground="{DynamicResource SubtextBrush}"
+                               HorizontalAlignment="Center"
+                               VerticalAlignment="Center"
+                               IsVisible="{Binding Jobs.Count, Converter={StaticResource InvBoolToVis}}" />
 
-                 <DataGrid x:Name="JobsGrid"
-                           Grid.Row="1"
-                           ItemsSource="{Binding Jobs}"
-                           AutoGenerateColumns="False"
-                           IsReadOnly="True"
-                           CanUserReorderColumns="False"
-                           RowHeight="32"
-                           CanUserSortColumns="False"
-                           SelectionMode="Single"
-                           GridLinesVisibility="Horizontal"
-                           HeadersVisibility="Column">
-                    <DataGrid.Columns>
-                        <!-- Title column — TextBox styled as plain text; saves on focus loss -->
-                        <DataGridTemplateColumn Width="*" IsReadOnly="True" CanUserResize="True">
-                            <DataGridTemplateColumn.Header>
-                                <TextBlock Text="{Binding Source={x:Static local:Loc.Instance}, Path=[history_col_title]}" />
-                            </DataGridTemplateColumn.Header>
-                            <DataGridTemplateColumn.CellTemplate>
-                                <DataTemplate>
-                                    <TextBox Text="{Binding JobTitle, Mode=OneWay}"
-                                             BorderThickness="0"
-                                             Background="Transparent"
-                                             Foreground="{DynamicResource TextBrush}"
-                                             Padding="4,2"
-                                             VerticalAlignment="Center"
-                                             IsReadOnly="{Binding IsCancellable}"
-                                             GotFocus="OnTitleTextBoxGotFocus"
-                                             KeyDown="OnTitleTextBoxKeyDown"
-                                             LostFocus="OnTitleTextBoxLostFocus" />
-                                </DataTemplate>
-                            </DataGridTemplateColumn.CellTemplate>
-                        </DataGridTemplateColumn>
-                        <DataGridTextColumn Binding="{Binding AudioBaseName}" Width="160" CanUserResize="True">
-                            <DataGridTextColumn.Header>
-                                <TextBlock Text="{Binding Source={x:Static local:Loc.Instance}, Path=[history_col_audio]}" />
-                            </DataGridTextColumn.Header>
-                        </DataGridTextColumn>
-                        <DataGridTextColumn Binding="{Binding DisplayDate}"  Width="140" CanUserResize="False">
-                            <DataGridTextColumn.Header>
-                                <TextBlock Text="{Binding Source={x:Static local:Loc.Instance}, Path=[history_col_date]}" />
-                            </DataGridTextColumn.Header>
-                        </DataGridTextColumn>
-
-                        <!-- Run time column — shown for completed jobs -->
-                        <DataGridTemplateColumn Width="70" CanUserResize="False">
-                            <DataGridTemplateColumn.Header>
-                                <TextBlock Text="{Binding Source={x:Static local:Loc.Instance}, Path=[history_col_time]}" />
-                            </DataGridTemplateColumn.Header>
-                            <DataGridTemplateColumn.CellTemplate>
-                                <DataTemplate>
-                                    <TextBlock Text="{Binding RunTimeLabel}"
-                                               VerticalAlignment="Center"
-                                               HorizontalAlignment="Right"
-                                               Padding="4,0"
-                                               Foreground="{DynamicResource SubtextBrush}"
-                                               FontSize="11" />
-                                </DataTemplate>
-                            </DataGridTemplateColumn.CellTemplate>
-                        </DataGridTemplateColumn>
-
-                        <!-- Status badge column -->
-                        <DataGridTemplateColumn Width="90" CanUserResize="False">
-                            <DataGridTemplateColumn.Header>
-                                <TextBlock Text="{Binding Source={x:Static local:Loc.Instance}, Path=[history_col_status]}" />
-                            </DataGridTemplateColumn.Header>
-                            <DataGridTemplateColumn.CellTemplate>
-                                <DataTemplate>
-                                    <Border Background="{Binding Status, Converter={StaticResource StatusToBrush}}"
-                                            Classes="status-badge"
-                                            HorizontalAlignment="Left">
-                                    <ToolTip.Tip>
-                                        <Border MaxWidth="500">
-                                            <TextBlock Text="{Binding ErrorMessage}"
-                                                       TextWrapping="Wrap"
-                                                       FontFamily="Consolas"
-                                                       FontSize="11" />
-                                        </Border>
-                                    </ToolTip.Tip>
-                                    <TextBlock Text="{Binding StatusLabel}"
-                                                   Foreground="{DynamicResource BgBrush}"
-                                                   FontWeight="SemiBold" />
-                                    </Border>
-                                </DataTemplate>
-                            </DataGridTemplateColumn.CellTemplate>
-                        </DataGridTemplateColumn>
-
-                        <!-- Progress column — shown for incomplete / active jobs -->
-                        <DataGridTemplateColumn Width="110" CanUserResize="False">
-                            <DataGridTemplateColumn.Header>
-                                <TextBlock Text="{Binding Source={x:Static local:Loc.Instance}, Path=[history_col_progress]}" />
-                            </DataGridTemplateColumn.Header>
-                            <DataGridTemplateColumn.CellTemplate>
-                                <DataTemplate>
-                                    <Grid IsVisible="{Binding ShowProgress, Converter={StaticResource BoolToVis}}"
-                                          Margin="4,3">
-                                        <Grid.RowDefinitions>
-                                            <RowDefinition Height="Auto" />
-                                            <RowDefinition Height="Auto" />
-                                            <RowDefinition Height="Auto" />
-                                        </Grid.RowDefinitions>
-                                        <TextBlock Grid.Row="0"
-                                                   Text="{Binding PhaseLabel}"
-                                                   FontSize="10"
-                                                   FontWeight="SemiBold"
-                                                   HorizontalAlignment="Center"
+                    <DataGrid 
+                        x:Name="JobsGrid"
+                        ItemsSource="{Binding Jobs}"
+                        AutoGenerateColumns="False"
+                        IsReadOnly="True"
+                        SelectionMode="Single"
+                        GridLinesVisibility="Horizontal"
+                        HeadersVisibility="Column">
+                        <DataGrid.Columns>
+                            <DataGridTemplateColumn Width="*" IsReadOnly="True">
+                                <DataGridTemplateColumn.Header>
+                                    <TextBlock Text="{Binding Source={x:Static local:Loc.Instance}, Path=[history_col_title]}" />
+                                </DataGridTemplateColumn.Header>
+                                <DataGridTemplateColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <TextBlock Text="{Binding JobTitle}"
+                                                   Padding="4,2"
+                                                   VerticalAlignment="Center" />
+                                    </DataTemplate>
+                                </DataGridTemplateColumn.CellTemplate>
+                            </DataGridTemplateColumn>
+                            <DataGridTextColumn Binding="{Binding AudioBaseName}" Width="160">
+                                <DataGridTextColumn.Header>
+                                    <TextBlock Text="{Binding Source={x:Static local:Loc.Instance}, Path=[history_col_audio]}" />
+                                </DataGridTextColumn.Header>
+                            </DataGridTextColumn>
+                            <DataGridTextColumn Binding="{Binding DisplayDate}" Width="140">
+                                <DataGridTextColumn.Header>
+                                    <TextBlock Text="{Binding Source={x:Static local:Loc.Instance}, Path=[history_col_date]}" />
+                                </DataGridTextColumn.Header>
+                            </DataGridTextColumn>
+                            <DataGridTemplateColumn Width="70">
+                                <DataGridTemplateColumn.Header>
+                                    <TextBlock Text="{Binding Source={x:Static local:Loc.Instance}, Path=[history_col_time]}" />
+                                </DataGridTemplateColumn.Header>
+                                <DataGridTemplateColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <TextBlock Text="{Binding RunTimeLabel}"
+                                                   VerticalAlignment="Center"
+                                                   HorizontalAlignment="Right"
+                                                   Padding="4,0"
                                                    Foreground="{DynamicResource SubtextBrush}"
-                                                   IsVisible="{Binding IsActivelyRunning, Converter={StaticResource BoolToVis}}"
-                                                   Margin="0,0,0,2" />
-                                        <ProgressBar Grid.Row="1"
-                                                     Height="5"
-                                                     Minimum="0" Maximum="100"
-                                                     Value="{Binding ProgressPercent}"
-                                                     IsIndeterminate="{Binding IsIndeterminate}"
-                                                     Margin="0,0,0,2" />
-                                        <TextBlock Grid.Row="2"
-                                                   Text="{Binding ProgressPercent, StringFormat={}{0:F0}%}"
-                                                   FontSize="10"
-                                                   HorizontalAlignment="Center"
-                                                   Foreground="{DynamicResource SubtextBrush}" />
-                                    </Grid>
-                                </DataTemplate>
-                            </DataGridTemplateColumn.CellTemplate>
-                        </DataGridTemplateColumn>
-
-                        <!-- Action buttons column -->
-                        <DataGridTemplateColumn Width="Auto" CanUserResize="False">
-                            <DataGridTemplateColumn.Header>
-                                <TextBlock Text="{Binding Source={x:Static local:Loc.Instance}, Path=[history_col_actions]}" />
-                            </DataGridTemplateColumn.Header>
-                            <DataGridTemplateColumn.CellTemplate>
-                                <DataTemplate>
-                                    <StackPanel Orientation="Horizontal" Margin="2" VerticalAlignment="Center">
-                                        <!-- Resume: shown for Failed / Cancelled -->
-                                        <Button Content="{local:Loc btn_resume}"
-                                                Classes="secondary-button"
-                                                Padding="8,4"
-                                                Margin="0,0,4,0"
-                                                IsVisible="{Binding IsResumable, Converter={StaticResource BoolToVis}}"
-                                                Command="{Binding DataContext.ResumeJobCommand,
-                                                          RelativeSource={RelativeSource AncestorType=DataGrid}}"
-                                                CommandParameter="{Binding}" />
-                                        <!-- Monitor: shown for Running / Queued -->
-                                        <Button Content="{local:Loc btn_monitor}"
-                                                Classes="primary-button"
-                                                Padding="8,4"
-                                                Margin="0,0,4,0"
-                                                IsVisible="{Binding IsCancellable, Converter={StaticResource BoolToVis}}"
-                                                Command="{Binding DataContext.MonitorQueuedJobCommand,
-                                                          RelativeSource={RelativeSource AncestorType=DataGrid}}"
-                                                CommandParameter="{Binding}" />
-                                        <!-- Pause: shown for Running / Queued -->
-                                        <Button Content="{local:Loc btn_pause}"
-                                                Classes="secondary-button"
-                                                Padding="8,4"
-                                                Margin="0,0,4,0"
-                                                IsVisible="{Binding IsCancellable, Converter={StaticResource BoolToVis}}"
-                                                Command="{Binding DataContext.CancelQueuedJobCommand,
-                                                          RelativeSource={RelativeSource AncestorType=DataGrid}}"
-                                                CommandParameter="{Binding}" />
-                                        <!-- Load: shown for Complete -->
-                                        <Button Content="{local:Loc btn_load}"
-                                                Classes="secondary-button"
-                                                Padding="8,4"
-                                                Margin="0,0,4,0"
-                                                IsVisible="{Binding IsLoadable, Converter={StaticResource BoolToVis}}"
-                                                Command="{Binding DataContext.LoadJobCommand,
-                                                          RelativeSource={RelativeSource AncestorType=DataGrid}}"
-                                                CommandParameter="{Binding}" />
-                                        <Button Content="{local:Loc btn_remove}"
-                                                Classes="danger-button"
-                                                Padding="8,4"
-                                                IsEnabled="{Binding IsDeletable}"
-                                                Command="{Binding DataContext.DeleteJobCommand,
-                                                          RelativeSource={RelativeSource AncestorType=DataGrid}}"
-                                                CommandParameter="{Binding}" />
-                                    </StackPanel>
-                                </DataTemplate>
-                            </DataGridTemplateColumn.CellTemplate>
-                        </DataGridTemplateColumn>
-                    </DataGrid.Columns>
-                </DataGrid>
+                                                   FontSize="11" />
+                                    </DataTemplate>
+                                </DataGridTemplateColumn.CellTemplate>
+                            </DataGridTemplateColumn>
+                            <DataGridTemplateColumn Width="90">
+                                <DataGridTemplateColumn.Header>
+                                    <TextBlock Text="{Binding Source={x:Static local:Loc.Instance}, Path=[history_col_status]}" />
+                                </DataGridTemplateColumn.Header>
+                                <DataGridTemplateColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <Border Background="{Binding Status, Converter={StaticResource StatusToBrush}}"
+                                                HorizontalAlignment="Left"
+                                                Padding="6,3"
+                                                CornerRadius="4">
+                                            <TextBlock Text="{Binding StatusLabel}"
+                                                       Foreground="{DynamicResource BgBrush}"
+                                                       FontWeight="SemiBold" />
+                                        </Border>
+                                    </DataTemplate>
+                                </DataGridTemplateColumn.CellTemplate>
+                            </DataGridTemplateColumn>
+                            <DataGridTemplateColumn Width="110">
+                                <DataGridTemplateColumn.Header>
+                                    <TextBlock Text="{Binding Source={x:Static local:Loc.Instance}, Path=[history_col_progress]}" />
+                                </DataGridTemplateColumn.Header>
+                                <DataGridTemplateColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <StackPanel IsVisible="{Binding ShowProgress, Converter={StaticResource BoolToVis}}" Margin="4,3">
+                                            <TextBlock Text="{Binding PhaseLabel}"
+                                                       FontSize="10"
+                                                       FontWeight="SemiBold"
+                                                       HorizontalAlignment="Center"
+                                                       Foreground="{DynamicResource SubtextBrush}"
+                                                       IsVisible="{Binding IsActivelyRunning, Converter={StaticResource BoolToVis}}"
+                                                       Margin="0,0,0,2" />
+                                            <ProgressBar Height="5"
+                                                         Minimum="0" Maximum="100"
+                                                         Value="{Binding ProgressPercent}"
+                                                         IsIndeterminate="{Binding IsIndeterminate}"
+                                                         Margin="0,0,0,2" />
+                                            <TextBlock Text="{Binding ProgressPercent, StringFormat='{}{0:F0}%'}"
+                                                       FontSize="10"
+                                                       HorizontalAlignment="Center"
+                                                       Foreground="{DynamicResource SubtextBrush}" />
+                                        </StackPanel>
+                                    </DataTemplate>
+                                </DataGridTemplateColumn.CellTemplate>
+                            </DataGridTemplateColumn>
+                            <DataGridTemplateColumn Width="Auto">
+                                <DataGridTemplateColumn.Header>
+                                    <TextBlock Text="{Binding Source={x:Static local:Loc.Instance}, Path=[history_col_actions]}" />
+                                </DataGridTemplateColumn.Header>
+                                <DataGridTemplateColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <StackPanel Orientation="Horizontal" Margin="2" VerticalAlignment="Center">
+                                            <Button Content="{local:Loc btn_resume}"
+                                                    Classes="secondary-button"
+                                                    Padding="8,4"
+                                                    Margin="0,0,4,0"
+                                                    IsVisible="{Binding IsResumable, Converter={StaticResource BoolToVis}}"
+                                                    Command="{Binding $parent[DataGrid].DataContext.ResumeJobCommand}"
+                                                    CommandParameter="{Binding}" />
+                                            <Button Content="{local:Loc btn_monitor}"
+                                                    Classes="primary-button"
+                                                    Padding="8,4"
+                                                    Margin="0,0,4,0"
+                                                    IsVisible="{Binding IsCancellable, Converter={StaticResource BoolToVis}}"
+                                                    Command="{Binding $parent[DataGrid].DataContext.MonitorQueuedJobCommand}"
+                                                    CommandParameter="{Binding}" />
+                                            <Button Content="{local:Loc btn_pause}"
+                                                    Classes="secondary-button"
+                                                    Padding="8,4"
+                                                    Margin="0,0,4,0"
+                                                    IsVisible="{Binding IsCancellable, Converter={StaticResource BoolToVis}}"
+                                                    Command="{Binding $parent[DataGrid].DataContext.CancelQueuedJobCommand}"
+                                                    CommandParameter="{Binding}" />
+                                            <Button Content="{local:Loc btn_load}"
+                                                    Classes="secondary-button"
+                                                    Padding="8,4"
+                                                    Margin="0,0,4,0"
+                                                    IsVisible="{Binding IsLoadable, Converter={StaticResource BoolToVis}}"
+                                                    Command="{Binding $parent[DataGrid].DataContext.LoadJobCommand}"
+                                                    CommandParameter="{Binding}" />
+                                            <Button Content="{local:Loc btn_remove}"
+                                                    Classes="danger-button"
+                                                    Padding="8,4"
+                                                    IsEnabled="{Binding IsDeletable}"
+                                                    Command="{Binding $parent[DataGrid].DataContext.DeleteJobCommand}"
+                                                    CommandParameter="{Binding}" />
+                                        </StackPanel>
+                                    </DataTemplate>
+                                </DataGridTemplateColumn.CellTemplate>
+                            </DataGridTemplateColumn>
+                        </DataGrid.Columns>
+                    </DataGrid>
+                </Grid>
             </Grid>
         </Border>
     </Grid>
