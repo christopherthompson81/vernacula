@@ -82,17 +82,15 @@ internal static class HelpService
     /// <summary>
     /// Builds the assembly manifest resource name for a help file.
     /// e.g. "first_steps/model_precision.md" + "es"
-    ///   → "parakeet_csharp.Help.es.first_steps.model_precision.md"
+    ///   → "Parakeet.Avalonia.Help.es.first_steps.model_precision.md"
     /// </summary>
     private static string ManifestName(string relativePath, string lang) =>
-        "parakeet_csharp.Help." + lang + "." + relativePath.Replace('/', '.');
-
+        "Parakeet.Avalonia.Help." + lang + "." + relativePath.Replace('/', '.');
     /// <summary>Returns the topic matching <paramref name="topicId"/>, or null.</summary>
     internal static HelpTopic? FindById(string topicId) =>
         topicId == IndexTopic.TopicId
             ? IndexTopic
             : AllTopics.FirstOrDefault(t => t.TopicId == topicId);
-
     /// <summary>
     /// Resolves a relative Markdown link (e.g. "../first_steps/downloading_models.md")
     /// from the directory of <paramref name="current"/> to a <see cref="HelpTopic"/>.
@@ -107,7 +105,6 @@ internal static class HelpService
         string dir = current.ResourcePath.Contains('/')
             ? current.ResourcePath[..current.ResourcePath.LastIndexOf('/')]
             : string.Empty;
-
         // Combine and normalise using a path stack (handles ".." segments)
         string combined = dir.Length > 0 ? $"{dir}/{relativeLink}" : relativeLink;
         var    stack    = new Stack<string>();
@@ -117,21 +114,16 @@ internal static class HelpService
             else if (seg != ".") { stack.Push(seg); }
         }
         string resolved = string.Join("/", stack.Reverse());
-
         // Match against the index topic first, then all leaf topics
         if (resolved == IndexTopic.ResourcePath) return IndexTopic;
         return AllTopics.FirstOrDefault(t => t.ResourcePath == resolved);
     }
-
     // ── Internal helpers ─────────────────────────────────────────────────────
-
     private static string StripFrontmatter(string text)
     {
         if (!text.StartsWith("---", StringComparison.Ordinal)) return text;
-
         int closingDashes = text.IndexOf("\n---", 3, StringComparison.Ordinal);
         if (closingDashes < 0) return text;
-
         // Advance past the closing "---" line (skip to the character after the newline)
         int afterLine = text.IndexOf('\n', closingDashes + 1);
         return afterLine < 0 ? string.Empty : text[(afterLine + 1)..].TrimStart('\r', '\n');

@@ -37,6 +37,7 @@ namespace ParakeetCSharp.Views;
 public partial class HelpWindow : Window
 {
     private string? _currentTopicId;
+    public string? CurrentTopicId => _currentTopicId;
     private readonly Dictionary<string, Button> _sidebarButtons = new();
 
     public HelpWindow()
@@ -49,7 +50,7 @@ public partial class HelpWindow : Window
         _currentTopicId = topicId;
     }
 
-    private void Window_SourceInitialized(object sender, EventArgs e)
+    private void Window_Loaded(object? sender, RoutedEventArgs e)
     {
         WindowHelper.SetDarkMode(this, App.Current.Settings.Current.Theme == AppTheme.Dark);
         BuildSidebar();
@@ -147,21 +148,11 @@ public partial class HelpWindow : Window
         try
         {
             string markdown = HelpService.LoadMarkdown(topic);
-            // MarkdownFlowBuilder.Build() now returns a Panel instead of FlowDocument
-            var contentPanel = MarkdownFlowBuilder.Build(markdown, OnLinkNavigate);
-            // Add the panel to ContentPanel
-            ContentPanel.Children.Clear();
-            ContentPanel.Children.Add(contentPanel);
+            ContentMarkdown.Markdown = markdown;
         }
         catch (Exception ex)
         {
-            // Show error message in ContentPanel
-            ContentPanel.Children.Clear();
-            ContentPanel.Children.Add(new TextBlock
-                {
-                    Text = $"Error loading help topic: {ex.Message}",
-                    TextWrapping = TextWrapping.Wrap
-                });
+            ContentMarkdown.Markdown = $"Error loading help topic: {ex.Message}";
         }
 
         UpdateSidebarSelection(topic.TopicId);
