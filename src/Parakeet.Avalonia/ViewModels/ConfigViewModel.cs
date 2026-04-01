@@ -1,5 +1,3 @@
-using Avalonia.Controls;
-using Avalonia.Platform.Storage;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 
@@ -19,8 +17,10 @@ internal partial class ConfigViewModel : ObservableObject
     /// Called when the user confirms a new job.  Receives (audioPath, jobTitle).
     /// Runs asynchronously — the Start command navigates back after it completes.
     /// </summary>
-    public Func<string, string, Task>? EnqueueJob   { get; set; }
-    public Action?                     NavigateBack { get; set; }
+    public Func<string, string, Task>? EnqueueJob     { get; set; }
+    public Action?                     NavigateBack   { get; set; }
+    /// <summary>Opens an audio file picker and returns the chosen path, or null if cancelled.</summary>
+    public Func<Task<string?>>?        PickAudioFile  { get; set; }
 
     private bool CanStart() =>
         !string.IsNullOrWhiteSpace(AudioFilePath) &&
@@ -30,32 +30,11 @@ internal partial class ConfigViewModel : ObservableObject
     [RelayCommand]
     private async Task SelectAudioFileAsync()
     {
-        // We can't get TopLevel from a ViewModel directly
-        // This is a known limitation - we need to pass in a way to get the TopLevel
-        // For now, we'll skip this and assume it's called from a context where we can get it
-        return;
-        
-        // This code is kept for reference:
-        // var topLevel = TopLevel.GetTopLevel((Visual?)this);
-        // if (topLevel == null) return;
-        //
-        // var files = await topLevel.StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
-        // {
-        //     Title = Loc.Instance["dlg_select_audio"],
-        //     AllowMultiple = false,
-        //     FileTypeChoices = new[]
-        //     {
-        //         new FilePickerFileType(Loc.Instance["dlg_audio_filter"])
-        //         {
-        //             Patterns = new[] { "*.wav", "*.mp3", "*.m4a", "*.flac", "*.ogg" }
-        //         }
-        //     }
-        // });
-        //
-        // if (files.Count == 0) return;
-        //
-        // AudioFilePath = files[0].Path.LocalPath;
-        // JobName = Path.GetFileNameWithoutExtension(files[0].FileName);
+        if (PickAudioFile is null) return;
+        var path = await PickAudioFile();
+        if (path is null) return;
+        AudioFilePath = path;
+        JobName       = Path.GetFileNameWithoutExtension(path);
     }
 
     [RelayCommand(CanExecute = nameof(CanStart))]

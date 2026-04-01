@@ -37,10 +37,24 @@
         </Menu>
 
         <!-- ── Panel content ── -->
-        <StackPanel Margin="16">
-            <v:HomeView IsVisible="{Binding CurrentPanel, Converter={StaticResource PanelVisibilityConverter}, ConverterParameter=Home}" />
-            <v:ProgressView IsVisible="{Binding CurrentPanel, Converter={StaticResource PanelVisibilityConverter}, ConverterParameter=Progress}" />
-            <v:ResultsView IsVisible="{Binding CurrentPanel, Converter={StaticResource PanelVisibilityConverter}, ConverterParameter=Results}" />
-        </StackPanel>
+        <!-- DataContext on each view is scoped to its own ViewModel.
+             IsVisible must reach back to MainViewModel.CurrentPanel via RelativeSource. -->
+        <Grid Margin="16">
+            <v:HomeView     DataContext="{Binding Home}"
+                            IsVisible="{Binding DataContext.CurrentPanel,
+                                        RelativeSource={RelativeSource AncestorType=Window},
+                                        Converter={StaticResource PanelVisibilityConverter},
+                                        ConverterParameter=Home}" />
+            <v:ProgressView DataContext="{Binding Progress}"
+                            IsVisible="{Binding DataContext.CurrentPanel,
+                                        RelativeSource={RelativeSource AncestorType=Window},
+                                        Converter={StaticResource PanelVisibilityConverter},
+                                        ConverterParameter=Progress}" />
+            <v:ResultsView  DataContext="{Binding Results}"
+                            IsVisible="{Binding DataContext.CurrentPanel,
+                                        RelativeSource={RelativeSource AncestorType=Window},
+                                        Converter={StaticResource PanelVisibilityConverter},
+                                        ConverterParameter=Results}" />
+        </Grid>
     </DockPanel>
 </Window>

@@ -1,5 +1,6 @@
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Platform.Storage;
 using Avalonia.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
 using Parakeet.Base;
@@ -79,7 +80,7 @@ internal partial class MainViewModel : ObservableObject
         // Home → Results (load a completed job)
         Home.LoadJobToResults = job =>
         {
-            Results.Load(job.ResultsFile, job.AudioBaseName);
+            Results.Load(job.ResultsFile, job.AudioBaseName, _mainWindow);
             CurrentPanel = AppPanel.Results;
         };
 
@@ -98,6 +99,48 @@ internal partial class MainViewModel : ObservableObject
             RefreshJobsAndSync();
         };
 
+        // Home → Bulk file picker (multi-select)
+        Home.PickMultipleAudioFiles = async () =>
+        {
+            var files = await _mainWindow!.StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
+            {
+                Title         = Loc.Instance["dlg_select_audio"],
+                AllowMultiple = true,
+                FileTypeFilter =
+                [
+                    new FilePickerFileType("Media files")
+                    {
+                        Patterns = ["*.wav","*.mp3","*.flac","*.m4a","*.ogg","*.aac","*.webm",
+                                    "*.opus","*.wma","*.aiff","*.mp4","*.mov","*.mkv","*.avi",
+                                    "*.wmv","*.flv","*.ts","*.mts","*.m2ts","*.3gp"],
+                    },
+                    new FilePickerFileType("All files") { Patterns = ["*"] },
+                ],
+            });
+            return files.Count > 0 ? [.. files.Select(f => f.Path.LocalPath)] : null;
+        };
+
+        // Config → audio file picker (single-select)
+        Config.PickAudioFile = async () =>
+        {
+            var files = await _mainWindow!.StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
+            {
+                Title         = Loc.Instance["dlg_select_audio"],
+                AllowMultiple = false,
+                FileTypeFilter =
+                [
+                    new FilePickerFileType("Media files")
+                    {
+                        Patterns = ["*.wav","*.mp3","*.flac","*.m4a","*.ogg","*.aac","*.webm",
+                                    "*.opus","*.wma","*.aiff","*.mp4","*.mov","*.mkv","*.avi",
+                                    "*.wmv","*.flv","*.ts","*.mts","*.m2ts","*.3gp"],
+                    },
+                    new FilePickerFileType("All files") { Patterns = ["*"] },
+                ],
+            });
+            return files.Count > 0 ? files[0].Path.LocalPath : null;
+        };
+
         // Config → Enqueue (window closes via NavigateBack after enqueue)
         Config.EnqueueJob = async (audioPath, jobTitle) =>
         {
@@ -109,7 +152,7 @@ internal partial class MainViewModel : ObservableObject
         Progress.NavigateToResults = () =>
         {
             if (Progress.CompletedResultsDbPath is { } dbPath)
-                Results.Load(dbPath, Progress.CompletedAudioBaseName);
+                Results.Load(dbPath, Progress.CompletedAudioBaseName, _mainWindow);
             CurrentPanel = AppPanel.Results;
         };
 

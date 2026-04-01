@@ -2,7 +2,6 @@ using System.Collections.ObjectModel;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Media;
-using Avalonia.Platform.Storage;
 using Avalonia.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
@@ -30,8 +29,10 @@ internal partial class HomeViewModel : ObservableObject
     public Action<int>?          CancelJob         { get; set; }
     public Action<JobRecord>?    LoadJobToResults  { get; set; }
     public Action<JobRecord>?    MonitorJob        { get; set; }
-    public Func<string[], Task>? BulkEnqueueFiles  { get; set; }
-    public Action?               OpenSettings      { get; set; }
+    public Func<string[], Task>?        BulkEnqueueFiles        { get; set; }
+    public Action?                      OpenSettings            { get; set; }
+    /// <summary>Opens a multi-select audio file picker. Returns paths, or null if cancelled.</summary>
+    public Func<Task<string[]?>>?       PickMultipleAudioFiles  { get; set; }
 
     public HomeViewModel(ModelManagerService modelMgr, ControlDb controlDb)
     {
@@ -111,10 +112,11 @@ internal partial class HomeViewModel : ObservableObject
     [RelayCommand]
     private async Task BulkAddJobs()
     {
-        // ViewModels can't directly access TopLevel
-        // This needs to be handled by the view or through a service
-        // For now, this is a placeholder
-        return;
+        if (PickMultipleAudioFiles is null) return;
+        var paths = await PickMultipleAudioFiles();
+        if (paths is null || paths.Length == 0) return;
+        if (BulkEnqueueFiles != null)
+            await BulkEnqueueFiles(paths);
     }
 
     [RelayCommand]
