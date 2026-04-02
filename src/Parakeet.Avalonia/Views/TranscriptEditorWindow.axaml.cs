@@ -10,6 +10,7 @@ using Avalonia.Media;
 using Avalonia.Media.Imaging;
 using Avalonia.Platform;
 using Avalonia.Threading;
+using Avalonia.VisualTree;
 using Parakeet.Base;
 using ParakeetCSharp.Models;
 using ParakeetCSharp.Services;
@@ -62,6 +63,7 @@ public partial class TranscriptEditorWindow : Window
     private bool _redoAsrRunning;
     private int _redoAsrCardIndex = -1;
     private int _redoAsrSpinnerFrameIndex;
+    private bool _suppressSelectionChanged;
     private DispatcherTimer? _redoAsrSpinnerTimer;
 
     public event Action? DataChanged;
@@ -96,9 +98,12 @@ public partial class TranscriptEditorWindow : Window
         Loaded += OnLoaded;
         Closed += OnClosed;
 
-        SeekSlider.PointerPressed += (_, _) => _seekDragging = true;
-        SeekSlider.PointerReleased += OnSeekSliderPointerReleased;
+        SeekSlider.AddHandler(InputElement.PointerPressedEvent, OnSeekSliderPointerPressed, RoutingStrategies.Tunnel | RoutingStrategies.Bubble, handledEventsToo: true);
+        SeekSlider.AddHandler(InputElement.PointerMovedEvent, OnSeekSliderPointerMoved, RoutingStrategies.Tunnel | RoutingStrategies.Bubble, handledEventsToo: true);
+        SeekSlider.AddHandler(InputElement.PointerReleasedEvent, OnSeekSliderPointerReleased, RoutingStrategies.Tunnel | RoutingStrategies.Bubble, handledEventsToo: true);
+        SeekSlider.AddHandler(InputElement.PointerExitedEvent, OnSeekSliderPointerLeave, RoutingStrategies.Tunnel | RoutingStrategies.Bubble, handledEventsToo: true);
         SpeedSlider.PropertyChanged += OnSpeedSliderPropertyChanged;
+        SpeedSlider.PointerWheelChanged += OnSpeedSliderPointerWheelChanged;
     }
 
     private async void OnLoaded(object? sender, RoutedEventArgs e)
@@ -320,7 +325,7 @@ public partial class TranscriptEditorWindow : Window
             RefreshCardState(_state.Cards[i], preserveDrafts: true);
         }
 
-        RefreshFocusedCardAsrHighlighting();
+        RefreshFocusedNeighborhood();
     }
 
     private void RefreshCardState(TranscriptEditorCardState card, bool preserveDrafts)
@@ -349,21 +354,59 @@ public partial class TranscriptEditorWindow : Window
     {
         if (focusedIndex < 0 || focusedIndex >= _state.Cards.Count)
         {
-            _state.ApplyFocusedIndex(-1, force);
+            _suppressSelectionChanged = true;
+            try
+            {
+                _state.ApplyFocusedIndex(-1, force);
+            }
+            finally
+            {
+                _suppressSelectionChanged = false;
+            }
             return;
         }
 
         _isUpdatingUi = true;
-        _state.ApplyFocusedIndex(focusedIndex, force);
-        _isUpdatingUi = false;
+        _suppressSelectionChanged = true;
+        try
+        {
+            _state.ApplyFocusedIndex(focusedIndex, force);
+        }
+        finally
+        {
+            _suppressSelectionChanged = false;
+            _isUpdatingUi = false;
+        }
 
         for (int i = 0; i < _state.Cards.Count; i++)
-            if (i == focusedIndex || force)
+            if (force || IsWarmCardIndex(i, focusedIndex))
                 RefreshCardState(_state.Cards[i], preserveDrafts: true);
 
-        RefreshFocusedCardAsrHighlighting();
+        RefreshFocusedNeighborhood();
         SegmentList.ScrollIntoView(_state.Cards[focusedIndex]);
     }
+
+    private void RefreshFocusedNeighborhood()
+    {
+        if (_vm.FocusedIndex < 0 || _vm.FocusedIndex >= _state.Cards.Count)
+            return;
+
+        for (int i = 0; i < _state.Cards.Count; i++)
+        {
+            if (!IsWarmCardIndex(i, _vm.FocusedIndex))
+                continue;
+
+            _vm.RefreshFocusedCardAsrHighlighting(
+                _state.Cards[i],
+                _vocab,
+                GetThemeColor("ConfidenceLowBrush"),
+                GetThemeColor("AccentBrush"),
+                i == _vm.FocusedIndex ? _vm.HighlightedToken : -1);
+        }
+    }
+
+    private static bool IsWarmCardIndex(int cardIndex, int focusedIndex)
+        => Math.Abs(cardIndex - focusedIndex) <= 1;
 
     private void SetFocusedIndex(int index, bool force = false)
     {
@@ -406,15 +449,7 @@ public partial class TranscriptEditorWindow : Window
 
     private void RefreshFocusedCardAsrHighlighting()
     {
-        if (_vm.FocusedIndex < 0 || _vm.FocusedIndex >= _state.Cards.Count)
-            return;
-
-        _vm.RefreshFocusedCardAsrHighlighting(
-            _state.Cards[_vm.FocusedIndex],
-            _vocab,
-            GetThemeColor("ConfidenceLowBrush"),
-            GetThemeColor("AccentBrush"),
-            _vm.HighlightedToken);
+        RefreshFocusedNeighborhood();
     }
 
     private void UpdateFocusedCardTokenHighlight(int tokenIndex)
@@ -462,7 +497,7 @@ public partial class TranscriptEditorWindow : Window
 
     private void SegmentList_SelectionChanged(object? sender, SelectionChangedEventArgs e)
     {
-        if (_isUpdatingUi)
+        if (_isUpdatingUi || _suppressSelectionChanged)
         {
             return;
         }
@@ -473,10 +508,38 @@ public partial class TranscriptEditorWindow : Window
             return;
         }
 
+        if (_vm.IsPlaying && _vm.PlaybackMode == PlaybackMode.Continuous)
+        {
+            ApplyFocusedIndex(_vm.FocusedIndex, force: true);
+            return;
+        }
+
         if (_state.SelectedCard is { } card && card.Index != _vm.FocusedIndex)
         {
             _vm.NavigateTo(card.Index);
         }
+    }
+
+    private void SegmentCard_PointerPressed(object? sender, PointerPressedEventArgs e)
+    {
+        if (CardFromSender(sender) is not { } card)
+        {
+            return;
+        }
+
+        if (_redoAsrRunning)
+        {
+            ApplyFocusedIndex(_vm.FocusedIndex, force: true);
+            return;
+        }
+
+        if (card.Index != _vm.FocusedIndex)
+        {
+            _vm.NavigateTo(card.Index);
+        }
+
+        ApplyFocusedIndex(_vm.FocusedIndex, force: true);
+        RefreshPlaybackUi();
     }
 
     private void SpeakerNameBox_LostFocus(object? sender, RoutedEventArgs e)
@@ -607,12 +670,67 @@ public partial class TranscriptEditorWindow : Window
         RefreshPlaybackUi();
     }
 
+    private void OnSeekSliderPointerPressed(object? sender, PointerPressedEventArgs e)
+    {
+        _seekDragging = true;
+        OnSeekSliderPointerMoved(sender, e);
+    }
+
     private void OnSeekSliderPointerReleased(object? sender, PointerReleasedEventArgs e)
     {
         _seekDragging = false;
-        if (!_isUpdatingUi)
+        HideSeekBubble();
+        if (_isUpdatingUi)
         {
-            _vm.Seek(SeekSlider.Value);
+            return;
+        }
+
+        Dispatcher.UIThread.Post(() =>
+        {
+            double seekValue = SeekSlider.Value;
+            if (_vm.PlaybackMode == PlaybackMode.Continuous)
+            {
+                _vm.SeekContinuous(seekValue);
+                ApplyFocusedIndex(_vm.FocusedIndex, force: true);
+            }
+            else
+            {
+                _vm.Seek(seekValue);
+                ApplyFocusedIndex(_vm.FocusedIndex, force: true);
+            }
+            RefreshPlaybackUi();
+        }, DispatcherPriority.Background);
+    }
+
+    private void OnSeekSliderPointerMoved(object? sender, PointerEventArgs e)
+    {
+        if (_vm.PlaybackMode != PlaybackMode.Continuous
+            || _vm.TotalAudioSeconds is not { } totalSec
+            || totalSec <= 0
+            || SeekSlider.Bounds.Width <= 0)
+        {
+            HideSeekBubble();
+            return;
+        }
+
+        Point pointer = e.GetPosition(SeekSlider);
+        double ratio = Math.Clamp(pointer.X / SeekSlider.Bounds.Width, 0.0, 1.0);
+        SeekBubbleText.Text = FormatTime(ratio * totalSec);
+
+        Point bubbleAnchor = SeekSlider.TranslatePoint(new Point(pointer.X, 0), SeekBubbleLayer)
+            ?? default;
+
+        double bubbleWidth = SeekBubbleHost.Bounds.Width > 0 ? SeekBubbleHost.Bounds.Width : 72;
+        Canvas.SetLeft(SeekBubbleHost, bubbleAnchor.X - (bubbleWidth / 2));
+        Canvas.SetTop(SeekBubbleHost, bubbleAnchor.Y - 46);
+        SeekBubbleHost.IsVisible = true;
+    }
+
+    private void OnSeekSliderPointerLeave(object? sender, PointerEventArgs e)
+    {
+        if (!_seekDragging)
+        {
+            HideSeekBubble();
         }
     }
 
@@ -625,6 +743,26 @@ public partial class TranscriptEditorWindow : Window
 
         _vm.PlaybackSpeed = SpeedSlider.Value;
         RefreshPlaybackUi();
+    }
+
+    private void OnSpeedSliderPointerWheelChanged(object? sender, PointerWheelEventArgs e)
+    {
+        if (!SpeedSlider.IsEnabled)
+        {
+            return;
+        }
+
+        double step = e.Delta.Y > 0 ? 0.1 : -0.1;
+        SpeedSlider.Value = Math.Clamp(
+            SpeedSlider.Value + step,
+            SpeedSlider.Minimum,
+            SpeedSlider.Maximum);
+        e.Handled = true;
+    }
+
+    private void HideSeekBubble()
+    {
+        SeekBubbleHost.IsVisible = false;
     }
 
     private void RenameSpeaker_Click(object? sender, RoutedEventArgs e)
@@ -903,5 +1041,13 @@ public partial class TranscriptEditorWindow : Window
         var frames = GetRedoAsrSpinnerFrames();
         _redoAsrSpinnerFrameIndex = (_redoAsrSpinnerFrameIndex + 1) % frames.Length;
         card.RedoAsrSpinnerImage = frames[_redoAsrSpinnerFrameIndex];
+    }
+
+    private static string FormatTime(double s)
+    {
+        int h = (int)(s / 3600);
+        int m = (int)(s % 3600 / 60);
+        double sec = s % 60;
+        return h > 0 ? $"{h}:{m:D2}:{sec:00.0}" : $"{m:D2}:{sec:00.0}";
     }
 }

@@ -208,7 +208,7 @@
 
             <ListBox.ItemTemplate>
                 <DataTemplate>
-                    <Grid>
+                    <Grid PointerPressed="SegmentCard_PointerPressed">
                         <Border IsVisible="{Binding IsFocused, Converter={StaticResource InvBoolToVis}}"
                                 Background="{Binding AdjacentBackground}"
                                 BorderBrush="{DynamicResource OverlayBrush}"
@@ -410,7 +410,7 @@
 
                                 <Grid ColumnDefinitions="*,*"
                                       ColumnSpacing="10"
-                                      Height="240">
+                                      MaxHeight="240">
                                     <Border Background="Transparent">
                                         <Grid RowDefinitions="Auto,*"
                                               RowSpacing="6">
@@ -419,6 +419,7 @@
                                                        FontWeight="SemiBold"
                                                        Foreground="{DynamicResource SubtextBrush}" />
                                             <ScrollViewer Grid.Row="1"
+                                                          MaxHeight="214"
                                                           VerticalScrollBarVisibility="Auto"
                                                           HorizontalScrollBarVisibility="Disabled">
                                                 <ItemsControl ItemsSource="{Binding AsrRuns}">
@@ -453,7 +454,8 @@
                                                      AcceptsReturn="True"
                                                      TextWrapping="Wrap"
                                                      VerticalContentAlignment="Top"
-                                                     MinHeight="180"
+                                                     MinHeight="84"
+                                                     MaxHeight="214"
                                                      FontSize="14"
                                                      Padding="8,6"
                                                      LostFocus="EditTextBox_LostFocus" />
@@ -471,6 +473,30 @@
             </ListBox.ItemTemplate>
         </ListBox>
         </DockPanel>
+
+        <Canvas x:Name="SeekBubbleLayer"
+                IsHitTestVisible="False">
+            <StackPanel x:Name="SeekBubbleHost"
+                        IsVisible="False"
+                        Spacing="0">
+                <Border Background="{DynamicResource SurfaceBrush}"
+                        BorderBrush="{DynamicResource OverlayBrush}"
+                        BorderThickness="1"
+                        CornerRadius="4">
+                    <TextBlock x:Name="SeekBubbleText"
+                               MinWidth="72"
+                               Padding="8,3"
+                               TextAlignment="Center"
+                               FontSize="12"
+                               Foreground="{DynamicResource TextBrush}" />
+                </Border>
+                <TextBlock Text="▼"
+                           FontSize="8"
+                           HorizontalAlignment="Center"
+                           Margin="0,-1,0,0"
+                           Foreground="{DynamicResource SubtextBrush}" />
+            </StackPanel>
+        </Canvas>
 
         <Border x:Name="LoadingOverlay"
                 IsVisible="{Binding IsLoading}"

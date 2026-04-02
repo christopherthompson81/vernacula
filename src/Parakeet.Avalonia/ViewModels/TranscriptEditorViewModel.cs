@@ -39,6 +39,8 @@ internal partial class TranscriptEditorViewModel : ObservableObject, IDisposable
     private WaveOutEvent?    _waveOut;
     private Process?         _playbackProcess;
     private DispatcherTimer? _playbackTimer;
+    private bool             _preserveContinuousPlaybackPosition;
+    private bool             _suppressContinuousPositionFocusSync;
 
     public ObservableCollection<EditorSegment> Segments    { get; } = [];
     public List<(int SpeakerId, string Name)>  AllSpeakers { get; private set; } = [];
@@ -206,8 +208,13 @@ internal partial class TranscriptEditorViewModel : ObservableObject, IDisposable
     {
         if (PlaybackMode == PlaybackMode.Continuous)
         {
-            // Seek to the start of the newly focused segment (unless playing — position drives focus then)
-            if (!IsPlaying && value >= 0 && value < Segments.Count && _fullAudio != null)
+            // Keep the global playback cursor when focus is being driven from it, such as
+            // during continuous-mode seeking.
+            if (!IsPlaying
+                && !_preserveContinuousPlaybackPosition
+                && value >= 0
+                && value < Segments.Count
+                && _fullAudio != null)
             {
                 double totalDuration = (double)_fullAudio.Length / (_audioSampleRate * _audioChannels);
                 if (totalDuration > 0)
@@ -235,7 +242,18 @@ internal partial class TranscriptEditorViewModel : ObservableObject, IDisposable
             if (_fullAudio == null) return;
             double totalDuration = (double)_fullAudio.Length / (_audioSampleRate * _audioChannels);
             double curSec = value * totalDuration;
-            UpdateContinuousFocus(curSec);
+            if (!_suppressContinuousPositionFocusSync)
+            {
+                _preserveContinuousPlaybackPosition = true;
+                try
+                {
+                    UpdateContinuousFocus(curSec);
+                }
+                finally
+                {
+                    _preserveContinuousPlaybackPosition = false;
+                }
+            }
             if (FocusedIndex >= 0 && FocusedIndex < Segments.Count)
             {
                 var cseg = Segments[FocusedIndex];
@@ -445,6 +463,65 @@ internal partial class TranscriptEditorViewModel : ObservableObject, IDisposable
         StopPlayback();
         PlaybackPosition = Math.Clamp(position, 0.0, 1.0);
         if (wasPlaying) Play();
+    }
+
+    public void SeekContinuous(double position)
+    {
+        if (_fullAudio == null || Segments.Count == 0)
+            return;
+
+        bool wasPlaying = IsPlaying;
+        double clampedPosition = Math.Clamp(position, 0.0, 1.0);
+        int focusIndex = GetContinuousFocusIndex(clampedPosition);
+
+        StopPlayback();
+
+        _suppressContinuousPositionFocusSync = true;
+        _preserveContinuousPlaybackPosition = true;
+        try
+        {
+            PlaybackPosition = clampedPosition;
+            if (focusIndex >= 0 && focusIndex < Segments.Count && focusIndex != FocusedIndex)
+            {
+                FocusedIndexChanging?.Invoke(focusIndex);
+                FocusedIndex = focusIndex;
+            }
+        }
+        finally
+        {
+            _preserveContinuousPlaybackPosition = false;
+            _suppressContinuousPositionFocusSync = false;
+        }
+
+        if (wasPlaying)
+            Play();
+    }
+
+    public int GetContinuousFocusIndex(double position)
+    {
+        if (_fullAudio == null || Segments.Count == 0)
+            return FocusedIndex;
+
+        double totalDuration = (double)_fullAudio.Length / (_audioSampleRate * _audioChannels);
+        if (totalDuration <= 0)
+            return FocusedIndex;
+
+        double timeSec = Math.Clamp(position, 0.0, 1.0) * totalDuration;
+
+        for (int i = 0; i < Segments.Count; i++)
+        {
+            var segment = Segments[i];
+            if (timeSec >= segment.PlayStart && timeSec < segment.PlayEnd)
+                return i;
+        }
+
+        for (int i = 0; i < Segments.Count; i++)
+        {
+            if (Segments[i].PlayStart > timeSec)
+                return i;
+        }
+
+        return Segments.Count - 1;
     }
 
     private void UpdateHighlightedToken(EditorSegment seg, double secondsIntoSegment)
