@@ -21,6 +21,19 @@ namespace ParakeetCSharp.Views;
 public partial class TranscriptEditorWindow : Window
 {
     private const int RedoSpinnerFrameCount = 20;
+    private static readonly Bitmap SuppressDarkBitmap = LoadBitmap("avares://Parakeet.Avalonia/Assets/toolbar_icons/suppress_dark.png");
+    private static readonly Bitmap SuppressLightBitmap = LoadBitmap("avares://Parakeet.Avalonia/Assets/toolbar_icons/suppress_light.png");
+    private static readonly Bitmap SuppressRedBitmap = LoadBitmap("avares://Parakeet.Avalonia/Assets/toolbar_icons/suppress_red.png");
+    private static readonly Bitmap AdjustTimesDarkBitmap = LoadBitmap("avares://Parakeet.Avalonia/Assets/toolbar_icons/adjust_times_dark.png");
+    private static readonly Bitmap AdjustTimesLightBitmap = LoadBitmap("avares://Parakeet.Avalonia/Assets/toolbar_icons/adjust_times_light.png");
+    private static readonly Bitmap MergePrevDarkBitmap = LoadBitmap("avares://Parakeet.Avalonia/Assets/toolbar_icons/merge_prev_dark.png");
+    private static readonly Bitmap MergePrevLightBitmap = LoadBitmap("avares://Parakeet.Avalonia/Assets/toolbar_icons/merge_prev_light.png");
+    private static readonly Bitmap MergeNextDarkBitmap = LoadBitmap("avares://Parakeet.Avalonia/Assets/toolbar_icons/merge_next_dark.png");
+    private static readonly Bitmap MergeNextLightBitmap = LoadBitmap("avares://Parakeet.Avalonia/Assets/toolbar_icons/merge_next_light.png");
+    private static readonly Bitmap SplitDarkBitmap = LoadBitmap("avares://Parakeet.Avalonia/Assets/toolbar_icons/split_dark.png");
+    private static readonly Bitmap SplitLightBitmap = LoadBitmap("avares://Parakeet.Avalonia/Assets/toolbar_icons/split_light.png");
+    private static readonly Bitmap RedoDarkBitmap = LoadBitmap("avares://Parakeet.Avalonia/Assets/toolbar_icons/redo_dark.png");
+    private static readonly Bitmap RedoLightBitmap = LoadBitmap("avares://Parakeet.Avalonia/Assets/toolbar_icons/redo_light.png");
     private static readonly Bitmap[] RedoSpinnerDarkFrames = LoadSpinnerFrames("avares://Parakeet.Avalonia/Assets/redo_spinner_dark_frames");
     private static readonly Bitmap[] RedoSpinnerLightFrames = LoadSpinnerFrames("avares://Parakeet.Avalonia/Assets/redo_spinner_light_frames");
 
@@ -124,6 +137,7 @@ public partial class TranscriptEditorWindow : Window
     {
         Dispatcher.UIThread.Post(() =>
         {
+            RefreshActionButtonImages();
             RefreshRedoAsrSpinnerImages();
             RefreshHeader();
             RefreshPlaybackUi();
@@ -218,10 +232,29 @@ public partial class TranscriptEditorWindow : Window
         for (int i = 0; i < _vm.Segments.Count; i++)
         {
             var state = new TranscriptEditorCardState(_vm.Segments[i], i);
+            AssignActionButtonImages(state);
             state.RedoAsrSpinnerImage = GetRedoAsrSpinnerImage();
             RefreshCardState(state, preserveDrafts: false);
             _state.Cards.Add(state);
         }
+    }
+
+    private void RefreshActionButtonImages()
+    {
+        foreach (var card in _state.Cards)
+            AssignActionButtonImages(card);
+    }
+
+    private static void AssignActionButtonImages(TranscriptEditorCardState card)
+    {
+        bool dark = App.Current.Settings.Current.Theme == AppTheme.Dark;
+        card.SuppressIconImage = dark ? SuppressDarkBitmap : SuppressLightBitmap;
+        card.SuppressAlertIconImage = SuppressRedBitmap;
+        card.AdjustTimesIconImage = dark ? AdjustTimesDarkBitmap : AdjustTimesLightBitmap;
+        card.MergePrevIconImage = dark ? MergePrevDarkBitmap : MergePrevLightBitmap;
+        card.MergeNextIconImage = dark ? MergeNextDarkBitmap : MergeNextLightBitmap;
+        card.SplitIconImage = dark ? SplitDarkBitmap : SplitLightBitmap;
+        card.RedoAsrIconImage = dark ? RedoDarkBitmap : RedoLightBitmap;
     }
 
     private void RefreshRedoAsrSpinnerImages()
@@ -250,6 +283,9 @@ public partial class TranscriptEditorWindow : Window
 
         return frames;
     }
+
+    private static Bitmap LoadBitmap(string uri)
+        => new(AssetLoader.Open(new Uri(uri)));
 
     private void RefreshAllCardState()
     {

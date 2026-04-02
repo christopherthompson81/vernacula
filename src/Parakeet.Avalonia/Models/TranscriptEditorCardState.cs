@@ -41,13 +41,19 @@ internal sealed partial class TranscriptEditorCardState : ObservableObject
     [ObservableProperty] private string _statusMessage = "";
     [ObservableProperty] private string _timeRangeText;
     [ObservableProperty] private string _suppressButtonText;
-    [ObservableProperty] private string _suppressGlyph = "⊘";
     [ObservableProperty] private bool _canMergePrev;
     [ObservableProperty] private bool _canMergeNext;
     [ObservableProperty] private bool _canSplit;
     [ObservableProperty] private bool _canRedoAsr;
     [ObservableProperty] private bool _canAdjustTimes = true;
     [ObservableProperty] private bool _isRedoAsrSpinning;
+    [ObservableProperty] private Bitmap? _suppressIconImage;
+    [ObservableProperty] private Bitmap? _suppressAlertIconImage;
+    [ObservableProperty] private Bitmap? _adjustTimesIconImage;
+    [ObservableProperty] private Bitmap? _mergePrevIconImage;
+    [ObservableProperty] private Bitmap? _mergeNextIconImage;
+    [ObservableProperty] private Bitmap? _splitIconImage;
+    [ObservableProperty] private Bitmap? _redoAsrIconImage;
     [ObservableProperty] private Bitmap? _redoAsrSpinnerImage;
     [ObservableProperty] private bool _showAdjacentRuns;
     [ObservableProperty] private string _adjacentPlainText = "";
@@ -102,7 +108,6 @@ internal sealed partial class TranscriptEditorCardState : ObservableObject
         RefreshDerived();
         SetSpeakerChoices(choices);
         SuppressButtonText = Segment.IsSuppressed ? unsuppressText : suppressText;
-        SuppressGlyph = "⊘";
         ApplyActionAvailability(canMergePrev, canMergeNext, canSplit, canRedoAsr, canAdjustTimes);
     }
 

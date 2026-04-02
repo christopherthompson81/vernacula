@@ -18,45 +18,43 @@
 
     <Window.Styles>
         <Style Selector="Button.action-button">
-            <Setter Property="Width" Value="34" />
-            <Setter Property="Height" Value="30" />
+            <Setter Property="Width" Value="32" />
+            <Setter Property="Height" Value="32" />
             <Setter Property="Padding" Value="0" />
+            <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+            <Setter Property="VerticalContentAlignment" Value="Stretch" />
         </Style>
-        <Style Selector="TextBlock.action-icon">
-            <Setter Property="FontSize" Value="15" />
+        <Style Selector="Image.action-icon-image">
+            <Setter Property="Width" Value="28" />
+            <Setter Property="Height" Value="28" />
             <Setter Property="HorizontalAlignment" Value="Center" />
             <Setter Property="VerticalAlignment" Value="Center" />
-            <Setter Property="TextAlignment" Value="Center" />
-        </Style>
-        <Style Selector="TextBlock.compact-action-icon">
-            <Setter Property="FontSize" Value="15" />
-            <Setter Property="HorizontalAlignment" Value="Center" />
-            <Setter Property="VerticalAlignment" Value="Center" />
-            <Setter Property="TextAlignment" Value="Center" />
+            <Setter Property="Stretch" Value="Uniform" />
         </Style>
         <Style Selector="Grid.redo-button-host">
-            <Setter Property="Width" Value="34" />
-            <Setter Property="Height" Value="30" />
+            <Setter Property="Width" Value="32" />
+            <Setter Property="Height" Value="32" />
             <Setter Property="HorizontalAlignment" Value="Stretch" />
             <Setter Property="VerticalAlignment" Value="Stretch" />
             <Setter Property="ClipToBounds" Value="True" />
         </Style>
         <Style Selector="Canvas.redo-square-host">
-            <Setter Property="Width" Value="30" />
-            <Setter Property="Height" Value="30" />
+            <Setter Property="Width" Value="32" />
+            <Setter Property="Height" Value="32" />
             <Setter Property="HorizontalAlignment" Value="Center" />
             <Setter Property="VerticalAlignment" Value="Center" />
         </Style>
         <Style Selector="Border.redo-spinner-viewport">
-            <Setter Property="Width" Value="16" />
-            <Setter Property="Height" Value="16" />
+            <Setter Property="Width" Value="28" />
+            <Setter Property="Height" Value="28" />
             <Setter Property="Background" Value="Transparent" />
         </Style>
         <Style Selector="Image.redo-icon-host">
-            <Setter Property="Width" Value="16" />
-            <Setter Property="Height" Value="16" />
+            <Setter Property="Width" Value="28" />
+            <Setter Property="Height" Value="28" />
             <Setter Property="HorizontalAlignment" Value="Center" />
             <Setter Property="VerticalAlignment" Value="Center" />
+            <Setter Property="Stretch" Value="Uniform" />
         </Style>
     </Window.Styles>
 
@@ -323,62 +321,64 @@
                                             Margin="0,0,8,8"
                                             Click="SuppressButton_Click"
                                             ToolTip.Tip="{Binding SuppressButtonText}">
-                                        <TextBlock Text="{Binding SuppressGlyph}"
-                                                   Foreground="{Binding SuppressIconBrush}"
-                                                   Classes="action-icon" />
+                                        <Grid Width="28"
+                                              Height="28">
+                                            <Image Classes="action-icon-image"
+                                                   Source="{Binding SuppressIconImage}"
+                                                   Opacity="{Binding IsSuppressed, Converter={StaticResource InvBoolToOpacity}}" />
+                                            <Image Classes="action-icon-image"
+                                                   Source="{Binding SuppressAlertIconImage}"
+                                                   Opacity="{Binding IsSuppressed, Converter={StaticResource BoolToOpacity}}" />
+                                        </Grid>
                                     </Button>
                                     <Button Classes="secondary-button action-button"
                                             Margin="0,0,8,8"
                                             Click="AdjustTimes_Click"
                                             IsEnabled="{Binding CanAdjustTimes}"
                                             ToolTip.Tip="{local:Loc editor_adjust_times}">
-                                        <TextBlock Classes="action-icon"
-                                                   Text="◷" />
+                                        <Image Classes="action-icon-image"
+                                               Source="{Binding AdjustTimesIconImage}" />
                                     </Button>
                                     <Button Classes="secondary-button action-button"
                                             Margin="0,0,8,8"
                                             Click="MergePrev_Click"
                                             IsEnabled="{Binding CanMergePrev}"
                                             ToolTip.Tip="{local:Loc editor_merge_prev}">
-                                        <TextBlock Classes="compact-action-icon"
-                                                   Text="←" />
+                                        <Image Classes="action-icon-image"
+                                               Source="{Binding MergePrevIconImage}" />
                                     </Button>
                                     <Button Classes="secondary-button action-button"
                                             Margin="0,0,8,8"
                                             Click="MergeNext_Click"
                                             IsEnabled="{Binding CanMergeNext}"
                                             ToolTip.Tip="{local:Loc editor_merge_next}">
-                                        <TextBlock Classes="compact-action-icon"
-                                                   Text="→" />
+                                        <Image Classes="action-icon-image"
+                                               Source="{Binding MergeNextIconImage}" />
                                     </Button>
                                     <Button Classes="secondary-button action-button"
                                             Margin="0,0,8,8"
                                             Click="Split_Click"
                                             IsEnabled="{Binding CanSplit}"
                                             ToolTip.Tip="{local:Loc editor_split}">
-                                        <TextBlock Classes="action-icon"
-                                                   Text="✂" />
+                                        <Image Classes="action-icon-image"
+                                               Source="{Binding SplitIconImage}" />
                                     </Button>
                                     <Button Classes="secondary-button action-button"
                                             Margin="0,0,8,8"
                                             Click="RedoAsr_Click"
                                             IsEnabled="{Binding CanRedoAsr}"
-                                            HorizontalContentAlignment="Stretch"
-                                            VerticalContentAlignment="Stretch"
                                             ToolTip.Tip="{local:Loc editor_redo_asr}">
                                         <Grid Classes="redo-button-host">
                                             <Canvas Classes="redo-square-host"
                                                     ClipToBounds="True">
-                                                <TextBlock Classes="action-icon"
-                                                           Canvas.Left="7"
-                                                           Canvas.Top="7"
-                                                           Width="16"
-                                                           Height="16"
-                                                           Text="↻"
-                                                           Opacity="{Binding IsRedoAsrSpinning, Converter={StaticResource InvBoolToOpacity}}" />
+                                                <Image Classes="redo-icon-host"
+                                                       Canvas.Left="2"
+                                                       Canvas.Top="2"
+                                                       Source="{Binding RedoAsrIconImage}"
+                                                       Opacity="{Binding IsRedoAsrSpinning, Converter={StaticResource InvBoolToOpacity}}" />
                                                 <Border Classes="redo-spinner-viewport"
-                                                        Canvas.Left="7"
-                                                        Canvas.Top="7"
+                                                        Canvas.Left="2"
+                                                        Canvas.Top="2"
                                                         Opacity="{Binding IsRedoAsrSpinning, Converter={StaticResource BoolToOpacity}}">
                                                     <Image Classes="redo-icon-host"
                                                            Source="{Binding RedoAsrSpinnerImage}"
