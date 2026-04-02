@@ -3,6 +3,7 @@ using System.Linq;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.Primitives;
+using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Media;
 using ParakeetCSharp.Models;
@@ -16,14 +17,21 @@ namespace ParakeetCSharp.Views.Dialogs;
 public partial class SplitSegmentDialog : Window
 {
     private IReadOnlyList<string>? _tokenTexts;
-    private readonly List<Button>          _tokenBtns = [];
+    private readonly List<Button> _tokenBtns = [];
 
     /// <summary>Index of the first token that belongs to the second (new) segment.</summary>
     public int SplitTokenIndex { get; private set; } = -1;
+    public bool DialogResult { get; private set; }
 
     public SplitSegmentDialog()
     {
         InitializeComponent();
+        KeyDown += OnDialogKeyDown;
+        Closed += (_, _) =>
+        {
+            if (!DialogResult)
+                SplitTokenIndex = -1;
+        };
     }
 
     /// <param name="tokenTexts">One decoded string per token, in order.</param>
@@ -41,8 +49,8 @@ public partial class SplitSegmentDialog : Window
     {
         if (_tokenTexts is null) return;
 
-        var surfaceBrush = (IBrush)Resources["SurfaceBrush"]!;
-        var textBrush    = (IBrush)Resources["TextBrush"]!;
+        TokenPanel.Children.Clear();
+        _tokenBtns.Clear();
 
         for (int i = 0; i < _tokenTexts.Count; i++)
         {
@@ -52,11 +60,8 @@ public partial class SplitSegmentDialog : Window
             var btn = new Button
             {
                 Content         = display,
+                Classes         = { "token-button" },
                 Margin          = new Thickness(1),
-                Padding         = new Thickness(4, 2, 4, 2),
-                Background      = surfaceBrush,
-                Foreground      = textBrush,
-                BorderThickness = new Thickness(1),
                 FontSize        = 12,
             };
             btn.SetValue(ToolTip.TipProperty, $"Token {i}: \"{_tokenTexts[i]}\"  — click to split before this token");
@@ -82,18 +87,10 @@ public partial class SplitSegmentDialog : Window
         SplitTokenIndex = index;
         OkBtn.IsEnabled = true;
 
-        var accentColor  = ((SolidColorBrush)Resources["AccentBrush"]!).Color;
-        var surfaceBrush = (IBrush)Resources["SurfaceBrush"]!;
-        var textBrush    = (IBrush)Resources["TextBrush"]!;
-        var subtextBrush = (IBrush)Resources["SubtextBrush"]!;
-
         for (int i = 0; i < _tokenBtns.Count; i++)
         {
             bool isSecond = i >= index;
-            _tokenBtns[i].Background = isSecond
-                ? new SolidColorBrush(Color.FromArgb(80, accentColor.R, accentColor.G, accentColor.B))
-                : surfaceBrush;
-            _tokenBtns[i].Foreground = isSecond ? textBrush : subtextBrush;
+            _tokenBtns[i].Classes.Set("second-half", isSecond);
         }
 
         FirstPreview.Text  = string.Concat(_tokenTexts!.Take(index)).Trim();
@@ -101,8 +98,32 @@ public partial class SplitSegmentDialog : Window
     }
 
     private void OkBtn_Click(object sender, RoutedEventArgs e)
-        => Close();
+    {
+        if (SplitTokenIndex <= 0)
+            return;
+
+        DialogResult = true;
+        Close();
+    }
 
     private void CancelBtn_Click(object sender, RoutedEventArgs e)
-        => Close();
+    {
+        DialogResult = false;
+        SplitTokenIndex = -1;
+        Close();
+    }
+
+    private void OnDialogKeyDown(object? sender, KeyEventArgs e)
+    {
+        if (e.Key == Key.Enter && OkBtn.IsEnabled)
+        {
+            OkBtn_Click(OkBtn, new RoutedEventArgs());
+            e.Handled = true;
+        }
+        else if (e.Key == Key.Escape)
+        {
+            CancelBtn_Click(CancelBtn, new RoutedEventArgs());
+            e.Handled = true;
+        }
+    }
 }

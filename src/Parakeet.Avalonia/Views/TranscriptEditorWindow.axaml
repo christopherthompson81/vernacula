@@ -124,6 +124,16 @@
                     <Setter Property="HorizontalContentAlignment" Value="Stretch" />
                     <Setter Property="BorderThickness" Value="0" />
                     <Setter Property="Background" Value="Transparent" />
+                    <Setter Property="Template">
+                        <ControlTemplate>
+                            <ContentPresenter Name="PART_ContentPresenter"
+                                              Content="{TemplateBinding Content}"
+                                              ContentTemplate="{TemplateBinding ContentTemplate}"
+                                              HorizontalContentAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                              VerticalContentAlignment="{TemplateBinding VerticalContentAlignment}"
+                                              Padding="{TemplateBinding Padding}" />
+                        </ControlTemplate>
+                    </Setter>
                 </Style>
                 <Style Selector="ListBoxItem:pointerover">
                     <Setter Property="Background" Value="Transparent" />
@@ -212,8 +222,8 @@
                         </Border>
 
                         <Border IsVisible="{Binding IsFocused, Converter={StaticResource BoolToVis}}"
-                                Background="{DynamicResource SurfaceBrush}"
-                                BorderBrush="{DynamicResource AccentBrush}"
+                                Background="{Binding FocusedBackground}"
+                                BorderBrush="{Binding FocusedBorderBrush}"
                                 BorderThickness="2"
                                 CornerRadius="10"
                                 Padding="14,12">
@@ -281,6 +291,7 @@
                                             Click="SuppressButton_Click"
                                             ToolTip.Tip="{Binding SuppressButtonText}">
                                         <TextBlock Text="{Binding SuppressGlyph}"
+                                                   Foreground="{Binding SuppressIconBrush}"
                                                    FontSize="15"
                                                    HorizontalAlignment="Center"
                                                    VerticalAlignment="Center" />

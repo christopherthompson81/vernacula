@@ -786,14 +786,14 @@ internal partial class TranscriptEditorViewModel : ObservableObject, IDisposable
     }
 
     public void RefreshAdjacentCardHighlighting(TranscriptEditorCardState card, VocabService? vocab,
-        Color confidenceLowColor, IBrush subtextBrush, IBrush textBrush)
+        Color confidenceLowColor, Color greenColor, Color redColor, IBrush subtextBrush, IBrush textBrush)
     {
         var seg = card.Segment;
         if (seg.IsSuppressed)
         {
             card.SetAdjacentPlainText(
                 seg.Content,
-                new SolidColorBrush(Color.FromArgb(30, 0xF3, 0x8B, 0xA8)),
+                new SolidColorBrush(Color.FromArgb(30, redColor.R, redColor.G, redColor.B)),
                 subtextBrush,
                 TextDecorations.Strikethrough);
             return;
@@ -803,7 +803,7 @@ internal partial class TranscriptEditorViewModel : ObservableObject, IDisposable
         {
             card.SetAdjacentPlainText(
                 seg.Content,
-                new SolidColorBrush(Color.FromArgb(40, 0xA6, 0xE3, 0xA1)),
+                new SolidColorBrush(Color.FromArgb(40, greenColor.R, greenColor.G, greenColor.B)),
                 textBrush);
             return;
         }
@@ -828,6 +828,45 @@ internal partial class TranscriptEditorViewModel : ObservableObject, IDisposable
 
         card.AdjacentBackground = Brushes.Transparent;
         card.RebuildAdjacentRuns(runs, subtextBrush);
+    }
+
+    public void RefreshFocusedCardAppearance(TranscriptEditorCardState card,
+        IBrush surfaceBrush, IBrush accentBrush, IBrush greenBrush, IBrush redBrush,
+        Color greenColor, Color redColor, IBrush textBrush)
+    {
+        Color surfaceColor = surfaceBrush is ISolidColorBrush sb ? sb.Color : Colors.Transparent;
+        var seg = card.Segment;
+        if (seg.IsSuppressed)
+        {
+            card.SetFocusedAppearance(
+                new SolidColorBrush(Blend(surfaceColor, redColor, 0.18)),
+                redBrush,
+                redBrush);
+            return;
+        }
+
+        if (seg.Verified)
+        {
+            card.SetFocusedAppearance(
+                new SolidColorBrush(Blend(surfaceColor, greenColor, 0.18)),
+                greenBrush,
+                textBrush);
+            return;
+        }
+
+        card.SetFocusedAppearance(surfaceBrush, accentBrush, textBrush);
+    }
+
+    private static Color Blend(Color baseColor, Color tintColor, double tintAmount)
+    {
+        byte BlendChannel(byte a, byte b) => (byte)Math.Clamp(
+            (int)Math.Round(a * (1.0 - tintAmount) + b * tintAmount), 0, 255);
+
+        return Color.FromArgb(
+            255,
+            BlendChannel(baseColor.R, tintColor.R),
+            BlendChannel(baseColor.G, tintColor.G),
+            BlendChannel(baseColor.B, tintColor.B));
     }
 
     public void RefreshFocusedCardAsrHighlighting(TranscriptEditorCardState card, VocabService? vocab,

@@ -225,10 +225,21 @@ public partial class TranscriptEditorWindow : Window
     private void RefreshCardState(TranscriptEditorCardState card, bool preserveDrafts)
     {
         _vm.RefreshCardState(card, preserveDrafts, _state.Cards.Count, _redoAsrRunning, _asrModelsAvailable, _vocab != null);
+        _vm.RefreshFocusedCardAppearance(
+            card,
+            GetThemeBrush("SurfaceBrush"),
+            GetThemeBrush("AccentBrush"),
+            GetThemeBrush("GreenBrush"),
+            GetThemeBrush("RedBrush"),
+            GetThemeColor("GreenColor"),
+            GetThemeColor("RedColor"),
+            GetThemeBrush("TextBrush"));
         _vm.RefreshAdjacentCardHighlighting(
             card,
             _vocab,
             GetThemeColor("ConfidenceLowBrush"),
+            GetThemeColor("GreenColor"),
+            GetThemeColor("RedColor"),
             GetThemeBrush("SubtextBrush"),
             GetThemeBrush("TextBrush"));
     }
@@ -318,9 +329,13 @@ public partial class TranscriptEditorWindow : Window
 
     private Color GetThemeColor(string brushKey)
     {
-        if (Application.Current?.Resources.TryGetResource(brushKey, null, out var value) == true
-            && value is ISolidColorBrush brush)
-            return brush.Color;
+        if (Application.Current?.Resources.TryGetResource(brushKey, null, out var value) == true)
+        {
+            if (value is Color color)
+                return color;
+            if (value is ISolidColorBrush brush)
+                return brush.Color;
+        }
 
         return Colors.Transparent;
     }
@@ -625,7 +640,7 @@ public partial class TranscriptEditorWindow : Window
 
         var dialog = new SplitSegmentDialog(tokenTexts);
         await dialog.ShowDialog(this);
-        if (dialog.SplitTokenIndex <= 0)
+        if (!dialog.DialogResult || dialog.SplitTokenIndex <= 0)
         {
             return;
         }

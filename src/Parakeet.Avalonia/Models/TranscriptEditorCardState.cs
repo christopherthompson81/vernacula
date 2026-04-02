@@ -51,6 +51,9 @@ internal sealed partial class TranscriptEditorCardState : ObservableObject
     [ObservableProperty] private IBrush _adjacentBackground = Brushes.Transparent;
     [ObservableProperty] private IBrush _adjacentForeground = Brushes.Black;
     [ObservableProperty] private TextDecorationCollection? _adjacentTextDecorations;
+    [ObservableProperty] private IBrush _focusedBackground = Brushes.Transparent;
+    [ObservableProperty] private IBrush _focusedBorderBrush = Brushes.Transparent;
+    [ObservableProperty] private IBrush _suppressIconBrush = Brushes.Black;
 
     public bool IsVerified => Segment.Verified;
     public bool IsSuppressed => Segment.IsSuppressed;
@@ -96,7 +99,7 @@ internal sealed partial class TranscriptEditorCardState : ObservableObject
         RefreshDerived();
         SetSpeakerChoices(choices);
         SuppressButtonText = Segment.IsSuppressed ? unsuppressText : suppressText;
-        SuppressGlyph = Segment.IsSuppressed ? "↺" : "⊘";
+        SuppressGlyph = "⊘";
         ApplyActionAvailability(canMergePrev, canMergeNext, canSplit, canRedoAsr, canAdjustTimes);
     }
 
@@ -147,6 +150,13 @@ internal sealed partial class TranscriptEditorCardState : ObservableObject
         ShowAdjacentRuns = false;
         AdjacentRuns.Clear();
         _adjacentBaseColors.Clear();
+    }
+
+    public void SetFocusedAppearance(IBrush background, IBrush borderBrush, IBrush suppressIconBrush)
+    {
+        FocusedBackground = background;
+        FocusedBorderBrush = borderBrush;
+        SuppressIconBrush = suppressIconBrush;
     }
 
     public void ApplyHighlightedAsrToken(int tokenIndex, Color accentColor)

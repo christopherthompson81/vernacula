@@ -40,7 +40,23 @@ public partial class App : Application
             Console.WriteLine($"[UNHANDLED] AppDomain exception: {e.ExceptionObject}");
 
         TaskScheduler.UnobservedTaskException += (_, e) =>
+        {
+            if (IsIgnorableLinuxDesktopIntegrationException(e.Exception))
+            {
+                e.SetObserved();
+                Console.WriteLine($"[INFO] Ignored desktop integration exception: {e.Exception.GetBaseException().Message}");
+                return;
+            }
+
             Console.WriteLine($"[UNHANDLED] Unobserved task exception: {e.Exception}");
+        };
+    }
+
+    private static bool IsIgnorableLinuxDesktopIntegrationException(Exception ex)
+    {
+        string text = ex.ToString();
+        return text.Contains("com.canonical.AppMenu.Registrar", StringComparison.Ordinal)
+               && text.Contains("org.freedesktop.DBus.Error.ServiceUnknown", StringComparison.Ordinal);
     }
 
     public override void Initialize()
