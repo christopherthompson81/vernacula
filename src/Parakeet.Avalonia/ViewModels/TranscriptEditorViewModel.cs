@@ -3,6 +3,7 @@ using System.Collections.ObjectModel;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text.Json;
+using Avalonia;
 using Avalonia.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
@@ -16,6 +17,8 @@ namespace ParakeetCSharp.ViewModels;
 
 internal partial class TranscriptEditorViewModel : ObservableObject, IDisposable
 {
+    public static bool SupportsAudioPlayback => OperatingSystem.IsWindows();
+
     private string?          _dbPath;
     private float[]?         _fullAudio;
     private int              _audioSampleRate = Config.SampleRate;
@@ -86,7 +89,7 @@ internal partial class TranscriptEditorViewModel : ObservableObject, IDisposable
                     _fullAudio       = samples;
                     _audioSampleRate = rate;
                     _audioChannels   = channels;
-                    Application.Current?.Dispatcher.InvokeAsync(
+                    Dispatcher.UIThread.InvokeAsync(
                         () => PlayCommand.NotifyCanExecuteChanged());
                 }
                 catch { /* audio unavailable */ }
@@ -255,7 +258,8 @@ internal partial class TranscriptEditorViewModel : ObservableObject, IDisposable
         };
         _playbackTimer.Start();
     }
-    private bool CanPlay() => _fullAudio != null && !IsPlaying
+    private bool CanPlay() => SupportsAudioPlayback
+                           && _fullAudio != null && !IsPlaying
                            && (PlaybackMode == PlaybackMode.Continuous
                                || (FocusedIndex >= 0 && FocusedIndex < Segments.Count));
 
@@ -390,7 +394,7 @@ internal partial class TranscriptEditorViewModel : ObservableObject, IDisposable
 
     private void OnWaveOutStopped(object? sender, StoppedEventArgs e)
     {
-        Application.Current?.Dispatcher.InvokeAsync(() =>
+        Dispatcher.UIThread.InvokeAsync(() =>
         {
             PlaybackPosition = 1.0;
             OnSegmentPlaybackComplete();

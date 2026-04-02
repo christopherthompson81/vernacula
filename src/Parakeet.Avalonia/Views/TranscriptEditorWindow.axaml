@@ -1,19 +1,27 @@
 <Window x:Class="ParakeetCSharp.Views.TranscriptEditorWindow"
         xmlns="https://github.com/avaloniaui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:conv="using:ParakeetCSharp.Converters"
         xmlns:local="using:ParakeetCSharp"
         Title="{local:Loc editor_heading}"
-        Width="900" Height="700"
-        MinWidth="700" MinHeight="500"
+        Width="1040" Height="820"
+        MinWidth="820" MinHeight="560"
         WindowStartupLocation="CenterOwner"
         Background="{DynamicResource BgBrush}">
 
-    <DockPanel>
+    <Window.Resources>
+        <conv:BoolToVisibilityConverter x:Key="BoolToVis" />
+        <conv:BoolToVisibilityConverter x:Key="InvBoolToVis" Invert="True" />
+    </Window.Resources>
 
-        <!-- ── Header ─────────────────────────────────────────────────────────── -->
+    <DockPanel Margin="18">
         <Border DockPanel.Dock="Top"
                 Background="{DynamicResource SurfaceBrush}"
-                Padding="16,10">
+                BorderBrush="{DynamicResource OverlayBrush}"
+                BorderThickness="1"
+                CornerRadius="10"
+                Padding="16,12"
+                Margin="0,0,0,14">
             <DockPanel>
                 <TextBlock x:Name="HeaderSubtext"
                            DockPanel.Dock="Right"
@@ -22,84 +30,338 @@
                            Margin="12,0,0,0" />
                 <TextBlock x:Name="HeaderTitle"
                            Foreground="{DynamicResource TextBrush}"
-                           FontSize="16" FontWeight="SemiBold"
+                           FontSize="18"
+                           FontWeight="SemiBold"
                            VerticalAlignment="Center"
                            TextTrimming="CharacterEllipsis" />
             </DockPanel>
         </Border>
 
-        <!-- ── Audio controls bar ─────────────────────────────────────────────── -->
-        <Border x:Name="AudioBar"
-                DockPanel.Dock="Bottom"
+        <Border DockPanel.Dock="Bottom"
                 Background="{DynamicResource SurfaceBrush}"
                 BorderBrush="{DynamicResource OverlayBrush}"
-                BorderThickness="0,1,0,0"
-                Padding="12,8">
-            <DockPanel>
-
-                <!-- Left: transport + checkboxes -->
-                <StackPanel DockPanel.Dock="Left" Orientation="Horizontal"
-                            VerticalAlignment="Center">
-                    <Button x:Name="PlayPauseBtn"
+                BorderThickness="1"
+                CornerRadius="10"
+                Padding="12,10"
+                Margin="0,14,0,0">
+            <Grid ColumnDefinitions="Auto,* ,Auto"
+                  ColumnSpacing="14">
+                <StackPanel Orientation="Horizontal"
+                            Spacing="8">
+                    <Button x:Name="PlayPauseButton"
                             Content="▶"
-                            FontFamily="Segoe UI Symbol"
-                            Width="36" Height="36"
-                            Margin="0,0,4,0" />
-                    <Button x:Name="PrevBtn"
+                            Width="38"
+                            Height="38"
+                            Click="PlayPauseButton_Click" />
+                    <Button x:Name="PrevButton"
                             Content="⏮"
-                            FontFamily="Segoe UI Symbol"
-                            Width="36" Height="36"
-                            Margin="0,0,2,0" />
-                    <Button x:Name="NextBtn"
+                            Width="38"
+                            Height="38"
+                            Click="PrevButton_Click" />
+                    <Button x:Name="NextButton"
                             Content="⏭"
-                            FontFamily="Segoe UI Symbol"
-                            Width="36" Height="36"
-                            Margin="2,0,8,0" />
+                            Width="38"
+                            Height="38"
+                            Click="NextButton_Click" />
                     <ComboBox x:Name="PlayModeCombo"
+                              MinWidth="140"
                               VerticalAlignment="Center"
-                              Margin="0,0,8,0"
-                              MinWidth="100" />
-                    <CheckBox x:Name="VerifiedChk"
-                              Foreground="{DynamicResource TextBrush}"
-                              VerticalAlignment="Center"
-                              IsChecked="{Binding FocusedSegment.Verified, Mode=OneWay}" />
+                              SelectionChanged="PlayModeCombo_SelectionChanged" />
                 </StackPanel>
 
-                <!-- Right: speed -->
-                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal"
+                <Slider Grid.Column="1"
+                        x:Name="SeekSlider"
+                        Minimum="0"
+                        Maximum="1"
+                        VerticalAlignment="Center"
+                        Margin="0,0,8,0" />
+
+                <StackPanel Grid.Column="2"
+                            Orientation="Horizontal"
+                            Spacing="10"
                             VerticalAlignment="Center">
                     <TextBlock x:Name="SpeedLabel"
                                VerticalAlignment="Center"
-                               Foreground="{DynamicResource TextBrush}"
-                               MinWidth="30"
-                               Margin="0,0,2,0" />
+                               Foreground="{DynamicResource TextBrush}" />
                     <Slider x:Name="SpeedSlider"
-                            Minimum="0.2" Maximum="2.0"
-                            SmallChange="0.1" LargeChange="0.2"
-                            TickFrequency="0.1" IsSnapToTickEnabled="True"
-                            Width="80"
-                            Margin="4,0,0,0" />
+                            Width="110"
+                            Minimum="0.2"
+                            Maximum="2.0"
+                            VerticalAlignment="Center" />
                 </StackPanel>
-
-                <!-- Center: seek slider (fills remaining space) -->
-                <Slider x:Name="SeekSlider"
-                        Minimum="0" Maximum="1"
-                        SmallChange="0.01"
-                        VerticalAlignment="Center"
-                        Margin="8,0" />
-
-            </DockPanel>
+            </Grid>
         </Border>
 
-        <!-- ── Segment scroll area ─────────────────────────────────────────────── -->
-        <ScrollViewer x:Name="Scroller"
-                      VerticalScrollBarVisibility="Auto"
-                      HorizontalScrollBarVisibility="Disabled"
-                      PanningMode="VerticalOnly"
-                      Focusable="False">
-            <StackPanel x:Name="SegmentStack"
-                        Margin="16,8" />
-        </ScrollViewer>
+        <ListBox x:Name="SegmentList"
+                 Background="Transparent"
+                 BorderThickness="0"
+                 SelectionMode="Single"
+                 SelectionChanged="SegmentList_SelectionChanged">
+            <ListBox.Styles>
+                <Style Selector="ListBoxItem">
+                    <Setter Property="Padding" Value="0" />
+                    <Setter Property="Margin" Value="0,0,0,10" />
+                    <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                    <Setter Property="BorderThickness" Value="0" />
+                    <Setter Property="Background" Value="Transparent" />
+                </Style>
+                <Style Selector="ListBoxItem:pointerover">
+                    <Setter Property="Background" Value="Transparent" />
+                </Style>
+                <Style Selector="ListBoxItem:selected">
+                    <Setter Property="Background" Value="Transparent" />
+                </Style>
+            </ListBox.Styles>
 
+            <ListBox.ItemTemplate>
+                <DataTemplate>
+                    <Grid>
+                        <Border IsVisible="{Binding IsFocused, Converter={StaticResource InvBoolToVis}}"
+                                Background="Transparent"
+                                BorderBrush="{DynamicResource OverlayBrush}"
+                                BorderThickness="1"
+                                CornerRadius="10"
+                                Padding="14,12">
+                            <StackPanel Spacing="8">
+                                <Grid ColumnDefinitions="*,Auto"
+                                      ColumnSpacing="10">
+                                    <TextBlock Text="{Binding DraftSpeakerName}"
+                                               FontWeight="SemiBold"
+                                               Foreground="{DynamicResource TextBrush}"
+                                               VerticalAlignment="Center" />
+                                    <TextBlock Grid.Column="1"
+                                               Text="{Binding TimeRangeText}"
+                                               FontSize="11"
+                                               Foreground="{DynamicResource SubtextBrush}"
+                                               VerticalAlignment="Center" />
+                                </Grid>
+
+                                <StackPanel Orientation="Horizontal"
+                                            Spacing="6">
+                                    <Border Background="{DynamicResource GreenBrush}"
+                                            CornerRadius="999"
+                                            Padding="8,3"
+                                            IsVisible="{Binding IsVerified, Converter={StaticResource BoolToVis}}">
+                                        <TextBlock Text="{local:Loc editor_verified}"
+                                                   FontSize="11"
+                                                   Foreground="White" />
+                                    </Border>
+                                    <Border Background="{DynamicResource RedBrush}"
+                                            CornerRadius="999"
+                                            Padding="8,3"
+                                            IsVisible="{Binding IsSuppressed, Converter={StaticResource BoolToVis}}">
+                                        <TextBlock Text="Suppressed"
+                                                   FontSize="11"
+                                                   Foreground="White" />
+                                    </Border>
+                                    <Border Background="{DynamicResource AccentBrush}"
+                                            CornerRadius="999"
+                                            Padding="8,3"
+                                            IsVisible="{Binding HasUserEdits, Converter={StaticResource BoolToVis}}">
+                                        <TextBlock Text="Edited"
+                                                   FontSize="11"
+                                                   Foreground="White" />
+                                    </Border>
+                                </StackPanel>
+
+                                <TextBlock Text="{Binding DraftContent}"
+                                           TextWrapping="Wrap"
+                                           MaxHeight="54"
+                                           TextTrimming="CharacterEllipsis"
+                                           Foreground="{DynamicResource SubtextBrush}" />
+                            </StackPanel>
+                        </Border>
+
+                        <Border IsVisible="{Binding IsFocused, Converter={StaticResource BoolToVis}}"
+                                Background="{DynamicResource SurfaceBrush}"
+                                BorderBrush="{DynamicResource AccentBrush}"
+                                BorderThickness="2"
+                                CornerRadius="10"
+                                Padding="14,12">
+                            <StackPanel Spacing="10">
+                                <Grid ColumnDefinitions="Auto,Auto,Auto,*,Auto,Auto"
+                                      ColumnSpacing="8">
+                                    <TextBox Text="{Binding DraftSpeakerName, Mode=TwoWay}"
+                                             MinWidth="130"
+                                             MaxWidth="220"
+                                             HorizontalAlignment="Left"
+                                             LostFocus="SpeakerNameBox_LostFocus" />
+                                    <Button Grid.Column="1"
+                                            Content="Rename"
+                                            MinWidth="78"
+                                            Click="RenameSpeaker_Click" />
+                                    <ComboBox Grid.Column="2"
+                                              ItemsSource="{Binding SpeakerChoices}"
+                                              SelectedItem="{Binding SelectedSpeaker, Mode=TwoWay}"
+                                              MinWidth="140" />
+                                    <StackPanel Grid.Column="3"
+                                                Orientation="Horizontal"
+                                                Spacing="8"
+                                                HorizontalAlignment="Right">
+                                        <Button Classes="secondary-button"
+                                                Width="34"
+                                                Height="30"
+                                                Padding="0"
+                                                Click="ReassignSpeaker_Click"
+                                                ToolTip.Tip="Reassign">
+                                            <TextBlock Text="⇄"
+                                                       FontSize="15"
+                                                       HorizontalAlignment="Center"
+                                                       VerticalAlignment="Center" />
+                                        </Button>
+                                        <Button Classes="secondary-button"
+                                                Width="34"
+                                                Height="30"
+                                                Padding="0"
+                                                Click="AddSpeaker_Click"
+                                                ToolTip.Tip="{local:Loc editor_add_speaker}">
+                                            <TextBlock Text="+"
+                                                       FontSize="18"
+                                                       HorizontalAlignment="Center"
+                                                       VerticalAlignment="Center" />
+                                        </Button>
+                                    </StackPanel>
+                                    <TextBlock Grid.Column="4"
+                                               Text="{Binding TimeRangeText}"
+                                               Foreground="{DynamicResource SubtextBrush}"
+                                               VerticalAlignment="Center" />
+                                    <CheckBox Grid.Column="5"
+                                              Content="{local:Loc editor_verified}"
+                                              IsChecked="{Binding IsVerified}"
+                                              VerticalAlignment="Center"
+                                              Click="VerifiedCheckBox_Click" />
+                                </Grid>
+
+                                <WrapPanel Orientation="Horizontal"
+                                           ItemHeight="34">
+                                    <Button Classes="secondary-button"
+                                            Width="34"
+                                            Height="30"
+                                            Padding="0"
+                                            Margin="0,0,8,8"
+                                            Click="SuppressButton_Click"
+                                            ToolTip.Tip="{Binding SuppressButtonText}">
+                                        <TextBlock Text="{Binding SuppressGlyph}"
+                                                   FontSize="15"
+                                                   HorizontalAlignment="Center"
+                                                   VerticalAlignment="Center" />
+                                    </Button>
+                                    <Button Classes="secondary-button"
+                                            Width="34"
+                                            Height="30"
+                                            Padding="0"
+                                            Margin="0,0,8,8"
+                                            Click="AdjustTimes_Click"
+                                            IsEnabled="{Binding CanAdjustTimes}"
+                                            ToolTip.Tip="{local:Loc editor_adjust_times}">
+                                        <TextBlock Text="◷"
+                                                   FontSize="15"
+                                                   HorizontalAlignment="Center"
+                                                   VerticalAlignment="Center" />
+                                    </Button>
+                                    <Button Classes="secondary-button"
+                                            Width="34"
+                                            Height="30"
+                                            Padding="0"
+                                            Margin="0,0,8,8"
+                                            Click="MergePrev_Click"
+                                            IsEnabled="{Binding CanMergePrev}"
+                                            ToolTip.Tip="{local:Loc editor_merge_prev}">
+                                        <TextBlock Text="←"
+                                                   FontSize="15"
+                                                   HorizontalAlignment="Center"
+                                                   VerticalAlignment="Center" />
+                                    </Button>
+                                    <Button Classes="secondary-button"
+                                            Width="34"
+                                            Height="30"
+                                            Padding="0"
+                                            Margin="0,0,8,8"
+                                            Click="MergeNext_Click"
+                                            IsEnabled="{Binding CanMergeNext}"
+                                            ToolTip.Tip="{local:Loc editor_merge_next}">
+                                        <TextBlock Text="→"
+                                                   FontSize="15"
+                                                   HorizontalAlignment="Center"
+                                                   VerticalAlignment="Center" />
+                                    </Button>
+                                    <Button Classes="secondary-button"
+                                            Width="34"
+                                            Height="30"
+                                            Padding="0"
+                                            Margin="0,0,8,8"
+                                            Click="Split_Click"
+                                            IsEnabled="{Binding CanSplit}"
+                                            ToolTip.Tip="{local:Loc editor_split}">
+                                        <TextBlock Text="✂"
+                                                   FontSize="15"
+                                                   HorizontalAlignment="Center"
+                                                   VerticalAlignment="Center" />
+                                    </Button>
+                                    <Button Classes="secondary-button"
+                                            Width="34"
+                                            Height="30"
+                                            Padding="0"
+                                            Margin="0,0,8,8"
+                                            Click="RedoAsr_Click"
+                                            IsEnabled="{Binding CanRedoAsr}"
+                                            ToolTip.Tip="{local:Loc editor_redo_asr}">
+                                        <TextBlock Text="↻"
+                                                   FontSize="15"
+                                                   HorizontalAlignment="Center"
+                                                   VerticalAlignment="Center" />
+                                    </Button>
+                                </WrapPanel>
+
+                                <Grid ColumnDefinitions="*,*"
+                                      ColumnSpacing="10"
+                                      Height="240">
+                                    <Border Background="Transparent">
+                                        <Grid RowDefinitions="Auto,*"
+                                              RowSpacing="6">
+                                            <TextBlock Text="{local:Loc editor_asr_label}"
+                                                       FontSize="11"
+                                                       FontWeight="SemiBold"
+                                                       Foreground="{DynamicResource SubtextBrush}" />
+                                            <ScrollViewer Grid.Row="1"
+                                                          VerticalScrollBarVisibility="Auto"
+                                                          HorizontalScrollBarVisibility="Disabled">
+                                                <SelectableTextBlock Text="{Binding AsrContent}"
+                                                                     TextWrapping="Wrap"
+                                                                     Foreground="{DynamicResource TextBrush}" />
+                                            </ScrollViewer>
+                                        </Grid>
+                                    </Border>
+
+                                    <Border Grid.Column="1"
+                                            Background="Transparent">
+                                        <Grid RowDefinitions="Auto,*"
+                                              RowSpacing="6">
+                                            <TextBlock Text="{local:Loc editor_edit_label}"
+                                                       FontSize="11"
+                                                       FontWeight="SemiBold"
+                                                       Foreground="{DynamicResource SubtextBrush}" />
+                                            <TextBox Grid.Row="1"
+                                                     Text="{Binding DraftContent, Mode=TwoWay}"
+                                                     AcceptsReturn="True"
+                                                     TextWrapping="Wrap"
+                                                     VerticalContentAlignment="Top"
+                                                     MinHeight="180"
+                                                     FontSize="14"
+                                                     Padding="8,6"
+                                                     LostFocus="EditTextBox_LostFocus" />
+                                        </Grid>
+                                    </Border>
+                                </Grid>
+
+                                <TextBlock Text="{Binding StatusMessage}"
+                                           Foreground="{DynamicResource SubtextBrush}"
+                                           TextWrapping="Wrap" />
+                            </StackPanel>
+                        </Border>
+                    </Grid>
+                </DataTemplate>
+            </ListBox.ItemTemplate>
+        </ListBox>
     </DockPanel>
 </Window>

@@ -18,6 +18,7 @@ internal partial class ResultsViewModel : ObservableObject
 
     private string? _dbPath;
     private Window? _ownerWindow;
+    private Views.TranscriptEditorWindow? _editorWindow;
 
     public ObservableCollection<SegmentRow> Segments { get; } = new();
 
@@ -61,8 +62,27 @@ internal partial class ResultsViewModel : ObservableObject
     [RelayCommand]
     private void EditTranscript()
     {
-        // TODO: Enable when TranscriptEditorWindow is ported
-        System.Diagnostics.Debug.WriteLine("Transcript editing not yet available");
+        if (_dbPath is null || _ownerWindow is null) return;
+        if (_editorWindow is { IsVisible: true })
+        {
+            _editorWindow.Activate();
+            if (_editorWindow.WindowState == WindowState.Minimized)
+                _editorWindow.WindowState = WindowState.Normal;
+            return;
+        }
+
+        _editorWindow = new Views.TranscriptEditorWindow(_dbPath, AudioBaseName);
+        _editorWindow.DataChanged += ReloadSegments;
+        _editorWindow.Closed += (_, _) => _editorWindow = null;
+        _editorWindow.Show(_ownerWindow);
+    }
+
+    private void ReloadSegments()
+    {
+        if (_dbPath is null) return;
+        Segments.Clear();
+        using var db = new TranscriptionDb(_dbPath);
+        PopulateSegments(db);
     }
 
     [RelayCommand(CanExecute = nameof(CanEditSpeakerNames))]
