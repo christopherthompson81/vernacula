@@ -1,4 +1,5 @@
 using System.Globalization;
+using Avalonia;
 using Avalonia.Data.Converters;
 using Avalonia.Media;
 using ParakeetCSharp.Models;
@@ -22,8 +23,21 @@ public class StatusToBrushConverter : IValueConverter
             _                   => "SubtextBrush",
         };
 
-        var app = Avalonia.Application.Current;
-        return app?.Resources[key] as IBrush ?? Brushes.Transparent;
+        var app = Application.Current;
+        if (app?.Resources.TryGetResource(key, null, out var resourceValue) == true)
+        {
+            if (resourceValue is IBrush brush)
+            {
+                return brush;
+            }
+
+            if (resourceValue is Color color)
+            {
+                return new SolidColorBrush(color);
+            }
+        }
+
+        return Brushes.Transparent;
     }
 
     public object? ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture)

@@ -170,12 +170,19 @@
                                 <DataGridTemplateColumn.CellTemplate>
                                     <DataTemplate>
                                         <Border Background="{Binding Status, Converter={StaticResource StatusToBrush}}"
+                                                BorderBrush="{Binding Status, Converter={StaticResource StatusToBrush}}"
+                                                BorderThickness="1"
                                                 HorizontalAlignment="Left"
-                                                Padding="6,3"
-                                                CornerRadius="4">
+                                                VerticalAlignment="Center"
+                                                Padding="6,1"
+                                                MinHeight="0"
+                                                CornerRadius="999">
                                             <TextBlock Text="{Binding StatusLabel}"
                                                        Foreground="{DynamicResource BgBrush}"
-                                                       FontWeight="SemiBold" />
+                                                       FontWeight="SemiBold"
+                                                       FontSize="11"
+                                                       LineHeight="13"
+                                                       VerticalAlignment="Center" />
                                         </Border>
                                     </DataTemplate>
                                 </DataGridTemplateColumn.CellTemplate>
