@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using Avalonia.Media.Imaging;
 using CommunityToolkit.Mvvm.ComponentModel;
 using ParakeetCSharp.ViewModels;
 
@@ -10,6 +11,7 @@ internal sealed partial class TranscriptEditorWindowState : ObservableObject
     [ObservableProperty] private string _headerSubtext = "";
     [ObservableProperty] private bool _isLoading;
     [ObservableProperty] private string _playPauseGlyph = "▶";
+    [ObservableProperty] private bool _isPlaying;
     [ObservableProperty] private double _seekValue;
     [ObservableProperty] private double _playbackSpeed = 1.0;
     [ObservableProperty] private string _speedLabel = "1.0x";
@@ -20,6 +22,10 @@ internal sealed partial class TranscriptEditorWindowState : ObservableObject
     [ObservableProperty] private bool _canChangePlaybackMode;
     [ObservableProperty] private bool _canGoPrev;
     [ObservableProperty] private bool _canGoNext;
+    [ObservableProperty] private Bitmap? _playIconImage;
+    [ObservableProperty] private Bitmap? _pauseIconImage;
+    [ObservableProperty] private Bitmap? _prevIconImage;
+    [ObservableProperty] private Bitmap? _nextIconImage;
     [ObservableProperty] private TranscriptEditorCardState? _selectedCard;
 
     public ObservableCollection<TranscriptEditorCardState> Cards { get; } = [];
@@ -46,6 +52,7 @@ internal sealed partial class TranscriptEditorWindowState : ObservableObject
     public void RefreshPlayback(TranscriptEditorViewModel viewModel, bool seekDragging, bool isLoading)
     {
         IsLoading = isLoading;
+        IsPlaying = viewModel.IsPlaying;
         PlayPauseGlyph = viewModel.IsPlaying ? "⏸" : "▶";
         if (!seekDragging)
             SeekValue = viewModel.PlaybackPosition;

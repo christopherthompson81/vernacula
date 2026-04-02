@@ -50,6 +50,8 @@ internal sealed partial class TranscriptEditorCardState : ObservableObject
     [ObservableProperty] private Bitmap? _suppressIconImage;
     [ObservableProperty] private Bitmap? _suppressAlertIconImage;
     [ObservableProperty] private Bitmap? _adjustTimesIconImage;
+    [ObservableProperty] private Bitmap? _reassignSpeakerIconImage;
+    [ObservableProperty] private Bitmap? _addSpeakerIconImage;
     [ObservableProperty] private Bitmap? _mergePrevIconImage;
     [ObservableProperty] private Bitmap? _mergeNextIconImage;
     [ObservableProperty] private Bitmap? _splitIconImage;

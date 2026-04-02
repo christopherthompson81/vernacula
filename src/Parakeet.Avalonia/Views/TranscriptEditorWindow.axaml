@@ -31,6 +31,13 @@
             <Setter Property="VerticalAlignment" Value="Center" />
             <Setter Property="Stretch" Value="Uniform" />
         </Style>
+        <Style Selector="Image.playback-icon-image">
+            <Setter Property="Width" Value="30" />
+            <Setter Property="Height" Value="30" />
+            <Setter Property="HorizontalAlignment" Value="Center" />
+            <Setter Property="VerticalAlignment" Value="Center" />
+            <Setter Property="Stretch" Value="Uniform" />
+        </Style>
         <Style Selector="Grid.redo-button-host">
             <Setter Property="Width" Value="32" />
             <Setter Property="Height" Value="32" />
@@ -99,23 +106,35 @@
                 <StackPanel Orientation="Horizontal"
                             Spacing="8">
                     <Button x:Name="PlayPauseButton"
-                            Content="{Binding PlayPauseGlyph}"
                             IsEnabled="{Binding CanPlayPause}"
                             Width="38"
                             Height="38"
-                            Click="PlayPauseButton_Click" />
+                            Click="PlayPauseButton_Click">
+                        <Grid Width="30" Height="30">
+                            <Image Classes="playback-icon-image"
+                                   Source="{Binding PlayIconImage}"
+                                   Opacity="{Binding IsPlaying, Converter={StaticResource InvBoolToOpacity}}" />
+                            <Image Classes="playback-icon-image"
+                                   Source="{Binding PauseIconImage}"
+                                   Opacity="{Binding IsPlaying, Converter={StaticResource BoolToOpacity}}" />
+                        </Grid>
+                    </Button>
                     <Button x:Name="PrevButton"
-                            Content="⏮"
                             IsEnabled="{Binding CanGoPrev}"
                             Width="38"
                             Height="38"
-                            Click="PrevButton_Click" />
+                            Click="PrevButton_Click">
+                        <Image Classes="playback-icon-image"
+                               Source="{Binding PrevIconImage}" />
+                    </Button>
                     <Button x:Name="NextButton"
-                            Content="⏭"
                             IsEnabled="{Binding CanGoNext}"
                             Width="38"
                             Height="38"
-                            Click="NextButton_Click" />
+                            Click="NextButton_Click">
+                        <Image Classes="playback-icon-image"
+                               Source="{Binding NextIconImage}" />
+                    </Button>
                     <ComboBox x:Name="PlayModeCombo"
                               ItemsSource="{Binding PlaybackModes}"
                               SelectedIndex="{Binding SelectedPlaybackModeIndex}"
@@ -294,14 +313,14 @@
                                         <Button Classes="secondary-button action-button"
                                                 Click="ReassignSpeaker_Click"
                                                 ToolTip.Tip="Reassign">
-                                            <TextBlock Classes="action-icon"
-                                                       Text="⇄" />
+                                            <Image Classes="action-icon-image"
+                                                   Source="{Binding ReassignSpeakerIconImage}" />
                                         </Button>
                                         <Button Classes="secondary-button action-button"
                                                 Click="AddSpeaker_Click"
                                                 ToolTip.Tip="{local:Loc editor_add_speaker}">
-                                            <TextBlock Classes="action-icon"
-                                                       Text="+" />
+                                            <Image Classes="action-icon-image"
+                                                   Source="{Binding AddSpeakerIconImage}" />
                                         </Button>
                                     </StackPanel>
                                     <TextBlock Grid.Column="4"

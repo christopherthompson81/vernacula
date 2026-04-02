@@ -26,6 +26,10 @@ public partial class TranscriptEditorWindow : Window
     private static readonly Bitmap SuppressRedBitmap = LoadBitmap("avares://Parakeet.Avalonia/Assets/toolbar_icons/suppress_red.png");
     private static readonly Bitmap AdjustTimesDarkBitmap = LoadBitmap("avares://Parakeet.Avalonia/Assets/toolbar_icons/adjust_times_dark.png");
     private static readonly Bitmap AdjustTimesLightBitmap = LoadBitmap("avares://Parakeet.Avalonia/Assets/toolbar_icons/adjust_times_light.png");
+    private static readonly Bitmap ReassignSpeakerDarkBitmap = LoadBitmap("avares://Parakeet.Avalonia/Assets/toolbar_icons/reassign_dark.png");
+    private static readonly Bitmap ReassignSpeakerLightBitmap = LoadBitmap("avares://Parakeet.Avalonia/Assets/toolbar_icons/reassign_light.png");
+    private static readonly Bitmap AddSpeakerDarkBitmap = LoadBitmap("avares://Parakeet.Avalonia/Assets/toolbar_icons/add_speaker_dark.png");
+    private static readonly Bitmap AddSpeakerLightBitmap = LoadBitmap("avares://Parakeet.Avalonia/Assets/toolbar_icons/add_speaker_light.png");
     private static readonly Bitmap MergePrevDarkBitmap = LoadBitmap("avares://Parakeet.Avalonia/Assets/toolbar_icons/merge_prev_dark.png");
     private static readonly Bitmap MergePrevLightBitmap = LoadBitmap("avares://Parakeet.Avalonia/Assets/toolbar_icons/merge_prev_light.png");
     private static readonly Bitmap MergeNextDarkBitmap = LoadBitmap("avares://Parakeet.Avalonia/Assets/toolbar_icons/merge_next_dark.png");
@@ -34,6 +38,14 @@ public partial class TranscriptEditorWindow : Window
     private static readonly Bitmap SplitLightBitmap = LoadBitmap("avares://Parakeet.Avalonia/Assets/toolbar_icons/split_light.png");
     private static readonly Bitmap RedoDarkBitmap = LoadBitmap("avares://Parakeet.Avalonia/Assets/toolbar_icons/redo_dark.png");
     private static readonly Bitmap RedoLightBitmap = LoadBitmap("avares://Parakeet.Avalonia/Assets/toolbar_icons/redo_light.png");
+    private static readonly Bitmap PlayDarkBitmap = LoadBitmap("avares://Parakeet.Avalonia/Assets/toolbar_icons/play_dark.png");
+    private static readonly Bitmap PlayLightBitmap = LoadBitmap("avares://Parakeet.Avalonia/Assets/toolbar_icons/play_light.png");
+    private static readonly Bitmap PauseDarkBitmap = LoadBitmap("avares://Parakeet.Avalonia/Assets/toolbar_icons/pause_dark.png");
+    private static readonly Bitmap PauseLightBitmap = LoadBitmap("avares://Parakeet.Avalonia/Assets/toolbar_icons/pause_light.png");
+    private static readonly Bitmap PrevDarkBitmap = LoadBitmap("avares://Parakeet.Avalonia/Assets/toolbar_icons/prev_dark.png");
+    private static readonly Bitmap PrevLightBitmap = LoadBitmap("avares://Parakeet.Avalonia/Assets/toolbar_icons/prev_light.png");
+    private static readonly Bitmap NextDarkBitmap = LoadBitmap("avares://Parakeet.Avalonia/Assets/toolbar_icons/next_dark.png");
+    private static readonly Bitmap NextLightBitmap = LoadBitmap("avares://Parakeet.Avalonia/Assets/toolbar_icons/next_light.png");
     private static readonly Bitmap[] RedoSpinnerDarkFrames = LoadSpinnerFrames("avares://Parakeet.Avalonia/Assets/redo_spinner_dark_frames");
     private static readonly Bitmap[] RedoSpinnerLightFrames = LoadSpinnerFrames("avares://Parakeet.Avalonia/Assets/redo_spinner_light_frames");
 
@@ -95,6 +107,7 @@ public partial class TranscriptEditorWindow : Window
         ThemeManager.ThemeChanged += OnThemeChanged;
         Loc.Instance.PropertyChanged += OnLocalePropertyChanged;
 
+        RefreshPlaybackButtonImages();
         RefreshPlaybackModeCombo();
         SetLoadingState(true);
         RefreshHeader();
@@ -138,6 +151,7 @@ public partial class TranscriptEditorWindow : Window
         Dispatcher.UIThread.Post(() =>
         {
             RefreshActionButtonImages();
+            RefreshPlaybackButtonImages();
             RefreshRedoAsrSpinnerImages();
             RefreshHeader();
             RefreshPlaybackUi();
@@ -245,12 +259,23 @@ public partial class TranscriptEditorWindow : Window
             AssignActionButtonImages(card);
     }
 
+    private void RefreshPlaybackButtonImages()
+    {
+        bool dark = App.Current.Settings.Current.Theme == AppTheme.Dark;
+        _state.PlayIconImage = dark ? PlayDarkBitmap : PlayLightBitmap;
+        _state.PauseIconImage = dark ? PauseDarkBitmap : PauseLightBitmap;
+        _state.PrevIconImage = dark ? PrevDarkBitmap : PrevLightBitmap;
+        _state.NextIconImage = dark ? NextDarkBitmap : NextLightBitmap;
+    }
+
     private static void AssignActionButtonImages(TranscriptEditorCardState card)
     {
         bool dark = App.Current.Settings.Current.Theme == AppTheme.Dark;
         card.SuppressIconImage = dark ? SuppressDarkBitmap : SuppressLightBitmap;
         card.SuppressAlertIconImage = SuppressRedBitmap;
         card.AdjustTimesIconImage = dark ? AdjustTimesDarkBitmap : AdjustTimesLightBitmap;
+        card.ReassignSpeakerIconImage = dark ? ReassignSpeakerDarkBitmap : ReassignSpeakerLightBitmap;
+        card.AddSpeakerIconImage = dark ? AddSpeakerDarkBitmap : AddSpeakerLightBitmap;
         card.MergePrevIconImage = dark ? MergePrevDarkBitmap : MergePrevLightBitmap;
         card.MergeNextIconImage = dark ? MergeNextDarkBitmap : MergeNextLightBitmap;
         card.SplitIconImage = dark ? SplitDarkBitmap : SplitLightBitmap;
