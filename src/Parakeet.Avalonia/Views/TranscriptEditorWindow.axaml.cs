@@ -29,6 +29,8 @@ public partial class TranscriptEditorWindow : Window
     private bool _suppressSegmentCollectionChanged;
     private bool _seekDragging;
     private bool _redoAsrRunning;
+    private int _redoAsrCardIndex = -1;
+    private DispatcherTimer? _redoAsrSpinnerTimer;
 
     public event Action? DataChanged;
 
@@ -100,6 +102,7 @@ public partial class TranscriptEditorWindow : Window
 
     private void OnClosed(object? sender, EventArgs e)
     {
+        StopRedoAsrSpinner();
         PersistAllDrafts();
         ThemeManager.ThemeChanged -= OnThemeChanged;
         Loc.Instance.PropertyChanged -= OnLocalePropertyChanged;
@@ -366,6 +369,12 @@ public partial class TranscriptEditorWindow : Window
             return;
         }
 
+        if (_redoAsrRunning)
+        {
+            ApplyFocusedIndex(_vm.FocusedIndex, force: true);
+            return;
+        }
+
         if (_state.SelectedCard is { } card && card.Index != _vm.FocusedIndex)
         {
             _vm.NavigateTo(card.Index);
@@ -446,9 +455,27 @@ public partial class TranscriptEditorWindow : Window
         }
     }
 
-    private void PrevButton_Click(object? sender, RoutedEventArgs e) => _vm.PrevSegmentCommand.Execute(null);
+    private void PrevButton_Click(object? sender, RoutedEventArgs e)
+    {
+        if (_redoAsrRunning)
+        {
+            ApplyFocusedIndex(_vm.FocusedIndex, force: true);
+            return;
+        }
 
-    private void NextButton_Click(object? sender, RoutedEventArgs e) => _vm.NextSegmentCommand.Execute(null);
+        _vm.PrevSegmentCommand.Execute(null);
+    }
+
+    private void NextButton_Click(object? sender, RoutedEventArgs e)
+    {
+        if (_redoAsrRunning)
+        {
+            ApplyFocusedIndex(_vm.FocusedIndex, force: true);
+            return;
+        }
+
+        _vm.NextSegmentCommand.Execute(null);
+    }
 
     private void PlayModeCombo_SelectionChanged(object? sender, SelectionChangedEventArgs e)
     {
@@ -591,7 +618,7 @@ public partial class TranscriptEditorWindow : Window
         }
     }
 
-    private void MergePrev_Click(object? sender, RoutedEventArgs e)
+    private async void MergePrev_Click(object? sender, RoutedEventArgs e)
     {
         if (CardFromSender(sender) is not { } card)
         {
@@ -602,10 +629,11 @@ public partial class TranscriptEditorWindow : Window
         if (_vm.MergeWithPrev(card.Index))
         {
             ApplyStructuralChange(Math.Max(0, card.Index - 1), "Segments merged.");
+            await RunRedoAsrForFocusedSegmentAsync();
         }
     }
 
-    private void MergeNext_Click(object? sender, RoutedEventArgs e)
+    private async void MergeNext_Click(object? sender, RoutedEventArgs e)
     {
         if (CardFromSender(sender) is not { } card)
         {
@@ -616,6 +644,7 @@ public partial class TranscriptEditorWindow : Window
         if (_vm.MergeWithNext(card.Index))
         {
             ApplyStructuralChange(Math.Min(card.Index, _state.Cards.Count - 1), "Segments merged.");
+            await RunRedoAsrForFocusedSegmentAsync();
         }
     }
 
@@ -659,12 +688,30 @@ public partial class TranscriptEditorWindow : Window
             return;
         }
 
+        await RunRedoAsrAsync(card);
+    }
+
+    private async Task RunRedoAsrForFocusedSegmentAsync()
+    {
+        if (_vm.FocusedIndex < 0 || _vm.FocusedIndex >= _state.Cards.Count)
+        {
+            return;
+        }
+
+        await RunRedoAsrAsync(_state.Cards[_vm.FocusedIndex]);
+    }
+
+    private async Task RunRedoAsrAsync(TranscriptEditorCardState card)
+    {
+        ApplyFocusedIndex(_vm.FocusedIndex, force: true);
+
         if (_redoAsrRunning || !_asrModelsAvailable || !_vm.HasAudio)
         {
             return;
         }
 
         _redoAsrRunning = true;
+        StartRedoAsrSpinner(card.Index);
         RefreshAllCardState();
         SetCardStatus(card, Loc.Instance["editor_redo_asr_running"]);
 
@@ -696,7 +743,46 @@ public partial class TranscriptEditorWindow : Window
         finally
         {
             _redoAsrRunning = false;
+            StopRedoAsrSpinner();
             RefreshAllCardState();
         }
+    }
+
+    private void StartRedoAsrSpinner(int cardIndex)
+    {
+        _redoAsrCardIndex = cardIndex;
+        _redoAsrSpinnerTimer ??= new DispatcherTimer(TimeSpan.FromMilliseconds(50), DispatcherPriority.Background, OnRedoAsrSpinnerTick);
+
+        if (cardIndex >= 0 && cardIndex < _state.Cards.Count)
+        {
+            _state.Cards[cardIndex].IsRedoAsrSpinning = true;
+            _state.Cards[cardIndex].RedoAsrIconAngle = 0;
+        }
+
+        _redoAsrSpinnerTimer.Start();
+    }
+
+    private void StopRedoAsrSpinner()
+    {
+        _redoAsrSpinnerTimer?.Stop();
+
+        if (_redoAsrCardIndex >= 0 && _redoAsrCardIndex < _state.Cards.Count)
+        {
+            _state.Cards[_redoAsrCardIndex].IsRedoAsrSpinning = false;
+            _state.Cards[_redoAsrCardIndex].RedoAsrIconAngle = 0;
+        }
+
+        _redoAsrCardIndex = -1;
+    }
+
+    private void OnRedoAsrSpinnerTick(object? sender, EventArgs e)
+    {
+        if (_redoAsrCardIndex < 0 || _redoAsrCardIndex >= _state.Cards.Count)
+        {
+            return;
+        }
+
+        var card = _state.Cards[_redoAsrCardIndex];
+        card.RedoAsrIconAngle = (card.RedoAsrIconAngle + 18) % 360;
     }
 }

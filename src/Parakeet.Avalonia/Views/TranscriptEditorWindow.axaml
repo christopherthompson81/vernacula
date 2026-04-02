@@ -14,6 +14,36 @@
         <conv:BoolToVisibilityConverter x:Key="InvBoolToVis" Invert="True" />
     </Window.Resources>
 
+    <Window.Styles>
+        <Style Selector="Button.action-button">
+            <Setter Property="Width" Value="34" />
+            <Setter Property="Height" Value="30" />
+            <Setter Property="Padding" Value="0" />
+        </Style>
+        <Style Selector="TextBlock.action-icon">
+            <Setter Property="FontSize" Value="15" />
+            <Setter Property="HorizontalAlignment" Value="Center" />
+            <Setter Property="VerticalAlignment" Value="Center" />
+            <Setter Property="TextAlignment" Value="Center" />
+        </Style>
+        <Style Selector="TextBlock.compact-action-icon">
+            <Setter Property="FontSize" Value="15" />
+            <Setter Property="HorizontalAlignment" Value="Center" />
+            <Setter Property="VerticalAlignment" Value="Center" />
+            <Setter Property="TextAlignment" Value="Center" />
+        </Style>
+        <Style Selector="Border.redo-icon-host">
+            <Setter Property="Width" Value="16" />
+            <Setter Property="Height" Value="16" />
+            <Setter Property="HorizontalAlignment" Value="Center" />
+            <Setter Property="VerticalAlignment" Value="Center" />
+        </Style>
+        <Style Selector="Path.redo-spinner-path">
+            <Setter Property="StrokeThickness" Value="1.7" />
+            <Setter Property="StrokeLineCap" Value="Round" />
+        </Style>
+    </Window.Styles>
+
     <Grid>
         <DockPanel x:Name="MainContent"
                    Margin="18">
@@ -247,27 +277,17 @@
                                                 Orientation="Horizontal"
                                                 Spacing="8"
                                                 HorizontalAlignment="Right">
-                                        <Button Classes="secondary-button"
-                                                Width="34"
-                                                Height="30"
-                                                Padding="0"
+                                        <Button Classes="secondary-button action-button"
                                                 Click="ReassignSpeaker_Click"
                                                 ToolTip.Tip="Reassign">
-                                            <TextBlock Text="⇄"
-                                                       FontSize="15"
-                                                       HorizontalAlignment="Center"
-                                                       VerticalAlignment="Center" />
+                                            <TextBlock Classes="action-icon"
+                                                       Text="⇄" />
                                         </Button>
-                                        <Button Classes="secondary-button"
-                                                Width="34"
-                                                Height="30"
-                                                Padding="0"
+                                        <Button Classes="secondary-button action-button"
                                                 Click="AddSpeaker_Click"
                                                 ToolTip.Tip="{local:Loc editor_add_speaker}">
-                                            <TextBlock Text="+"
-                                                       FontSize="18"
-                                                       HorizontalAlignment="Center"
-                                                       VerticalAlignment="Center" />
+                                            <TextBlock Classes="action-icon"
+                                                       Text="+" />
                                         </Button>
                                     </StackPanel>
                                     <TextBlock Grid.Column="4"
@@ -283,83 +303,72 @@
 
                                 <WrapPanel Orientation="Horizontal"
                                            ItemHeight="34">
-                                    <Button Classes="secondary-button"
-                                            Width="34"
-                                            Height="30"
-                                            Padding="0"
+                                    <Button Classes="secondary-button action-button"
                                             Margin="0,0,8,8"
                                             Click="SuppressButton_Click"
                                             ToolTip.Tip="{Binding SuppressButtonText}">
                                         <TextBlock Text="{Binding SuppressGlyph}"
                                                    Foreground="{Binding SuppressIconBrush}"
-                                                   FontSize="15"
-                                                   HorizontalAlignment="Center"
-                                                   VerticalAlignment="Center" />
+                                                   Classes="action-icon" />
                                     </Button>
-                                    <Button Classes="secondary-button"
-                                            Width="34"
-                                            Height="30"
-                                            Padding="0"
+                                    <Button Classes="secondary-button action-button"
                                             Margin="0,0,8,8"
                                             Click="AdjustTimes_Click"
                                             IsEnabled="{Binding CanAdjustTimes}"
                                             ToolTip.Tip="{local:Loc editor_adjust_times}">
-                                        <TextBlock Text="◷"
-                                                   FontSize="15"
-                                                   HorizontalAlignment="Center"
-                                                   VerticalAlignment="Center" />
+                                        <TextBlock Classes="action-icon"
+                                                   Text="◷" />
                                     </Button>
-                                    <Button Classes="secondary-button"
-                                            Width="34"
-                                            Height="30"
-                                            Padding="0"
+                                    <Button Classes="secondary-button action-button"
                                             Margin="0,0,8,8"
                                             Click="MergePrev_Click"
                                             IsEnabled="{Binding CanMergePrev}"
                                             ToolTip.Tip="{local:Loc editor_merge_prev}">
-                                        <TextBlock Text="←"
-                                                   FontSize="15"
-                                                   HorizontalAlignment="Center"
-                                                   VerticalAlignment="Center" />
+                                        <TextBlock Classes="compact-action-icon"
+                                                   Text="←" />
                                     </Button>
-                                    <Button Classes="secondary-button"
-                                            Width="34"
-                                            Height="30"
-                                            Padding="0"
+                                    <Button Classes="secondary-button action-button"
                                             Margin="0,0,8,8"
                                             Click="MergeNext_Click"
                                             IsEnabled="{Binding CanMergeNext}"
                                             ToolTip.Tip="{local:Loc editor_merge_next}">
-                                        <TextBlock Text="→"
-                                                   FontSize="15"
-                                                   HorizontalAlignment="Center"
-                                                   VerticalAlignment="Center" />
+                                        <TextBlock Classes="compact-action-icon"
+                                                   Text="→" />
                                     </Button>
-                                    <Button Classes="secondary-button"
-                                            Width="34"
-                                            Height="30"
-                                            Padding="0"
+                                    <Button Classes="secondary-button action-button"
                                             Margin="0,0,8,8"
                                             Click="Split_Click"
                                             IsEnabled="{Binding CanSplit}"
                                             ToolTip.Tip="{local:Loc editor_split}">
-                                        <TextBlock Text="✂"
-                                                   FontSize="15"
-                                                   HorizontalAlignment="Center"
-                                                   VerticalAlignment="Center" />
+                                        <TextBlock Classes="action-icon"
+                                                   Text="✂" />
                                     </Button>
-                                    <Button Classes="secondary-button"
-                                            Width="34"
-                                            Height="30"
-                                            Padding="0"
+                                    <Button Classes="secondary-button action-button"
                                             Margin="0,0,8,8"
                                             Click="RedoAsr_Click"
                                             IsEnabled="{Binding CanRedoAsr}"
                                             ToolTip.Tip="{local:Loc editor_redo_asr}">
-                                        <TextBlock Text="↻"
-                                                   FontSize="15"
-                                                   HorizontalAlignment="Center"
-                                                   VerticalAlignment="Center" />
+                                        <Grid>
+                                            <TextBlock Classes="action-icon"
+                                                       Text="↻"
+                                                       IsVisible="{Binding IsRedoAsrSpinning, Converter={StaticResource InvBoolToVis}}" />
+                                            <Border Classes="redo-icon-host"
+                                                    IsVisible="{Binding IsRedoAsrSpinning, Converter={StaticResource BoolToVis}}"
+                                                    RenderTransformOrigin="0.5,0.5">
+                                                <Border.RenderTransform>
+                                                    <RotateTransform Angle="{Binding RedoAsrIconAngle}" />
+                                                </Border.RenderTransform>
+                                                <Canvas Width="16"
+                                                        Height="16">
+                                                    <Path Classes="redo-spinner-path"
+                                                          Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"
+                                                          Data="M11.6,5.1 A4.6,4.6 0 1 0 11.6,10.9" />
+                                                    <Path Classes="redo-spinner-path"
+                                                          Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"
+                                                          Data="M10.1,2.9 L12.9,2.9 L12.9,5.7" />
+                                                </Canvas>
+                                            </Border>
+                                        </Grid>
                                     </Button>
                                 </WrapPanel>
 

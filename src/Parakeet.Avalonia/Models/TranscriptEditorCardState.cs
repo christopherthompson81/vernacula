@@ -46,6 +46,8 @@ internal sealed partial class TranscriptEditorCardState : ObservableObject
     [ObservableProperty] private bool _canSplit;
     [ObservableProperty] private bool _canRedoAsr;
     [ObservableProperty] private bool _canAdjustTimes = true;
+    [ObservableProperty] private bool _isRedoAsrSpinning;
+    [ObservableProperty] private double _redoAsrIconAngle;
     [ObservableProperty] private bool _showAdjacentRuns;
     [ObservableProperty] private string _adjacentPlainText = "";
     [ObservableProperty] private IBrush _adjacentBackground = Brushes.Transparent;
