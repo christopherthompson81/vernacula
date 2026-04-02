@@ -129,7 +129,7 @@ internal sealed partial class TranscriptEditorCardState : ObservableObject
         OnPropertyChanged(nameof(AsrContent));
     }
 
-    public void RebuildAsrRuns(IReadOnlyList<(string text, Color background)> runs)
+    public void RebuildAsrRuns(IReadOnlyList<(string text, Color background)> runs, IBrush foreground)
     {
         AsrRuns.Clear();
         _asrBaseColors.Clear();
@@ -138,7 +138,7 @@ internal sealed partial class TranscriptEditorCardState : ObservableObject
         foreach (var (text, background) in runs)
         {
             _asrBaseColors.Add(background);
-            AsrRuns.Add(new TranscriptEditorTextRunState(text, new SolidColorBrush(background)));
+            AsrRuns.Add(new TranscriptEditorTextRunState(text, new SolidColorBrush(background), foreground));
         }
     }
 
@@ -149,7 +149,7 @@ internal sealed partial class TranscriptEditorCardState : ObservableObject
         foreach (var (text, background) in runs)
         {
             _adjacentBaseColors.Add(background);
-            AdjacentRuns.Add(new TranscriptEditorTextRunState(text, new SolidColorBrush(background)));
+            AdjacentRuns.Add(new TranscriptEditorTextRunState(text, new SolidColorBrush(background), foreground));
         }
 
         ShowAdjacentRuns = true;

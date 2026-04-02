@@ -406,6 +406,7 @@ public partial class TranscriptEditorWindow : Window
                 _vocab,
                 GetThemeColor("ConfidenceLowBrush"),
                 GetThemeColor("AccentBrush"),
+                GetThemeBrush("TextBrush"),
                 i == _vm.FocusedIndex ? _vm.HighlightedToken : -1);
         }
     }

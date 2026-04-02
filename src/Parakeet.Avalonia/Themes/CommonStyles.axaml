@@ -6,6 +6,7 @@
         <Setter Property="BorderThickness" Value="0" />
         <Setter Property="Padding"         Value="12,6" />
         <Setter Property="Cursor"          Value="Hand" />
+        <Setter Property="Opacity"         Value="1" />
         <Setter Property="Template">
             <Setter.Value>
                 <ControlTemplate TargetType="Button">
@@ -28,11 +29,11 @@
 
     <!-- Button hover/pressed states -->
     <Style Selector="Button:pointerover">
-        <Setter Property="Background" Value="{DynamicResource OverlayBrush}" />
+        <Setter Property="Opacity" Value="0.85" />
     </Style>
 
     <Style Selector="Button:pressed">
-        <Setter Property="Background" Value="{DynamicResource AccentBrush}" />
+        <Setter Property="Opacity" Value="0.70" />
     </Style>
 
     <Style Selector="Button:disabled">
@@ -51,6 +52,7 @@
 
     <Style Selector="Button.sidebar-topic-button:pointerover">
         <Setter Property="Background" Value="{DynamicResource OverlayBrush}" />
+        <Setter Property="Opacity" Value="1" />
     </Style>
 
     <!-- Named button variants (using Classes) -->
@@ -61,10 +63,6 @@
         <Setter Property="BorderBrush" Value="{DynamicResource OverlayBrush}" />
     </Style>
 
-    <Style Selector="Button.primary-button:pointerover">
-        <Setter Property="Background" Value="{DynamicResource OverlayBrush}" />
-    </Style>
-
     <Style Selector="Button.secondary-button">
         <Setter Property="Background" Value="{DynamicResource SecondaryBrush}" />
         <Setter Property="Foreground" Value="{DynamicResource ButtonTextBrush}" />
@@ -73,7 +71,7 @@
     </Style>
 
     <Style Selector="Button.secondary-button:pointerover">
-        <Setter Property="Background" Value="{DynamicResource OverlayBrush}" />
+        <Setter Property="Background" Value="{DynamicResource SecondaryBrush}" />
     </Style>
 
     <Style Selector="Button.danger-button">
@@ -82,7 +80,15 @@
     </Style>
 
     <Style Selector="Button.danger-button:pointerover">
-        <Setter Property="Opacity" Value="0.85" />
+        <Setter Property="Background" Value="{DynamicResource DangerButtonBgBrush}" />
+    </Style>
+
+    <Style Selector="Button.danger-button:pressed">
+        <Setter Property="Background" Value="{DynamicResource DangerButtonBgBrush}" />
+    </Style>
+
+    <Style Selector="Button.secondary-button:pressed">
+        <Setter Property="Background" Value="{DynamicResource SecondaryBrush}" />
     </Style>
 
     <!-- TextBlock -->
@@ -108,7 +114,7 @@
 
     <Style Selector="TextBox:focus">
         <Setter Property="BorderBrush" Value="{DynamicResource AccentBrush}" />
-        <Setter Property="BorderThickness" Value="2" />
+        <Setter Property="BorderThickness" Value="1" />
     </Style>
 
     <!-- ProgressBar -->
@@ -117,31 +123,63 @@
         <Setter Property="Foreground" Value="{DynamicResource AccentBrush}" />
     </Style>
 
-    <!--
     <Style Selector="DataGrid">
+        <Setter Property="Background" Value="{DynamicResource SurfaceBrush}" />
+        <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
+        <Setter Property="BorderBrush" Value="{DynamicResource OverlayBrush}" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="HorizontalGridLinesBrush" Value="{DynamicResource OverlayBrush}" />
+        <Setter Property="VerticalGridLinesBrush" Value="{DynamicResource OverlayBrush}" />
     </Style>
-    
+
     <Style Selector="DataGridColumnHeader">
+        <Setter Property="Background" Value="{DynamicResource SurfaceBrush}" />
+        <Setter Property="Foreground" Value="{DynamicResource SubtextBrush}" />
+        <Setter Property="BorderBrush" Value="{DynamicResource OverlayBrush}" />
+        <Setter Property="BorderThickness" Value="0,0,1,1" />
+        <Setter Property="Padding" Value="8,6" />
+        <Setter Property="FontSize" Value="11" />
+        <Setter Property="FontWeight" Value="SemiBold" />
+        <Setter Property="Template">
+            <ControlTemplate>
+                <Border Background="{TemplateBinding Background}"
+                        BorderBrush="{TemplateBinding BorderBrush}"
+                        BorderThickness="{TemplateBinding BorderThickness}"
+                        Padding="{TemplateBinding Padding}">
+                    <ContentPresenter Content="{TemplateBinding Content}"
+                                      ContentTemplate="{TemplateBinding ContentTemplate}"
+                                      Foreground="{TemplateBinding Foreground}"
+                                      VerticalAlignment="Center" />
+                </Border>
+            </ControlTemplate>
+        </Setter>
     </Style>
 
     <Style Selector="DataGridColumnHeader:pointerover">
+        <Setter Property="Background" Value="{DynamicResource OverlayBrush}" />
     </Style>
 
     <Style Selector="DataGridRow">
+        <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
+        <Setter Property="Background" Value="{DynamicResource SurfaceBrush}" />
     </Style>
 
-    <Style Selector="DataGridRow:pointerover">
+    <Style Selector="DataGridRow:nth-child(even)">
+        <Setter Property="Background" Value="{DynamicResource BgBrush}" />
     </Style>
 
     <Style Selector="DataGridRow:selected">
+        <Setter Property="Background" Value="{DynamicResource OverlayBrush}" />
+        <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
     </Style>
 
     <Style Selector="DataGridCell">
+        <Setter Property="BorderThickness" Value="0" />
     </Style>
 
     <Style Selector="DataGridCell:focus">
+        <Setter Property="BorderThickness" Value="0" />
     </Style>
-    -->
 
     <!-- Window -->
     <Style Selector="Window">
@@ -184,7 +222,7 @@
     </Style>
 
     <Style Selector="RadioButton:checked">
-        <Setter Property="Foreground" Value="{DynamicResource AccentBrush}" />
+        <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
     </Style>
 
     <!-- CheckBox -->
@@ -193,7 +231,7 @@
     </Style>
 
     <Style Selector="CheckBox:checked">
-        <Setter Property="Foreground" Value="{DynamicResource AccentBrush}" />
+        <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
     </Style>
 
     <!-- ComboBox -->
@@ -212,7 +250,7 @@
 
     <Style Selector="ComboBox:focus">
         <Setter Property="BorderBrush" Value="{DynamicResource AccentBrush}" />
-        <Setter Property="BorderThickness" Value="2" />
+        <Setter Property="BorderThickness" Value="1" />
     </Style>
 
     <!-- ComboBoxItem -->
@@ -227,8 +265,8 @@
     </Style>
 
     <Style Selector="ComboBoxItem:selected">
-        <Setter Property="Background" Value="{DynamicResource AccentBrush}" />
-        <Setter Property="Foreground" Value="White" />
+        <Setter Property="Background" Value="{DynamicResource OverlayBrush}" />
+        <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
     </Style>
 
     <!-- Status badge (used in HomeView) -->
@@ -244,7 +282,7 @@
     </Style>
 
     <Style Selector="ScrollBar Thumb:pointerover">
-        <Setter Property="Background" Value="{DynamicResource TextBrush}" />
+        <Setter Property="Background" Value="{DynamicResource AccentBrush}" />
     </Style>
 
     <Style Selector="ScrollBar Thumb:pressed">

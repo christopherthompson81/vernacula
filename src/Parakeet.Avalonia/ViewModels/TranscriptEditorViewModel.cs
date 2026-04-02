@@ -957,11 +957,11 @@ internal partial class TranscriptEditorViewModel : ObservableObject, IDisposable
     }
 
     public void RefreshFocusedCardAsrHighlighting(TranscriptEditorCardState card, VocabService? vocab,
-        Color confidenceLowColor, Color accentColor, int highlightedToken)
+        Color confidenceLowColor, Color accentColor, IBrush textBrush, int highlightedToken)
     {
         if (vocab == null || card.Segment.Tokens.Count == 0)
         {
-            card.RebuildAsrRuns([(card.Segment.AsrContent, Colors.Transparent)]);
+            card.RebuildAsrRuns([(card.Segment.AsrContent, Colors.Transparent)], textBrush);
             return;
         }
 
@@ -971,7 +971,7 @@ internal partial class TranscriptEditorViewModel : ObservableObject, IDisposable
                 VocabService.GetConfidenceHighlight(r.logprob, confidenceLowColor)))
             .ToList();
 
-        card.RebuildAsrRuns(runs);
+        card.RebuildAsrRuns(runs, textBrush);
         card.ApplyHighlightedAsrToken(highlightedToken, accentColor);
     }
 
