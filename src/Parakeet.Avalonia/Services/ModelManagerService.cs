@@ -165,6 +165,7 @@ internal class ModelManagerService
         string logPath  = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "Parakeet", "cuda_debug.txt");
+        Directory.CreateDirectory(Path.GetDirectoryName(logPath)!);
 
         string modelFile = Path.Combine(_settings.GetModelsDir(), "nemo128.onnx");
         if (!File.Exists(modelFile))
@@ -175,23 +176,45 @@ internal class ModelManagerService
         }
         try
         {
+            if (OperatingSystem.IsMacOS())
+            {
+                const string macOsMessage = "CUDA execution is not supported on macOS.";
+                File.WriteAllText(logPath, macOsMessage);
+                return (false, macOsMessage);
+            }
+
+            if (!OperatingSystem.IsWindows() && !OperatingSystem.IsLinux())
+            {
+                string unsupportedMessage = $"CUDA execution is not supported on {RuntimeInformation.OSDescription}.";
+                File.WriteAllText(logPath, unsupportedMessage);
+                return (false, unsupportedMessage);
+            }
+
             AddCudaToSearchPath();
             var opts = new SessionOptions();
             opts.AppendExecutionProvider_CUDA(0);
             using var session = new InferenceSession(modelFile, opts);
-            string msg = "CUDA OK";
+            string msg = $"CUDA OK on {GetPlatformName()}";
             File.WriteAllText(logPath, msg);
             return (true, msg);
         }
         catch (Exception ex)
         {
-            string msg = $"Exception: {ex.GetType().Name}\n{ex.Message}\n\nInner: {ex.InnerException?.Message}\n\nStack:\n{ex.StackTrace}";
+            string msg = $"CUDA check failed on {GetPlatformName()}.\nException: {ex.GetType().Name}\n{ex.Message}\n\nInner: {ex.InnerException?.Message}\n\nStack:\n{ex.StackTrace}";
             File.WriteAllText(logPath, msg);
             return (false, msg);
         }
     }
 
     public bool IsCudaAvailable() => CheckCuda().Available;
+
+    private static string GetPlatformName()
+    {
+        if (OperatingSystem.IsWindows()) return "Windows";
+        if (OperatingSystem.IsLinux()) return "Linux";
+        if (OperatingSystem.IsMacOS()) return "macOS";
+        return RuntimeInformation.OSDescription;
+    }
 
     public async Task DownloadMissingModelsAsync(
         IProgress<DownloadProgress> progress,

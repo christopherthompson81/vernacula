@@ -76,9 +76,9 @@
 
   <ItemGroup>
     <!-- Platform-specific ONNX Runtime -->
-    <PackageReference Include="Microsoft.ML.OnnxRuntime.Gpu" Version="1.24.2" Condition="'$(UseDirectML)' != 'true' AND $([MSBuild]::IsOSPlatform('Windows'))" />
+    <PackageReference Include="Microsoft.ML.OnnxRuntime.Gpu" Version="1.24.2" Condition="'$(UseDirectML)' != 'true' AND ( $([MSBuild]::IsOSPlatform('Windows')) OR $([MSBuild]::IsOSPlatform('Linux')) )" />
     <PackageReference Include="Microsoft.ML.OnnxRuntime.DirectML" Version="1.21.1" Condition="'$(UseDirectML)' == 'true' AND $([MSBuild]::IsOSPlatform('Windows'))" />
-    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.24.2" Condition="'$(UseDirectML)' != 'true' AND !$([MSBuild]::IsOSPlatform('Windows'))" />
+    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.24.2" Condition="'$(UseDirectML)' != 'true' AND !$([MSBuild]::IsOSPlatform('Windows')) AND !$([MSBuild]::IsOSPlatform('Linux'))" />
   </ItemGroup>
 
   <ItemGroup>
