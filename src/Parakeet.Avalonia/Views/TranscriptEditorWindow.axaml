@@ -31,6 +31,13 @@
             <Setter Property="VerticalAlignment" Value="Center" />
             <Setter Property="Stretch" Value="Uniform" />
         </Style>
+        <Style Selector="TextBlock.speaker-menu-icon">
+            <Setter Property="FontFamily" Value="Segoe MDL2 Assets" />
+            <Setter Property="FontSize" Value="18" />
+            <Setter Property="HorizontalAlignment" Value="Center" />
+            <Setter Property="VerticalAlignment" Value="Center" />
+            <Setter Property="TextAlignment" Value="Center" />
+        </Style>
         <Style Selector="Image.playback-icon-image">
             <Setter Property="Width" Value="30" />
             <Setter Property="Height" Value="30" />
@@ -291,43 +298,28 @@
                                 CornerRadius="10"
                                 Padding="14,12">
                             <StackPanel Spacing="10">
-                                <Grid ColumnDefinitions="Auto,Auto,Auto,*,Auto,Auto"
+                                <Grid ColumnDefinitions="Auto,Auto,*,Auto,Auto"
                                       ColumnSpacing="8">
                                     <TextBox Text="{Binding DraftSpeakerName, Mode=TwoWay}"
+                                             x:Name="SpeakerNameTextBox"
                                              MinWidth="130"
                                              MaxWidth="220"
                                              HorizontalAlignment="Left"
+                                             KeyDown="SpeakerNameBox_KeyDown"
+                                             PointerWheelChanged="SpeakerNameBox_PointerWheelChanged"
                                              LostFocus="SpeakerNameBox_LostFocus" />
                                     <Button Grid.Column="1"
-                                            Content="Rename"
-                                            MinWidth="78"
-                                            Click="RenameSpeaker_Click" />
-                                    <ComboBox Grid.Column="2"
-                                              ItemsSource="{Binding SpeakerChoices}"
-                                              SelectedItem="{Binding SelectedSpeaker, Mode=TwoWay}"
-                                              MinWidth="140" />
-                                    <StackPanel Grid.Column="3"
-                                                Orientation="Horizontal"
-                                                Spacing="8"
-                                                HorizontalAlignment="Right">
-                                        <Button Classes="secondary-button action-button"
-                                                Click="ReassignSpeaker_Click"
-                                                ToolTip.Tip="Reassign">
-                                            <Image Classes="action-icon-image"
-                                                   Source="{Binding ReassignSpeakerIconImage}" />
-                                        </Button>
-                                        <Button Classes="secondary-button action-button"
-                                                Click="AddSpeaker_Click"
-                                                ToolTip.Tip="{local:Loc editor_add_speaker}">
-                                            <Image Classes="action-icon-image"
-                                                   Source="{Binding AddSpeakerIconImage}" />
-                                        </Button>
-                                    </StackPanel>
-                                    <TextBlock Grid.Column="4"
+                                            Classes="secondary-button action-button"
+                                            Click="SpeakerMenu_Click"
+                                            ToolTip.Tip="{local:Loc editor_add_speaker}">
+                                        <TextBlock Classes="speaker-menu-icon"
+                                                   Text="&#xE77B;" />
+                                    </Button>
+                                    <TextBlock Grid.Column="3"
                                                Text="{Binding TimeRangeText}"
                                                Foreground="{DynamicResource SubtextBrush}"
                                                VerticalAlignment="Center" />
-                                    <CheckBox Grid.Column="5"
+                                    <CheckBox Grid.Column="4"
                                               Content="{local:Loc editor_verified}"
                                               IsChecked="{Binding IsVerified}"
                                               VerticalAlignment="Center"
@@ -449,10 +441,11 @@
                                                        FontSize="11"
                                                        FontWeight="SemiBold"
                                                        Foreground="{DynamicResource SubtextBrush}" />
-                                            <TextBox Grid.Row="1"
-                                                     Text="{Binding DraftContent, Mode=TwoWay}"
-                                                     AcceptsReturn="True"
-                                                     TextWrapping="Wrap"
+                                    <TextBox Grid.Row="1"
+                                             x:Name="SegmentContentTextBox"
+                                             Text="{Binding DraftContent, Mode=TwoWay}"
+                                             AcceptsReturn="True"
+                                             TextWrapping="Wrap"
                                                      VerticalContentAlignment="Top"
                                                      MinHeight="84"
                                                      MaxHeight="214"

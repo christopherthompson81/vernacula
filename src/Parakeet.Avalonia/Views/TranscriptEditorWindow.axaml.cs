@@ -22,6 +22,7 @@ namespace ParakeetCSharp.Views;
 public partial class TranscriptEditorWindow : Window
 {
     private const int RedoSpinnerFrameCount = 20;
+    private static readonly TimeSpan SpeakerWheelCooldown = TimeSpan.FromMilliseconds(180);
     private static readonly Bitmap SuppressDarkBitmap = LoadBitmap("avares://Parakeet.Avalonia/Assets/toolbar_icons/suppress_dark.png");
     private static readonly Bitmap SuppressLightBitmap = LoadBitmap("avares://Parakeet.Avalonia/Assets/toolbar_icons/suppress_light.png");
     private static readonly Bitmap SuppressRedBitmap = LoadBitmap("avares://Parakeet.Avalonia/Assets/toolbar_icons/suppress_red.png");
@@ -64,6 +65,8 @@ public partial class TranscriptEditorWindow : Window
     private int _redoAsrCardId = -1;
     private int _redoAsrSpinnerFrameIndex;
     private bool _suppressSelectionChanged;
+    private int _lastSpeakerWheelCardIndex = -1;
+    private DateTime _lastSpeakerWheelUtc = DateTime.MinValue;
     private DispatcherTimer? _redoAsrSpinnerTimer;
 
     public event Action? DataChanged;
@@ -548,8 +551,61 @@ public partial class TranscriptEditorWindow : Window
     {
         if (CardFromSender(sender) is { } card)
         {
-            SaveDraft(card);
+            SaveSpeakerName(card, statusMessage: "Speaker name updated.");
         }
+    }
+
+    private void SpeakerNameBox_KeyDown(object? sender, KeyEventArgs e)
+    {
+        if (e.Key is not (Key.Enter or Key.Tab))
+        {
+            return;
+        }
+
+        if (CardFromSender(sender) is not { } card)
+        {
+            return;
+        }
+
+        SaveSpeakerName(card, statusMessage: "Speaker name updated.");
+        FocusSegmentContent(sender);
+        e.Handled = true;
+    }
+
+    private void SpeakerNameBox_PointerWheelChanged(object? sender, PointerWheelEventArgs e)
+    {
+        if (CardFromSender(sender) is not { } card)
+        {
+            return;
+        }
+
+        var now = DateTime.UtcNow;
+        if (card.Index == _lastSpeakerWheelCardIndex
+            && now - _lastSpeakerWheelUtc < SpeakerWheelCooldown)
+        {
+            e.Handled = true;
+            return;
+        }
+
+        var speakers = _vm.AllSpeakers;
+        if (speakers.Count < 2)
+        {
+            e.Handled = true;
+            return;
+        }
+
+        int currentIndex = speakers.FindIndex(s => s.SpeakerId == _vm.Segments[card.Index].SpeakerId);
+        if (currentIndex < 0)
+        {
+            e.Handled = true;
+            return;
+        }
+
+        int nextIndex = (currentIndex + (e.Delta.Y > 0 ? -1 : 1) + speakers.Count) % speakers.Count;
+        _lastSpeakerWheelCardIndex = card.Index;
+        _lastSpeakerWheelUtc = now;
+        ApplySpeakerReassignment(card, speakers[nextIndex].SpeakerId, "Segment reassigned.");
+        e.Handled = true;
     }
 
     private void EditTextBox_LostFocus(object? sender, RoutedEventArgs e)
@@ -572,6 +628,27 @@ public partial class TranscriptEditorWindow : Window
                 ApplyFocusedIndex(_vm.FocusedIndex, force: true);
             }
         }
+    }
+
+    private void SaveSpeakerName(TranscriptEditorCardState card, string statusMessage)
+    {
+        string speakerName = (card.DraftSpeakerName ?? string.Empty).Trim();
+        if (string.IsNullOrEmpty(speakerName))
+        {
+            card.SyncDraftsFromSegment();
+            return;
+        }
+
+        bool changed = _vm.SaveSpeakerName(card.Index, speakerName);
+        card.SyncDraftsFromSegment();
+        if (!changed)
+        {
+            return;
+        }
+
+        DataChanged?.Invoke();
+        RefreshAllCardState();
+        SetCardStatus(card, statusMessage);
     }
 
     private void PersistAllDrafts()
@@ -767,39 +844,79 @@ public partial class TranscriptEditorWindow : Window
         SeekBubbleHost.IsVisible = false;
     }
 
-    private void RenameSpeaker_Click(object? sender, RoutedEventArgs e)
+    private void SpeakerMenu_Click(object? sender, RoutedEventArgs e)
     {
-        if (CardFromSender(sender) is not { } card)
+        if (sender is not Button anchor || CardFromSender(sender) is not { } card)
         {
             return;
         }
 
-        if (_vm.RenameSpeaker(card))
-        {
-            DataChanged?.Invoke();
-            RefreshAllCardState();
-            SetCardStatus(card, "Speaker name updated.");
-        }
+        ShowSpeakerMenu(anchor, card.Index);
     }
 
-    private void ReassignSpeaker_Click(object? sender, RoutedEventArgs e)
+    private void ShowSpeakerMenu(Button anchor, int segmentIndex)
     {
-        if (CardFromSender(sender) is not { } card || card.SelectedSpeaker is null)
+        int currentSpeakerId = _vm.Segments[segmentIndex].SpeakerId;
+        var menuItems = new List<object>();
+
+        foreach (var (speakerId, name) in _vm.AllSpeakers)
+        {
+            int id = speakerId;
+            bool isCurrent = speakerId == currentSpeakerId;
+            string label = string.IsNullOrWhiteSpace(name) ? $"speaker_{speakerId - 1}" : name;
+            var item = new MenuItem
+            {
+                Header = isCurrent ? $"✓ {label}" : label,
+                IsEnabled = !isCurrent
+            };
+            item.Click += (_, _) => ApplySpeakerReassignment(segmentIndex, id, "Segment reassigned.");
+            menuItems.Add(item);
+        }
+
+        menuItems.Add(new Separator());
+
+        var addItem = new MenuItem
+        {
+            Header = Loc.Instance["editor_add_speaker"]
+        };
+        addItem.Click += async (_, _) => await PromptAddAndReassignAsync(segmentIndex);
+        menuItems.Add(addItem);
+
+        var menu = new ContextMenu
+        {
+            PlacementTarget = anchor,
+            ItemsSource = menuItems
+        };
+
+        anchor.ContextMenu = menu;
+        menu.Open(anchor);
+    }
+
+    private void ApplySpeakerReassignment(TranscriptEditorCardState card, int speakerId, string statusMessage)
+    {
+        if (!_vm.ReassignSegment(card.Index, speakerId))
         {
             return;
         }
 
-        if (_vm.ReassignSpeaker(card))
-        {
-            DataChanged?.Invoke();
-            RefreshAllCardState();
-            SetCardStatus(card, "Segment reassigned.");
-        }
+        DataChanged?.Invoke();
+        RefreshAllCardState();
+        SetCardStatus(card, statusMessage);
     }
 
-    private async void AddSpeaker_Click(object? sender, RoutedEventArgs e)
+    private void ApplySpeakerReassignment(int segmentIndex, int speakerId, string statusMessage)
     {
-        if (CardFromSender(sender) is not { } card)
+        if (segmentIndex < 0 || segmentIndex >= _state.Cards.Count)
+        {
+            return;
+        }
+
+        ApplySpeakerReassignment(_state.Cards[segmentIndex], speakerId, statusMessage);
+    }
+
+    private async Task PromptAddAndReassignAsync(int segmentIndex)
+    {
+        if (segmentIndex < 0 || segmentIndex >= _state.Cards.Count)
         {
             return;
         }
@@ -817,11 +934,23 @@ public partial class TranscriptEditorWindow : Window
             return;
         }
 
-        DataChanged?.Invoke();
-        RefreshAllCardState();
-        card.SelectedSpeaker = card.SpeakerChoices.FirstOrDefault(c => c.SpeakerId == newSpeakerId);
-        card.SyncDraftsFromSegment();
-        SetCardStatus(card, "Speaker added.");
+        ApplySpeakerReassignment(segmentIndex, newSpeakerId, "Speaker added.");
+    }
+
+    private static void FocusSegmentContent(object? sender)
+    {
+        if (sender is not Control control)
+        {
+            return;
+        }
+
+        var container = control.GetVisualAncestors()
+            .OfType<Control>()
+            .FirstOrDefault(ancestor => ancestor.FindControl<TextBox>("SegmentContentTextBox") is not null);
+        if (container?.FindControl<TextBox>("SegmentContentTextBox") is { } contentBox)
+        {
+            contentBox.Focus();
+        }
     }
 
     private void VerifiedCheckBox_Click(object? sender, RoutedEventArgs e)

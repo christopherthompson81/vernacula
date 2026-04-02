@@ -77,6 +77,11 @@ internal sealed partial class TranscriptEditorCardState : ObservableObject
         DraftContent = Segment.Content;
     }
 
+    public void SyncSpeakerDraftFromSegment()
+    {
+        DraftSpeakerName = Segment.SpeakerDisplayName;
+    }
+
     public void SetSpeakerChoices(IEnumerable<SpeakerChoice> choices)
     {
         SpeakerChoices.Clear();
@@ -106,6 +111,8 @@ internal sealed partial class TranscriptEditorCardState : ObservableObject
     {
         if (!preserveDrafts)
             SyncDraftsFromSegment();
+        else
+            SyncSpeakerDraftFromSegment();
 
         RefreshDerived();
         SetSpeakerChoices(choices);
