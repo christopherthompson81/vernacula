@@ -134,6 +134,11 @@ internal class ModelManagerService
     /// </summary>
     internal static void AddCudaToSearchPath()
     {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
         var dirs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         // CUDA Toolkit installer sets CUDA_PATH (e.g. C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.8)
