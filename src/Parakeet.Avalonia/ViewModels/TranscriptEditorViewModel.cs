@@ -135,6 +135,13 @@ internal partial class TranscriptEditorViewModel : ObservableObject, IDisposable
     public void NavigateTo(int index)
     {
         if (index < 0 || index >= Segments.Count || index == FocusedIndex) return;
+        if (IsPlaying && PlaybackMode == PlaybackMode.Continuous)
+        {
+            FocusedIndexChanging?.Invoke(index);
+            FocusedIndex = index;
+            return;
+        }
+
         StopPlayback();
         FocusedIndexChanging?.Invoke(index);
         FocusedIndex = index;
@@ -144,7 +151,13 @@ internal partial class TranscriptEditorViewModel : ObservableObject, IDisposable
     private void PrevSegment()
     {
         int next = FocusedIndex - 1;
-        if (IsPlaying && PlaybackMode == PlaybackMode.Continuous) { SeekContinuousTo(next); return; }
+        if (IsPlaying && PlaybackMode == PlaybackMode.Continuous)
+        {
+            FocusedIndexChanging?.Invoke(next);
+            FocusedIndex = next;
+            return;
+        }
+
         StopPlayback();
         FocusedIndexChanging?.Invoke(next);
         FocusedIndex = next;
@@ -155,23 +168,18 @@ internal partial class TranscriptEditorViewModel : ObservableObject, IDisposable
     private void NextSegment()
     {
         int next = FocusedIndex + 1;
-        if (IsPlaying && PlaybackMode == PlaybackMode.Continuous) { SeekContinuousTo(next); return; }
+        if (IsPlaying && PlaybackMode == PlaybackMode.Continuous)
+        {
+            FocusedIndexChanging?.Invoke(next);
+            FocusedIndex = next;
+            return;
+        }
+
         StopPlayback();
         FocusedIndexChanging?.Invoke(next);
         FocusedIndex = next;
     }
     private bool CanGoNext() => FocusedIndex < Segments.Count - 1;
-
-    private void SeekContinuousTo(int segmentIndex)
-    {
-        if (_fullAudio is null || segmentIndex < 0 || segmentIndex >= Segments.Count) return;
-        double totalDuration = (double)_fullAudio.Length / (_audioSampleRate * _audioChannels);
-        if (totalDuration > 0)
-            PlaybackPosition = Segments[segmentIndex].PlayStart / totalDuration;
-        PlayContinuous();
-        FocusedIndexChanging?.Invoke(segmentIndex);
-        FocusedIndex = segmentIndex;
-    }
 
     partial void OnPlaybackSpeedChanged(double value)
     {
