@@ -202,10 +202,54 @@
         <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
         <Setter Property="Background" Value="Transparent" />
         <Setter Property="Padding" Value="8,4" />
+        <Setter Property="Template">
+            <ControlTemplate>
+                <Grid>
+                    <Border Background="{TemplateBinding Background}"
+                            CornerRadius="4"
+                            Margin="2,1">
+                        <ContentPresenter Content="{TemplateBinding Header}"
+                                          Margin="{TemplateBinding Padding}"
+                                          Foreground="{TemplateBinding Foreground}"
+                                          VerticalAlignment="Center" />
+                    </Border>
+                    <Popup IsOpen="{TemplateBinding IsSubMenuOpen}"
+                           Placement="Bottom"
+                           HorizontalOffset="-4">
+                        <Border Background="{DynamicResource SurfaceBrush}"
+                                BorderBrush="{DynamicResource OverlayBrush}"
+                                BorderThickness="1"
+                                CornerRadius="6"
+                                Padding="4">
+                            <ItemsPresenter />
+                        </Border>
+                    </Popup>
+                </Grid>
+            </ControlTemplate>
+        </Setter>
     </Style>
 
     <Style Selector="MenuItem:pointerover">
         <Setter Property="Background" Value="{DynamicResource OverlayBrush}" />
+    </Style>
+
+    <Style Selector="MenuFlyoutPresenter">
+        <Setter Property="Background" Value="{DynamicResource SurfaceBrush}" />
+        <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
+        <Setter Property="BorderBrush" Value="{DynamicResource OverlayBrush}" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="Padding" Value="4" />
+        <Setter Property="Template">
+            <ControlTemplate>
+                <Border Background="{TemplateBinding Background}"
+                        BorderBrush="{TemplateBinding BorderBrush}"
+                        BorderThickness="{TemplateBinding BorderThickness}"
+                        CornerRadius="6"
+                        Padding="{TemplateBinding Padding}">
+                    <ItemsPresenter />
+                </Border>
+            </ControlTemplate>
+        </Setter>
     </Style>
 
     <!-- ContextMenu -->
@@ -214,6 +258,27 @@
         <Setter Property="BorderBrush" Value="{DynamicResource AccentBrush}" />
         <Setter Property="BorderThickness" Value="1" />
         <Setter Property="Padding" Value="4" />
+        <Setter Property="Template">
+            <ControlTemplate>
+                <Border Background="{TemplateBinding Background}"
+                        BorderBrush="{TemplateBinding BorderBrush}"
+                        BorderThickness="{TemplateBinding BorderThickness}"
+                        CornerRadius="6"
+                        Padding="{TemplateBinding Padding}">
+                    <ItemsPresenter />
+                </Border>
+            </ControlTemplate>
+        </Setter>
+    </Style>
+
+    <Style Selector="Separator">
+        <Setter Property="Template">
+            <ControlTemplate>
+                <Border BorderBrush="{DynamicResource OverlayBrush}"
+                        BorderThickness="0,1,0,0"
+                        Margin="8,3" />
+            </ControlTemplate>
+        </Setter>
     </Style>
 
     <!-- RadioButton -->
@@ -242,6 +307,65 @@
         <Setter Property="BorderThickness" Value="1" />
         <Setter Property="Padding" Value="8,4" />
         <Setter Property="Cursor" Value="Hand" />
+        <Setter Property="Template">
+            <ControlTemplate>
+                <Border Background="{TemplateBinding Background}"
+                        BorderBrush="{TemplateBinding BorderBrush}"
+                        BorderThickness="{TemplateBinding BorderThickness}"
+                        CornerRadius="4">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+
+                        <ToggleButton Grid.ColumnSpan="2"
+                                      IsChecked="{Binding IsDropDownOpen, RelativeSource={RelativeSource TemplatedParent}, Mode=TwoWay}"
+                                      Focusable="False"
+                                      ClickMode="Press">
+                            <ToggleButton.Template>
+                                <ControlTemplate>
+                                    <Border Background="Transparent" />
+                                </ControlTemplate>
+                            </ToggleButton.Template>
+                        </ToggleButton>
+
+                        <ContentPresenter Grid.Column="0"
+                                          Content="{TemplateBinding SelectionBoxItem}"
+                                          ContentTemplate="{TemplateBinding SelectionBoxItemTemplate}"
+                                          Margin="{TemplateBinding Padding}"
+                                          VerticalAlignment="Center"
+                                          IsHitTestVisible="False" />
+
+                        <Path Grid.Column="1"
+                              Data="M 0 0 L 5 5 L 10 0"
+                              Stroke="{DynamicResource SubtextBrush}"
+                              StrokeThickness="1.5"
+                              HorizontalAlignment="Center"
+                              VerticalAlignment="Center"
+                              Margin="0,0,8,0"
+                              IsHitTestVisible="False" />
+
+                        <Popup x:Name="PART_Popup"
+                               Grid.ColumnSpan="2"
+                               IsOpen="{TemplateBinding IsDropDownOpen}"
+                               Focusable="False"
+                               Placement="Bottom">
+                            <Border Background="{DynamicResource SurfaceBrush}"
+                                    BorderBrush="{DynamicResource OverlayBrush}"
+                                    BorderThickness="1"
+                                    CornerRadius="4"
+                                    Padding="4"
+                                    MaxHeight="{TemplateBinding MaxDropDownHeight}">
+                                <ScrollViewer>
+                                    <ItemsPresenter />
+                                </ScrollViewer>
+                            </Border>
+                        </Popup>
+                    </Grid>
+                </Border>
+            </ControlTemplate>
+        </Setter>
     </Style>
 
     <Style Selector="ComboBox:pointerover">
@@ -258,6 +382,16 @@
         <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
         <Setter Property="Background" Value="Transparent" />
         <Setter Property="Padding" Value="8,5" />
+        <Setter Property="Template">
+            <ControlTemplate>
+                <Border Background="{TemplateBinding Background}"
+                        Padding="{TemplateBinding Padding}"
+                        CornerRadius="3">
+                    <ContentPresenter Content="{TemplateBinding Content}"
+                                      ContentTemplate="{TemplateBinding ContentTemplate}" />
+                </Border>
+            </ControlTemplate>
+        </Setter>
     </Style>
 
     <Style Selector="ComboBoxItem:pointerover">
