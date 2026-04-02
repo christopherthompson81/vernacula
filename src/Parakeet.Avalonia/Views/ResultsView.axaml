@@ -41,7 +41,6 @@
                   AutoGenerateColumns="False"
                   IsReadOnly="True"
                   CanUserReorderColumns="False"
-                  
                   SelectionMode="Single"
                   GridLinesVisibility="Horizontal"
                   HeadersVisibility="Column">
@@ -61,11 +60,19 @@
                         <TextBlock Text="{Binding Source={x:Static local:Loc.Instance}, Path=[segments_col_end]}" />
                     </DataGridTextColumn.Header>
                 </DataGridTextColumn>
-                <DataGridTextColumn Binding="{Binding Text}" Width="*">
-                    <DataGridTextColumn.Header>
+                <DataGridTemplateColumn Width="*">
+                    <DataGridTemplateColumn.Header>
                         <TextBlock Text="{Binding Source={x:Static local:Loc.Instance}, Path=[segments_col_content]}" />
-                    </DataGridTextColumn.Header>
-                </DataGridTextColumn>
+                    </DataGridTemplateColumn.Header>
+                    <DataGridTemplateColumn.CellTemplate>
+                        <DataTemplate>
+                            <TextBlock Text="{Binding Text}"
+                                       TextWrapping="Wrap"
+                                       Padding="4,2"
+                                       VerticalAlignment="Center" />
+                        </DataTemplate>
+                    </DataGridTemplateColumn.CellTemplate>
+                </DataGridTemplateColumn>
             </DataGrid.Columns>
         </DataGrid>
 

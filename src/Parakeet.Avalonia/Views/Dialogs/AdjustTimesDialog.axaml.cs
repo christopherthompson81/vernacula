@@ -9,6 +9,7 @@ public partial class AdjustTimesDialog : Window
 {
     public double NewStartTime { get; private set; }
     public double NewEndTime   { get; private set; }
+    public bool DialogResult   { get; private set; }
 
     public AdjustTimesDialog()
     {
@@ -47,28 +48,31 @@ public partial class AdjustTimesDialog : Window
     {
         if (!double.TryParse(StartBox.Text, out double start) || start < 0)
         {
-            // TODO: Port error display to Avalonia
-            // ShowError("Start time must be a non-negative number.");
+            ShowError("Start time must be a non-negative number.");
             return;
         }
         if (!double.TryParse(EndBox.Text, out double end) || end <= start)
         {
-            // TODO: Port error display to Avalonia
-            // ShowError("End time must be greater than start time.");
+            ShowError("End time must be greater than start time.");
             return;
         }
+
+        ErrorLabel.IsVisible = false;
         NewStartTime = start;
         NewEndTime   = end;
+        DialogResult = true;
         Close();
     }
 
     private void CancelBtn_Click(object sender, RoutedEventArgs e)
-        => Close();
+    {
+        DialogResult = false;
+        Close();
+    }
 
-     // TODO: Port to Avalonia - Visibility not available
-    // private void ShowError(string msg)
-    // {
-    //     ErrorLabel.Text       = msg;
-    //     ErrorLabel.Visibility = Visibility.Visible;
-    // }
+    private void ShowError(string msg)
+    {
+        ErrorLabel.Text = msg;
+        ErrorLabel.IsVisible = true;
+    }
 }

@@ -58,18 +58,31 @@ public partial class SpeakerNamesDialog : Window
         Close();
     }
 
-    private void SpeakersGrid_BeginningEdit(object sender, System.EventArgs e)
+    private void SpeakersGrid_BeginningEdit(object? sender, DataGridBeginningEditEventArgs e)
         => _isEditing = true;
 
-    private void SpeakersGrid_CellEditEnding(object sender, System.EventArgs e)
+    private void SpeakersGrid_CellEditEnding(object? sender, DataGridCellEditEndingEventArgs e)
         => _isEditing = false;
 
-    private void SpeakersGrid_PreviewKeyDown(object sender, KeyEventArgs e)
+    private void SpeakersGrid_PreviewKeyDown(object? sender, KeyEventArgs e)
     {
         if (e.Key != Key.Tab || !_isEditing)
             return;
 
-        // Simplified tab handling - Avalonia DataGrid handles this differently
+        int currentRow = _entries.IndexOf((SpeakerEntry?)SpeakersGrid.SelectedItem!);
+        int nextRow = currentRow + 1;
+
+        if (nextRow < 0 || nextRow >= _entries.Count)
+            return;
+
         e.Handled = true;
+        SpeakersGrid.CommitEdit(DataGridEditingUnit.Row, true);
+
+        var nextItem = _entries[nextRow];
+        SpeakersGrid.SelectedItem = nextItem;
+        if (SpeakersGrid.Columns.Count > 1)
+            SpeakersGrid.CurrentColumn = SpeakersGrid.Columns[1];
+        SpeakersGrid.ScrollIntoView(nextItem, SpeakersGrid.CurrentColumn);
+        SpeakersGrid.BeginEdit();
     }
 }

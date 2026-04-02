@@ -27,6 +27,8 @@
                   GridLinesVisibility="Horizontal"
                   HeadersVisibility="Column"
                   Margin="0,0,0,12"
+                  BeginningEdit="SpeakersGrid_BeginningEdit"
+                  CellEditEnding="SpeakersGrid_CellEditEnding"
                   KeyDown="SpeakersGrid_PreviewKeyDown">
             <DataGrid.Columns>
                 <DataGridTextColumn Binding="{Binding SpeakerTag}"
