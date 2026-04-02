@@ -6,6 +6,7 @@ using Avalonia.Controls;
 using Avalonia.Controls.Primitives;
 using Avalonia.Input;
 using Avalonia.Interactivity;
+using Avalonia.Media;
 using Avalonia.Threading;
 using Parakeet.Base;
 using ParakeetCSharp.Models;
@@ -115,6 +116,7 @@ public partial class TranscriptEditorWindow : Window
         {
             RefreshHeader();
             RefreshPlaybackUi();
+            RefreshFocusedCardAsrHighlighting();
         }, DispatcherPriority.Background);
     }
 
@@ -177,6 +179,9 @@ public partial class TranscriptEditorWindow : Window
                     ApplyFocusedIndex(_vm.FocusedIndex);
                     RefreshPlaybackUi();
                     break;
+                case nameof(TranscriptEditorViewModel.HighlightedToken):
+                    UpdateFocusedCardTokenHighlight(_vm.HighlightedToken);
+                    break;
                 case nameof(TranscriptEditorViewModel.PlaybackPosition):
                     if (!_seekDragging)
                     {
@@ -213,10 +218,20 @@ public partial class TranscriptEditorWindow : Window
             _state.Cards[i].Index = i;
             RefreshCardState(_state.Cards[i], preserveDrafts: true);
         }
+
+        RefreshFocusedCardAsrHighlighting();
     }
 
     private void RefreshCardState(TranscriptEditorCardState card, bool preserveDrafts)
-        => _vm.RefreshCardState(card, preserveDrafts, _state.Cards.Count, _redoAsrRunning, _asrModelsAvailable, _vocab != null);
+    {
+        _vm.RefreshCardState(card, preserveDrafts, _state.Cards.Count, _redoAsrRunning, _asrModelsAvailable, _vocab != null);
+        _vm.RefreshAdjacentCardHighlighting(
+            card,
+            _vocab,
+            GetThemeColor("ConfidenceLowBrush"),
+            GetThemeBrush("SubtextBrush"),
+            GetThemeBrush("TextBrush"));
+    }
 
     private void ApplyFocusedIndex(int focusedIndex, bool force = false)
     {
@@ -234,6 +249,7 @@ public partial class TranscriptEditorWindow : Window
             if (i == focusedIndex || force)
                 RefreshCardState(_state.Cards[i], preserveDrafts: true);
 
+        RefreshFocusedCardAsrHighlighting();
         SegmentList.ScrollIntoView(_state.Cards[focusedIndex]);
     }
 
@@ -274,6 +290,48 @@ public partial class TranscriptEditorWindow : Window
         _isUpdatingUi = true;
         _state.RefreshPlayback(_vm, _seekDragging, _isLoading);
         _isUpdatingUi = false;
+    }
+
+    private void RefreshFocusedCardAsrHighlighting()
+    {
+        if (_vm.FocusedIndex < 0 || _vm.FocusedIndex >= _state.Cards.Count)
+            return;
+
+        _vm.RefreshFocusedCardAsrHighlighting(
+            _state.Cards[_vm.FocusedIndex],
+            _vocab,
+            GetThemeColor("ConfidenceLowBrush"),
+            GetThemeColor("AccentBrush"),
+            _vm.HighlightedToken);
+    }
+
+    private void UpdateFocusedCardTokenHighlight(int tokenIndex)
+    {
+        if (_vm.FocusedIndex < 0 || _vm.FocusedIndex >= _state.Cards.Count)
+            return;
+
+        _vm.UpdateFocusedCardTokenHighlight(
+            _state.Cards[_vm.FocusedIndex],
+            GetThemeColor("AccentBrush"),
+            tokenIndex);
+    }
+
+    private Color GetThemeColor(string brushKey)
+    {
+        if (Application.Current?.Resources.TryGetResource(brushKey, null, out var value) == true
+            && value is ISolidColorBrush brush)
+            return brush.Color;
+
+        return Colors.Transparent;
+    }
+
+    private IBrush GetThemeBrush(string brushKey)
+    {
+        if (Application.Current?.Resources.TryGetResource(brushKey, null, out var value) == true
+            && value is IBrush brush)
+            return brush;
+
+        return Brushes.Transparent;
     }
 
     private void SetLoadingState(bool isLoading)
@@ -613,6 +671,7 @@ public partial class TranscriptEditorWindow : Window
             card.DraftContent = card.Segment.Content;
             DataChanged?.Invoke();
             RefreshCardState(card, preserveDrafts: true);
+            RefreshFocusedCardAsrHighlighting();
             SetCardStatus(card, "ASR regenerated.");
         }
         catch (Exception ex)

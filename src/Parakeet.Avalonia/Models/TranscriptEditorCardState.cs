@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using System.Linq;
+using Avalonia.Media;
 using CommunityToolkit.Mvvm.ComponentModel;
 
 namespace ParakeetCSharp.Models;
@@ -22,10 +23,15 @@ internal sealed partial class TranscriptEditorCardState : ObservableObject
     }
 
     internal EditorSegment Segment { get; }
+    private readonly List<Color> _asrBaseColors = [];
+    private readonly List<Color> _adjacentBaseColors = [];
+    private int _highlightedAsrToken = -1;
 
     public int Index { get; set; }
 
     public ObservableCollection<SpeakerChoice> SpeakerChoices { get; } = [];
+    public ObservableCollection<TranscriptEditorTextRunState> AsrRuns { get; } = [];
+    public ObservableCollection<TranscriptEditorTextRunState> AdjacentRuns { get; } = [];
 
     [ObservableProperty] private bool _isFocused;
     [ObservableProperty] private string _draftSpeakerName;
@@ -40,6 +46,11 @@ internal sealed partial class TranscriptEditorCardState : ObservableObject
     [ObservableProperty] private bool _canSplit;
     [ObservableProperty] private bool _canRedoAsr;
     [ObservableProperty] private bool _canAdjustTimes = true;
+    [ObservableProperty] private bool _showAdjacentRuns;
+    [ObservableProperty] private string _adjacentPlainText = "";
+    [ObservableProperty] private IBrush _adjacentBackground = Brushes.Transparent;
+    [ObservableProperty] private IBrush _adjacentForeground = Brushes.Black;
+    [ObservableProperty] private TextDecorationCollection? _adjacentTextDecorations;
 
     public bool IsVerified => Segment.Verified;
     public bool IsSuppressed => Segment.IsSuppressed;
@@ -96,6 +107,60 @@ internal sealed partial class TranscriptEditorCardState : ObservableObject
         OnPropertyChanged(nameof(IsSuppressed));
         OnPropertyChanged(nameof(HasUserEdits));
         OnPropertyChanged(nameof(AsrContent));
+    }
+
+    public void RebuildAsrRuns(IReadOnlyList<(string text, Color background)> runs)
+    {
+        AsrRuns.Clear();
+        _asrBaseColors.Clear();
+        _highlightedAsrToken = -1;
+
+        foreach (var (text, background) in runs)
+        {
+            _asrBaseColors.Add(background);
+            AsrRuns.Add(new TranscriptEditorTextRunState(text, new SolidColorBrush(background)));
+        }
+    }
+
+    public void RebuildAdjacentRuns(IReadOnlyList<(string text, Color background)> runs, IBrush foreground)
+    {
+        AdjacentRuns.Clear();
+        _adjacentBaseColors.Clear();
+        foreach (var (text, background) in runs)
+        {
+            _adjacentBaseColors.Add(background);
+            AdjacentRuns.Add(new TranscriptEditorTextRunState(text, new SolidColorBrush(background)));
+        }
+
+        ShowAdjacentRuns = true;
+        AdjacentForeground = foreground;
+        AdjacentTextDecorations = null;
+    }
+
+    public void SetAdjacentPlainText(string text, IBrush background, IBrush foreground,
+        TextDecorationCollection? decorations = null)
+    {
+        AdjacentPlainText = text;
+        AdjacentBackground = background;
+        AdjacentForeground = foreground;
+        AdjacentTextDecorations = decorations;
+        ShowAdjacentRuns = false;
+        AdjacentRuns.Clear();
+        _adjacentBaseColors.Clear();
+    }
+
+    public void ApplyHighlightedAsrToken(int tokenIndex, Color accentColor)
+    {
+        if (_highlightedAsrToken == tokenIndex)
+            return;
+
+        if (_highlightedAsrToken >= 0 && _highlightedAsrToken < AsrRuns.Count && _highlightedAsrToken < _asrBaseColors.Count)
+            AsrRuns[_highlightedAsrToken].Background = new SolidColorBrush(_asrBaseColors[_highlightedAsrToken]);
+
+        if (tokenIndex >= 0 && tokenIndex < AsrRuns.Count)
+            AsrRuns[tokenIndex].Background = new SolidColorBrush(Color.FromArgb(120, accentColor.R, accentColor.G, accentColor.B));
+
+        _highlightedAsrToken = tokenIndex;
     }
 
     partial void OnDraftContentChanged(string value) => OnPropertyChanged(nameof(HasUserEdits));

@@ -137,7 +137,7 @@
                 <DataTemplate>
                     <Grid>
                         <Border IsVisible="{Binding IsFocused, Converter={StaticResource InvBoolToVis}}"
-                                Background="Transparent"
+                                Background="{Binding AdjacentBackground}"
                                 BorderBrush="{DynamicResource OverlayBrush}"
                                 BorderThickness="1"
                                 CornerRadius="10"
@@ -184,11 +184,30 @@
                                     </Border>
                                 </StackPanel>
 
-                                <TextBlock Text="{Binding DraftContent}"
+                                <TextBlock Text="{Binding AdjacentPlainText}"
+                                           IsVisible="{Binding ShowAdjacentRuns, Converter={StaticResource InvBoolToVis}}"
                                            TextWrapping="Wrap"
                                            MaxHeight="54"
                                            TextTrimming="CharacterEllipsis"
-                                           Foreground="{DynamicResource SubtextBrush}" />
+                                           Foreground="{Binding AdjacentForeground}"
+                                           TextDecorations="{Binding AdjacentTextDecorations}" />
+                                <ItemsControl ItemsSource="{Binding AdjacentRuns}"
+                                              IsVisible="{Binding ShowAdjacentRuns, Converter={StaticResource BoolToVis}}"
+                                              MaxHeight="54">
+                                    <ItemsControl.ItemsPanel>
+                                        <ItemsPanelTemplate>
+                                            <WrapPanel />
+                                        </ItemsPanelTemplate>
+                                    </ItemsControl.ItemsPanel>
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <TextBlock Text="{Binding Text}"
+                                                       Background="{Binding Background}"
+                                                       TextWrapping="NoWrap"
+                                                       Foreground="{Binding DataContext.AdjacentForeground, RelativeSource={RelativeSource AncestorType=ContentPresenter}}" />
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
                             </StackPanel>
                         </Border>
 
@@ -346,9 +365,21 @@
                                             <ScrollViewer Grid.Row="1"
                                                           VerticalScrollBarVisibility="Auto"
                                                           HorizontalScrollBarVisibility="Disabled">
-                                                <SelectableTextBlock Text="{Binding AsrContent}"
-                                                                     TextWrapping="Wrap"
-                                                                     Foreground="{DynamicResource TextBrush}" />
+                                                <ItemsControl ItemsSource="{Binding AsrRuns}">
+                                                    <ItemsControl.ItemsPanel>
+                                                        <ItemsPanelTemplate>
+                                                            <WrapPanel />
+                                                        </ItemsPanelTemplate>
+                                                    </ItemsControl.ItemsPanel>
+                                                    <ItemsControl.ItemTemplate>
+                                                        <DataTemplate>
+                                                            <TextBlock Text="{Binding Text}"
+                                                                       Background="{Binding Background}"
+                                                                       TextWrapping="NoWrap"
+                                                                       Foreground="{DynamicResource TextBrush}" />
+                                                        </DataTemplate>
+                                                    </ItemsControl.ItemTemplate>
+                                                </ItemsControl>
                                             </ScrollViewer>
                                         </Grid>
                                     </Border>

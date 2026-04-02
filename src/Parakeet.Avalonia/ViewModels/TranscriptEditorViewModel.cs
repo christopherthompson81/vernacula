@@ -5,6 +5,7 @@ using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text.Json;
 using Avalonia;
+using Avalonia.Media;
 using Avalonia.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
@@ -12,6 +13,7 @@ using NAudio.Wave;
 using SoundTouch;
 using Parakeet.Base;
 using ParakeetCSharp.Models;
+using ParakeetCSharp.Services;
 using ParakeetAsr = Parakeet.Base.Parakeet;
 
 namespace ParakeetCSharp.ViewModels;
@@ -774,6 +776,73 @@ internal partial class TranscriptEditorViewModel : ObservableObject, IDisposable
             canRedoAsr: !redoAsrRunning && asrModelsAvailable && HasAudio,
             canAdjustTimes: !redoAsrRunning);
     }
+
+    public void RefreshAdjacentCardHighlighting(TranscriptEditorCardState card, VocabService? vocab,
+        Color confidenceLowColor, IBrush subtextBrush, IBrush textBrush)
+    {
+        var seg = card.Segment;
+        if (seg.IsSuppressed)
+        {
+            card.SetAdjacentPlainText(
+                seg.Content,
+                new SolidColorBrush(Color.FromArgb(30, 0xF3, 0x8B, 0xA8)),
+                subtextBrush,
+                TextDecorations.Strikethrough);
+            return;
+        }
+
+        if (seg.Verified)
+        {
+            card.SetAdjacentPlainText(
+                seg.Content,
+                new SolidColorBrush(Color.FromArgb(40, 0xA6, 0xE3, 0xA1)),
+                textBrush);
+            return;
+        }
+
+        if (seg.Content != seg.AsrContent)
+        {
+            card.SetAdjacentPlainText(seg.Content, Brushes.Transparent, textBrush);
+            return;
+        }
+
+        if (vocab == null || seg.Tokens.Count == 0)
+        {
+            card.SetAdjacentPlainText(seg.Content, Brushes.Transparent, subtextBrush);
+            return;
+        }
+
+        var runs = vocab.GetTokenRuns(seg.Tokens, seg.Logprobs)
+            .Select(r => (
+                r.text,
+                VocabService.GetConfidenceHighlight(r.logprob, confidenceLowColor)))
+            .ToList();
+
+        card.AdjacentBackground = Brushes.Transparent;
+        card.RebuildAdjacentRuns(runs, subtextBrush);
+    }
+
+    public void RefreshFocusedCardAsrHighlighting(TranscriptEditorCardState card, VocabService? vocab,
+        Color confidenceLowColor, Color accentColor, int highlightedToken)
+    {
+        if (vocab == null || card.Segment.Tokens.Count == 0)
+        {
+            card.RebuildAsrRuns([(card.Segment.AsrContent, Colors.Transparent)]);
+            return;
+        }
+
+        var runs = vocab.GetTokenRuns(card.Segment.Tokens, card.Segment.Logprobs)
+            .Select(r => (
+                r.text,
+                VocabService.GetConfidenceHighlight(r.logprob, confidenceLowColor)))
+            .ToList();
+
+        card.RebuildAsrRuns(runs);
+        card.ApplyHighlightedAsrToken(highlightedToken, accentColor);
+    }
+
+    public void UpdateFocusedCardTokenHighlight(TranscriptEditorCardState card, Color accentColor, int highlightedToken)
+        => card.ApplyHighlightedAsrToken(highlightedToken, accentColor);
 
     /// <summary>
     /// Re-runs ASR on the segment's audio and replaces all its sources with a single fresh result.
