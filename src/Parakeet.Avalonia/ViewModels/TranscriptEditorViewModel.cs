@@ -137,8 +137,7 @@ internal partial class TranscriptEditorViewModel : ObservableObject, IDisposable
         if (index < 0 || index >= Segments.Count || index == FocusedIndex) return;
         if (IsPlaying && PlaybackMode == PlaybackMode.Continuous)
         {
-            FocusedIndexChanging?.Invoke(index);
-            FocusedIndex = index;
+            JumpToContinuousSegment(index);
             return;
         }
 
@@ -153,8 +152,7 @@ internal partial class TranscriptEditorViewModel : ObservableObject, IDisposable
         int next = FocusedIndex - 1;
         if (IsPlaying && PlaybackMode == PlaybackMode.Continuous)
         {
-            FocusedIndexChanging?.Invoke(next);
-            FocusedIndex = next;
+            JumpToContinuousSegment(next);
             return;
         }
 
@@ -170,8 +168,7 @@ internal partial class TranscriptEditorViewModel : ObservableObject, IDisposable
         int next = FocusedIndex + 1;
         if (IsPlaying && PlaybackMode == PlaybackMode.Continuous)
         {
-            FocusedIndexChanging?.Invoke(next);
-            FocusedIndex = next;
+            JumpToContinuousSegment(next);
             return;
         }
 
@@ -180,6 +177,19 @@ internal partial class TranscriptEditorViewModel : ObservableObject, IDisposable
         FocusedIndex = next;
     }
     private bool CanGoNext() => FocusedIndex < Segments.Count - 1;
+
+    private void JumpToContinuousSegment(int index)
+    {
+        if (index < 0 || index >= Segments.Count)
+        {
+            return;
+        }
+
+        StopPlayback();
+        FocusedIndexChanging?.Invoke(index);
+        FocusedIndex = index;
+        Play();
+    }
 
     partial void OnPlaybackSpeedChanged(double value)
     {

@@ -561,7 +561,16 @@ public partial class TranscriptEditorWindow : Window
             return;
         }
 
+        if (!_vm.PrevSegmentCommand.CanExecute(null))
+        {
+            ApplyFocusedIndex(_vm.FocusedIndex, force: true);
+            RefreshPlaybackUi();
+            return;
+        }
+
         _vm.PrevSegmentCommand.Execute(null);
+        ApplyFocusedIndex(_vm.FocusedIndex, force: true);
+        RefreshPlaybackUi();
     }
 
     private void NextButton_Click(object? sender, RoutedEventArgs e)
@@ -572,7 +581,16 @@ public partial class TranscriptEditorWindow : Window
             return;
         }
 
+        if (!_vm.NextSegmentCommand.CanExecute(null))
+        {
+            ApplyFocusedIndex(_vm.FocusedIndex, force: true);
+            RefreshPlaybackUi();
+            return;
+        }
+
         _vm.NextSegmentCommand.Execute(null);
+        ApplyFocusedIndex(_vm.FocusedIndex, force: true);
+        RefreshPlaybackUi();
     }
 
     private void PlayModeCombo_SelectionChanged(object? sender, SelectionChangedEventArgs e)
