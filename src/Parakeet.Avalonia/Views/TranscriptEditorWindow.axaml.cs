@@ -7,6 +7,8 @@ using Avalonia.Controls.Primitives;
 using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Media;
+using Avalonia.Media.Imaging;
+using Avalonia.Platform;
 using Avalonia.Threading;
 using Parakeet.Base;
 using ParakeetCSharp.Models;
@@ -18,6 +20,10 @@ namespace ParakeetCSharp.Views;
 
 public partial class TranscriptEditorWindow : Window
 {
+    private const int RedoSpinnerFrameCount = 20;
+    private static readonly Bitmap[] RedoSpinnerDarkFrames = LoadSpinnerFrames("avares://Parakeet.Avalonia/Assets/redo_spinner_dark_frames");
+    private static readonly Bitmap[] RedoSpinnerLightFrames = LoadSpinnerFrames("avares://Parakeet.Avalonia/Assets/redo_spinner_light_frames");
+
     private readonly TranscriptEditorViewModel _vm = null!;
     private readonly TranscriptEditorWindowState _state = new();
     private readonly VocabService? _vocab;
@@ -30,6 +36,7 @@ public partial class TranscriptEditorWindow : Window
     private bool _seekDragging;
     private bool _redoAsrRunning;
     private int _redoAsrCardIndex = -1;
+    private int _redoAsrSpinnerFrameIndex;
     private DispatcherTimer? _redoAsrSpinnerTimer;
 
     public event Action? DataChanged;
@@ -117,8 +124,10 @@ public partial class TranscriptEditorWindow : Window
     {
         Dispatcher.UIThread.Post(() =>
         {
+            RefreshRedoAsrSpinnerImages();
             RefreshHeader();
             RefreshPlaybackUi();
+            RefreshAllCardState();
             RefreshFocusedCardAsrHighlighting();
         }, DispatcherPriority.Background);
     }
@@ -209,9 +218,37 @@ public partial class TranscriptEditorWindow : Window
         for (int i = 0; i < _vm.Segments.Count; i++)
         {
             var state = new TranscriptEditorCardState(_vm.Segments[i], i);
+            state.RedoAsrSpinnerImage = GetRedoAsrSpinnerImage();
             RefreshCardState(state, preserveDrafts: false);
             _state.Cards.Add(state);
         }
+    }
+
+    private void RefreshRedoAsrSpinnerImages()
+    {
+        Bitmap image = GetRedoAsrSpinnerImage();
+        foreach (var card in _state.Cards)
+            card.RedoAsrSpinnerImage = image;
+    }
+
+    private static Bitmap GetRedoAsrSpinnerImage()
+        => GetRedoAsrSpinnerFrames()[0];
+
+    private static Bitmap[] GetRedoAsrSpinnerFrames()
+        => App.Current.Settings.Current.Theme == AppTheme.Dark
+            ? RedoSpinnerDarkFrames
+            : RedoSpinnerLightFrames;
+
+    private static Bitmap[] LoadSpinnerFrames(string baseUri)
+    {
+        var frames = new Bitmap[RedoSpinnerFrameCount];
+        for (int i = 0; i < RedoSpinnerFrameCount; i++)
+        {
+            string uri = $"{baseUri}/frame_{i:00}.png";
+            frames[i] = new Bitmap(AssetLoader.Open(new Uri(uri)));
+        }
+
+        return frames;
     }
 
     private void RefreshAllCardState()
@@ -751,12 +788,14 @@ public partial class TranscriptEditorWindow : Window
     private void StartRedoAsrSpinner(int cardIndex)
     {
         _redoAsrCardIndex = cardIndex;
+        _redoAsrSpinnerFrameIndex = 0;
         _redoAsrSpinnerTimer ??= new DispatcherTimer(TimeSpan.FromMilliseconds(50), DispatcherPriority.Background, OnRedoAsrSpinnerTick);
 
         if (cardIndex >= 0 && cardIndex < _state.Cards.Count)
         {
             _state.Cards[cardIndex].IsRedoAsrSpinning = true;
             _state.Cards[cardIndex].RedoAsrIconAngle = 0;
+            _state.Cards[cardIndex].RedoAsrSpinnerImage = GetRedoAsrSpinnerFrames()[0];
         }
 
         _redoAsrSpinnerTimer.Start();
@@ -770,6 +809,7 @@ public partial class TranscriptEditorWindow : Window
         {
             _state.Cards[_redoAsrCardIndex].IsRedoAsrSpinning = false;
             _state.Cards[_redoAsrCardIndex].RedoAsrIconAngle = 0;
+            _state.Cards[_redoAsrCardIndex].RedoAsrSpinnerImage = GetRedoAsrSpinnerFrames()[0];
         }
 
         _redoAsrCardIndex = -1;
@@ -783,6 +823,9 @@ public partial class TranscriptEditorWindow : Window
         }
 
         var card = _state.Cards[_redoAsrCardIndex];
-        card.RedoAsrIconAngle = (card.RedoAsrIconAngle + 18) % 360;
+        var frames = GetRedoAsrSpinnerFrames();
+        _redoAsrSpinnerFrameIndex = (_redoAsrSpinnerFrameIndex + 1) % frames.Length;
+        card.RedoAsrIconAngle = (_redoAsrSpinnerFrameIndex * 18) % 360;
+        card.RedoAsrSpinnerImage = frames[_redoAsrSpinnerFrameIndex];
     }
 }

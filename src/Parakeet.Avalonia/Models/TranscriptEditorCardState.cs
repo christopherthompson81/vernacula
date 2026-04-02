@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using System.Linq;
 using Avalonia.Media;
+using Avalonia.Media.Imaging;
 using CommunityToolkit.Mvvm.ComponentModel;
 
 namespace ParakeetCSharp.Models;
@@ -48,6 +49,7 @@ internal sealed partial class TranscriptEditorCardState : ObservableObject
     [ObservableProperty] private bool _canAdjustTimes = true;
     [ObservableProperty] private bool _isRedoAsrSpinning;
     [ObservableProperty] private double _redoAsrIconAngle;
+    [ObservableProperty] private Bitmap? _redoAsrSpinnerImage;
     [ObservableProperty] private bool _showAdjacentRuns;
     [ObservableProperty] private string _adjacentPlainText = "";
     [ObservableProperty] private IBrush _adjacentBackground = Brushes.Transparent;

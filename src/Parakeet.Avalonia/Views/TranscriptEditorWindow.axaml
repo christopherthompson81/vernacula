@@ -12,6 +12,8 @@
     <Window.Resources>
         <conv:BoolToVisibilityConverter x:Key="BoolToVis" />
         <conv:BoolToVisibilityConverter x:Key="InvBoolToVis" Invert="True" />
+        <conv:BoolToOpacityConverter x:Key="BoolToOpacity" />
+        <conv:BoolToOpacityConverter x:Key="InvBoolToOpacity" Invert="True" />
     </Window.Resources>
 
     <Window.Styles>
@@ -32,15 +34,29 @@
             <Setter Property="VerticalAlignment" Value="Center" />
             <Setter Property="TextAlignment" Value="Center" />
         </Style>
-        <Style Selector="Border.redo-icon-host">
+        <Style Selector="Grid.redo-button-host">
+            <Setter Property="Width" Value="34" />
+            <Setter Property="Height" Value="30" />
+            <Setter Property="HorizontalAlignment" Value="Stretch" />
+            <Setter Property="VerticalAlignment" Value="Stretch" />
+            <Setter Property="ClipToBounds" Value="True" />
+        </Style>
+        <Style Selector="Canvas.redo-square-host">
+            <Setter Property="Width" Value="30" />
+            <Setter Property="Height" Value="30" />
+            <Setter Property="HorizontalAlignment" Value="Center" />
+            <Setter Property="VerticalAlignment" Value="Center" />
+        </Style>
+        <Style Selector="Border.redo-spinner-viewport">
+            <Setter Property="Width" Value="16" />
+            <Setter Property="Height" Value="16" />
+            <Setter Property="Background" Value="Transparent" />
+        </Style>
+        <Style Selector="Image.redo-icon-host">
             <Setter Property="Width" Value="16" />
             <Setter Property="Height" Value="16" />
             <Setter Property="HorizontalAlignment" Value="Center" />
             <Setter Property="VerticalAlignment" Value="Center" />
-        </Style>
-        <Style Selector="Path.redo-spinner-path">
-            <Setter Property="StrokeThickness" Value="1.7" />
-            <Setter Property="StrokeLineCap" Value="Round" />
         </Style>
     </Window.Styles>
 
@@ -347,27 +363,28 @@
                                             Margin="0,0,8,8"
                                             Click="RedoAsr_Click"
                                             IsEnabled="{Binding CanRedoAsr}"
+                                            HorizontalContentAlignment="Stretch"
+                                            VerticalContentAlignment="Stretch"
                                             ToolTip.Tip="{local:Loc editor_redo_asr}">
-                                        <Grid>
-                                            <TextBlock Classes="action-icon"
-                                                       Text="↻"
-                                                       IsVisible="{Binding IsRedoAsrSpinning, Converter={StaticResource InvBoolToVis}}" />
-                                            <Border Classes="redo-icon-host"
-                                                    IsVisible="{Binding IsRedoAsrSpinning, Converter={StaticResource BoolToVis}}"
-                                                    RenderTransformOrigin="0.5,0.5">
-                                                <Border.RenderTransform>
-                                                    <RotateTransform Angle="{Binding RedoAsrIconAngle}" />
-                                                </Border.RenderTransform>
-                                                <Canvas Width="16"
-                                                        Height="16">
-                                                    <Path Classes="redo-spinner-path"
-                                                          Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"
-                                                          Data="M11.6,5.1 A4.6,4.6 0 1 0 11.6,10.9" />
-                                                    <Path Classes="redo-spinner-path"
-                                                          Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"
-                                                          Data="M10.1,2.9 L12.9,2.9 L12.9,5.7" />
-                                                </Canvas>
-                                            </Border>
+                                        <Grid Classes="redo-button-host">
+                                            <Canvas Classes="redo-square-host"
+                                                    ClipToBounds="True">
+                                                <TextBlock Classes="action-icon"
+                                                           Canvas.Left="7"
+                                                           Canvas.Top="7"
+                                                           Width="16"
+                                                           Height="16"
+                                                           Text="↻"
+                                                           Opacity="{Binding IsRedoAsrSpinning, Converter={StaticResource InvBoolToOpacity}}" />
+                                                <Border Classes="redo-spinner-viewport"
+                                                        Canvas.Left="7"
+                                                        Canvas.Top="7"
+                                                        Opacity="{Binding IsRedoAsrSpinning, Converter={StaticResource BoolToOpacity}}">
+                                                    <Image Classes="redo-icon-host"
+                                                           Source="{Binding RedoAsrSpinnerImage}"
+                                                           Stretch="Fill" />
+                                                </Border>
+                                            </Canvas>
                                         </Grid>
                                     </Button>
                                 </WrapPanel>
