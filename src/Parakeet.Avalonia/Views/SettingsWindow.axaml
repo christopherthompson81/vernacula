@@ -51,9 +51,9 @@
 
         <ScrollViewer Grid.Row="0"
                       VerticalScrollBarVisibility="Auto"
-                      HorizontalScrollBarVisibility="Disabled"
-                      Padding="20,4,20,4">
-            <StackPanel MaxWidth="540">
+                      HorizontalScrollBarVisibility="Disabled">
+            <Border Padding="24,12,38,32">
+                <StackPanel MaxWidth="500">
 
                 <!-- ─── Hardware & Performance ──────────────────────────────── -->
                 <TextBlock Text="{local:Loc settings_section_hardware}"
@@ -426,7 +426,8 @@
                     </ComboBox>
                 </Border>
 
-            </StackPanel>
+                </StackPanel>
+            </Border>
         </ScrollViewer>
 
         <!-- ─── Footer ───────────────────────────────────────────────────────── -->

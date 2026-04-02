@@ -2,7 +2,6 @@ using System.ComponentModel;
 using System.Diagnostics;
 using Avalonia;
 using Avalonia.Controls;
-using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Media;
 using Avalonia.Threading;
@@ -12,37 +11,16 @@ using ParakeetCSharp.Services;
 
 namespace ParakeetCSharp.Views;
 
-/// <summary>
-/// ⚠️ AVALONIA MIGRATION REQUIRED ⚠️
-/// 
-/// This window uses FlowDocument which doesn't exist in Avalonia.
-/// The following WPF types need to be replaced:
-/// 
-/// - Window → Avalonia.Controls.Window (already correct)
-/// - TextBlock → Avalonia.Controls.TextBlock (already correct)
-/// - Button → Avalonia.Controls.Button (already correct)
-/// - ScrollViewer → Avalonia.Controls.ScrollViewer (already correct)
-/// - DependencyObject → AvaloniaObject
-/// - VisualTreeHelper → VisualTreeHelper (Avalonia has this)
-/// - FlowDocument → N/A (use MarkdownFlowBuilder which returns a Panel)
-/// - Run → N/A (replaced by TextBlock)
-/// - Paragraph → N/A (replaced by TextBlock)
-/// - Brush → IBrush
-/// - FontWeights → FontWeights (Avalonia has this)
-/// - Thickness → Thickness (Avalonia has this)
-/// 
-/// The ContentViewer control is expected to be a DockPanel or similar container
-/// that hosts the markdown-rendered content from MarkdownFlowBuilder.Build().
-/// </summary>
 public partial class HelpWindow : Window
 {
     private string? _currentTopicId;
     public string? CurrentTopicId => _currentTopicId;
-    private readonly Dictionary<string, Button> _sidebarButtons = new();
+    private readonly Dictionary<string, (Grid Root, Border Background, TextBlock Label)> _sidebarButtons = new();
 
     public HelpWindow()
     {
         InitializeComponent();
+        Closing += Window_Closing;
     }
 
     public HelpWindow(string? topicId) : this()
@@ -59,7 +37,7 @@ public partial class HelpWindow : Window
         Loc.Instance.PropertyChanged += OnLocalePropertyChanged;
     }
 
-    private void Window_Closing(object sender, CancelEventArgs e)
+    private void Window_Closing(object? sender, WindowClosingEventArgs e)
     {
         ThemeManager.ThemeChanged    -= OnThemeChanged;
         Loc.Instance.PropertyChanged -= OnLocalePropertyChanged;
@@ -109,34 +87,67 @@ public partial class HelpWindow : Window
 
         foreach (var group in HelpService.Groups)
         {
-            // TODO: Port to Avalonia - FontWeights not available
-            // SidebarPanel.Children.Add(new TextBlock
-            // {
-            //     Text       = Loc.Instance[group.GroupTitle],
-            //     Foreground = (IBrush)Application.Current.Resources["SubtextBrush"],
-            //     FontWeight = FontWeights.SemiBold,
-            //     FontSize   = 11,
-            //     Margin     = new Thickness(6, 10, 6, 2),
-            // });
+            SidebarPanel.Children.Add(new TextBlock
+            {
+                Text = Loc.Instance[group.GroupTitle],
+                Foreground = GetBrush("SubtextBrush"),
+                FontWeight = FontWeight.SemiBold,
+                FontSize = 11,
+                Margin = new Thickness(6, 10, 6, 2),
+                Opacity = 1,
+            });
 
             foreach (var topic in group.Topics)
                 SidebarPanel.Children.Add(MakeSidebarButton(topic));
         }
+
+        Console.WriteLine($"[HelpNav] sidebar children={SidebarPanel.Children.Count} buttonCount={_sidebarButtons.Count}");
     }
 
-    private Button MakeSidebarButton(HelpTopic topic)
+    private Grid MakeSidebarButton(HelpTopic topic)
     {
-        var btn = new Button
+        string labelText = GetSidebarLabel(topic);
+        Console.WriteLine($"[HelpNav] make topic={topic.TopicId} label='{labelText}'");
+
+        var label = new TextBlock
         {
-            Content             = Loc.Instance["help_topic_" + topic.TopicId],
-            Tag                 = topic.TopicId,
-            HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Stretch,
-            Margin              = new Thickness(0, 1, 0, 1),
+            Text = labelText,
+            TextWrapping = TextWrapping.Wrap,
+            Foreground = GetBrush("TextBrush"),
+            FontSize = 13,
+            Opacity = 1,
+            VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center,
+            HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Left,
+            Margin = new Thickness(10, 5, 8, 5),
         };
-        btn.Click += (_, _) => DisplayTopic(topic.TopicId);
-        _sidebarButtons[topic.TopicId] = btn;
-        return btn;
+
+        var background = new Border
+        {
+            CornerRadius = new CornerRadius(4),
+            MinHeight = 28,
+            HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Stretch,
+            Background = Brushes.Transparent,
+        };
+
+        var row = new Grid
+        {
+            HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Stretch,
+            Margin = new Thickness(0, 1, 0, 1),
+            MinHeight = 28,
+            Cursor = new Avalonia.Input.Cursor(Avalonia.Input.StandardCursorType.Hand),
+        };
+        row.Children.Add(background);
+        row.Children.Add(label);
+        row.PointerPressed += (_, _) => DisplayTopic(topic.TopicId);
+
+        _sidebarButtons[topic.TopicId] = (row, background, label);
+        return row;
     }
+
+    private static string GetSidebarLabel(HelpTopic topic)
+        => Loc.Instance["help_topic_" + topic.TopicId] is { } text && !string.IsNullOrWhiteSpace(text) && text != "help_topic_" + topic.TopicId
+            ? text
+            : topic.Title;
 
     // ── Topic display ─────────────────────────────────────────────────────────
 
@@ -144,17 +155,22 @@ public partial class HelpWindow : Window
     {
         var topic = HelpService.FindById(topicId) ?? HelpService.IndexTopic;
         _currentTopicId = topic.TopicId;
-
         try
         {
-            string lang = Loc.Instance.CurrentLanguage;
-            if (lang == "en")
-                lang = "en";
-            ContentMarkdown.Source = new Uri($"avares://Parakeet.Avalonia/Help/{lang}/{topic.ResourcePath}");
+            string markdown = HelpService.LoadMarkdown(topic);
+            var content = MarkdownFlowBuilder.Build(markdown, OnLinkNavigate);
+            ContentViewer.Content = content;
+            ContentScrollViewer.Offset = new Vector(0, 0);
         }
         catch (Exception ex)
         {
-            ContentMarkdown.Markdown = $"Error loading help topic: {ex.Message}";
+            ContentViewer.Content = new TextBlock
+            {
+                Text = $"Error loading help topic: {ex.Message}",
+                Foreground = GetBrush("TextBrush"),
+                TextWrapping = TextWrapping.Wrap,
+                Margin = new Thickness(16),
+            };
         }
 
         UpdateSidebarSelection(topic.TopicId);
@@ -176,39 +192,32 @@ public partial class HelpWindow : Window
 
     private void UpdateSidebarSelection(string topicId)
     {
-        var overlayBrush = (IBrush)Application.Current!.Resources["OverlayBrush"]!;
-        var accentBrush  = (IBrush)Application.Current.Resources["AccentBrush"]!;
-        var textBrush    = (IBrush)Application.Current.Resources["TextBrush"]!;
+        var overlayBrush = GetBrush("OverlayBrush");
+        var accentBrush  = GetBrush("AccentBrush");
+        var textBrush    = GetBrush("TextBrush");
 
-        foreach (var (id, btn) in _sidebarButtons)
+        foreach (var (id, entry) in _sidebarButtons)
         {
             bool selected  = id == topicId;
-            btn.Background = selected ? overlayBrush : Brushes.Transparent;
-            btn.Foreground = selected ? accentBrush  : textBrush;
+            entry.Background.Background = selected ? overlayBrush : Brushes.Transparent;
+            entry.Label.Foreground = selected ? accentBrush : textBrush;
+        }
+
+        if (_sidebarButtons.TryGetValue(topicId, out var current))
+        {
+            Console.WriteLine($"[HelpNav] selected={topicId} text='{current.Label.Text}' fg='{current.Label.Foreground}'");
         }
     }
 
-     // ── Scroll speed ──────────────────────────────────────────────────────────
+    private static IBrush GetBrush(string key)
+    {
+        var app = Application.Current;
+        if (app?.Resources.TryGetResource(key, null, out var value) == true && value is IBrush brush)
+        {
+            return brush;
+        }
 
-    // TODO: Port to Avalonia - requires different event handling and ScrollViewer API
-    // private ScrollViewer? _contentScrollViewer;
+        return Brushes.Magenta;
+    }
 
-    // private void ContentViewer_PreviewMouseWheel(object sender, WheelEventArgs e)
-    // {
-    //     _contentScrollViewer ??= FindDescendant<ScrollViewer>(ContentViewer);
-    //     if (_contentScrollViewer is null) return;
-    //     e.Handled = true;
-    // }
-
-    // private static T? FindDescendant<T>(AvaloniaObject parent) where T : AvaloniaObject
-    // {
-    //     for (int i = 0; i < VisualTreeHelper.GetChildrenCount(parent); i++)
-    //     {
-    //         var child = VisualTreeHelper.GetChild(parent, i);
-    //         if (child is T match) return match;
-    //         var result = FindDescendant<T>(child);
-    //         if (result is not null) return result;
-    //     }
-    //     return null;
-    // }
 }

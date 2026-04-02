@@ -8,6 +8,7 @@
     <Color x:Key="TextColor"    >#121217</Color>
     <Color x:Key="SubtextColor" >#6C6F85</Color>
     <Color x:Key="AccentColor"  >#1E66F5</Color>
+    <Color x:Key="LinkColor"    >#0B57D0</Color>
     <Color x:Key="GreenColor"   >#2ea125</Color>
     <Color x:Key="RedColor"     >#D20F39</Color>
     <Color x:Key="YellowColor"  >#DF8E1D</Color>
@@ -24,6 +25,7 @@
     <SolidColorBrush x:Key="TextBrush"      Color="{StaticResource TextColor}"     />
     <SolidColorBrush x:Key="SubtextBrush"   Color="{StaticResource SubtextColor}" />
     <SolidColorBrush x:Key="AccentBrush"    Color="{StaticResource AccentColor}"  />
+    <SolidColorBrush x:Key="LinkBrush"      Color="{StaticResource LinkColor}"    />
     <SolidColorBrush x:Key="GreenBrush"     Color="{StaticResource GreenColor}"   />
     <SolidColorBrush x:Key="RedBrush"       Color="{StaticResource RedColor}"     />
     <SolidColorBrush x:Key="YellowBrush"         Color="{StaticResource YellowColor}"        />

@@ -1,5 +1,6 @@
 using System.Reflection;
 using System.Text;
+using Avalonia.Platform;
 
 namespace ParakeetCSharp.Services;
 
@@ -63,29 +64,21 @@ internal static class HelpService
     /// </summary>
     internal static string LoadMarkdown(HelpTopic topic)
     {
-        var assembly = Assembly.GetExecutingAssembly();
-        string lang  = Loc.Instance.CurrentLanguage;
+        string lang = Loc.Instance.CurrentLanguage;
 
-        // Try the active language; fall back to "en" if unavailable.
-        Stream? stream = null;
-        if (lang != "en")
-            stream = assembly.GetManifestResourceStream(ManifestName(topic.ResourcePath, lang));
-
-        stream ??= assembly.GetManifestResourceStream(ManifestName(topic.ResourcePath, "en"))
-                   ?? throw new InvalidOperationException(
-                       $"Help resource not found: {topic.ResourcePath}");
+        using var stream = OpenHelpResource(topic.ResourcePath, lang)
+            ?? OpenHelpResource(topic.ResourcePath, "en")
+            ?? throw new InvalidOperationException($"Help resource not found: {topic.ResourcePath}");
 
         using var reader = new StreamReader(stream, Encoding.UTF8);
         return StripFrontmatter(reader.ReadToEnd());
     }
 
-    /// <summary>
-    /// Builds the assembly manifest resource name for a help file.
-    /// e.g. "first_steps/model_precision.md" + "es"
-    ///   → "Parakeet.Avalonia.Help.es.first_steps.model_precision.md"
-    /// </summary>
-    private static string ManifestName(string relativePath, string lang) =>
-        "Parakeet.Avalonia.Help." + lang + "." + relativePath.Replace('/', '.');
+    private static Stream? OpenHelpResource(string relativePath, string lang)
+    {
+        var uri = new Uri($"avares://Parakeet.Avalonia/Help/{lang}/{relativePath}");
+        return AssetLoader.Exists(uri) ? AssetLoader.Open(uri) : null;
+    }
     /// <summary>Returns the topic matching <paramref name="topicId"/>, or null.</summary>
     internal static HelpTopic? FindById(string topicId) =>
         topicId == IndexTopic.TopicId

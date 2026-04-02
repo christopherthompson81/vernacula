@@ -12,12 +12,19 @@ namespace ParakeetCSharp.Views;
 
 public partial class MainWindow : Window
 {
+    private PixelPoint? _lastNormalPosition;
+    private Size? _lastNormalSize;
+
     public MainWindow()
     {
         InitializeComponent();
         Console.WriteLine("[MainWindow] Constructor called");
+        RestoreInitialWindowSettings();
         Loaded += MainWindow_Loaded;
+        Opened += MainWindow_Opened;
         Closing += Window_Closing;
+        PositionChanged += (_, _) => CaptureNormalBounds();
+        Resized += (_, _) => CaptureNormalBounds();
         Closed += (_, _) => Console.WriteLine("[MainWindow] Closed event fired!");
     }
 
@@ -33,29 +40,52 @@ public partial class MainWindow : Window
         }
 
         WindowHelper.SetDarkMode(this, App.Current.Settings.Current.Theme == AppTheme.Dark);
+        CaptureNormalBounds();
+    }
 
+    private void MainWindow_Opened(object? sender, EventArgs e)
+    {
         var s = App.Current.Settings.Current;
-        Width  = s.WindowWidth;
-        Height = s.WindowHeight;
-
-        var virtualBounds = WindowHelper.GetVirtualScreenBounds();
         if (s.WindowLeft.HasValue && s.WindowTop.HasValue)
         {
-            // Ensure the saved position is on a visible part of the virtual screen
-            double l = s.WindowLeft.Value, t = s.WindowTop.Value;
-            if (l >= virtualBounds.X &&
-                l <  virtualBounds.Right  - 100 &&
-                t >= virtualBounds.Y &&
-                t <  virtualBounds.Bottom - 100)
-            {
-                Position = new PixelPoint((int)l, (int)t);
-            }
+            Position = WindowHelper.ClampToVisibleArea(
+                this,
+                new PixelPoint((int)Math.Round(s.WindowLeft.Value), (int)Math.Round(s.WindowTop.Value)),
+                Width,
+                Height);
         }
 
         if (s.WindowMaximized)
         {
             WindowState = WindowState.Maximized;
         }
+
+        CaptureNormalBounds();
+    }
+
+    private void RestoreInitialWindowSettings()
+    {
+        var s = App.Current.Settings.Current;
+        Width = Math.Max(MinWidth, s.WindowWidth);
+        Height = Math.Max(MinHeight, s.WindowHeight);
+
+        if (s.WindowLeft.HasValue && s.WindowTop.HasValue)
+        {
+            Position = new PixelPoint(
+                (int)Math.Round(s.WindowLeft.Value),
+                (int)Math.Round(s.WindowTop.Value));
+        }
+    }
+
+    private void CaptureNormalBounds()
+    {
+        if (WindowState != WindowState.Normal)
+        {
+            return;
+        }
+
+        _lastNormalPosition = Position;
+        _lastNormalSize = new Size(Width, Height);
     }
 
     private void Window_Closing(object? sender, CancelEventArgs e)
@@ -73,27 +103,13 @@ public partial class MainWindow : Window
 
         var s = App.Current.Settings.Current;
 
-        // Get current window bounds
-        double left = Position.X;
-        double top = Position.Y;
-        double width = Width;
-        double height = Height;
+        var normalPosition = _lastNormalPosition ?? Position;
+        var normalSize = _lastNormalSize ?? new Size(Width, Height);
 
-        // If maximized, use restore bounds
-        // TODO: Avalonia doesn't have GetRestoreBounds - use current position when maximized
-        // if (WindowState == WindowState.Maximized)
-        // {
-        //     var restoreBounds = GetRestoreBounds();
-        //     left = restoreBounds.X;
-        //     top = restoreBounds.Y;
-        //     width = restoreBounds.Width;
-        //     height = restoreBounds.Height;
-        // }
-
-        s.WindowLeft      = left;
-        s.WindowTop       = top;
-        s.WindowWidth     = width;
-        s.WindowHeight    = height;
+        s.WindowLeft      = normalPosition.X;
+        s.WindowTop       = normalPosition.Y;
+        s.WindowWidth     = normalSize.Width;
+        s.WindowHeight    = normalSize.Height;
         s.WindowMaximized = WindowState == WindowState.Maximized;
         App.Current.Settings.Save();
     }
