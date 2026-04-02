@@ -62,6 +62,7 @@ public partial class TranscriptEditorWindow : Window
     private bool _seekDragging;
     private bool _redoAsrRunning;
     private int _redoAsrCardIndex = -1;
+    private int _redoAsrCardId = -1;
     private int _redoAsrSpinnerFrameIndex;
     private bool _suppressSelectionChanged;
     private DispatcherTimer? _redoAsrSpinnerTimer;
@@ -254,6 +255,7 @@ public partial class TranscriptEditorWindow : Window
             AssignActionButtonImages(state);
             state.RedoAsrSpinnerImage = GetRedoAsrSpinnerImage();
             RefreshCardState(state, preserveDrafts: false);
+            SyncRedoAsrSpinnerState(state);
             _state.Cards.Add(state);
         }
     }
@@ -348,6 +350,7 @@ public partial class TranscriptEditorWindow : Window
             GetThemeColor("RedColor"),
             GetThemeBrush("SubtextBrush"),
             GetThemeBrush("TextBrush"));
+        SyncRedoAsrSpinnerState(card);
     }
 
     private void ApplyFocusedIndex(int focusedIndex, bool force = false)
@@ -964,6 +967,12 @@ public partial class TranscriptEditorWindow : Window
             return;
         }
 
+        // After structural changes like merge, let the focused card's visual tree settle
+        // before we toggle spinner state on it.
+        await Dispatcher.UIThread.InvokeAsync(
+            static () => { },
+            DispatcherPriority.Render);
+
         _redoAsrRunning = true;
         StartRedoAsrSpinner(card.Index);
         RefreshAllCardState();
@@ -1010,8 +1019,14 @@ public partial class TranscriptEditorWindow : Window
 
         if (cardIndex >= 0 && cardIndex < _state.Cards.Count)
         {
-            _state.Cards[cardIndex].IsRedoAsrSpinning = true;
-            _state.Cards[cardIndex].RedoAsrSpinnerImage = GetRedoAsrSpinnerFrames()[0];
+            _redoAsrCardId = _state.Cards[cardIndex].Segment.CardId;
+            var card = _state.Cards[cardIndex];
+            RefreshCardState(card, preserveDrafts: true);
+
+            if (cardIndex == _vm.FocusedIndex)
+            {
+                ApplyFocusedIndex(cardIndex, force: true);
+            }
         }
 
         _redoAsrSpinnerTimer.Start();
@@ -1021,26 +1036,35 @@ public partial class TranscriptEditorWindow : Window
     {
         _redoAsrSpinnerTimer?.Stop();
 
-        if (_redoAsrCardIndex >= 0 && _redoAsrCardIndex < _state.Cards.Count)
-        {
-            _state.Cards[_redoAsrCardIndex].IsRedoAsrSpinning = false;
-            _state.Cards[_redoAsrCardIndex].RedoAsrSpinnerImage = GetRedoAsrSpinnerFrames()[0];
-        }
+        foreach (var card in _state.Cards)
+            SyncRedoAsrSpinnerState(card);
 
         _redoAsrCardIndex = -1;
+        _redoAsrCardId = -1;
     }
 
     private void OnRedoAsrSpinnerTick(object? sender, EventArgs e)
     {
-        if (_redoAsrCardIndex < 0 || _redoAsrCardIndex >= _state.Cards.Count)
+        if (_redoAsrCardId < 0)
         {
             return;
         }
 
-        var card = _state.Cards[_redoAsrCardIndex];
         var frames = GetRedoAsrSpinnerFrames();
         _redoAsrSpinnerFrameIndex = (_redoAsrSpinnerFrameIndex + 1) % frames.Length;
-        card.RedoAsrSpinnerImage = frames[_redoAsrSpinnerFrameIndex];
+        foreach (var card in _state.Cards)
+        {
+            if (card.Segment.CardId == _redoAsrCardId)
+                card.RedoAsrSpinnerImage = frames[_redoAsrSpinnerFrameIndex];
+        }
+    }
+
+    private void SyncRedoAsrSpinnerState(TranscriptEditorCardState card)
+    {
+        bool isSpinning = _redoAsrRunning && card.Segment.CardId == _redoAsrCardId;
+        card.IsRedoAsrSpinning = isSpinning;
+        card.RedoAsrSpinnerImage = GetRedoAsrSpinnerFrames()[
+            isSpinning ? Math.Clamp(_redoAsrSpinnerFrameIndex, 0, GetRedoAsrSpinnerFrames().Length - 1) : 0];
     }
 
     private static string FormatTime(double s)
