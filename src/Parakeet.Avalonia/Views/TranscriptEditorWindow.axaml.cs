@@ -794,7 +794,6 @@ public partial class TranscriptEditorWindow : Window
         if (cardIndex >= 0 && cardIndex < _state.Cards.Count)
         {
             _state.Cards[cardIndex].IsRedoAsrSpinning = true;
-            _state.Cards[cardIndex].RedoAsrIconAngle = 0;
             _state.Cards[cardIndex].RedoAsrSpinnerImage = GetRedoAsrSpinnerFrames()[0];
         }
 
@@ -808,7 +807,6 @@ public partial class TranscriptEditorWindow : Window
         if (_redoAsrCardIndex >= 0 && _redoAsrCardIndex < _state.Cards.Count)
         {
             _state.Cards[_redoAsrCardIndex].IsRedoAsrSpinning = false;
-            _state.Cards[_redoAsrCardIndex].RedoAsrIconAngle = 0;
             _state.Cards[_redoAsrCardIndex].RedoAsrSpinnerImage = GetRedoAsrSpinnerFrames()[0];
         }
 
@@ -825,7 +823,6 @@ public partial class TranscriptEditorWindow : Window
         var card = _state.Cards[_redoAsrCardIndex];
         var frames = GetRedoAsrSpinnerFrames();
         _redoAsrSpinnerFrameIndex = (_redoAsrSpinnerFrameIndex + 1) % frames.Length;
-        card.RedoAsrIconAngle = (_redoAsrSpinnerFrameIndex * 18) % 360;
         card.RedoAsrSpinnerImage = frames[_redoAsrSpinnerFrameIndex];
     }
 }
