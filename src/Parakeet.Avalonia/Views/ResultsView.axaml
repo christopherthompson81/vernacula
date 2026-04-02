@@ -50,16 +50,26 @@
                         <TextBlock Text="{Binding Source={x:Static local:Loc.Instance}, Path=[segments_col_speaker]}" />
                     </DataGridTextColumn.Header>
                 </DataGridTextColumn>
-                <DataGridTextColumn Binding="{Binding StartTime, Converter={StaticResource SecondsToTime}}" Width="70">
-                    <DataGridTextColumn.Header>
-                        <TextBlock Text="{Binding Source={x:Static local:Loc.Instance}, Path=[segments_col_start]}" />
-                    </DataGridTextColumn.Header>
-                </DataGridTextColumn>
-                <DataGridTextColumn Binding="{Binding EndTime, Converter={StaticResource SecondsToTime}}" Width="70">
-                    <DataGridTextColumn.Header>
-                        <TextBlock Text="{Binding Source={x:Static local:Loc.Instance}, Path=[segments_col_end]}" />
-                    </DataGridTextColumn.Header>
-                </DataGridTextColumn>
+                <DataGridTemplateColumn Header="{Binding Source={x:Static local:Loc.Instance}, Path=[segments_col_start]}"
+                                        Width="70">
+                    <DataGridTemplateColumn.CellTemplate>
+                        <DataTemplate>
+                            <TextBlock Text="{Binding StartTime, Converter={StaticResource SecondsToTime}}"
+                                       Padding="4,2"
+                                       VerticalAlignment="Center" />
+                        </DataTemplate>
+                    </DataGridTemplateColumn.CellTemplate>
+                </DataGridTemplateColumn>
+                <DataGridTemplateColumn Header="{Binding Source={x:Static local:Loc.Instance}, Path=[segments_col_end]}"
+                                        Width="70">
+                    <DataGridTemplateColumn.CellTemplate>
+                        <DataTemplate>
+                            <TextBlock Text="{Binding EndTime, Converter={StaticResource SecondsToTime}}"
+                                       Padding="4,2"
+                                       VerticalAlignment="Center" />
+                        </DataTemplate>
+                    </DataGridTemplateColumn.CellTemplate>
+                </DataGridTemplateColumn>
                 <DataGridTemplateColumn Width="*">
                     <DataGridTemplateColumn.Header>
                         <TextBlock Text="{Binding Source={x:Static local:Loc.Instance}, Path=[segments_col_content]}" />
