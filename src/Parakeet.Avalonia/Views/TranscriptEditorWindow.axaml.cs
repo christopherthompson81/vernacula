@@ -61,7 +61,6 @@ public partial class TranscriptEditorWindow : Window
     private bool _suppressSegmentCollectionChanged;
     private bool _seekDragging;
     private bool _redoAsrRunning;
-    private int _redoAsrCardIndex = -1;
     private int _redoAsrCardId = -1;
     private int _redoAsrSpinnerFrameIndex;
     private bool _suppressSelectionChanged;
@@ -967,12 +966,6 @@ public partial class TranscriptEditorWindow : Window
             return;
         }
 
-        // After structural changes like merge, let the focused card's visual tree settle
-        // before we toggle spinner state on it.
-        await Dispatcher.UIThread.InvokeAsync(
-            static () => { },
-            DispatcherPriority.Render);
-
         _redoAsrRunning = true;
         StartRedoAsrSpinner(card.Index);
         RefreshAllCardState();
@@ -1013,7 +1006,6 @@ public partial class TranscriptEditorWindow : Window
 
     private void StartRedoAsrSpinner(int cardIndex)
     {
-        _redoAsrCardIndex = cardIndex;
         _redoAsrSpinnerFrameIndex = 0;
         _redoAsrSpinnerTimer ??= new DispatcherTimer(TimeSpan.FromMilliseconds(50), DispatcherPriority.Background, OnRedoAsrSpinnerTick);
 
@@ -1039,7 +1031,6 @@ public partial class TranscriptEditorWindow : Window
         foreach (var card in _state.Cards)
             SyncRedoAsrSpinnerState(card);
 
-        _redoAsrCardIndex = -1;
         _redoAsrCardId = -1;
     }
 
