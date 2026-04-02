@@ -10,6 +10,8 @@ namespace ParakeetCSharp;
 
 public partial class App : Application
 {
+    private bool _servicesDisposed;
+
     public new static App Current => (App)Application.Current!;
 
     internal SettingsService      Settings      { get; } = new();
@@ -92,7 +94,11 @@ public partial class App : Application
 
         if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
         {
-            desktop.Exit += (_, e) => Console.WriteLine($"[App] Desktop Exit event! ExitCode={e.ApplicationExitCode}");
+            desktop.Exit += (_, e) =>
+            {
+                Console.WriteLine($"[App] Desktop Exit event! ExitCode={e.ApplicationExitCode}");
+                DisposeServices();
+            };
             var mainVm = new MainViewModel(Settings, ControlDb, ModelManager, Transcription, JobQueue, Export);
             desktop.MainWindow = new MainWindow { DataContext = mainVm };
             Console.WriteLine("[App] MainWindow set");
@@ -103,8 +109,14 @@ public partial class App : Application
         }
     }
 
-    public void OnExit()
+    private void DisposeServices()
     {
+        if (_servicesDisposed)
+        {
+            return;
+        }
+
+        _servicesDisposed = true;
         ControlDb?.Dispose();
     }
 }

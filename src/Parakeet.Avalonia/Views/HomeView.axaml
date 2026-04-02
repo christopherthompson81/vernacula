@@ -11,6 +11,8 @@
         <conv:BoolToVisibilityConverter x:Key="BoolToVis" />
         <conv:BoolToVisibilityConverter x:Key="InvBoolToVis" Invert="True" />
         <conv:StatusToBrushConverter    x:Key="StatusToBrush" />
+        <conv:PercentToGridLengthConverter x:Key="ProgressFillWidth" />
+        <conv:PercentToGridLengthConverter x:Key="ProgressRemainingWidth" Invert="True" />
     </UserControl.Resources>
 
     <Grid>
@@ -192,11 +194,20 @@
                                                        Foreground="{DynamicResource SubtextBrush}"
                                                        IsVisible="{Binding IsActivelyRunning, Converter={StaticResource BoolToVis}}"
                                                        Margin="0,0,0,2" />
-                                            <ProgressBar Height="5"
-                                                         Minimum="0" Maximum="100"
-                                                         Value="{Binding ProgressPercent}"
-                                                         IsIndeterminate="{Binding IsIndeterminate}"
-                                                         Margin="0,0,0,2" />
+                                            <Grid Height="5"
+                                                  Margin="0,0,0,2"
+                                                  ClipToBounds="True">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="{Binding ProgressPercent, Converter={StaticResource ProgressFillWidth}}" />
+                                                    <ColumnDefinition Width="{Binding ProgressPercent, Converter={StaticResource ProgressRemainingWidth}}" />
+                                                </Grid.ColumnDefinitions>
+                                                <Border Grid.ColumnSpan="2"
+                                                        Background="{DynamicResource OverlayBrush}"
+                                                        CornerRadius="999" />
+                                                <Border Grid.Column="0"
+                                                        Background="{DynamicResource AccentBrush}"
+                                                        CornerRadius="999" />
+                                            </Grid>
                                             <TextBlock Text="{Binding ProgressPercent, StringFormat='{}{0:F0}%'}"
                                                        FontSize="10"
                                                        HorizontalAlignment="Center"

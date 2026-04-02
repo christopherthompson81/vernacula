@@ -14,6 +14,8 @@ public partial class MainWindow : Window
 {
     private PixelPoint? _lastNormalPosition;
     private Size? _lastNormalSize;
+    private bool _allowCloseWithJobs;
+    private bool _isShowingCloseDialog;
 
     public MainWindow()
     {
@@ -92,12 +94,13 @@ public partial class MainWindow : Window
     {
         bool isAnyJobRunning = DataContext is MainViewModel vm && vm.IsAnyJobRunning;
         Console.WriteLine($"[MainWindow] Closing event fired! IsAnyJobRunning={isAnyJobRunning}");
-        // If any job is running or queued, prompt the user before closing
-        if (isAnyJobRunning)
+        if (isAnyJobRunning && !_allowCloseWithJobs)
         {
-            // Simple confirmation - for now just cancel if jobs are running
-            // TODO: Replace with proper Avalonia dialog
             e.Cancel = true;
+            if (!_isShowingCloseDialog)
+            {
+                _ = ConfirmCloseWhileJobsRunningAsync();
+            }
             return;
         }
 
@@ -112,6 +115,33 @@ public partial class MainWindow : Window
         s.WindowHeight    = normalSize.Height;
         s.WindowMaximized = WindowState == WindowState.Maximized;
         App.Current.Settings.Save();
+    }
+
+    private async Task ConfirmCloseWhileJobsRunningAsync()
+    {
+        _isShowingCloseDialog = true;
+
+        try
+        {
+            var dialog = new Dialogs.CloseWhileRunningDialog();
+            bool shouldClose = await dialog.ShowDialog<bool>(this);
+            if (!shouldClose)
+            {
+                return;
+            }
+
+            if (DataContext is MainViewModel vm)
+            {
+                vm.CancelAllJobs();
+            }
+
+            _allowCloseWithJobs = true;
+            Close();
+        }
+        finally
+        {
+            _isShowingCloseDialog = false;
+        }
     }
 
     private SettingsWindow? _settingsWindow;

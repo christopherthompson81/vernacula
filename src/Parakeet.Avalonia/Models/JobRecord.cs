@@ -70,7 +70,7 @@ public class JobRecord : ObservableObject
     public double ProgressPercent
     {
         get => _progressPercent;
-        set => SetProperty(ref _progressPercent, value);
+        set => SetProperty(ref _progressPercent, Math.Clamp(value, 0, 100));
     }
 
     private bool _isActivelyRunning;

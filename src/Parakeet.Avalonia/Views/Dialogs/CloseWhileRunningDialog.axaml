@@ -1,0 +1,30 @@
+<Window x:Class="ParakeetCSharp.Views.Dialogs.CloseWhileRunningDialog"
+        xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Width="420"
+        SizeToContent="Height"
+        CanResize="False"
+        WindowStartupLocation="CenterOwner"
+        ShowInTaskbar="False"
+        Title="Close Parakeet?">
+    <Border Background="{DynamicResource BgBrush}" Padding="20">
+        <StackPanel Spacing="16">
+            <TextBlock Text="Transcription jobs are still running or queued."
+                       FontWeight="SemiBold"
+                       FontSize="15" />
+            <TextBlock Text="Closing now will cancel those jobs. Do you want to close the app anyway?"
+                       TextWrapping="Wrap"
+                       Foreground="{DynamicResource TextBrush}" />
+            <StackPanel Orientation="Horizontal"
+                        HorizontalAlignment="Right"
+                        Spacing="10">
+                <Button Content="Keep Working"
+                        Classes="secondary-button"
+                        Click="KeepWorking_Click" />
+                <Button Content="Close Anyway"
+                        Classes="danger-button"
+                        Click="CloseAnyway_Click" />
+            </StackPanel>
+        </StackPanel>
+    </Border>
+</Window>

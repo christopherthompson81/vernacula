@@ -40,13 +40,13 @@ public static class ThemeManager
 
     private static IEnumerable<Window> FindAllWindows()
     {
-        // In Avalonia, we need to track windows differently
-        // This is a simplified version - in practice you might want to maintain a list
         var app = Application.Current as App;
         if (app?.ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
         {
-            if (desktop.MainWindow != null)
-                yield return desktop.MainWindow;
+            foreach (var window in desktop.Windows.OfType<Window>().Distinct())
+            {
+                yield return window;
+            }
         }
     }
 }
