@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.Linq;
 using CommunityToolkit.Mvvm.ComponentModel;
 
 namespace ParakeetCSharp.Models;
@@ -45,6 +46,49 @@ internal sealed partial class TranscriptEditorCardState : ObservableObject
     public bool HasUserEdits => DraftContent != Segment.AsrContent;
     public string AsrContent => Segment.AsrContent;
 
+    public void SyncDraftsFromSegment()
+    {
+        DraftSpeakerName = Segment.SpeakerDisplayName;
+        DraftContent = Segment.Content;
+    }
+
+    public void SetSpeakerChoices(IEnumerable<SpeakerChoice> choices)
+    {
+        SpeakerChoices.Clear();
+        foreach (var choice in choices)
+            SpeakerChoices.Add(choice);
+
+        SelectedSpeaker = SpeakerChoices.FirstOrDefault(c => c.SpeakerId == Segment.SpeakerId);
+    }
+
+    public void ApplyActionAvailability(
+        bool canMergePrev,
+        bool canMergeNext,
+        bool canSplit,
+        bool canRedoAsr,
+        bool canAdjustTimes)
+    {
+        CanMergePrev = canMergePrev;
+        CanMergeNext = canMergeNext;
+        CanSplit = canSplit;
+        CanRedoAsr = canRedoAsr;
+        CanAdjustTimes = canAdjustTimes;
+    }
+
+    public void RefreshFromSegment(bool preserveDrafts, IEnumerable<SpeakerChoice> choices,
+        string suppressText, string unsuppressText, bool canMergePrev, bool canMergeNext,
+        bool canSplit, bool canRedoAsr, bool canAdjustTimes)
+    {
+        if (!preserveDrafts)
+            SyncDraftsFromSegment();
+
+        RefreshDerived();
+        SetSpeakerChoices(choices);
+        SuppressButtonText = Segment.IsSuppressed ? unsuppressText : suppressText;
+        SuppressGlyph = Segment.IsSuppressed ? "↺" : "⊘";
+        ApplyActionAvailability(canMergePrev, canMergeNext, canSplit, canRedoAsr, canAdjustTimes);
+    }
+
     public void RefreshDerived()
     {
         TimeRangeText = FormatTimeRange(Segment.PlayStart, Segment.PlayEnd);
@@ -57,5 +101,5 @@ internal sealed partial class TranscriptEditorCardState : ObservableObject
     partial void OnDraftContentChanged(string value) => OnPropertyChanged(nameof(HasUserEdits));
 
     private static string FormatTimeRange(double start, double end)
-        => $"{start:F3}s - {end:F3}s";
+        => FormattableString.Invariant($"{start:F3}s - {end:F3}s");
 }

@@ -18,22 +18,23 @@ namespace ParakeetCSharp.Views;
 public partial class TranscriptEditorWindow : Window
 {
     private readonly TranscriptEditorViewModel _vm = null!;
+    private readonly TranscriptEditorWindowState _state = new();
     private readonly VocabService? _vocab;
     private readonly string _dbPath = "";
     private readonly string _audioBaseName = "";
     private readonly bool _asrModelsAvailable;
     private bool _isUpdatingUi;
+    private bool _isLoading;
+    private bool _suppressSegmentCollectionChanged;
     private bool _seekDragging;
     private bool _redoAsrRunning;
-
-    private ObservableCollection<TranscriptEditorCardState> Cards { get; } = [];
 
     public event Action? DataChanged;
 
     public TranscriptEditorWindow()
     {
         InitializeComponent();
-        DataContext = this;
+        DataContext = _state;
     }
 
     public TranscriptEditorWindow(string dbPath, string audioBaseName) : this()
@@ -45,6 +46,7 @@ public partial class TranscriptEditorWindow : Window
         _vm.PropertyChanged += OnViewModelPropertyChanged;
         _vm.FocusedIndexChanging += OnFocusedIndexChanging;
         _vm.Segments.CollectionChanged += OnSegmentsCollectionChanged;
+        _vm.PlayCommand.CanExecuteChanged += OnPlayCommandCanExecuteChanged;
 
         string modelsDir = App.Current.Settings.GetModelsDir();
         string vocabPath = Path.Combine(modelsDir, Config.VocabFile);
@@ -64,20 +66,35 @@ public partial class TranscriptEditorWindow : Window
         SpeedSlider.PropertyChanged += OnSpeedSliderPropertyChanged;
     }
 
-    private void OnLoaded(object? sender, RoutedEventArgs e)
+    private async void OnLoaded(object? sender, RoutedEventArgs e)
     {
         WindowHelper.SetDarkMode(this, App.Current.Settings.Current.Theme == AppTheme.Dark);
         ThemeManager.ThemeChanged += OnThemeChanged;
         Loc.Instance.PropertyChanged += OnLocalePropertyChanged;
 
-        HeaderTitle.Text = _audioBaseName;
         RefreshPlaybackModeCombo();
+        SetLoadingState(true);
+        RefreshHeader();
+        RefreshPlaybackUi();
+        await Task.Yield();
 
-        _vm.Load(_dbPath, _audioBaseName);
+        var snapshot = await Task.Run(() => TranscriptEditorViewModel.LoadSnapshotData(_dbPath));
+
+        _suppressSegmentCollectionChanged = true;
+        try
+        {
+            _vm.ApplyLoadedData(_dbPath, _audioBaseName, snapshot);
+        }
+        finally
+        {
+            _suppressSegmentCollectionChanged = false;
+        }
+
         RebuildCards();
         RefreshHeader();
         RefreshPlaybackUi();
         ApplyFocusedIndex(_vm.FocusedIndex, force: true);
+        SetLoadingState(false);
     }
 
     private void OnClosed(object? sender, EventArgs e)
@@ -88,6 +105,7 @@ public partial class TranscriptEditorWindow : Window
         _vm.PropertyChanged -= OnViewModelPropertyChanged;
         _vm.FocusedIndexChanging -= OnFocusedIndexChanging;
         _vm.Segments.CollectionChanged -= OnSegmentsCollectionChanged;
+        _vm.PlayCommand.CanExecuteChanged -= OnPlayCommandCanExecuteChanged;
         _vm.Dispose();
     }
 
@@ -119,14 +137,28 @@ public partial class TranscriptEditorWindow : Window
     private void OnFocusedIndexChanging(int newIndex)
     {
         int oldIndex = _vm.FocusedIndex;
-        if (oldIndex >= 0 && oldIndex < Cards.Count)
+        if (oldIndex >= 0 && oldIndex < _state.Cards.Count)
         {
-            SyncDraftToSegment(Cards[oldIndex]);
+            SaveDraft(_state.Cards[oldIndex], refreshUi: false);
         }
+    }
+
+    private void OnPlayCommandCanExecuteChanged(object? sender, EventArgs e)
+    {
+        Dispatcher.UIThread.Post(() =>
+        {
+            RefreshPlaybackUi();
+            RefreshAllCardState();
+        }, DispatcherPriority.Background);
     }
 
     private void OnSegmentsCollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)
     {
+        if (_suppressSegmentCollectionChanged || _isLoading)
+        {
+            return;
+        }
+
         Dispatcher.UIThread.Post(() =>
         {
             RebuildCards();
@@ -164,85 +196,50 @@ public partial class TranscriptEditorWindow : Window
 
     private void RebuildCards()
     {
-        Cards.Clear();
+        _state.Cards.Clear();
 
         for (int i = 0; i < _vm.Segments.Count; i++)
         {
             var state = new TranscriptEditorCardState(_vm.Segments[i], i);
             RefreshCardState(state, preserveDrafts: false);
-            Cards.Add(state);
+            _state.Cards.Add(state);
         }
-
-        SegmentList.ItemsSource = Cards;
     }
 
     private void RefreshAllCardState()
     {
-        foreach (var card in Cards)
+        for (int i = 0; i < _state.Cards.Count; i++)
         {
-            card.Index = Cards.IndexOf(card);
-            RefreshCardState(card, preserveDrafts: true);
+            _state.Cards[i].Index = i;
+            RefreshCardState(_state.Cards[i], preserveDrafts: true);
         }
     }
 
     private void RefreshCardState(TranscriptEditorCardState card, bool preserveDrafts)
-    {
-        var seg = card.Segment;
-        if (!preserveDrafts)
-        {
-            card.DraftSpeakerName = seg.SpeakerDisplayName;
-            card.DraftContent = seg.Content;
-        }
-
-        card.RefreshDerived();
-        card.SpeakerChoices.Clear();
-        foreach (var choice in CreateSpeakerChoices(seg.SpeakerId))
-        {
-            card.SpeakerChoices.Add(choice);
-        }
-
-        card.SelectedSpeaker = card.SpeakerChoices.FirstOrDefault(c => c.SpeakerId == seg.SpeakerId);
-        card.SuppressButtonText = seg.IsSuppressed ? Loc.Instance["editor_unsuppress"] : Loc.Instance["editor_suppress"];
-        card.SuppressGlyph = seg.IsSuppressed ? "↺" : "⊘";
-        card.CanMergePrev = !_redoAsrRunning && card.Index > 0;
-        card.CanMergeNext = !_redoAsrRunning && card.Index < Cards.Count - 1;
-        card.CanSplit = !_redoAsrRunning && seg.Tokens.Count > 1;
-        card.CanRedoAsr = !_redoAsrRunning && _asrModelsAvailable && _vm.HasAudio;
-        card.CanAdjustTimes = !_redoAsrRunning;
-    }
+        => _vm.RefreshCardState(card, preserveDrafts, _state.Cards.Count, _redoAsrRunning, _asrModelsAvailable, _vocab != null);
 
     private void ApplyFocusedIndex(int focusedIndex, bool force = false)
     {
-        if (focusedIndex < 0 || focusedIndex >= Cards.Count)
+        if (focusedIndex < 0 || focusedIndex >= _state.Cards.Count)
         {
-            SegmentList.SelectedIndex = -1;
+            _state.ApplyFocusedIndex(-1, force);
             return;
         }
 
-        if (SegmentList.SelectedIndex != focusedIndex || force)
-        {
-            _isUpdatingUi = true;
-            SegmentList.SelectedIndex = focusedIndex;
-            _isUpdatingUi = false;
-        }
+        _isUpdatingUi = true;
+        _state.ApplyFocusedIndex(focusedIndex, force);
+        _isUpdatingUi = false;
 
-        for (int i = 0; i < Cards.Count; i++)
-        {
-            Cards[i].IsFocused = i == focusedIndex;
+        for (int i = 0; i < _state.Cards.Count; i++)
             if (i == focusedIndex || force)
-            {
-                RefreshCardState(Cards[i], preserveDrafts: true);
-            }
-        }
+                RefreshCardState(_state.Cards[i], preserveDrafts: true);
 
-        PrevButton.IsEnabled = _vm.PrevSegmentCommand.CanExecute(null);
-        NextButton.IsEnabled = _vm.NextSegmentCommand.CanExecute(null);
-        SegmentList.ScrollIntoView(Cards[focusedIndex]);
+        SegmentList.ScrollIntoView(_state.Cards[focusedIndex]);
     }
 
     private void SetFocusedIndex(int index, bool force = false)
     {
-        if (index < 0 || index >= Cards.Count)
+        if (index < 0 || index >= _state.Cards.Count)
         {
             return;
         }
@@ -259,40 +256,31 @@ public partial class TranscriptEditorWindow : Window
 
     private void RefreshHeader()
     {
-        HeaderSubtext.Text = $"{_vm.Segments.Count} {Loc.Instance["results_segments_label"]}";
+        _state.SetHeader(_audioBaseName, $"{_vm.Segments.Count} {Loc.Instance["results_segments_label"]}");
     }
 
     private void RefreshPlaybackModeCombo()
     {
-        PlayModeCombo.ItemsSource = new[]
+        _state.SetPlaybackModes(new[]
         {
             Loc.Instance["editor_mode_single"],
             Loc.Instance["editor_auto_advance"],
             Loc.Instance["editor_mode_continuous"],
-        };
-        PlayModeCombo.SelectedIndex = (int)_vm.PlaybackMode;
+        }, (int)_vm.PlaybackMode);
     }
 
     private void RefreshPlaybackUi()
     {
         _isUpdatingUi = true;
-        PlayPauseButton.Content = _vm.IsPlaying ? "⏸" : "▶";
-        if (!_seekDragging)
-        {
-            SeekSlider.Value = _vm.PlaybackPosition;
-        }
-        SpeedSlider.Value = _vm.PlaybackSpeed;
-        SpeedLabel.Text = $"{_vm.PlaybackSpeed:0.0}x";
-        PlayModeCombo.SelectedIndex = (int)_vm.PlaybackMode;
-
-        bool playbackSupported = TranscriptEditorViewModel.SupportsAudioPlayback;
-        PlayPauseButton.IsEnabled = playbackSupported && (_vm.IsPlaying || _vm.PlayCommand.CanExecute(null));
-        SeekSlider.IsEnabled = playbackSupported;
-        SpeedSlider.IsEnabled = playbackSupported;
-        PlayModeCombo.IsEnabled = playbackSupported;
-        PrevButton.IsEnabled = _vm.PrevSegmentCommand.CanExecute(null);
-        NextButton.IsEnabled = _vm.NextSegmentCommand.CanExecute(null);
+        _state.RefreshPlayback(_vm, _seekDragging, _isLoading);
         _isUpdatingUi = false;
+    }
+
+    private void SetLoadingState(bool isLoading)
+    {
+        _isLoading = isLoading;
+        _state.IsLoading = isLoading;
+        RefreshPlaybackUi();
     }
 
     private static TranscriptEditorCardState? CardFromSender(object? sender)
@@ -305,7 +293,7 @@ public partial class TranscriptEditorWindow : Window
             return;
         }
 
-        if (SegmentList.SelectedItem is TranscriptEditorCardState card && card.Index != _vm.FocusedIndex)
+        if (_state.SelectedCard is { } card && card.Index != _vm.FocusedIndex)
         {
             _vm.NavigateTo(card.Index);
         }
@@ -315,7 +303,7 @@ public partial class TranscriptEditorWindow : Window
     {
         if (CardFromSender(sender) is { } card)
         {
-            SyncDraftToSegment(card);
+            SaveDraft(card);
         }
     }
 
@@ -323,60 +311,40 @@ public partial class TranscriptEditorWindow : Window
     {
         if (CardFromSender(sender) is { } card)
         {
-            SyncDraftToSegment(card);
+            SaveDraft(card);
         }
     }
 
-    private void SyncDraftToSegment(TranscriptEditorCardState card)
+    private void SaveDraft(TranscriptEditorCardState card, bool refreshUi = true)
     {
-        card.Segment.Content = card.DraftContent ?? string.Empty;
-        if (!string.IsNullOrWhiteSpace(card.DraftSpeakerName))
-        {
-            card.Segment.SpeakerDisplayName = card.DraftSpeakerName.Trim();
-        }
-    }
-
-    private void SaveDraft(TranscriptEditorCardState card)
-    {
-        SyncDraftToSegment(card);
-
-        bool changed = false;
-        if (_vm.SaveContent(card.Index, card.DraftContent ?? string.Empty))
-        {
-            changed = true;
-        }
-
-        string speakerName = (card.DraftSpeakerName ?? string.Empty).Trim();
-        if (!string.IsNullOrEmpty(speakerName) && _vm.SaveSpeakerName(card.Index, speakerName))
-        {
-            changed = true;
-        }
-
+        bool changed = _vm.SaveDraft(card);
         if (changed)
         {
             DataChanged?.Invoke();
-            RefreshAllCardState();
-            ApplyFocusedIndex(_vm.FocusedIndex, force: true);
+            if (refreshUi)
+            {
+                RefreshAllCardState();
+                ApplyFocusedIndex(_vm.FocusedIndex, force: true);
+            }
         }
     }
 
     private void PersistAllDrafts()
     {
-        for (int i = 0; i < Cards.Count; i++)
+        for (int i = 0; i < _state.Cards.Count; i++)
         {
-            SaveDraft(Cards[i]);
+            SaveDraft(_state.Cards[i]);
         }
     }
 
-    private List<TranscriptEditorCardState.SpeakerChoice> CreateSpeakerChoices(int selectedSpeakerId)
+    private void ApplyStructuralChange(int newFocusIndex, string statusMessage)
     {
-        return _vm.AllSpeakers
-            .Select(s => new TranscriptEditorCardState.SpeakerChoice(
-                s.SpeakerId,
-                string.IsNullOrWhiteSpace(s.Name) ? $"speaker_{s.SpeakerId - 1}" : s.Name))
-            .OrderByDescending(s => s.SpeakerId == selectedSpeakerId)
-            .ThenBy(s => s.Name, StringComparer.OrdinalIgnoreCase)
-            .ToList();
+        DataChanged?.Invoke();
+        RebuildCards();
+        RefreshHeader();
+        SetFocusedIndex(newFocusIndex, force: true);
+        if (_vm.FocusedIndex >= 0 && _vm.FocusedIndex < _state.Cards.Count)
+            SetCardStatus(_state.Cards[_vm.FocusedIndex], statusMessage);
     }
 
     private void SetCardStatus(TranscriptEditorCardState card, string text)
@@ -388,9 +356,9 @@ public partial class TranscriptEditorWindow : Window
     {
         if (!TranscriptEditorViewModel.SupportsAudioPlayback)
         {
-            if (_vm.FocusedIndex >= 0 && _vm.FocusedIndex < Cards.Count)
+            if (_vm.FocusedIndex >= 0 && _vm.FocusedIndex < _state.Cards.Count)
             {
-                SetCardStatus(Cards[_vm.FocusedIndex], "Playback is currently only available on Windows in this Avalonia port.");
+                SetCardStatus(_state.Cards[_vm.FocusedIndex], TranscriptEditorViewModel.PlaybackUnavailableReason);
             }
             return;
         }
@@ -450,15 +418,8 @@ public partial class TranscriptEditorWindow : Window
             return;
         }
 
-        string name = (card.DraftSpeakerName ?? string.Empty).Trim();
-        if (string.IsNullOrEmpty(name))
+        if (_vm.RenameSpeaker(card))
         {
-            return;
-        }
-
-        if (_vm.SaveSpeakerName(card.Index, name))
-        {
-            card.DraftSpeakerName = name;
             DataChanged?.Invoke();
             RefreshAllCardState();
             SetCardStatus(card, "Speaker name updated.");
@@ -472,9 +433,8 @@ public partial class TranscriptEditorWindow : Window
             return;
         }
 
-        if (_vm.ReassignSegment(card.Index, card.SelectedSpeaker.SpeakerId))
+        if (_vm.ReassignSpeaker(card))
         {
-            card.DraftSpeakerName = _vm.Segments[card.Index].SpeakerDisplayName;
             DataChanged?.Invoke();
             RefreshAllCardState();
             SetCardStatus(card, "Segment reassigned.");
@@ -504,6 +464,7 @@ public partial class TranscriptEditorWindow : Window
         DataChanged?.Invoke();
         RefreshAllCardState();
         card.SelectedSpeaker = card.SpeakerChoices.FirstOrDefault(c => c.SpeakerId == newSpeakerId);
+        card.SyncDraftsFromSegment();
         SetCardStatus(card, "Speaker added.");
     }
 
@@ -526,7 +487,7 @@ public partial class TranscriptEditorWindow : Window
             return;
         }
 
-        if (_vm.ToggleSuppressed(card.Index))
+        if (_vm.ToggleSuppressed(card))
         {
             DataChanged?.Invoke();
             RefreshCardState(card, preserveDrafts: true);
@@ -549,7 +510,7 @@ public partial class TranscriptEditorWindow : Window
             return;
         }
 
-        if (_vm.AdjustSegmentTimes(card.Index, dialog.NewStartTime, dialog.NewEndTime))
+        if (_vm.AdjustSegmentTimes(card, dialog.NewStartTime, dialog.NewEndTime))
         {
             DataChanged?.Invoke();
             RefreshCardState(card, preserveDrafts: true);
@@ -567,14 +528,7 @@ public partial class TranscriptEditorWindow : Window
         SaveDraft(card);
         if (_vm.MergeWithPrev(card.Index))
         {
-            DataChanged?.Invoke();
-            RebuildCards();
-            RefreshHeader();
-            SetFocusedIndex(Math.Max(0, card.Index - 1), force: true);
-            if (_vm.FocusedIndex >= 0 && _vm.FocusedIndex < Cards.Count)
-            {
-                SetCardStatus(Cards[_vm.FocusedIndex], "Segments merged.");
-            }
+            ApplyStructuralChange(Math.Max(0, card.Index - 1), "Segments merged.");
         }
     }
 
@@ -588,14 +542,7 @@ public partial class TranscriptEditorWindow : Window
         SaveDraft(card);
         if (_vm.MergeWithNext(card.Index))
         {
-            DataChanged?.Invoke();
-            RebuildCards();
-            RefreshHeader();
-            SetFocusedIndex(Math.Min(card.Index, Cards.Count - 1), force: true);
-            if (_vm.FocusedIndex >= 0 && _vm.FocusedIndex < Cards.Count)
-            {
-                SetCardStatus(Cards[_vm.FocusedIndex], "Segments merged.");
-            }
+            ApplyStructuralChange(Math.Min(card.Index, _state.Cards.Count - 1), "Segments merged.");
         }
     }
 
@@ -628,14 +575,7 @@ public partial class TranscriptEditorWindow : Window
         SaveDraft(card);
         if (_vm.SplitSegment(card.Index, dialog.SplitTokenIndex, _vocab))
         {
-            DataChanged?.Invoke();
-            RebuildCards();
-            RefreshHeader();
-            SetFocusedIndex(Math.Min(card.Index, Cards.Count - 1), force: true);
-            if (_vm.FocusedIndex >= 0 && _vm.FocusedIndex < Cards.Count)
-            {
-                SetCardStatus(Cards[_vm.FocusedIndex], "Segment split.");
-            }
+            ApplyStructuralChange(Math.Min(card.Index, _state.Cards.Count - 1), "Segment split.");
         }
     }
 
