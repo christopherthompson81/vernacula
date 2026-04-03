@@ -5,7 +5,6 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <AllowUnsafeBlocks>false</AllowUnsafeBlocks>
-    <Platforms>x64</Platforms>
 
     <!--
       EP is passed by consuming projects (Parakeet.CLI, Parakeet.WPF).
