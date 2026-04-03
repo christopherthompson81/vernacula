@@ -1,6 +1,7 @@
 using Microsoft.ML.OnnxRuntime;
 using Microsoft.ML.OnnxRuntime.Tensors;
 using Parakeet.Base.Models;
+using System.Text.Json;
 
 namespace Parakeet.Base;
 
@@ -39,9 +40,59 @@ public sealed class DiariZenDiarizer : IDisposable
     /// Minimum active frames a local speaker must have in a chunk to warrant
     /// computing an embedding for it. 10 frames ≈ 200 ms at 50 Hz.
     /// </summary>
-    private const int MinActiveFramesForEmbed = 10;
+    private const int DefaultMinActiveFramesForEmbed = 10;
     private const double MinCleanFrameRatioForClustering = 0.1;
     private static readonly int MaxEmbeddingWorkers = Math.Max(1, Environment.ProcessorCount - 2);
+    private static readonly bool UseConstrainedCentroidAssignment =
+        !string.Equals(
+            Environment.GetEnvironmentVariable("PARAKEET_DIARIZEN_DISABLE_CONSTRAINED_ASSIGNMENT"),
+            "1",
+            StringComparison.Ordinal);
+    private static readonly bool DisablePostSmoothing =
+        string.Equals(
+            Environment.GetEnvironmentVariable("PARAKEET_DIARIZEN_DISABLE_POST_SMOOTHING"),
+            "1",
+            StringComparison.Ordinal);
+    private static readonly bool DisableTinySpeakerPruning =
+        string.Equals(
+            Environment.GetEnvironmentVariable("PARAKEET_DIARIZEN_DISABLE_TINY_SPEAKER_PRUNING"),
+            "1",
+            StringComparison.Ordinal);
+    private static readonly bool DisableGapFill =
+        string.Equals(
+            Environment.GetEnvironmentVariable("PARAKEET_DIARIZEN_DISABLE_GAP_FILL"),
+            "1",
+            StringComparison.Ordinal);
+    private static readonly bool DisableShortRegionRemoval =
+        string.Equals(
+            Environment.GetEnvironmentVariable("PARAKEET_DIARIZEN_DISABLE_SHORT_REGION_REMOVAL"),
+            "1",
+            StringComparison.Ordinal);
+    private static readonly bool UseHardPowersetMasks =
+        string.Equals(
+            Environment.GetEnvironmentVariable("PARAKEET_DIARIZEN_USE_HARD_POWERSET_MASKS"),
+            "1",
+            StringComparison.Ordinal);
+    private static readonly bool UseHardPowersetCount =
+        string.Equals(
+            Environment.GetEnvironmentVariable("PARAKEET_DIARIZEN_USE_HARD_POWERSET_COUNT"),
+            "1",
+            StringComparison.Ordinal);
+    private static readonly bool ProjectSoftMasksToHardCount =
+        string.Equals(
+            Environment.GetEnvironmentVariable("PARAKEET_DIARIZEN_PROJECT_SOFT_MASKS_TO_COUNT"),
+            "1",
+            StringComparison.Ordinal);
+    private static readonly bool UseSummedActivations =
+        string.Equals(
+            Environment.GetEnvironmentVariable("PARAKEET_DIARIZEN_USE_SUMMED_ACTIVATIONS"),
+            "1",
+            StringComparison.Ordinal);
+    private static readonly string CountRoundingMode =
+        (Environment.GetEnvironmentVariable("PARAKEET_DIARIZEN_COUNT_ROUNDING") ?? "round")
+        .Trim()
+        .ToLowerInvariant();
+    private static readonly int MinActiveFramesForEmbed = GetMinActiveFramesForEmbed();
 
     // ── Construction ───────────────────────────────────────────────────────
 
@@ -118,12 +169,23 @@ public sealed class DiariZenDiarizer : IDisposable
         // score[t, spk] = Σ_c p(c|t)  for all powerset classes c containing spk.
         // Followed by median_filter(size=(1,11,1)).
         var perChunkScores = new List<float[,]>(chunks.Count);
+        var perChunkBinary = new List<float[,]>(chunks.Count);
+        var perChunkCounts = new List<int[]>(chunks.Count);
         for (int ci = 0; ci < chunkScores.Count; ci++)
         {
             var rawScores = chunkScores[ci];
             var probs    = ApplySoftmaxSingle(rawScores);
             var filtered = ApplyMedianFilterSingle(probs, Config.DiariZenMedianFilterSize);
-            perChunkScores.Add(ComputePerSpeakerScores(filtered));
+            var softScores = ComputePerSpeakerScores(filtered);
+            perChunkScores.Add(softScores);
+            int[] hardCounts = DecodePowersetCardinality(filtered, threshold);
+            perChunkCounts.Add(hardCounts);
+            perChunkBinary.Add(
+                UseHardPowersetMasks
+                    ? DecodeHardPowersetMasks(filtered, threshold)
+                    : ProjectSoftMasksToHardCount
+                        ? ProjectSoftScoresToFrameCount(softScores, hardCounts, threshold)
+                        : BinarizePerSpeakerScores(softScores, threshold));
             if (ShouldReportProgress(ci, chunkScores.Count))
                 progress?.Invoke($"decoded chunk {ci + 1}/{chunkScores.Count}");
         }
@@ -142,12 +204,12 @@ public sealed class DiariZenDiarizer : IDisposable
             var jobs = new List<EmbeddingJob>();
             for (int ci = 0; ci < perChunkScores.Count; ci++)
             {
-                var chunkScore = perChunkScores[ci];
+                var chunkScore = perChunkBinary[ci];
                 int numFrames  = chunkScore.GetLength(0);
                 var overlapCounts = new int[numFrames];
                 for (int t = 0; t < numFrames; t++)
                 for (int other = 0; other < MaxUniqueSpeakers; other++)
-                    if (chunkScore[t, other] >= threshold)
+                    if (chunkScore[t, other] > 0f)
                         overlapCounts[t]++;
 
                 for (int spk = 0; spk < MaxUniqueSpeakers; spk++)
@@ -158,7 +220,7 @@ public sealed class DiariZenDiarizer : IDisposable
                     int cleanCount  = 0;
                     for (int t = 0; t < numFrames; t++)
                     {
-                        if (chunkScore[t, spk] < threshold) continue;
+                        if (chunkScore[t, spk] <= 0f) continue;
                         activeMask[t] = true;
                         activeCount++;
                         if (overlapCounts[t] == 1)
@@ -220,6 +282,7 @@ public sealed class DiariZenDiarizer : IDisposable
         }
 
         progress?.Invoke($"collected {embeddings.Count} embedding(s) from {perChunkScores.Count} chunk(s)");
+        WriteLocalMaskDebug(startTimes, perChunkBinary, perChunkCounts);
 
         // ── Step 4: Cluster embeddings ────────────────────────────────────
         // Build (chunkIdx, speakerIdx) → global speaker ID lookup.
@@ -266,7 +329,11 @@ public sealed class DiariZenDiarizer : IDisposable
                         trainEmbeddings,
                         Config.DiariZenMinEmbeddingClusterSize);
                     var centroids = ComputeClusterCentroids(trainEmbeddings, clusterIds);
-                    clusterIds = AssignEmbeddingsToCentroids(results, embeddings.ToArray(), centroids, constrained: true);
+                    clusterIds = AssignEmbeddingsToCentroids(
+                        results,
+                        embeddings.ToArray(),
+                        centroids,
+                        constrained: UseConstrainedCentroidAssignment);
                     progress?.Invoke($"VBx refined clustering to {clusterIds.Distinct().Count()} speaker(s)");
                 }
                 else
@@ -283,6 +350,8 @@ public sealed class DiariZenDiarizer : IDisposable
                 if (clusterIds[i] < 0) continue;
                 localToGlobal[embedKeys[i]] = clusterIds[i];
             }
+
+            WriteAssignmentDebug(startTimes, localToGlobal);
 
             progress?.Invoke($"clustered to {clusterIds.Distinct().Count()} speaker(s)");
         }
@@ -308,15 +377,23 @@ public sealed class DiariZenDiarizer : IDisposable
         //    speakers across overlapping chunks, then rounding.
         // 4. For each frame, activate the top-N global speakers where N = count[t].
         int totalFrames = (int)Math.Ceiling(audio.Length / (double)SampleRate * FrameRate);
-        var activations = new float[totalFrames * numGlobalSpeakers];
-        var countSums   = new float[totalFrames];
+        var activationSums = new float[totalFrames * numGlobalSpeakers];
+        var activationContrib = new int[totalFrames * numGlobalSpeakers];
+        var countSums = new float[totalFrames];
         var countContrib = new int[totalFrames];
         var perChunkGlobal = new float[numGlobalSpeakers];
+        var chunkHasGlobalSpeaker = new bool[perChunkScores.Count, numGlobalSpeakers];
+
+        foreach (var ((chunkIdx, _), globalSpeaker) in localToGlobal)
+        {
+            if (globalSpeaker >= 0)
+                chunkHasGlobalSpeaker[chunkIdx, globalSpeaker] = true;
+        }
 
         progress?.Invoke("reconstructing global speaker timeline");
         for (int ci = 0; ci < perChunkScores.Count; ci++)
         {
-            var chunkScore = perChunkScores[ci];
+            var chunkScore = perChunkBinary[ci];
             int numFrames  = chunkScore.GetLength(0);
             int startFrame = (int)Math.Round(startTimes[ci] * FrameRate);
 
@@ -325,12 +402,12 @@ public sealed class DiariZenDiarizer : IDisposable
                 int gf = startFrame + t;
                 if (gf >= totalFrames) break;
 
-                int activeLocalSpeakers = 0;
+                int activeLocalSpeakers = UseHardPowersetCount ? perChunkCounts[ci][t] : 0;
                 Array.Clear(perChunkGlobal, 0, perChunkGlobal.Length);
                 for (int spk = 0; spk < MaxUniqueSpeakers; spk++)
                 {
                     float localScore = chunkScore[t, spk];
-                    if (localScore >= threshold)
+                    if (!UseHardPowersetCount && localScore > 0f)
                         activeLocalSpeakers++;
 
                     if (localScore <= 0f) continue;
@@ -340,8 +417,11 @@ public sealed class DiariZenDiarizer : IDisposable
 
                 for (int gs = 0; gs < numGlobalSpeakers; gs++)
                 {
-                    if (perChunkGlobal[gs] <= 0f) continue;
-                    activations[gf * numGlobalSpeakers + gs] += perChunkGlobal[gs];
+                    if (!chunkHasGlobalSpeaker[ci, gs]) continue;
+
+                    int flatIndex = gf * numGlobalSpeakers + gs;
+                    activationSums[flatIndex] += perChunkGlobal[gs];
+                    activationContrib[flatIndex]++;
                 }
 
                 countSums[gf] += activeLocalSpeakers;
@@ -356,19 +436,34 @@ public sealed class DiariZenDiarizer : IDisposable
         var labeled = new List<(int startFrame, int endFrame, string speaker)>();
         var binary  = new bool[totalFrames * numGlobalSpeakers];
         var ranked  = new (float score, int speaker)[numGlobalSpeakers];
+        var debugFrames = CreateReconstructionDebugFrames(totalFrames);
 
         for (int f = 0; f < totalFrames; f++)
         {
             if (countContrib[f] <= 0) continue;
 
-            int count = (int)Math.Round(countSums[f] / countContrib[f], MidpointRounding.AwayFromZero);
+            double averageCount = countSums[f] / countContrib[f];
+            int count = CountRoundingMode switch
+            {
+                "floor" => (int)Math.Floor(averageCount),
+                "ceil" => (int)Math.Ceiling(averageCount),
+                _ => (int)Math.Round(averageCount, MidpointRounding.AwayFromZero),
+            };
             count = Math.Clamp(
                 count,
                 0,
                 Math.Min(Math.Min(maxSpeakers, numGlobalSpeakers), MaxSimultaneousPerFrame));
 
             for (int gs = 0; gs < numGlobalSpeakers; gs++)
-                ranked[gs] = (activations[f * numGlobalSpeakers + gs], gs);
+            {
+                int flatIndex = f * numGlobalSpeakers + gs;
+                float score = activationContrib[flatIndex] > 0
+                    ? (UseSummedActivations
+                        ? activationSums[flatIndex]
+                        : activationSums[flatIndex] / activationContrib[flatIndex])
+                    : 0f;
+                ranked[gs] = (score, gs);
+            }
 
             Array.Sort(ranked, (a, b) => b.score.CompareTo(a.score));
             for (int i = 0; i < count; i++)
@@ -376,14 +471,26 @@ public sealed class DiariZenDiarizer : IDisposable
                 if (ranked[i].score <= 0f) break;
                 binary[f * numGlobalSpeakers + ranked[i].speaker] = true;
             }
+
+            CaptureReconstructionDebugFrame(
+                debugFrames,
+                f,
+                (float)averageCount,
+                count,
+                ranked,
+                binary,
+                numGlobalSpeakers);
         }
 
-        SmoothBinaryTimeline(
-            binary,
-            totalFrames,
-            numGlobalSpeakers,
-            Config.DiariZenFillShortGapFrames,
-            Config.DiariZenMinRegionFrames);
+        if (!DisablePostSmoothing)
+        {
+            SmoothBinaryTimeline(
+                binary,
+                totalFrames,
+                numGlobalSpeakers,
+                Config.GetDiariZenFillShortGapFrames(),
+                Config.GetDiariZenMinRegionFrames());
+        }
 
         for (int gs = 0; gs < numGlobalSpeakers; gs++)
         {
@@ -405,7 +512,9 @@ public sealed class DiariZenDiarizer : IDisposable
                 labeled.Add((regionStart.Value, totalFrames, $"speaker_{gs}"));
         }
 
-        labeled = PruneTinySpeakers(labeled, Config.DiariZenMinSpeakerDurationSeconds);
+        if (!DisableTinySpeakerPruning)
+            labeled = PruneTinySpeakers(labeled, Config.DiariZenMinSpeakerDurationSeconds);
+        WriteReconstructionDebugFrames(debugFrames);
         progress?.Invoke($"extracted {labeled.Count} raw segment(s)");
         if (labeled.Count == 0) return [];
 
@@ -424,9 +533,195 @@ public sealed class DiariZenDiarizer : IDisposable
 
         for (int gs = 0; gs < numGlobalSpeakers; gs++)
         {
-            FillShortFalseGaps(binary, totalFrames, numGlobalSpeakers, gs, fillShortGapFrames);
-            RemoveShortTrueRegions(binary, totalFrames, numGlobalSpeakers, gs, minRegionFrames);
+            if (!DisableGapFill)
+                FillShortFalseGaps(binary, totalFrames, numGlobalSpeakers, gs, fillShortGapFrames);
+            if (!DisableShortRegionRemoval)
+                RemoveShortTrueRegions(binary, totalFrames, numGlobalSpeakers, gs, minRegionFrames);
         }
+    }
+
+    private static List<ReconstructionDebugFrame>? CreateReconstructionDebugFrames(int totalFrames)
+    {
+        if (!TryGetDebugReconstructionWindow(out int startFrame, out int endFrame))
+            return null;
+
+        startFrame = Math.Clamp(startFrame, 0, totalFrames);
+        endFrame = Math.Clamp(endFrame, startFrame, totalFrames);
+        return endFrame > startFrame ? new List<ReconstructionDebugFrame>(endFrame - startFrame) : null;
+    }
+
+    private static void CaptureReconstructionDebugFrame(
+        List<ReconstructionDebugFrame>? debugFrames,
+        int frameIndex,
+        float averageCount,
+        int selectedCount,
+        (float score, int speaker)[] ranked,
+        bool[] binary,
+        int numGlobalSpeakers)
+    {
+        if (debugFrames is null || !TryGetDebugReconstructionWindow(out int startFrame, out int endFrame))
+            return;
+        if (frameIndex < startFrame || frameIndex >= endFrame)
+            return;
+
+        var scores = new float[numGlobalSpeakers];
+        var selected = new bool[numGlobalSpeakers];
+        for (int i = 0; i < ranked.Length; i++)
+            scores[ranked[i].speaker] = ranked[i].score;
+        for (int gs = 0; gs < numGlobalSpeakers; gs++)
+            selected[gs] = binary[frameIndex * numGlobalSpeakers + gs];
+
+        debugFrames.Add(new ReconstructionDebugFrame(
+            frameIndex,
+            frameIndex / (double)FrameRate,
+            averageCount,
+            selectedCount,
+            scores,
+            selected));
+    }
+
+    private static void WriteReconstructionDebugFrames(List<ReconstructionDebugFrame>? debugFrames)
+    {
+        if (debugFrames is null)
+            return;
+
+        string? outputPath = Environment.GetEnvironmentVariable("PARAKEET_DIARIZEN_DEBUG_RECON_PATH");
+        if (string.IsNullOrWhiteSpace(outputPath))
+            return;
+
+        string? directory = Path.GetDirectoryName(outputPath);
+        if (!string.IsNullOrWhiteSpace(directory))
+            Directory.CreateDirectory(directory);
+
+        File.WriteAllText(outputPath, JsonSerializer.Serialize(debugFrames, new JsonSerializerOptions
+        {
+            WriteIndented = true
+        }));
+    }
+
+    private static bool TryGetDebugReconstructionWindow(out int startFrame, out int endFrame)
+    {
+        startFrame = 0;
+        endFrame = 0;
+
+        string? raw = Environment.GetEnvironmentVariable("PARAKEET_DIARIZEN_DEBUG_RECON_WINDOW");
+        if (string.IsNullOrWhiteSpace(raw))
+            return false;
+
+        string[] parts = raw.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length != 2)
+            return false;
+
+        if (!double.TryParse(parts[0], out double startSeconds) ||
+            !double.TryParse(parts[1], out double endSeconds))
+            return false;
+
+        startFrame = (int)Math.Floor(startSeconds * FrameRate);
+        endFrame = (int)Math.Ceiling(endSeconds * FrameRate);
+        return endFrame > startFrame;
+    }
+
+    private static int GetMinActiveFramesForEmbed()
+    {
+        string? raw = Environment.GetEnvironmentVariable("PARAKEET_DIARIZEN_MIN_ACTIVE_FRAMES_FOR_EMBED");
+        return int.TryParse(raw, out int parsed) && parsed >= 0
+            ? parsed
+            : DefaultMinActiveFramesForEmbed;
+    }
+
+    private static void WriteAssignmentDebug(
+        List<double> startTimes,
+        Dictionary<(int chunkIdx, int localSpeaker), int> localToGlobal)
+    {
+        string? outputPath = Environment.GetEnvironmentVariable("PARAKEET_DIARIZEN_DEBUG_ASSIGN_PATH");
+        if (string.IsNullOrWhiteSpace(outputPath))
+            return;
+
+        string? directory = Path.GetDirectoryName(outputPath);
+        if (!string.IsNullOrWhiteSpace(directory))
+            Directory.CreateDirectory(directory);
+
+        var payload = startTimes.Select((startTime, chunkIdx) => new
+        {
+            chunkIdx,
+            startTime,
+            assignments = localToGlobal
+                .Where(kv => kv.Key.chunkIdx == chunkIdx)
+                .OrderBy(kv => kv.Key.localSpeaker)
+                .Select(kv => new
+                {
+                    localSpeaker = kv.Key.localSpeaker,
+                    globalSpeaker = kv.Value
+                })
+                .ToArray()
+        });
+
+        File.WriteAllText(outputPath, JsonSerializer.Serialize(payload, new JsonSerializerOptions
+        {
+            WriteIndented = true
+        }));
+    }
+
+    private static void WriteLocalMaskDebug(
+        List<double> startTimes,
+        List<float[,]> perChunkBinary,
+        List<int[]> perChunkCounts)
+    {
+        string? outputPath = Environment.GetEnvironmentVariable("PARAKEET_DIARIZEN_DEBUG_LOCAL_PATH");
+        if (string.IsNullOrWhiteSpace(outputPath))
+            return;
+
+        if (!TryGetDebugReconstructionWindow(out int startFrame, out int endFrame))
+            return;
+
+        string? directory = Path.GetDirectoryName(outputPath);
+        if (!string.IsNullOrWhiteSpace(directory))
+            Directory.CreateDirectory(directory);
+
+        var payload = new List<object>();
+        for (int ci = 0; ci < perChunkBinary.Count; ci++)
+        {
+            float[,] chunkBinary = perChunkBinary[ci];
+            int[] chunkCounts = perChunkCounts[ci];
+            int numFrames = chunkBinary.GetLength(0);
+            int chunkStartFrame = (int)Math.Round(startTimes[ci] * FrameRate);
+            var frames = new List<object>();
+
+            for (int t = 0; t < numFrames; t++)
+            {
+                int globalFrame = chunkStartFrame + t;
+                if (globalFrame < startFrame || globalFrame >= endFrame)
+                    continue;
+
+                var mask = new float[MaxUniqueSpeakers];
+                for (int spk = 0; spk < MaxUniqueSpeakers; spk++)
+                    mask[spk] = chunkBinary[t, spk];
+
+                frames.Add(new
+                {
+                    localFrame = t,
+                    globalFrame,
+                    globalTimeSeconds = globalFrame / (double)FrameRate,
+                    decodedCount = chunkCounts[t],
+                    localMask = mask
+                });
+            }
+
+            if (frames.Count == 0)
+                continue;
+
+            payload.Add(new
+            {
+                chunkIdx = ci,
+                startTime = startTimes[ci],
+                frames
+            });
+        }
+
+        File.WriteAllText(outputPath, JsonSerializer.Serialize(payload, new JsonSerializerOptions
+        {
+            WriteIndented = true
+        }));
     }
 
     private static void FillShortFalseGaps(
@@ -669,6 +964,76 @@ public sealed class DiariZenDiarizer : IDisposable
         }
 
         return result;
+    }
+
+    private static float[,] BinarizePerSpeakerScores(float[,] scores, float threshold)
+    {
+        int numFrames = scores.GetLength(0);
+        int numSpeakers = scores.GetLength(1);
+        var binary = new float[numFrames, numSpeakers];
+
+        for (int t = 0; t < numFrames; t++)
+        for (int spk = 0; spk < numSpeakers; spk++)
+            binary[t, spk] = scores[t, spk] >= threshold ? 1f : 0f;
+
+        return binary;
+    }
+
+    private static float[,] ProjectSoftScoresToFrameCount(float[,] scores, int[] frameCounts, float threshold)
+    {
+        int numFrames = scores.GetLength(0);
+        int numSpeakers = scores.GetLength(1);
+        var binary = new float[numFrames, numSpeakers];
+        var ranked = new (float score, int speaker)[numSpeakers];
+
+        for (int t = 0; t < numFrames; t++)
+        {
+            int keep = Math.Clamp(frameCounts[t], 0, Math.Min(numSpeakers, MaxSimultaneousPerFrame));
+            for (int spk = 0; spk < numSpeakers; spk++)
+                ranked[spk] = (scores[t, spk], spk);
+
+            Array.Sort(ranked, (a, b) => b.score.CompareTo(a.score));
+            for (int i = 0; i < keep; i++)
+            {
+                if (ranked[i].score < threshold)
+                    break;
+                binary[t, ranked[i].speaker] = 1f;
+            }
+        }
+
+        return binary;
+    }
+
+    private static float[,] DecodeHardPowersetMasks(float[] powersetScores, float threshold)
+    {
+        var activeSpeakers = PowersetDecoder.BinarizePowerset(
+            powersetScores,
+            MaxUniqueSpeakers,
+            MaxSimultaneousPerFrame,
+            threshold);
+        int numFrames = activeSpeakers.Length;
+        var binary = new float[numFrames, MaxUniqueSpeakers];
+
+        for (int t = 0; t < numFrames; t++)
+        {
+            foreach (int spk in activeSpeakers[t])
+                binary[t, spk] = 1f;
+        }
+
+        return binary;
+    }
+
+    private static int[] DecodePowersetCardinality(float[] powersetScores, float threshold)
+    {
+        var activeSpeakers = PowersetDecoder.BinarizePowerset(
+            powersetScores,
+            MaxUniqueSpeakers,
+            MaxSimultaneousPerFrame,
+            threshold);
+        var counts = new int[activeSpeakers.Length];
+        for (int t = 0; t < activeSpeakers.Length; t++)
+            counts[t] = activeSpeakers[t].Count;
+        return counts;
     }
 
     // ── Small-cluster absorption ───────────────────────────────────────────
@@ -1028,3 +1393,11 @@ public sealed class DiarizationSegment
     public override string ToString() =>
         $"{Start:F2}s - {End:F2}: {Speaker} ({Duration:F2}s)";
 }
+
+internal sealed record ReconstructionDebugFrame(
+    int Frame,
+    double TimeSeconds,
+    float AverageCount,
+    int SelectedCount,
+    float[] Scores,
+    bool[] Selected);

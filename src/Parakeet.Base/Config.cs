@@ -181,4 +181,24 @@ public static class Config
 
         return DiariZenSegmentationIntraOpThreads;
     }
+
+    public static int GetDiariZenFillShortGapFrames()
+    {
+        const string envVar = "PARAKEET_DIARIZEN_FILL_SHORT_GAP_FRAMES";
+        string? raw = Environment.GetEnvironmentVariable(envVar);
+        if (int.TryParse(raw, out int parsed) && parsed >= 0)
+            return parsed;
+
+        return DiariZenFillShortGapFrames;
+    }
+
+    public static int GetDiariZenMinRegionFrames()
+    {
+        const string envVar = "PARAKEET_DIARIZEN_MIN_REGION_FRAMES";
+        string? raw = Environment.GetEnvironmentVariable(envVar);
+        if (int.TryParse(raw, out int parsed) && parsed >= 1)
+            return parsed;
+
+        return DiariZenMinRegionFrames;
+    }
 }
