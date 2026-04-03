@@ -20,6 +20,7 @@ namespace ParakeetCSharp.ViewModels;
 
 internal partial class TranscriptEditorViewModel : ObservableObject, IDisposable
 {
+    private static readonly TimeSpan InitialPlaybackWarmupLeadIn = TimeSpan.FromMilliseconds(400);
     internal sealed record LoadSnapshot(
         List<EditorSegment> Segments,
         List<(int SpeakerId, string Name)> Speakers,
@@ -41,6 +42,7 @@ internal partial class TranscriptEditorViewModel : ObservableObject, IDisposable
     private DispatcherTimer? _playbackTimer;
     private bool             _preserveContinuousPlaybackPosition;
     private bool             _suppressContinuousPositionFocusSync;
+    private bool             _needsInitialPlaybackWarmup = true;
 
     public ObservableCollection<EditorSegment> Segments    { get; } = [];
     public List<(int SpeakerId, string Name)>  AllSpeakers { get; private set; } = [];
@@ -99,6 +101,10 @@ internal partial class TranscriptEditorViewModel : ObservableObject, IDisposable
         _dbPath       = dbPath;
         AudioBaseName = audioBaseName;
         _audioPath    = snapshot.AudioPath;
+        _fullAudio = null;
+        _audioSampleRate = Config.SampleRate;
+        _audioChannels = 1;
+        _needsInitialPlaybackWarmup = true;
         Segments.Clear();
         foreach (var segment in snapshot.Segments)
             Segments.Add(segment);
@@ -294,18 +300,20 @@ internal partial class TranscriptEditorViewModel : ObservableObject, IDisposable
         if (count <= 0) return;
 
         StopPlayback();
+        TimeSpan leadIn = ConsumeInitialPlaybackLeadIn();
         if (OperatingSystem.IsWindows())
         {
             var waveFormat = WaveFormat.CreateIeeeFloatWaveFormat(_audioSampleRate, _audioChannels);
             var provider   = new SoundTouchWaveProvider(_fullAudio, startSample, count,
-                                                        waveFormat, _audioChannels, PlaybackSpeed);
+                                                        waveFormat, _audioChannels, PlaybackSpeed,
+                                                        leadIn);
 
             _waveOut = new WaveOutEvent();
             _waveOut.Init(provider);
             _waveOut.PlaybackStopped += OnWaveOutStopped;
             _waveOut.Play();
         }
-        else if (!StartFfplayPlayback(seg.PlayStart + segOffsetSec, segDuration - segOffsetSec))
+        else if (!StartFfplayPlayback(seg.PlayStart + segOffsetSec, segDuration - segOffsetSec, leadIn))
         {
             return;
         }
@@ -315,13 +323,13 @@ internal partial class TranscriptEditorViewModel : ObservableObject, IDisposable
         PauseCommand.NotifyCanExecuteChanged();
 
         double posAtStart = PlaybackPosition;
-        var    startedAt  = DateTime.UtcNow;
+        var    startedAt  = DateTime.UtcNow + leadIn;
         double speed      = PlaybackSpeed;
 
         _playbackTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(50) };
         _playbackTimer.Tick += (_, _) =>
         {
-            double elapsed = (DateTime.UtcNow - startedAt).TotalSeconds;
+            double elapsed = Math.Max(0.0, (DateTime.UtcNow - startedAt).TotalSeconds);
             double newPos  = posAtStart + elapsed * speed / segDuration;
             PlaybackPosition = Math.Min(1.0, newPos);
 
@@ -365,19 +373,21 @@ internal partial class TranscriptEditorViewModel : ObservableObject, IDisposable
         if (count <= 0) return;
 
         StopPlayback();
+        TimeSpan leadIn = ConsumeInitialPlaybackLeadIn();
         double speed = PlaybackSpeed;
         if (OperatingSystem.IsWindows())
         {
             var waveFormat = WaveFormat.CreateIeeeFloatWaveFormat(_audioSampleRate, _audioChannels);
             var provider   = new SoundTouchWaveProvider(_fullAudio, startSample, count,
-                                                        waveFormat, _audioChannels, speed);
+                                                        waveFormat, _audioChannels, speed,
+                                                        leadIn);
 
             _waveOut = new WaveOutEvent();
             _waveOut.Init(provider);
             _waveOut.PlaybackStopped += OnWaveOutStopped;
             _waveOut.Play();
         }
-        else if (!StartFfplayPlayback(startSec))
+        else if (!StartFfplayPlayback(startSec, null, leadIn))
         {
             return;
         }
@@ -386,12 +396,13 @@ internal partial class TranscriptEditorViewModel : ObservableObject, IDisposable
         PlayCommand.NotifyCanExecuteChanged();
         PauseCommand.NotifyCanExecuteChanged();
 
-        var startedAt = DateTime.UtcNow;
+        var startedAt = DateTime.UtcNow + leadIn;
 
         _playbackTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(50) };
         _playbackTimer.Tick += (_, _) =>
         {
-            double curSec = startSec + (DateTime.UtcNow - startedAt).TotalSeconds * speed;
+            double elapsed = Math.Max(0.0, (DateTime.UtcNow - startedAt).TotalSeconds);
+            double curSec = startSec + elapsed * speed;
             PlaybackPosition = Math.Min(1.0, curSec / totalDuration);
 
             UpdateContinuousFocus(curSec);
@@ -407,6 +418,17 @@ internal partial class TranscriptEditorViewModel : ObservableObject, IDisposable
                 OnSegmentPlaybackComplete();
         };
         _playbackTimer.Start();
+    }
+
+    private TimeSpan ConsumeInitialPlaybackLeadIn()
+    {
+        if (!_needsInitialPlaybackWarmup)
+        {
+            return TimeSpan.Zero;
+        }
+
+        _needsInitialPlaybackWarmup = false;
+        return InitialPlaybackWarmupLeadIn;
     }
 
     /// <summary>
@@ -1183,7 +1205,7 @@ internal partial class TranscriptEditorViewModel : ObservableObject, IDisposable
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
-    private bool StartFfplayPlayback(double startSec, double? durationSec = null)
+    private bool StartFfplayPlayback(double startSec, double? durationSec = null, TimeSpan? leadingSilence = null)
     {
         if (FfplayPath is null || string.IsNullOrWhiteSpace(_audioPath) || !File.Exists(_audioPath))
             return false;
@@ -1209,10 +1231,11 @@ internal partial class TranscriptEditorViewModel : ObservableObject, IDisposable
             psi.ArgumentList.Add(durationSec.Value.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture));
         }
 
-        if (Math.Abs(PlaybackSpeed - 1.0) >= 0.005)
+        string? audioFilter = BuildPlaybackAudioFilter(PlaybackSpeed, leadingSilence ?? TimeSpan.Zero);
+        if (!string.IsNullOrEmpty(audioFilter))
         {
             psi.ArgumentList.Add("-af");
-            psi.ArgumentList.Add(BuildAtempoFilter(PlaybackSpeed));
+            psi.ArgumentList.Add(audioFilter);
         }
 
         psi.ArgumentList.Add(_audioPath);
@@ -1302,6 +1325,24 @@ internal partial class TranscriptEditorViewModel : ObservableObject, IDisposable
             factors.Select(f => $"atempo={f.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture)}"));
     }
 
+    private static string? BuildPlaybackAudioFilter(double speed, TimeSpan leadingSilence)
+    {
+        var filters = new List<string>();
+
+        if (Math.Abs(speed - 1.0) >= 0.005)
+        {
+            filters.Add(BuildAtempoFilter(speed));
+        }
+
+        if (leadingSilence > TimeSpan.Zero)
+        {
+            int delayMs = (int)Math.Ceiling(leadingSilence.TotalMilliseconds);
+            filters.Add($"adelay={delayMs}:all=1");
+        }
+
+        return filters.Count == 0 ? null : string.Join(",", filters);
+    }
+
     private static string? FindExecutable(string fileName)
     {
         string? pathEnv = Environment.GetEnvironmentVariable("PATH");
@@ -1335,20 +1376,26 @@ internal partial class TranscriptEditorViewModel : ObservableObject, IDisposable
         private readonly int                  _srcEnd;
         private readonly int                  _channels;
         private readonly SoundTouchProcessor? _st;
+        private readonly int                  _leadingSilenceFloats;
         private          int                  _srcPos;
         private          bool                 _flushed;
+        private          int                  _leadingSilenceFloatsRemaining;
         private readonly Queue<float>         _outQ = new();
 
         public WaveFormat WaveFormat { get; }
 
         public SoundTouchWaveProvider(float[] src, int offset, int length,
-                                      WaveFormat waveFormat, int channels, double speed)
+                                      WaveFormat waveFormat, int channels, double speed,
+                                      TimeSpan leadingSilence)
         {
             _src      = src;
             _srcPos   = offset;
             _srcEnd   = offset + length;
             _channels = channels;
             WaveFormat = waveFormat;
+            _leadingSilenceFloats = (int)Math.Ceiling(
+                leadingSilence.TotalSeconds * waveFormat.SampleRate * channels);
+            _leadingSilenceFloatsRemaining = _leadingSilenceFloats;
 
             if (Math.Abs(speed - 1.0) >= 0.005)
             {
@@ -1361,6 +1408,14 @@ internal partial class TranscriptEditorViewModel : ObservableObject, IDisposable
 
         public int Read(byte[] buffer, int offset, int count)
         {
+            if (_leadingSilenceFloatsRemaining > 0)
+            {
+                int silenceFloats = Math.Min(count / 4, _leadingSilenceFloatsRemaining);
+                buffer.AsSpan(offset, silenceFloats * 4).Clear();
+                _leadingSilenceFloatsRemaining -= silenceFloats;
+                return silenceFloats * 4;
+            }
+
             if (_st is null)
             {
                 // 1.0× — copy raw bytes directly, no processing needed
