@@ -1,0 +1,30 @@
+using Parakeet.Base.Models;
+
+namespace ParakeetCSharp.Models;
+
+public enum AppTheme    { Dark, Light }
+public enum PlaybackMode { Single, AutoAdvance, Continuous }
+
+public class AppSettings
+{
+    public AppTheme           Theme               { get; set; } = AppTheme.Dark;
+    public ModelPrecision     Precision           { get; set; } = ModelPrecision.Fp32;
+    public SegmentationMode   Segmentation        { get; set; } = SegmentationMode.VoiceActivity;
+    public PlaybackMode       EditorPlaybackMode  { get; set; } = PlaybackMode.Continuous;
+    public string         ModelsDir { get; set; } = "";
+    public string         Language  { get; set; } = "";
+
+    // Column widths — 0 means "use default"
+    public double HomeColTitleWidth      { get; set; } = 0;
+    public double HomeColAudioWidth      { get; set; } = 0;
+    public double ResultsColSpeakerWidth { get; set; } = 0;
+    public double ResultsColStartWidth   { get; set; } = 0;
+    public double ResultsColEndWidth     { get; set; } = 0;
+
+    // Window state — null Left/Top means "let Windows decide"
+    public double? WindowLeft      { get; set; } = null;
+    public double? WindowTop       { get; set; } = null;
+    public double  WindowWidth     { get; set; } = 920;
+    public double  WindowHeight    { get; set; } = 840;
+    public bool    WindowMaximized { get; set; } = false;
+}

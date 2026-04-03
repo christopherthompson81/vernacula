@@ -1,0 +1,92 @@
+<Window x:Class="ParakeetCSharp.Views.Dialogs.SplitSegmentDialog"
+        xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Split Segment"
+        Width="560" Height="420"
+        MinWidth="400" MinHeight="300"
+        WindowStartupLocation="CenterOwner"
+        Background="{DynamicResource BgBrush}">
+
+    <Window.Styles>
+        <Style Selector="Button.token-button">
+            <Setter Property="Background" Value="{DynamicResource SurfaceBrush}" />
+            <Setter Property="Foreground" Value="{DynamicResource SubtextBrush}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource OverlayBrush}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Padding" Value="4,2" />
+        </Style>
+        <Style Selector="Button.token-button:pointerover">
+            <Setter Property="BorderBrush" Value="{DynamicResource AccentBrush}" />
+        </Style>
+        <Style Selector="Button.token-button:pressed">
+            <Setter Property="BorderBrush" Value="{DynamicResource AccentBrush}" />
+        </Style>
+        <Style Selector="Button.token-button.second-half">
+            <Setter Property="Background" Value="{DynamicResource AccentBrush}" />
+            <Setter Property="Foreground" Value="{DynamicResource ButtonTextBrush}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource AccentBrush}" />
+        </Style>
+        <Style Selector="Button.token-button.second-half:pointerover">
+            <Setter Property="Opacity" Value="0.9" />
+        </Style>
+    </Window.Styles>
+
+    <DockPanel Margin="16">
+
+        <TextBlock DockPanel.Dock="Top"
+                   Text="Click the token where the second segment should begin."
+                   Foreground="{DynamicResource SubtextBrush}"
+                   FontSize="12"
+                   Margin="0,0,0,10"/>
+
+        <Border DockPanel.Dock="Bottom"
+                Background="{DynamicResource SurfaceBrush}"
+                BorderBrush="{DynamicResource OverlayBrush}"
+                BorderThickness="1"
+                CornerRadius="4"
+                Padding="8"
+                Margin="0,10,0,0">
+            <StackPanel Spacing="8">
+                <Grid ColumnDefinitions="Auto,*" ColumnSpacing="8">
+                    <TextBlock Text="First:"
+                               FontWeight="SemiBold"
+                               Foreground="{DynamicResource TextBrush}"
+                               MinWidth="48"/>
+                    <TextBlock x:Name="FirstPreview"
+                               Grid.Column="1"
+                               Foreground="{DynamicResource SubtextBrush}"
+                               TextWrapping="Wrap"
+                               Text="(select a split point above)"/>
+                </Grid>
+
+                <Grid ColumnDefinitions="Auto,*" ColumnSpacing="8">
+                    <TextBlock Text="Second:"
+                               FontWeight="SemiBold"
+                               Foreground="{DynamicResource TextBrush}"
+                               MinWidth="48"/>
+                    <TextBlock x:Name="SecondPreview"
+                               Grid.Column="1"
+                               Foreground="{DynamicResource SubtextBrush}"
+                               TextWrapping="Wrap"/>
+                </Grid>
+            </StackPanel>
+        </Border>
+
+        <StackPanel DockPanel.Dock="Bottom"
+                    Orientation="Horizontal"
+                    HorizontalAlignment="Right"
+                    Margin="0,10,0,0">
+            <Button x:Name="OkBtn"     Content="Split"  Width="72" Margin="0,0,8,0"
+                    IsEnabled="False"   Click="OkBtn_Click"/>
+            <Button x:Name="CancelBtn" Content="Cancel" Width="72"
+                    Click="CancelBtn_Click"/>
+        </StackPanel>
+
+        <!-- Token scroll area -->
+        <ScrollViewer VerticalScrollBarVisibility="Auto"
+                      HorizontalScrollBarVisibility="Disabled">
+            <WrapPanel x:Name="TokenPanel" Margin="0,0,0,4"/>
+        </ScrollViewer>
+
+    </DockPanel>
+</Window>

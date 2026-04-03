@@ -1,0 +1,52 @@
+<Window x:Class="ParakeetCSharp.Views.HelpWindow"
+        xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:local="using:ParakeetCSharp"
+        Title="{local:Loc help_window_title}"
+        Icon="avares://Parakeet.Avalonia/Assets/icon.ico"
+        Width="900" Height="620"
+        MinWidth="600" MinHeight="400"
+        WindowStartupLocation="CenterOwner"
+        Loaded="Window_Loaded"
+        Background="{DynamicResource BgBrush}">
+
+    <Grid>
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="220" MinWidth="160" MaxWidth="380" />
+            <ColumnDefinition Width="4" />
+            <ColumnDefinition Width="*" MinWidth="300" />
+        </Grid.ColumnDefinitions>
+
+        <!-- ── Sidebar ── -->
+        <Border Grid.Column="0"
+                Background="{DynamicResource SurfaceBrush}"
+                BorderBrush="{DynamicResource OverlayBrush}"
+                BorderThickness="0,0,1,0">
+            <ScrollViewer VerticalScrollBarVisibility="Auto"
+                          HorizontalScrollBarVisibility="Disabled">
+                <StackPanel x:Name="SidebarPanel"
+                            Margin="6,10,6,10" />
+            </ScrollViewer>
+        </Border>
+
+        <!-- ── Splitter ── -->
+        <GridSplitter Grid.Column="1"
+                      Width="4"
+                      HorizontalAlignment="Stretch"
+                      Background="{DynamicResource OverlayBrush}"
+                      ResizeDirection="Columns"
+                      ShowsPreview="False" />
+
+        <!-- ── Content ── -->
+        <Border Grid.Column="2"
+                Background="{DynamicResource BgBrush}">
+            <ScrollViewer x:Name="ContentScrollViewer"
+                          VerticalScrollBarVisibility="Auto"
+                          HorizontalScrollBarVisibility="Disabled">
+                <Border Padding="18,18,34,34">
+                    <ContentControl x:Name="ContentViewer" />
+                </Border>
+            </ScrollViewer>
+        </Border>
+    </Grid>
+</Window>

@@ -55,8 +55,10 @@ public sealed class Parakeet : IDisposable
         switch (ep)
         {
             case ExecutionProvider.Auto:
-                try { opts.AppendExecutionProvider_Tensorrt(0); } catch { }
-                try { opts.AppendExecutionProvider_CUDA(0);     } catch { }
+                if (HardwareInfo.CanProbeCudaExecutionProvider())
+                {
+                    try { opts.AppendExecutionProvider_CUDA(0); } catch { }
+                }
                 try { opts.AppendExecutionProvider_DML(0);      } catch { }
                 break;
             case ExecutionProvider.Cuda:
