@@ -92,6 +92,8 @@ public partial class TranscriptEditorWindow : Window
         SeekSlider.AddHandler(InputElement.PointerMovedEvent, OnSeekSliderPointerMoved, RoutingStrategies.Tunnel | RoutingStrategies.Bubble, handledEventsToo: true);
         SeekSlider.AddHandler(InputElement.PointerReleasedEvent, OnSeekSliderPointerReleased, RoutingStrategies.Tunnel | RoutingStrategies.Bubble, handledEventsToo: true);
         SeekSlider.AddHandler(InputElement.PointerExitedEvent, OnSeekSliderPointerLeave, RoutingStrategies.Tunnel | RoutingStrategies.Bubble, handledEventsToo: true);
+        AddHandler(InputElement.PointerMovedEvent, OnWindowPointerMoved, RoutingStrategies.Tunnel | RoutingStrategies.Bubble, handledEventsToo: true);
+        AddHandler(InputElement.PointerPressedEvent, OnWindowPointerPressed, RoutingStrategies.Tunnel | RoutingStrategies.Bubble, handledEventsToo: true);
         SpeedSlider.PropertyChanged += OnSpeedSliderPropertyChanged;
         SpeedSlider.PointerWheelChanged += OnSpeedSliderPointerWheelChanged;
     }
@@ -798,6 +800,32 @@ public partial class TranscriptEditorWindow : Window
         }
     }
 
+    private void OnWindowPointerMoved(object? sender, PointerEventArgs e)
+    {
+        if (_seekDragging || !SeekBubbleHost.IsVisible)
+        {
+            return;
+        }
+
+        if (!IsPointerOverSeekSlider(e))
+        {
+            HideSeekBubble();
+        }
+    }
+
+    private void OnWindowPointerPressed(object? sender, PointerPressedEventArgs e)
+    {
+        if (_seekDragging)
+        {
+            return;
+        }
+
+        if (!IsPointerOverSeekSlider(e))
+        {
+            HideSeekBubble();
+        }
+    }
+
     private void OnSpeedSliderPropertyChanged(object? sender, AvaloniaPropertyChangedEventArgs e)
     {
         if (e.Property != RangeBase.ValueProperty || _isUpdatingUi)
@@ -827,6 +855,17 @@ public partial class TranscriptEditorWindow : Window
     private void HideSeekBubble()
     {
         SeekBubbleHost.IsVisible = false;
+    }
+
+    private bool IsPointerOverSeekSlider(PointerEventArgs e)
+    {
+        var visual = e.Source as Visual;
+        if (visual is null)
+        {
+            return SeekSlider.IsPointerOver;
+        }
+
+        return visual == SeekSlider || SeekSlider.IsVisualAncestorOf(visual);
     }
 
     private void SpeakerMenu_Click(object? sender, RoutedEventArgs e)
