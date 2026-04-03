@@ -1,6 +1,7 @@
 using Avalonia.Controls;
 using Avalonia.Interactivity;
 using ParakeetCSharp.Models;
+using System.ComponentModel;
 
 namespace ParakeetCSharp.Views.Dialogs;
 
@@ -14,6 +15,8 @@ public partial class ExportDialog : Window
     public ExportDialog()
     {
         InitializeComponent();
+        ApplyLocalizedText();
+        Loc.Instance.PropertyChanged += OnLocalePropertyChanged;
         Loaded += (_, _) =>
             WindowHelper.SetDarkMode(this, App.Current.Settings.Current.Theme == AppTheme.Dark);
     }
@@ -39,5 +42,34 @@ public partial class ExportDialog : Window
     {
         DialogResult = false;
         Close();
+    }
+
+    private void OnLocalePropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName != nameof(Loc.CurrentLanguage) && e.PropertyName != "Item[]")
+            return;
+
+        ApplyLocalizedText();
+    }
+
+    private void ApplyLocalizedText()
+    {
+        Title = Loc.Instance["modal_export_heading"];
+        FormatLabelText.Text = Loc.Instance["label_format"];
+        FormatExcelItem.Content = Loc.Instance["format_excel"];
+        FormatCsvItem.Content = Loc.Instance["format_csv"];
+        FormatJsonItem.Content = Loc.Instance["format_json"];
+        FormatSrtItem.Content = Loc.Instance["format_srt"];
+        FormatMdItem.Content = Loc.Instance["format_md"];
+        FormatDocxItem.Content = Loc.Instance["format_docx"];
+        FormatDbItem.Content = Loc.Instance["format_db"];
+        SaveButton.Content = Loc.Instance["btn_save"];
+        CancelButton.Content = Loc.Instance["btn_cancel"];
+    }
+
+    protected override void OnClosed(EventArgs e)
+    {
+        Loc.Instance.PropertyChanged -= OnLocalePropertyChanged;
+        base.OnClosed(e);
     }
 }

@@ -33,7 +33,7 @@
                    Foreground="{DynamicResource SubtextBrush}"
                    Margin="0,0,0,16">
             <Run Text="{Binding Segments.Count, Mode=OneWay}" />
-            <Run Text="{local:Loc results_segments_label}" />
+            <Run x:Name="SegmentsLabelRun" Text="{local:Loc results_segments_label}" />
         </TextBlock>
 
         <!-- Segments table -->
@@ -91,18 +91,18 @@
 
         <!-- Action buttons -->
         <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Right">
-            <Button Content="{local:Loc btn_edit_transcript}"
+            <Button x:Name="EditTranscriptButton" Content="{local:Loc btn_edit_transcript}"
                     Classes="secondary-button"
                     Command="{Binding EditTranscriptCommand}"
                     Margin="0,0,8,0" />
-            <Button Content="{local:Loc btn_edit_speakers}"
+            <Button x:Name="EditSpeakersButton" Content="{local:Loc btn_edit_speakers}"
                     Classes="secondary-button"
                     Command="{Binding EditSpeakerNamesCommand}"
                     Margin="0,0,8,0" />
-            <Button Content="{local:Loc btn_export}"
+            <Button x:Name="ExportButton" Content="{local:Loc btn_export}"
                     Command="{Binding ExportCommand}"
                     Margin="0,0,8,0" />
-            <Button Content="{local:Loc btn_back_history}"
+            <Button x:Name="BackHistoryButton" Content="{local:Loc btn_back_history}"
                     Classes="secondary-button"
                     Command="{Binding BackCommand}" />
         </StackPanel>

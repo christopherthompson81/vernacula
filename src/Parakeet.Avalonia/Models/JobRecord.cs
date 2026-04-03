@@ -12,7 +12,14 @@ public class JobRecord : ObservableObject
         Loc.Instance.PropertyChanged += (_, e) =>
         {
             if (e.PropertyName == "Item[]")
+            {
                 OnPropertyChanged(nameof(StatusLabel));
+                OnPropertyChanged(nameof(ResumeLabel));
+                OnPropertyChanged(nameof(MonitorLabel));
+                OnPropertyChanged(nameof(PauseLabel));
+                OnPropertyChanged(nameof(LoadLabel));
+                OnPropertyChanged(nameof(RemoveLabel));
+            }
         };
     }
 
@@ -105,6 +112,12 @@ public class JobRecord : ObservableObject
         JobStatus.Queued    => Loc.Instance["status_queued"],
         _                   => Status.ToString().ToLowerInvariant(),
     };
+
+    public string ResumeLabel => Loc.Instance["btn_resume"];
+    public string MonitorLabel => Loc.Instance["btn_monitor"];
+    public string PauseLabel => Loc.Instance["btn_pause"];
+    public string LoadLabel => Loc.Instance["btn_load"];
+    public string RemoveLabel => Loc.Instance["btn_remove"];
 
     public string AudioBaseName =>
         Path.GetFileName(AudioFilePath);

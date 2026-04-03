@@ -343,7 +343,7 @@
                                     <Button Grid.Column="1"
                                             Classes="secondary-button action-button"
                                             Click="SpeakerMenu_Click"
-                                            ToolTip.Tip="{local:Loc editor_add_speaker}">
+                                            ToolTip.Tip="{Binding AddSpeakerTooltip}">
                                         <TextBlock Classes="speaker-menu-icon"
                                                    Text="&#xE77B;" />
                                     </Button>
@@ -352,7 +352,7 @@
                                                Foreground="{DynamicResource SubtextBrush}"
                                                VerticalAlignment="Center" />
                                     <CheckBox Grid.Column="4"
-                                              Content="{local:Loc editor_verified}"
+                                              Content="{Binding VerifiedLabel}"
                                               IsChecked="{Binding IsVerified}"
                                               VerticalAlignment="Center"
                                               Click="VerifiedCheckBox_Click" />
@@ -378,7 +378,7 @@
                                             Margin="0,0,8,8"
                                             Click="AdjustTimes_Click"
                                             IsEnabled="{Binding CanAdjustTimes}"
-                                            ToolTip.Tip="{local:Loc editor_adjust_times}">
+                                            ToolTip.Tip="{Binding AdjustTimesTooltip}">
                                         <Image Classes="action-icon-image"
                                                Source="{Binding AdjustTimesIconImage}" />
                                     </Button>
@@ -386,7 +386,7 @@
                                             Margin="0,0,8,8"
                                             Click="MergePrev_Click"
                                             IsEnabled="{Binding CanMergePrev}"
-                                            ToolTip.Tip="{local:Loc editor_merge_prev}">
+                                            ToolTip.Tip="{Binding MergePrevTooltip}">
                                         <Image Classes="action-icon-image"
                                                Source="{Binding MergePrevIconImage}" />
                                     </Button>
@@ -394,7 +394,7 @@
                                             Margin="0,0,8,8"
                                             Click="MergeNext_Click"
                                             IsEnabled="{Binding CanMergeNext}"
-                                            ToolTip.Tip="{local:Loc editor_merge_next}">
+                                            ToolTip.Tip="{Binding MergeNextTooltip}">
                                         <Image Classes="action-icon-image"
                                                Source="{Binding MergeNextIconImage}" />
                                     </Button>
@@ -402,7 +402,7 @@
                                             Margin="0,0,8,8"
                                             Click="Split_Click"
                                             IsEnabled="{Binding CanSplit}"
-                                            ToolTip.Tip="{local:Loc editor_split}">
+                                            ToolTip.Tip="{Binding SplitTooltip}">
                                         <Image Classes="action-icon-image"
                                                Source="{Binding SplitIconImage}" />
                                     </Button>
@@ -410,7 +410,7 @@
                                             Margin="0,0,8,8"
                                             Click="RedoAsr_Click"
                                             IsEnabled="{Binding CanRedoAsr}"
-                                            ToolTip.Tip="{local:Loc editor_redo_asr}">
+                                            ToolTip.Tip="{Binding RedoAsrTooltip}">
                                         <Grid Classes="redo-button-host">
                                             <Canvas Classes="redo-square-host"
                                                     ClipToBounds="True">

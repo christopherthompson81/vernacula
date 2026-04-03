@@ -21,6 +21,19 @@ internal sealed partial class TranscriptEditorCardState : ObservableObject
         _draftContent = segment.Content;
         _timeRangeText = FormatTimeRange(segment.PlayStart, segment.PlayEnd);
         _suppressButtonText = "Suppress";
+        Loc.Instance.PropertyChanged += (_, e) =>
+        {
+            if (e.PropertyName != "Item[]")
+                return;
+
+            OnPropertyChanged(nameof(VerifiedLabel));
+            OnPropertyChanged(nameof(AddSpeakerTooltip));
+            OnPropertyChanged(nameof(AdjustTimesTooltip));
+            OnPropertyChanged(nameof(MergePrevTooltip));
+            OnPropertyChanged(nameof(MergeNextTooltip));
+            OnPropertyChanged(nameof(SplitTooltip));
+            OnPropertyChanged(nameof(RedoAsrTooltip));
+        };
     }
 
     internal EditorSegment Segment { get; }
@@ -70,6 +83,13 @@ internal sealed partial class TranscriptEditorCardState : ObservableObject
     public bool IsSuppressed => Segment.IsSuppressed;
     public bool HasUserEdits => DraftContent != Segment.AsrContent;
     public string AsrContent => Segment.AsrContent;
+    public string VerifiedLabel => Loc.Instance["editor_verified"];
+    public string AddSpeakerTooltip => Loc.Instance["editor_add_speaker"];
+    public string AdjustTimesTooltip => Loc.Instance["editor_adjust_times"];
+    public string MergePrevTooltip => Loc.Instance["editor_merge_prev"];
+    public string MergeNextTooltip => Loc.Instance["editor_merge_next"];
+    public string SplitTooltip => Loc.Instance["editor_split"];
+    public string RedoAsrTooltip => Loc.Instance["editor_redo_asr"];
 
     public void SyncDraftsFromSegment()
     {

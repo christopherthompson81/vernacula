@@ -251,9 +251,15 @@ internal partial class SettingsViewModel : ObservableObject
 
     private void ApplyUpdateBannerText()
     {
-        if (_outdatedFiles.Count == 0) return;
-        UpdateBannerText = Loc.Instance.T("update_banner_text",
-            new() { ["count"] = _outdatedFiles.Count.ToString() });
+        if (_outdatedFiles.Count > 0)
+        {
+            UpdateBannerText = Loc.Instance.T("update_banner_text",
+                new() { ["count"] = _outdatedFiles.Count.ToString() });
+            return;
+        }
+
+        if (UpdateBannerVisible && !IsCheckingUpdates)
+            UpdateBannerText = Loc.Instance["settings_models_up_to_date"];
     }
 
     private void ApplyModelStatusText()

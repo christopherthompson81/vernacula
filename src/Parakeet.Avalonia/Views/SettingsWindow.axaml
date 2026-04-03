@@ -5,7 +5,7 @@
         xmlns:conv="using:ParakeetCSharp.Converters"
         xmlns:vm="using:ParakeetCSharp.ViewModels"
         x:DataType="vm:SettingsViewModel"
-        Title="{local:Loc settings_window_title}"
+        Title="{Binding Source={x:Static local:Loc.Instance}, Path=[settings_window_title]}"
         Icon="avares://Parakeet.Avalonia/Assets/icon.ico"
         Width="580" Height="720"
         MinWidth="480" MinHeight="500"
@@ -56,7 +56,8 @@
                 <StackPanel MaxWidth="500">
 
                 <!-- ─── Hardware & Performance ──────────────────────────────── -->
-                <TextBlock Text="{local:Loc settings_section_hardware}"
+                <TextBlock x:Name="HardwareSectionHeader"
+                           Text="{Binding Source={x:Static local:Loc.Instance}, Path=[settings_section_hardware]}"
                            Classes="section-heading" />
 
                 <Border Background="{DynamicResource SurfaceBrush}"
@@ -64,7 +65,8 @@
                     <StackPanel>
 
                         <!-- Checking spinner (visible while running) -->
-                        <TextBlock Text="{local:Loc settings_hw_checking}"
+                        <TextBlock x:Name="HardwareCheckingText"
+                                   Text="{Binding Source={x:Static local:Loc.Instance}, Path=[settings_hw_checking]}"
                                    Foreground="{DynamicResource SubtextBrush}"
                                    Margin="0,0,0,8"
                                    IsVisible="{Binding IsCheckingHardware,
@@ -109,10 +111,12 @@
                                                VerticalAlignment="Center"
                                                Text="{Binding CudaToolkitInstalled, Converter={StaticResource BoolToStatusIcon}}"
                                                Foreground="{Binding CudaToolkitInstalled, Converter={StaticResource BoolToStatusBrushYellow}}" />
-                                    <TextBlock Grid.Column="1" Text="{local:Loc settings_hw_cuda_toolkit}"
+                                    <TextBlock x:Name="CudaToolkitLabel"
+                                               Grid.Column="1" Text="{Binding Source={x:Static local:Loc.Instance}, Path=[settings_hw_cuda_toolkit]}"
                                                Classes="check-label" />
-                                    <Button Grid.Column="2"
-                                            Content="{local:Loc settings_hw_download_cuda}"
+                                    <Button x:Name="DownloadCudaButton"
+                                            Grid.Column="2"
+                                            Content="{Binding Source={x:Static local:Loc.Instance}, Path=[settings_hw_download_cuda]}"
                                             Classes="link-button"
                                             Command="{Binding OpenCudaDownloadPageCommand}"
                                             IsVisible="{Binding CudaToolkitInstalled,
@@ -131,10 +135,12 @@
                                                VerticalAlignment="Center"
                                                Text="{Binding CudnnInstalled, Converter={StaticResource BoolToStatusIcon}}"
                                                Foreground="{Binding CudnnInstalled, Converter={StaticResource BoolToStatusBrushYellow}}" />
-                                    <TextBlock Grid.Column="1" Text="{local:Loc settings_hw_cudnn}"
+                                    <TextBlock x:Name="CudnnLabel"
+                                               Grid.Column="1" Text="{Binding Source={x:Static local:Loc.Instance}, Path=[settings_hw_cudnn]}"
                                                Classes="check-label" />
-                                    <Button Grid.Column="2"
-                                            Content="{local:Loc settings_hw_download_cudnn}"
+                                    <Button x:Name="DownloadCudnnButton"
+                                            Grid.Column="2"
+                                            Content="{Binding Source={x:Static local:Loc.Instance}, Path=[settings_hw_download_cudnn]}"
                                             Classes="link-button"
                                             Command="{Binding OpenCudnnDownloadPageCommand}"
                                             IsVisible="{Binding CudnnInstalled,
@@ -152,14 +158,16 @@
                                                VerticalAlignment="Center"
                                                Text="{Binding CudaEpWorking, Converter={StaticResource BoolToStatusIcon}}"
                                                Foreground="{Binding CudaEpWorking, Converter={StaticResource BoolToStatusBrushSubtext}}" />
-                                    <TextBlock Grid.Column="1" Text="{local:Loc settings_hw_cuda_ep}"
+                                    <TextBlock x:Name="CudaEpLabel"
+                                               Grid.Column="1" Text="{Binding Source={x:Static local:Loc.Instance}, Path=[settings_hw_cuda_ep]}"
                                                Classes="check-label" />
                                 </Grid>
 
                             </StackPanel>
 
                             <!-- No GPU message — shown when no acceleratable GPU is present -->
-                            <TextBlock Text="{local:Loc settings_hw_no_gpu}"
+                            <TextBlock x:Name="NoGpuText"
+                                       Text="{Binding Source={x:Static local:Loc.Instance}, Path=[settings_hw_no_gpu]}"
                                        Foreground="{DynamicResource SubtextBrush}"
                                        FontSize="12"
                                        TextWrapping="Wrap"
@@ -177,7 +185,8 @@
                         </StackPanel>
 
                         <!-- Re-check button (always shown) -->
-                        <Button Content="{local:Loc settings_hw_recheck}"
+                        <Button x:Name="RecheckHardwareButton"
+                                Content="{Binding Source={x:Static local:Loc.Instance}, Path=[settings_hw_recheck]}"
                                 Classes="secondary-button"
                                 Command="{Binding RecheckHardwareCommand}"
                                 HorizontalAlignment="Left"
@@ -187,7 +196,8 @@
                 </Border>
 
                 <!-- ─── Models ───────────────────────────────────────────────── -->
-                <TextBlock Text="{local:Loc settings_section_models}"
+                <TextBlock x:Name="ModelsSectionHeader"
+                           Text="{Binding Source={x:Static local:Loc.Instance}, Path=[settings_section_models]}"
                            Classes="section-heading" />
 
                 <Border Background="{DynamicResource SurfaceBrush}"
@@ -219,13 +229,15 @@
                                            TextWrapping="Wrap"
                                            VerticalAlignment="Center" />
                                 <Button Grid.Column="1"
-                                        Content="{local:Loc btn_update_models}"
+                                        x:Name="UpdateModelsButton"
+                                        Content="{Binding Source={x:Static local:Loc.Instance}, Path=[btn_update_models]}"
                                         Command="{Binding UpdateModelsCommand}"
                                         Margin="8,0,4,0"
                                         IsVisible="{Binding HasOutdatedFiles,
                                                              Converter={StaticResource BoolToVis}}" />
                                 <Button Grid.Column="2"
-                                        Content="{local:Loc btn_dismiss}"
+                                        x:Name="DismissUpdateBannerButton"
+                                        Content="{Binding Source={x:Static local:Loc.Instance}, Path=[btn_dismiss]}"
                                         Classes="secondary-button"
                                         Command="{Binding DismissUpdateBannerCommand}" />
                             </Grid>
@@ -246,20 +258,23 @@
 
                         <!-- Action buttons -->
                         <StackPanel Orientation="Horizontal" Margin="0,0,0,16">
-                            <Button Content="{local:Loc btn_download_models}"
+                            <Button x:Name="DownloadModelsButton"
+                                    Content="{Binding Source={x:Static local:Loc.Instance}, Path=[btn_download_models]}"
                                     Command="{Binding DownloadModelsCommand}"
                                     Margin="0,0,8,0"
                                     IsVisible="{Binding DownloadVisible,
                                                          Converter={StaticResource BoolToVis}}"
                                     IsEnabled="{Binding IsDownloading,
                                                         Converter={StaticResource InvBoolToVis}}" />
-                            <Button Content="{local:Loc btn_cancel}"
+                            <Button x:Name="CancelDownloadButton"
+                                    Content="{Binding Source={x:Static local:Loc.Instance}, Path=[btn_cancel]}"
                                     Classes="secondary-button"
                                     Command="{Binding CancelDownloadCommand}"
                                     Margin="0,0,8,0"
                                     IsVisible="{Binding IsDownloading,
                                                          Converter={StaticResource BoolToVis}}" />
-                            <Button Content="{local:Loc btn_check_updates}"
+                            <Button x:Name="CheckUpdatesButton"
+                                    Content="{Binding Source={x:Static local:Loc.Instance}, Path=[btn_check_updates]}"
                                     Classes="secondary-button"
                                     Command="{Binding CheckForUpdatesCommand}"
                                     IsEnabled="{Binding IsCheckingUpdates,
@@ -270,19 +285,22 @@
 
                         <!-- Precision -->
                         <Separator Background="{DynamicResource OverlayBrush}" Margin="0,0,0,12" />
-                        <TextBlock Text="{local:Loc menu_model_precision}"
+                        <TextBlock x:Name="ModelPrecisionLabel"
+                                   Text="{Binding Source={x:Static local:Loc.Instance}, Path=[menu_model_precision]}"
                                    Foreground="{DynamicResource TextBrush}"
                                    FontWeight="SemiBold"
                                    Margin="0,0,0,8" />
                         <StackPanel Orientation="Horizontal">
-                            <RadioButton Content="{local:Loc menu_precision_fp16}"
+                            <RadioButton x:Name="PrecisionFp32Radio"
+                                         Content="{Binding Source={x:Static local:Loc.Instance}, Path=[menu_precision_fp16]}"
                                          Foreground="{DynamicResource TextBrush}"
                                          GroupName="Precision"
                                          IsChecked="{Binding IsFp32, Mode=OneWay}"
                                          Command="{Binding SetPrecisionCommand}"
                                          CommandParameter="Fp32"
                                          Margin="0,0,20,0" />
-                            <RadioButton Content="{local:Loc menu_precision_int8}"
+                            <RadioButton x:Name="PrecisionInt8Radio"
+                                         Content="{Binding Source={x:Static local:Loc.Instance}, Path=[menu_precision_int8]}"
                                          Foreground="{DynamicResource TextBrush}"
                                          GroupName="Precision"
                                          IsChecked="{Binding IsInt8, Mode=OneWay}"
@@ -294,7 +312,8 @@
                 </Border>
 
                 <!-- ─── Segmentation ────────────────────────────────────────── -->
-                <TextBlock Text="{local:Loc settings_section_segmentation}"
+                <TextBlock x:Name="SegmentationSectionHeader"
+                           Text="{Binding Source={x:Static local:Loc.Instance}, Path=[settings_section_segmentation]}"
                            Classes="section-heading" />
 
                 <Border Background="{DynamicResource SurfaceBrush}"
@@ -309,10 +328,12 @@
                                      Foreground="{DynamicResource TextBrush}"
                                      Margin="0,0,0,4">
                             <StackPanel>
-                                <TextBlock Text="{local:Loc settings_segmentation_vad}"
+                                <TextBlock x:Name="SegmentationVadLabel"
+                                           Text="{Binding Source={x:Static local:Loc.Instance}, Path=[settings_segmentation_vad]}"
                                            FontWeight="SemiBold"
                                            Foreground="{DynamicResource TextBrush}" />
-                                <TextBlock Text="{local:Loc settings_segmentation_vad_desc}"
+                                <TextBlock x:Name="SegmentationVadDescription"
+                                           Text="{Binding Source={x:Static local:Loc.Instance}, Path=[settings_segmentation_vad_desc]}"
                                            Foreground="{DynamicResource SubtextBrush}"
                                            FontSize="11"
                                            TextWrapping="Wrap" />
@@ -328,10 +349,12 @@
                                      CommandParameter="Diarization"
                                      Foreground="{DynamicResource TextBrush}">
                             <StackPanel>
-                                <TextBlock Text="{local:Loc settings_segmentation_diarization}"
+                                <TextBlock x:Name="SegmentationDiarizationLabel"
+                                           Text="{Binding Source={x:Static local:Loc.Instance}, Path=[settings_segmentation_diarization]}"
                                            FontWeight="SemiBold"
                                            Foreground="{DynamicResource TextBrush}" />
-                                <TextBlock Text="{local:Loc settings_segmentation_diarization_desc}"
+                                <TextBlock x:Name="SegmentationDiarizationDescription"
+                                           Text="{Binding Source={x:Static local:Loc.Instance}, Path=[settings_segmentation_diarization_desc]}"
                                            Foreground="{DynamicResource SubtextBrush}"
                                            FontSize="11"
                                            TextWrapping="Wrap" />
@@ -342,32 +365,37 @@
                 </Border>
 
                 <!-- ─── Transcript Editor ───────────────────────────────────── -->
-                <TextBlock Text="{local:Loc settings_section_editor}"
+                <TextBlock x:Name="EditorSectionHeader"
+                           Text="{Binding Source={x:Static local:Loc.Instance}, Path=[settings_section_editor]}"
                            Classes="section-heading" />
 
                 <Border Background="{DynamicResource SurfaceBrush}"
                         CornerRadius="8" Padding="16">
                     <StackPanel>
-                        <TextBlock Text="{local:Loc settings_editor_playback_mode}"
+                        <TextBlock x:Name="EditorPlaybackModeLabel"
+                                   Text="{Binding Source={x:Static local:Loc.Instance}, Path=[settings_editor_playback_mode]}"
                                    Foreground="{DynamicResource TextBrush}"
                                    FontWeight="SemiBold"
                                    Margin="0,0,0,8" />
                         <StackPanel Orientation="Horizontal">
-                            <RadioButton Content="{local:Loc editor_mode_continuous}"
+                            <RadioButton x:Name="EditorContinuousRadio"
+                                         Content="{Binding Source={x:Static local:Loc.Instance}, Path=[editor_mode_continuous]}"
                                          Foreground="{DynamicResource TextBrush}"
                                          GroupName="EditorPlayback"
                                          IsChecked="{Binding IsEditorContinuous, Mode=OneWay}"
                                          Command="{Binding SetEditorPlaybackModeCommand}"
                                          CommandParameter="Continuous"
                                          Margin="0,0,20,0" />
-                            <RadioButton Content="{local:Loc editor_mode_single}"
+                            <RadioButton x:Name="EditorSingleRadio"
+                                         Content="{Binding Source={x:Static local:Loc.Instance}, Path=[editor_mode_single]}"
                                          Foreground="{DynamicResource TextBrush}"
                                          GroupName="EditorPlayback"
                                          IsChecked="{Binding IsEditorSingle, Mode=OneWay}"
                                          Command="{Binding SetEditorPlaybackModeCommand}"
                                          CommandParameter="Single"
                                          Margin="0,0,20,0" />
-                            <RadioButton Content="{local:Loc editor_auto_advance}"
+                            <RadioButton x:Name="EditorAutoAdvanceRadio"
+                                         Content="{Binding Source={x:Static local:Loc.Instance}, Path=[editor_auto_advance]}"
                                          Foreground="{DynamicResource TextBrush}"
                                          GroupName="EditorPlayback"
                                          IsChecked="{Binding IsEditorAutoAdvance, Mode=OneWay}"
@@ -378,25 +406,29 @@
                 </Border>
 
                 <!-- ─── Appearance ───────────────────────────────────────────── -->
-                <TextBlock Text="{local:Loc settings_section_appearance}"
+                <TextBlock x:Name="AppearanceSectionHeader"
+                           Text="{Binding Source={x:Static local:Loc.Instance}, Path=[settings_section_appearance]}"
                            Classes="section-heading" />
 
                 <Border Background="{DynamicResource SurfaceBrush}"
                         CornerRadius="8" Padding="16">
                     <StackPanel>
-                        <TextBlock Text="{local:Loc menu_theme}"
+                        <TextBlock x:Name="ThemeLabel"
+                                   Text="{Binding Source={x:Static local:Loc.Instance}, Path=[menu_theme]}"
                                    Foreground="{DynamicResource TextBrush}"
                                    FontWeight="SemiBold"
                                    Margin="0,0,0,8" />
                         <StackPanel Orientation="Horizontal">
-                            <RadioButton Content="{local:Loc menu_theme_dark}"
+                            <RadioButton x:Name="ThemeDarkRadio"
+                                         Content="{Binding Source={x:Static local:Loc.Instance}, Path=[menu_theme_dark]}"
                                          Foreground="{DynamicResource TextBrush}"
                                          GroupName="Theme"
                                          IsChecked="{Binding IsDark, Mode=OneWay}"
                                          Command="{Binding SetThemeCommand}"
                                          CommandParameter="Dark"
                                          Margin="0,0,20,0" />
-                            <RadioButton Content="{local:Loc menu_theme_light}"
+                            <RadioButton x:Name="ThemeLightRadio"
+                                         Content="{Binding Source={x:Static local:Loc.Instance}, Path=[menu_theme_light]}"
                                          Foreground="{DynamicResource TextBrush}"
                                          GroupName="Theme"
                                          IsChecked="{Binding IsLight, Mode=OneWay}"
@@ -407,7 +439,8 @@
                 </Border>
 
                 <!-- ─── Language ─────────────────────────────────────────────── -->
-                <TextBlock Text="{local:Loc settings_section_language}"
+                <TextBlock x:Name="LanguageSectionHeader"
+                           Text="{Binding Source={x:Static local:Loc.Instance}, Path=[settings_section_language]}"
                            Classes="section-heading" />
 
                 <Border Background="{DynamicResource SurfaceBrush}"
@@ -436,7 +469,8 @@
                 BorderBrush="{DynamicResource OverlayBrush}"
                 BorderThickness="0,1,0,0"
                 Padding="16,10">
-            <Button Content="{local:Loc btn_ok}"
+            <Button x:Name="OkButton"
+                    Content="{Binding Source={x:Static local:Loc.Instance}, Path=[btn_ok]}"
                     Classes="secondary-button"
                     HorizontalAlignment="Right"
                     Click="Close_Click" />

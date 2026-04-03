@@ -31,22 +31,22 @@
             </Grid.RowDefinitions>
 
             <StackPanel Grid.Row="0">
-                <TextBlock Text="{local:Loc about_heading}"
+                <TextBlock x:Name="AboutHeadingText" Text="{local:Loc about_heading}"
                            Foreground="{DynamicResource TextBrush}"
                            FontSize="18" FontWeight="SemiBold"
                            Margin="0,0,0,8" />
-                <TextBlock Text="{local:Loc about_description}"
+                <TextBlock x:Name="AboutDescriptionText" Text="{local:Loc about_description}"
                            Foreground="{DynamicResource SubtextBrush}"
                            TextWrapping="Wrap"
                            Margin="0,0,0,4" />
-                <TextBlock Text="{local:Loc about_tech}"
+                <TextBlock x:Name="AboutTechText" Text="{local:Loc about_tech}"
                            Foreground="{DynamicResource SubtextBrush}"
                            Margin="0,0,0,4" />
-                <TextBlock Text="{local:Loc about_credit}"
+                <TextBlock x:Name="AboutCreditText" Text="{local:Loc about_credit}"
                            Foreground="{DynamicResource SubtextBrush}" />
             </StackPanel>
 
-            <Button Grid.Row="1"
+            <Button x:Name="AboutOkButton" Grid.Row="1"
                     Content="{local:Loc btn_ok}"
                     HorizontalAlignment="Right"
                     Margin="0,16,0,0"

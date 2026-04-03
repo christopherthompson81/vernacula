@@ -27,20 +27,20 @@
     <DockPanel>
         <!-- ── Menu bar ── -->
         <Menu DockPanel.Dock="Top">
-            <MenuItem Header="{local:Loc menu_file}">
-                <MenuItem Header="{local:Loc menu_new_transcription}"
+            <MenuItem x:Name="FileMenuItem" Header="{local:Loc menu_file}">
+                <MenuItem x:Name="NewTranscriptionMenuItem" Header="{local:Loc menu_new_transcription}"
                           Command="{Binding Home.NewTranscriptionCommand}" />
                 <Separator />
-                <MenuItem Header="{local:Loc menu_exit}" Click="Exit_Click" />
+                <MenuItem x:Name="ExitMenuItem" Header="{local:Loc menu_exit}" Click="Exit_Click" />
             </MenuItem>
 
-            <MenuItem Header="{local:Loc menu_settings}"
+            <MenuItem x:Name="SettingsMenuItem" Header="{local:Loc menu_settings}"
                       Click="Settings_Click" />
 
-            <MenuItem Header="{local:Loc menu_help}">
-                <MenuItem Header="{local:Loc menu_help_contents}" Click="HelpContents_Click" />
+            <MenuItem x:Name="HelpMenuItem" Header="{local:Loc menu_help}">
+                <MenuItem x:Name="HelpContentsMenuItem" Header="{local:Loc menu_help_contents}" Click="HelpContents_Click" />
                 <Separator />
-                <MenuItem Header="{local:Loc menu_about}" Click="About_Click" />
+                <MenuItem x:Name="AboutMenuItem" Header="{local:Loc menu_about}" Click="About_Click" />
             </MenuItem>
         </Menu>
 

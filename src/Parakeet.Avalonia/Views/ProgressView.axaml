@@ -25,7 +25,8 @@
             <RowDefinition Height="Auto" />   <!-- Action buttons -->
         </Grid.RowDefinitions>
 
-        <TextBlock Grid.Row="0"
+        <TextBlock x:Name="ProgressHeadingText"
+                   Grid.Row="0"
                    Foreground="{DynamicResource TextBrush}"
                    Text="{local:Loc progress_heading}"
                    FontSize="20" FontWeight="SemiBold"
@@ -127,12 +128,12 @@
 
         <!-- Action buttons -->
         <StackPanel Grid.Row="4" Orientation="Horizontal" HorizontalAlignment="Right">
-            <Button Content="{local:Loc btn_pause}"
+            <Button x:Name="PauseButton" Content="{local:Loc btn_pause}"
                     Classes="primary-button"
                     Command="{Binding CancelCommand}"
                     IsVisible="{Binding IsRunning, Converter={StaticResource BoolToVis}}"
                     Margin="0,0,8,0" />
-            <Button Content="{local:Loc btn_back_home}"
+            <Button x:Name="BackHomeButton" Content="{local:Loc btn_back_home}"
                     Classes="secondary-button"
                     Command="{Binding GoBackCommand}" />
         </StackPanel>

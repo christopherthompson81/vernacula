@@ -14,13 +14,15 @@
                 Padding="24"
                 Margin="0,0,0,12">
             <StackPanel>
-                <TextBlock Text="{local:Loc config_heading}"
+                <TextBlock x:Name="ConfigHeadingText"
+                           Text="{local:Loc config_heading}"
                            Foreground="{DynamicResource TextBrush}"
                            FontSize="20" FontWeight="SemiBold"
                            Margin="0,0,0,20" />
 
                 <!-- Audio file -->
-                <TextBlock Text="{local:Loc label_audio_file}"
+                <TextBlock x:Name="AudioFileLabelText"
+                           Text="{local:Loc label_audio_file}"
                            Foreground="{DynamicResource TextBrush}"
                            Margin="0,0,0,4" />
                 <Grid Margin="0,0,0,16">
@@ -35,14 +37,16 @@
                              BorderBrush="{DynamicResource OverlayBrush}"
                              IsReadOnly="True"
                              Margin="0,0,8,0" />
-                    <Button Grid.Column="1"
+                    <Button x:Name="BrowseButton"
+                            Grid.Column="1"
                             Content="{local:Loc btn_browse}"
                             Classes="secondary-button"
                             Command="{Binding SelectAudioFileCommand}" />
                 </Grid>
 
                 <!-- Job name -->
-                <TextBlock Text="{local:Loc label_job_name}"
+                <TextBlock x:Name="JobNameLabelText"
+                           Text="{local:Loc label_job_name}"
                            Foreground="{DynamicResource TextBrush}"
                            Margin="0,0,0,4" />
                 <TextBox Text="{Binding JobName, UpdateSourceTrigger=PropertyChanged}"
@@ -55,11 +59,13 @@
         <!-- Buttons -->
         <StackPanel Orientation="Horizontal" HorizontalAlignment="Right"
                     Margin="0,0,0,12">
-            <Button Content="{local:Loc btn_back}"
+            <Button x:Name="BackButton"
+                    Content="{local:Loc btn_back}"
                     Classes="secondary-button"
                     Command="{Binding BackCommand}"
                     Margin="0,0,8,0" />
-            <Button Content="{local:Loc btn_start}"
+            <Button x:Name="StartButton"
+                    Content="{local:Loc btn_start}"
                     Command="{Binding StartCommand}" />
         </StackPanel>
 

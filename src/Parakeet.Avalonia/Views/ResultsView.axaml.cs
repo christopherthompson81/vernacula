@@ -14,12 +14,15 @@ public partial class ResultsView : UserControl
     public ResultsView()
     {
         InitializeComponent();
+        ApplyLocalizedText();
         Loaded   += OnLoaded;
         Unloaded += OnUnloaded;
     }
 
     private void OnLoaded(object? sender, RoutedEventArgs e)
     {
+        Loc.Instance.PropertyChanged += OnLocalePropertyChanged;
+        ApplyLocalizedText();
         var s = App.Current.Settings.Current;
         if (s.ResultsColSpeakerWidth > 0)
             SegmentsGrid.Columns[0].Width = new DataGridLength(s.ResultsColSpeakerWidth);
@@ -41,7 +44,10 @@ public partial class ResultsView : UserControl
         => SaveColumnWidths();
 
     private void OnUnloaded(object? sender, RoutedEventArgs e)
-        => SaveColumnWidths();
+    {
+        Loc.Instance.PropertyChanged -= OnLocalePropertyChanged;
+        SaveColumnWidths();
+    }
 
     private void SaveColumnWidths()
     {
@@ -53,6 +59,27 @@ public partial class ResultsView : UserControl
         if (!double.IsNaN(w1) && w1 > 0) s.ResultsColStartWidth   = w1;
         if (!double.IsNaN(w2) && w2 > 0) s.ResultsColEndWidth     = w2;
         App.Current.Settings.Save();
+    }
+
+    private void OnLocalePropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName != nameof(Loc.CurrentLanguage) && e.PropertyName != "Item[]")
+            return;
+
+        ApplyLocalizedText();
+    }
+
+    private void ApplyLocalizedText()
+    {
+        SegmentsLabelRun.Text = Loc.Instance["results_segments_label"];
+        SegmentsGrid.Columns[0].Header = Loc.Instance["segments_col_speaker"];
+        SegmentsGrid.Columns[1].Header = Loc.Instance["segments_col_start"];
+        SegmentsGrid.Columns[2].Header = Loc.Instance["segments_col_end"];
+        SegmentsGrid.Columns[3].Header = Loc.Instance["segments_col_content"];
+        EditTranscriptButton.Content = Loc.Instance["btn_edit_transcript"];
+        EditSpeakersButton.Content = Loc.Instance["btn_edit_speakers"];
+        ExportButton.Content = Loc.Instance["btn_export"];
+        BackHistoryButton.Content = Loc.Instance["btn_back_history"];
     }
 
     private void ResultsView_KeyDown(object? sender, KeyEventArgs e)

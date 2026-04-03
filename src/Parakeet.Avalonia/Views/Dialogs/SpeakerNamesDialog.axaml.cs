@@ -2,6 +2,7 @@ using Avalonia.Controls;
 using Avalonia.Input;
 using Avalonia.Interactivity;
 using ParakeetCSharp.Models;
+using System.ComponentModel;
 
 namespace ParakeetCSharp.Views.Dialogs;
 
@@ -16,6 +17,8 @@ public partial class SpeakerNamesDialog : Window
     public SpeakerNamesDialog()
     {
         InitializeComponent();
+        ApplyLocalizedText();
+        Loc.Instance.PropertyChanged += OnLocalePropertyChanged;
     }
 
     public SpeakerNamesDialog(string dbPath) : this()
@@ -58,6 +61,28 @@ public partial class SpeakerNamesDialog : Window
         Close();
     }
 
+    private void OnLocalePropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName != nameof(Loc.CurrentLanguage) && e.PropertyName != "Item[]")
+            return;
+
+        ApplyLocalizedText();
+    }
+
+    private void ApplyLocalizedText()
+    {
+        Title = Loc.Instance["modal_speakers_heading"];
+        SpeakerNamesHeadingText.Text = Loc.Instance["modal_speakers_heading"];
+        if (SpeakersGrid.Columns.Count > 0)
+        {
+            SpeakersGrid.Columns[0].Header = Loc.Instance["modal_speakers_col_id"];
+            if (SpeakersGrid.Columns.Count > 1)
+                SpeakersGrid.Columns[1].Header = Loc.Instance["modal_speakers_col_name"];
+        }
+        SaveButton.Content = Loc.Instance["btn_save"];
+        CancelButton.Content = Loc.Instance["btn_cancel"];
+    }
+
     private void SpeakersGrid_BeginningEdit(object? sender, DataGridBeginningEditEventArgs e)
         => _isEditing = true;
 
@@ -84,5 +109,11 @@ public partial class SpeakerNamesDialog : Window
             SpeakersGrid.CurrentColumn = SpeakersGrid.Columns[1];
         SpeakersGrid.ScrollIntoView(nextItem, SpeakersGrid.CurrentColumn);
         SpeakersGrid.BeginEdit();
+    }
+
+    protected override void OnClosed(EventArgs e)
+    {
+        Loc.Instance.PropertyChanged -= OnLocalePropertyChanged;
+        base.OnClosed(e);
     }
 }

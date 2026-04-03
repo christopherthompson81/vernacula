@@ -15,7 +15,7 @@
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
-        <TextBlock Grid.Row="0"
+        <TextBlock x:Name="FormatLabelText" Grid.Row="0"
                    Text="{local:Loc label_format}"
                    Foreground="{DynamicResource SubtextBrush}"
                    Margin="0,0,0,12" />
@@ -24,21 +24,21 @@
                   Grid.Row="1"
                   SelectedIndex="0"
                   Margin="0,0,0,16">
-            <ComboBoxItem Content="{local:Loc format_excel}" />
-            <ComboBoxItem Content="{local:Loc format_csv}" />
-            <ComboBoxItem Content="{local:Loc format_json}" />
-            <ComboBoxItem Content="{local:Loc format_srt}" />
-            <ComboBoxItem Content="{local:Loc format_md}" />
-            <ComboBoxItem Content="{local:Loc format_docx}" />
-            <ComboBoxItem Content="{local:Loc format_db}" />
+            <ComboBoxItem x:Name="FormatExcelItem" Content="{local:Loc format_excel}" />
+            <ComboBoxItem x:Name="FormatCsvItem" Content="{local:Loc format_csv}" />
+            <ComboBoxItem x:Name="FormatJsonItem" Content="{local:Loc format_json}" />
+            <ComboBoxItem x:Name="FormatSrtItem" Content="{local:Loc format_srt}" />
+            <ComboBoxItem x:Name="FormatMdItem" Content="{local:Loc format_md}" />
+            <ComboBoxItem x:Name="FormatDocxItem" Content="{local:Loc format_docx}" />
+            <ComboBoxItem x:Name="FormatDbItem" Content="{local:Loc format_db}" />
         </ComboBox>
 
         <StackPanel Grid.Row="2" Orientation="Horizontal"
                     HorizontalAlignment="Right">
-            <Button Content="{local:Loc btn_save}"
+            <Button x:Name="SaveButton" Content="{local:Loc btn_save}"
                     Click="Save_Click"
                     Margin="0,0,8,0" />
-            <Button Content="{local:Loc btn_cancel}"
+            <Button x:Name="CancelButton" Content="{local:Loc btn_cancel}"
                     Classes="secondary-button"
                     Click="Cancel_Click" />
         </StackPanel>

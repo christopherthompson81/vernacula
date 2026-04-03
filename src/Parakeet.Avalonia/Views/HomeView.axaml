@@ -42,7 +42,8 @@
                            Foreground="{Binding ModelStatusBrush}"
                            TextWrapping="Wrap"
                            VerticalAlignment="Center" />
-                <Button Grid.Column="1"
+                <Button x:Name="OpenSettingsButton"
+                        Grid.Column="1"
                         Content="{local:Loc btn_open_settings}"
                         Classes="secondary-button"
                         Command="{Binding OpenSettingsWindowCommand}"
@@ -65,17 +66,20 @@
                     <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
-                <TextBlock Grid.Column="0"
+                <TextBlock x:Name="UpdateAvailableText"
+                           Grid.Column="0"
                            Text="{local:Loc home_update_available}"
                            Foreground="{DynamicResource BgBrush}"
                            TextWrapping="Wrap"
                            VerticalAlignment="Center" />
-                <Button Grid.Column="1"
+                <Button x:Name="BannerOpenSettingsButton"
+                        Grid.Column="1"
                         Content="{local:Loc btn_open_settings}"
                         Command="{Binding OpenSettingsWindowCommand}"
                         Margin="10,0,6,0"
                         IsEnabled="{Binding HasOutdatedFiles}" />
-                <Button Grid.Column="2"
+                <Button x:Name="DismissBannerButton"
+                        Grid.Column="2"
                         Content="{local:Loc btn_dismiss}"
                         Classes="secondary-button"
                         Command="{Binding DismissUpdateBannerCommand}"
@@ -85,12 +89,14 @@
 
         <!-- ── Action buttons ── -->
         <StackPanel Grid.Row="2" Orientation="Horizontal" Margin="0,0,0,12">
-            <Button Content="{local:Loc btn_new_transcription}"
+            <Button x:Name="NewTranscriptionButton"
+                    Content="{local:Loc btn_new_transcription}"
                     Classes="primary-button"
                     Margin="0,0,10,0"
                     Command="{Binding NewTranscriptionCommand}"
                     IsEnabled="{Binding ModelsReady}" />
-            <Button Content="{local:Loc btn_bulk_add}"
+            <Button x:Name="BulkAddButton"
+                    Content="{local:Loc btn_bulk_add}"
                     Classes="secondary-button"
                     Command="{Binding BulkAddJobsCommand}"
                     IsEnabled="{Binding ModelsReady}" />
@@ -107,14 +113,16 @@
                     <RowDefinition Height="*" />
                 </Grid.RowDefinitions>
 
-                <TextBlock Grid.Row="0"
+                <TextBlock x:Name="HistoryHeadingText"
+                           Grid.Row="0"
                            Foreground="{DynamicResource TextBrush}"
                            Text="{local:Loc history_heading}"
                            FontSize="15" FontWeight="SemiBold"
                            Margin="0,0,0,8" />
 
                 <Grid Grid.Row="1">
-                    <TextBlock Text="{local:Loc history_empty}"
+                    <TextBlock x:Name="HistoryEmptyText"
+                               Text="{local:Loc history_empty}"
                                Foreground="{DynamicResource SubtextBrush}"
                                HorizontalAlignment="Center"
                                VerticalAlignment="Center"
@@ -233,35 +241,35 @@
                                 <DataGridTemplateColumn.CellTemplate>
                                     <DataTemplate>
                                         <StackPanel Orientation="Horizontal" Margin="2" VerticalAlignment="Center">
-                                            <Button Content="{local:Loc btn_resume}"
+                                            <Button Content="{Binding ResumeLabel}"
                                                     Classes="secondary-button"
                                                     Padding="8,4"
                                                     Margin="0,0,4,0"
                                                     IsVisible="{Binding IsResumable, Converter={StaticResource BoolToVis}}"
                                                     Command="{Binding $parent[DataGrid].DataContext.ResumeJobCommand}"
                                                     CommandParameter="{Binding}" />
-                                            <Button Content="{local:Loc btn_monitor}"
+                                            <Button Content="{Binding MonitorLabel}"
                                                     Classes="primary-button"
                                                     Padding="8,4"
                                                     Margin="0,0,4,0"
                                                     IsVisible="{Binding IsCancellable, Converter={StaticResource BoolToVis}}"
                                                     Command="{Binding $parent[DataGrid].DataContext.MonitorQueuedJobCommand}"
                                                     CommandParameter="{Binding}" />
-                                            <Button Content="{local:Loc btn_pause}"
+                                            <Button Content="{Binding PauseLabel}"
                                                     Classes="secondary-button"
                                                     Padding="8,4"
                                                     Margin="0,0,4,0"
                                                     IsVisible="{Binding IsCancellable, Converter={StaticResource BoolToVis}}"
                                                     Command="{Binding $parent[DataGrid].DataContext.CancelQueuedJobCommand}"
                                                     CommandParameter="{Binding}" />
-                                            <Button Content="{local:Loc btn_load}"
+                                            <Button Content="{Binding LoadLabel}"
                                                     Classes="secondary-button"
                                                     Padding="8,4"
                                                     Margin="0,0,4,0"
                                                     IsVisible="{Binding IsLoadable, Converter={StaticResource BoolToVis}}"
                                                     Command="{Binding $parent[DataGrid].DataContext.LoadJobCommand}"
                                                     CommandParameter="{Binding}" />
-                                            <Button Content="{local:Loc btn_remove}"
+                                            <Button Content="{Binding RemoveLabel}"
                                                     Classes="danger-button"
                                                     Padding="8,4"
                                                     IsEnabled="{Binding IsDeletable}"

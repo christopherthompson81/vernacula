@@ -20,6 +20,8 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
+        ApplyLocalizedText();
+        Loc.Instance.PropertyChanged += OnLocalePropertyChanged;
         Console.WriteLine("[MainWindow] Constructor called");
         RestoreInitialWindowSettings();
         Loaded += MainWindow_Loaded;
@@ -33,6 +35,7 @@ public partial class MainWindow : Window
     private void MainWindow_Loaded(object? sender, RoutedEventArgs e)
     {
         Console.WriteLine("[MainWindow] MainWindow_Loaded");
+        ApplyLocalizedText();
         // Set the main window reference in the view model
         if (DataContext is MainViewModel vm)
         {
@@ -168,6 +171,28 @@ public partial class MainWindow : Window
 
     private void Exit_Click(object? sender, RoutedEventArgs e) => Close();
 
+    private void OnLocalePropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName != nameof(Loc.CurrentLanguage) && e.PropertyName != "Item[]")
+            return;
+
+        ApplyLocalizedText();
+    }
+
+    private void ApplyLocalizedText()
+    {
+        FileMenuItem.Header = MenuText("menu_file");
+        NewTranscriptionMenuItem.Header = MenuText("menu_new_transcription");
+        ExitMenuItem.Header = MenuText("menu_exit");
+        SettingsMenuItem.Header = MenuText("menu_settings");
+        HelpMenuItem.Header = MenuText("menu_help");
+        HelpContentsMenuItem.Header = MenuText("menu_help_contents");
+        AboutMenuItem.Header = MenuText("menu_about");
+    }
+
+    private static string MenuText(string key) =>
+        Loc.Instance[key].TrimStart('_');
+
     private HelpWindow? _helpWindow;
 
     private void HelpContents_Click(object? sender, RoutedEventArgs e) => OpenHelp(null);
@@ -189,4 +214,10 @@ public partial class MainWindow : Window
 
     private void About_Click(object? sender, RoutedEventArgs e) =>
         new Dialogs.AboutDialog().ShowDialog(this);
+
+    protected override void OnClosed(EventArgs e)
+    {
+        Loc.Instance.PropertyChanged -= OnLocalePropertyChanged;
+        base.OnClosed(e);
+    }
 }

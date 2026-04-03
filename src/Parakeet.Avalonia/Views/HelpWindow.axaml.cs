@@ -31,6 +31,7 @@ public partial class HelpWindow : Window
     private void Window_Loaded(object? sender, RoutedEventArgs e)
     {
         WindowHelper.SetDarkMode(this, App.Current.Settings.Current.Theme == AppTheme.Dark);
+        Title = Loc.Instance["help_window_title"];
         BuildSidebar();
         DisplayTopic(_currentTopicId ?? HelpService.IndexTopic.TopicId);
         ThemeManager.ThemeChanged    += OnThemeChanged;
@@ -67,6 +68,7 @@ public partial class HelpWindow : Window
         // resource exists for the new language.
         Dispatcher.UIThread.InvokeAsync(() =>
         {
+            Title = Loc.Instance["help_window_title"];
             BuildSidebar();
             if (_currentTopicId is not null)
             {
