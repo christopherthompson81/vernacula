@@ -161,6 +161,23 @@ public static class HardwareInfo
         return false;
     }
 
+    /// <summary>
+    /// True when the current machine appears capable of initializing CUDA execution:
+    /// the CUDA runtime is installed, cuDNN is present, and at least one NVIDIA GPU
+    /// is visible through NVML.
+    /// </summary>
+    public static bool CanProbeCudaExecutionProvider()
+    {
+        if (!OperatingSystem.IsWindows() && !OperatingSystem.IsLinux())
+            return false;
+
+        if (!IsCudaToolkitInstalled() || !IsCudnnInstalled())
+            return false;
+
+        var (totalMb, _) = GetGpuMemoryMb();
+        return totalMb > 0;
+    }
+
     private static int NvmlInitPlatform() =>
         OperatingSystem.IsWindows() ? NvmlInitWindows() : NvmlInitLinux();
 

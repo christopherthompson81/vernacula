@@ -190,6 +190,13 @@ internal class ModelManagerService
                 return (false, unsupportedMessage);
             }
 
+            if (!HardwareInfo.CanProbeCudaExecutionProvider())
+            {
+                const string unavailableMessage = "CUDA execution is unavailable on this machine.";
+                File.WriteAllText(logPath, unavailableMessage);
+                return (false, unavailableMessage);
+            }
+
             AddCudaToSearchPath();
             var opts = new SessionOptions();
             opts.AppendExecutionProvider_CUDA(0);
