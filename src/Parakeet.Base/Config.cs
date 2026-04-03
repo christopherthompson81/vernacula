@@ -93,10 +93,16 @@ public static class Config
     public const float DiariZenDefaultThreshold = 0.5f;
 
     /// <summary>
-    /// Median filter half-width (frames) applied to powerset probabilities before binarisation.
-    /// 7 frames ≈ 140 ms at 50 Hz, matching pyannote's apply_median_filtering=True.
+    /// ONNX Runtime intra-op thread count for DiariZen segmentation inference.
+    /// This is intentionally tuned separately from embedding extraction.
     /// </summary>
-    public const int DiariZenMedianFilterSize = 7;
+    public const int DiariZenSegmentationIntraOpThreads = 12;
+
+    /// <summary>
+    /// Median filter half-width (frames) applied to powerset probabilities before binarisation.
+    /// 11 frames ≈ 220 ms at 50 Hz, matching DiariZen's median_filter(size=(1, 11, 1)).
+    /// </summary>
+    public const int DiariZenMedianFilterSize = 11;
 
     /// <summary>
     /// Hierarchical clustering parameters for DiariZen.
@@ -117,6 +123,10 @@ public static class Config
     public const float DiariZenVbxFb = 0.8f;  // speaker regularization
     public const int DiariZenVbxLdaDim = 128; // PLDA dimensionality
     public const int DiariZenVbxMaxIters = 20;
+    public const int DiariZenMinEmbeddingClusterSize = 8;
+    public const double DiariZenMinSpeakerDurationSeconds = 2.0;
+    public const int DiariZenFillShortGapFrames = 2;
+    public const int DiariZenMinRegionFrames = 2;
 
     // Slaney mel-scale parameters
     public const double FMin      = 0.0;
@@ -161,4 +171,14 @@ public static class Config
         precision == ModelPrecision.Int8
             ? (EncoderFileInt8, DecoderJointFileInt8)
             : (EncoderFile,     DecoderJointFile);
+
+    public static int GetDiariZenSegmentationIntraOpThreads()
+    {
+        const string envVar = "PARAKEET_DIARIZEN_SEG_THREADS";
+        string? raw = Environment.GetEnvironmentVariable(envVar);
+        if (int.TryParse(raw, out int parsed) && parsed > 0)
+            return parsed;
+
+        return DiariZenSegmentationIntraOpThreads;
+    }
 }

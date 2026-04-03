@@ -108,11 +108,16 @@ public sealed class WeSpeakerEmbedder : IDisposable
         }
 
         var opts = new SessionOptions();
-        opts.IntraOpNumThreads = 2;
+        // Keep per-session threading low and use outer parallelism across
+        // multiple embedding jobs instead of oversubscribing CPU cores.
+        opts.IntraOpNumThreads = 1;
         switch (ep)
         {
             case ExecutionProvider.Auto:
-                try { opts.AppendExecutionProvider_CUDA(0); } catch { }
+                if (HardwareInfo.CanProbeCudaExecutionProvider())
+                {
+                    try { opts.AppendExecutionProvider_CUDA(0); } catch { }
+                }
                 try { opts.AppendExecutionProvider_DML(0); }  catch { }
                 break;
             case ExecutionProvider.Cuda:
@@ -164,6 +169,64 @@ public sealed class WeSpeakerEmbedder : IDisposable
         Array.Copy(audio, startSample, segment, 0, regionLen);
 
         var fbank = ComputeFbank(segment);
+        return ComputeEmbeddingFromFbank(fbank, out rawEmbedding);
+    }
+
+    /// <summary>
+    /// Compute an embedding from a chunk waveform using a frame mask defined at
+    /// diarization frame resolution. The mask is upsampled to the fbank frame
+    /// rate and only masked frames are passed to the embedding model.
+    /// </summary>
+    public float[] ComputeEmbedding(float[] waveform, bool[] frameMask, out float[] rawEmbedding)
+    {
+        if (waveform.Length < FrameLengthSamples || frameMask.Length == 0)
+        {
+            rawEmbedding = new float[EmbeddingDim];
+            return new float[EmbeddingDim];
+        }
+
+        var fbank = ComputeFbank(waveform);
+        int numFrames = fbank.GetLength(0);
+        if (fbank.GetLength(0) == 0)
+        {
+            rawEmbedding = new float[EmbeddingDim];
+            return new float[EmbeddingDim];
+        }
+
+        int selectedCount = 0;
+        var selected = new bool[numFrames];
+        for (int fi = 0; fi < numFrames; fi++)
+        {
+            int srcIndex = Math.Clamp(
+                (int)Math.Floor(fi * frameMask.Length / (double)numFrames),
+                0,
+                frameMask.Length - 1);
+            bool keep = frameMask[srcIndex];
+            selected[fi] = keep;
+            if (keep) selectedCount++;
+        }
+
+        if (selectedCount == 0)
+        {
+            rawEmbedding = new float[EmbeddingDim];
+            return new float[EmbeddingDim];
+        }
+
+        var maskedFbank = new float[selectedCount, NumMelBins];
+        int dst = 0;
+        for (int fi = 0; fi < numFrames; fi++)
+        {
+            if (!selected[fi]) continue;
+            for (int m = 0; m < NumMelBins; m++)
+                maskedFbank[dst, m] = fbank[fi, m];
+            dst++;
+        }
+
+        return ComputeEmbeddingFromFbank(maskedFbank, out rawEmbedding);
+    }
+
+    private float[] ComputeEmbeddingFromFbank(float[,] fbank, out float[] rawEmbedding)
+    {
         if (fbank.GetLength(0) == 0)
         {
             rawEmbedding = new float[EmbeddingDim];
@@ -173,12 +236,7 @@ public sealed class WeSpeakerEmbedder : IDisposable
         rawEmbedding = RunInference(fbank);  // raw un-normalised 256-dim
 
         // L2-normalise for AHC (matches Python: train_embeddings_normed = emb / ||emb||)
-        float[] l2 = (float[])rawEmbedding.Clone();
-        float norm = 0f;
-        for (int i = 0; i < l2.Length; i++) norm += l2[i] * l2[i];
-        norm = MathF.Sqrt(norm);
-        if (norm > 0) for (int i = 0; i < l2.Length; i++) l2[i] /= norm;
-        return l2;
+        return NormalizeEmbedding(rawEmbedding);
     }
 
     /// <summary>
@@ -356,6 +414,16 @@ public sealed class WeSpeakerEmbedder : IDisposable
         for (int i = 0; i < outSize; i++)
             embedding[i] = output[0, i];
         return embedding;
+    }
+
+    private static float[] NormalizeEmbedding(float[] rawEmbedding)
+    {
+        float[] l2 = (float[])rawEmbedding.Clone();
+        float norm = 0f;
+        for (int i = 0; i < l2.Length; i++) norm += l2[i] * l2[i];
+        norm = MathF.Sqrt(norm);
+        if (norm > 0) for (int i = 0; i < l2.Length; i++) l2[i] /= norm;
+        return l2;
     }
 
     // ── LDA binary file loaders ────────────────────────────────────────────

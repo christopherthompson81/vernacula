@@ -15,6 +15,7 @@ string  exportFormat    = "md";
 string  diarization     = "sortformer"; // sortformer, diarizen, or vad
 float   ahcThreshold    = Config.DiariZenAhcThreshold;
 bool    showBenchmark   = false;
+bool    skipAsr         = false;
 ModelPrecision precision = ModelPrecision.Fp32;
 
 for (int i = 0; i < args.Length; i++)
@@ -37,6 +38,7 @@ for (int i = 0; i < args.Length; i++)
         case "--vad":           diarization = "vad"; break; // deprecated but supported
         case "--ahc-threshold": ahcThreshold = float.Parse(args[++i]); break;
         case "--benchmark":     showBenchmark = true; break;
+        case "--skip-asr":      skipAsr = true; break;
         case "--precision":
             precision = args[++i].ToLowerInvariant() switch {
                 "int8" => ModelPrecision.Int8,
@@ -156,7 +158,12 @@ try
         string? embedderModel = Path.Combine(modelDir, Config.DiariZenEmbedderFile);
         if (!File.Exists(embedderModel)) embedderModel = null;
         using var diarizer = new DiariZenDiarizer(diarizenModel, embedderModel);
-        var diarSegments = diarizer.Diarize(audio, minSpeakers: 1, maxSpeakers: 8, ahcThreshold: ahcThreshold);
+        var diarSegments = diarizer.Diarize(
+            audio,
+            minSpeakers: 1,
+            maxSpeakers: 8,
+            ahcThreshold: ahcThreshold,
+            progress: message => Console.Write($"\r  {message,-72}"));
         segs = diarSegments.Select(s => (s.Start, s.End, s.Speaker)).ToList();
         swDiar.Stop();
         Console.WriteLine($"\rDiarizing (DiariZen)... {segs.Count} segment(s) ({swDiar.ElapsedMilliseconds}ms)");
@@ -175,27 +182,35 @@ try
 
     // ── Phase 3: ASR ─────────────────────────────────────────────────────────
 
-    var (encoderFile, decoderJointFile) = Config.GetAsrFiles(precision);
-    using var parakeet = new ParakeetAsr(modelDir, encoderFile, decoderJointFile);
-
-    int totalSegs = segs.Count;
-    int completed = 0;
-    var results   = new List<(double start, double end, string spkId, string text)>(totalSegs);
-
-    Console.WriteLine($"Transcribing {totalSegs} segment(s)...");
+    var results = new List<(double start, double end, string spkId, string text)>(segs.Count);
     var swAsr = Stopwatch.StartNew();
 
-    foreach (var (segId, text, _, _, _) in parakeet.Recognize(segs, audio))
+    if (skipAsr)
     {
-        cts.Token.ThrowIfCancellationRequested();
-        completed++;
-        var (start, end, spkId) = segs[segId];
-        results.Add((start, end, spkId, text));
-        Console.Write($"\r  {completed}/{totalSegs}");
+        results.AddRange(segs.Select(s => (s.start, s.end, s.spkId, string.Empty)));
+        swAsr.Stop();
     }
+    else
+    {
+        var (encoderFile, decoderJointFile) = Config.GetAsrFiles(precision);
+        using var parakeet = new ParakeetAsr(modelDir, encoderFile, decoderJointFile);
 
-    Console.WriteLine();
-    swAsr.Stop();
+        int totalSegs = segs.Count;
+        int completed = 0;
+
+        Console.WriteLine($"Transcribing {totalSegs} segment(s)...");
+        foreach (var (segId, text, _, _, _) in parakeet.Recognize(segs, audio))
+        {
+            cts.Token.ThrowIfCancellationRequested();
+            completed++;
+            var (start, end, spkId) = segs[segId];
+            results.Add((start, end, spkId, text));
+            Console.Write($"\r  {completed}/{totalSegs}");
+        }
+
+        Console.WriteLine();
+        swAsr.Stop();
+    }
 
     // Sort by start time (Recognize may return results in batch order)
     results.Sort((a, b) => a.start.CompareTo(b.start));
@@ -310,6 +325,7 @@ static void PrintUsage()
     Console.WriteLine("                                     (default: sortformer)");
     Console.WriteLine("  --vad                              Use VAD instead of diarization (deprecated)");
     Console.WriteLine("  --precision <fp32|int8>            Model precision (default: fp32)");
+    Console.WriteLine("  --skip-asr                         Export diarization/VAD segments without transcription");
     Console.WriteLine("  --benchmark                        Print timing / RTF after transcription");
     Console.WriteLine("  -h, --help                         Show this help");
     Console.WriteLine();
