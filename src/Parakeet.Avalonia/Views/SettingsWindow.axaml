@@ -35,6 +35,87 @@
             <Setter Property="VerticalAlignment" Value="Center" />
         </Style>
 
+        <Style Selector="RadioButton">
+            <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="Padding" Value="6,4" />
+            <Setter Property="Template">
+                <ControlTemplate>
+                    <Border Background="{TemplateBinding Background}"
+                            CornerRadius="4"
+                            Padding="{TemplateBinding Padding}">
+                        <Grid ColumnDefinitions="16,*"
+                              ColumnSpacing="8">
+                            <Grid Width="16"
+                                  Height="16"
+                                  VerticalAlignment="Center">
+                                <Ellipse x:Name="OuterRing"
+                                         Width="16"
+                                         Height="16"
+                                         Stroke="{DynamicResource TextBrush}"
+                                         StrokeThickness="1.5"
+                                         Fill="Transparent" />
+                                <Ellipse x:Name="InnerDot"
+                                         Width="8"
+                                         Height="8"
+                                         Fill="{DynamicResource AccentBrush}"
+                                         HorizontalAlignment="Center"
+                                         VerticalAlignment="Center"
+                                         IsVisible="False" />
+                            </Grid>
+                            <ContentPresenter Grid.Column="1"
+                                              Content="{TemplateBinding Content}"
+                                              ContentTemplate="{TemplateBinding ContentTemplate}"
+                                              VerticalAlignment="Center"
+                                              Foreground="{TemplateBinding Foreground}" />
+                        </Grid>
+                    </Border>
+                </ControlTemplate>
+            </Setter>
+        </Style>
+
+        <Style Selector="RadioButton:pointerover">
+            <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
+            <Setter Property="Background" Value="{DynamicResource OverlayBrush}" />
+        </Style>
+
+        <Style Selector="RadioButton:pressed">
+            <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
+            <Setter Property="Background" Value="{DynamicResource OverlayBrush}" />
+        </Style>
+
+        <Style Selector="RadioButton /template/ ContentPresenter">
+            <Setter Property="TextElement.Foreground" Value="{DynamicResource TextBrush}" />
+        </Style>
+
+        <Style Selector="RadioButton:pointerover /template/ ContentPresenter">
+            <Setter Property="TextElement.Foreground" Value="{DynamicResource TextBrush}" />
+        </Style>
+
+        <Style Selector="RadioButton:pressed /template/ ContentPresenter">
+            <Setter Property="TextElement.Foreground" Value="{DynamicResource TextBrush}" />
+        </Style>
+
+        <Style Selector="RadioButton:not(:checked) /template/ Ellipse#OuterRing">
+            <Setter Property="Stroke" Value="{DynamicResource TextBrush}" />
+        </Style>
+
+        <Style Selector="RadioButton:checked /template/ Ellipse#OuterRing">
+            <Setter Property="Stroke" Value="{DynamicResource AccentBrush}" />
+        </Style>
+
+        <Style Selector="RadioButton:checked /template/ Ellipse#InnerDot">
+            <Setter Property="IsVisible" Value="True" />
+        </Style>
+
+        <Style Selector="RadioButton:not(:checked):pointerover /template/ Ellipse#OuterRing">
+            <Setter Property="Stroke" Value="{DynamicResource TextBrush}" />
+        </Style>
+
+        <Style Selector="RadioButton:checked:pointerover /template/ Ellipse#OuterRing">
+            <Setter Property="Stroke" Value="{DynamicResource AccentBrush}" />
+        </Style>
+
         <Style Selector="Button.link-button">
             <Setter Property="Background"      Value="Transparent" />
             <Setter Property="Foreground"      Value="{DynamicResource AccentBrush}" />

@@ -1,4 +1,6 @@
 using CommunityToolkit.Mvvm.ComponentModel;
+using Avalonia;
+using Avalonia.Media;
 using ParakeetCSharp;
 
 namespace ParakeetCSharp.Models;
@@ -69,6 +71,7 @@ public class JobRecord : ObservableObject
                 OnPropertyChanged(nameof(IsDeletable));
                 OnPropertyChanged(nameof(ShowProgress));
                 OnPropertyChanged(nameof(StatusLabel));
+                OnPropertyChanged(nameof(StatusBrush));
             }
         }
     }
@@ -112,6 +115,34 @@ public class JobRecord : ObservableObject
         JobStatus.Queued    => Loc.Instance["status_queued"],
         _                   => Status.ToString().ToLowerInvariant(),
     };
+
+    public IBrush StatusBrush
+    {
+        get
+        {
+            string key = Status switch
+            {
+                JobStatus.Complete  => "GreenBrush",
+                JobStatus.Failed    => "RedBrush",
+                JobStatus.Cancelled => "YellowBrush",
+                JobStatus.Running   => "AccentBrush",
+                JobStatus.Queued    => "AccentBrush",
+                _                   => "SubtextBrush",
+            };
+
+            var app = Application.Current;
+            if (app?.Resources.TryGetResource(key, null, out var resourceValue) == true)
+            {
+                if (resourceValue is IBrush brush)
+                    return brush;
+
+                if (resourceValue is Color color)
+                    return new SolidColorBrush(color);
+            }
+
+            return Brushes.Transparent;
+        }
+    }
 
     public string ResumeLabel => Loc.Instance["btn_resume"];
     public string MonitorLabel => Loc.Instance["btn_monitor"];
@@ -160,5 +191,10 @@ public class JobRecord : ObservableObject
             if (secs < 3600) return $"{secs / 60}m {secs % 60:D2}s";
             return $"{secs / 3600}h {secs % 3600 / 60}m";
         }
+    }
+
+    public void RefreshThemeBindings()
+    {
+        OnPropertyChanged(nameof(StatusBrush));
     }
 }

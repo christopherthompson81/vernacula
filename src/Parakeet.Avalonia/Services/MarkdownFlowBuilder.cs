@@ -481,28 +481,15 @@ internal static class MarkdownFlowBuilder
         if (end <= start || !ushort.TryParse(tag[start..end], NumberStyles.HexNumber, null, out var codePoint))
             return (ConvertHtmlInline(html), null, null);
 
-        bool dark = App.Current.Settings.Current.Theme == AppTheme.Dark;
         return codePoint switch
         {
             0xE77B => (null, null, ((char)codePoint).ToString()),
-            0xE916 => (null, dark
-                ? "avares://Parakeet.Avalonia/Assets/toolbar_icons/adjust_times_dark.png"
-                : "avares://Parakeet.Avalonia/Assets/toolbar_icons/adjust_times_light.png", null),
-            0xEA39 => (null, dark
-                ? "avares://Parakeet.Avalonia/Assets/toolbar_icons/suppress_dark.png"
-                : "avares://Parakeet.Avalonia/Assets/toolbar_icons/suppress_light.png", null),
-            0xE72B => (null, dark
-                ? "avares://Parakeet.Avalonia/Assets/toolbar_icons/merge_prev_dark.png"
-                : "avares://Parakeet.Avalonia/Assets/toolbar_icons/merge_prev_light.png", null),
-            0xE72A => (null, dark
-                ? "avares://Parakeet.Avalonia/Assets/toolbar_icons/merge_next_dark.png"
-                : "avares://Parakeet.Avalonia/Assets/toolbar_icons/merge_next_light.png", null),
-            0xE8C6 => (null, dark
-                ? "avares://Parakeet.Avalonia/Assets/toolbar_icons/split_dark.png"
-                : "avares://Parakeet.Avalonia/Assets/toolbar_icons/split_light.png", null),
-            0xE72C => (null, dark
-                ? "avares://Parakeet.Avalonia/Assets/toolbar_icons/redo_dark.png"
-                : "avares://Parakeet.Avalonia/Assets/toolbar_icons/redo_light.png", null),
+            0xE916 => (null, "avares://Parakeet.Avalonia/Assets/toolbar_icons/adjust_times.png", null),
+            0xEA39 => (null, "avares://Parakeet.Avalonia/Assets/toolbar_icons/suppress.png", null),
+            0xE72B => (null, "avares://Parakeet.Avalonia/Assets/toolbar_icons/merge_prev.png", null),
+            0xE72A => (null, "avares://Parakeet.Avalonia/Assets/toolbar_icons/merge_next.png", null),
+            0xE8C6 => (null, "avares://Parakeet.Avalonia/Assets/toolbar_icons/split.png", null),
+            0xE72C => (null, "avares://Parakeet.Avalonia/Assets/toolbar_icons/redo.png", null),
             _ => (ConvertHtmlInline(html), null, null),
         };
     }

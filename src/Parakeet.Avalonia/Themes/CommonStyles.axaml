@@ -290,6 +290,38 @@
         <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
     </Style>
 
+    <Style Selector="RadioButton:pointerover">
+        <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
+    </Style>
+
+    <Style Selector="RadioButton:pressed">
+        <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
+    </Style>
+
+    <Style Selector="RadioButton:checked:pointerover">
+        <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
+    </Style>
+
+    <Style Selector="RadioButton:checked:pressed">
+        <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
+    </Style>
+
+    <Style Selector="RadioButton:pointerover TextBlock">
+        <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
+    </Style>
+
+    <Style Selector="RadioButton:pressed TextBlock">
+        <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
+    </Style>
+
+    <Style Selector="RadioButton:checked:pointerover TextBlock">
+        <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
+    </Style>
+
+    <Style Selector="RadioButton:checked:pressed TextBlock">
+        <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
+    </Style>
+
     <!-- CheckBox -->
     <Style Selector="CheckBox">
         <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />

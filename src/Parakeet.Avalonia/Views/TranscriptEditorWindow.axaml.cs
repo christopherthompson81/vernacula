@@ -23,33 +23,20 @@ public partial class TranscriptEditorWindow : Window
 {
     private const int RedoSpinnerFrameCount = 20;
     private static readonly TimeSpan SpeakerWheelCooldown = TimeSpan.FromMilliseconds(180);
-    private static readonly Bitmap SuppressDarkBitmap = LoadBitmap("avares://Parakeet.Avalonia/Assets/toolbar_icons/suppress_dark.png");
-    private static readonly Bitmap SuppressLightBitmap = LoadBitmap("avares://Parakeet.Avalonia/Assets/toolbar_icons/suppress_light.png");
+    private static readonly Bitmap SuppressBitmap = LoadBitmap("avares://Parakeet.Avalonia/Assets/toolbar_icons/suppress.png");
     private static readonly Bitmap SuppressRedBitmap = LoadBitmap("avares://Parakeet.Avalonia/Assets/toolbar_icons/suppress_red.png");
-    private static readonly Bitmap AdjustTimesDarkBitmap = LoadBitmap("avares://Parakeet.Avalonia/Assets/toolbar_icons/adjust_times_dark.png");
-    private static readonly Bitmap AdjustTimesLightBitmap = LoadBitmap("avares://Parakeet.Avalonia/Assets/toolbar_icons/adjust_times_light.png");
-    private static readonly Bitmap ReassignSpeakerDarkBitmap = LoadBitmap("avares://Parakeet.Avalonia/Assets/toolbar_icons/reassign_dark.png");
-    private static readonly Bitmap ReassignSpeakerLightBitmap = LoadBitmap("avares://Parakeet.Avalonia/Assets/toolbar_icons/reassign_light.png");
-    private static readonly Bitmap AddSpeakerDarkBitmap = LoadBitmap("avares://Parakeet.Avalonia/Assets/toolbar_icons/add_speaker_dark.png");
-    private static readonly Bitmap AddSpeakerLightBitmap = LoadBitmap("avares://Parakeet.Avalonia/Assets/toolbar_icons/add_speaker_light.png");
-    private static readonly Bitmap MergePrevDarkBitmap = LoadBitmap("avares://Parakeet.Avalonia/Assets/toolbar_icons/merge_prev_dark.png");
-    private static readonly Bitmap MergePrevLightBitmap = LoadBitmap("avares://Parakeet.Avalonia/Assets/toolbar_icons/merge_prev_light.png");
-    private static readonly Bitmap MergeNextDarkBitmap = LoadBitmap("avares://Parakeet.Avalonia/Assets/toolbar_icons/merge_next_dark.png");
-    private static readonly Bitmap MergeNextLightBitmap = LoadBitmap("avares://Parakeet.Avalonia/Assets/toolbar_icons/merge_next_light.png");
-    private static readonly Bitmap SplitDarkBitmap = LoadBitmap("avares://Parakeet.Avalonia/Assets/toolbar_icons/split_dark.png");
-    private static readonly Bitmap SplitLightBitmap = LoadBitmap("avares://Parakeet.Avalonia/Assets/toolbar_icons/split_light.png");
-    private static readonly Bitmap RedoDarkBitmap = LoadBitmap("avares://Parakeet.Avalonia/Assets/toolbar_icons/redo_dark.png");
-    private static readonly Bitmap RedoLightBitmap = LoadBitmap("avares://Parakeet.Avalonia/Assets/toolbar_icons/redo_light.png");
-    private static readonly Bitmap PlayDarkBitmap = LoadBitmap("avares://Parakeet.Avalonia/Assets/toolbar_icons/play_dark.png");
-    private static readonly Bitmap PlayLightBitmap = LoadBitmap("avares://Parakeet.Avalonia/Assets/toolbar_icons/play_light.png");
-    private static readonly Bitmap PauseDarkBitmap = LoadBitmap("avares://Parakeet.Avalonia/Assets/toolbar_icons/pause_dark.png");
-    private static readonly Bitmap PauseLightBitmap = LoadBitmap("avares://Parakeet.Avalonia/Assets/toolbar_icons/pause_light.png");
-    private static readonly Bitmap PrevDarkBitmap = LoadBitmap("avares://Parakeet.Avalonia/Assets/toolbar_icons/prev_dark.png");
-    private static readonly Bitmap PrevLightBitmap = LoadBitmap("avares://Parakeet.Avalonia/Assets/toolbar_icons/prev_light.png");
-    private static readonly Bitmap NextDarkBitmap = LoadBitmap("avares://Parakeet.Avalonia/Assets/toolbar_icons/next_dark.png");
-    private static readonly Bitmap NextLightBitmap = LoadBitmap("avares://Parakeet.Avalonia/Assets/toolbar_icons/next_light.png");
-    private static readonly Bitmap[] RedoSpinnerDarkFrames = LoadSpinnerFrames("avares://Parakeet.Avalonia/Assets/redo_spinner_dark_frames");
-    private static readonly Bitmap[] RedoSpinnerLightFrames = LoadSpinnerFrames("avares://Parakeet.Avalonia/Assets/redo_spinner_light_frames");
+    private static readonly Bitmap AdjustTimesBitmap = LoadBitmap("avares://Parakeet.Avalonia/Assets/toolbar_icons/adjust_times.png");
+    private static readonly Bitmap ReassignSpeakerBitmap = LoadBitmap("avares://Parakeet.Avalonia/Assets/toolbar_icons/reassign.png");
+    private static readonly Bitmap AddSpeakerBitmap = LoadBitmap("avares://Parakeet.Avalonia/Assets/toolbar_icons/add_speaker.png");
+    private static readonly Bitmap MergePrevBitmap = LoadBitmap("avares://Parakeet.Avalonia/Assets/toolbar_icons/merge_prev.png");
+    private static readonly Bitmap MergeNextBitmap = LoadBitmap("avares://Parakeet.Avalonia/Assets/toolbar_icons/merge_next.png");
+    private static readonly Bitmap SplitBitmap = LoadBitmap("avares://Parakeet.Avalonia/Assets/toolbar_icons/split.png");
+    private static readonly Bitmap RedoBitmap = LoadBitmap("avares://Parakeet.Avalonia/Assets/toolbar_icons/redo.png");
+    private static readonly Bitmap PlayBitmap = LoadBitmap("avares://Parakeet.Avalonia/Assets/toolbar_icons/play.png");
+    private static readonly Bitmap PauseBitmap = LoadBitmap("avares://Parakeet.Avalonia/Assets/toolbar_icons/pause.png");
+    private static readonly Bitmap PrevBitmap = LoadBitmap("avares://Parakeet.Avalonia/Assets/toolbar_icons/prev.png");
+    private static readonly Bitmap NextBitmap = LoadBitmap("avares://Parakeet.Avalonia/Assets/toolbar_icons/next.png");
+    private static readonly Bitmap[] RedoSpinnerFrames = LoadSpinnerFrames("avares://Parakeet.Avalonia/Assets/redo_spinner_frames");
 
     private readonly TranscriptEditorViewModel _vm = null!;
     private readonly TranscriptEditorWindowState _state = new();
@@ -270,25 +257,23 @@ public partial class TranscriptEditorWindow : Window
 
     private void RefreshPlaybackButtonImages()
     {
-        bool dark = App.Current.Settings.Current.Theme == AppTheme.Dark;
-        _state.PlayIconImage = dark ? PlayDarkBitmap : PlayLightBitmap;
-        _state.PauseIconImage = dark ? PauseDarkBitmap : PauseLightBitmap;
-        _state.PrevIconImage = dark ? PrevDarkBitmap : PrevLightBitmap;
-        _state.NextIconImage = dark ? NextDarkBitmap : NextLightBitmap;
+        _state.PlayIconImage = PlayBitmap;
+        _state.PauseIconImage = PauseBitmap;
+        _state.PrevIconImage = PrevBitmap;
+        _state.NextIconImage = NextBitmap;
     }
 
     private static void AssignActionButtonImages(TranscriptEditorCardState card)
     {
-        bool dark = App.Current.Settings.Current.Theme == AppTheme.Dark;
-        card.SuppressIconImage = dark ? SuppressDarkBitmap : SuppressLightBitmap;
+        card.SuppressIconImage = SuppressBitmap;
         card.SuppressAlertIconImage = SuppressRedBitmap;
-        card.AdjustTimesIconImage = dark ? AdjustTimesDarkBitmap : AdjustTimesLightBitmap;
-        card.ReassignSpeakerIconImage = dark ? ReassignSpeakerDarkBitmap : ReassignSpeakerLightBitmap;
-        card.AddSpeakerIconImage = dark ? AddSpeakerDarkBitmap : AddSpeakerLightBitmap;
-        card.MergePrevIconImage = dark ? MergePrevDarkBitmap : MergePrevLightBitmap;
-        card.MergeNextIconImage = dark ? MergeNextDarkBitmap : MergeNextLightBitmap;
-        card.SplitIconImage = dark ? SplitDarkBitmap : SplitLightBitmap;
-        card.RedoAsrIconImage = dark ? RedoDarkBitmap : RedoLightBitmap;
+        card.AdjustTimesIconImage = AdjustTimesBitmap;
+        card.ReassignSpeakerIconImage = ReassignSpeakerBitmap;
+        card.AddSpeakerIconImage = AddSpeakerBitmap;
+        card.MergePrevIconImage = MergePrevBitmap;
+        card.MergeNextIconImage = MergeNextBitmap;
+        card.SplitIconImage = SplitBitmap;
+        card.RedoAsrIconImage = RedoBitmap;
     }
 
     private void RefreshRedoAsrSpinnerImages()
@@ -302,9 +287,7 @@ public partial class TranscriptEditorWindow : Window
         => GetRedoAsrSpinnerFrames()[0];
 
     private static Bitmap[] GetRedoAsrSpinnerFrames()
-        => App.Current.Settings.Current.Theme == AppTheme.Dark
-            ? RedoSpinnerDarkFrames
-            : RedoSpinnerLightFrames;
+        => RedoSpinnerFrames;
 
     private static Bitmap[] LoadSpinnerFrames(string baseUri)
     {
@@ -787,7 +770,8 @@ public partial class TranscriptEditorWindow : Window
         if (_vm.PlaybackMode != PlaybackMode.Continuous
             || _vm.TotalAudioSeconds is not { } totalSec
             || totalSec <= 0
-            || SeekSlider.Bounds.Width <= 0)
+            || SeekSlider.Bounds.Width <= 0
+            || (!_seekDragging && !SeekSlider.IsPointerOver))
         {
             HideSeekBubble();
             return;

@@ -180,8 +180,8 @@
                                 </DataGridTemplateColumn.Header>
                                 <DataGridTemplateColumn.CellTemplate>
                                     <DataTemplate>
-                                        <Border Background="{Binding Status, Converter={StaticResource StatusToBrush}}"
-                                                BorderBrush="{Binding Status, Converter={StaticResource StatusToBrush}}"
+                                        <Border Background="{Binding StatusBrush}"
+                                                BorderBrush="{Binding StatusBrush}"
                                                 BorderThickness="1"
                                                 HorizontalAlignment="Left"
                                                 VerticalAlignment="Center"

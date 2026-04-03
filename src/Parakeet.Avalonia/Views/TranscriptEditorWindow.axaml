@@ -14,31 +14,54 @@
         <conv:BoolToVisibilityConverter x:Key="InvBoolToVis" Invert="True" />
         <conv:BoolToOpacityConverter x:Key="BoolToOpacity" />
         <conv:BoolToOpacityConverter x:Key="InvBoolToOpacity" Invert="True" />
+        <SolidColorBrush x:Key="EditorPrimaryButtonBrush" Color="#3070C8" />
+        <SolidColorBrush x:Key="EditorSecondaryButtonBrush" Color="#3A404A" />
+        <SolidColorBrush x:Key="EditorDangerButtonBrush" Color="#C8404E" />
+        <SolidColorBrush x:Key="EditorButtonTextBrush" Color="#FFFFFF" />
+        <SolidColorBrush x:Key="EditorButtonBorderBrush" Color="#45475A" />
     </Window.Resources>
 
     <Window.Styles>
         <Style Selector="Button">
+            <Setter Property="Background" Value="{StaticResource EditorPrimaryButtonBrush}" />
+            <Setter Property="Foreground" Value="{StaticResource EditorButtonTextBrush}" />
+            <Setter Property="BorderBrush" Value="{StaticResource EditorButtonBorderBrush}" />
             <Setter Property="Opacity" Value="1" />
         </Style>
         <Style Selector="Button:pointerover">
             <Setter Property="Opacity" Value="0.85" />
-            <Setter Property="Background" Value="{DynamicResource ButtonBgBrush}" />
+            <Setter Property="Background" Value="{StaticResource EditorPrimaryButtonBrush}" />
         </Style>
         <Style Selector="Button:pressed">
             <Setter Property="Opacity" Value="0.70" />
-            <Setter Property="Background" Value="{DynamicResource ButtonBgBrush}" />
+            <Setter Property="Background" Value="{StaticResource EditorPrimaryButtonBrush}" />
+        </Style>
+        <Style Selector="Button.primary-button">
+            <Setter Property="Background" Value="{StaticResource EditorPrimaryButtonBrush}" />
+            <Setter Property="Foreground" Value="{StaticResource EditorButtonTextBrush}" />
+            <Setter Property="BorderBrush" Value="{StaticResource EditorButtonBorderBrush}" />
+        </Style>
+        <Style Selector="Button.secondary-button">
+            <Setter Property="Background" Value="{StaticResource EditorSecondaryButtonBrush}" />
+            <Setter Property="Foreground" Value="{StaticResource EditorButtonTextBrush}" />
+            <Setter Property="BorderBrush" Value="{StaticResource EditorButtonBorderBrush}" />
         </Style>
         <Style Selector="Button.secondary-button:pointerover">
-            <Setter Property="Background" Value="{DynamicResource SecondaryBrush}" />
+            <Setter Property="Background" Value="{StaticResource EditorSecondaryButtonBrush}" />
         </Style>
         <Style Selector="Button.secondary-button:pressed">
-            <Setter Property="Background" Value="{DynamicResource SecondaryBrush}" />
+            <Setter Property="Background" Value="{StaticResource EditorSecondaryButtonBrush}" />
+        </Style>
+        <Style Selector="Button.danger-button">
+            <Setter Property="Background" Value="{StaticResource EditorDangerButtonBrush}" />
+            <Setter Property="Foreground" Value="{StaticResource EditorButtonTextBrush}" />
+            <Setter Property="BorderBrush" Value="{StaticResource EditorButtonBorderBrush}" />
         </Style>
         <Style Selector="Button.danger-button:pointerover">
-            <Setter Property="Background" Value="{DynamicResource DangerButtonBgBrush}" />
+            <Setter Property="Background" Value="{StaticResource EditorDangerButtonBrush}" />
         </Style>
         <Style Selector="Button.danger-button:pressed">
-            <Setter Property="Background" Value="{DynamicResource DangerButtonBgBrush}" />
+            <Setter Property="Background" Value="{StaticResource EditorDangerButtonBrush}" />
         </Style>
         <Style Selector="TextBox:focus">
             <Setter Property="BorderBrush" Value="{DynamicResource AccentBrush}" />
@@ -49,11 +72,20 @@
             <Setter Property="BorderThickness" Value="1" />
         </Style>
         <Style Selector="Button.action-button">
+            <Setter Property="Background" Value="{StaticResource EditorPrimaryButtonBrush}" />
+            <Setter Property="Foreground" Value="{StaticResource EditorButtonTextBrush}" />
+            <Setter Property="BorderBrush" Value="{StaticResource EditorButtonBorderBrush}" />
             <Setter Property="Width" Value="30" />
             <Setter Property="Height" Value="26" />
             <Setter Property="Padding" Value="2" />
             <Setter Property="HorizontalContentAlignment" Value="Stretch" />
             <Setter Property="VerticalContentAlignment" Value="Stretch" />
+        </Style>
+        <Style Selector="Button.action-button:pointerover">
+            <Setter Property="Background" Value="{StaticResource EditorPrimaryButtonBrush}" />
+        </Style>
+        <Style Selector="Button.action-button:pressed">
+            <Setter Property="Background" Value="{StaticResource EditorPrimaryButtonBrush}" />
         </Style>
         <Style Selector="Image.action-icon-image">
             <Setter Property="Width" Value="24" />
@@ -68,6 +100,56 @@
             <Setter Property="HorizontalAlignment" Value="Center" />
             <Setter Property="VerticalAlignment" Value="Center" />
             <Setter Property="TextAlignment" Value="Center" />
+        </Style>
+        <Style Selector="CheckBox">
+            <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="Padding" Value="4,2" />
+            <Setter Property="Template">
+                <ControlTemplate>
+                    <Border Background="{TemplateBinding Background}"
+                            CornerRadius="4"
+                            Padding="{TemplateBinding Padding}">
+                        <Grid ColumnDefinitions="16,*"
+                              ColumnSpacing="8">
+                            <Border x:Name="CheckBoxBorder"
+                                    Width="16"
+                                    Height="16"
+                                    BorderBrush="{DynamicResource TextBrush}"
+                                    BorderThickness="1.5"
+                                    Background="Transparent"
+                                    CornerRadius="3"
+                                    VerticalAlignment="Center">
+                                <Path x:Name="CheckMark"
+                                      Data="M 3 8 L 6.5 11.5 L 13 4.5"
+                                      Stroke="{StaticResource EditorButtonTextBrush}"
+                                      StrokeThickness="2"
+                                      IsVisible="False" />
+                            </Border>
+                            <ContentPresenter Grid.Column="1"
+                                              Content="{TemplateBinding Content}"
+                                              ContentTemplate="{TemplateBinding ContentTemplate}"
+                                              VerticalAlignment="Center"
+                                              Foreground="{TemplateBinding Foreground}" />
+                        </Grid>
+                    </Border>
+                </ControlTemplate>
+            </Setter>
+        </Style>
+        <Style Selector="CheckBox:pointerover">
+            <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
+            <Setter Property="Background" Value="{DynamicResource OverlayBrush}" />
+        </Style>
+        <Style Selector="CheckBox:pressed">
+            <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
+            <Setter Property="Background" Value="{DynamicResource OverlayBrush}" />
+        </Style>
+        <Style Selector="CheckBox:checked /template/ Border#CheckBoxBorder">
+            <Setter Property="Background" Value="{StaticResource EditorPrimaryButtonBrush}" />
+            <Setter Property="BorderBrush" Value="{StaticResource EditorPrimaryButtonBrush}" />
+        </Style>
+        <Style Selector="CheckBox:checked /template/ Path#CheckMark">
+            <Setter Property="IsVisible" Value="True" />
         </Style>
         <Style Selector="Image.playback-icon-image">
             <Setter Property="Width" Value="30" />

@@ -52,6 +52,12 @@ internal partial class HomeViewModel : ObservableObject
             if (e.PropertyName == "Item[]")
                 UpdateStatusText();
         };
+
+        ThemeManager.ThemeChanged += _ =>
+        {
+            foreach (var job in Jobs)
+                job.RefreshThemeBindings();
+        };
     }
 
     private void UpdateStatusText()
