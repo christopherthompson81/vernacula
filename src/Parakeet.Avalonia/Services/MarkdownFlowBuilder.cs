@@ -4,10 +4,13 @@ using Avalonia.Controls;
 using Avalonia.Controls.Documents;
 using Avalonia.Layout;
 using Avalonia.Media;
+using Avalonia.Media.Imaging;
+using Avalonia.Platform;
 using Markdig;
 using Markdig.Extensions.Tables;
 using Markdig.Syntax;
 using Markdig.Syntax.Inlines;
+using ParakeetCSharp.Models;
 
 namespace ParakeetCSharp.Services;
 
@@ -15,6 +18,18 @@ internal static class MarkdownFlowBuilder
 {
     private static readonly MarkdownPipeline Pipeline =
         new MarkdownPipelineBuilder().UseAdvancedExtensions().Build();
+
+    private static readonly IReadOnlyDictionary<ushort, string> Mdl2Fallbacks = new Dictionary<ushort, string>
+    {
+        [0xE77B] = "\u25CC",
+        [0xE916] = "\u23F2",
+        [0xEA39] = "\u2297",
+        [0xE72B] = "\u2190",
+        [0xE72A] = "\u2192",
+        [0xE8C6] = "\u2702",
+        [0xE72C] = "\u21BB",
+    };
+    private static readonly Dictionary<string, Bitmap> ImageCache = new(StringComparer.Ordinal);
 
     private static readonly FontFamily MonoFamily =
         new("Cascadia Mono,Consolas,Courier New");
@@ -273,11 +288,12 @@ internal static class MarkdownFlowBuilder
 
     private static Control CreateTextWithLinks(ContainerInline? inline, Thickness margin, Action<string>? navigateTo)
     {
-        var segments = new List<(string Text, string? Url)>();
+        var segments = new List<InlineSegment>();
         CollectSegments(inline, segments);
         bool hasLinks = segments.Any(s => !string.IsNullOrWhiteSpace(s.Url));
+        bool hasIcons = segments.Any(s => s.IconUri is not null || s.IconGlyph is not null);
 
-        if (!hasLinks)
+        if (!hasLinks && !hasIcons)
         {
             return new TextBlock
             {
@@ -295,22 +311,56 @@ internal static class MarkdownFlowBuilder
             Margin = margin,
         };
 
-        foreach (var (text, url) in segments)
+        foreach (var segment in segments)
         {
-            if (string.IsNullOrEmpty(text))
+            if (segment.IconGlyph is not null)
+            {
+                textBlock.Inlines!.Add(new InlineUIContainer
+                {
+                    Child = new TextBlock
+                    {
+                        Text = segment.IconGlyph,
+                        FontFamily = new FontFamily("Segoe MDL2 Assets"),
+                        FontSize = 16,
+                        Foreground = Brush("TextBrush"),
+                        VerticalAlignment = VerticalAlignment.Center,
+                    },
+                    BaselineAlignment = BaselineAlignment.Center,
+                });
+                continue;
+            }
+
+            if (segment.IconUri is not null)
+            {
+                textBlock.Inlines!.Add(new InlineUIContainer
+                {
+                    Child = new Image
+                    {
+                        Source = LoadBitmap(segment.IconUri),
+                        Width = 16,
+                        Height = 16,
+                        Stretch = Stretch.Uniform,
+                        VerticalAlignment = VerticalAlignment.Center,
+                    },
+                    BaselineAlignment = BaselineAlignment.Center,
+                });
+                continue;
+            }
+
+            if (string.IsNullOrEmpty(segment.Text))
             {
                 continue;
             }
 
-            if (string.IsNullOrWhiteSpace(url))
+            if (string.IsNullOrWhiteSpace(segment.Url))
             {
-                textBlock.Inlines!.Add(new Run(text));
+                textBlock.Inlines!.Add(new Run(segment.Text));
             }
             else
             {
                 var linkText = new TextBlock
                 {
-                    Text = text,
+                    Text = segment.Text,
                     Foreground = Brush("LinkBrush"),
                     TextWrapping = TextWrapping.NoWrap,
                     TextDecorations = TextDecorations.Underline,
@@ -319,7 +369,7 @@ internal static class MarkdownFlowBuilder
                     FontSize = 13,
                     FontFamily = new FontFamily("Segoe UI"),
                 };
-                linkText.PointerPressed += (_, _) => navigateTo?.Invoke(url);
+                linkText.PointerPressed += (_, _) => navigateTo?.Invoke(segment.Url);
                 textBlock.Inlines!.Add(new InlineUIContainer
                 {
                     Child = linkText,
@@ -331,7 +381,7 @@ internal static class MarkdownFlowBuilder
         return textBlock;
     }
 
-    private static void CollectSegments(ContainerInline? container, List<(string Text, string? Url)> segments)
+    private static void CollectSegments(ContainerInline? container, List<InlineSegment> segments)
     {
         if (container is null)
         {
@@ -344,24 +394,25 @@ internal static class MarkdownFlowBuilder
         }
     }
 
-    private static void CollectSegments(Markdig.Syntax.Inlines.Inline inline, List<(string Text, string? Url)> segments)
+    private static void CollectSegments(Markdig.Syntax.Inlines.Inline inline, List<InlineSegment> segments)
     {
         switch (inline)
         {
             case LiteralInline literal:
-                AddSegment(segments, literal.ToString(), null);
+                AddSegment(segments, literal.ToString(), null, null, null);
                 break;
             case CodeInline code:
-                AddSegment(segments, code.Content, null);
+                AddSegment(segments, code.Content, null, null, null);
                 break;
             case LineBreakInline lineBreak:
-                AddSegment(segments, lineBreak.IsHard ? "\n" : " ", null);
+                AddSegment(segments, lineBreak.IsHard ? "\n" : " ", null, null, null);
                 break;
             case HtmlInline html:
-                AddSegment(segments, ConvertHtmlInline(html), null);
+                var icon = GetMdl2Icon(html);
+                AddSegment(segments, icon.Text, null, icon.IconUri, icon.IconGlyph);
                 break;
             case LinkInline link:
-                AddSegment(segments, GetInlinePlainText(link), link.Url);
+                AddSegment(segments, GetInlinePlainText(link), link.Url, null, null);
                 break;
             case ContainerInline container:
                 foreach (var child in container)
@@ -370,25 +421,31 @@ internal static class MarkdownFlowBuilder
                 }
                 break;
             default:
-                AddSegment(segments, inline.ToString() ?? string.Empty, null);
+                AddSegment(segments, inline.ToString() ?? string.Empty, null, null, null);
                 break;
         }
     }
 
-    private static void AddSegment(List<(string Text, string? Url)> segments, string text, string? url)
+    private static void AddSegment(List<InlineSegment> segments, string? text, string? url, string? iconUri, string? iconGlyph)
     {
+        if (iconUri is not null || iconGlyph is not null)
+        {
+            segments.Add(new InlineSegment(null, null, iconUri, iconGlyph));
+            return;
+        }
+
         if (string.IsNullOrEmpty(text))
         {
             return;
         }
 
-        if (segments.Count > 0 && segments[^1].Url == url)
+        if (segments.Count > 0 && segments[^1].IconUri is null && segments[^1].IconGlyph is null && segments[^1].Url == url)
         {
-            segments[^1] = (segments[^1].Text + text, url);
+            segments[^1] = segments[^1] with { Text = segments[^1].Text + text };
             return;
         }
 
-        segments.Add((text, url));
+        segments.Add(new InlineSegment(text, url, null, null));
     }
 
     private static string ConvertHtmlInline(HtmlInline html)
@@ -402,12 +459,65 @@ internal static class MarkdownFlowBuilder
             int end = tag.IndexOf('"', start);
             if (end > start && ushort.TryParse(tag[start..end], NumberStyles.HexNumber, null, out var codePoint))
             {
-                return ((char)codePoint).ToString();
+                return Mdl2Fallbacks.TryGetValue(codePoint, out var fallback)
+                    ? fallback
+                    : string.Empty;
             }
         }
 
         return string.Empty;
     }
+
+    private static (string? Text, string? IconUri, string? IconGlyph) GetMdl2Icon(HtmlInline html)
+    {
+        var tag = html.Tag;
+        const string marker = "ch=\"";
+        int index = tag.IndexOf(marker, StringComparison.Ordinal);
+        if (!tag.StartsWith("<mdl2 ", StringComparison.Ordinal) || index < 0)
+            return (ConvertHtmlInline(html), null, null);
+
+        int start = index + marker.Length;
+        int end = tag.IndexOf('"', start);
+        if (end <= start || !ushort.TryParse(tag[start..end], NumberStyles.HexNumber, null, out var codePoint))
+            return (ConvertHtmlInline(html), null, null);
+
+        bool dark = App.Current.Settings.Current.Theme == AppTheme.Dark;
+        return codePoint switch
+        {
+            0xE77B => (null, null, ((char)codePoint).ToString()),
+            0xE916 => (null, dark
+                ? "avares://Parakeet.Avalonia/Assets/toolbar_icons/adjust_times_dark.png"
+                : "avares://Parakeet.Avalonia/Assets/toolbar_icons/adjust_times_light.png", null),
+            0xEA39 => (null, dark
+                ? "avares://Parakeet.Avalonia/Assets/toolbar_icons/suppress_dark.png"
+                : "avares://Parakeet.Avalonia/Assets/toolbar_icons/suppress_light.png", null),
+            0xE72B => (null, dark
+                ? "avares://Parakeet.Avalonia/Assets/toolbar_icons/merge_prev_dark.png"
+                : "avares://Parakeet.Avalonia/Assets/toolbar_icons/merge_prev_light.png", null),
+            0xE72A => (null, dark
+                ? "avares://Parakeet.Avalonia/Assets/toolbar_icons/merge_next_dark.png"
+                : "avares://Parakeet.Avalonia/Assets/toolbar_icons/merge_next_light.png", null),
+            0xE8C6 => (null, dark
+                ? "avares://Parakeet.Avalonia/Assets/toolbar_icons/split_dark.png"
+                : "avares://Parakeet.Avalonia/Assets/toolbar_icons/split_light.png", null),
+            0xE72C => (null, dark
+                ? "avares://Parakeet.Avalonia/Assets/toolbar_icons/redo_dark.png"
+                : "avares://Parakeet.Avalonia/Assets/toolbar_icons/redo_light.png", null),
+            _ => (ConvertHtmlInline(html), null, null),
+        };
+    }
+
+    private static Bitmap LoadBitmap(string uri)
+    {
+        if (ImageCache.TryGetValue(uri, out var bitmap))
+            return bitmap;
+
+        bitmap = new Bitmap(AssetLoader.Open(new Uri(uri)));
+        ImageCache[uri] = bitmap;
+        return bitmap;
+    }
+
+    private sealed record InlineSegment(string? Text, string? Url, string? IconUri, string? IconGlyph);
 
     private static string GetInlinePlainText(ContainerInline? container)
     {
