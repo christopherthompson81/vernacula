@@ -342,6 +342,8 @@ public partial class TranscriptEditorWindow : Window
 
     private void ApplyFocusedIndex(int focusedIndex, bool force = false)
     {
+        int previousFocusedIndex = _state.SelectedCard?.Index ?? -1;
+
         if (focusedIndex < 0 || focusedIndex >= _state.Cards.Count)
         {
             _suppressSelectionChanged = true;
@@ -369,10 +371,12 @@ public partial class TranscriptEditorWindow : Window
         }
 
         for (int i = 0; i < _state.Cards.Count; i++)
-            if (force || IsWarmCardIndex(i, focusedIndex))
+            if (force || ShouldRefreshCardIndex(i, focusedIndex, previousFocusedIndex))
                 RefreshCardState(_state.Cards[i], preserveDrafts: true);
 
         RefreshFocusedNeighborhood();
+        SegmentList.InvalidateMeasure();
+        SegmentList.InvalidateArrange();
         SegmentList.ScrollIntoView(_state.Cards[focusedIndex]);
     }
 
@@ -398,6 +402,10 @@ public partial class TranscriptEditorWindow : Window
 
     private static bool IsWarmCardIndex(int cardIndex, int focusedIndex)
         => Math.Abs(cardIndex - focusedIndex) <= 1;
+
+    private static bool ShouldRefreshCardIndex(int cardIndex, int focusedIndex, int previousFocusedIndex)
+        => IsWarmCardIndex(cardIndex, focusedIndex)
+           || (previousFocusedIndex >= 0 && IsWarmCardIndex(cardIndex, previousFocusedIndex));
 
     private void SetFocusedIndex(int index, bool force = false)
     {

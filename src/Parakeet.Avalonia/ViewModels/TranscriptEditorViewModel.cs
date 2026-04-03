@@ -326,6 +326,8 @@ internal partial class TranscriptEditorViewModel : ObservableObject, IDisposable
         var    startedAt  = DateTime.UtcNow + leadIn;
         double speed      = PlaybackSpeed;
 
+        UpdateHighlightedToken(seg, segOffsetSec);
+
         _playbackTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(50) };
         _playbackTimer.Tick += (_, _) =>
         {
@@ -397,6 +399,14 @@ internal partial class TranscriptEditorViewModel : ObservableObject, IDisposable
         PauseCommand.NotifyCanExecuteChanged();
 
         var startedAt = DateTime.UtcNow + leadIn;
+
+        UpdateContinuousFocus(startSec);
+
+        if (FocusedIndex >= 0 && FocusedIndex < Segments.Count)
+        {
+            var currentSegment = Segments[FocusedIndex];
+            UpdateHighlightedToken(currentSegment, Math.Max(0.0, startSec - currentSegment.PlayStart));
+        }
 
         _playbackTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(50) };
         _playbackTimer.Tick += (_, _) =>
