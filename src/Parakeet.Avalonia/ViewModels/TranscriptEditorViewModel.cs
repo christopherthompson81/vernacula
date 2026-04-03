@@ -497,10 +497,10 @@ internal partial class TranscriptEditorViewModel : ObservableObject, IDisposable
         if (wasPlaying) Play();
     }
 
-    public void SeekContinuous(double position)
+    public bool SeekContinuous(double position, bool resumePlayback = true)
     {
         if (_fullAudio == null || Segments.Count == 0)
-            return;
+            return false;
 
         bool wasPlaying = IsPlaying;
         double clampedPosition = Math.Clamp(position, 0.0, 1.0);
@@ -525,8 +525,10 @@ internal partial class TranscriptEditorViewModel : ObservableObject, IDisposable
             _suppressContinuousPositionFocusSync = false;
         }
 
-        if (wasPlaying)
+        if (wasPlaying && resumePlayback)
             Play();
+
+        return wasPlaying;
     }
 
     public int GetContinuousFocusIndex(double position)

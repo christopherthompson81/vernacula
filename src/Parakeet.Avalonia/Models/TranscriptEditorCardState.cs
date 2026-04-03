@@ -21,19 +21,6 @@ internal sealed partial class TranscriptEditorCardState : ObservableObject
         _draftContent = segment.Content;
         _timeRangeText = FormatTimeRange(segment.PlayStart, segment.PlayEnd);
         _suppressButtonText = "Suppress";
-        Loc.Instance.PropertyChanged += (_, e) =>
-        {
-            if (e.PropertyName != "Item[]")
-                return;
-
-            OnPropertyChanged(nameof(VerifiedLabel));
-            OnPropertyChanged(nameof(AddSpeakerTooltip));
-            OnPropertyChanged(nameof(AdjustTimesTooltip));
-            OnPropertyChanged(nameof(MergePrevTooltip));
-            OnPropertyChanged(nameof(MergeNextTooltip));
-            OnPropertyChanged(nameof(SplitTooltip));
-            OnPropertyChanged(nameof(RedoAsrTooltip));
-        };
     }
 
     internal EditorSegment Segment { get; }
@@ -75,9 +62,13 @@ internal sealed partial class TranscriptEditorCardState : ObservableObject
     [ObservableProperty] private IBrush _adjacentBackground = Brushes.Transparent;
     [ObservableProperty] private IBrush _adjacentForeground = Brushes.Black;
     [ObservableProperty] private TextDecorationCollection? _adjacentTextDecorations;
+    [ObservableProperty] private IBrush _cardBackground = Brushes.Transparent;
+    [ObservableProperty] private IBrush _cardBorderBrush = Brushes.Transparent;
     [ObservableProperty] private IBrush _focusedBackground = Brushes.Transparent;
     [ObservableProperty] private IBrush _focusedBorderBrush = Brushes.Transparent;
     [ObservableProperty] private IBrush _suppressIconBrush = Brushes.Black;
+    private IBrush _unfocusedBackground = Brushes.Transparent;
+    private IBrush _unfocusedBorderBrush = Brushes.Transparent;
 
     public bool IsVerified => Segment.Verified;
     public bool IsSuppressed => Segment.IsSuppressed;
@@ -90,6 +81,17 @@ internal sealed partial class TranscriptEditorCardState : ObservableObject
     public string MergeNextTooltip => Loc.Instance["editor_merge_next"];
     public string SplitTooltip => Loc.Instance["editor_split"];
     public string RedoAsrTooltip => Loc.Instance["editor_redo_asr"];
+
+    public void RefreshLocalizedText()
+    {
+        OnPropertyChanged(nameof(VerifiedLabel));
+        OnPropertyChanged(nameof(AddSpeakerTooltip));
+        OnPropertyChanged(nameof(AdjustTimesTooltip));
+        OnPropertyChanged(nameof(MergePrevTooltip));
+        OnPropertyChanged(nameof(MergeNextTooltip));
+        OnPropertyChanged(nameof(SplitTooltip));
+        OnPropertyChanged(nameof(RedoAsrTooltip));
+    }
 
     public void SyncDraftsFromSegment()
     {
@@ -194,6 +196,14 @@ internal sealed partial class TranscriptEditorCardState : ObservableObject
         FocusedBackground = background;
         FocusedBorderBrush = borderBrush;
         SuppressIconBrush = suppressIconBrush;
+        RefreshCardChrome();
+    }
+
+    public void SetUnfocusedAppearance(IBrush background, IBrush borderBrush)
+    {
+        _unfocusedBackground = background;
+        _unfocusedBorderBrush = borderBrush;
+        RefreshCardChrome();
     }
 
     public void ApplyHighlightedAsrToken(int tokenIndex, Color accentColor)
@@ -211,6 +221,14 @@ internal sealed partial class TranscriptEditorCardState : ObservableObject
     }
 
     partial void OnDraftContentChanged(string value) => OnPropertyChanged(nameof(HasUserEdits));
+
+    partial void OnIsFocusedChanged(bool value) => RefreshCardChrome();
+
+    private void RefreshCardChrome()
+    {
+        CardBackground = IsFocused ? FocusedBackground : _unfocusedBackground;
+        CardBorderBrush = IsFocused ? FocusedBorderBrush : _unfocusedBorderBrush;
+    }
 
     private static string FormatTimeRange(double start, double end)
         => FormattableString.Invariant($"{start:F3}s - {end:F3}s");

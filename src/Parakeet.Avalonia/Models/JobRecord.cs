@@ -11,18 +11,6 @@ public class JobRecord : ObservableObject
 {
     public JobRecord()
     {
-        Loc.Instance.PropertyChanged += (_, e) =>
-        {
-            if (e.PropertyName == "Item[]")
-            {
-                OnPropertyChanged(nameof(StatusLabel));
-                OnPropertyChanged(nameof(ResumeLabel));
-                OnPropertyChanged(nameof(MonitorLabel));
-                OnPropertyChanged(nameof(PauseLabel));
-                OnPropertyChanged(nameof(LoadLabel));
-                OnPropertyChanged(nameof(RemoveLabel));
-            }
-        };
     }
 
     public int     JobId                     { get; set; }
@@ -196,5 +184,15 @@ public class JobRecord : ObservableObject
     public void RefreshThemeBindings()
     {
         OnPropertyChanged(nameof(StatusBrush));
+    }
+
+    public void RefreshLocalizedText()
+    {
+        OnPropertyChanged(nameof(StatusLabel));
+        OnPropertyChanged(nameof(ResumeLabel));
+        OnPropertyChanged(nameof(MonitorLabel));
+        OnPropertyChanged(nameof(PauseLabel));
+        OnPropertyChanged(nameof(LoadLabel));
+        OnPropertyChanged(nameof(RemoveLabel));
     }
 }

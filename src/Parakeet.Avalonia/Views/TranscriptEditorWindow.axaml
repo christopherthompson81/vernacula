@@ -292,298 +292,273 @@
                 </Grid>
             </Border>
 
-            <ListBox x:Name="SegmentList"
-                     ItemsSource="{Binding Cards}"
-                     SelectedItem="{Binding SelectedCard, Mode=TwoWay}"
-                     IsEnabled="{Binding CanInteract}"
-                     Background="Transparent"
-                     BorderThickness="0"
-                     Margin="16,8"
-                     SelectionMode="Single"
-                     SelectionChanged="SegmentList_SelectionChanged">
-            <ListBox.ItemsPanel>
-                <ItemsPanelTemplate>
-                    <StackPanel />
-                </ItemsPanelTemplate>
-            </ListBox.ItemsPanel>
-            <ListBox.Styles>
-                <Style Selector="ListBoxItem">
-                    <Setter Property="Padding" Value="0" />
-                    <Setter Property="Margin" Value="0,4,0,4" />
-                    <Setter Property="HorizontalContentAlignment" Value="Stretch" />
-                    <Setter Property="BorderThickness" Value="0" />
-                    <Setter Property="Background" Value="Transparent" />
-                    <Setter Property="Template">
-                        <ControlTemplate>
-                            <ContentPresenter Name="PART_ContentPresenter"
-                                              Content="{TemplateBinding Content}"
-                                              ContentTemplate="{TemplateBinding ContentTemplate}"
-                                              HorizontalContentAlignment="{TemplateBinding HorizontalContentAlignment}"
-                                              VerticalContentAlignment="{TemplateBinding VerticalContentAlignment}"
-                                              Padding="{TemplateBinding Padding}" />
-                        </ControlTemplate>
-                    </Setter>
-                </Style>
-                <Style Selector="ListBoxItem:pointerover">
-                    <Setter Property="Background" Value="Transparent" />
-                </Style>
-                <Style Selector="ListBoxItem:selected">
-                    <Setter Property="Background" Value="Transparent" />
-                </Style>
-            </ListBox.Styles>
+            <Grid Margin="16,8"
+                  ColumnDefinitions="360,*"
+                  ColumnSpacing="12"
+                  IsEnabled="{Binding CanInteract}">
+                <ListBox x:Name="SegmentList"
+                         Grid.Column="0"
+                         ItemsSource="{Binding Cards}"
+                         SelectedItem="{Binding SelectedCard, Mode=TwoWay}"
+                         Background="Transparent"
+                         BorderThickness="0"
+                         SelectionMode="Single"
+                         SelectionChanged="SegmentList_SelectionChanged">
+                    <ListBox.Styles>
+                        <Style Selector="ListBoxItem">
+                            <Setter Property="Padding" Value="0" />
+                            <Setter Property="Margin" Value="0,4,0,4" />
+                            <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                            <Setter Property="BorderThickness" Value="0" />
+                            <Setter Property="Background" Value="Transparent" />
+                            <Setter Property="Template">
+                                <ControlTemplate>
+                                    <ContentPresenter Name="PART_ContentPresenter"
+                                                      Content="{TemplateBinding Content}"
+                                                      ContentTemplate="{TemplateBinding ContentTemplate}"
+                                                      HorizontalContentAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                                      VerticalContentAlignment="{TemplateBinding VerticalContentAlignment}"
+                                                      Padding="{TemplateBinding Padding}" />
+                                </ControlTemplate>
+                            </Setter>
+                        </Style>
+                        <Style Selector="ListBoxItem:pointerover">
+                            <Setter Property="Background" Value="Transparent" />
+                        </Style>
+                        <Style Selector="ListBoxItem:selected">
+                            <Setter Property="Background" Value="Transparent" />
+                        </Style>
+                    </ListBox.Styles>
 
-            <ListBox.ItemTemplate>
-                <DataTemplate>
-                    <Grid PointerPressed="SegmentCard_PointerPressed">
-                        <Border IsVisible="{Binding IsFocused, Converter={StaticResource InvBoolToVis}}"
-                                Background="{Binding AdjacentBackground}"
-                                BorderBrush="{DynamicResource OverlayBrush}"
-                                BorderThickness="1"
-                                CornerRadius="6"
-                                Padding="8">
-                            <StackPanel Spacing="8">
-                                <Grid ColumnDefinitions="*,Auto"
-                                      ColumnSpacing="10">
-                                    <TextBlock Text="{Binding DraftSpeakerName}"
-                                               FontWeight="SemiBold"
-                                               Foreground="{DynamicResource TextBrush}"
-                                               VerticalAlignment="Center" />
-                                    <TextBlock Grid.Column="1"
-                                               Text="{Binding TimeRangeText}"
-                                               FontSize="11"
-                                               Foreground="{DynamicResource SubtextBrush}"
-                                               VerticalAlignment="Center" />
-                                </Grid>
+                    <ListBox.ItemTemplate>
+                        <DataTemplate>
+                            <Border PointerPressed="SegmentCard_PointerPressed"
+                                    Background="{Binding CardBackground}"
+                                    BorderBrush="{Binding CardBorderBrush}"
+                                    BorderThickness="2"
+                                    CornerRadius="8"
+                                    Padding="8">
+                                <StackPanel Spacing="8">
+                                    <Grid ColumnDefinitions="*,Auto"
+                                          ColumnSpacing="10">
+                                        <TextBlock Text="{Binding DraftSpeakerName}"
+                                                   FontWeight="SemiBold"
+                                                   Foreground="{DynamicResource TextBrush}"
+                                                   VerticalAlignment="Center" />
+                                        <TextBlock Grid.Column="1"
+                                                   Text="{Binding TimeRangeText}"
+                                                   FontSize="11"
+                                                   Foreground="{DynamicResource SubtextBrush}"
+                                                   VerticalAlignment="Center" />
+                                    </Grid>
 
-                                <StackPanel Orientation="Horizontal"
-                                            Spacing="6">
-                                    <Border Background="{DynamicResource GreenBrush}"
-                                            CornerRadius="999"
-                                            Padding="8,3"
-                                            IsVisible="{Binding IsVerified, Converter={StaticResource BoolToVis}}">
-                                        <TextBlock Text="{local:Loc editor_verified}"
-                                                   FontSize="11"
-                                                   Foreground="White" />
-                                    </Border>
-                                    <Border Background="{DynamicResource RedBrush}"
-                                            CornerRadius="999"
-                                            Padding="8,3"
-                                            IsVisible="{Binding IsSuppressed, Converter={StaticResource BoolToVis}}">
-                                        <TextBlock Text="Suppressed"
-                                                   FontSize="11"
-                                                   Foreground="White" />
-                                    </Border>
-                                    <Border Background="{DynamicResource AccentBrush}"
-                                            CornerRadius="999"
-                                            Padding="8,3"
-                                            IsVisible="{Binding HasUserEdits, Converter={StaticResource BoolToVis}}">
-                                        <TextBlock Text="Edited"
-                                                   FontSize="11"
-                                                   Foreground="White" />
-                                    </Border>
+                                    <TextBlock Text="{Binding AdjacentPlainText}"
+                                               IsVisible="{Binding ShowAdjacentRuns, Converter={StaticResource InvBoolToVis}}"
+                                               TextWrapping="Wrap"
+                                               MaxHeight="72"
+                                               TextTrimming="CharacterEllipsis"
+                                               Foreground="{Binding AdjacentForeground}"
+                                               TextDecorations="{Binding AdjacentTextDecorations}" />
+                                    <ItemsControl ItemsSource="{Binding AdjacentRuns}"
+                                                  IsVisible="{Binding ShowAdjacentRuns, Converter={StaticResource BoolToVis}}"
+                                                  MaxHeight="72">
+                                        <ItemsControl.ItemsPanel>
+                                            <ItemsPanelTemplate>
+                                                <WrapPanel />
+                                            </ItemsPanelTemplate>
+                                        </ItemsControl.ItemsPanel>
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate>
+                                                <TextBlock Text="{Binding Text}"
+                                                           Background="{Binding Background}"
+                                                           TextWrapping="NoWrap"
+                                                           Foreground="{Binding Foreground}" />
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
                                 </StackPanel>
+                            </Border>
+                        </DataTemplate>
+                    </ListBox.ItemTemplate>
+                </ListBox>
 
-                                <TextBlock Text="{Binding AdjacentPlainText}"
-                                           IsVisible="{Binding ShowAdjacentRuns, Converter={StaticResource InvBoolToVis}}"
-                                           TextWrapping="Wrap"
-                                           MaxHeight="54"
-                                           TextTrimming="CharacterEllipsis"
-                                           Foreground="{Binding AdjacentForeground}"
-                                           TextDecorations="{Binding AdjacentTextDecorations}" />
-                                <ItemsControl ItemsSource="{Binding AdjacentRuns}"
-                                              IsVisible="{Binding ShowAdjacentRuns, Converter={StaticResource BoolToVis}}"
-                                              MaxHeight="54">
-                                    <ItemsControl.ItemsPanel>
-                                        <ItemsPanelTemplate>
-                                            <WrapPanel />
-                                        </ItemsPanelTemplate>
-                                    </ItemsControl.ItemsPanel>
-                                    <ItemsControl.ItemTemplate>
-                                        <DataTemplate>
-                                            <TextBlock Text="{Binding Text}"
-                                                       Background="{Binding Background}"
-                                                       TextWrapping="NoWrap"
-                                                       Foreground="{Binding Foreground}" />
-                                        </DataTemplate>
-                                    </ItemsControl.ItemTemplate>
-                                </ItemsControl>
-                            </StackPanel>
-                        </Border>
+                <ContentControl Grid.Column="1"
+                                Content="{Binding SelectedCard}">
+                    <ContentControl.ContentTemplate>
+                        <DataTemplate>
+                            <Border Background="{Binding FocusedBackground}"
+                                    BorderBrush="{Binding FocusedBorderBrush}"
+                                    BorderThickness="2"
+                                    CornerRadius="8"
+                                    Padding="12">
+                                <StackPanel Spacing="10">
+                                    <Grid ColumnDefinitions="Auto,Auto,*,Auto,Auto"
+                                          ColumnSpacing="8">
+                                        <TextBox Text="{Binding DraftSpeakerName, Mode=TwoWay}"
+                                                 x:Name="SpeakerNameTextBox"
+                                                 MinWidth="130"
+                                                 MaxWidth="220"
+                                                 HorizontalAlignment="Left"
+                                                 KeyDown="SpeakerNameBox_KeyDown"
+                                                 PointerWheelChanged="SpeakerNameBox_PointerWheelChanged"
+                                                 LostFocus="SpeakerNameBox_LostFocus" />
+                                        <Button Grid.Column="1"
+                                                Classes="secondary-button action-button"
+                                                Click="SpeakerMenu_Click"
+                                                ToolTip.Tip="{Binding AddSpeakerTooltip}">
+                                            <TextBlock Classes="speaker-menu-icon"
+                                                       Text="&#xE77B;" />
+                                        </Button>
+                                        <TextBlock Grid.Column="3"
+                                                   Text="{Binding TimeRangeText}"
+                                                   Foreground="{DynamicResource SubtextBrush}"
+                                                   VerticalAlignment="Center" />
+                                        <CheckBox Grid.Column="4"
+                                                  Content="{Binding VerifiedLabel}"
+                                                  IsChecked="{Binding IsVerified}"
+                                                  VerticalAlignment="Center"
+                                                  Click="VerifiedCheckBox_Click" />
+                                    </Grid>
 
-                        <Border IsVisible="{Binding IsFocused, Converter={StaticResource BoolToVis}}"
-                                Background="{Binding FocusedBackground}"
-                                BorderBrush="{Binding FocusedBorderBrush}"
-                                BorderThickness="2"
-                                CornerRadius="8"
-                                Padding="12">
-                            <StackPanel Spacing="10">
-                                <Grid ColumnDefinitions="Auto,Auto,*,Auto,Auto"
-                                      ColumnSpacing="8">
-                                    <TextBox Text="{Binding DraftSpeakerName, Mode=TwoWay}"
-                                             x:Name="SpeakerNameTextBox"
-                                             MinWidth="130"
-                                             MaxWidth="220"
-                                             HorizontalAlignment="Left"
-                                             KeyDown="SpeakerNameBox_KeyDown"
-                                             PointerWheelChanged="SpeakerNameBox_PointerWheelChanged"
-                                             LostFocus="SpeakerNameBox_LostFocus" />
-                                    <Button Grid.Column="1"
-                                            Classes="secondary-button action-button"
-                                            Click="SpeakerMenu_Click"
-                                            ToolTip.Tip="{Binding AddSpeakerTooltip}">
-                                        <TextBlock Classes="speaker-menu-icon"
-                                                   Text="&#xE77B;" />
-                                    </Button>
-                                    <TextBlock Grid.Column="3"
-                                               Text="{Binding TimeRangeText}"
-                                               Foreground="{DynamicResource SubtextBrush}"
-                                               VerticalAlignment="Center" />
-                                    <CheckBox Grid.Column="4"
-                                              Content="{Binding VerifiedLabel}"
-                                              IsChecked="{Binding IsVerified}"
-                                              VerticalAlignment="Center"
-                                              Click="VerifiedCheckBox_Click" />
-                                </Grid>
-
-                                <WrapPanel Orientation="Horizontal"
-                                           ItemHeight="34">
-                                    <Button Classes="secondary-button action-button"
-                                            Margin="0,0,8,8"
-                                            Click="SuppressButton_Click"
-                                            ToolTip.Tip="{Binding SuppressButtonText}">
-                                        <Grid Width="28"
-                                              Height="28">
+                                    <WrapPanel Orientation="Horizontal"
+                                               ItemHeight="34">
+                                        <Button Classes="secondary-button action-button"
+                                                Margin="0,0,8,8"
+                                                Click="SuppressButton_Click"
+                                                ToolTip.Tip="{Binding SuppressButtonText}">
+                                            <Grid Width="28"
+                                                  Height="28">
+                                                <Image Classes="action-icon-image"
+                                                       Source="{Binding SuppressIconImage}"
+                                                       Opacity="{Binding IsSuppressed, Converter={StaticResource InvBoolToOpacity}}" />
+                                                <Image Classes="action-icon-image"
+                                                       Source="{Binding SuppressAlertIconImage}"
+                                                       Opacity="{Binding IsSuppressed, Converter={StaticResource BoolToOpacity}}" />
+                                            </Grid>
+                                        </Button>
+                                        <Button Classes="secondary-button action-button"
+                                                Margin="0,0,8,8"
+                                                Click="AdjustTimes_Click"
+                                                IsEnabled="{Binding CanAdjustTimes}"
+                                                ToolTip.Tip="{Binding AdjustTimesTooltip}">
                                             <Image Classes="action-icon-image"
-                                                   Source="{Binding SuppressIconImage}"
-                                                   Opacity="{Binding IsSuppressed, Converter={StaticResource InvBoolToOpacity}}" />
+                                                   Source="{Binding AdjustTimesIconImage}" />
+                                        </Button>
+                                        <Button Classes="secondary-button action-button"
+                                                Margin="0,0,8,8"
+                                                Click="MergePrev_Click"
+                                                IsEnabled="{Binding CanMergePrev}"
+                                                ToolTip.Tip="{Binding MergePrevTooltip}">
                                             <Image Classes="action-icon-image"
-                                                   Source="{Binding SuppressAlertIconImage}"
-                                                   Opacity="{Binding IsSuppressed, Converter={StaticResource BoolToOpacity}}" />
-                                        </Grid>
-                                    </Button>
-                                    <Button Classes="secondary-button action-button"
-                                            Margin="0,0,8,8"
-                                            Click="AdjustTimes_Click"
-                                            IsEnabled="{Binding CanAdjustTimes}"
-                                            ToolTip.Tip="{Binding AdjustTimesTooltip}">
-                                        <Image Classes="action-icon-image"
-                                               Source="{Binding AdjustTimesIconImage}" />
-                                    </Button>
-                                    <Button Classes="secondary-button action-button"
-                                            Margin="0,0,8,8"
-                                            Click="MergePrev_Click"
-                                            IsEnabled="{Binding CanMergePrev}"
-                                            ToolTip.Tip="{Binding MergePrevTooltip}">
-                                        <Image Classes="action-icon-image"
-                                               Source="{Binding MergePrevIconImage}" />
-                                    </Button>
-                                    <Button Classes="secondary-button action-button"
-                                            Margin="0,0,8,8"
-                                            Click="MergeNext_Click"
-                                            IsEnabled="{Binding CanMergeNext}"
-                                            ToolTip.Tip="{Binding MergeNextTooltip}">
-                                        <Image Classes="action-icon-image"
-                                               Source="{Binding MergeNextIconImage}" />
-                                    </Button>
-                                    <Button Classes="secondary-button action-button"
-                                            Margin="0,0,8,8"
-                                            Click="Split_Click"
-                                            IsEnabled="{Binding CanSplit}"
-                                            ToolTip.Tip="{Binding SplitTooltip}">
-                                        <Image Classes="action-icon-image"
-                                               Source="{Binding SplitIconImage}" />
-                                    </Button>
-                                    <Button Classes="secondary-button action-button"
-                                            Margin="0,0,8,8"
-                                            Click="RedoAsr_Click"
-                                            IsEnabled="{Binding CanRedoAsr}"
-                                            ToolTip.Tip="{Binding RedoAsrTooltip}">
-                                        <Grid Classes="redo-button-host">
-                                            <Canvas Classes="redo-square-host"
-                                                    ClipToBounds="True">
-                                                <Image Classes="redo-icon-host"
-                                                       Canvas.Left="2"
-                                                       Canvas.Top="2"
-                                                       Source="{Binding RedoAsrIconImage}"
-                                                       Opacity="{Binding IsRedoAsrSpinning, Converter={StaticResource InvBoolToOpacity}}" />
-                                                <Border Classes="redo-spinner-viewport"
-                                                        Canvas.Left="2"
-                                                        Canvas.Top="2"
-                                                        Opacity="{Binding IsRedoAsrSpinning, Converter={StaticResource BoolToOpacity}}">
+                                                   Source="{Binding MergePrevIconImage}" />
+                                        </Button>
+                                        <Button Classes="secondary-button action-button"
+                                                Margin="0,0,8,8"
+                                                Click="MergeNext_Click"
+                                                IsEnabled="{Binding CanMergeNext}"
+                                                ToolTip.Tip="{Binding MergeNextTooltip}">
+                                            <Image Classes="action-icon-image"
+                                                   Source="{Binding MergeNextIconImage}" />
+                                        </Button>
+                                        <Button Classes="secondary-button action-button"
+                                                Margin="0,0,8,8"
+                                                Click="Split_Click"
+                                                IsEnabled="{Binding CanSplit}"
+                                                ToolTip.Tip="{Binding SplitTooltip}">
+                                            <Image Classes="action-icon-image"
+                                                   Source="{Binding SplitIconImage}" />
+                                        </Button>
+                                        <Button Classes="secondary-button action-button"
+                                                Margin="0,0,8,8"
+                                                Click="RedoAsr_Click"
+                                                IsEnabled="{Binding CanRedoAsr}"
+                                                ToolTip.Tip="{Binding RedoAsrTooltip}">
+                                            <Grid Classes="redo-button-host">
+                                                <Canvas Classes="redo-square-host"
+                                                        ClipToBounds="True">
                                                     <Image Classes="redo-icon-host"
-                                                           Source="{Binding RedoAsrSpinnerImage}"
-                                                           Stretch="Fill" />
-                                                </Border>
-                                            </Canvas>
-                                        </Grid>
-                                    </Button>
-                                </WrapPanel>
+                                                           Canvas.Left="2"
+                                                           Canvas.Top="2"
+                                                           Source="{Binding RedoAsrIconImage}"
+                                                           Opacity="{Binding IsRedoAsrSpinning, Converter={StaticResource InvBoolToOpacity}}" />
+                                                    <Border Classes="redo-spinner-viewport"
+                                                            Canvas.Left="2"
+                                                            Canvas.Top="2"
+                                                            Opacity="{Binding IsRedoAsrSpinning, Converter={StaticResource BoolToOpacity}}">
+                                                        <Image Classes="redo-icon-host"
+                                                               Source="{Binding RedoAsrSpinnerImage}"
+                                                               Stretch="Fill" />
+                                                    </Border>
+                                                </Canvas>
+                                            </Grid>
+                                        </Button>
+                                    </WrapPanel>
 
-                                <Grid ColumnDefinitions="*,*"
-                                      ColumnSpacing="10"
-                                      MaxHeight="240">
-                                    <Border Background="Transparent">
-                                        <Grid RowDefinitions="Auto,*"
-                                              RowSpacing="6">
-                                            <TextBlock Text="{local:Loc editor_asr_label}"
-                                                       FontSize="11"
-                                                       FontWeight="SemiBold"
-                                                       Foreground="{DynamicResource SubtextBrush}" />
-                                            <ScrollViewer Grid.Row="1"
-                                                          MaxHeight="214"
-                                                          VerticalScrollBarVisibility="Auto"
-                                                          HorizontalScrollBarVisibility="Disabled">
-                                                <ItemsControl ItemsSource="{Binding AsrRuns}">
-                                                    <ItemsControl.ItemsPanel>
-                                                        <ItemsPanelTemplate>
-                                                            <WrapPanel />
-                                                        </ItemsPanelTemplate>
-                                                    </ItemsControl.ItemsPanel>
-                                                    <ItemsControl.ItemTemplate>
-                                                        <DataTemplate>
-                                                            <TextBlock Text="{Binding Text}"
-                                                                       Background="{Binding Background}"
-                                                                       TextWrapping="NoWrap"
-                                                                       Foreground="{Binding Foreground}" />
-                                                        </DataTemplate>
-                                                    </ItemsControl.ItemTemplate>
-                                                </ItemsControl>
-                                            </ScrollViewer>
-                                        </Grid>
-                                    </Border>
+                                    <Grid ColumnDefinitions="*,*"
+                                          ColumnSpacing="10"
+                                          MaxHeight="240">
+                                        <Border Background="Transparent">
+                                            <Grid RowDefinitions="Auto,*"
+                                                  RowSpacing="6">
+                                                <TextBlock Text="{local:Loc editor_asr_label}"
+                                                           FontSize="11"
+                                                           FontWeight="SemiBold"
+                                                           Foreground="{DynamicResource SubtextBrush}" />
+                                                <ScrollViewer Grid.Row="1"
+                                                              MaxHeight="214"
+                                                              VerticalScrollBarVisibility="Auto"
+                                                              HorizontalScrollBarVisibility="Disabled">
+                                                    <ItemsControl ItemsSource="{Binding AsrRuns}">
+                                                        <ItemsControl.ItemsPanel>
+                                                            <ItemsPanelTemplate>
+                                                                <WrapPanel />
+                                                            </ItemsPanelTemplate>
+                                                        </ItemsControl.ItemsPanel>
+                                                        <ItemsControl.ItemTemplate>
+                                                            <DataTemplate>
+                                                                <TextBlock Text="{Binding Text}"
+                                                                           Background="{Binding Background}"
+                                                                           TextWrapping="NoWrap"
+                                                                           Foreground="{Binding Foreground}" />
+                                                            </DataTemplate>
+                                                        </ItemsControl.ItemTemplate>
+                                                    </ItemsControl>
+                                                </ScrollViewer>
+                                            </Grid>
+                                        </Border>
 
-                                    <Border Grid.Column="1"
-                                            Background="Transparent">
-                                        <Grid RowDefinitions="Auto,*"
-                                              RowSpacing="6">
-                                            <TextBlock Text="{local:Loc editor_edit_label}"
-                                                       FontSize="11"
-                                                       FontWeight="SemiBold"
-                                                       Foreground="{DynamicResource SubtextBrush}" />
-                                    <TextBox Grid.Row="1"
-                                             x:Name="SegmentContentTextBox"
-                                             Text="{Binding DraftContent, Mode=TwoWay}"
-                                             AcceptsReturn="True"
-                                             TextWrapping="Wrap"
-                                                     VerticalContentAlignment="Top"
-                                                     MinHeight="84"
-                                                     MaxHeight="214"
-                                                     FontSize="14"
-                                                     Padding="8,6"
-                                                     LostFocus="EditTextBox_LostFocus" />
-                                        </Grid>
-                                    </Border>
-                                </Grid>
+                                        <Border Grid.Column="1"
+                                                Background="Transparent">
+                                            <Grid RowDefinitions="Auto,*"
+                                                  RowSpacing="6">
+                                                <TextBlock Text="{local:Loc editor_edit_label}"
+                                                           FontSize="11"
+                                                           FontWeight="SemiBold"
+                                                           Foreground="{DynamicResource SubtextBrush}" />
+                                                <TextBox Grid.Row="1"
+                                                         x:Name="SegmentContentTextBox"
+                                                         Text="{Binding DraftContent, Mode=TwoWay}"
+                                                         AcceptsReturn="True"
+                                                         TextWrapping="Wrap"
+                                                         VerticalContentAlignment="Top"
+                                                         MinHeight="84"
+                                                         MaxHeight="214"
+                                                         FontSize="14"
+                                                         Padding="8,6"
+                                                         LostFocus="EditTextBox_LostFocus" />
+                                            </Grid>
+                                        </Border>
+                                    </Grid>
 
-                                <TextBlock Text="{Binding StatusMessage}"
-                                           Foreground="{DynamicResource SubtextBrush}"
-                                           TextWrapping="Wrap" />
-                            </StackPanel>
-                        </Border>
-                    </Grid>
-                </DataTemplate>
-            </ListBox.ItemTemplate>
-        </ListBox>
+                                    <TextBlock Text="{Binding StatusMessage}"
+                                               Foreground="{DynamicResource SubtextBrush}"
+                                               TextWrapping="Wrap" />
+                                </StackPanel>
+                            </Border>
+                        </DataTemplate>
+                    </ContentControl.ContentTemplate>
+                </ContentControl>
+            </Grid>
         </DockPanel>
 
         <Canvas x:Name="SeekBubbleLayer"

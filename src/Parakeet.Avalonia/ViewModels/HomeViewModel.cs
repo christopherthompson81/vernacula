@@ -50,7 +50,11 @@ internal partial class HomeViewModel : ObservableObject
         Loc.Instance.PropertyChanged += (_, e) =>
         {
             if (e.PropertyName == "Item[]")
+            {
                 UpdateStatusText();
+                foreach (var job in Jobs)
+                    job.RefreshLocalizedText();
+            }
         };
 
         ThemeManager.ThemeChanged += _ =>

@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using System.Collections.Specialized;
 using System.ComponentModel;
+using System.Linq;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.Primitives;
@@ -55,6 +56,7 @@ public partial class TranscriptEditorWindow : Window
     private int _lastSpeakerWheelCardIndex = -1;
     private DateTime _lastSpeakerWheelUtc = DateTime.MinValue;
     private DispatcherTimer? _redoAsrSpinnerTimer;
+    private int _focusRefreshVersion;
 
     public event Action? DataChanged;
 
@@ -311,6 +313,7 @@ public partial class TranscriptEditorWindow : Window
         for (int i = 0; i < _state.Cards.Count; i++)
         {
             _state.Cards[i].Index = i;
+            _state.Cards[i].RefreshLocalizedText();
             RefreshCardState(_state.Cards[i], preserveDrafts: true);
         }
 
@@ -320,29 +323,38 @@ public partial class TranscriptEditorWindow : Window
     private void RefreshCardState(TranscriptEditorCardState card, bool preserveDrafts)
     {
         _vm.RefreshCardState(card, preserveDrafts, _state.Cards.Count, _redoAsrRunning, _asrModelsAvailable, _vocab != null);
-        _vm.RefreshFocusedCardAppearance(
-            card,
-            GetThemeBrush("SurfaceBrush"),
-            GetThemeBrush("AccentBrush"),
-            GetThemeBrush("GreenBrush"),
-            GetThemeBrush("RedBrush"),
-            GetThemeColor("GreenColor"),
-            GetThemeColor("RedColor"),
-            GetThemeBrush("TextBrush"));
+        IBrush surfaceBrush = GetThemeBrush("SurfaceBrush");
+        IBrush accentBrush = GetThemeBrush("AccentBrush");
+        IBrush greenBrush = GetThemeBrush("GreenBrush");
+        IBrush redBrush = GetThemeBrush("RedBrush");
+        Color greenColor = GetThemeColor("GreenColor");
+        Color redColor = GetThemeColor("RedColor");
+        IBrush textBrush = GetThemeBrush("TextBrush");
         _vm.RefreshAdjacentCardHighlighting(
             card,
             _vocab,
             GetThemeColor("ConfidenceLowBrush"),
-            GetThemeColor("GreenColor"),
-            GetThemeColor("RedColor"),
+            greenColor,
+            redColor,
             GetThemeBrush("SubtextBrush"),
-            GetThemeBrush("TextBrush"));
+            textBrush);
+        card.SetUnfocusedAppearance(card.AdjacentBackground, GetThemeBrush("OverlayBrush"));
+        _vm.RefreshFocusedCardAppearance(
+            card,
+            surfaceBrush,
+            accentBrush,
+            greenBrush,
+            redBrush,
+            greenColor,
+            redColor,
+            textBrush);
         SyncRedoAsrSpinnerState(card);
     }
 
     private void ApplyFocusedIndex(int focusedIndex, bool force = false)
     {
         int previousFocusedIndex = _state.SelectedCard?.Index ?? -1;
+        int refreshVersion = ++_focusRefreshVersion;
 
         if (focusedIndex < 0 || focusedIndex >= _state.Cards.Count)
         {
@@ -378,6 +390,7 @@ public partial class TranscriptEditorWindow : Window
         SegmentList.InvalidateMeasure();
         SegmentList.InvalidateArrange();
         SegmentList.ScrollIntoView(_state.Cards[focusedIndex]);
+        QueueDeferredCardRefresh(focusedIndex, previousFocusedIndex, refreshVersion);
     }
 
     private void RefreshFocusedNeighborhood()
@@ -406,6 +419,46 @@ public partial class TranscriptEditorWindow : Window
     private static bool ShouldRefreshCardIndex(int cardIndex, int focusedIndex, int previousFocusedIndex)
         => IsWarmCardIndex(cardIndex, focusedIndex)
            || (previousFocusedIndex >= 0 && IsWarmCardIndex(cardIndex, previousFocusedIndex));
+
+    private void QueueDeferredCardRefresh(int focusedIndex, int previousFocusedIndex, int refreshVersion)
+    {
+        var pendingIndexes = Enumerable.Range(0, _state.Cards.Count)
+            .Where(i => !ShouldRefreshCardIndex(i, focusedIndex, previousFocusedIndex))
+            .OrderBy(i => Math.Abs(i - focusedIndex))
+            .ToArray();
+
+        if (pendingIndexes.Length == 0)
+        {
+            return;
+        }
+
+        const int batchSize = 8;
+
+        void ProcessBatch(int start)
+        {
+            if (refreshVersion != _focusRefreshVersion)
+            {
+                return;
+            }
+
+            int end = Math.Min(start + batchSize, pendingIndexes.Length);
+            for (int i = start; i < end; i++)
+            {
+                RefreshCardState(_state.Cards[pendingIndexes[i]], preserveDrafts: true);
+            }
+
+            if (end < pendingIndexes.Length)
+            {
+                Dispatcher.UIThread.Post(
+                    () => ProcessBatch(end),
+                    DispatcherPriority.Background);
+            }
+        }
+
+        Dispatcher.UIThread.Post(
+            () => ProcessBatch(0),
+            DispatcherPriority.Background);
+    }
 
     private void SetFocusedIndex(int index, bool force = false)
     {
@@ -763,15 +816,27 @@ public partial class TranscriptEditorWindow : Window
             double seekValue = SeekSlider.Value;
             if (_vm.PlaybackMode == PlaybackMode.Continuous)
             {
-                _vm.SeekContinuous(seekValue);
+                bool resumePlayback = _vm.SeekContinuous(seekValue, resumePlayback: false);
                 ApplyFocusedIndex(_vm.FocusedIndex, force: true);
+                RefreshPlaybackUi();
+
+                if (resumePlayback)
+                {
+                    Dispatcher.UIThread.Post(() =>
+                    {
+                        if (!_seekDragging && !_isLoading && !_redoAsrRunning && _vm.PlayCommand.CanExecute(null))
+                        {
+                            _vm.PlayCommand.Execute(null);
+                        }
+                    }, DispatcherPriority.Background);
+                }
             }
             else
             {
                 _vm.Seek(seekValue);
                 ApplyFocusedIndex(_vm.FocusedIndex, force: true);
+                RefreshPlaybackUi();
             }
-            RefreshPlaybackUi();
         }, DispatcherPriority.Background);
     }
 
