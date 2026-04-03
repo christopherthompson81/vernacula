@@ -279,7 +279,10 @@ public sealed class DiariZenDiarizer : IDisposable
             }
 
             for (int i = 0; i < embedKeys.Count; i++)
+            {
+                if (clusterIds[i] < 0) continue;
                 localToGlobal[embedKeys[i]] = clusterIds[i];
+            }
 
             progress?.Invoke($"clustered to {clusterIds.Distinct().Count()} speaker(s)");
         }
@@ -293,7 +296,7 @@ public sealed class DiariZenDiarizer : IDisposable
         }
 
         int numGlobalSpeakers = localToGlobal.Count > 0
-            ? localToGlobal.Values.Max() + 1
+            ? localToGlobal.Values.Where(id => id >= 0).DefaultIfEmpty(0).Max() + 1
             : MaxUniqueSpeakers;
 
         // ── Step 5: Reconstruct global timeline ───────────────────────────
@@ -836,16 +839,24 @@ public sealed class DiariZenDiarizer : IDisposable
                 if (cluster >= 0)
                     assigned[chunkIndices[row]] = cluster;
             }
-
-            for (int row = 0; row < chunkIndices.Count; row++)
-            {
-                int index = chunkIndices[row];
-                if (assigned[index] < 0)
-                    assigned[index] = BestCentroidIndex(embeddings[index], centroids);
-            }
         }
 
-        return CompactIds(assigned);
+        var activeAssignments = assigned.Where(id => id >= 0).ToArray();
+        if (activeAssignments.Length == 0)
+            return Enumerable.Repeat(0, assigned.Length).ToArray();
+
+        var compactMap = new Dictionary<int, int>();
+        int nextId = 0;
+        for (int i = 0; i < assigned.Length; i++)
+        {
+            int id = assigned[i];
+            if (id < 0) continue;
+            if (!compactMap.TryGetValue(id, out int mapped))
+                compactMap[id] = mapped = nextId++;
+            assigned[i] = mapped;
+        }
+
+        return assigned;
     }
 
     private static int BestCentroidIndex(double[] embedding, double[][] centroids)
