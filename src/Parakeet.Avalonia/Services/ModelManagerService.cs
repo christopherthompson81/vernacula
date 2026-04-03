@@ -15,7 +15,7 @@ internal class ModelManagerService
         "https://huggingface.co/christopherthompson81/sortformer_parakeet_onnx/resolve/main";
 
     private static readonly string[] DiarizationFiles =
-        ["diar_streaming_sortformer_4spk-v2.1.onnx", Config.VadFile];
+        ["diar_streaming_sortformer_4spk-v2.1.onnx", Config.VadFile, Config.DiariZenFile];
 
     private static readonly string[] AsrFilesInt8 =
         ["nemo128.onnx", "encoder-model.int8.onnx", "decoder_joint-model.int8.onnx",

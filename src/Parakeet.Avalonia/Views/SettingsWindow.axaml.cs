@@ -66,10 +66,12 @@ public partial class SettingsWindow : Window
         PrecisionInt8Radio.Content = Loc.Instance["menu_precision_int8"];
 
         SegmentationSectionHeader.Text = Loc.Instance["settings_section_segmentation"];
-        SegmentationVadLabel.Text = Loc.Instance["settings_segmentation_vad"];
-        SegmentationVadDescription.Text = Loc.Instance["settings_segmentation_vad_desc"];
-        SegmentationDiarizationLabel.Text = Loc.Instance["settings_segmentation_diarization"];
-        SegmentationDiarizationDescription.Text = Loc.Instance["settings_segmentation_diarization_desc"];
+        SegmentationSileroLabel.Text = Loc.Instance["settings_segmentation_vad"];
+        SegmentationSileroDescription.Text = Loc.Instance["settings_segmentation_vad_desc"];
+        SegmentationSortformerLabel.Text = Loc.Instance["settings_segmentation_diarization"];
+        SegmentationSortformerDescription.Text = Loc.Instance["settings_segmentation_diarization_desc"];
+        SegmentationDiariZenLabel.Text = Loc.Instance["settings_segmentation_diarizen"];
+        SegmentationDiariZenDescription.Text = Loc.Instance["settings_segmentation_diarizen_desc"];
 
         EditorSectionHeader.Text = Loc.Instance["settings_section_editor"];
         EditorPlaybackModeLabel.Text = Loc.Instance["settings_editor_playback_mode"];

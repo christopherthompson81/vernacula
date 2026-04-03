@@ -83,12 +83,11 @@ internal class TranscriptionService
         List<(double start, double end, string spkId)> segs;
         bool inlineAsrDone = false;
 
-        bool useDiarization =
-            _settings.Current.Segmentation == SegmentationMode.Diarization;
+        var segmentationMode = _settings.Current.Segmentation;
 
-        if (!db.CheckDiarization() && !useDiarization)
+        if (!db.CheckDiarization() && segmentationMode == SegmentationMode.SileroVad)
         {
-            // ── VAD path ──────────────────────────────────────────────────────
+            // ── Silero VAD path ──────────────────────────────────────────────
             progress.Report(new TranscriptionProgress(
                 TranscriptionPhase.Diarizing, 0, 1, Loc.Instance["progress_detecting_speech"]));
 
@@ -132,8 +131,9 @@ internal class TranscriptionService
                 TranscriptionPhase.Diarizing, 1, 1,
                 Loc.Instance.T("progress_vad_complete", new() { ["count"] = segs.Count.ToString() })));
         }
-        else if (!db.CheckDiarization())
+        else if (!db.CheckDiarization() && segmentationMode == SegmentationMode.Sortformer)
         {
+            // ── Sortformer path (streaming diarization with inline ASR) ──────
             segs = new List<(double, double, string)>();
             var seenSpeakers = new HashSet<string>();
 
@@ -263,6 +263,73 @@ internal class TranscriptionService
 
             db.MarkDiarizationComplete();
             inlineAsrDone = true;
+        }
+        else if (!db.CheckDiarization() && segmentationMode == SegmentationMode.DiariZen)
+        {
+            // ── DiariZen path (batch diarization) ────────────────────────────
+            progress.Report(new TranscriptionProgress(
+                TranscriptionPhase.Diarizing, 0, 1, Loc.Instance["progress_diarizing_diarizen"]));
+
+            ct.ThrowIfCancellationRequested();
+
+            string diarizenModel = Path.Combine(modelsDir, Config.DiariZenFile);
+            if (!File.Exists(diarizenModel))
+            {
+                throw new FileNotFoundException(
+                    $"DiariZen model not found: {diarizenModel}. " +
+                    "Please ensure the model has been exported using: " +
+                    "python scripts/diarizen_export/export_diarizen_onnx.py");
+            }
+
+            List<DiarizationSegment> diarSegments = [];
+            await Task.Run(() =>
+            {
+                using var diarizer = new DiariZenDiarizer(diarizenModel);
+                diarSegments = diarizer.Diarize(audio, minSpeakers: 1, maxSpeakers: 8);
+            }, ct);
+
+            segs = new List<(double, double, string)>(diarSegments.Count);
+            var seenSpeakers = new HashSet<string>();
+
+            foreach (var seg in diarSegments)
+            {
+                ct.ThrowIfCancellationRequested();
+                string spkId = seg.Speaker.StartsWith("speaker_", StringComparison.Ordinal)
+                    ? seg.Speaker
+                    : $"speaker_{seg.Speaker}";
+
+                string speakerSuffix = spkId["speaker_".Length..];
+                int diarSpkId = int.TryParse(speakerSuffix, out int speakerIndex)
+                    ? speakerIndex + 1
+                    : 1;
+                db.InsertResult(
+                    diarizationSpeakerId: diarSpkId,
+                    speakerId:            diarSpkId,
+                    startTime:            seg.Start,
+                    endTime:              seg.End,
+                    startTimeF:           AudioUtils.SecondsToHhMmSs(Math.Round(seg.Start, 3)),
+                    endTimeF:             AudioUtils.SecondsToHhMmSs(Math.Round(seg.End, 3)),
+                    asrContent: null, content: null, tokens: null, timestamps: null, logprobs: null);
+
+                if (seenSpeakers.Add(spkId))
+                    db.InsertSpeaker(spkId);
+
+                onSegmentAdded(new SegmentRow
+                {
+                    SegmentId          = segs.Count,
+                    SpeakerTag         = spkId,
+                    SpeakerDisplayName = spkId,
+                    StartTime          = seg.Start,
+                    EndTime            = seg.End,
+                });
+                segs.Add((seg.Start, seg.End, spkId));
+            }
+
+            db.MarkDiarizationComplete();
+
+            progress.Report(new TranscriptionProgress(
+                TranscriptionPhase.Diarizing, 1, 1,
+                Loc.Instance.T("progress_diarizen_complete", new() { ["count"] = segs.Count.ToString() })));
         }
         else
         {

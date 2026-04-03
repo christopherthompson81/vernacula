@@ -27,7 +27,7 @@ internal partial class SettingsViewModel : ObservableObject
     private ModelPrecision _selectedPrecision;
 
     [ObservableProperty]
-    [NotifyPropertyChangedFor(nameof(IsDiarization), nameof(IsVoiceActivity))]
+    [NotifyPropertyChangedFor(nameof(IsSileroVad), nameof(IsSortformer), nameof(IsDiariZen))]
     private SegmentationMode _selectedSegmentation;
 
     [ObservableProperty]
@@ -50,8 +50,9 @@ internal partial class SettingsViewModel : ObservableObject
     public bool IsLight             => SelectedTheme == AppTheme.Light;
     public bool IsInt8              => SelectedPrecision == ModelPrecision.Int8;
     public bool IsFp32              => SelectedPrecision == ModelPrecision.Fp32;
-    public bool IsDiarization       => SelectedSegmentation == SegmentationMode.Diarization;
-    public bool IsVoiceActivity     => SelectedSegmentation == SegmentationMode.VoiceActivity;
+    public bool IsSileroVad         => SelectedSegmentation == SegmentationMode.SileroVad;
+    public bool IsSortformer        => SelectedSegmentation == SegmentationMode.Sortformer;
+    public bool IsDiariZen          => SelectedSegmentation == SegmentationMode.DiariZen;
     public bool IsEditorSingle      => SelectedEditorPlaybackMode == PlaybackMode.Single;
     public bool IsEditorAutoAdvance => SelectedEditorPlaybackMode == PlaybackMode.AutoAdvance;
     public bool IsEditorContinuous  => SelectedEditorPlaybackMode == PlaybackMode.Continuous;
