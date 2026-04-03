@@ -5,7 +5,10 @@
              xmlns:conv="using:ParakeetCSharp.Converters"
              xmlns:models="using:ParakeetCSharp.Models"
              xmlns:vm="using:ParakeetCSharp.ViewModels"
-             x:DataType="vm:HomeViewModel">
+             x:DataType="vm:HomeViewModel"
+             Focusable="True"
+             KeyDown="HomeView_KeyDown"
+             PointerPressed="HomeView_PointerPressed">
 
     <UserControl.Resources>
         <conv:BoolToVisibilityConverter x:Key="BoolToVis" />

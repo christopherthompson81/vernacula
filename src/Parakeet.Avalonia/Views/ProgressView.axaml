@@ -5,7 +5,10 @@
              xmlns:conv="using:ParakeetCSharp.Converters"
              xmlns:beh="using:ParakeetCSharp.Behaviors"
              xmlns:vm="using:ParakeetCSharp.ViewModels"
-             x:DataType="vm:ProgressViewModel">
+             x:DataType="vm:ProgressViewModel"
+             Focusable="True"
+             KeyDown="ProgressView_KeyDown"
+             PointerPressed="ProgressView_PointerPressed">
 
     <UserControl.Resources>
         <conv:BoolToVisibilityConverter x:Key="BoolToVis" />
@@ -69,7 +72,8 @@
         </StackPanel>
 
         <!-- Live segments table -->
-        <DataGrid Grid.Row="3"
+        <DataGrid x:Name="SegmentsGrid"
+                  Grid.Row="3"
                   Margin="0,0,0,12"
                   ItemsSource="{Binding Segments}"
                   AutoGenerateColumns="False"

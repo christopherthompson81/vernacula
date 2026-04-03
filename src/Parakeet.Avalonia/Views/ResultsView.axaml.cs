@@ -1,7 +1,9 @@
 using System.ComponentModel;
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Input;
 using Avalonia.Interactivity;
+using Avalonia.VisualTree;
 using ParakeetCSharp.Extensions;
 using ParakeetCSharp.Models;
 
@@ -51,5 +53,29 @@ public partial class ResultsView : UserControl
         if (!double.IsNaN(w1) && w1 > 0) s.ResultsColStartWidth   = w1;
         if (!double.IsNaN(w2) && w2 > 0) s.ResultsColEndWidth     = w2;
         App.Current.Settings.Save();
+    }
+
+    private void ResultsView_KeyDown(object? sender, KeyEventArgs e)
+    {
+        if (e.Key != Key.Escape)
+            return;
+
+        ClearSegmentsGridSelection();
+        e.Handled = true;
+    }
+
+    private void ResultsView_PointerPressed(object? sender, PointerPressedEventArgs e)
+    {
+        if (e.Source is not Control source || source == SegmentsGrid || source.GetVisualAncestors().Contains(SegmentsGrid))
+            return;
+
+        ClearSegmentsGridSelection();
+    }
+
+    private void ClearSegmentsGridSelection()
+    {
+        SegmentsGrid.SelectedItem = null;
+        SegmentsGrid.SelectedIndex = -1;
+        Focus();
     }
 }

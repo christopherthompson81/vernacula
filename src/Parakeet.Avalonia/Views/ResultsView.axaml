@@ -4,7 +4,10 @@
              xmlns:local="using:ParakeetCSharp"
              xmlns:conv="using:ParakeetCSharp.Converters"
              xmlns:vm="using:ParakeetCSharp.ViewModels"
-             x:DataType="vm:ResultsViewModel">
+             x:DataType="vm:ResultsViewModel"
+             Focusable="True"
+             KeyDown="ResultsView_KeyDown"
+             PointerPressed="ResultsView_PointerPressed">
 
     <UserControl.Resources>
         <conv:SecondsToTimeConverter x:Key="SecondsToTime" />
