@@ -486,7 +486,7 @@ public sealed class DiariZenDiarizer : IDisposable
         progress?.Invoke($"extracted {labeled.Count} raw segment(s)");
         if (labeled.Count == 0) return [];
 
-        return MergeAdjacentSegments(labeled);
+        return MergeAdjacentSegments(labeled, Config.GetDiariZenMergeGapFrames());
     }
 
     private static void SmoothBinaryTimeline(
@@ -1624,36 +1624,40 @@ public sealed class DiariZenDiarizer : IDisposable
     // ── Temporal merging ───────────────────────────────────────────────────
 
     private static List<DiarizationSegment> MergeAdjacentSegments(
-        List<(int startFrame, int endFrame, string speakerLabel)> labeled)
+        List<(int startFrame, int endFrame, string speakerLabel)> labeled,
+        int mergeGapFrames)
     {
         if (labeled.Count == 0) return [];
 
-        const double mergeGap = 0.0;
         var sorted = labeled.OrderBy(r => r.startFrame).ToList();
         var merged = new List<DiarizationSegment>();
 
-        double curStart   = sorted[0].startFrame / (double)FrameRate;
-        double curEnd     = sorted[0].endFrame   / (double)FrameRate;
+        int curStartFrame = sorted[0].startFrame;
+        int curEndFrame = sorted[0].endFrame;
         string curSpeaker = sorted[0].speakerLabel;
 
         for (int i = 1; i < sorted.Count; i++)
         {
             var (sf, ef, spk) = sorted[i];
-            double startT = sf / (double)FrameRate;
-            double endT   = ef / (double)FrameRate;
 
-            if (spk == curSpeaker && startT - curEnd <= mergeGap)
-                curEnd = Math.Max(curEnd, endT);
+            if (spk == curSpeaker && sf - curEndFrame <= mergeGapFrames)
+                curEndFrame = Math.Max(curEndFrame, ef);
             else
             {
-                merged.Add(new DiarizationSegment(curStart, curEnd, curSpeaker));
-                curStart   = startT;
-                curEnd     = endT;
+                merged.Add(new DiarizationSegment(
+                    curStartFrame / (double)FrameRate,
+                    curEndFrame / (double)FrameRate,
+                    curSpeaker));
+                curStartFrame = sf;
+                curEndFrame = ef;
                 curSpeaker = spk;
             }
         }
 
-        merged.Add(new DiarizationSegment(curStart, curEnd, curSpeaker));
+        merged.Add(new DiarizationSegment(
+            curStartFrame / (double)FrameRate,
+            curEndFrame / (double)FrameRate,
+            curSpeaker));
         return merged;
     }
 

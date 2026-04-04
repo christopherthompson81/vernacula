@@ -128,6 +128,7 @@ public static class Config
     public const double DiariZenMinSpeakerDurationSeconds = 2.0;
     public const int DiariZenFillShortGapFrames = 2;
     public const int DiariZenMinRegionFrames = 2;
+    public const int DiariZenMergeGapFrames = 50;
     public const int DiariZenEmbeddingGpuSafetyMb = 1024;
     public const int DiariZenEmbeddingGpuMaxBatchSize = 32;
     public const int DiariZenEmbeddingGpuMaxBatchFrames = 32_000;
@@ -285,6 +286,16 @@ public static class Config
             return parsed;
 
         return DiariZenFillShortGapFrames;
+    }
+
+    public static int GetDiariZenMergeGapFrames()
+    {
+        const string envVar = "PARAKEET_DIARIZEN_MERGE_GAP_FRAMES";
+        string? raw = Environment.GetEnvironmentVariable(envVar);
+        if (int.TryParse(raw, out int parsed) && parsed >= 0)
+            return parsed;
+
+        return DiariZenMergeGapFrames;
     }
 
     private static int GetAdaptiveDiariZenSegmentationIntraOpThreads()
