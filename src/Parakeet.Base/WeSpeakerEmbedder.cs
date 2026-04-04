@@ -35,7 +35,7 @@ public sealed class WeSpeakerEmbedder : IDisposable
     private readonly string? _weightsInputName;
     private readonly string _outputName;
     private readonly float[] _window;
-    private readonly float[,] _melFilters;
+    private readonly float[] _melFilters;
     private bool _disposed;
 
     // Full PLDA transform parameters (optional, loaded from plda/ directory)
@@ -72,6 +72,7 @@ public sealed class WeSpeakerEmbedder : IDisposable
     public const int FrameLengthSamples = 400;   // 25 ms × 16 kHz
     public const int FrameShiftSamples  = 160;   // 10 ms × 16 kHz
     public const int FftSize            = 512;   // next power of 2 ≥ 400
+    public const int NumFreqBins        = FftSize / 2 + 1;
     public const float LowFreqHz        = 20f;
     public const float HighFreqHz       = 8_000f;
     public const float PreEmphCoeff     = 0.97f;
@@ -368,10 +369,10 @@ public sealed class WeSpeakerEmbedder : IDisposable
         int numFrames = 1 + (n - FrameLengthSamples) / FrameShiftSamples;
         if (numFrames <= 0) return new float[0, NumMelBins];
 
-        int numFreqBins = FftSize / 2 + 1;
         var result     = new float[numFrames, NumMelBins];
         var complexBuf = new Complex[FftSize];
         var frame      = new float[FrameLengthSamples];
+        var power      = new float[NumFreqBins];
 
         for (int fi = 0; fi < numFrames; fi++)
         {
@@ -407,16 +408,19 @@ public sealed class WeSpeakerEmbedder : IDisposable
             // Forward FFT (no scaling – matches NumPy/PyTorch convention)
             Fourier.Forward(complexBuf, FourierOptions.AsymmetricScaling);
 
+            for (int k = 0; k < NumFreqBins; k++)
+            {
+                float re = (float)complexBuf[k].Real;
+                float im = (float)complexBuf[k].Imaginary;
+                power[k] = re * re + im * im;
+            }
+
             // Mel filterbank + log
             for (int m = 0; m < NumMelBins; m++)
             {
-                float energy = 0f;
-                for (int k = 0; k < numFreqBins; k++)
-                {
-                    float re = (float)complexBuf[k].Real;
-                    float im = (float)complexBuf[k].Imaginary;
-                    energy += _melFilters[m, k] * (re * re + im * im);
-                }
+                float energy = DotProduct(
+                    _melFilters.AsSpan(m * NumFreqBins, NumFreqBins),
+                    power);
                 result[fi, m] = MathF.Log(MathF.Max(energy, 1e-10f));
             }
         }
@@ -424,12 +428,20 @@ public sealed class WeSpeakerEmbedder : IDisposable
         // Per-utterance mean normalisation: subtract mean per mel bin across all frames.
         // Matches pyannote WeSpeakerResNet34.compute_fbank:
         //   features = features - features.mean(dim=1, keepdim=True)
-        for (int m = 0; m < NumMelBins; m++)
+        var means = new float[NumMelBins];
+        for (int fi = 0; fi < numFrames; fi++)
         {
-            float mean = 0f;
-            for (int fi = 0; fi < numFrames; fi++) mean += result[fi, m];
-            mean /= numFrames;
-            for (int fi = 0; fi < numFrames; fi++) result[fi, m] -= mean;
+            for (int m = 0; m < NumMelBins; m++)
+                means[m] += result[fi, m];
+        }
+
+        for (int m = 0; m < NumMelBins; m++)
+            means[m] /= numFrames;
+
+        for (int fi = 0; fi < numFrames; fi++)
+        {
+            for (int m = 0; m < NumMelBins; m++)
+                result[fi, m] -= means[m];
         }
 
         return result;
@@ -441,9 +453,7 @@ public sealed class WeSpeakerEmbedder : IDisposable
     {
         int numFrames = fbank.GetLength(0);
         var data = new float[numFrames * NumMelBins];
-        for (int fi = 0; fi < numFrames; fi++)
-            for (int m = 0; m < NumMelBins; m++)
-                data[fi * NumMelBins + m] = fbank[fi, m];
+        Buffer.BlockCopy(fbank, 0, data, 0, data.Length * sizeof(float));
 
         var tensor = new DenseTensor<float>(data, new[] { 1, numFrames, NumMelBins });
         var inputs = new List<NamedOnnxValue>
@@ -510,11 +520,11 @@ public sealed class WeSpeakerEmbedder : IDisposable
         return w;
     }
 
-    private static float[,] MakeMelFilters(int numMelBins, int fftSize, int sampleRate,
+    private static float[] MakeMelFilters(int numMelBins, int fftSize, int sampleRate,
         float lowFreqHz, float highFreqHz)
     {
         int numFreqBins = fftSize / 2 + 1;
-        var filters = new float[numMelBins, numFreqBins];
+        var filters = new float[numMelBins * numFreqBins];
 
         double melLow  = HzToMel(lowFreqHz);
         double melHigh = HzToMel(highFreqHz);
@@ -546,11 +556,29 @@ public sealed class WeSpeakerEmbedder : IDisposable
                     w = (float)((fh - fk) / (fh - fc));
                 else
                     w = 0f;
-                filters[m, k] = w;
+                filters[m * numFreqBins + k] = w;
             }
         }
 
         return filters;
+    }
+
+    private static float DotProduct(ReadOnlySpan<float> left, ReadOnlySpan<float> right)
+    {
+        int width = Vector<float>.Count;
+        int i = 0;
+        Vector<float> sum = Vector<float>.Zero;
+        for (; i <= left.Length - width; i += width)
+            sum += new Vector<float>(left.Slice(i, width)) * new Vector<float>(right.Slice(i, width));
+
+        float total = 0f;
+        for (int lane = 0; lane < Vector<float>.Count; lane++)
+            total += sum[lane];
+
+        for (; i < left.Length; i++)
+            total += left[i] * right[i];
+
+        return total;
     }
 
     private static double HzToMel(double hz) => 1127.0 * Math.Log(1.0 + hz / 700.0);

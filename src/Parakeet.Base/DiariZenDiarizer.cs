@@ -1,6 +1,7 @@
 using Microsoft.ML.OnnxRuntime;
 using Microsoft.ML.OnnxRuntime.Tensors;
 using Parakeet.Base.Models;
+using System.Collections.Concurrent;
 using System.Text.Json;
 
 namespace Parakeet.Base;
@@ -22,8 +23,13 @@ namespace Parakeet.Base;
 /// </summary>
 public sealed class DiariZenDiarizer : IDisposable
 {
-    private readonly InferenceSession _segSession;
+    private readonly InferenceSession[] _segSessions;
     private readonly WeSpeakerEmbedder? _embedder;
+    private readonly string _segInputName;
+    private readonly string _segOutputName;
+    private readonly bool _segSupportsBatching;
+    private readonly int _segBatchSize;
+    private int _segBatchingDisabled;
     private bool _disposed;
 
     // ── Model constants ────────────────────────────────────────────────────
@@ -43,6 +49,7 @@ public sealed class DiariZenDiarizer : IDisposable
     private const int DefaultMinActiveFramesForEmbed = 10;
     private const double MinCleanFrameRatioForClustering = 0.1;
     private static readonly int MaxEmbeddingWorkers = Math.Max(1, Environment.ProcessorCount - 2);
+    private static readonly int MaxSegmentationWorkers = DetermineSegmentationWorkerCount();
     private static readonly bool UseConstrainedCentroidAssignment =
         !string.Equals(
             Environment.GetEnvironmentVariable("PARAKEET_DIARIZEN_DISABLE_CONSTRAINED_ASSIGNMENT"),
@@ -72,31 +79,13 @@ public sealed class DiariZenDiarizer : IDisposable
         string? embeddingModelPath = null,
         ExecutionProvider ep = ExecutionProvider.Auto)
     {
-        var opts = new SessionOptions();
-        opts.IntraOpNumThreads = Config.GetDiariZenSegmentationIntraOpThreads();
-
-        switch (ep)
-        {
-            case ExecutionProvider.Auto:
-                if (HardwareInfo.CanProbeCudaExecutionProvider())
-                {
-                    try { opts.AppendExecutionProvider_CUDA(0); } catch { }
-                }
-                try { opts.AppendExecutionProvider_DML(0); }  catch { }
-                break;
-            case ExecutionProvider.Cuda:
-                try { opts.AppendExecutionProvider_CUDA(0); }
-                catch (EntryPointNotFoundException)
-                { throw new InvalidOperationException("CUDA EP not available."); }
-                break;
-            case ExecutionProvider.DirectML:
-                try { opts.AppendExecutionProvider_DML(0); }
-                catch (EntryPointNotFoundException)
-                { throw new InvalidOperationException("DirectML EP not available."); }
-                break;
-        }
-
-        _segSession = new InferenceSession(segmentationModelPath, opts);
+        _segSessions = new InferenceSession[MaxSegmentationWorkers];
+        for (int i = 0; i < _segSessions.Length; i++)
+            _segSessions[i] = CreateSegmentationSession(segmentationModelPath, ep);
+        _segInputName = _segSessions[0].InputMetadata.Keys.First();
+        _segOutputName = _segSessions[0].OutputMetadata.Keys.First();
+        _segSupportsBatching = SupportsDynamicBatch(_segSessions[0], _segInputName);
+        _segBatchSize = _segSupportsBatching ? Config.GetDiariZenSegmentationBatchSize() : 1;
 
         if (embeddingModelPath != null && File.Exists(embeddingModelPath))
         {
@@ -128,28 +117,11 @@ public sealed class DiariZenDiarizer : IDisposable
         if (audio.Length == 0)
             return [];
 
-        var (chunks, startTimes) = ChunkAudio(audio);
-        progress?.Invoke($"chunked audio into {chunks.Count} window(s)");
+        int chunkCount = GetChunkCount(audio.Length);
+        progress?.Invoke($"chunked audio into {chunkCount} window(s)");
 
-        // ── Step 1: Per-chunk powerset inference ──────────────────────────
-        progress?.Invoke("running segmentation model");
-        var chunkScores = SegmentBatched(chunks, progress);
-
-        // ── Step 2: Per-chunk decode → soft per-speaker scores (T × 4) ──
-        // Matches pyannote's Inference.infer with soft=True + to_multilabel:
-        // score[t, spk] = Σ_c p(c|t)  for all powerset classes c containing spk.
-        // Followed by median_filter(size=(1,11,1)).
-        var perChunkBinary = new List<float[,]>(chunks.Count);
-        for (int ci = 0; ci < chunkScores.Count; ci++)
-        {
-            var rawScores  = chunkScores[ci];
-            var probs      = ApplySoftmaxSingle(rawScores);
-            var filtered   = ApplyMedianFilterSingle(probs, Config.DiariZenMedianFilterSize);
-            var softScores = ComputePerSpeakerScores(filtered);
-            perChunkBinary.Add(BinarizePerSpeakerScores(softScores, threshold));
-            if (ShouldReportProgress(ci, chunkScores.Count))
-                progress?.Invoke($"decoded chunk {ci + 1}/{chunkScores.Count}");
-        }
+        var startTimes = new List<double>(chunkCount);
+        var perChunkBinary = new List<float[,]>(chunkCount);
 
         // ── Step 3: Extract per-(chunk, local_speaker) embeddings ─────────
         // embeddings — L2-normed 256-dim, used for AHC initialisation
@@ -159,13 +131,52 @@ public sealed class DiariZenDiarizer : IDisposable
         var embedKeys  = new List<(int chunkIdx, int speakerIdx)>();
         var results    = Array.Empty<EmbeddingJobResult>();
 
+        progress?.Invoke("running segmentation model");
+        List<EmbeddingJob>? jobs = _embedder != null ? new List<EmbeddingJob>() : null;
+        BlockingCollection<EmbeddingJobRequest>? jobQueue = null;
+        ConcurrentDictionary<int, EmbeddingJobResult>? resultMap = null;
+        Task[] embedWorkers = [];
+        var completedJobs = new[] { 0 };
+        var lastReportedJobs = new[] { 0 };
+
         if (_embedder != null)
         {
             progress?.Invoke("extracting speaker embeddings");
-            var jobs = new List<EmbeddingJob>();
-            for (int ci = 0; ci < perChunkBinary.Count; ci++)
+            jobQueue = new BlockingCollection<EmbeddingJobRequest>(Math.Max(1, MaxEmbeddingWorkers * 2));
+            resultMap = new ConcurrentDictionary<int, EmbeddingJobResult>();
+            embedWorkers = StartEmbeddingWorkers(
+                _embedder,
+                jobQueue,
+                resultMap,
+                () => jobs!.Count,
+                progress,
+                completedJobs,
+                lastReportedJobs);
+        }
+
+        int decodedChunks = 0;
+        int batchStartChunkIndex = 0;
+        foreach (var chunkBatch in EnumerateChunkBatches(audio, _segBatchSize))
+        {
+            var batchScores = SegmentBatch(chunkBatch.Select(item => item.Chunk).ToList());
+            for (int bi = 0; bi < chunkBatch.Count; bi++)
             {
-                var chunkScore = perChunkBinary[ci];
+                var chunkInfo = chunkBatch[bi];
+                var rawScores  = batchScores[bi];
+                var probs      = ApplySoftmaxSingle(rawScores);
+                var filtered   = ApplyMedianFilterSingle(probs, Config.DiariZenMedianFilterSize);
+                var softScores = ComputePerSpeakerScores(filtered);
+                var chunkScore = BinarizePerSpeakerScores(softScores, threshold);
+                perChunkBinary.Add(chunkScore);
+                startTimes.Add(chunkInfo.StartTime);
+
+                int ci = batchStartChunkIndex + bi;
+                if (ShouldReportProgress(ci, chunkCount))
+                    progress?.Invoke($"decoded chunk {ci + 1}/{chunkCount}");
+
+                if (_embedder == null || jobs == null || jobQueue == null)
+                    continue;
+
                 int numFrames  = chunkScore.GetLength(0);
                 var overlapCounts = new int[numFrames];
                 for (int t = 0; t < numFrames; t++)
@@ -204,7 +215,7 @@ public sealed class DiariZenDiarizer : IDisposable
                         int minMaskFrames = Math.Max(
                             1,
                             (int)Math.Ceiling(
-                                numFrames * (_embedder.MinNumSamples / (double)chunks[ci].Length)));
+                                numFrames * (_embedder.MinNumSamples / (double)chunkInfo.Chunk.Length)));
                         selectedMask = cleanCount > minMaskFrames ? cleanMask : activeMask;
                     }
                     else
@@ -213,46 +224,28 @@ public sealed class DiariZenDiarizer : IDisposable
                         selectedMask = cleanCount >= MinActiveFramesForEmbed ? cleanMask : activeMask;
                     }
 
-                    jobs.Add(new EmbeddingJob(ci, spk, chunks[ci], selectedMask, numFrames, cleanCount));
+                    int sequenceIndex = jobs.Count;
+                    var job = new EmbeddingJob(sequenceIndex, ci, spk, selectedMask, numFrames, cleanCount);
+                    jobs.Add(job);
+                    jobQueue.Add(new EmbeddingJobRequest(job, chunkInfo.Chunk));
                 }
 
-                if (ShouldReportProgress(ci, perChunkBinary.Count))
-                    progress?.Invoke($"processed embeddings for chunk {ci + 1}/{perChunkBinary.Count}");
+                if (ShouldReportProgress(ci, chunkCount))
+                    progress?.Invoke($"processed embeddings for chunk {ci + 1}/{chunkCount}");
             }
+            decodedChunks += chunkBatch.Count;
+            batchStartChunkIndex += chunkBatch.Count;
+            progress?.Invoke($"segmented chunk {decodedChunks}/{chunkCount}");
+        }
 
+        if (_embedder != null && jobs != null && jobQueue != null && resultMap != null)
+        {
+            jobQueue.CompleteAdding();
+            Task.WaitAll(embedWorkers);
             results = new EmbeddingJobResult[jobs.Count];
-            int completedJobs = 0;
-            int lastReported = 0;
-            int reportInterval = Math.Max(1, jobs.Count / 10);
-
-            Parallel.For(
-                0,
-                jobs.Count,
-                new ParallelOptions { MaxDegreeOfParallelism = MaxEmbeddingWorkers },
-                jobIndex =>
-                {
-                    var job = jobs[jobIndex];
-                    float[] l2emb = _embedder.ComputeEmbedding(job.ChunkWaveform, job.SelectedMask, out float[] rawEmb);
-                    float[]? xv = _embedder.ComputeXvec(rawEmb);
-                    results[jobIndex] = new EmbeddingJobResult(
-                        job.ChunkIdx,
-                        job.SpeakerIdx,
-                        job.NumFrames,
-                        job.CleanFrameCount,
-                        l2emb,
-                        xv);
-
-                    int done = Interlocked.Increment(ref completedJobs);
-                    if (done == jobs.Count || done - Volatile.Read(ref lastReported) >= reportInterval)
-                    {
-                        int previous = Interlocked.Exchange(ref lastReported, done);
-                        if (done != previous)
-                            progress?.Invoke($"computed embeddings {done}/{jobs.Count}");
-                    }
-                });
-
-            for (int i = 0; i < results.Length; i++)
+            for (int i = 0; i < jobs.Count; i++)
             {
+                results[i] = resultMap[i];
                 var result = results[i];
                 var emb = new double[result.L2Embedding.Length];
                 for (int d = 0; d < result.L2Embedding.Length; d++) emb[d] = result.L2Embedding[d];
@@ -806,40 +799,39 @@ public sealed class DiariZenDiarizer : IDisposable
 
     // ── Chunking ───────────────────────────────────────────────────────────
 
-    private (List<float[]> chunks, List<double> startTimes) ChunkAudio(float[] audio)
+    private IEnumerable<ChunkInfo> EnumerateChunks(float[] audio)
     {
         int chunkSamples  = ChunkDurationSeconds * SampleRate;
         int strideSamples = (int)(chunkSamples * SegmentationStep);  // 25 600 = 1.6 s
 
-        var chunks     = new List<float[]>();
-        var startTimes = new List<double>();
-
+        int chunkIndex = 0;
         for (int start = 0; start < audio.Length; start += strideSamples)
         {
             var chunk = new float[chunkSamples];
             int end   = Math.Min(start + chunkSamples, audio.Length);
             Array.Copy(audio, start, chunk, 0, end - start);
-
-            chunks.Add(chunk);
-            startTimes.Add(start / (double)SampleRate);
+            yield return new ChunkInfo(chunkIndex++, chunk, start / (double)SampleRate);
         }
-
-        return (chunks, startTimes);
     }
 
     // ── Segmentation inference ─────────────────────────────────────────────
 
-    private List<float[]> SegmentBatched(List<float[]> chunks, Action<string>? progress = null)
+    private IEnumerable<List<ChunkInfo>> EnumerateChunkBatches(float[] audio, int batchSize)
     {
-        var results = new List<float[]>(chunks.Count);
-        for (int ci = 0; ci < chunks.Count; ci++)
+        batchSize = Math.Max(1, batchSize);
+        var batch = new List<ChunkInfo>(batchSize);
+        foreach (var chunk in EnumerateChunks(audio))
         {
-            var chunk = chunks[ci];
-            results.Add(SegmentSingle(chunk));
-            if (ShouldReportProgress(ci, chunks.Count))
-                progress?.Invoke($"segmented chunk {ci + 1}/{chunks.Count}");
+            batch.Add(chunk);
+            if (batch.Count == batchSize)
+            {
+                yield return batch;
+                batch = new List<ChunkInfo>(batchSize);
+            }
         }
-        return results;
+
+        if (batch.Count > 0)
+            yield return batch;
     }
 
     private static bool ShouldReportProgress(int index, int total)
@@ -852,14 +844,22 @@ public sealed class DiariZenDiarizer : IDisposable
         return index == 0 || ((index + 1) % interval) == 0;
     }
 
+    private readonly record struct ChunkInfo(
+        int ChunkIndex,
+        float[] Chunk,
+        double StartTime);
     private readonly record struct EmbeddingJob(
+        int SequenceIndex,
         int ChunkIdx,
         int SpeakerIdx,
-        float[] ChunkWaveform,
         bool[] SelectedMask,
         int NumFrames,
         int CleanFrameCount);
+    private readonly record struct EmbeddingJobRequest(
+        EmbeddingJob Job,
+        float[] ChunkWaveform);
     private readonly record struct EmbeddingJobResult(
+        int SequenceIndex,
         int ChunkIdx,
         int SpeakerIdx,
         int NumFrames,
@@ -867,14 +867,14 @@ public sealed class DiariZenDiarizer : IDisposable
         float[] L2Embedding,
         float[]? Xvec);
 
-    private float[] SegmentSingle(float[] chunk)
+    private float[] SegmentSingle(InferenceSession session, float[] chunk)
     {
         var tensor = new DenseTensor<float>(chunk, new[] { 1, 1, chunk.Length });
         var inputs = new List<NamedOnnxValue>
-            { NamedOnnxValue.CreateFromTensor("waveform", tensor) };
+            { NamedOnnxValue.CreateFromTensor(_segInputName, tensor) };
 
-        using var onnxOut = _segSession.Run(inputs);
-        var outTensor     = onnxOut.First(r => r.Name == "scores").AsTensor<float>();
+        using var onnxOut = session.Run(inputs);
+        var outTensor     = onnxOut.First(r => r.Name == _segOutputName).AsTensor<float>();
 
         int frames  = outTensor.Dimensions[1];
         int classes = outTensor.Dimensions[2];
@@ -883,6 +883,181 @@ public sealed class DiariZenDiarizer : IDisposable
             for (int c = 0; c < classes; c++)
                 scores[f * classes + c] = outTensor[0, f, c];
         return scores;
+    }
+
+    private List<float[]> SegmentBatch(IReadOnlyList<float[]> chunks)
+    {
+        if (chunks.Count == 0)
+            return [];
+
+        if (_segBatchSize > 1 && chunks.Count > 1 && Volatile.Read(ref _segBatchingDisabled) == 0)
+        {
+            try
+            {
+                return SegmentBatchSingleSession(chunks);
+            }
+            catch (OnnxRuntimeException)
+            {
+                Interlocked.Exchange(ref _segBatchingDisabled, 1);
+            }
+        }
+
+        if (_segSessions.Length == 1 || chunks.Count == 1)
+            return chunks.Select(chunk => SegmentSingle(_segSessions[0], chunk)).ToList();
+
+        var results = new float[chunks.Count][];
+        int nextSession = -1;
+        using var sessionLease = new ThreadLocal<InferenceSession>(
+            () => _segSessions[Interlocked.Increment(ref nextSession) % _segSessions.Length]);
+
+        Parallel.For(
+            0,
+            chunks.Count,
+            new ParallelOptions { MaxDegreeOfParallelism = _segSessions.Length },
+            ci => results[ci] = SegmentSingle(sessionLease.Value!, chunks[ci]));
+
+        return new List<float[]>(results);
+    }
+
+    private List<float[]> SegmentBatchSingleSession(IReadOnlyList<float[]> chunks)
+    {
+        int batch = chunks.Count;
+        int chunkLength = chunks[0].Length;
+        var data = new float[batch * chunkLength];
+        for (int i = 0; i < batch; i++)
+            Array.Copy(chunks[i], 0, data, i * chunkLength, chunkLength);
+
+        var tensor = new DenseTensor<float>(data, new[] { batch, 1, chunkLength });
+        var inputs = new List<NamedOnnxValue>
+            { NamedOnnxValue.CreateFromTensor(_segInputName, tensor) };
+
+        using var onnxOut = _segSessions[0].Run(inputs);
+        var outTensor = onnxOut.First(r => r.Name == _segOutputName).AsTensor<float>();
+        int frames = outTensor.Dimensions[1];
+        int classes = outTensor.Dimensions[2];
+        var results = new List<float[]>(batch);
+        for (int b = 0; b < batch; b++)
+        {
+            var scores = new float[frames * classes];
+            for (int f = 0; f < frames; f++)
+                for (int c = 0; c < classes; c++)
+                    scores[f * classes + c] = outTensor[b, f, c];
+            results.Add(scores);
+        }
+
+        return results;
+    }
+
+    private static int DetermineSegmentationWorkerCount()
+    {
+        int? configuredWorkers = Config.GetDiariZenSegmentationMaxWorkers();
+        if (configuredWorkers.HasValue)
+            return configuredWorkers.Value;
+
+        int intraOpThreads = Math.Max(1, Config.GetDiariZenSegmentationIntraOpThreads());
+        int availableCores = Math.Max(1, Environment.ProcessorCount);
+        return Math.Clamp(availableCores / intraOpThreads, 1, 4);
+    }
+
+    private static int GetChunkCount(int audioLength)
+    {
+        if (audioLength <= 0)
+            return 0;
+
+        int chunkSamples = ChunkDurationSeconds * SampleRate;
+        int strideSamples = (int)(chunkSamples * SegmentationStep);
+        return 1 + Math.Max(0, (audioLength - 1) / strideSamples);
+    }
+
+    private static bool SupportsDynamicBatch(InferenceSession session, string inputName)
+    {
+        if (!session.InputMetadata.TryGetValue(inputName, out var metadata))
+            return false;
+
+        if (metadata.Dimensions.Length == 0)
+            return false;
+
+        int batchDim = metadata.Dimensions[0];
+        return batchDim <= 0;
+    }
+
+    private static Task[] StartEmbeddingWorkers(
+        WeSpeakerEmbedder embedder,
+        BlockingCollection<EmbeddingJobRequest> jobQueue,
+        ConcurrentDictionary<int, EmbeddingJobResult> resultMap,
+        Func<int> totalJobsProvider,
+        Action<string>? progress,
+        int[] completedJobs,
+        int[] lastReportedJobs)
+    {
+        var workers = new Task[MaxEmbeddingWorkers];
+        for (int workerIndex = 0; workerIndex < workers.Length; workerIndex++)
+        {
+            workers[workerIndex] = Task.Run(() =>
+            {
+                foreach (var request in jobQueue.GetConsumingEnumerable())
+                {
+                    float[] l2emb = embedder.ComputeEmbedding(
+                        request.ChunkWaveform,
+                        request.Job.SelectedMask,
+                        out float[] rawEmb);
+                    float[]? xv = embedder.ComputeXvec(rawEmb);
+                    resultMap[request.Job.SequenceIndex] = new EmbeddingJobResult(
+                        request.Job.SequenceIndex,
+                        request.Job.ChunkIdx,
+                        request.Job.SpeakerIdx,
+                        request.Job.NumFrames,
+                        request.Job.CleanFrameCount,
+                        l2emb,
+                        xv);
+
+                    int done = Interlocked.Increment(ref completedJobs[0]);
+                    int totalJobs = totalJobsProvider();
+                    int reportInterval = Math.Max(1, Math.Max(done, totalJobs) / 10);
+                    if (done == totalJobs || done - Volatile.Read(ref lastReportedJobs[0]) >= reportInterval)
+                    {
+                        int previous = Interlocked.Exchange(ref lastReportedJobs[0], done);
+                        if (done != previous)
+                            progress?.Invoke($"computed embeddings {done}/{totalJobs}");
+                    }
+                }
+            });
+        }
+
+        return workers;
+    }
+
+    private static InferenceSession CreateSegmentationSession(
+        string segmentationModelPath,
+        ExecutionProvider ep)
+    {
+        var opts = new SessionOptions
+        {
+            IntraOpNumThreads = Config.GetDiariZenSegmentationIntraOpThreads()
+        };
+
+        switch (ep)
+        {
+            case ExecutionProvider.Auto:
+                if (HardwareInfo.CanProbeCudaExecutionProvider())
+                {
+                    try { opts.AppendExecutionProvider_CUDA(0); } catch { }
+                }
+                try { opts.AppendExecutionProvider_DML(0); }  catch { }
+                break;
+            case ExecutionProvider.Cuda:
+                try { opts.AppendExecutionProvider_CUDA(0); }
+                catch (EntryPointNotFoundException)
+                { throw new InvalidOperationException("CUDA EP not available."); }
+                break;
+            case ExecutionProvider.DirectML:
+                try { opts.AppendExecutionProvider_DML(0); }
+                catch (EntryPointNotFoundException)
+                { throw new InvalidOperationException("DirectML EP not available."); }
+                break;
+        }
+
+        return new InferenceSession(segmentationModelPath, opts);
     }
 
     // ── Per-chunk softmax ──────────────────────────────────────────────────
@@ -1299,7 +1474,8 @@ public sealed class DiariZenDiarizer : IDisposable
     {
         if (!_disposed)
         {
-            _segSession?.Dispose();
+            foreach (var segSession in _segSessions)
+                segSession.Dispose();
             _embedder?.Dispose();
             _disposed = true;
         }

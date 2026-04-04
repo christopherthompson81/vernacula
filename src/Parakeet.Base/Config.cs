@@ -183,6 +183,26 @@ public static class Config
         return DiariZenSegmentationIntraOpThreads;
     }
 
+    public static int? GetDiariZenSegmentationMaxWorkers()
+    {
+        const string envVar = "PARAKEET_DIARIZEN_SEG_MAX_WORKERS";
+        string? raw = Environment.GetEnvironmentVariable(envVar);
+        if (int.TryParse(raw, out int parsed) && parsed > 0)
+            return parsed;
+
+        return null;
+    }
+
+    public static int GetDiariZenSegmentationBatchSize()
+    {
+        const string envVar = "PARAKEET_DIARIZEN_SEG_BATCH_SIZE";
+        string? raw = Environment.GetEnvironmentVariable(envVar);
+        if (int.TryParse(raw, out int parsed) && parsed > 0)
+            return parsed;
+
+        return 1;
+    }
+
     public static int GetDiariZenFillShortGapFrames()
     {
         const string envVar = "PARAKEET_DIARIZEN_FILL_SHORT_GAP_FRAMES";
