@@ -128,6 +128,10 @@ public static class Config
     public const double DiariZenMinSpeakerDurationSeconds = 2.0;
     public const int DiariZenFillShortGapFrames = 2;
     public const int DiariZenMinRegionFrames = 2;
+    public const int DiariZenEmbeddingGpuSafetyMb = 1024;
+    public const int DiariZenEmbeddingGpuMaxBatchSize = 32;
+    public const int DiariZenEmbeddingGpuMaxBatchFrames = 32_000;
+    public const int DiariZenEmbeddingGpuBytesPerFrameEstimate = 65_536;
 
     // Slaney mel-scale parameters
     public const double FMin      = 0.0;
@@ -201,6 +205,46 @@ public static class Config
             return parsed;
 
         return 1;
+    }
+
+    public static int GetDiariZenEmbeddingGpuSafetyMb()
+    {
+        const string envVar = "PARAKEET_DIARIZEN_EMBED_GPU_SAFETY_MB";
+        string? raw = Environment.GetEnvironmentVariable(envVar);
+        if (int.TryParse(raw, out int parsed) && parsed >= 0)
+            return parsed;
+
+        return DiariZenEmbeddingGpuSafetyMb;
+    }
+
+    public static int GetDiariZenEmbeddingGpuMaxBatchSize()
+    {
+        const string envVar = "PARAKEET_DIARIZEN_EMBED_GPU_MAX_BATCH_SIZE";
+        string? raw = Environment.GetEnvironmentVariable(envVar);
+        if (int.TryParse(raw, out int parsed) && parsed > 0)
+            return parsed;
+
+        return DiariZenEmbeddingGpuMaxBatchSize;
+    }
+
+    public static int GetDiariZenEmbeddingGpuMaxBatchFrames()
+    {
+        const string envVar = "PARAKEET_DIARIZEN_EMBED_GPU_MAX_BATCH_FRAMES";
+        string? raw = Environment.GetEnvironmentVariable(envVar);
+        if (int.TryParse(raw, out int parsed) && parsed > 0)
+            return parsed;
+
+        return DiariZenEmbeddingGpuMaxBatchFrames;
+    }
+
+    public static int GetDiariZenEmbeddingGpuBytesPerFrameEstimate()
+    {
+        const string envVar = "PARAKEET_DIARIZEN_EMBED_GPU_BYTES_PER_FRAME";
+        string? raw = Environment.GetEnvironmentVariable(envVar);
+        if (int.TryParse(raw, out int parsed) && parsed > 0)
+            return parsed;
+
+        return DiariZenEmbeddingGpuBytesPerFrameEstimate;
     }
 
     public static int GetDiariZenFillShortGapFrames()

@@ -30,6 +30,7 @@ public sealed class DiariZenDiarizer : IDisposable
     private readonly bool _segSupportsBatching;
     private readonly int _segBatchSize;
     private int _segBatchingDisabled;
+    private readonly bool _preferGpuEmbeddingPipeline;
     private bool _disposed;
 
     // ── Model constants ────────────────────────────────────────────────────
@@ -49,7 +50,6 @@ public sealed class DiariZenDiarizer : IDisposable
     private const int DefaultMinActiveFramesForEmbed = 10;
     private const double MinCleanFrameRatioForClustering = 0.1;
     private static readonly int MaxEmbeddingWorkers = Math.Max(1, Environment.ProcessorCount - 2);
-    private static readonly int MaxSegmentationWorkers = DetermineSegmentationWorkerCount();
     private static readonly bool UseConstrainedCentroidAssignment =
         !string.Equals(
             Environment.GetEnvironmentVariable("PARAKEET_DIARIZEN_DISABLE_CONSTRAINED_ASSIGNMENT"),
@@ -79,7 +79,7 @@ public sealed class DiariZenDiarizer : IDisposable
         string? embeddingModelPath = null,
         ExecutionProvider ep = ExecutionProvider.Auto)
     {
-        _segSessions = new InferenceSession[MaxSegmentationWorkers];
+        _segSessions = new InferenceSession[DetermineSegmentationWorkerCount(ep)];
         for (int i = 0; i < _segSessions.Length; i++)
             _segSessions[i] = CreateSegmentationSession(segmentationModelPath, ep);
         _segInputName = _segSessions[0].InputMetadata.Keys.First();
@@ -99,6 +99,8 @@ public sealed class DiariZenDiarizer : IDisposable
             }
             _embedder = new WeSpeakerEmbedder(embeddingModelPath, ldaDir, ep);
         }
+
+        _preferGpuEmbeddingPipeline = _embedder?.PreferGpuBatching == true;
     }
 
     // ── Public API ─────────────────────────────────────────────────────────
@@ -133,25 +135,25 @@ public sealed class DiariZenDiarizer : IDisposable
 
         progress?.Invoke("running segmentation model");
         List<EmbeddingJob>? jobs = _embedder != null ? new List<EmbeddingJob>() : null;
-        BlockingCollection<EmbeddingJobRequest>? jobQueue = null;
-        ConcurrentDictionary<int, EmbeddingJobResult>? resultMap = null;
-        Task[] embedWorkers = [];
-        var completedJobs = new[] { 0 };
-        var lastReportedJobs = new[] { 0 };
+        BlockingCollection<ChunkEmbeddingPrepRequest>? prepQueue = null;
+        ConcurrentDictionary<int, WeSpeakerEmbedder.PreparedEmbeddingInput>? preparedMap = null;
+        Task[] prepWorkers = [];
+        var completedPrepJobs = new[] { 0 };
+        var lastReportedPrepJobs = new[] { 0 };
 
         if (_embedder != null)
         {
             progress?.Invoke("extracting speaker embeddings");
-            jobQueue = new BlockingCollection<EmbeddingJobRequest>(Math.Max(1, MaxEmbeddingWorkers * 2));
-            resultMap = new ConcurrentDictionary<int, EmbeddingJobResult>();
-            embedWorkers = StartEmbeddingWorkers(
+            prepQueue = new BlockingCollection<ChunkEmbeddingPrepRequest>(Math.Max(1, MaxEmbeddingWorkers * 2));
+            preparedMap = new ConcurrentDictionary<int, WeSpeakerEmbedder.PreparedEmbeddingInput>();
+            prepWorkers = StartEmbeddingPrepWorkers(
                 _embedder,
-                jobQueue,
-                resultMap,
+                prepQueue,
+                preparedMap,
                 () => jobs!.Count,
                 progress,
-                completedJobs,
-                lastReportedJobs);
+                completedPrepJobs,
+                lastReportedPrepJobs);
         }
 
         int decodedChunks = 0;
@@ -174,11 +176,12 @@ public sealed class DiariZenDiarizer : IDisposable
                 if (ShouldReportProgress(ci, chunkCount))
                     progress?.Invoke($"decoded chunk {ci + 1}/{chunkCount}");
 
-                if (_embedder == null || jobs == null || jobQueue == null)
+                if (_embedder == null || jobs == null || prepQueue == null)
                     continue;
 
                 int numFrames  = chunkScore.GetLength(0);
                 var overlapCounts = new int[numFrames];
+                var chunkJobs = new List<EmbeddingJob>(MaxUniqueSpeakers);
                 for (int t = 0; t < numFrames; t++)
                 for (int other = 0; other < MaxUniqueSpeakers; other++)
                     if (chunkScore[t, other] > 0f)
@@ -227,8 +230,11 @@ public sealed class DiariZenDiarizer : IDisposable
                     int sequenceIndex = jobs.Count;
                     var job = new EmbeddingJob(sequenceIndex, ci, spk, selectedMask, numFrames, cleanCount);
                     jobs.Add(job);
-                    jobQueue.Add(new EmbeddingJobRequest(job, chunkInfo.Chunk));
+                    chunkJobs.Add(job);
                 }
+
+                if (chunkJobs.Count > 0)
+                    prepQueue.Add(new ChunkEmbeddingPrepRequest(ci, chunkInfo.Chunk, chunkJobs));
 
                 if (ShouldReportProgress(ci, chunkCount))
                     progress?.Invoke($"processed embeddings for chunk {ci + 1}/{chunkCount}");
@@ -238,21 +244,12 @@ public sealed class DiariZenDiarizer : IDisposable
             progress?.Invoke($"segmented chunk {decodedChunks}/{chunkCount}");
         }
 
-        if (_embedder != null && jobs != null && jobQueue != null && resultMap != null)
+        if (_embedder != null && jobs != null && prepQueue != null && preparedMap != null)
         {
-            jobQueue.CompleteAdding();
-            Task.WaitAll(embedWorkers);
-            results = new EmbeddingJobResult[jobs.Count];
-            for (int i = 0; i < jobs.Count; i++)
-            {
-                results[i] = resultMap[i];
-                var result = results[i];
-                var emb = new double[result.L2Embedding.Length];
-                for (int d = 0; d < result.L2Embedding.Length; d++) emb[d] = result.L2Embedding[d];
-                embeddings.Add(emb);
-                if (result.Xvec != null) xvecs.Add(result.Xvec);
-                embedKeys.Add((result.ChunkIdx, result.SpeakerIdx));
-            }
+            prepQueue.CompleteAdding();
+            Task.WaitAll(prepWorkers);
+            results = ComputeEmbeddingResults(_embedder, jobs, preparedMap, progress);
+            MaterializeEmbeddingOutputs(results, embeddings, xvecs, embedKeys);
 
             WriteEmbeddingDebug(startTimes, jobs, results);
         }
@@ -855,9 +852,10 @@ public sealed class DiariZenDiarizer : IDisposable
         bool[] SelectedMask,
         int NumFrames,
         int CleanFrameCount);
-    private readonly record struct EmbeddingJobRequest(
-        EmbeddingJob Job,
-        float[] ChunkWaveform);
+    private readonly record struct ChunkEmbeddingPrepRequest(
+        int ChunkIdx,
+        float[] ChunkWaveform,
+        List<EmbeddingJob> Jobs);
     private readonly record struct EmbeddingJobResult(
         int SequenceIndex,
         int ChunkIdx,
@@ -948,11 +946,16 @@ public sealed class DiariZenDiarizer : IDisposable
         return results;
     }
 
-    private static int DetermineSegmentationWorkerCount()
+    private static int DetermineSegmentationWorkerCount(ExecutionProvider ep)
     {
         int? configuredWorkers = Config.GetDiariZenSegmentationMaxWorkers();
         if (configuredWorkers.HasValue)
             return configuredWorkers.Value;
+
+        if (ep == ExecutionProvider.Cuda || ep == ExecutionProvider.DirectML)
+            return 1;
+        if (ep == ExecutionProvider.Auto && HardwareInfo.CanProbeCudaExecutionProvider())
+            return 1;
 
         int intraOpThreads = Math.Max(1, Config.GetDiariZenSegmentationIntraOpThreads());
         int availableCores = Math.Max(1, Environment.ProcessorCount);
@@ -981,10 +984,10 @@ public sealed class DiariZenDiarizer : IDisposable
         return batchDim <= 0;
     }
 
-    private static Task[] StartEmbeddingWorkers(
+    private static Task[] StartEmbeddingPrepWorkers(
         WeSpeakerEmbedder embedder,
-        BlockingCollection<EmbeddingJobRequest> jobQueue,
-        ConcurrentDictionary<int, EmbeddingJobResult> resultMap,
+        BlockingCollection<ChunkEmbeddingPrepRequest> prepQueue,
+        ConcurrentDictionary<int, WeSpeakerEmbedder.PreparedEmbeddingInput> preparedMap,
         Func<int> totalJobsProvider,
         Action<string>? progress,
         int[] completedJobs,
@@ -995,36 +998,142 @@ public sealed class DiariZenDiarizer : IDisposable
         {
             workers[workerIndex] = Task.Run(() =>
             {
-                foreach (var request in jobQueue.GetConsumingEnumerable())
+                foreach (var request in prepQueue.GetConsumingEnumerable())
                 {
-                    float[] l2emb = embedder.ComputeEmbedding(
-                        request.ChunkWaveform,
-                        request.Job.SelectedMask,
-                        out float[] rawEmb);
-                    float[]? xv = embedder.ComputeXvec(rawEmb);
-                    resultMap[request.Job.SequenceIndex] = new EmbeddingJobResult(
-                        request.Job.SequenceIndex,
-                        request.Job.ChunkIdx,
-                        request.Job.SpeakerIdx,
-                        request.Job.NumFrames,
-                        request.Job.CleanFrameCount,
-                        l2emb,
-                        xv);
-
-                    int done = Interlocked.Increment(ref completedJobs[0]);
-                    int totalJobs = totalJobsProvider();
-                    int reportInterval = Math.Max(1, Math.Max(done, totalJobs) / 10);
-                    if (done == totalJobs || done - Volatile.Read(ref lastReportedJobs[0]) >= reportInterval)
+                    float[,] fbank = embedder.ComputeChunkFbank(request.ChunkWaveform);
+                    foreach (var job in request.Jobs)
                     {
-                        int previous = Interlocked.Exchange(ref lastReportedJobs[0], done);
-                        if (done != previous)
-                            progress?.Invoke($"computed embeddings {done}/{totalJobs}");
+                        var prepared = embedder.PrepareEmbeddingInput(fbank, job.SelectedMask);
+                        if (prepared == null)
+                            continue;
+
+                        preparedMap[job.SequenceIndex] = prepared.Value;
+                        int done = Interlocked.Increment(ref completedJobs[0]);
+                        int totalJobs = totalJobsProvider();
+                        int reportInterval = Math.Max(1, Math.Max(done, totalJobs) / 10);
+                        if (done == totalJobs || done - Volatile.Read(ref lastReportedJobs[0]) >= reportInterval)
+                        {
+                            int previous = Interlocked.Exchange(ref lastReportedJobs[0], done);
+                            if (done != previous)
+                                progress?.Invoke($"prepared embeddings {done}/{totalJobs}");
+                        }
                     }
                 }
             });
         }
 
         return workers;
+    }
+
+    private EmbeddingJobResult[] ComputeEmbeddingResults(
+        WeSpeakerEmbedder embedder,
+        List<EmbeddingJob> jobs,
+        ConcurrentDictionary<int, WeSpeakerEmbedder.PreparedEmbeddingInput> preparedMap,
+        Action<string>? progress)
+    {
+        var results = new EmbeddingJobResult[jobs.Count];
+        if (_preferGpuEmbeddingPipeline)
+        {
+            int maxBatchSize = Config.GetDiariZenEmbeddingGpuMaxBatchSize();
+            int maxBatchFrames = embedder.ComputeSuggestedGpuBatchFrameLimit();
+            var preparedJobs = jobs
+                .Where(job => preparedMap.ContainsKey(job.SequenceIndex))
+                .Select(job => new WeSpeakerEmbedder.PreparedEmbeddingJob(
+                    job.SequenceIndex,
+                    preparedMap[job.SequenceIndex]))
+                .ToList();
+
+            int completed = 0;
+            foreach (var batch in MakeEmbeddingBatches(preparedJobs, maxBatchSize, maxBatchFrames))
+            {
+                foreach (var batchResult in embedder.ComputeEmbeddings(batch))
+                {
+                    var job = jobs[batchResult.SequenceIndex];
+                    results[job.SequenceIndex] = new EmbeddingJobResult(
+                        job.SequenceIndex,
+                        job.ChunkIdx,
+                        job.SpeakerIdx,
+                        job.NumFrames,
+                        job.CleanFrameCount,
+                        batchResult.L2Embedding,
+                        embedder.ComputeXvec(batchResult.RawEmbedding));
+                    completed++;
+                    if (completed == jobs.Count || completed % Math.Max(1, jobs.Count / 10) == 0)
+                        progress?.Invoke($"computed embeddings {completed}/{jobs.Count}");
+                }
+            }
+
+            return results;
+        }
+
+        Parallel.For(
+            0,
+            jobs.Count,
+            new ParallelOptions { MaxDegreeOfParallelism = MaxEmbeddingWorkers },
+            jobIndex =>
+            {
+                var job = jobs[jobIndex];
+                if (!preparedMap.TryGetValue(job.SequenceIndex, out var prepared))
+                    return;
+                float[] l2emb = embedder.ComputeEmbedding(prepared, out float[] rawEmb);
+                results[job.SequenceIndex] = new EmbeddingJobResult(
+                    job.SequenceIndex,
+                    job.ChunkIdx,
+                    job.SpeakerIdx,
+                    job.NumFrames,
+                    job.CleanFrameCount,
+                    l2emb,
+                    embedder.ComputeXvec(rawEmb));
+            });
+
+        return results;
+    }
+
+    private static IEnumerable<List<WeSpeakerEmbedder.PreparedEmbeddingJob>> MakeEmbeddingBatches(
+        List<WeSpeakerEmbedder.PreparedEmbeddingJob> jobs,
+        int maxBatchSize,
+        int maxBatchFrames)
+    {
+        var current = new List<WeSpeakerEmbedder.PreparedEmbeddingJob>();
+        int currentMaxFrames = 0;
+
+        foreach (var job in jobs)
+        {
+            int frames = job.Prepared.Fbank.GetLength(0);
+            int projectedMaxFrames = Math.Max(currentMaxFrames, frames);
+            long projectedFrames = (long)(current.Count + 1) * projectedMaxFrames;
+            bool sizeLimit = current.Count >= maxBatchSize;
+            bool frameLimit = current.Count > 0 && projectedFrames > maxBatchFrames;
+            if (sizeLimit || frameLimit)
+            {
+                yield return current;
+                current = new List<WeSpeakerEmbedder.PreparedEmbeddingJob>();
+                currentMaxFrames = 0;
+            }
+
+            current.Add(job);
+            currentMaxFrames = Math.Max(currentMaxFrames, frames);
+        }
+
+        if (current.Count > 0)
+            yield return current;
+    }
+
+    private static void MaterializeEmbeddingOutputs(
+        EmbeddingJobResult[] results,
+        List<double[]> embeddings,
+        List<float[]> xvecs,
+        List<(int chunkIdx, int speakerIdx)> embedKeys)
+    {
+        for (int i = 0; i < results.Length; i++)
+        {
+            var result = results[i];
+            var emb = new double[result.L2Embedding.Length];
+            for (int d = 0; d < result.L2Embedding.Length; d++) emb[d] = result.L2Embedding[d];
+            embeddings.Add(emb);
+            if (result.Xvec != null) xvecs.Add(result.Xvec);
+            embedKeys.Add((result.ChunkIdx, result.SpeakerIdx));
+        }
     }
 
     private static InferenceSession CreateSegmentationSession(

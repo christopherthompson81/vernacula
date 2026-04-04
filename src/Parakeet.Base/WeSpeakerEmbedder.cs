@@ -31,6 +31,8 @@ public sealed class WeSpeakerEmbedder : IDisposable
 {
     private readonly InferenceSession _session;
     private readonly bool _supportsWeights;
+    private readonly bool _supportsBatching;
+    private readonly bool _preferGpuBatching;
     private readonly string _fbankInputName;
     private readonly string? _weightsInputName;
     private readonly string _outputName;
@@ -57,6 +59,8 @@ public sealed class WeSpeakerEmbedder : IDisposable
 
     /// <summary>Whether the loaded ONNX embedder supports native frame weights.</summary>
     public bool SupportsWeights => _supportsWeights;
+    public bool SupportsBatching => _supportsBatching;
+    public bool PreferGpuBatching => _preferGpuBatching;
 
     /// <summary>
     /// Minimum waveform length accepted by the weighted pyannote WeSpeaker path.
@@ -144,9 +148,11 @@ public sealed class WeSpeakerEmbedder : IDisposable
         _session = new InferenceSession(modelPath, opts);
         var inputNames = _session.InputMetadata.Keys.ToArray();
         _fbankInputName = inputNames.First();
+        _supportsBatching = SupportsDynamicBatch(_session.InputMetadata[_fbankInputName]);
         _weightsInputName = inputNames.FirstOrDefault(name =>
             string.Equals(name, "weights", StringComparison.OrdinalIgnoreCase));
         _supportsWeights = _weightsInputName != null;
+        _preferGpuBatching = ep != ExecutionProvider.Cpu && _supportsWeights && _supportsBatching;
         _outputName = _session.OutputMetadata.Keys.First();
     }
 
@@ -211,16 +217,34 @@ public sealed class WeSpeakerEmbedder : IDisposable
             return new float[EmbeddingDim];
         }
 
-        var fbank = ComputeFbank(waveform);
-        int numFrames = fbank.GetLength(0);
-        if (fbank.GetLength(0) == 0)
+        var prepared = PrepareEmbeddingInput(waveform, frameMask);
+        if (prepared == null)
         {
             rawEmbedding = new float[EmbeddingDim];
             return new float[EmbeddingDim];
         }
 
+        return ComputeEmbedding(prepared.Value, out rawEmbedding);
+    }
+
+    public float[,] ComputeChunkFbank(float[] waveform) => ComputeFbank(waveform);
+
+    public PreparedEmbeddingInput? PrepareEmbeddingInput(float[] waveform, bool[] frameMask)
+    {
+        if (waveform.Length < FrameLengthSamples || frameMask.Length == 0)
+            return null;
+
+        var fbank = ComputeFbank(waveform);
+        return PrepareEmbeddingInput(fbank, frameMask);
+    }
+
+    public PreparedEmbeddingInput? PrepareEmbeddingInput(float[,] fbank, bool[] frameMask)
+    {
+        int numFrames = fbank.GetLength(0);
+        if (numFrames == 0 || frameMask.Length == 0)
+            return null;
+
         int selectedCount = 0;
-        var selected = new bool[numFrames];
         var frameWeights = new float[numFrames];
         for (int fi = 0; fi < numFrames; fi++)
         {
@@ -229,31 +253,97 @@ public sealed class WeSpeakerEmbedder : IDisposable
                 0,
                 frameMask.Length - 1);
             bool keep = frameMask[srcIndex];
-            selected[fi] = keep;
             frameWeights[fi] = keep ? 1f : 0f;
             if (keep) selectedCount++;
         }
 
         if (selectedCount == 0)
-        {
-            rawEmbedding = new float[EmbeddingDim];
-            return new float[EmbeddingDim];
-        }
+            return null;
 
         if (_supportsWeights)
-            return ComputeEmbeddingFromFbank(fbank, frameWeights, out rawEmbedding);
+            return new PreparedEmbeddingInput(fbank, frameWeights, selectedCount);
 
         var maskedFbank = new float[selectedCount, NumMelBins];
-        int dst = 0;
-        for (int fi = 0; fi < numFrames; fi++)
+        for (int fi = 0, dst = 0; fi < numFrames; fi++)
         {
-            if (!selected[fi]) continue;
+            if (frameWeights[fi] <= 0f) continue;
             for (int m = 0; m < NumMelBins; m++)
                 maskedFbank[dst, m] = fbank[fi, m];
             dst++;
         }
 
-        return ComputeEmbeddingFromFbank(maskedFbank, out rawEmbedding);
+        return new PreparedEmbeddingInput(maskedFbank, null, selectedCount);
+    }
+
+    public float[] ComputeEmbedding(PreparedEmbeddingInput prepared, out float[] rawEmbedding)
+    {
+        if (prepared.FrameWeights != null)
+            return ComputeEmbeddingFromFbank(prepared.Fbank, prepared.FrameWeights, out rawEmbedding);
+
+        return ComputeEmbeddingFromFbank(prepared.Fbank, out rawEmbedding);
+    }
+
+    public BatchEmbeddingResult[] ComputeEmbeddings(IReadOnlyList<PreparedEmbeddingJob> jobs)
+    {
+        if (jobs.Count == 0)
+            return [];
+
+        if (!_supportsBatching || !_supportsWeights || jobs.Any(job => job.Prepared.FrameWeights == null))
+        {
+            var fallback = new BatchEmbeddingResult[jobs.Count];
+            for (int i = 0; i < jobs.Count; i++)
+            {
+                float[] l2 = ComputeEmbedding(jobs[i].Prepared, out float[] raw);
+                fallback[i] = new BatchEmbeddingResult(jobs[i].SequenceIndex, l2, raw);
+            }
+            return fallback;
+        }
+
+        int batch = jobs.Count;
+        int maxFrames = jobs.Max(job => job.Prepared.Fbank.GetLength(0));
+        var data = new float[batch * maxFrames * NumMelBins];
+        var weights = new float[batch * maxFrames];
+
+        for (int bi = 0; bi < batch; bi++)
+        {
+            float[,] fbank = jobs[bi].Prepared.Fbank;
+            float[] frameWeights = jobs[bi].Prepared.FrameWeights!;
+            int numFrames = fbank.GetLength(0);
+
+            for (int fi = 0; fi < numFrames; fi++)
+            {
+                int dstBase = (bi * maxFrames + fi) * NumMelBins;
+                Buffer.BlockCopy(
+                    fbank,
+                    fi * NumMelBins * sizeof(float),
+                    data,
+                    dstBase * sizeof(float),
+                    NumMelBins * sizeof(float));
+                weights[bi * maxFrames + fi] = frameWeights[fi];
+            }
+        }
+
+        var tensor = new DenseTensor<float>(data, new[] { batch, maxFrames, NumMelBins });
+        var weightTensor = new DenseTensor<float>(weights, new[] { batch, maxFrames });
+        var inputs = new List<NamedOnnxValue>
+        {
+            NamedOnnxValue.CreateFromTensor(_fbankInputName, tensor),
+            NamedOnnxValue.CreateFromTensor(_weightsInputName!, weightTensor)
+        };
+
+        using var results = _session.Run(inputs);
+        var output = results.First(r => r.Name == _outputName).AsTensor<float>();
+        int embeddingDim = output.Dimensions[1];
+        var batchResults = new BatchEmbeddingResult[batch];
+        for (int bi = 0; bi < batch; bi++)
+        {
+            var raw = new float[embeddingDim];
+            for (int i = 0; i < embeddingDim; i++)
+                raw[i] = output[bi, i];
+            batchResults[bi] = new BatchEmbeddingResult(jobs[bi].SequenceIndex, NormalizeEmbedding(raw), raw);
+        }
+
+        return batchResults;
     }
 
     private float[] ComputeEmbeddingFromFbank(float[,] fbank, out float[] rawEmbedding)
@@ -583,6 +673,44 @@ public sealed class WeSpeakerEmbedder : IDisposable
 
     private static double HzToMel(double hz) => 1127.0 * Math.Log(1.0 + hz / 700.0);
     private static double MelToHz(double mel) => 700.0 * (Math.Exp(mel / 1127.0) - 1.0);
+
+    public int ComputeSuggestedGpuBatchFrameLimit()
+    {
+        long configuredMaxFrames = Config.GetDiariZenEmbeddingGpuMaxBatchFrames();
+        long configuredBytesPerFrame = Config.GetDiariZenEmbeddingGpuBytesPerFrameEstimate();
+        long safetyMb = Config.GetDiariZenEmbeddingGpuSafetyMb();
+        var (_, freeMb) = HardwareInfo.GetGpuMemoryMb();
+        if (freeMb <= 0 || configuredBytesPerFrame <= 0)
+            return (int)configuredMaxFrames;
+
+        long availableMb = freeMb - safetyMb;
+        if (availableMb <= 0)
+            return (int)configuredMaxFrames;
+
+        long bytesBudget = availableMb * 1024L * 1024L;
+        long vramLimitedFrames = bytesBudget / configuredBytesPerFrame;
+        if (vramLimitedFrames <= 0)
+            return (int)configuredMaxFrames;
+
+        return (int)Math.Max(1, Math.Min(configuredMaxFrames, vramLimitedFrames));
+    }
+
+    private static bool SupportsDynamicBatch(NodeMetadata metadata) =>
+        metadata.Dimensions.Length > 0 && metadata.Dimensions[0] <= 0;
+
+    public readonly record struct PreparedEmbeddingInput(
+        float[,] Fbank,
+        float[]? FrameWeights,
+        int SelectedFrameCount);
+
+    public readonly record struct PreparedEmbeddingJob(
+        int SequenceIndex,
+        PreparedEmbeddingInput Prepared);
+
+    public readonly record struct BatchEmbeddingResult(
+        int SequenceIndex,
+        float[] L2Embedding,
+        float[] RawEmbedding);
 
     // ── IDisposable ────────────────────────────────────────────────────────
 
