@@ -53,11 +53,6 @@ public sealed class DiariZenDiarizer : IDisposable
             Environment.GetEnvironmentVariable("PARAKEET_DIARIZEN_DISABLE_POST_SMOOTHING"),
             "1",
             StringComparison.Ordinal);
-    private static readonly bool DisableTinySpeakerPruning =
-        string.Equals(
-            Environment.GetEnvironmentVariable("PARAKEET_DIARIZEN_DISABLE_TINY_SPEAKER_PRUNING"),
-            "1",
-            StringComparison.Ordinal);
     private static readonly bool DisableGapFill =
         string.Equals(
             Environment.GetEnvironmentVariable("PARAKEET_DIARIZEN_DISABLE_GAP_FILL"),
@@ -68,35 +63,6 @@ public sealed class DiariZenDiarizer : IDisposable
             Environment.GetEnvironmentVariable("PARAKEET_DIARIZEN_DISABLE_SHORT_REGION_REMOVAL"),
             "1",
             StringComparison.Ordinal);
-    private static readonly bool DisableAdjacentMerge =
-        string.Equals(
-            Environment.GetEnvironmentVariable("PARAKEET_DIARIZEN_DISABLE_ADJACENT_MERGE"),
-            "1",
-            StringComparison.Ordinal);
-    private static readonly bool UseHardPowersetMasks =
-        string.Equals(
-            Environment.GetEnvironmentVariable("PARAKEET_DIARIZEN_USE_HARD_POWERSET_MASKS"),
-            "1",
-            StringComparison.Ordinal);
-    private static readonly bool UseHardPowersetCount =
-        string.Equals(
-            Environment.GetEnvironmentVariable("PARAKEET_DIARIZEN_USE_HARD_POWERSET_COUNT"),
-            "1",
-            StringComparison.Ordinal);
-    private static readonly bool ProjectSoftMasksToHardCount =
-        string.Equals(
-            Environment.GetEnvironmentVariable("PARAKEET_DIARIZEN_PROJECT_SOFT_MASKS_TO_COUNT"),
-            "1",
-            StringComparison.Ordinal);
-    private static readonly bool UseSummedActivations =
-        string.Equals(
-            Environment.GetEnvironmentVariable("PARAKEET_DIARIZEN_USE_SUMMED_ACTIVATIONS"),
-            "1",
-            StringComparison.Ordinal);
-    private static readonly string CountRoundingMode =
-        (Environment.GetEnvironmentVariable("PARAKEET_DIARIZEN_COUNT_ROUNDING") ?? "round")
-        .Trim()
-        .ToLowerInvariant();
     private static readonly int MinActiveFramesForEmbed = GetMinActiveFramesForEmbed();
 
     // ── Construction ───────────────────────────────────────────────────────
@@ -173,24 +139,14 @@ public sealed class DiariZenDiarizer : IDisposable
         // Matches pyannote's Inference.infer with soft=True + to_multilabel:
         // score[t, spk] = Σ_c p(c|t)  for all powerset classes c containing spk.
         // Followed by median_filter(size=(1,11,1)).
-        var perChunkScores = new List<float[,]>(chunks.Count);
         var perChunkBinary = new List<float[,]>(chunks.Count);
-        var perChunkCounts = new List<int[]>(chunks.Count);
         for (int ci = 0; ci < chunkScores.Count; ci++)
         {
-            var rawScores = chunkScores[ci];
-            var probs    = ApplySoftmaxSingle(rawScores);
-            var filtered = ApplyMedianFilterSingle(probs, Config.DiariZenMedianFilterSize);
+            var rawScores  = chunkScores[ci];
+            var probs      = ApplySoftmaxSingle(rawScores);
+            var filtered   = ApplyMedianFilterSingle(probs, Config.DiariZenMedianFilterSize);
             var softScores = ComputePerSpeakerScores(filtered);
-            perChunkScores.Add(softScores);
-            int[] hardCounts = DecodePowersetCardinality(filtered, threshold);
-            perChunkCounts.Add(hardCounts);
-            perChunkBinary.Add(
-                UseHardPowersetMasks
-                    ? DecodeHardPowersetMasks(filtered, threshold)
-                    : ProjectSoftMasksToHardCount
-                        ? ProjectSoftScoresToFrameCount(softScores, hardCounts, threshold)
-                        : BinarizePerSpeakerScores(softScores, threshold));
+            perChunkBinary.Add(BinarizePerSpeakerScores(softScores, threshold));
             if (ShouldReportProgress(ci, chunkScores.Count))
                 progress?.Invoke($"decoded chunk {ci + 1}/{chunkScores.Count}");
         }
@@ -207,7 +163,7 @@ public sealed class DiariZenDiarizer : IDisposable
         {
             progress?.Invoke("extracting speaker embeddings");
             var jobs = new List<EmbeddingJob>();
-            for (int ci = 0; ci < perChunkScores.Count; ci++)
+            for (int ci = 0; ci < perChunkBinary.Count; ci++)
             {
                 var chunkScore = perChunkBinary[ci];
                 int numFrames  = chunkScore.GetLength(0);
@@ -260,8 +216,8 @@ public sealed class DiariZenDiarizer : IDisposable
                     jobs.Add(new EmbeddingJob(ci, spk, chunks[ci], selectedMask, numFrames, cleanCount));
                 }
 
-                if (ShouldReportProgress(ci, perChunkScores.Count))
-                    progress?.Invoke($"processed embeddings for chunk {ci + 1}/{perChunkScores.Count}");
+                if (ShouldReportProgress(ci, perChunkBinary.Count))
+                    progress?.Invoke($"processed embeddings for chunk {ci + 1}/{perChunkBinary.Count}");
             }
 
             results = new EmbeddingJobResult[jobs.Count];
@@ -308,8 +264,8 @@ public sealed class DiariZenDiarizer : IDisposable
             WriteEmbeddingDebug(startTimes, jobs, results);
         }
 
-        progress?.Invoke($"collected {embeddings.Count} embedding(s) from {perChunkScores.Count} chunk(s)");
-        WriteLocalMaskDebug(startTimes, perChunkBinary, perChunkCounts);
+        progress?.Invoke($"collected {embeddings.Count} embedding(s) from {perChunkBinary.Count} chunk(s)");
+        WriteLocalMaskDebug(startTimes, perChunkBinary);
 
         // ── Step 4: Cluster embeddings ────────────────────────────────────
         // Build (chunkIdx, speakerIdx) → global speaker ID lookup.
@@ -386,7 +342,7 @@ public sealed class DiariZenDiarizer : IDisposable
         {
             // No embedder — assign all local speakers in each chunk to
             // their local index (will produce up to 4 "speakers")
-            for (int ci = 0; ci < perChunkScores.Count; ci++)
+            for (int ci = 0; ci < perChunkBinary.Count; ci++)
                 for (int spk = 0; spk < MaxUniqueSpeakers; spk++)
                     localToGlobal[(ci, spk)] = spk;
         }
@@ -409,7 +365,7 @@ public sealed class DiariZenDiarizer : IDisposable
         var countSums = new float[totalFrames];
         var countContrib = new int[totalFrames];
         var perChunkGlobal = new float[numGlobalSpeakers];
-        var chunkHasGlobalSpeaker = new bool[perChunkScores.Count, numGlobalSpeakers];
+        var chunkHasGlobalSpeaker = new bool[perChunkBinary.Count, numGlobalSpeakers];
 
         foreach (var ((chunkIdx, _), globalSpeaker) in localToGlobal)
         {
@@ -418,7 +374,7 @@ public sealed class DiariZenDiarizer : IDisposable
         }
 
         progress?.Invoke("reconstructing global speaker timeline");
-        for (int ci = 0; ci < perChunkScores.Count; ci++)
+        for (int ci = 0; ci < perChunkBinary.Count; ci++)
         {
             var chunkScore = perChunkBinary[ci];
             int numFrames  = chunkScore.GetLength(0);
@@ -429,12 +385,12 @@ public sealed class DiariZenDiarizer : IDisposable
                 int gf = startFrame + t;
                 if (gf >= totalFrames) break;
 
-                int activeLocalSpeakers = UseHardPowersetCount ? perChunkCounts[ci][t] : 0;
+                int activeLocalSpeakers = 0;
                 Array.Clear(perChunkGlobal, 0, perChunkGlobal.Length);
                 for (int spk = 0; spk < MaxUniqueSpeakers; spk++)
                 {
                     float localScore = chunkScore[t, spk];
-                    if (!UseHardPowersetCount && localScore > 0f)
+                    if (localScore > 0f)
                         activeLocalSpeakers++;
 
                     if (localScore <= 0f) continue;
@@ -455,8 +411,8 @@ public sealed class DiariZenDiarizer : IDisposable
                 countContrib[gf]++;
             }
 
-            if (ShouldReportProgress(ci, perChunkScores.Count))
-                progress?.Invoke($"reconstructed chunk {ci + 1}/{perChunkScores.Count}");
+            if (ShouldReportProgress(ci, perChunkBinary.Count))
+                progress?.Invoke($"reconstructed chunk {ci + 1}/{perChunkBinary.Count}");
         }
 
         // ── Step 6: Select top-N speakers per frame and extract regions ────
@@ -470,12 +426,7 @@ public sealed class DiariZenDiarizer : IDisposable
             if (countContrib[f] <= 0) continue;
 
             double averageCount = countSums[f] / countContrib[f];
-            int count = CountRoundingMode switch
-            {
-                "floor" => (int)Math.Floor(averageCount),
-                "ceil" => (int)Math.Ceiling(averageCount),
-                _ => (int)Math.Round(averageCount, MidpointRounding.AwayFromZero),
-            };
+            int count = (int)Math.Round(averageCount, MidpointRounding.AwayFromZero);
             count = Math.Clamp(
                 count,
                 0,
@@ -485,9 +436,7 @@ public sealed class DiariZenDiarizer : IDisposable
             {
                 int flatIndex = f * numGlobalSpeakers + gs;
                 float score = activationContrib[flatIndex] > 0
-                    ? (UseSummedActivations
-                        ? activationSums[flatIndex]
-                        : activationSums[flatIndex] / activationContrib[flatIndex])
+                    ? activationSums[flatIndex] / activationContrib[flatIndex]
                     : 0f;
                 ranked[gs] = (score, gs);
             }
@@ -543,7 +492,7 @@ public sealed class DiariZenDiarizer : IDisposable
         progress?.Invoke($"extracted {labeled.Count} raw segment(s)");
         if (labeled.Count == 0) return [];
 
-        return DisableAdjacentMerge ? ToDiarizationSegments(labeled) : MergeAdjacentSegments(labeled);
+        return MergeAdjacentSegments(labeled);
     }
 
     private static void SmoothBinaryTimeline(
@@ -689,8 +638,7 @@ public sealed class DiariZenDiarizer : IDisposable
 
     private static void WriteLocalMaskDebug(
         List<double> startTimes,
-        List<float[,]> perChunkBinary,
-        List<int[]> perChunkCounts)
+        List<float[,]> perChunkBinary)
     {
         string? outputPath = Environment.GetEnvironmentVariable("PARAKEET_DIARIZEN_DEBUG_LOCAL_PATH");
         if (string.IsNullOrWhiteSpace(outputPath))
@@ -707,7 +655,6 @@ public sealed class DiariZenDiarizer : IDisposable
         for (int ci = 0; ci < perChunkBinary.Count; ci++)
         {
             float[,] chunkBinary = perChunkBinary[ci];
-            int[] chunkCounts = perChunkCounts[ci];
             int numFrames = chunkBinary.GetLength(0);
             int chunkStartFrame = (int)Math.Round(startTimes[ci] * FrameRate);
             var frames = new List<object>();
@@ -727,7 +674,6 @@ public sealed class DiariZenDiarizer : IDisposable
                     localFrame = t,
                     globalFrame,
                     globalTimeSeconds = globalFrame / (double)FrameRate,
-                    decodedCount = chunkCounts[t],
                     localMask = mask
                 });
             }
@@ -1043,63 +989,6 @@ public sealed class DiariZenDiarizer : IDisposable
         return binary;
     }
 
-    private static float[,] ProjectSoftScoresToFrameCount(float[,] scores, int[] frameCounts, float threshold)
-    {
-        int numFrames = scores.GetLength(0);
-        int numSpeakers = scores.GetLength(1);
-        var binary = new float[numFrames, numSpeakers];
-        var ranked = new (float score, int speaker)[numSpeakers];
-
-        for (int t = 0; t < numFrames; t++)
-        {
-            int keep = Math.Clamp(frameCounts[t], 0, numSpeakers);
-            for (int spk = 0; spk < numSpeakers; spk++)
-                ranked[spk] = (scores[t, spk], spk);
-
-            Array.Sort(ranked, (a, b) => b.score.CompareTo(a.score));
-            for (int i = 0; i < keep; i++)
-            {
-                if (ranked[i].score < threshold)
-                    break;
-                binary[t, ranked[i].speaker] = 1f;
-            }
-        }
-
-        return binary;
-    }
-
-    private static float[,] DecodeHardPowersetMasks(float[] powersetScores, float threshold)
-    {
-        var activeSpeakers = PowersetDecoder.BinarizePowerset(
-            powersetScores,
-            MaxUniqueSpeakers,
-            MaxSimultaneousPerFrame,
-            threshold);
-        int numFrames = activeSpeakers.Length;
-        var binary = new float[numFrames, MaxUniqueSpeakers];
-
-        for (int t = 0; t < numFrames; t++)
-        {
-            foreach (int spk in activeSpeakers[t])
-                binary[t, spk] = 1f;
-        }
-
-        return binary;
-    }
-
-    private static int[] DecodePowersetCardinality(float[] powersetScores, float threshold)
-    {
-        var activeSpeakers = PowersetDecoder.BinarizePowerset(
-            powersetScores,
-            MaxUniqueSpeakers,
-            MaxSimultaneousPerFrame,
-            threshold);
-        var counts = new int[activeSpeakers.Length];
-        for (int t = 0; t < activeSpeakers.Length; t++)
-            counts[t] = activeSpeakers[t].Count;
-        return counts;
-    }
-
     // ── Small-cluster absorption ───────────────────────────────────────────
 
     /// <summary>
@@ -1402,44 +1291,6 @@ public sealed class DiariZenDiarizer : IDisposable
 
         merged.Add(new DiarizationSegment(curStart, curEnd, curSpeaker));
         return merged;
-    }
-
-    private static List<DiarizationSegment> ToDiarizationSegments(
-        List<(int startFrame, int endFrame, string speakerLabel)> labeled)
-    {
-        var sorted = labeled.OrderBy(r => r.startFrame).ToList();
-        var segments = new List<DiarizationSegment>(sorted.Count);
-        foreach (var (startFrame, endFrame, speakerLabel) in sorted)
-        {
-            segments.Add(new DiarizationSegment(
-                startFrame / (double)FrameRate,
-                endFrame / (double)FrameRate,
-                speakerLabel));
-        }
-
-        return segments;
-    }
-
-    private static List<(int startFrame, int endFrame, string speakerLabel)> PruneTinySpeakers(
-        List<(int startFrame, int endFrame, string speakerLabel)> labeled,
-        double minDurationSeconds)
-    {
-        if (labeled.Count == 0 || minDurationSeconds <= 0)
-            return labeled;
-
-        int minFrames = Math.Max(1, (int)Math.Round(minDurationSeconds * FrameRate));
-        var durationBySpeaker = new Dictionary<string, int>(StringComparer.Ordinal);
-        foreach (var (startFrame, endFrame, speakerLabel) in labeled)
-            durationBySpeaker[speakerLabel] = durationBySpeaker.GetValueOrDefault(speakerLabel) + (endFrame - startFrame);
-
-        var tinySpeakers = new HashSet<string>(
-            durationBySpeaker.Where(kv => kv.Value < minFrames).Select(kv => kv.Key),
-            StringComparer.Ordinal);
-
-        if (tinySpeakers.Count == 0)
-            return labeled;
-
-        return labeled.Where(seg => !tinySpeakers.Contains(seg.speakerLabel)).ToList();
     }
 
     // ── IDisposable ────────────────────────────────────────────────────────
