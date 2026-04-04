@@ -30,6 +30,10 @@ namespace Parakeet.Base;
 public sealed class WeSpeakerEmbedder : IDisposable
 {
     private readonly InferenceSession _session;
+    private readonly bool _supportsWeights;
+    private readonly string _fbankInputName;
+    private readonly string? _weightsInputName;
+    private readonly string _outputName;
     private readonly float[] _window;
     private readonly float[,] _melFilters;
     private bool _disposed;
@@ -51,6 +55,15 @@ public sealed class WeSpeakerEmbedder : IDisposable
     /// <summary>PLDA eigenspace matrix (128×128), needed for batch plda_tf, or null.</summary>
     public float[,]? PldaTr => _pldaTr;
 
+    /// <summary>Whether the loaded ONNX embedder supports native frame weights.</summary>
+    public bool SupportsWeights => _supportsWeights;
+
+    /// <summary>
+    /// Minimum waveform length accepted by the weighted pyannote WeSpeaker path.
+    /// This matches the reference pipeline's `min_num_samples` behavior.
+    /// </summary>
+    public int MinNumSamples => FrameLengthSamples;
+
     // ── Constants ──────────────────────────────────────────────────────────
 
     public const int EmbeddingDim    = 256;
@@ -71,7 +84,7 @@ public sealed class WeSpeakerEmbedder : IDisposable
     /// <summary>
     /// Create a WeSpeaker embedder.
     /// </summary>
-    /// <param name="modelPath">Path to wespeaker_pyannote.onnx.</param>
+    /// <param name="modelPath">Path to wespeaker_pyannote_weighted.onnx or wespeaker_pyannote.onnx.</param>
     /// <param name="ldaDir">
     /// Optional directory containing <c>mean1.bin</c>, <c>lda.bin</c>, <c>mean2.bin</c>
     /// (exported from plda/xvec_transform.npz by export_lda_transform.py).
@@ -128,6 +141,12 @@ public sealed class WeSpeakerEmbedder : IDisposable
                 break;
         }
         _session = new InferenceSession(modelPath, opts);
+        var inputNames = _session.InputMetadata.Keys.ToArray();
+        _fbankInputName = inputNames.First();
+        _weightsInputName = inputNames.FirstOrDefault(name =>
+            string.Equals(name, "weights", StringComparison.OrdinalIgnoreCase));
+        _supportsWeights = _weightsInputName != null;
+        _outputName = _session.OutputMetadata.Keys.First();
     }
 
     // ── Public API ─────────────────────────────────────────────────────────
@@ -174,8 +193,14 @@ public sealed class WeSpeakerEmbedder : IDisposable
 
     /// <summary>
     /// Compute an embedding from a chunk waveform using a frame mask defined at
-    /// diarization frame resolution. The mask is upsampled to the fbank frame
-    /// rate and only masked frames are passed to the embedding model.
+    /// diarization frame resolution.
+    ///
+    /// When the ONNX model supports a `weights` input, this mirrors pyannote's
+    /// native weighted pooling semantics by feeding the full fbank sequence plus
+    /// an upsampled 0/1 frame-weight vector.
+    ///
+    /// Otherwise, it falls back to the older masked-frame approximation where
+    /// only selected frames are passed to the embedding model.
     /// </summary>
     public float[] ComputeEmbedding(float[] waveform, bool[] frameMask, out float[] rawEmbedding)
     {
@@ -195,6 +220,7 @@ public sealed class WeSpeakerEmbedder : IDisposable
 
         int selectedCount = 0;
         var selected = new bool[numFrames];
+        var frameWeights = new float[numFrames];
         for (int fi = 0; fi < numFrames; fi++)
         {
             int srcIndex = Math.Clamp(
@@ -203,6 +229,7 @@ public sealed class WeSpeakerEmbedder : IDisposable
                 frameMask.Length - 1);
             bool keep = frameMask[srcIndex];
             selected[fi] = keep;
+            frameWeights[fi] = keep ? 1f : 0f;
             if (keep) selectedCount++;
         }
 
@@ -211,6 +238,9 @@ public sealed class WeSpeakerEmbedder : IDisposable
             rawEmbedding = new float[EmbeddingDim];
             return new float[EmbeddingDim];
         }
+
+        if (_supportsWeights)
+            return ComputeEmbeddingFromFbank(fbank, frameWeights, out rawEmbedding);
 
         var maskedFbank = new float[selectedCount, NumMelBins];
         int dst = 0;
@@ -236,6 +266,18 @@ public sealed class WeSpeakerEmbedder : IDisposable
         rawEmbedding = RunInference(fbank);  // raw un-normalised 256-dim
 
         // L2-normalise for AHC (matches Python: train_embeddings_normed = emb / ||emb||)
+        return NormalizeEmbedding(rawEmbedding);
+    }
+
+    private float[] ComputeEmbeddingFromFbank(float[,] fbank, float[] frameWeights, out float[] rawEmbedding)
+    {
+        if (fbank.GetLength(0) == 0)
+        {
+            rawEmbedding = new float[EmbeddingDim];
+            return new float[EmbeddingDim];
+        }
+
+        rawEmbedding = RunInference(fbank, frameWeights);  // raw un-normalised 256-dim
         return NormalizeEmbedding(rawEmbedding);
     }
 
@@ -395,7 +437,7 @@ public sealed class WeSpeakerEmbedder : IDisposable
 
     // ── ONNX inference ─────────────────────────────────────────────────────
 
-    private float[] RunInference(float[,] fbank)
+    private float[] RunInference(float[,] fbank, float[]? frameWeights = null)
     {
         int numFrames = fbank.GetLength(0);
         var data = new float[numFrames * NumMelBins];
@@ -404,10 +446,19 @@ public sealed class WeSpeakerEmbedder : IDisposable
                 data[fi * NumMelBins + m] = fbank[fi, m];
 
         var tensor = new DenseTensor<float>(data, new[] { 1, numFrames, NumMelBins });
-        var inputs = new List<NamedOnnxValue> { NamedOnnxValue.CreateFromTensor("fbank", tensor) };
+        var inputs = new List<NamedOnnxValue>
+        {
+            NamedOnnxValue.CreateFromTensor(_fbankInputName, tensor)
+        };
+
+        if (_supportsWeights && frameWeights != null)
+        {
+            var weightTensor = new DenseTensor<float>(frameWeights, new[] { 1, numFrames });
+            inputs.Add(NamedOnnxValue.CreateFromTensor(_weightsInputName!, weightTensor));
+        }
 
         using var results = _session.Run(inputs);
-        var output = results.First(r => r.Name == "embedding").AsTensor<float>();
+        var output = results.First(r => r.Name == _outputName).AsTensor<float>();
 
         int outSize = output.Dimensions[1];
         var embedding = new float[outSize];

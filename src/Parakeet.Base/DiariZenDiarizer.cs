@@ -68,6 +68,11 @@ public sealed class DiariZenDiarizer : IDisposable
             Environment.GetEnvironmentVariable("PARAKEET_DIARIZEN_DISABLE_SHORT_REGION_REMOVAL"),
             "1",
             StringComparison.Ordinal);
+    private static readonly bool DisableAdjacentMerge =
+        string.Equals(
+            Environment.GetEnvironmentVariable("PARAKEET_DIARIZEN_DISABLE_ADJACENT_MERGE"),
+            "1",
+            StringComparison.Ordinal);
     private static readonly bool UseHardPowersetMasks =
         string.Equals(
             Environment.GetEnvironmentVariable("PARAKEET_DIARIZEN_USE_HARD_POWERSET_MASKS"),
@@ -230,8 +235,28 @@ public sealed class DiariZenDiarizer : IDisposable
                         }
                     }
 
-                    if (activeCount < MinActiveFramesForEmbed) continue;
-                    bool[] selectedMask = cleanCount >= MinActiveFramesForEmbed ? cleanMask : activeMask;
+                    if (activeCount == 0) continue;
+
+                    bool[] selectedMask;
+                    if (_embedder.SupportsWeights)
+                    {
+                        // Match pyannote speaker_diarization: derive the minimum
+                        // clean-mask length from the embedder's minimum accepted
+                        // waveform size, use clean speech only when it is strictly
+                        // longer than that threshold, otherwise fall back to the
+                        // full speaker mask without dropping the local speaker.
+                        int minMaskFrames = Math.Max(
+                            1,
+                            (int)Math.Ceiling(
+                                numFrames * (_embedder.MinNumSamples / (double)chunks[ci].Length)));
+                        selectedMask = cleanCount > minMaskFrames ? cleanMask : activeMask;
+                    }
+                    else
+                    {
+                        if (activeCount < MinActiveFramesForEmbed) continue;
+                        selectedMask = cleanCount >= MinActiveFramesForEmbed ? cleanMask : activeMask;
+                    }
+
                     jobs.Add(new EmbeddingJob(ci, spk, chunks[ci], selectedMask, numFrames, cleanCount));
                 }
 
@@ -279,6 +304,8 @@ public sealed class DiariZenDiarizer : IDisposable
                 if (result.Xvec != null) xvecs.Add(result.Xvec);
                 embedKeys.Add((result.ChunkIdx, result.SpeakerIdx));
             }
+
+            WriteEmbeddingDebug(startTimes, jobs, results);
         }
 
         progress?.Invoke($"collected {embeddings.Count} embedding(s) from {perChunkScores.Count} chunk(s)");
@@ -452,7 +479,7 @@ public sealed class DiariZenDiarizer : IDisposable
             count = Math.Clamp(
                 count,
                 0,
-                Math.Min(Math.Min(maxSpeakers, numGlobalSpeakers), MaxSimultaneousPerFrame));
+                Math.Min(maxSpeakers, numGlobalSpeakers));
 
             for (int gs = 0; gs < numGlobalSpeakers; gs++)
             {
@@ -512,13 +539,11 @@ public sealed class DiariZenDiarizer : IDisposable
                 labeled.Add((regionStart.Value, totalFrames, $"speaker_{gs}"));
         }
 
-        if (!DisableTinySpeakerPruning)
-            labeled = PruneTinySpeakers(labeled, Config.DiariZenMinSpeakerDurationSeconds);
         WriteReconstructionDebugFrames(debugFrames);
         progress?.Invoke($"extracted {labeled.Count} raw segment(s)");
         if (labeled.Count == 0) return [];
 
-        return MergeAdjacentSegments(labeled);
+        return DisableAdjacentMerge ? ToDiarizationSegments(labeled) : MergeAdjacentSegments(labeled);
     }
 
     private static void SmoothBinaryTimeline(
@@ -715,6 +740,45 @@ public sealed class DiariZenDiarizer : IDisposable
                 chunkIdx = ci,
                 startTime = startTimes[ci],
                 frames
+            });
+        }
+
+        File.WriteAllText(outputPath, JsonSerializer.Serialize(payload, new JsonSerializerOptions
+        {
+            WriteIndented = true
+        }));
+    }
+
+    private static void WriteEmbeddingDebug(
+        List<double> startTimes,
+        List<EmbeddingJob> jobs,
+        EmbeddingJobResult[] results)
+    {
+        string? outputPath = Environment.GetEnvironmentVariable("PARAKEET_DIARIZEN_DEBUG_EMBED_PATH");
+        if (string.IsNullOrWhiteSpace(outputPath))
+            return;
+
+        string? directory = Path.GetDirectoryName(outputPath);
+        if (!string.IsNullOrWhiteSpace(directory))
+            Directory.CreateDirectory(directory);
+
+        var payload = new List<object>(results.Length);
+        for (int i = 0; i < results.Length; i++)
+        {
+            var job = jobs[i];
+            var result = results[i];
+            payload.Add(new
+            {
+                index = i,
+                chunkIdx = result.ChunkIdx,
+                chunkStartTime = startTimes[result.ChunkIdx],
+                localSpeaker = result.SpeakerIdx,
+                numFrames = result.NumFrames,
+                cleanFrameCount = result.CleanFrameCount,
+                selectedFrameCount = job.SelectedMask.Count(v => v),
+                selectedMask = job.SelectedMask,
+                l2Embedding = result.L2Embedding,
+                xvec = result.Xvec,
             });
         }
 
@@ -988,7 +1052,7 @@ public sealed class DiariZenDiarizer : IDisposable
 
         for (int t = 0; t < numFrames; t++)
         {
-            int keep = Math.Clamp(frameCounts[t], 0, Math.Min(numSpeakers, MaxSimultaneousPerFrame));
+            int keep = Math.Clamp(frameCounts[t], 0, numSpeakers);
             for (int spk = 0; spk < numSpeakers; spk++)
                 ranked[spk] = (scores[t, spk], spk);
 
@@ -1338,6 +1402,22 @@ public sealed class DiariZenDiarizer : IDisposable
 
         merged.Add(new DiarizationSegment(curStart, curEnd, curSpeaker));
         return merged;
+    }
+
+    private static List<DiarizationSegment> ToDiarizationSegments(
+        List<(int startFrame, int endFrame, string speakerLabel)> labeled)
+    {
+        var sorted = labeled.OrderBy(r => r.startFrame).ToList();
+        var segments = new List<DiarizationSegment>(sorted.Count);
+        foreach (var (startFrame, endFrame, speakerLabel) in sorted)
+        {
+            segments.Add(new DiarizationSegment(
+                startFrame / (double)FrameRate,
+                endFrame / (double)FrameRate,
+                speakerLabel));
+        }
+
+        return segments;
     }
 
     private static List<(int startFrame, int endFrame, string speakerLabel)> PruneTinySpeakers(

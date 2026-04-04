@@ -44,10 +44,11 @@ public static class Config
     /// </summary>
     public const string DiariZenFile          = "diarizen_segmentation.onnx";
     /// <summary>
-    /// pyannote/wespeaker-voxceleb-resnet34-LM: 80-bin Fbank input, 256-dim L2-normalised output.
-    /// Export via: python scripts/diarizen_export/export_pyannote_wespeaker_onnx.py
+    /// pyannote/wespeaker-voxceleb-resnet34-LM: 80-bin Fbank input, 256-dim raw embedding,
+    /// with frame-weight support matching pyannote's native weighted pooling semantics.
+    /// Export via: python scripts/diarizen_export/export_pyannote_wespeaker_onnx.py --weighted
     /// </summary>
-    public const string DiariZenEmbedderFile  = "wespeaker_pyannote.onnx";
+    public const string DiariZenEmbedderFile  = "wespeaker_pyannote_weighted.onnx";
 
     /// <summary>
     /// Directory (relative to model dir) containing mean1.bin, lda.bin, mean2.bin
