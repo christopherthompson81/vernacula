@@ -51,6 +51,10 @@ public sealed class DiariZenDiarizer : IDisposable
     private const double MinCleanFrameRatioForClustering = 0.1;
     private static readonly int MaxEmbeddingWorkers =
         Math.Max(1, Config.GetDiariZenEmbeddingMaxWorkers() ?? Math.Max(1, Environment.ProcessorCount - 2));
+    private static readonly int[][] PowersetCombinations =
+        PowersetDecoder.GetPowersetCombinations(MaxUniqueSpeakers, MaxSimultaneousPerFrame)
+            .Select(combo => combo.ToArray())
+            .ToArray();
     private static readonly bool UseConstrainedCentroidAssignment =
         !string.Equals(
             Environment.GetEnvironmentVariable("PARAKEET_DIARIZEN_DISABLE_CONSTRAINED_ASSIGNMENT"),
@@ -165,10 +169,10 @@ public sealed class DiariZenDiarizer : IDisposable
             {
                 var chunkInfo = chunkBatch[bi];
                 var rawScores  = batchScores[bi];
-                var probs      = ApplySoftmaxSingle(rawScores);
-                var filtered   = ApplyMedianFilterSingle(probs, Config.DiariZenMedianFilterSize);
-                var softScores = ComputePerSpeakerScores(filtered);
-                var chunkScore = BinarizePerSpeakerScores(softScores, threshold);
+                var chunkScore = DecodeChunkBinary(
+                    rawScores,
+                    threshold,
+                    Config.DiariZenMedianFilterSize);
                 perChunkBinary.Add(chunkScore);
                 startTimes.Add(chunkInfo.StartTime);
 
@@ -1227,6 +1231,82 @@ public sealed class DiariZenDiarizer : IDisposable
         }
 
         return filtered;
+    }
+
+    private static float[,] DecodeChunkBinary(float[] logits, float threshold, int medianFilterSize)
+    {
+        float[] probs = ApplySoftmaxSingle(logits);
+        int numFrames = probs.Length / NumPowersetClasses;
+        var scores = new float[numFrames * MaxUniqueSpeakers];
+
+        if (medianFilterSize <= 1)
+        {
+            AccumulateSpeakerScores(probs, scores);
+            return BinarizeSpeakerScores(scores, numFrames, threshold);
+        }
+
+        int half = medianFilterSize / 2;
+        var window = new float[medianFilterSize];
+        for (int c = 0; c < NumPowersetClasses; c++)
+        {
+            int[] speakers = PowersetCombinations[c];
+            for (int f = 0; f < numFrames; f++)
+            {
+                int count = 0;
+                for (int k = -half; k <= half; k++)
+                {
+                    int fk = f + k;
+                    if (fk < 0) fk = -fk;
+                    if (fk >= numFrames) fk = 2 * numFrames - 2 - fk;
+                    fk = Math.Clamp(fk, 0, numFrames - 1);
+                    window[count++] = probs[fk * NumPowersetClasses + c];
+                }
+
+                Array.Sort(window, 0, count);
+                float median = window[count / 2];
+                if (median == 0f)
+                    continue;
+
+                int scoreBase = f * MaxUniqueSpeakers;
+                for (int i = 0; i < speakers.Length; i++)
+                    scores[scoreBase + speakers[i]] += median;
+            }
+        }
+
+        return BinarizeSpeakerScores(scores, numFrames, threshold);
+    }
+
+    private static void AccumulateSpeakerScores(float[] probs, float[] scores)
+    {
+        int numFrames = probs.Length / NumPowersetClasses;
+        for (int f = 0; f < numFrames; f++)
+        {
+            int powersetBase = f * NumPowersetClasses;
+            int scoreBase = f * MaxUniqueSpeakers;
+            for (int c = 0; c < NumPowersetClasses; c++)
+            {
+                float p = probs[powersetBase + c];
+                if (p == 0f)
+                    continue;
+
+                int[] speakers = PowersetCombinations[c];
+                for (int i = 0; i < speakers.Length; i++)
+                    scores[scoreBase + speakers[i]] += p;
+            }
+        }
+    }
+
+    private static float[,] BinarizeSpeakerScores(float[] scores, int numFrames, float threshold)
+    {
+        var binary = new float[numFrames, MaxUniqueSpeakers];
+        for (int f = 0; f < numFrames; f++)
+        {
+            int scoreBase = f * MaxUniqueSpeakers;
+            for (int spk = 0; spk < MaxUniqueSpeakers; spk++)
+                binary[f, spk] = scores[scoreBase + spk] >= threshold ? 1f : 0f;
+        }
+
+        return binary;
     }
 
     // ── Powerset → soft per-speaker scores ────────────────────────────────
