@@ -39,6 +39,9 @@ internal class SettingsService
     public string GetModelsDir() =>
         string.IsNullOrEmpty(Current.ModelsDir) ? DefaultModelsDir : Current.ModelsDir;
 
+    public string GetDiariZenModelsDir() =>
+        Path.Combine(GetModelsDir(), "diarizen");
+
     public string GetJobsDir()
     {
         string dir = Path.Combine(

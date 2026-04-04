@@ -8,6 +8,8 @@ namespace ParakeetCSharp.Services;
 
 internal class TranscriptionService
 {
+    private const double DiariZenDiarizationPercentWeight = 40.0;
+
     private readonly SettingsService _settings;
 
     public TranscriptionService(SettingsService settings) => _settings = settings;
@@ -268,24 +270,54 @@ internal class TranscriptionService
         {
             // ── DiariZen path (batch diarization) ────────────────────────────
             progress.Report(new TranscriptionProgress(
-                TranscriptionPhase.Diarizing, 0, 1, Loc.Instance["progress_diarizing_diarizen"]));
+                TranscriptionPhase.Diarizing,
+                0,
+                100,
+                Loc.Instance["progress_diarizing_diarizen"],
+                OverridePercent: 0));
 
             ct.ThrowIfCancellationRequested();
 
-            string diarizenModel = Path.Combine(modelsDir, Config.DiariZenFile);
+            string diarizenModelsDir = _settings.GetDiariZenModelsDir();
+            string diarizenModel = Path.Combine(diarizenModelsDir, Config.DiariZenFile);
             if (!File.Exists(diarizenModel))
             {
                 throw new FileNotFoundException(
                     $"DiariZen model not found: {diarizenModel}. " +
-                    "Please ensure the model has been exported using: " +
-                    "python scripts/diarizen_export/export_diarizen_onnx.py");
+                    "Please ensure the DiariZen weights are installed under the diarizen model directory.");
+            }
+
+            string diarizenEmbedderModel = Path.Combine(diarizenModelsDir, Config.DiariZenEmbedderFile);
+            if (!File.Exists(diarizenEmbedderModel))
+            {
+                throw new FileNotFoundException(
+                    $"DiariZen embedder model not found: {diarizenEmbedderModel}. " +
+                    "Please ensure the WeSpeaker embedder export is present in the diarizen model directory.");
             }
 
             List<DiarizationSegment> diarSegments = [];
+            double diarizationFraction = 0;
             await Task.Run(() =>
             {
-                using var diarizer = new DiariZenDiarizer(diarizenModel);
-                diarSegments = diarizer.Diarize(audio, minSpeakers: 1, maxSpeakers: 8);
+                using var diarizer = new DiariZenDiarizer(diarizenModel, diarizenEmbedderModel);
+                diarSegments = diarizer.Diarize(
+                    audio,
+                    minSpeakers: 1,
+                    maxSpeakers: 8,
+                    progress: message =>
+                    {
+                        double estimatedFraction = EstimateDiariZenDiarizationFraction(message);
+                        diarizationFraction = Math.Max(diarizationFraction, estimatedFraction);
+                        progress.Report(new TranscriptionProgress(
+                            TranscriptionPhase.Diarizing,
+                            (int)Math.Round(diarizationFraction * 100),
+                            100,
+                            message,
+                            OverridePercent: ScaleOverallProgress(
+                                0,
+                                DiariZenDiarizationPercentWeight,
+                                diarizationFraction)));
+                    });
             }, ct);
 
             segs = new List<(double, double, string)>(diarSegments.Count);
@@ -328,8 +360,11 @@ internal class TranscriptionService
             db.MarkDiarizationComplete();
 
             progress.Report(new TranscriptionProgress(
-                TranscriptionPhase.Diarizing, 1, 1,
-                Loc.Instance.T("progress_diarizen_complete", new() { ["count"] = segs.Count.ToString() })));
+                TranscriptionPhase.Diarizing,
+                100,
+                100,
+                Loc.Instance.T("progress_diarizen_complete", new() { ["count"] = segs.Count.ToString() }),
+                OverridePercent: DiariZenDiarizationPercentWeight));
         }
         else
         {
@@ -393,13 +428,91 @@ internal class TranscriptionService
                 string asrText = Loc.Instance.T("progress_recognizing_segment", new() {
                     ["i"]     = completed.ToString(),
                     ["count"] = totalSegs.ToString() });
+                double? overridePercent = segmentationMode == SegmentationMode.DiariZen
+                    ? ScaleOverallProgress(
+                        DiariZenDiarizationPercentWeight,
+                        100,
+                        totalSegs > 0 ? completed / (double)totalSegs : 1)
+                    : null;
                 progress.Report(new TranscriptionProgress(
                     TranscriptionPhase.Recognizing,
-                    completed, totalSegs, asrText, absId, text));
+                    completed,
+                    totalSegs,
+                    asrText,
+                    absId,
+                    text,
+                    overridePercent));
             }
         }
 
         progress.Report(new TranscriptionProgress(
-            TranscriptionPhase.Done, 1, 1, Loc.Instance["transcription_complete"]));
+            TranscriptionPhase.Done,
+            1,
+            1,
+            Loc.Instance["transcription_complete"],
+            OverridePercent: 100));
     }
+
+    private static double EstimateDiariZenDiarizationFraction(string message)
+    {
+        if (TryParseProgressFraction(message, "reconstructed chunk ", out double reconstructedFraction))
+            return 0.94 + 0.05 * reconstructedFraction;
+        if (TryParseProgressFraction(message, "segmented chunk ", out double segmentedFraction))
+            return 0.15 + 0.60 * segmentedFraction;
+        if (TryParseProgressFraction(message, "processed embeddings for chunk ", out double embeddingFraction))
+            return 0.12 + 0.56 * embeddingFraction;
+        if (TryParseProgressFraction(message, "decoded chunk ", out double decodedFraction))
+            return 0.10 + 0.50 * decodedFraction;
+
+        if (message.StartsWith("chunked audio into ", StringComparison.Ordinal))
+            return 0.02;
+        if (message.StartsWith("running segmentation model", StringComparison.Ordinal))
+            return 0.05;
+        if (message.StartsWith("extracting speaker embeddings", StringComparison.Ordinal))
+            return 0.08;
+        if (message.StartsWith("collected ", StringComparison.Ordinal))
+            return 0.78;
+        if (message.StartsWith("clustering ", StringComparison.Ordinal))
+            return 0.82;
+        if (message.StartsWith("AHC produced ", StringComparison.Ordinal))
+            return 0.86;
+        if (message.StartsWith("VBx refined clustering to ", StringComparison.Ordinal)
+            || message.StartsWith("small-cluster merge produced ", StringComparison.Ordinal))
+            return 0.90;
+        if (message.StartsWith("clustered to ", StringComparison.Ordinal))
+            return 0.92;
+        if (message.StartsWith("reconstructing global speaker timeline", StringComparison.Ordinal))
+            return 0.94;
+        if (message.StartsWith("extracted ", StringComparison.Ordinal))
+            return 1.0;
+
+        return 0;
+    }
+
+    private static bool TryParseProgressFraction(string message, string prefix, out double fraction)
+    {
+        fraction = 0;
+        if (!message.StartsWith(prefix, StringComparison.Ordinal))
+            return false;
+
+        ReadOnlySpan<char> remainder = message.AsSpan(prefix.Length);
+        int slashIndex = remainder.IndexOf('/');
+        if (slashIndex <= 0)
+            return false;
+
+        ReadOnlySpan<char> currentSpan = remainder[..slashIndex];
+        ReadOnlySpan<char> totalSpan = remainder[(slashIndex + 1)..];
+        int totalEnd = totalSpan.IndexOfAny(' ', ')');
+        if (totalEnd >= 0)
+            totalSpan = totalSpan[..totalEnd];
+
+        if (!int.TryParse(currentSpan, out int current) || !int.TryParse(totalSpan, out int total) || total <= 0)
+            return false;
+
+        fraction = Math.Clamp(current / (double)total, 0, 1);
+        return true;
+    }
+
+    private static double ScaleOverallProgress(double startPercent, double endPercent, double fraction) =>
+        startPercent + (endPercent - startPercent) * Math.Clamp(fraction, 0, 1);
 }
