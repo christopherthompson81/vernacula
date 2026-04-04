@@ -128,7 +128,7 @@ public sealed class WeSpeakerEmbedder : IDisposable
         var opts = new SessionOptions();
         // Keep per-session threading low and use outer parallelism across
         // multiple embedding jobs instead of oversubscribing CPU cores.
-        opts.IntraOpNumThreads = 1;
+        opts.IntraOpNumThreads = Config.GetDiariZenEmbeddingIntraOpThreads();
         switch (ep)
         {
             case ExecutionProvider.Auto:

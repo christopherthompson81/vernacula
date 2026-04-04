@@ -94,10 +94,10 @@ public static class Config
     public const float DiariZenDefaultThreshold = 0.5f;
 
     /// <summary>
-    /// ONNX Runtime intra-op thread count for DiariZen segmentation inference.
-    /// This is intentionally tuned separately from embedding extraction.
+    /// Default upper bound for adaptive ONNX Runtime intra-op threading used by
+    /// DiariZen segmentation inference on CPU.
     /// </summary>
-    public const int DiariZenSegmentationIntraOpThreads = 12;
+    public const int DiariZenSegmentationMaxIntraOpThreads = 12;
 
     /// <summary>
     /// Median filter half-width (frames) applied to powerset probabilities before binarisation.
@@ -132,6 +132,7 @@ public static class Config
     public const int DiariZenEmbeddingGpuMaxBatchSize = 32;
     public const int DiariZenEmbeddingGpuMaxBatchFrames = 32_000;
     public const int DiariZenEmbeddingGpuBytesPerFrameEstimate = 65_536;
+    public const int DiariZenEmbeddingMaxIntraOpThreads = 8;
 
     // Slaney mel-scale parameters
     public const double FMin      = 0.0;
@@ -184,7 +185,7 @@ public static class Config
         if (int.TryParse(raw, out int parsed) && parsed > 0)
             return parsed;
 
-        return DiariZenSegmentationIntraOpThreads;
+        return GetAdaptiveDiariZenSegmentationIntraOpThreads();
     }
 
     public static int? GetDiariZenSegmentationMaxWorkers()
@@ -215,6 +216,35 @@ public static class Config
             return parsed;
 
         return DiariZenEmbeddingGpuSafetyMb;
+    }
+
+    public static int GetDiariZenEmbeddingIntraOpThreads()
+    {
+        const string envVar = "PARAKEET_DIARIZEN_EMBED_THREADS";
+        string? raw = Environment.GetEnvironmentVariable(envVar);
+        if (int.TryParse(raw, out int parsed) && parsed > 0)
+            return parsed;
+
+        return GetAdaptiveDiariZenEmbeddingIntraOpThreads();
+    }
+
+    public static int? GetDiariZenEmbeddingMaxWorkers()
+    {
+        const string envVar = "PARAKEET_DIARIZEN_EMBED_MAX_WORKERS";
+        string? raw = Environment.GetEnvironmentVariable(envVar);
+        if (int.TryParse(raw, out int parsed) && parsed > 0)
+            return parsed;
+
+        int logicalCpuCount = Math.Max(1, Environment.ProcessorCount);
+        int embedThreads = Math.Max(1, GetDiariZenEmbeddingIntraOpThreads());
+        int usableCores = Math.Max(1, logicalCpuCount - 2);
+        if (embedThreads >= 8)
+            return logicalCpuCount >= 16 ? 2 : 1;
+
+        if (embedThreads >= 4)
+            return Math.Max(1, Math.Min(2, usableCores / embedThreads));
+
+        return Math.Max(1, Math.Min(3, usableCores / embedThreads));
     }
 
     public static int GetDiariZenEmbeddingGpuMaxBatchSize()
@@ -255,6 +285,50 @@ public static class Config
             return parsed;
 
         return DiariZenFillShortGapFrames;
+    }
+
+    private static int GetAdaptiveDiariZenSegmentationIntraOpThreads()
+    {
+        int logicalCpuCount = Math.Max(1, Environment.ProcessorCount);
+        long totalMemoryMb = HardwareInfo.GetTotalSystemMemoryMb();
+
+        if (logicalCpuCount <= 4)
+            return Math.Clamp(2, 1, logicalCpuCount);
+
+        if (logicalCpuCount <= 8)
+            return Math.Clamp(logicalCpuCount - 1, 2, logicalCpuCount);
+
+        int preferredThreads = Math.Max(2, (int)Math.Floor(logicalCpuCount * 0.75));
+
+        // Keep memory-constrained systems from leaning too hard on CPU
+        // parallelism, even when the host reports many logical cores.
+        if (totalMemoryMb > 0 && totalMemoryMb <= 4 * 1024)
+            return Math.Min(4, preferredThreads);
+
+        if (totalMemoryMb > 0 && totalMemoryMb <= 8 * 1024)
+            return Math.Min(8, preferredThreads);
+
+        return Math.Min(DiariZenSegmentationMaxIntraOpThreads, preferredThreads);
+    }
+
+    private static int GetAdaptiveDiariZenEmbeddingIntraOpThreads()
+    {
+        int logicalCpuCount = Math.Max(1, Environment.ProcessorCount);
+        long totalMemoryMb = HardwareInfo.GetTotalSystemMemoryMb();
+
+        if (logicalCpuCount <= 4)
+            return 1;
+
+        if (logicalCpuCount <= 8)
+            return 2;
+
+        if (logicalCpuCount <= 12)
+            return totalMemoryMb > 0 && totalMemoryMb <= 8 * 1024 ? 2 : 4;
+
+        if (totalMemoryMb > 0 && totalMemoryMb <= 8 * 1024)
+            return 4;
+
+        return Math.Min(DiariZenEmbeddingMaxIntraOpThreads, 8);
     }
 
     public static int GetDiariZenMinRegionFrames()

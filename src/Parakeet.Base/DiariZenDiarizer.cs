@@ -49,7 +49,8 @@ public sealed class DiariZenDiarizer : IDisposable
     /// </summary>
     private const int DefaultMinActiveFramesForEmbed = 10;
     private const double MinCleanFrameRatioForClustering = 0.1;
-    private static readonly int MaxEmbeddingWorkers = Math.Max(1, Environment.ProcessorCount - 2);
+    private static readonly int MaxEmbeddingWorkers =
+        Math.Max(1, Config.GetDiariZenEmbeddingMaxWorkers() ?? Math.Max(1, Environment.ProcessorCount - 2));
     private static readonly bool UseConstrainedCentroidAssignment =
         !string.Equals(
             Environment.GetEnvironmentVariable("PARAKEET_DIARIZEN_DISABLE_CONSTRAINED_ASSIGNMENT"),
@@ -71,7 +72,6 @@ public sealed class DiariZenDiarizer : IDisposable
             "1",
             StringComparison.Ordinal);
     private static readonly int MinActiveFramesForEmbed = GetMinActiveFramesForEmbed();
-
     // ── Construction ───────────────────────────────────────────────────────
 
     public DiariZenDiarizer(
