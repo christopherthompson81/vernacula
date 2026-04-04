@@ -51,6 +51,7 @@ internal class TranscriptionService
                 catch (Exception ex)
                 {
                     Console.WriteLine($"[Transcription] RunPipelineAsync EXCEPTION: {ex}");
+                    throw;
                 }
             },
             ct, TaskCreationOptions.LongRunning, TaskScheduler.Default).Unwrap();
