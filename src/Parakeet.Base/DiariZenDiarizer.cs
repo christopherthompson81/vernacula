@@ -850,7 +850,7 @@ public sealed class DiariZenDiarizer : IDisposable
                 frame++;
 
             int regionLength = frame - regionStart;
-            if (regionLength < minRegionFrames)
+            if (regionLength <= minRegionFrames)
             {
                 for (int clear = regionStart; clear < frame; clear++)
                     binary[clear * numGlobalSpeakers + speakerIndex] = false;

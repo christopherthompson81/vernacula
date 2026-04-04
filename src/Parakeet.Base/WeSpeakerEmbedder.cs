@@ -520,31 +520,34 @@ public sealed class WeSpeakerEmbedder : IDisposable
         double melHigh = HzToMel(highFreqHz);
 
         // numMelBins + 2 equally spaced Mel-scale centre points
-        int   nPoints   = numMelBins + 2;
-        var   melPts    = new double[nPoints];
-        var   hzPts     = new double[nPoints];
-        var   binPts    = new int[nPoints];
-
+        int   nPoints = numMelBins + 2;
+        var   hzPts   = new double[nPoints];
         for (int i = 0; i < nPoints; i++)
-        {
-            melPts[i] = melLow + i * (melHigh - melLow) / (numMelBins + 1);
-            hzPts[i]  = MelToHz(melPts[i]);
-            binPts[i] = (int)Math.Floor((fftSize + 1) * hzPts[i] / sampleRate);
-        }
+            hzPts[i] = MelToHz(melLow + i * (melHigh - melLow) / (numMelBins + 1));
 
+        // Evaluate each triangular filter at the exact FFT bin centre frequency
+        // (k * sr / fftSize Hz).  Matches torchaudio's get_mel_banks behaviour:
+        // no integer rounding of bin boundaries, so every filter has non-zero
+        // support and narrow low-frequency filters are not accidentally collapsed
+        // to zero.
         for (int m = 0; m < numMelBins; m++)
         {
-            int left   = binPts[m];
-            int centre = binPts[m + 1];
-            int right  = binPts[m + 2];
+            double fl = hzPts[m];
+            double fc = hzPts[m + 1];
+            double fh = hzPts[m + 2];
 
-            for (int k = left; k < centre && k < numFreqBins; k++)
-                if (centre > left)
-                    filters[m, k] = (k - left) / (float)(centre - left);
-
-            for (int k = centre; k <= right && k < numFreqBins; k++)
-                if (right > centre)
-                    filters[m, k] = (right - k) / (float)(right - centre);
+            for (int k = 0; k < numFreqBins; k++)
+            {
+                double fk = k * (double)sampleRate / fftSize;
+                float w;
+                if (fk >= fl && fk < fc && fc > fl)
+                    w = (float)((fk - fl) / (fc - fl));
+                else if (fk >= fc && fk <= fh && fh > fc)
+                    w = (float)((fh - fk) / (fh - fc));
+                else
+                    w = 0f;
+                filters[m, k] = w;
+            }
         }
 
         return filters;
