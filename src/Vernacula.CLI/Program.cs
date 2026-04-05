@@ -147,15 +147,19 @@ try
     else if (diarization == "diarizen")
     {
         Console.Write("Diarizing (DiariZen)... ");
-        string diarizenModel = Path.Combine(modelDir, Config.DiariZenFile);
+        // Check <modelDir>/diarizen/ subdirectory first (matches Avalonia app layout),
+        // then fall back to modelDir root for backward compatibility.
+        string diarizenSubDir = Path.Combine(modelDir, "diarizen");
+        string diarizenBase   = Directory.Exists(diarizenSubDir) ? diarizenSubDir : modelDir;
+        string diarizenModel  = Path.Combine(diarizenBase, Config.DiariZenFile);
         if (!File.Exists(diarizenModel))
         {
             Console.Error.WriteLine($"\nError: DiariZen model not found: {diarizenModel}");
-            Console.Error.WriteLine("Run: python scripts/diarizen_export/export_diarizen_onnx.py");
+            Console.Error.WriteLine("Expected at <model-dir>/diarizen/diarizen_segmentation.onnx");
             return 1;
         }
-        
-        string? embedderModel = Path.Combine(modelDir, Config.DiariZenEmbedderFile);
+
+        string? embedderModel = Path.Combine(diarizenBase, Config.DiariZenEmbedderFile);
         if (!File.Exists(embedderModel)) embedderModel = null;
         using var diarizer = new DiariZenDiarizer(diarizenModel, embedderModel);
         var diarSegments = diarizer.Diarize(
