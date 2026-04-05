@@ -3,6 +3,7 @@ using Vernacula.Base;
 using Vernacula.Base.Models;
 using Vernacula.App.Models;
 using ParakeetAsr = Vernacula.Base.Parakeet;
+using DFN3Denoiser = Vernacula.Base.DeepFilterNet3Denoiser;
 
 namespace Vernacula.App.Services;
 
@@ -75,7 +76,41 @@ internal class TranscriptionService
 
         ct.ThrowIfCancellationRequested();
         var (rawSamples, sampleRate, channels) = AudioUtils.ReadAudio(audioPath, streamIndex);
-        float[] audio = AudioUtils.AudioTo16000Mono(rawSamples, sampleRate, channels);
+
+        // ── Phase 1b: Denoising (optional) ────────────────────────────────────
+        float[] audio;
+        var denoiserMode = _settings.Current.Denoiser;
+        if (denoiserMode == DenoiserMode.DeepFilterNet3)
+        {
+            progress.Report(new TranscriptionProgress(
+                TranscriptionPhase.LoadingAudio, 0, 1, Loc.Instance["progress_denoising"]));
+
+            ct.ThrowIfCancellationRequested();
+
+            string denoiserModelsDir = _settings.GetDenoiserModelsDir();
+            audio = await Task.Run(() =>
+            {
+                // Downmix to mono at native sample rate, resample to 48 kHz
+                float[] mono48k = DFN3Denoiser.ResampleTo48k(
+                    Vernacula.Base.AudioUtils.DownmixToMono(rawSamples, channels), sampleRate);
+
+                // Pad to multiple of HopSize (480 samples) before denoising
+                const int hopSize = 480;
+                int padded = ((mono48k.Length + hopSize - 1) / hopSize) * hopSize;
+                if (padded != mono48k.Length)
+                    Array.Resize(ref mono48k, padded);
+
+                using var denoiser = new DFN3Denoiser(denoiserModelsDir);
+                float[] enhanced48k = denoiser.Denoise(mono48k);
+
+                // Resample to 16 kHz for ASR
+                return DFN3Denoiser.ResampleFrom48k(enhanced48k, Vernacula.Base.AudioUtils.AsrSampleRate);
+            }, ct);
+        }
+        else
+        {
+            audio = AudioUtils.AudioTo16000Mono(rawSamples, sampleRate, channels);
+        }
 
         // ── Phase 2: Open results DB ──────────────────────────────────────────
         using var db = new TranscriptionDb(resultsDbPath);
