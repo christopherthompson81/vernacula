@@ -3,17 +3,21 @@ set -e
 
 # ---------------------------------------------------------------------------
 # Parakeet Transcription — Linux desktop uninstaller
-# Usage: ./uninstall.sh [--prefix <dir>]
+# Usage: ./uninstall.sh [--prefix <dir>] [--purge]
 # ---------------------------------------------------------------------------
 
 PREFIX="$HOME/.local/share/parakeet"
+PURGE=0
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --prefix) PREFIX="$2"; shift 2 ;;
+        --purge)  PURGE=1; shift ;;
         --help|-h)
-            echo "Usage: $0 [--prefix <dir>]"
+            echo "Usage: $0 [--prefix <dir>] [--purge]"
             echo "  --prefix  Install directory to remove (default: ~/.local/share/parakeet)"
+            echo "  --purge   Also remove user data: settings, models, and job history"
+            echo "            (~/.config/Parakeet/)"
             exit 0 ;;
         *) echo "Unknown argument: $1"; exit 1 ;;
     esac
@@ -40,6 +44,15 @@ if [[ -f "$ICON" ]]; then
     echo "Removing $ICON ..."
     rm -f "$ICON"
     removed=1
+fi
+
+if [[ $PURGE -eq 1 ]]; then
+    USERDATA="$HOME/.config/Parakeet"
+    if [[ -d "$USERDATA" ]]; then
+        echo "Purging user data at $USERDATA ..."
+        rm -rf "$USERDATA"
+        removed=1
+    fi
 fi
 
 if [[ $removed -eq 1 ]]; then
