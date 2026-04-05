@@ -76,11 +76,17 @@
     <PackageReference Include="DocumentFormat.OpenXml" Version="3.3.0" />
   </ItemGroup>
 
+  <PropertyGroup>
+    <EP Condition="'$(EP)' == ''">Cuda</EP>
+    <!-- Suppress win-x64 native asset conflicts during Linux self-contained publish -->
+    <ErrorOnDuplicatePublishOutputFiles>false</ErrorOnDuplicatePublishOutputFiles>
+  </PropertyGroup>
+
   <ItemGroup>
-    <!-- Platform-specific ONNX Runtime -->
-    <PackageReference Include="Microsoft.ML.OnnxRuntime.Gpu" Version="1.24.2" Condition="'$(UseDirectML)' != 'true' AND ( $([MSBuild]::IsOSPlatform('Windows')) OR $([MSBuild]::IsOSPlatform('Linux')) )" />
+    <!-- Platform-specific ONNX Runtime, selected by EP build property -->
+    <PackageReference Include="Microsoft.ML.OnnxRuntime.Gpu" Version="1.24.2" Condition="'$(EP)' == 'Cuda' AND '$(UseDirectML)' != 'true' AND ($([MSBuild]::IsOSPlatform('Windows')) OR $([MSBuild]::IsOSPlatform('Linux')))" />
     <PackageReference Include="Microsoft.ML.OnnxRuntime.DirectML" Version="1.21.1" Condition="'$(UseDirectML)' == 'true' AND $([MSBuild]::IsOSPlatform('Windows'))" />
-    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.24.2" Condition="'$(UseDirectML)' != 'true' AND !$([MSBuild]::IsOSPlatform('Windows')) AND !$([MSBuild]::IsOSPlatform('Linux'))" />
+    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.24.2" Condition="'$(EP)' == 'Cpu' OR ('$(UseDirectML)' != 'true' AND !$([MSBuild]::IsOSPlatform('Windows')) AND !$([MSBuild]::IsOSPlatform('Linux')))" />
   </ItemGroup>
 
   <ItemGroup>
