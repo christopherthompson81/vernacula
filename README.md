@@ -236,16 +236,30 @@ DiariZen's segmentation and embedding pipeline can be tuned via environment vari
 
 ## Benchmarks
 
-All runs on a 10-minute English audio file, fp32 models, Sortformer diarization.
+### Throughput
 
-| Hardware | Diarization | ASR | Total | RTF |
+10-minute English audio file, fp32 models, AMD Ryzen 7 7840U (CPU). RTF < 1.0 = faster than real-time.
+
+| Backend | Diarization | ASR | Total | RTF |
 |---|---|---|---|---|
-| AMD Ryzen 7 7840U (CPU) | 33.2s | 49.2s | 82.4s | 0.137 |
-| NVIDIA RTX 3090 (CUDA) | — | — | — | — |
+| Silero VAD | 2.1s | 50.5s | 52.7s | **0.088** |
+| Sortformer | 33.2s | 49.2s | 82.4s | **0.137** |
+| DiariZen | 502.0s | 55.8s | 557.8s | 0.930 |
+| Sortformer — NVIDIA RTX 3090 | — | — | — | — |
 
-RTF < 1.0 means faster than real-time. CPU-only inference is already well within real-time on a mid-range laptop CPU.
+> DiariZen is CPU-bound by the segmentation and embedding pipeline. GPU acceleration (CUDA) reduces diarization time dramatically. RTX 3090 results pending.
 
-> RTX 3090 results pending — will update once benchmarked.
+### Accuracy (DER)
+
+Diarization Error Rate from published benchmarks. Lower is better.
+
+| Backend | AMI-SDM | VoxConverse | DIHARD III | Source |
+|---|---|---|---|---|
+| Sortformer v2-stream | — | — | 13.2% (≤4spk) | [HuggingFace](https://huggingface.co/nvidia/diar_streaming_sortformer_4spk-v2) |
+| Sortformer v2-stream | — | — | 5.3% (CALLHOME) | [HuggingFace](https://huggingface.co/nvidia/diar_streaming_sortformer_4spk-v2) |
+| DiariZen-Large | 13.9% | 9.1% | 14.5% | [BUTSpeechFIT/DiariZen](https://github.com/BUTSpeechFIT/DiariZen) |
+
+> Benchmarks use different evaluation conditions (collar, overlap handling) — direct cross-model comparison should be treated as indicative only. The independent survey [Benchmarking Diarization Models (2509.26177)](https://arxiv.org/abs/2509.26177) found Sortformer v2-stream and DiariZen among the top open-source performers overall.
 
 ---
 
