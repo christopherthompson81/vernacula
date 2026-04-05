@@ -187,7 +187,7 @@ To install to a custom location:
 > - Core int8: ~820 MB
 > - DiariZen add-on: ~310 MB
 >
-> Models are stored in `~/.config/Parakeet/models/`.
+> Models are stored in `~/.local/share/Parakeet/models/`.
 
 ---
 
