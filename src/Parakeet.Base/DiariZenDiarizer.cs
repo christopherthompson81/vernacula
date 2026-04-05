@@ -240,8 +240,6 @@ public sealed class DiariZenDiarizer : IDisposable
                 if (chunkJobs.Count > 0)
                     prepQueue.Add(new ChunkEmbeddingPrepRequest(ci, chunkInfo.Chunk, chunkJobs));
 
-                if (ShouldReportProgress(ci, chunkCount))
-                    progress?.Invoke($"processed embeddings for chunk {ci + 1}/{chunkCount}");
             }
             decodedChunks += chunkBatch.Count;
             batchStartChunkIndex += chunkBatch.Count;
@@ -1012,15 +1010,7 @@ public sealed class DiariZenDiarizer : IDisposable
                             continue;
 
                         preparedMap[job.SequenceIndex] = prepared.Value;
-                        int done = Interlocked.Increment(ref completedJobs[0]);
-                        int totalJobs = totalJobsProvider();
-                        int reportInterval = Math.Max(1, Math.Max(done, totalJobs) / 10);
-                        if (done == totalJobs || done - Volatile.Read(ref lastReportedJobs[0]) >= reportInterval)
-                        {
-                            int previous = Interlocked.Exchange(ref lastReportedJobs[0], done);
-                            if (done != previous)
-                                progress?.Invoke($"prepared embeddings {done}/{totalJobs}");
-                        }
+                        Interlocked.Increment(ref completedJobs[0]);
                     }
                 }
             });
