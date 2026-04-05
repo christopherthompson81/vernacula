@@ -13,6 +13,8 @@ namespace ParakeetCSharp.ViewModels;
 
 internal partial class SettingsViewModel : ObservableObject
 {
+    private const string DiariZenGatedModelId = SettingsService.DiariZenGatedModelId;
+
     private readonly SettingsService     _svc;
     private readonly ModelManagerService _modelMgr;
 
@@ -55,9 +57,14 @@ internal partial class SettingsViewModel : ObservableObject
     public bool IsSileroVad         => SelectedSegmentation == SegmentationMode.SileroVad;
     public bool IsSortformer        => SelectedSegmentation == SegmentationMode.Sortformer;
     public bool IsDiariZen          => SelectedSegmentation == SegmentationMode.DiariZen;
+    public bool ShowDiariZenInSegmentation => HasAcceptedDiariZenNotice;
     public bool IsEditorSingle      => SelectedEditorPlaybackMode == PlaybackMode.Single;
     public bool IsEditorAutoAdvance => SelectedEditorPlaybackMode == PlaybackMode.AutoAdvance;
     public bool IsEditorContinuous  => SelectedEditorPlaybackMode == PlaybackMode.Continuous;
+    public bool HasUnlockedGatedModels => HasAcceptedDiariZenNotice;
+    public string GatedModelsStatusText => HasUnlockedGatedModels
+        ? "Unlocked gated models: DiariZen"
+        : "Some optional models require accepting their own license terms before they appear in settings.";
 
     // ── Hardware check state ─────────────────────────────────────────────────
 
@@ -108,11 +115,18 @@ internal partial class SettingsViewModel : ObservableObject
         _modelMgr              = modelMgr;
         _selectedTheme                = svc.Current.Theme;
         _selectedPrecision            = svc.Current.Precision;
-        _selectedSegmentation         = svc.Current.Segmentation;
+        _selectedSegmentation         = svc.Current.Segmentation == SegmentationMode.DiariZen && !svc.IsGatedModelAccepted(DiariZenGatedModelId)
+            ? SegmentationMode.Sortformer
+            : svc.Current.Segmentation;
         _selectedEditorPlaybackMode   = svc.Current.EditorPlaybackMode;
         _selectedLanguage             = svc.Current.Language;
         _selectedLanguageInfo         = Loc.Languages.FirstOrDefault(l => l.Code == svc.Current.Language) 
                                         ?? Loc.Languages.FirstOrDefault(l => l.Code == "en")!;
+        if (svc.Current.Segmentation != _selectedSegmentation)
+        {
+            svc.Current.Segmentation = _selectedSegmentation;
+            svc.Save();
+        }
         ModelStatusText    = Loc.Instance["model_status_checking"];
         DiariZenStatusText = "Checking external DiariZen weights…";
         DiariZenModelsLocationText = _svc.GetDiariZenModelsDir();
@@ -149,6 +163,9 @@ internal partial class SettingsViewModel : ObservableObject
 
     partial void OnSelectedSegmentationChanged(SegmentationMode value)
     {
+        if (value == SegmentationMode.DiariZen && !HasAcceptedDiariZenNotice)
+            return;
+
         _svc.Current.Segmentation = value;
         _svc.Save();
         OnSegmentationChanged?.Invoke();
@@ -334,15 +351,17 @@ internal partial class SettingsViewModel : ObservableObject
         OnSegmentationChanged?.Invoke();
     }
 
-    public bool HasAcceptedDiariZenNotice => _svc.Current.DiariZenNoticeAccepted;
+    public bool HasAcceptedDiariZenNotice => _svc.IsGatedModelAccepted(DiariZenGatedModelId);
 
     internal void MarkDiariZenNoticeAccepted()
     {
-        if (_svc.Current.DiariZenNoticeAccepted)
+        if (!_svc.AcceptGatedModel(DiariZenGatedModelId))
             return;
 
-        _svc.Current.DiariZenNoticeAccepted = true;
-        _svc.Save();
+        OnPropertyChanged(nameof(HasAcceptedDiariZenNotice));
+        OnPropertyChanged(nameof(ShowDiariZenInSegmentation));
+        OnPropertyChanged(nameof(HasUnlockedGatedModels));
+        OnPropertyChanged(nameof(GatedModelsStatusText));
     }
 
     internal async Task SetDiariZenModelsDirAsync(string path)

@@ -11,10 +11,11 @@ public class AppSettings
     public ModelPrecision     Precision           { get; set; } = ModelPrecision.Fp32;
     public SegmentationMode   Segmentation        { get; set; } = SegmentationMode.SileroVad;
     public PlaybackMode       EditorPlaybackMode  { get; set; } = PlaybackMode.Continuous;
-    public string         ModelsDir { get; set; } = "";
-    public string         DiariZenModelsDir { get; set; } = "";
-    public bool           DiariZenNoticeAccepted { get; set; } = false;
-    public string         Language  { get; set; } = "";
+    public string             ModelsDir           { get; set; } = "";
+    public string             DiariZenModelsDir   { get; set; } = "";
+    public bool               DiariZenNoticeAccepted { get; set; } = false;
+    public List<string>       AcceptedGatedModels { get; set; } = [];
+    public string             Language            { get; set; } = "";
 
     // Column widths — 0 means "use default"
     public double HomeColTitleWidth      { get; set; } = 0;

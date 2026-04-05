@@ -5,6 +5,8 @@ namespace ParakeetCSharp.Services;
 
 internal class SettingsService
 {
+    public const string DiariZenGatedModelId = "diarizen";
+
     private static readonly string SettingsPath = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
         "Parakeet", "settings.json");
@@ -22,6 +24,7 @@ internal class SettingsService
             if (!File.Exists(SettingsPath)) return;
             var json = File.ReadAllText(SettingsPath);
             Current = JsonSerializer.Deserialize<AppSettings>(json) ?? new();
+            MigrateLegacySettings();
         }
         catch
         {
@@ -34,6 +37,36 @@ internal class SettingsService
         Directory.CreateDirectory(Path.GetDirectoryName(SettingsPath)!);
         File.WriteAllText(SettingsPath,
             JsonSerializer.Serialize(Current, new JsonSerializerOptions { WriteIndented = true }));
+    }
+
+    private void MigrateLegacySettings()
+    {
+        Current.AcceptedGatedModels ??= [];
+
+        if (Current.DiariZenNoticeAccepted &&
+            !Current.AcceptedGatedModels.Contains(DiariZenGatedModelId, StringComparer.OrdinalIgnoreCase))
+        {
+            Current.AcceptedGatedModels.Add(DiariZenGatedModelId);
+        }
+    }
+
+    public bool IsGatedModelAccepted(string modelId) =>
+        Current.AcceptedGatedModels.Any(id => string.Equals(id, modelId, StringComparison.OrdinalIgnoreCase));
+
+    public bool AcceptGatedModel(string modelId)
+    {
+        Current.AcceptedGatedModels ??= [];
+
+        if (IsGatedModelAccepted(modelId))
+            return false;
+
+        Current.AcceptedGatedModels.Add(modelId);
+
+        if (string.Equals(modelId, DiariZenGatedModelId, StringComparison.OrdinalIgnoreCase))
+            Current.DiariZenNoticeAccepted = true;
+
+        Save();
+        return true;
     }
 
     public string GetModelsDir() =>

@@ -1,10 +1,8 @@
 using Avalonia.Controls;
 using Avalonia.Interactivity;
-using Avalonia.Platform.Storage;
 using ParakeetCSharp.Models;
 using ParakeetCSharp.ViewModels;
 using ParakeetCSharp.Views.Dialogs;
-using System.Diagnostics;
 using System.ComponentModel;
 
 namespace ParakeetCSharp.Views;
@@ -64,6 +62,7 @@ public partial class SettingsWindow : Window
         DownloadModelsButton.Content = Loc.Instance["btn_download_models"];
         CancelDownloadButton.Content = Loc.Instance["btn_cancel"];
         CheckUpdatesButton.Content = Loc.Instance["btn_check_updates"];
+        OpenGatedModelsButton.Content = "Manage Gated Models";
         ModelPrecisionLabel.Text = Loc.Instance["menu_model_precision"];
         PrecisionFp32Radio.Content = Loc.Instance["menu_precision_fp16"];
         PrecisionInt8Radio.Content = Loc.Instance["menu_precision_int8"];
@@ -75,10 +74,7 @@ public partial class SettingsWindow : Window
         SegmentationSortformerDescription.Text = Loc.Instance["settings_segmentation_diarization_desc"];
         SegmentationDiariZenLabel.Text = Loc.Instance["settings_segmentation_diarizen"];
         SegmentationDiariZenDescription.Text = Loc.Instance["settings_segmentation_diarizen_desc"];
-        ReviewDiariZenNoticeButton.Content = "Review External Weights Notice";
-        ChooseDiariZenFolderButton.Content = "Choose Weights Folder";
-        DownloadDiariZenButton.Content = "Download External Weights";
-        OpenDiariZenRepoButton.Content = "Open External Weights Repo";
+        GatedSegmentationHintText.Text = "Additional gated segmentation models can be enabled from Models.";
 
         EditorSectionHeader.Text = Loc.Instance["settings_section_editor"];
         EditorPlaybackModeLabel.Text = Loc.Instance["settings_editor_playback_mode"];
@@ -102,58 +98,17 @@ public partial class SettingsWindow : Window
         base.OnClosed(e);
     }
 
-    private async Task<bool> EnsureDiariZenNoticeAcceptedAsync()
-    {
-        if (DataContext is not SettingsViewModel vm)
-            return false;
-
-        if (vm.HasAcceptedDiariZenNotice)
-            return true;
-
-        var dialog = new DiariZenNoticeDialog();
-        bool accepted = await dialog.ShowDialog<bool>(this);
-        if (accepted)
-            vm.MarkDiariZenNoticeAccepted();
-        return accepted;
-    }
-
-    private async void ReviewDiariZenNotice_Click(object? sender, RoutedEventArgs e)
-    {
-        _ = await EnsureDiariZenNoticeAcceptedAsync();
-    }
-
-    private async void ChooseDiariZenFolder_Click(object? sender, RoutedEventArgs e)
+    private async Task OpenGatedModelsAsync()
     {
         if (DataContext is not SettingsViewModel vm)
             return;
 
-        if (!await EnsureDiariZenNoticeAcceptedAsync())
-            return;
-
-        var folders = await StorageProvider.OpenFolderPickerAsync(new FolderPickerOpenOptions
-        {
-            Title = "Choose a folder containing external DiariZen weights",
-            AllowMultiple = false,
-        });
-
-        if (folders.Count == 0)
-            return;
-
-        await vm.SetDiariZenModelsDirAsync(folders[0].Path.LocalPath);
+        var dialog = new GatedModelsDialog(vm);
+        await dialog.ShowDialog(this);
     }
 
-    private async void DownloadDiariZenWeights_Click(object? sender, RoutedEventArgs e)
+    private async void OpenGatedModels_Click(object? sender, RoutedEventArgs e)
     {
-        if (DataContext is not SettingsViewModel vm)
-            return;
-
-        if (!await EnsureDiariZenNoticeAcceptedAsync())
-            return;
-
-        await vm.DownloadDiariZenModelsCommand.ExecuteAsync(null);
+        await OpenGatedModelsAsync();
     }
-
-    private void OpenDiariZenRepo_Click(object? sender, RoutedEventArgs e) =>
-        Process.Start(new ProcessStartInfo(
-            "https://huggingface.co/christopherthompson81/diarizen_onnx") { UseShellExecute = true });
 }
