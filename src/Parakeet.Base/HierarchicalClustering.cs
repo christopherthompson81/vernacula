@@ -84,7 +84,7 @@ public static class HierarchicalClustering
 
         // Cluster sizes and centroids
         int[] clusterSize = new int[maxClusters];
-        double[][] clusterCentroid = new double[maxClusters][];
+        double[]?[] clusterCentroid = new double[maxClusters][];
 
         for (int i = 0; i < n; i++)
         {
@@ -125,23 +125,27 @@ public static class HierarchicalClustering
             // Create new cluster
             int newIdx = n + k;
             clusterSize[newIdx] = clusterSize[iMin] + clusterSize[jMin];
+            double[] leftCentroid = clusterCentroid[iMin]!;
+            double[] rightCentroid = clusterCentroid[jMin]!;
 
             // Compute new centroid
-            clusterCentroid[newIdx] = new double[d];
+            double[] newCentroid = new double[d];
+            clusterCentroid[newIdx] = newCentroid;
             for (int dim = 0; dim < d; dim++)
             {
-                clusterCentroid[newIdx][dim] =
-                    (clusterSize[iMin] * clusterCentroid[iMin][dim] +
-                     clusterSize[jMin] * clusterCentroid[jMin][dim]) /
+                newCentroid[dim] =
+                    (clusterSize[iMin] * leftCentroid[dim] +
+                     clusterSize[jMin] * rightCentroid[dim]) /
                     clusterSize[newIdx];
             }
 
             // Update distances to new cluster
             for (int i = 0; i < n + k; i++)
             {
-                if (i != iMin && i != jMin && clusterCentroid[i] != null)
+                double[]? existingCentroid = clusterCentroid[i];
+                if (i != iMin && i != jMin && existingCentroid != null)
                 {
-                    double dist = EuclideanDistance(clusterCentroid[i], clusterCentroid[newIdx]);
+                    double dist = EuclideanDistance(existingCentroid, newCentroid);
                     R[i][newIdx] = dist;
                     R[newIdx][i] = dist;
                 }
