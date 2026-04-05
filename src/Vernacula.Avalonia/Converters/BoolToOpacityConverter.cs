@@ -1,7 +1,7 @@
 using System.Globalization;
 using Avalonia.Data.Converters;
 
-namespace Vernacula.Avalonia.Converters;
+namespace Vernacula.App.Converters;
 
 public class BoolToOpacityConverter : IValueConverter
 {

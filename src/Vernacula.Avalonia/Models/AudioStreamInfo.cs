@@ -1,4 +1,4 @@
-namespace Vernacula.Avalonia.Models;
+namespace Vernacula.App.Models;
 
 /// <summary>Metadata about a single audio stream within a media file.</summary>
 public record AudioStreamInfo(

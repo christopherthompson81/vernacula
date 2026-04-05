@@ -1,9 +1,9 @@
 using Avalonia.Data;
 using Avalonia.Data.Converters;
-using Vernacula.Avalonia.ViewModels;
+using Vernacula.App.ViewModels;
 using System.Globalization;
 
-namespace Vernacula.Avalonia;
+namespace Vernacula.App;
 
 public class PanelVisibilityConverter : IValueConverter
 {

@@ -1,6 +1,6 @@
-using Vernacula.Avalonia.Models;
+using Vernacula.App.Models;
 
-namespace Vernacula.Avalonia.Services;
+namespace Vernacula.App.Services;
 
 internal sealed class JobQueueService
 {

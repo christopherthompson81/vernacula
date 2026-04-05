@@ -1,8 +1,8 @@
 using Avalonia.Controls;
 using Avalonia.Interactivity;
-using Vernacula.Avalonia.Models;
+using Vernacula.App.Models;
 
-namespace Vernacula.Avalonia.Views.Dialogs;
+namespace Vernacula.App.Views.Dialogs;
 
 public partial class CloseWhileRunningDialog : Window
 {

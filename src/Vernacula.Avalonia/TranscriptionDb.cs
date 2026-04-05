@@ -5,7 +5,7 @@ using System.Linq;
 using System.Text.Json;
 using Microsoft.Data.Sqlite;
 
-namespace Vernacula.Avalonia;
+namespace Vernacula.App;
 
 /// <summary>
 /// SQLite-backed persistence for diarization + ASR results.

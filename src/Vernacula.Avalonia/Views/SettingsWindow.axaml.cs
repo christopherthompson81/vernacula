@@ -1,11 +1,11 @@
 using Avalonia.Controls;
 using Avalonia.Interactivity;
-using Vernacula.Avalonia.Models;
-using Vernacula.Avalonia.ViewModels;
-using Vernacula.Avalonia.Views.Dialogs;
+using Vernacula.App.Models;
+using Vernacula.App.ViewModels;
+using Vernacula.App.Views.Dialogs;
 using System.ComponentModel;
 
-namespace Vernacula.Avalonia.Views;
+namespace Vernacula.App.Views;
 
 public partial class SettingsWindow : Window
 {

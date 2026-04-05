@@ -4,7 +4,7 @@ using Avalonia.Media;
 using Avalonia.Media.Imaging;
 using CommunityToolkit.Mvvm.ComponentModel;
 
-namespace Vernacula.Avalonia.Models;
+namespace Vernacula.App.Models;
 
 internal sealed partial class TranscriptEditorCardState : ObservableObject
 {

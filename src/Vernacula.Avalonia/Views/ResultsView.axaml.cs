@@ -4,10 +4,10 @@ using Avalonia.Controls;
 using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.VisualTree;
-using Vernacula.Avalonia.Extensions;
-using Vernacula.Avalonia.Models;
+using Vernacula.App.Extensions;
+using Vernacula.App.Models;
 
-namespace Vernacula.Avalonia.Views;
+namespace Vernacula.App.Views;
 
 public partial class ResultsView : UserControl
 {

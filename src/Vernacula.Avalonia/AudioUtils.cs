@@ -9,7 +9,7 @@ using MathNet.Numerics.IntegralTransforms;
 using NAudio.Wave;
 using NAudio.Wave.SampleProviders;
 
-namespace Vernacula.Avalonia;
+namespace Vernacula.App;
 
 internal static class AudioUtils
 {

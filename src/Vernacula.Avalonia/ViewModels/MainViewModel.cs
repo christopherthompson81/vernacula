@@ -4,10 +4,10 @@ using Avalonia.Platform.Storage;
 using Avalonia.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
 using Vernacula.Base;
-using Vernacula.Avalonia.Models;
-using Vernacula.Avalonia.Services;
+using Vernacula.App.Models;
+using Vernacula.App.Services;
 
-namespace Vernacula.Avalonia.ViewModels;
+namespace Vernacula.App.ViewModels;
 
 internal enum AppPanel { Home, Progress, Results }
 

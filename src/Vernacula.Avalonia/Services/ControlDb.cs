@@ -1,7 +1,7 @@
 using Microsoft.Data.Sqlite;
-using Vernacula.Avalonia.Models;
+using Vernacula.App.Models;
 
-namespace Vernacula.Avalonia.Services;
+namespace Vernacula.App.Services;
 
 /// <summary>
 /// Application-level job history database.

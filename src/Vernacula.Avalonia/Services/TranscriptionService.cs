@@ -1,10 +1,10 @@
 using System.Text.Json;
 using Vernacula.Base;
 using Vernacula.Base.Models;
-using Vernacula.Avalonia.Models;
+using Vernacula.App.Models;
 using ParakeetAsr = Vernacula.Base.Parakeet;
 
-namespace Vernacula.Avalonia.Services;
+namespace Vernacula.App.Services;
 
 internal class TranscriptionService
 {

@@ -1,7 +1,7 @@
 using Avalonia.Controls;
 using System.ComponentModel;
 
-namespace Vernacula.Avalonia.Views;
+namespace Vernacula.App.Views;
 
 public partial class ConfigView : UserControl
 {

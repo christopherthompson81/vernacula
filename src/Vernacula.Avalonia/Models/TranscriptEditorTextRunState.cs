@@ -1,7 +1,7 @@
 using Avalonia.Media;
 using CommunityToolkit.Mvvm.ComponentModel;
 
-namespace Vernacula.Avalonia.Models;
+namespace Vernacula.App.Models;
 
 internal sealed partial class TranscriptEditorTextRunState : ObservableObject
 {

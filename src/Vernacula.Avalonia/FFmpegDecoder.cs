@@ -1,8 +1,8 @@
 using System.Runtime.InteropServices;
 using FFmpeg.AutoGen;
-using Vernacula.Avalonia.Models;
+using Vernacula.App.Models;
 
-namespace Vernacula.Avalonia;
+namespace Vernacula.App;
 
 /// <summary>
 /// Wraps FFmpeg.AutoGen to probe audio streams and decode audio from any

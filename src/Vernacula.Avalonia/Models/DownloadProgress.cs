@@ -1,4 +1,4 @@
-namespace Vernacula.Avalonia.Models;
+namespace Vernacula.App.Models;
 
 public record DownloadProgress(
     string FileName,

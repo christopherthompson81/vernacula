@@ -1,6 +1,6 @@
 using Avalonia;
 
-namespace Vernacula.Avalonia.Extensions;
+namespace Vernacula.App.Extensions;
 
 /// <summary>
 /// Extension methods for visual tree traversal.

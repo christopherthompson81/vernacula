@@ -12,11 +12,11 @@ using CommunityToolkit.Mvvm.Input;
 using NAudio.Wave;
 using SoundTouch;
 using Vernacula.Base;
-using Vernacula.Avalonia.Models;
-using Vernacula.Avalonia.Services;
+using Vernacula.App.Models;
+using Vernacula.App.Services;
 using ParakeetAsr = Vernacula.Base.Parakeet;
 
-namespace Vernacula.Avalonia.ViewModels;
+namespace Vernacula.App.ViewModels;
 
 internal partial class TranscriptEditorViewModel : ObservableObject, IDisposable
 {

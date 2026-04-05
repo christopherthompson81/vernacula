@@ -2,9 +2,9 @@ using System.Globalization;
 using Avalonia;
 using Avalonia.Data.Converters;
 using Avalonia.Media;
-using Vernacula.Avalonia.Models;
+using Vernacula.App.Models;
 
-namespace Vernacula.Avalonia.Converters;
+namespace Vernacula.App.Converters;
 
 /// <summary>Converts JobStatus to a SolidColorBrush from the active theme.</summary>
 public class StatusToBrushConverter : IValueConverter

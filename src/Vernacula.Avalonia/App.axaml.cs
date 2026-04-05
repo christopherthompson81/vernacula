@@ -2,11 +2,11 @@ using System.Globalization;
 using Avalonia;
 using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Markup.Xaml;
-using Vernacula.Avalonia.Services;
-using Vernacula.Avalonia.ViewModels;
-using Vernacula.Avalonia.Views;
+using Vernacula.App.Services;
+using Vernacula.App.ViewModels;
+using Vernacula.App.Views;
 
-namespace Vernacula.Avalonia;
+namespace Vernacula.App;
 
 public partial class App : Application
 {

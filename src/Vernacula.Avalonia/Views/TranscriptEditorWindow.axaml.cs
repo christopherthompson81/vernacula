@@ -13,12 +13,12 @@ using Avalonia.Platform;
 using Avalonia.Threading;
 using Avalonia.VisualTree;
 using Vernacula.Base;
-using Vernacula.Avalonia.Models;
-using Vernacula.Avalonia.Services;
-using Vernacula.Avalonia.ViewModels;
-using Vernacula.Avalonia.Views.Dialogs;
+using Vernacula.App.Models;
+using Vernacula.App.Services;
+using Vernacula.App.ViewModels;
+using Vernacula.App.Views.Dialogs;
 
-namespace Vernacula.Avalonia.Views;
+namespace Vernacula.App.Views;
 
 public partial class TranscriptEditorWindow : Window
 {

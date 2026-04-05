@@ -1,9 +1,9 @@
 using System.Collections.ObjectModel;
 using Avalonia.Media.Imaging;
 using CommunityToolkit.Mvvm.ComponentModel;
-using Vernacula.Avalonia.ViewModels;
+using Vernacula.App.ViewModels;
 
-namespace Vernacula.Avalonia.Models;
+namespace Vernacula.App.Models;
 
 internal sealed partial class TranscriptEditorWindowState : ObservableObject
 {

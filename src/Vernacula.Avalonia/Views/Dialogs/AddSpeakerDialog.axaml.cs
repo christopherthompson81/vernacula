@@ -1,9 +1,9 @@
 using Avalonia.Controls;
 using Avalonia.Input;
 using Avalonia.Interactivity;
-using Vernacula.Avalonia.Models;
+using Vernacula.App.Models;
 
-namespace Vernacula.Avalonia.Views.Dialogs;
+namespace Vernacula.App.Views.Dialogs;
 
 public partial class AddSpeakerDialog : Window
 {

@@ -2,10 +2,10 @@ using System.Diagnostics;
 using Avalonia.Controls;
 using Avalonia.Interactivity;
 using Avalonia.Platform.Storage;
-using Vernacula.Avalonia.Models;
-using Vernacula.Avalonia.ViewModels;
+using Vernacula.App.Models;
+using Vernacula.App.ViewModels;
 
-namespace Vernacula.Avalonia.Views.Dialogs;
+namespace Vernacula.App.Views.Dialogs;
 
 internal partial class GatedModelsDialog : Window
 {

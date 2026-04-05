@@ -1,6 +1,6 @@
 using Vernacula.Base.Models;
 
-namespace Vernacula.Avalonia.Models;
+namespace Vernacula.App.Models;
 
 public enum AppTheme    { Dark, Light }
 public enum PlaybackMode { Single, AutoAdvance, Continuous }

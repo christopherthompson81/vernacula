@@ -1,7 +1,7 @@
 using System.Collections.Generic;
 using CommunityToolkit.Mvvm.ComponentModel;
 
-namespace Vernacula.Avalonia.Models;
+namespace Vernacula.App.Models;
 
 internal partial class EditorSegment : ObservableObject
 {

@@ -2,7 +2,7 @@ using System.Globalization;
 using Avalonia.Controls;
 using Avalonia.Data.Converters;
 
-namespace Vernacula.Avalonia.Converters;
+namespace Vernacula.App.Converters;
 
 public class PercentToGridLengthConverter : IValueConverter
 {

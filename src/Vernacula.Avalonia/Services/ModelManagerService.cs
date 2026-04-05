@@ -5,9 +5,9 @@ using System.Text.Json;
 using Microsoft.ML.OnnxRuntime;
 using Vernacula.Base;
 using Vernacula.Base.Models;
-using Vernacula.Avalonia.Models;
+using Vernacula.App.Models;
 
-namespace Vernacula.Avalonia.Services;
+namespace Vernacula.App.Services;
 
 internal class ModelManagerService
 {

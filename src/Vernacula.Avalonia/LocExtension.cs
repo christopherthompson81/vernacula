@@ -1,7 +1,7 @@
 using Avalonia.Markup.Xaml;
 using Avalonia.Data;
 
-namespace Vernacula.Avalonia;
+namespace Vernacula.App;
 
 /// <summary>
 /// XAML markup extension for localized strings.

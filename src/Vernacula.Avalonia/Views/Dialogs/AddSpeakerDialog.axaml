@@ -1,4 +1,4 @@
-<Window x:Class="Vernacula.Avalonia.Views.Dialogs.AddSpeakerDialog"
+<Window x:Class="Vernacula.App.Views.Dialogs.AddSpeakerDialog"
         xmlns="https://github.com/avaloniaui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="Add Speaker"

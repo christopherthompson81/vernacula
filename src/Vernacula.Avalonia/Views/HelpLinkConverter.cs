@@ -1,8 +1,8 @@
 using System.Windows.Input;
 using Avalonia.Controls;
-using Vernacula.Avalonia.Services;
+using Vernacula.App.Services;
 
-namespace Vernacula.Avalonia.Views;
+namespace Vernacula.App.Views;
 
 public class HelpLinkConverter : ICommand
 {

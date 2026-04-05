@@ -1,4 +1,4 @@
-<Window x:Class="Vernacula.Avalonia.Views.Dialogs.AdjustTimesDialog"
+<Window x:Class="Vernacula.App.Views.Dialogs.AdjustTimesDialog"
         xmlns="https://github.com/avaloniaui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="Adjust Segment Times"

@@ -2,7 +2,7 @@ using System.Globalization;
 using Avalonia.Data.Converters;
 using Avalonia.Media;
 
-namespace Vernacula.Avalonia.Converters;
+namespace Vernacula.App.Converters;
 
 /// <summary>
 /// Converts a boolean value to a status icon character.

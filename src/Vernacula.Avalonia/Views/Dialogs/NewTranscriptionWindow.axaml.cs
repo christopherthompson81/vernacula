@@ -1,8 +1,8 @@
 using Avalonia.Controls;
-using Vernacula.Avalonia.Models;
+using Vernacula.App.Models;
 using System.ComponentModel;
 
-namespace Vernacula.Avalonia.Views.Dialogs;
+namespace Vernacula.App.Views.Dialogs;
 
 public partial class NewTranscriptionWindow : Window
 {

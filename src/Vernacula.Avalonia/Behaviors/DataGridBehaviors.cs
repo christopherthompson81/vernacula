@@ -4,7 +4,7 @@ using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Threading;
 
-namespace Vernacula.Avalonia.Behaviors;
+namespace Vernacula.App.Behaviors;
 
 public static class DataGridBehaviors
 {

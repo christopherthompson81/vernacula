@@ -3,7 +3,7 @@ using DocumentFormat.OpenXml;
 using DocumentFormat.OpenXml.Packaging;
 using DocumentFormat.OpenXml.Wordprocessing;
 
-namespace Vernacula.Avalonia.Services;
+namespace Vernacula.App.Services;
 
 internal class ExportService
 {

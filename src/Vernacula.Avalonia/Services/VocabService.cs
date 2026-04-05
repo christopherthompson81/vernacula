@@ -3,7 +3,7 @@ using System.IO;
 using Avalonia.Media;
 using Vernacula.Base;
 
-namespace Vernacula.Avalonia.Services;
+namespace Vernacula.App.Services;
 
 /// <summary>
 /// Loads the Parakeet vocabulary and provides token→text decoding and

@@ -3,7 +3,7 @@ using Avalonia.Controls;
 using Avalonia.Media;
 using Avalonia.Platform;
 
-namespace Vernacula.Avalonia;
+namespace Vernacula.App;
 
 internal static class WindowHelper
 {

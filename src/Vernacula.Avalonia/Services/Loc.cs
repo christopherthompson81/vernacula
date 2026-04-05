@@ -2,7 +2,7 @@ using System.ComponentModel;
 using System.Reflection;
 using System.Text.Json;
 
-namespace Vernacula.Avalonia;
+namespace Vernacula.App;
 
 /// <summary>
 /// Singleton localization service. Loads JSON locale files embedded in the assembly

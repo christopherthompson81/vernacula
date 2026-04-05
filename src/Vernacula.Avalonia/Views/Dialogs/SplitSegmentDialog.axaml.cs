@@ -6,9 +6,9 @@ using Avalonia.Controls.Primitives;
 using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Media;
-using Vernacula.Avalonia.Models;
+using Vernacula.App.Models;
 
-namespace Vernacula.Avalonia.Views.Dialogs;
+namespace Vernacula.App.Views.Dialogs;
 
 /// <summary>
 /// Lets the user pick a token boundary at which to split a segment.

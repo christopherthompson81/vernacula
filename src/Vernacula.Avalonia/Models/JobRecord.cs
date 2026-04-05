@@ -1,9 +1,9 @@
 using CommunityToolkit.Mvvm.ComponentModel;
 using Avalonia;
 using Avalonia.Media;
-using Vernacula.Avalonia;
+using Vernacula.App;
 
-namespace Vernacula.Avalonia.Models;
+namespace Vernacula.App.Models;
 
 public enum JobStatus { Pending, Queued, Running, Complete, Failed, Cancelled }
 

@@ -1,7 +1,7 @@
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 
-namespace Vernacula.Avalonia.ViewModels;
+namespace Vernacula.App.ViewModels;
 
 internal partial class ConfigViewModel : ObservableObject
 {

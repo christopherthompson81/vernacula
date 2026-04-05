@@ -4,11 +4,11 @@ using Avalonia.Controls;
 using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Media;
-using Vernacula.Avalonia.Models;
-using Vernacula.Avalonia.ViewModels;
-using Vernacula.Avalonia.Views;
+using Vernacula.App.Models;
+using Vernacula.App.ViewModels;
+using Vernacula.App.Views;
 
-namespace Vernacula.Avalonia.Views;
+namespace Vernacula.App.Views;
 
 public partial class MainWindow : Window
 {

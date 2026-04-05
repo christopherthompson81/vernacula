@@ -2,7 +2,7 @@ using System.Globalization;
 using System.Collections.Generic;
 using Avalonia.Data.Converters;
 
-namespace Vernacula.Avalonia.Converters;
+namespace Vernacula.App.Converters;
 
 /// <summary>
 /// IMultiValueConverter that returns true when all bound values are equal strings.

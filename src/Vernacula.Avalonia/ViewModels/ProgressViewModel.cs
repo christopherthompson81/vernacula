@@ -4,10 +4,10 @@ using Avalonia.Controls;
 using Avalonia.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
-using Vernacula.Avalonia.Models;
-using Vernacula.Avalonia.Services;
+using Vernacula.App.Models;
+using Vernacula.App.Services;
 
-namespace Vernacula.Avalonia.ViewModels;
+namespace Vernacula.App.ViewModels;
 
 internal partial class ProgressViewModel : ObservableObject
 {

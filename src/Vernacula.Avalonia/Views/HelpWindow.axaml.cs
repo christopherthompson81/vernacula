@@ -5,11 +5,11 @@ using Avalonia.Controls;
 using Avalonia.Interactivity;
 using Avalonia.Media;
 using Avalonia.Threading;
-using Vernacula.Avalonia;
-using Vernacula.Avalonia.Models;
-using Vernacula.Avalonia.Services;
+using Vernacula.App;
+using Vernacula.App.Models;
+using Vernacula.App.Services;
 
-namespace Vernacula.Avalonia.Views;
+namespace Vernacula.App.Views;
 
 public partial class HelpWindow : Window
 {

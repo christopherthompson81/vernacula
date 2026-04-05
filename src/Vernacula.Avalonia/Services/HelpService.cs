@@ -2,7 +2,7 @@ using System.Reflection;
 using System.Text;
 using Avalonia.Platform;
 
-namespace Vernacula.Avalonia.Services;
+namespace Vernacula.App.Services;
 
 /// <summary>
 /// Represents a single help article, keyed by its stable topic_id.

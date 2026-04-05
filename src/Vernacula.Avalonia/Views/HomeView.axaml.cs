@@ -3,7 +3,7 @@ using Avalonia.Input;
 using Avalonia.VisualTree;
 using System.ComponentModel;
 
-namespace Vernacula.Avalonia.Views;
+namespace Vernacula.App.Views;
 
 public partial class HomeView : UserControl
 {

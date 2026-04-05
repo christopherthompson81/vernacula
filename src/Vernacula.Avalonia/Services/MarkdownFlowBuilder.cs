@@ -10,9 +10,9 @@ using Markdig;
 using Markdig.Extensions.Tables;
 using Markdig.Syntax;
 using Markdig.Syntax.Inlines;
-using Vernacula.Avalonia.Models;
+using Vernacula.App.Models;
 
-namespace Vernacula.Avalonia.Services;
+namespace Vernacula.App.Services;
 
 internal static class MarkdownFlowBuilder
 {

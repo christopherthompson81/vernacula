@@ -1,6 +1,6 @@
-using Vernacula.Avalonia.ViewModels;
+using Vernacula.App.ViewModels;
 
-namespace Vernacula.Avalonia;
+namespace Vernacula.App;
 
 // NOTE: Avalonia handles template selection differently than WPF.
 // This class is kept for compatibility but template selection is now handled
