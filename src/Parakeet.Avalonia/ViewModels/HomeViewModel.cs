@@ -14,6 +14,7 @@ internal partial class HomeViewModel : ObservableObject
 {
     private readonly ModelManagerService _modelMgr;
     private readonly ControlDb           _controlDb;
+    private readonly SettingsService     _settings;
 
     [ObservableProperty] private string _modelStatusText  = "";
     [ObservableProperty] private IBrush _modelStatusBrush = Brushes.Gray;
@@ -33,10 +34,11 @@ internal partial class HomeViewModel : ObservableObject
     public Action?                      OpenSettings            { get; set; }
     public Func<Task<string[]?>>?       PickMultipleAudioFiles  { get; set; }
 
-    public HomeViewModel(ModelManagerService modelMgr, ControlDb controlDb)
+    public HomeViewModel(ModelManagerService modelMgr, ControlDb controlDb, SettingsService settings)
     {
         _modelMgr  = modelMgr;
         _controlDb = controlDb;
+        _settings  = settings;
         ModelStatusText = Loc.Instance["model_status_checking"];
 
         Jobs.CollectionChanged += (_, e) =>
@@ -69,7 +71,9 @@ internal partial class HomeViewModel : ObservableObject
         if (ModelsReady)
             ModelStatusText = Loc.Instance.T("model_status_ok", new() { ["count"] = _modelMgr.GetPresentFiles().Count.ToString() });
         else if (ModelsWarning)
-            ModelStatusText = Loc.Instance["settings_model_warning"];
+            ModelStatusText = _settings.Current.Segmentation == Parakeet.Base.Models.SegmentationMode.DiariZen
+                ? "DiariZen external weights are missing. Open Settings to review the notice and import or download them."
+                : Loc.Instance["settings_model_warning"];
     }
 
       public async Task InitializeAsync()
@@ -113,10 +117,13 @@ internal partial class HomeViewModel : ObservableObject
         ModelStatusBrush = Application.Current!.Resources["SubtextBrush"] as IBrush ?? Brushes.Gray;
 
         IReadOnlyList<string> missing = [];
+        IReadOnlyList<string> missingDiariZen = [];
         await Task.Run(() => missing = _modelMgr.GetMissingFiles());
+        if (_settings.Current.Segmentation == Parakeet.Base.Models.SegmentationMode.DiariZen)
+            await Task.Run(() => missingDiariZen = _modelMgr.GetMissingDiariZenFiles());
 
-        ModelsReady   = missing.Count == 0;
-        ModelsWarning = missing.Count > 0;
+        ModelsReady   = missing.Count == 0 && (_settings.Current.Segmentation != Parakeet.Base.Models.SegmentationMode.DiariZen || missingDiariZen.Count == 0);
+        ModelsWarning = !ModelsReady;
         UpdateStatusText();
 
         ModelStatusBrush = Application.Current.Resources[ModelsReady ? "GreenBrush" : "YellowBrush"] as IBrush

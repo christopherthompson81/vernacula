@@ -285,7 +285,7 @@ internal class TranscriptionService
             {
                 throw new FileNotFoundException(
                     $"DiariZen model not found: {diarizenModel}. " +
-                    "Please ensure the DiariZen weights are installed under the diarizen model directory.");
+                    "Open Settings to review the external weights notice and configure or download the DiariZen weights.");
             }
 
             string diarizenEmbedderModel = Path.Combine(diarizenModelsDir, Config.DiariZenEmbedderFile);
@@ -293,7 +293,7 @@ internal class TranscriptionService
             {
                 throw new FileNotFoundException(
                     $"DiariZen embedder model not found: {diarizenEmbedderModel}. " +
-                    "Please ensure the WeSpeaker embedder export is present in the diarizen model directory.");
+                    "Open Settings to review the external weights notice and configure or download the DiariZen weights.");
             }
 
             List<DiarizationSegment> diarSegments = [];

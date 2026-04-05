@@ -461,6 +461,59 @@
                                            Foreground="{DynamicResource SubtextBrush}"
                                            FontSize="11"
                                            TextWrapping="Wrap" />
+                                <TextBlock Text="{Binding DiariZenStatusText}"
+                                           Foreground="{Binding DiariZenStatusBrush}"
+                                           FontSize="11"
+                                           TextWrapping="Wrap"
+                                           Margin="0,8,0,0" />
+                                <TextBlock Text="{Binding DiariZenModelsLocationText}"
+                                           Foreground="{DynamicResource SubtextBrush}"
+                                           FontSize="10"
+                                           TextWrapping="Wrap"
+                                           Margin="0,4,0,0" />
+                                <StackPanel IsVisible="{Binding IsDownloadingDiariZen,
+                                                                 Converter={StaticResource BoolToVis}}"
+                                            Margin="0,8,0,0">
+                                    <ProgressBar Value="{Binding DiariZenDownloadPercent}"
+                                                 Minimum="0"
+                                                 Maximum="100"
+                                                 Margin="0,0,0,4" />
+                                    <TextBlock Text="{Binding DiariZenDownloadStatusText}"
+                                               Foreground="{DynamicResource SubtextBrush}"
+                                               FontSize="11"
+                                               TextWrapping="Wrap" />
+                                </StackPanel>
+                                <WrapPanel Margin="0,8,0,0"
+                                           Orientation="Horizontal"
+                                           ItemHeight="32">
+                                    <Button x:Name="ReviewDiariZenNoticeButton"
+                                            Content="Review External Weights Notice"
+                                            Click="ReviewDiariZenNotice_Click"
+                                            Margin="0,0,8,0" />
+                                    <Button x:Name="ChooseDiariZenFolderButton"
+                                            Content="Choose Weights Folder"
+                                            Click="ChooseDiariZenFolder_Click"
+                                            Classes="secondary-button"
+                                            Margin="0,0,8,0" />
+                                    <Button x:Name="DownloadDiariZenButton"
+                                            Content="Download External Weights"
+                                            Click="DownloadDiariZenWeights_Click"
+                                            IsEnabled="{Binding IsDownloadingDiariZen,
+                                                                Converter={StaticResource InvBoolToVis}}" />
+                                    <Button x:Name="CancelDiariZenDownloadButton"
+                                            Content="{Binding Source={x:Static local:Loc.Instance}, Path=[btn_cancel]}"
+                                            Classes="secondary-button"
+                                            Command="{Binding CancelDiariZenDownloadCommand}"
+                                            Margin="8,0,0,0"
+                                            IsVisible="{Binding IsDownloadingDiariZen,
+                                                                 Converter={StaticResource BoolToVis}}" />
+                                </WrapPanel>
+                                <Button x:Name="OpenDiariZenRepoButton"
+                                        Content="Open External Weights Repo"
+                                        Click="OpenDiariZenRepo_Click"
+                                        Classes="secondary-button"
+                                        Margin="0,8,0,0"
+                                        HorizontalAlignment="Left" />
                             </StackPanel>
                         </RadioButton>
 

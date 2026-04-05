@@ -1,0 +1,67 @@
+<Window x:Class="ParakeetCSharp.Views.Dialogs.DiariZenNoticeDialog"
+        xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Width="620"
+        SizeToContent="Height"
+        CanResize="False"
+        WindowStartupLocation="CenterOwner"
+        ShowInTaskbar="False"
+        Title="External DiariZen Weights Notice">
+    <Border Background="{DynamicResource BgBrush}" Padding="20">
+        <StackPanel Spacing="14">
+            <TextBlock Text="External DiariZen Weights"
+                       FontWeight="SemiBold"
+                       FontSize="16"
+                       Foreground="{DynamicResource TextBrush}" />
+
+            <TextBlock TextWrapping="Wrap"
+                       Foreground="{DynamicResource TextBrush}">
+                DiariZen support in Parakeet uses external model weights that are not bundled with this app and are not covered by Parakeet's software license.
+            </TextBlock>
+
+            <TextBlock TextWrapping="Wrap"
+                       Foreground="{DynamicResource TextBrush}">
+                The reference ONNX weights are published separately at:
+                https://huggingface.co/christopherthompson81/diarizen_onnx
+            </TextBlock>
+
+            <TextBlock TextWrapping="Wrap"
+                       Foreground="{DynamicResource TextBrush}">
+                Those weights are derived from upstream DiariZen materials:
+                https://github.com/BUTSpeechFIT/DiariZen
+                https://huggingface.co/BUT-FIT/diarizen-wavlm-large-s80-md
+            </TextBlock>
+
+            <TextBlock TextWrapping="Wrap"
+                       Foreground="{DynamicResource TextBrush}">
+                Upstream DiariZen-derived weights should be treated as non-commercial licensed material. You are responsible for reviewing the upstream terms, attribution requirements, and whether your use is permitted.
+            </TextBlock>
+
+            <TextBlock TextWrapping="Wrap"
+                       Foreground="{DynamicResource SubtextBrush}">
+                Parakeet can use an external weights folder that you provide, or download those external weights only after your explicit confirmation. This notice is stored locally on this device so the app knows you accepted it.
+            </TextBlock>
+
+            <CheckBox x:Name="AgreementCheckBox"
+                      Content="I understand these are external, non-commercial licensed weights and that I am responsible for compliance."
+                      IsChecked="False"
+                      Checked="AgreementCheckBox_Changed"
+                      Unchecked="AgreementCheckBox_Changed" />
+
+            <StackPanel Orientation="Horizontal"
+                        HorizontalAlignment="Right"
+                        Spacing="10">
+                <Button Content="Open Weights Repo"
+                        Classes="secondary-button"
+                        Click="OpenWeightsRepo_Click" />
+                <Button Content="Cancel"
+                        Classes="secondary-button"
+                        Click="Cancel_Click" />
+                <Button x:Name="AgreeButton"
+                        Content="I Agree"
+                        IsEnabled="False"
+                        Click="Agree_Click" />
+            </StackPanel>
+        </StackPanel>
+    </Border>
+</Window>

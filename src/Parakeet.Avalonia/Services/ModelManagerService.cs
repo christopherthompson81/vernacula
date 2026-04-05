@@ -13,13 +13,20 @@ internal class ModelManagerService
 {
     private readonly record struct ModelAsset(string LocalRelativePath, string RemoteRelativePath);
 
-    private const string RepoBase =
+    private const string CoreRepoBase =
         "https://huggingface.co/christopherthompson81/sortformer_parakeet_onnx/resolve/main";
 
-    private static readonly ModelAsset[] DiarizationFiles =
+    private const string DiariZenRepoBase =
+        "https://huggingface.co/christopherthompson81/diarizen_onnx/resolve/main";
+
+    private static readonly ModelAsset[] CoreDiarizationFiles =
         [
             new("diar_streaming_sortformer_4spk-v2.1.onnx", "diar_streaming_sortformer_4spk-v2.1.onnx"),
             new(Config.VadFile, Config.VadFile),
+        ];
+
+    private static readonly ModelAsset[] DiariZenFiles =
+        [
             new(Path.Combine("diarizen", Config.DiariZenFile), Config.DiariZenFile),
             new(Path.Combine("diarizen", $"{Config.DiariZenFile}.data"), $"{Config.DiariZenFile}.data"),
             new(Path.Combine("diarizen", Config.DiariZenEmbedderFile), Config.DiariZenEmbedderFile),
@@ -55,14 +62,14 @@ internal class ModelManagerService
 
     public ModelManagerService(SettingsService settings) => _settings = settings;
 
-    private ModelAsset[] AllFiles() =>
-        [.. DiarizationFiles,
+    private ModelAsset[] CoreFiles() =>
+        [.. CoreDiarizationFiles,
          .. (_settings.Current.Precision == ModelPrecision.Int8 ? AsrFilesInt8 : AsrFilesFp32)];
 
     public IReadOnlyList<string> GetMissingFiles()
     {
         string dir = _settings.GetModelsDir();
-        return AllFiles()
+        return CoreFiles()
             .Where(asset => !File.Exists(Path.Combine(dir, asset.LocalRelativePath)))
             .Select(asset => asset.LocalRelativePath)
             .ToList();
@@ -71,11 +78,32 @@ internal class ModelManagerService
     public IReadOnlyList<string> GetPresentFiles()
     {
         string dir = _settings.GetModelsDir();
-        return AllFiles()
+        return CoreFiles()
             .Where(asset => File.Exists(Path.Combine(dir, asset.LocalRelativePath)))
             .Select(asset => asset.LocalRelativePath)
             .ToList();
     }
+
+    public IReadOnlyList<string> GetMissingDiariZenFiles(string? diarizenDir = null)
+    {
+        string dir = diarizenDir ?? _settings.GetDiariZenModelsDir();
+        return DiariZenFiles
+            .Where(asset => !File.Exists(Path.Combine(dir, Path.GetRelativePath("diarizen", asset.LocalRelativePath))))
+            .Select(asset => Path.GetRelativePath("diarizen", asset.LocalRelativePath))
+            .ToList();
+    }
+
+    public IReadOnlyList<string> GetPresentDiariZenFiles(string? diarizenDir = null)
+    {
+        string dir = diarizenDir ?? _settings.GetDiariZenModelsDir();
+        return DiariZenFiles
+            .Where(asset => File.Exists(Path.Combine(dir, Path.GetRelativePath("diarizen", asset.LocalRelativePath))))
+            .Select(asset => Path.GetRelativePath("diarizen", asset.LocalRelativePath))
+            .ToList();
+    }
+
+    public bool AreDiariZenModelsPresent(string? diarizenDir = null) =>
+        GetMissingDiariZenFiles(diarizenDir).Count == 0;
 
     public bool AllModelsPresent() => GetMissingFiles().Count == 0;
 
@@ -106,7 +134,7 @@ internal class ModelManagerService
 
         string dir     = _settings.GetModelsDir();
         var outdated = new List<string>();
-        var toCheck = AllFiles()
+        var toCheck = CoreFiles()
             .Where(asset => manifest.ContainsKey(asset.RemoteRelativePath)
                 && File.Exists(Path.Combine(dir, asset.LocalRelativePath)))
             .ToList();
@@ -265,9 +293,37 @@ internal class ModelManagerService
         string dir = _settings.GetModelsDir();
         Directory.CreateDirectory(dir);
 
-        var missing = AllFiles()
+        var missing = CoreFiles()
             .Where(asset => !File.Exists(Path.Combine(dir, asset.LocalRelativePath)))
             .ToList();
+        await DownloadMissingAssetsAsync(dir, missing, CoreRepoBase, progress, ct);
+    }
+
+    public async Task DownloadMissingDiariZenModelsAsync(
+        IProgress<DownloadProgress> progress,
+        string? diarizenDir = null,
+        CancellationToken ct = default)
+    {
+        string dir = diarizenDir ?? _settings.GetDiariZenModelsDir();
+        Directory.CreateDirectory(dir);
+
+        var missing = DiariZenFiles
+            .Where(asset => !File.Exists(Path.Combine(dir, Path.GetRelativePath("diarizen", asset.LocalRelativePath))))
+            .Select(asset => new ModelAsset(
+                Path.GetRelativePath("diarizen", asset.LocalRelativePath),
+                asset.RemoteRelativePath))
+            .ToList();
+
+        await DownloadMissingAssetsAsync(dir, missing, DiariZenRepoBase, progress, ct);
+    }
+
+    private async Task DownloadMissingAssetsAsync(
+        string dir,
+        IReadOnlyList<ModelAsset> missing,
+        string repoBase,
+        IProgress<DownloadProgress> progress,
+        CancellationToken ct)
+    {
         int total = missing.Count;
         if (total == 0) return;
 
@@ -278,7 +334,7 @@ internal class ModelManagerService
             ct.ThrowIfCancellationRequested();
             try
             {
-                using var req  = new HttpRequestMessage(HttpMethod.Head, $"{RepoBase}/{missing[i].RemoteRelativePath}");
+                using var req  = new HttpRequestMessage(HttpMethod.Head, $"{repoBase}/{missing[i].RemoteRelativePath}");
                 using var resp = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct);
                 fileSizes[i] = resp.Content.Headers.ContentLength ?? 0;
             }
@@ -293,7 +349,7 @@ internal class ModelManagerService
             ct.ThrowIfCancellationRequested();
             var asset = missing[i];
             string fileName = asset.LocalRelativePath;
-            string url      = $"{RepoBase}/{asset.RemoteRelativePath}";
+            string url      = $"{repoBase}/{asset.RemoteRelativePath}";
             string destPath = Path.Combine(dir, asset.LocalRelativePath);
             string tmpPath  = destPath + ".download";
             Directory.CreateDirectory(Path.GetDirectoryName(destPath)!);

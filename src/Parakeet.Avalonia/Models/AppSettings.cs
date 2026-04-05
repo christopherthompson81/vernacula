@@ -12,6 +12,8 @@ public class AppSettings
     public SegmentationMode   Segmentation        { get; set; } = SegmentationMode.SileroVad;
     public PlaybackMode       EditorPlaybackMode  { get; set; } = PlaybackMode.Continuous;
     public string         ModelsDir { get; set; } = "";
+    public string         DiariZenModelsDir { get; set; } = "";
+    public bool           DiariZenNoticeAccepted { get; set; } = false;
     public string         Language  { get; set; } = "";
 
     // Column widths — 0 means "use default"

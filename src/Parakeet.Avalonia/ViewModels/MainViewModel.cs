@@ -58,7 +58,7 @@ internal partial class MainViewModel : ObservableObject
     {
         _queue   = queue;
         Settings = new SettingsViewModel(settings, modelManager);
-        Home     = new HomeViewModel(modelManager, controlDb);
+        Home     = new HomeViewModel(modelManager, controlDb, settings);
         Config   = new ConfigViewModel();
         Progress = new ProgressViewModel(transcription, controlDb, settings, queue);
         Results  = new ResultsViewModel(export);
@@ -194,6 +194,7 @@ internal partial class MainViewModel : ObservableObject
         // Re-check model presence when precision changes or after a download
         Settings.OnPrecisionChanged = () => _ = Home.CheckModelsAsync();
         Settings.AfterDownload      = () => _ = Home.CheckModelsAsync();
+        Settings.OnSegmentationChanged = () => _ = Home.CheckModelsAsync();
 
         // Propagate update-available signal to the Home banner
         Settings.OnUpdateAvailable  = () =>

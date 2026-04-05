@@ -197,7 +197,7 @@
   "settings_segmentation_diarization": "Speaker Diarization",
   "settings_segmentation_diarization_desc": "Identify and label individual speakers using the Sortformer model.",
   "settings_segmentation_diarizen": "DiariZen Diarization",
-  "settings_segmentation_diarizen_desc": "Batch speaker diarization using clustering. Supports up to 8 speakers with overlapping speech detection.",
+  "settings_segmentation_diarizen_desc": "Batch speaker diarization using external DiariZen weights. Supports up to 8 speakers with overlapping speech detection.",
   "settings_segmentation_vad": "Voice Activity Detection",
   "settings_segmentation_vad_desc": "Faster, no speaker labels — uses Silero VAD to detect speech regions only.",
   "settings_section_editor": "Transcript Editor",
