@@ -168,14 +168,12 @@ dotnet run --project src/Vernacula.CLI -p:EP=Cpu -- \
 Run the installer from the repo root:
 
 ```bash
-# NVIDIA GPU (CUDA)
 ./install.sh
-
-# CPU only
-./install.sh --ep Cpu
 ```
 
 The script publishes a self-contained build, installs the icon, creates a `.desktop` entry, and refreshes the desktop database. The app will appear in your application launcher under Audio/Video.
+
+The default build targets CUDA but falls back to CPU automatically if no NVIDIA GPU is present — no flags needed. Pass `--ep Cpu` only if you want a smaller install without the CUDA runtime libraries.
 
 To install to a custom location:
 ```bash
