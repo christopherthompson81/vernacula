@@ -13,17 +13,24 @@
 
 ## Parakeet Transcription — Desktop App
 
-**Parakeet Transcription** is a Linux desktop GUI built on this library. It provides a full transcription workflow with speaker diarization, a transcript editor, multi-format export, and automatic model management.
+**Parakeet Transcription** converts audio files into accurate, multi-speaker transcripts — entirely on your own computer. No cloud uploads, no subscriptions, no privacy concerns.
+
+Powered by NVIDIA's [Parakeet TDT](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2) and [Sortformer](https://huggingface.co/nvidia/diar_sortformer_4spk-v2.1) models, it delivers a **Word Error Rate of 4.85** on Google's FLEURS benchmark — among the best available anywhere. Most modern computers will transcribe one hour of audio in about five minutes. GPU-accelerated systems will be even faster.
 
 <!-- Screenshots -->
 <!-- Add screenshots here once available -->
 
-Features:
-- Automatic model download and management
-- Speaker diarization (Sortformer or DiariZen)
-- Transcript editor with per-segment speaker assignment
-- Export to Markdown, plain text, JSON, SRT
-- GPU (CUDA) and CPU execution
+- Local, private transcription — audio never leaves your computer
+- Multi-speaker detection — identifies and labels up to four speakers
+- No audio length limits — streaming and segmentation handle indefinite file lengths
+- Queue multiple files; pause and resume long transcription jobs
+- Automatic punctuation and capitalisation
+- Transcript editor with confidence colouring, audio playback, and segment editing
+- Wide format support — common audio formats plus MP4, MOV, MKV, AVI, WMV, FLV, MTS, and more
+- Export to XLSX, CSV, JSON, SRT, Markdown, DOCX, and SQLite3
+- Full analysis data in SQLite3 with word-level timestamps and confidence scoring
+- GPU acceleration via CUDA, with automatic CPU fallback
+- Supports 25 European languages: English, French, German, Spanish, Portuguese, Italian, Dutch, Polish, Russian, Ukrainian, Czech, Slovak, Romanian, Hungarian, Bulgarian, Croatian, Slovenian, Greek, Swedish, Danish, Finnish, Estonian, Latvian, Lithuanian, and Maltese
 
 Built with [Avalonia UI](https://avaloniaui.net/) — runs on any Linux desktop environment.
 
