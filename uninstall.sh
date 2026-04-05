@@ -17,7 +17,7 @@ while [[ $# -gt 0 ]]; do
             echo "Usage: $0 [--prefix <dir>] [--purge]"
             echo "  --prefix  Install directory to remove (default: ~/.local/share/parakeet)"
             echo "  --purge   Also remove user data: settings, models, and job history"
-            echo "            (~/.config/Parakeet/)"
+            echo "            (~/.local/share/Parakeet/)"
             exit 0 ;;
         *) echo "Unknown argument: $1"; exit 1 ;;
     esac
@@ -47,7 +47,7 @@ if [[ -f "$ICON" ]]; then
 fi
 
 if [[ $PURGE -eq 1 ]]; then
-    USERDATA="$HOME/.config/Parakeet"
+    USERDATA="$HOME/.local/share/Parakeet"
     if [[ -d "$USERDATA" ]]; then
         echo "Purging user data at $USERDATA ..."
         rm -rf "$USERDATA"
