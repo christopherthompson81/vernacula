@@ -196,7 +196,12 @@ gtk-update-icon-cache ~/.local/share/icons/hicolor
 
 The app should now appear in your DE's application launcher under Audio/Video.
 
-> **Note:** The first launch opens a model download dialog. Models total ~1.5 GB (core) or ~2.5 GB (with DiariZen). They are stored in `~/.config/Parakeet/models/`.
+> **Note:** The first launch opens a model download dialog. Model sizes:
+> - Core fp32: ~3 GB (encoder data file is 2.44 GB)
+> - Core int8: ~820 MB
+> - DiariZen add-on: ~310 MB
+>
+> Models are stored in `~/.config/Parakeet/models/`.
 
 ---
 
