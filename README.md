@@ -1,16 +1,43 @@
 # Vernacula
 
-A .NET 10 speech pipeline library and toolset for local, offline inference using ONNX models. Supports automatic speech recognition (ASR), speaker diarization, and voice activity detection — no cloud, no telemetry.
+<p align="center">
+  <img src="src/Vernacula.Avalonia/Assets/parakeet.png" width="180" alt="Parakeet Transcription" />
+</p>
 
-Built around the [NVIDIA Parakeet TDT](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2) ASR model with pluggable backends for each pipeline stage.
+<p align="center">
+  A .NET 10 speech pipeline library and toolset for local, offline inference using ONNX models.<br/>
+  No cloud. No telemetry. Runs entirely on your hardware.
+</p>
 
-## Components
+---
+
+## Parakeet Transcription — Desktop App
+
+**Parakeet Transcription** is a Linux desktop GUI built on this library. It provides a full transcription workflow with speaker diarization, a transcript editor, multi-format export, and automatic model management.
+
+<!-- Screenshots -->
+<!-- Add screenshots here once available -->
+
+Features:
+- Automatic model download and management
+- Speaker diarization (Sortformer or DiariZen)
+- Transcript editor with per-segment speaker assignment
+- Export to Markdown, plain text, JSON, SRT
+- GPU (CUDA) and CPU execution
+
+Built with [Avalonia UI](https://avaloniaui.net/) — runs on any Linux desktop environment.
+
+---
+
+## Library Components
 
 | Project | Description | License |
 |---|---|---|
 | `Vernacula.Base` | Core inference library — ASR, diarization, VAD, audio utilities | MIT |
 | `Vernacula.CLI` | Command-line transcription tool | MIT |
 | `Vernacula.Avalonia` | Desktop GUI app for Linux (Parakeet Transcription) | PolyForm Shield 1.0.0 |
+
+Built around the [NVIDIA Parakeet TDT](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2) ASR model with pluggable backends for each pipeline stage.
 
 ## Requirements
 
@@ -240,6 +267,21 @@ DiariZen's segmentation and embedding pipeline can be tuned via environment vari
 | CUDA | Linux, Windows | Best performance on NVIDIA GPUs |
 | CPU | All | Works everywhere, no GPU needed |
 | DirectML | Windows only | AMD/Intel/NVIDIA via DirectX 12 |
+
+---
+
+## Benchmarks
+
+All runs on a 10-minute English audio file, fp32 models, Sortformer diarization.
+
+| Hardware | Diarization | ASR | Total | RTF |
+|---|---|---|---|---|
+| AMD Ryzen 7 7840U (CPU) | 33.2s | 49.2s | 82.4s | 0.137 |
+| NVIDIA RTX 3090 (CUDA) | — | — | — | — |
+
+RTF < 1.0 means faster than real-time. CPU-only inference is already well within real-time on a mid-range laptop CPU.
+
+> RTX 3090 results pending — will update once benchmarked.
 
 ---
 
