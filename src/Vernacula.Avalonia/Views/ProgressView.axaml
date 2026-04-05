@@ -1,0 +1,141 @@
+<UserControl x:Class="Vernacula.Avalonia.Views.ProgressView"
+             xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:local="using:Vernacula.Avalonia"
+             xmlns:conv="using:Vernacula.Avalonia.Converters"
+             xmlns:beh="using:Vernacula.Avalonia.Behaviors"
+             xmlns:vm="using:Vernacula.Avalonia.ViewModels"
+             x:DataType="vm:ProgressViewModel"
+             Focusable="True"
+             KeyDown="ProgressView_KeyDown"
+             PointerPressed="ProgressView_PointerPressed">
+
+    <UserControl.Resources>
+        <conv:BoolToVisibilityConverter x:Key="BoolToVis" />
+        <conv:BoolToVisibilityConverter x:Key="InverseBoolToVis" Invert="True" />
+        <conv:SecondsToTimeConverter    x:Key="SecondsToTime" />
+    </UserControl.Resources>
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />   <!-- Header -->
+            <RowDefinition Height="Auto" />   <!-- Progress bar -->
+            <RowDefinition Height="Auto" />   <!-- Status text -->
+            <RowDefinition Height="*"    />   <!-- Segments table -->
+            <RowDefinition Height="Auto" />   <!-- Action buttons -->
+        </Grid.RowDefinitions>
+
+        <TextBlock x:Name="ProgressHeadingText"
+                   Grid.Row="0"
+                   Foreground="{DynamicResource TextBrush}"
+                   Text="{local:Loc progress_heading}"
+                   FontSize="20" FontWeight="SemiBold"
+                   Margin="0,0,0,16" />
+
+        <!-- Progress bar (indeterminate during loading/start) -->
+        <ProgressBar Grid.Row="1"
+                     Value="{Binding ProgressPercent}"
+                     IsIndeterminate="{Binding IsIndeterminate}"
+                     Minimum="0" Maximum="100"
+                     Margin="0,0,0,8" />
+
+        <!-- Percentage label -->
+        <TextBlock Grid.Row="1"
+                   Text="{Binding ProgressPercent, StringFormat={}{0:F0}%}"
+                   Foreground="{DynamicResource BlackBrush}"
+                   FontSize="11"
+                   HorizontalAlignment="Right"
+                   VerticalAlignment="Center"
+                   Margin="0,0,0,8"
+                   IsVisible="{Binding IsIndeterminate, Converter={StaticResource InverseBoolToVis}}" />
+
+        <!-- Status message + copyable error details -->
+        <StackPanel Grid.Row="2" Margin="0,0,0,12">
+            <TextBlock Text="{Binding StatusMessage}"
+                       Foreground="{DynamicResource SubtextBrush}"
+                       TextWrapping="Wrap" />
+            <Border Background="{DynamicResource SurfaceBrush}"
+                    BorderBrush="{DynamicResource RedBrush}"
+                    BorderThickness="1"
+                    Margin="0,8,0,0"
+                    MaxHeight="160"
+                    IsVisible="{Binding HasError, Converter={StaticResource BoolToVis}}">
+                <ScrollViewer VerticalScrollBarVisibility="Auto"
+                              HorizontalScrollBarVisibility="Disabled">
+                    <SelectableTextBlock Text="{Binding ErrorMessage}"
+                                         TextWrapping="Wrap"
+                                         FontFamily="Consolas"
+                                         FontSize="11"
+                                         Foreground="{DynamicResource RedBrush}"
+                                         Padding="6" />
+                </ScrollViewer>
+            </Border>
+        </StackPanel>
+
+        <!-- Live segments table -->
+        <DataGrid x:Name="SegmentsGrid"
+                  Grid.Row="3"
+                  Margin="0,0,0,12"
+                  ItemsSource="{Binding Segments}"
+                  AutoGenerateColumns="False"
+                  IsReadOnly="True"
+                  CanUserReorderColumns="False"
+                  SelectionMode="Single"
+                  GridLinesVisibility="Horizontal"
+                  HeadersVisibility="Column"
+                  beh:DataGridBehaviors.AutoScroll="True">
+            <DataGrid.Columns>
+                <DataGridTextColumn Binding="{Binding SpeakerDisplayName}" Width="110">
+                    <DataGridTextColumn.Header>
+                        <TextBlock Text="{Binding Source={x:Static local:Loc.Instance}, Path=[segments_col_speaker]}" />
+                    </DataGridTextColumn.Header>
+                </DataGridTextColumn>
+                <DataGridTemplateColumn Header="{Binding Source={x:Static local:Loc.Instance}, Path=[segments_col_start]}"
+                                        Width="70">
+                    <DataGridTemplateColumn.CellTemplate>
+                        <DataTemplate>
+                            <TextBlock Text="{Binding StartTime, Converter={StaticResource SecondsToTime}}"
+                                       Padding="4,2"
+                                       VerticalAlignment="Center" />
+                        </DataTemplate>
+                    </DataGridTemplateColumn.CellTemplate>
+                </DataGridTemplateColumn>
+                <DataGridTemplateColumn Header="{Binding Source={x:Static local:Loc.Instance}, Path=[segments_col_end]}"
+                                        Width="70">
+                    <DataGridTemplateColumn.CellTemplate>
+                        <DataTemplate>
+                            <TextBlock Text="{Binding EndTime, Converter={StaticResource SecondsToTime}}"
+                                       Padding="4,2"
+                                       VerticalAlignment="Center" />
+                        </DataTemplate>
+                    </DataGridTemplateColumn.CellTemplate>
+                </DataGridTemplateColumn>
+                <DataGridTemplateColumn Width="*">
+                    <DataGridTemplateColumn.Header>
+                        <TextBlock Text="{Binding Source={x:Static local:Loc.Instance}, Path=[segments_col_content]}" />
+                    </DataGridTemplateColumn.Header>
+                    <DataGridTemplateColumn.CellTemplate>
+                        <DataTemplate>
+                            <TextBlock Text="{Binding Text}"
+                                       TextWrapping="Wrap"
+                                       Padding="4,2"
+                                       VerticalAlignment="Center" />
+                        </DataTemplate>
+                    </DataGridTemplateColumn.CellTemplate>
+                </DataGridTemplateColumn>
+            </DataGrid.Columns>
+        </DataGrid>
+
+        <!-- Action buttons -->
+        <StackPanel Grid.Row="4" Orientation="Horizontal" HorizontalAlignment="Right">
+            <Button x:Name="PauseButton" Content="{local:Loc btn_pause}"
+                    Classes="primary-button"
+                    Command="{Binding CancelCommand}"
+                    IsVisible="{Binding IsRunning, Converter={StaticResource BoolToVis}}"
+                    Margin="0,0,8,0" />
+            <Button x:Name="BackHomeButton" Content="{local:Loc btn_back_home}"
+                    Classes="secondary-button"
+                    Command="{Binding GoBackCommand}" />
+        </StackPanel>
+    </Grid>
+</UserControl>

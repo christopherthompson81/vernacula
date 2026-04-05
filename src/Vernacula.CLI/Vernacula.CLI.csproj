@@ -1,0 +1,44 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>false</AllowUnsafeBlocks>
+    <Platforms>x64</Platforms>
+
+    <!--
+      Select execution provider at build time:
+        dotnet build -c Release -p:EP=Cuda       (default)
+        dotnet build -c Release -p:EP=DirectML
+        dotnet build -c Release -p:EP=Cpu
+
+      Then run with:
+        dotnet run -c Release -p:EP=&lt;EP&gt; -p:Platform=x64 - -audio &lt;file&gt; -model &lt;dir&gt;
+    -->
+    <EP Condition="'$(EP)' == ''">Cuda</EP>
+    <DefineConstants Condition="'$(EP)' == 'DirectML'">$(DefineConstants);DIRECTML</DefineConstants>
+    <DefineConstants Condition="'$(EP)' == 'Cpu'">$(DefineConstants);CPU</DefineConstants>
+  </PropertyGroup>
+
+  <!-- CUDA execution provider (NVIDIA GPU) -->
+  <ItemGroup Condition="'$(EP)' == 'Cuda'">
+    <PackageReference Include="Microsoft.ML.OnnxRuntime.Gpu" Version="1.24.2" />
+  </ItemGroup>
+
+  <!-- DirectML execution provider (any DX12 GPU: AMD, Intel, NVIDIA) -->
+  <ItemGroup Condition="'$(EP)' == 'DirectML'">
+    <PackageReference Include="Microsoft.ML.OnnxRuntime.DirectML" Version="1.21.1" />
+  </ItemGroup>
+
+  <!-- CPU-only baseline -->
+  <ItemGroup Condition="'$(EP)' == 'Cpu'">
+    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.24.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Vernacula.Base\Vernacula.Base.csproj" />
+  </ItemGroup>
+
+</Project>

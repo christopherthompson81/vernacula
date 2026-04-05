@@ -1,0 +1,42 @@
+<Window x:Class="Vernacula.Avalonia.Views.Dialogs.AddSpeakerDialog"
+        xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Add Speaker"
+        Width="300" Height="170"
+        WindowStartupLocation="CenterOwner"
+        CanResize="False"
+        ShowInTaskbar="False"
+        Icon="avares://Vernacula.Avalonia/Assets/icon.ico"
+        Background="{DynamicResource BgBrush}">
+
+    <Grid Margin="16">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <TextBlock Grid.Row="0"
+                   Text="Speaker name:"
+                   Foreground="{DynamicResource SubtextBrush}"
+                   Margin="0,0,0,8" />
+
+        <TextBox Grid.Row="1"
+                 x:Name="NameBox"
+                 Foreground="{DynamicResource TextBrush}"
+                 Background="{DynamicResource SurfaceBrush}"
+                 BorderBrush="{DynamicResource OverlayBrush}"
+                 Margin="0,0,0,12"
+                 KeyDown="NameBox_KeyDown" />
+
+        <StackPanel Grid.Row="2" Orientation="Horizontal"
+                    HorizontalAlignment="Right">
+            <Button Content="Add"
+                    Click="Add_Click"
+                    Margin="0,0,8,0" />
+            <Button Content="Cancel"
+                    Classes="secondary-button"
+                    Click="Cancel_Click" />
+        </StackPanel>
+    </Grid>
+</Window>

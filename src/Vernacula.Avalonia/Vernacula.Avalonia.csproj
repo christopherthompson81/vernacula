@@ -1,0 +1,89 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <BuiltInComInteropSupport>true</BuiltInComInteropSupport>
+    <ApplicationIcon>Assets/icon.ico</ApplicationIcon>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <AvaloniaUseCompiledBindingsByDefault>false</AvaloniaUseCompiledBindingsByDefault>
+    <NuGetAudit>false</NuGetAudit>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <AvaloniaResource Include="Assets\**" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="Locales\*.json" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <AvaloniaResource Include="Help\en\**\*.md" />
+    <AvaloniaResource Include="Help\de\**\*.md" />
+    <AvaloniaResource Include="Help\es\**\*.md" />
+    <AvaloniaResource Include="Help\fr\**\*.md" />
+    <AvaloniaResource Include="Help\it\**\*.md" />
+    <AvaloniaResource Include="Help\pl\**\*.md" />
+    <AvaloniaResource Include="Help\pt\**\*.md" />
+    <AvaloniaResource Include="Help\ru\**\*.md" />
+    <AvaloniaResource Include="Help\sv\**\*.md" />
+    <AvaloniaResource Include="Help\bg\**\*.md" />
+    <AvaloniaResource Include="Help\cs\**\*.md" />
+    <AvaloniaResource Include="Help\da\**\*.md" />
+    <AvaloniaResource Include="Help\el\**\*.md" />
+    <AvaloniaResource Include="Help\et\**\*.md" />
+    <AvaloniaResource Include="Help\fi\**\*.md" />
+    <AvaloniaResource Include="Help\hr\**\*.md" />
+    <AvaloniaResource Include="Help\hu\**\*.md" />
+    <AvaloniaResource Include="Help\lt\**\*.md" />
+    <AvaloniaResource Include="Help\lv\**\*.md" />
+    <AvaloniaResource Include="Help\mt\**\*.md" />
+    <AvaloniaResource Include="Help\nl\**\*.md" />
+    <AvaloniaResource Include="Help\ro\**\*.md" />
+    <AvaloniaResource Include="Help\sk\**\*.md" />
+    <AvaloniaResource Include="Help\sl\**\*.md" />
+    <AvaloniaResource Include="Help\uk\**\*.md" />
+    <AvaloniaResource Include="Help\ja\**\*.md" />
+    <AvaloniaResource Include="Help\ko\**\*.md" />
+    <AvaloniaResource Include="Help\tr\**\*.md" />
+    <AvaloniaResource Include="Help\zh\**\*.md" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Avalonia" Version="11.3.9" />
+    <PackageReference Include="Markdown.Avalonia" Version="11.0.2" />
+    <PackageReference Include="Markdig" Version="0.34.0" />
+    <PackageReference Include="Avalonia.Desktop" Version="11.3.9" />
+    <PackageReference Include="Avalonia.Themes.Fluent" Version="11.3.9" />
+    <PackageReference Include="Avalonia.Fonts.Inter" Version="11.3.9" />
+    <PackageReference Include="Avalonia.Controls.DataGrid" Version="11.3.9" />
+    <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.0" />
+    <PackageReference Include="FFmpeg.AutoGen" Version="7.1.1" />
+
+    <PackageReference Include="MathNet.Numerics" Version="5.0.0" />
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="9.0.4" />
+    <PackageReference Include="NAudio" Version="2.2.1" />
+    <PackageReference Include="SoundTouch.Net" Version="2.1.2" />
+    <PackageReference Include="ClosedXML" Version="0.104.1" />
+    <PackageReference Include="DocumentFormat.OpenXml" Version="3.3.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Platform-specific ONNX Runtime -->
+    <PackageReference Include="Microsoft.ML.OnnxRuntime.Gpu" Version="1.24.2" Condition="'$(UseDirectML)' != 'true' AND ( $([MSBuild]::IsOSPlatform('Windows')) OR $([MSBuild]::IsOSPlatform('Linux')) )" />
+    <PackageReference Include="Microsoft.ML.OnnxRuntime.DirectML" Version="1.21.1" Condition="'$(UseDirectML)' == 'true' AND $([MSBuild]::IsOSPlatform('Windows'))" />
+    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.24.2" Condition="'$(UseDirectML)' != 'true' AND !$([MSBuild]::IsOSPlatform('Windows')) AND !$([MSBuild]::IsOSPlatform('Linux'))" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Vernacula.Base\Vernacula.Base.csproj" />
+  </ItemGroup>
+
+</Project>
