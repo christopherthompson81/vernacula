@@ -255,8 +255,7 @@ Diarization Error Rate from published benchmarks. Lower is better.
 
 | Backend | AMI-SDM | VoxConverse | DIHARD III | Source |
 |---|---|---|---|---|
-| Sortformer v2-stream | — | — | 13.2% (≤4spk) | [HuggingFace](https://huggingface.co/nvidia/diar_streaming_sortformer_4spk-v2) |
-| Sortformer v2-stream | — | — | 5.3% (CALLHOME) | [HuggingFace](https://huggingface.co/nvidia/diar_streaming_sortformer_4spk-v2) |
+| Sortformer v2-stream | 20.6% | 13.9% | 20.2% | [HuggingFace](https://huggingface.co/nvidia/diar_streaming_sortformer_4spk-v2) |
 | DiariZen-Large | 13.9% | 9.1% | 14.5% | [BUTSpeechFIT/DiariZen](https://github.com/BUTSpeechFIT/DiariZen) |
 
 > Benchmarks use different evaluation conditions (collar, overlap handling) — direct cross-model comparison should be treated as indicative only. The independent survey [Benchmarking Diarization Models (2509.26177)](https://arxiv.org/abs/2509.26177) found Sortformer v2-stream and DiariZen among the top open-source performers overall.
