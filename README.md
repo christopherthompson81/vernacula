@@ -165,63 +165,22 @@ dotnet run --project src/Vernacula.CLI -p:EP=Cpu -- \
 
 ## Linux Desktop Installation (Avalonia)
 
-### 1. Publish a self-contained build
+Run the installer from the repo root:
 
 ```bash
-cd src/Vernacula.Avalonia
+# NVIDIA GPU (CUDA)
+./install.sh
 
-dotnet publish -c Release -p:EP=Cuda -p:Platform=x64 \
-  -r linux-x64 --self-contained true \
-  -o ~/.local/share/parakeet
+# CPU only
+./install.sh --ep Cpu
 ```
 
-For CPU-only systems, replace `-p:EP=Cuda` with `-p:EP=Cpu`.
+The script publishes a self-contained build, installs the icon, creates a `.desktop` entry, and refreshes the desktop database. The app will appear in your application launcher under Audio/Video.
 
-### 2. Copy the icon
-
+To install to a custom location:
 ```bash
-mkdir -p ~/.local/share/icons/hicolor/256x256/apps
-cp Assets/parakeet.png ~/.local/share/icons/hicolor/256x256/apps/parakeet.png
+./install.sh --prefix /opt/parakeet
 ```
-
-### 3. Create a .desktop entry
-
-Create `~/.local/share/applications/parakeet.desktop`:
-
-```ini
-[Desktop Entry]
-Type=Application
-Name=Parakeet Transcription
-Comment=Local speech-to-text with speaker diarization
-Exec=/home/YOUR_USERNAME/.local/share/parakeet/Vernacula.Avalonia
-Icon=parakeet
-Categories=AudioVideo;Audio;
-Terminal=false
-```
-
-Replace `YOUR_USERNAME` with your actual username, or use `$HOME`:
-
-```bash
-cat > ~/.local/share/applications/parakeet.desktop << EOF
-[Desktop Entry]
-Type=Application
-Name=Parakeet Transcription
-Comment=Local speech-to-text with speaker diarization
-Exec=$HOME/.local/share/parakeet/Vernacula.Avalonia
-Icon=parakeet
-Categories=AudioVideo;Audio;
-Terminal=false
-EOF
-```
-
-### 4. Refresh the desktop database
-
-```bash
-update-desktop-database ~/.local/share/applications
-gtk-update-icon-cache ~/.local/share/icons/hicolor
-```
-
-The app should now appear in your DE's application launcher under Audio/Video.
 
 > **Note:** The first launch opens a model download dialog. Model sizes:
 > - Core fp32: ~3 GB (encoder data file is 2.44 GB)
