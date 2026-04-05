@@ -9,6 +9,24 @@ namespace Parakeet.Base;
 /// </summary>
 public static class HardwareInfo
 {
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Auto)]
+    private struct MemoryStatusEx
+    {
+        public uint dwLength;
+        public uint dwMemoryLoad;
+        public ulong ullTotalPhys;
+        public ulong ullAvailPhys;
+        public ulong ullTotalPageFile;
+        public ulong ullAvailPageFile;
+        public ulong ullTotalVirtual;
+        public ulong ullAvailVirtual;
+        public ulong ullAvailExtendedVirtual;
+    }
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Auto, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GlobalMemoryStatusEx(ref MemoryStatusEx lpBuffer);
+
     // ── NVML P/Invokes ────────────────────────────────────────────────────────
 
     [DllImport("nvml.dll", EntryPoint = "nvmlInit_v2")]
@@ -63,6 +81,51 @@ public static class HardwareInfo
             finally { NvmlShutdownPlatform(); }
         }
         catch { return (0, 0); }
+    }
+
+    /// <summary>
+    /// Returns approximate total physical system memory in megabytes.
+    /// Returns 0 when the platform query is unavailable or fails.
+    /// </summary>
+    public static long GetTotalSystemMemoryMb()
+    {
+        try
+        {
+            if (OperatingSystem.IsWindows())
+            {
+                var status = new MemoryStatusEx
+                {
+                    dwLength = (uint)Marshal.SizeOf<MemoryStatusEx>()
+                };
+
+                if (GlobalMemoryStatusEx(ref status))
+                    return (long)(status.ullTotalPhys / (1024UL * 1024UL));
+            }
+
+            if (OperatingSystem.IsLinux())
+            {
+                const string memInfoPath = "/proc/meminfo";
+                if (!File.Exists(memInfoPath))
+                    return 0;
+
+                foreach (string line in File.ReadLines(memInfoPath))
+                {
+                    if (!line.StartsWith("MemTotal:", StringComparison.Ordinal))
+                        continue;
+
+                    string[] parts = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                    if (parts.Length < 2 || !long.TryParse(parts[1], out long kb))
+                        return 0;
+
+                    return kb / 1024;
+                }
+            }
+        }
+        catch
+        {
+        }
+
+        return 0;
     }
 
     // ── CUDA Toolkit ──────────────────────────────────────────────────────────

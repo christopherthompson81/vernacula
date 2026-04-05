@@ -364,6 +364,23 @@
                                                          Converter={StaticResource BoolToVis}}" />
                         </StackPanel>
 
+                        <Separator Background="{DynamicResource OverlayBrush}" Margin="0,0,0,12" />
+                        <TextBlock Text="Gated Models"
+                                   Foreground="{DynamicResource TextBrush}"
+                                   FontWeight="SemiBold"
+                                   Margin="0,0,0,8" />
+                        <TextBlock x:Name="GatedModelsStatusTextBlock"
+                                   Text="{Binding GatedModelsStatusText}"
+                                   Foreground="{DynamicResource SubtextBrush}"
+                                   FontSize="11"
+                                   TextWrapping="Wrap"
+                                   Margin="0,0,0,8" />
+                        <Button x:Name="OpenGatedModelsButton"
+                                Content="Manage Gated Models"
+                                Click="OpenGatedModels_Click"
+                                HorizontalAlignment="Left"
+                                Margin="0,0,0,16" />
+
                         <!-- Precision -->
                         <Separator Background="{DynamicResource OverlayBrush}" Margin="0,0,0,12" />
                         <TextBlock x:Name="ModelPrecisionLabel"
@@ -401,19 +418,19 @@
                         CornerRadius="8" Padding="16">
                     <StackPanel>
 
-                        <!-- VAD option -->
+                        <!-- Silero VAD option -->
                         <RadioButton GroupName="Segmentation"
-                                     IsChecked="{Binding IsVoiceActivity, Mode=OneWay}"
+                                     IsChecked="{Binding IsSileroVad, Mode=OneWay}"
                                      Command="{Binding SetSegmentationCommand}"
-                                     CommandParameter="VoiceActivity"
+                                     CommandParameter="SileroVad"
                                      Foreground="{DynamicResource TextBrush}"
                                      Margin="0,0,0,4">
                             <StackPanel>
-                                <TextBlock x:Name="SegmentationVadLabel"
+                                <TextBlock x:Name="SegmentationSileroLabel"
                                            Text="{Binding Source={x:Static local:Loc.Instance}, Path=[settings_segmentation_vad]}"
                                            FontWeight="SemiBold"
                                            Foreground="{DynamicResource TextBrush}" />
-                                <TextBlock x:Name="SegmentationVadDescription"
+                                <TextBlock x:Name="SegmentationSileroDescription"
                                            Text="{Binding Source={x:Static local:Loc.Instance}, Path=[settings_segmentation_vad_desc]}"
                                            Foreground="{DynamicResource SubtextBrush}"
                                            FontSize="11"
@@ -423,19 +440,52 @@
 
                         <Separator Background="{DynamicResource OverlayBrush}" Margin="0,8,0,8" />
 
-                        <!-- Diarization option -->
+                        <!-- Sortformer option -->
                         <RadioButton GroupName="Segmentation"
-                                     IsChecked="{Binding IsDiarization, Mode=OneWay}"
+                                     IsChecked="{Binding IsSortformer, Mode=OneWay}"
                                      Command="{Binding SetSegmentationCommand}"
-                                     CommandParameter="Diarization"
-                                     Foreground="{DynamicResource TextBrush}">
+                                     CommandParameter="Sortformer"
+                                     Foreground="{DynamicResource TextBrush}"
+                                     Margin="0,0,0,4">
                             <StackPanel>
-                                <TextBlock x:Name="SegmentationDiarizationLabel"
+                                <TextBlock x:Name="SegmentationSortformerLabel"
                                            Text="{Binding Source={x:Static local:Loc.Instance}, Path=[settings_segmentation_diarization]}"
                                            FontWeight="SemiBold"
                                            Foreground="{DynamicResource TextBrush}" />
-                                <TextBlock x:Name="SegmentationDiarizationDescription"
+                                <TextBlock x:Name="SegmentationSortformerDescription"
                                            Text="{Binding Source={x:Static local:Loc.Instance}, Path=[settings_segmentation_diarization_desc]}"
+                                           Foreground="{DynamicResource SubtextBrush}"
+                                           FontSize="11"
+                                           TextWrapping="Wrap" />
+                            </StackPanel>
+                        </RadioButton>
+
+                        <Separator Background="{DynamicResource OverlayBrush}" Margin="0,8,0,8" />
+
+                        <TextBlock x:Name="GatedSegmentationHintText"
+                                   Text="Additional gated segmentation models can be enabled from Models."
+                                   Foreground="{DynamicResource SubtextBrush}"
+                                   FontSize="11"
+                                   TextWrapping="Wrap"
+                                   Margin="0,0,0,8"
+                                   IsVisible="{Binding ShowDiariZenInSegmentation,
+                                                       Converter={StaticResource InvBoolToVis}}" />
+
+                        <!-- DiariZen option -->
+                        <RadioButton GroupName="Segmentation"
+                                     IsChecked="{Binding IsDiariZen, Mode=OneWay}"
+                                     Command="{Binding SetSegmentationCommand}"
+                                     CommandParameter="DiariZen"
+                                     Foreground="{DynamicResource TextBrush}"
+                                     IsVisible="{Binding ShowDiariZenInSegmentation,
+                                                         Converter={StaticResource BoolToVis}}">
+                            <StackPanel>
+                                <TextBlock x:Name="SegmentationDiariZenLabel"
+                                           Text="{Binding Source={x:Static local:Loc.Instance}, Path=[settings_segmentation_diarizen]}"
+                                           FontWeight="SemiBold"
+                                           Foreground="{DynamicResource TextBrush}" />
+                                <TextBlock x:Name="SegmentationDiariZenDescription"
+                                           Text="{Binding Source={x:Static local:Loc.Instance}, Path=[settings_segmentation_diarizen_desc]}"
                                            Foreground="{DynamicResource SubtextBrush}"
                                            FontSize="11"
                                            TextWrapping="Wrap" />

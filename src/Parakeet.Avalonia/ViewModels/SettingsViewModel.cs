@@ -13,6 +13,8 @@ namespace ParakeetCSharp.ViewModels;
 
 internal partial class SettingsViewModel : ObservableObject
 {
+    private const string DiariZenGatedModelId = SettingsService.DiariZenGatedModelId;
+
     private readonly SettingsService     _svc;
     private readonly ModelManagerService _modelMgr;
 
@@ -27,7 +29,7 @@ internal partial class SettingsViewModel : ObservableObject
     private ModelPrecision _selectedPrecision;
 
     [ObservableProperty]
-    [NotifyPropertyChangedFor(nameof(IsDiarization), nameof(IsVoiceActivity))]
+    [NotifyPropertyChangedFor(nameof(IsSileroVad), nameof(IsSortformer), nameof(IsDiariZen))]
     private SegmentationMode _selectedSegmentation;
 
     [ObservableProperty]
@@ -41,6 +43,8 @@ internal partial class SettingsViewModel : ObservableObject
     public Action? OnPrecisionChanged  { get; set; }
     /// <summary>Called after a successful download so Home can refresh its model status.</summary>
     public Action? AfterDownload       { get; set; }
+    /// <summary>Called after segmentation mode or DiariZen status changes.</summary>
+    public Action? OnSegmentationChanged { get; set; }
     /// <summary>Called when the update check finds outdated files.</summary>
     public Action? OnUpdateAvailable   { get; set; }
     /// <summary>Called when the update check completes and no outdated files are found.</summary>
@@ -50,11 +54,17 @@ internal partial class SettingsViewModel : ObservableObject
     public bool IsLight             => SelectedTheme == AppTheme.Light;
     public bool IsInt8              => SelectedPrecision == ModelPrecision.Int8;
     public bool IsFp32              => SelectedPrecision == ModelPrecision.Fp32;
-    public bool IsDiarization       => SelectedSegmentation == SegmentationMode.Diarization;
-    public bool IsVoiceActivity     => SelectedSegmentation == SegmentationMode.VoiceActivity;
+    public bool IsSileroVad         => SelectedSegmentation == SegmentationMode.SileroVad;
+    public bool IsSortformer        => SelectedSegmentation == SegmentationMode.Sortformer;
+    public bool IsDiariZen          => SelectedSegmentation == SegmentationMode.DiariZen;
+    public bool ShowDiariZenInSegmentation => HasAcceptedDiariZenNotice;
     public bool IsEditorSingle      => SelectedEditorPlaybackMode == PlaybackMode.Single;
     public bool IsEditorAutoAdvance => SelectedEditorPlaybackMode == PlaybackMode.AutoAdvance;
     public bool IsEditorContinuous  => SelectedEditorPlaybackMode == PlaybackMode.Continuous;
+    public bool HasUnlockedGatedModels => HasAcceptedDiariZenNotice;
+    public string GatedModelsStatusText => HasUnlockedGatedModels
+        ? "Unlocked gated models: DiariZen"
+        : "Some optional models require accepting their own license terms before they appear in settings.";
 
     // ── Hardware check state ─────────────────────────────────────────────────
 
@@ -79,10 +89,19 @@ internal partial class SettingsViewModel : ObservableObject
     [ObservableProperty] private string _updateBannerText    = "";
     [ObservableProperty] private bool   _isCheckingUpdates   = false;
     [ObservableProperty] private bool   _hasOutdatedFiles    = false;
+    [ObservableProperty] private string _diariZenStatusText  = "";
+    [ObservableProperty] private IBrush _diariZenStatusBrush = Brushes.Gray;
+    [ObservableProperty] private string _diariZenModelsLocationText = "";
+    [ObservableProperty] private bool   _diariZenReady       = false;
+    [ObservableProperty] private bool   _isDownloadingDiariZen = false;
+    [ObservableProperty] private double _diariZenDownloadPercent = 0;
+    [ObservableProperty] private string _diariZenDownloadStatusText = "";
 
     private CancellationTokenSource?  _downloadCts;
+    private CancellationTokenSource?  _diariZenDownloadCts;
     private IReadOnlyList<string>     _lastMissing    = [];
     private IReadOnlyList<string>     _lastPresent    = [];
+    private IReadOnlyList<string>     _lastDiariZenMissing = [];
     private IReadOnlyList<string>     _outdatedFiles  = [];
     private bool                      _modelCheckDone = false;
     private double                    _batchSecs      = 0;
@@ -96,12 +115,21 @@ internal partial class SettingsViewModel : ObservableObject
         _modelMgr              = modelMgr;
         _selectedTheme                = svc.Current.Theme;
         _selectedPrecision            = svc.Current.Precision;
-        _selectedSegmentation         = svc.Current.Segmentation;
+        _selectedSegmentation         = svc.Current.Segmentation == SegmentationMode.DiariZen && !svc.IsGatedModelAccepted(DiariZenGatedModelId)
+            ? SegmentationMode.Sortformer
+            : svc.Current.Segmentation;
         _selectedEditorPlaybackMode   = svc.Current.EditorPlaybackMode;
         _selectedLanguage             = svc.Current.Language;
         _selectedLanguageInfo         = Loc.Languages.FirstOrDefault(l => l.Code == svc.Current.Language) 
                                         ?? Loc.Languages.FirstOrDefault(l => l.Code == "en")!;
+        if (svc.Current.Segmentation != _selectedSegmentation)
+        {
+            svc.Current.Segmentation = _selectedSegmentation;
+            svc.Save();
+        }
         ModelStatusText    = Loc.Instance["model_status_checking"];
+        DiariZenStatusText = "Checking external DiariZen weights…";
+        DiariZenModelsLocationText = _svc.GetDiariZenModelsDir();
 
         Loc.Instance.PropertyChanged += (_, e) =>
         {
@@ -135,8 +163,12 @@ internal partial class SettingsViewModel : ObservableObject
 
     partial void OnSelectedSegmentationChanged(SegmentationMode value)
     {
+        if (value == SegmentationMode.DiariZen && !HasAcceptedDiariZenNotice)
+            return;
+
         _svc.Current.Segmentation = value;
         _svc.Save();
+        OnSegmentationChanged?.Invoke();
     }
 
     partial void OnSelectedEditorPlaybackModeChanged(PlaybackMode value)
@@ -270,6 +302,18 @@ internal partial class SettingsViewModel : ObservableObject
                                                                ["files"] = string.Join(", ", _lastMissing) });
     }
 
+    private void ApplyDiariZenStatusText()
+    {
+        DiariZenModelsLocationText = _svc.GetDiariZenModelsDir();
+        DiariZenStatusText = _lastDiariZenMissing.Count == 0
+            ? "External DiariZen weights found and ready."
+            : $"External DiariZen weights incomplete ({_lastDiariZenMissing.Count} file(s) missing): {string.Join(", ", _lastDiariZenMissing)}";
+
+        DiariZenStatusBrush = Application.Current!.Resources[_lastDiariZenMissing.Count == 0 ? "GreenBrush" : "YellowBrush"] as IBrush
+                              ?? (_lastDiariZenMissing.Count == 0 ? Brushes.LimeGreen : Brushes.Goldenrod);
+        DiariZenReady = _lastDiariZenMissing.Count == 0;
+    }
+
     [RelayCommand]
     internal async Task CheckModelsAsync()
     {
@@ -293,6 +337,79 @@ internal partial class SettingsViewModel : ObservableObject
         ModelStatusBrush = Application.Current.Resources[missing.Count == 0 ? "GreenBrush" : "YellowBrush"] as IBrush
                            ?? (missing.Count == 0 ? Brushes.LimeGreen : Brushes.Goldenrod);
     }
+
+    internal async Task CheckDiariZenModelsAsync()
+    {
+        DiariZenStatusText = "Checking external DiariZen weights…";
+        DiariZenModelsLocationText = _svc.GetDiariZenModelsDir();
+
+        IReadOnlyList<string> missing = [];
+        await Task.Run(() => missing = _modelMgr.GetMissingDiariZenFiles(_svc.GetDiariZenModelsDir()));
+
+        _lastDiariZenMissing = missing;
+        ApplyDiariZenStatusText();
+        OnSegmentationChanged?.Invoke();
+    }
+
+    public bool HasAcceptedDiariZenNotice => _svc.IsGatedModelAccepted(DiariZenGatedModelId);
+
+    internal void MarkDiariZenNoticeAccepted()
+    {
+        if (!_svc.AcceptGatedModel(DiariZenGatedModelId))
+            return;
+
+        OnPropertyChanged(nameof(HasAcceptedDiariZenNotice));
+        OnPropertyChanged(nameof(ShowDiariZenInSegmentation));
+        OnPropertyChanged(nameof(HasUnlockedGatedModels));
+        OnPropertyChanged(nameof(GatedModelsStatusText));
+    }
+
+    internal async Task SetDiariZenModelsDirAsync(string path)
+    {
+        _svc.Current.DiariZenModelsDir = path;
+        _svc.Save();
+        await CheckDiariZenModelsAsync();
+    }
+
+    [RelayCommand]
+    private async Task DownloadDiariZenModels()
+    {
+        IsDownloadingDiariZen = true;
+        DiariZenDownloadStatusText = "Starting external DiariZen weights download…";
+        DiariZenDownloadPercent = 0;
+        _diariZenDownloadCts = new CancellationTokenSource();
+
+        var progress = new Progress<DownloadProgress>(p =>
+        {
+            DiariZenDownloadPercent = p.OverallPercent;
+            DiariZenDownloadStatusText = $"[{p.FileIndex + 1}/{p.TotalFiles}] {p.FileName} — " +
+                (string.IsNullOrEmpty(p.OverallSizeText)
+                    ? p.SizeText
+                    : $"{p.SizeText}  |  {p.OverallSizeText} total  ({p.OverallPercent:F1}%)");
+        });
+
+        try
+        {
+            await _modelMgr.DownloadMissingDiariZenModelsAsync(progress, _svc.GetDiariZenModelsDir(), _diariZenDownloadCts.Token);
+            DiariZenDownloadStatusText = "External DiariZen weights download complete.";
+            await CheckDiariZenModelsAsync();
+            AfterDownload?.Invoke();
+        }
+        catch (OperationCanceledException)
+        {
+            DiariZenDownloadStatusText = "External DiariZen weights download cancelled.";
+        }
+        catch (Exception ex)
+        {
+            DiariZenDownloadStatusText = $"External DiariZen weights download failed: {ex.Message}";
+        }
+        finally
+        {
+            IsDownloadingDiariZen = false;
+        }
+    }
+
+    [RelayCommand] private void CancelDiariZenDownload() => _diariZenDownloadCts?.Cancel();
 
     [RelayCommand]
     private async Task DownloadModels()
@@ -406,8 +523,9 @@ internal partial class SettingsViewModel : ObservableObject
     public async Task InitializeAsync()
     {
         var modelTask    = CheckModelsAsync();
+        var diarizenTask = CheckDiariZenModelsAsync();
         var hardwareTask = RecheckHardwareAsync();
-        await Task.WhenAll(modelTask, hardwareTask);
+        await Task.WhenAll(modelTask, diarizenTask, hardwareTask);
 
         if (ModelsReady)
             _ = CheckForUpdatesAsync();   // non-blocking; skipped if offline

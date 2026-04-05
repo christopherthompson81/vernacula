@@ -1,0 +1,224 @@
+<Window x:Class="ParakeetCSharp.Views.Dialogs.GatedModelsDialog"
+        xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:ParakeetCSharp.ViewModels"
+        x:DataType="vm:SettingsViewModel"
+        Width="700"
+        Height="760"
+        MinHeight="560"
+        CanResize="False"
+        WindowStartupLocation="CenterOwner"
+        ShowInTaskbar="False"
+        Title="Gated Models">
+    <Window.Styles>
+        <Style Selector="Button.link-button">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="Foreground" Value="{DynamicResource AccentBrush}" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Padding" Value="0" />
+            <Setter Property="HorizontalAlignment" Value="Left" />
+        </Style>
+        <Style Selector="Button.chip-button">
+            <Setter Property="Background" Value="{DynamicResource OverlayBrush}" />
+            <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Padding" Value="10,4" />
+            <Setter Property="CornerRadius" Value="999" />
+        </Style>
+        <Style Selector="Button.license-chip-button">
+            <Setter Property="Background" Value="#6B5320" />
+            <Setter Property="Foreground" Value="#F6E7B0" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Padding" Value="10,4" />
+            <Setter Property="CornerRadius" Value="999" />
+        </Style>
+    </Window.Styles>
+    <Border Background="{DynamicResource BgBrush}" Padding="20">
+        <Grid RowDefinitions="Auto,*,Auto"
+              RowSpacing="16">
+            <StackPanel Grid.Row="0"
+                        Spacing="6">
+                <TextBlock Text="Gated Models"
+                           FontWeight="SemiBold"
+                           FontSize="16"
+                           Foreground="{DynamicResource TextBrush}" />
+                <TextBlock TextWrapping="Wrap"
+                           Foreground="{DynamicResource SubtextBrush}">
+                    Some optional models have their own licenses or usage conditions. Accept them here per model to unlock them in the main settings window.
+                </TextBlock>
+            </StackPanel>
+
+            <ScrollViewer Grid.Row="1"
+                          VerticalScrollBarVisibility="Auto"
+                          HorizontalScrollBarVisibility="Disabled">
+                <Border Background="{DynamicResource SurfaceBrush}"
+                        CornerRadius="8"
+                        Padding="16">
+                    <StackPanel Spacing="12">
+                    <Grid ColumnDefinitions="*,Auto,Auto,Auto"
+                          ColumnSpacing="12">
+                        <TextBlock Text="DiariZen"
+                                   FontWeight="SemiBold"
+                                   VerticalAlignment="Center"
+                                   Foreground="{DynamicResource TextBrush}" />
+                        <Button Grid.Column="1"
+                                Content="CC-BY-NC-4.0"
+                                Classes="license-chip-button"
+                                VerticalAlignment="Center"
+                                Click="OpenLicense_Click" />
+                        <Border Grid.Column="2"
+                                Background="{DynamicResource OverlayBrush}"
+                                CornerRadius="999"
+                                Padding="10,4"
+                                VerticalAlignment="Center">
+                            <TextBlock Text="Non-Commercial"
+                                       Foreground="{DynamicResource TextBrush}" />
+                        </Border>
+                        <Border Grid.Column="3"
+                                Background="{DynamicResource OverlayBrush}"
+                                CornerRadius="999"
+                                Padding="10,4"
+                                VerticalAlignment="Center">
+                            <TextBlock x:Name="DiariZenStatusText"
+                                       Text="Locked"
+                                       Foreground="{DynamicResource TextBrush}" />
+                        </Border>
+                    </Grid>
+
+                    <TextBlock TextWrapping="Wrap"
+                               Foreground="{DynamicResource SubtextBrush}">
+                        Speaker diarization model with external weights that are published separately from Parakeet.
+                    </TextBlock>
+
+                    <TextBlock TextWrapping="Wrap"
+                               Foreground="{DynamicResource TextBrush}">
+                        DiariZen support in Parakeet uses external model weights that are not bundled with this app and are not covered by Parakeet's software license.
+                    </TextBlock>
+
+                    <StackPanel Spacing="4">
+                        <TextBlock TextWrapping="Wrap"
+                                   Foreground="{DynamicResource TextBrush}">
+                            The reference ONNX weights are published separately at:
+                        </TextBlock>
+                        <Button Content="christopherthompson81/diarizen_onnx"
+                                Classes="link-button"
+                                Click="OpenReferenceRepo_Click" />
+                    </StackPanel>
+
+                    <StackPanel Spacing="4">
+                        <TextBlock TextWrapping="Wrap"
+                                   Foreground="{DynamicResource TextBrush}">
+                            Those weights are derived from upstream DiariZen materials:
+                        </TextBlock>
+                        <Button Content="BUTSpeechFIT/DiariZen"
+                                Classes="link-button"
+                                Click="OpenUpstreamRepo_Click" />
+                        <Button Content="BUT-FIT/diarizen-wavlm-large-s80-md"
+                                Classes="link-button"
+                                Click="OpenUpstreamModelCard_Click" />
+                        <Button Content="BUTSpeechFIT/DiariZen MODEL_LICENSE"
+                                Classes="link-button"
+                                Click="OpenModelLicense_Click" />
+                    </StackPanel>
+
+                    <TextBlock TextWrapping="Wrap"
+                               Foreground="{DynamicResource TextBrush}">
+                        The released pre-trained DiariZen weights are offered upstream by the BUTSpeechFIT DiariZen authors under CC BY-NC 4.0, while the repository source code is licensed separately. You are responsible for reviewing the upstream terms, attribution requirements, and whether your use is permitted.
+                    </TextBlock>
+
+                    <TextBlock TextWrapping="Wrap"
+                               Foreground="{DynamicResource TextBrush}">
+                        Reason for the non-commercial restriction: according to the upstream model license, the weights were trained on a mixture of datasets including RAMC, MSDWild, and DIHARD-3, whose terms include strict non-commercial limits. The upstream release also notes compatibility considerations around AISHELL-4 and AliMeeting.
+                    </TextBlock>
+
+                    <TextBlock TextWrapping="Wrap"
+                               Foreground="{DynamicResource TextBrush}">
+                        If you share or redistribute the weights, copies, or adapted versions, keep proper attribution to the upstream authors, keep the license notice, link to the license, and indicate if you made changes. Do not remove or alter the upstream license notice.
+                    </TextBlock>
+
+                    <TextBlock TextWrapping="Wrap"
+                               Foreground="{DynamicResource SubtextBrush}">
+                        Acceptance is stored locally on this device. Once accepted, DiariZen will appear in the main settings so you can choose a weights folder or download the external weights.
+                    </TextBlock>
+
+                    <CheckBox x:Name="DiariZenAgreementCheckBox"
+                              Content="I understand these are external, non-commercial licensed weights and that I am responsible for compliance."
+                              IsVisible="True"
+                              IsChecked="False"
+                              Checked="DiariZenAgreementCheckBox_Changed"
+                              Unchecked="DiariZenAgreementCheckBox_Changed" />
+
+                    <TextBlock x:Name="DiariZenAcceptedText"
+                               Text="Accepted on this device. DiariZen is now available in Settings."
+                               Foreground="{DynamicResource GreenBrush}"
+                               TextWrapping="Wrap"
+                               IsVisible="False" />
+
+                    <StackPanel x:Name="DiariZenManagementPanel"
+                                Spacing="10"
+                                IsVisible="False">
+                        <TextBlock x:Name="DiariZenStatusSummaryText"
+                                   Text="{Binding DiariZenStatusText}"
+                                   Foreground="{Binding DiariZenStatusBrush}"
+                                   TextWrapping="Wrap" />
+                        <TextBlock x:Name="DiariZenLocationText"
+                                   Text="{Binding DiariZenModelsLocationText}"
+                                   Foreground="{DynamicResource SubtextBrush}"
+                                   FontSize="10"
+                                   TextWrapping="Wrap" />
+                        <StackPanel x:Name="DiariZenDownloadPanel"
+                                    Spacing="4"
+                                    IsVisible="{Binding IsDownloadingDiariZen}">
+                            <ProgressBar Value="{Binding DiariZenDownloadPercent}"
+                                         Minimum="0"
+                                         Maximum="100" />
+                            <TextBlock Text="{Binding DiariZenDownloadStatusText}"
+                                       Foreground="{DynamicResource SubtextBrush}"
+                                       FontSize="11"
+                                       TextWrapping="Wrap" />
+                        </StackPanel>
+                        <WrapPanel Orientation="Horizontal">
+                            <Button x:Name="ChooseDiariZenFolderButton"
+                                    Content="Choose Weights Folder"
+                                    Classes="secondary-button"
+                                    Click="ChooseDiariZenFolder_Click"
+                                    Margin="0,0,8,8" />
+                            <Button x:Name="DownloadDiariZenButton"
+                                    Content="Download External Weights"
+                                    Click="DownloadDiariZenWeights_Click"
+                                    Margin="0,0,8,8" />
+                            <Button x:Name="CancelDiariZenDownloadButton"
+                                    Content="Cancel"
+                                    Classes="secondary-button"
+                                    Command="{Binding CancelDiariZenDownloadCommand}"
+                                    IsVisible="{Binding IsDownloadingDiariZen}"
+                                    Margin="0,0,8,8" />
+                            <Button Content="Open Weights Repo"
+                                    Classes="secondary-button"
+                                    Click="OpenWeightsRepo_Click"
+                                    Margin="0,0,0,8" />
+                        </WrapPanel>
+                    </StackPanel>
+
+                    <StackPanel Orientation="Horizontal"
+                                HorizontalAlignment="Right"
+                                Spacing="10">
+                        <Button x:Name="AcceptDiariZenButton"
+                                Content="Accept DiariZen Terms"
+                                IsEnabled="False"
+                                Click="AcceptDiariZen_Click" />
+                    </StackPanel>
+                    </StackPanel>
+                </Border>
+            </ScrollViewer>
+
+            <StackPanel Grid.Row="2"
+                        Orientation="Horizontal"
+                        HorizontalAlignment="Right"
+                        Spacing="10">
+                <Button Content="Close"
+                        Click="Close_Click" />
+            </StackPanel>
+        </Grid>
+    </Border>
+</Window>

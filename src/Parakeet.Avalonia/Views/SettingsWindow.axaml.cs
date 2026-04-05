@@ -2,6 +2,7 @@ using Avalonia.Controls;
 using Avalonia.Interactivity;
 using ParakeetCSharp.Models;
 using ParakeetCSharp.ViewModels;
+using ParakeetCSharp.Views.Dialogs;
 using System.ComponentModel;
 
 namespace ParakeetCSharp.Views;
@@ -61,15 +62,19 @@ public partial class SettingsWindow : Window
         DownloadModelsButton.Content = Loc.Instance["btn_download_models"];
         CancelDownloadButton.Content = Loc.Instance["btn_cancel"];
         CheckUpdatesButton.Content = Loc.Instance["btn_check_updates"];
+        OpenGatedModelsButton.Content = "Manage Gated Models";
         ModelPrecisionLabel.Text = Loc.Instance["menu_model_precision"];
         PrecisionFp32Radio.Content = Loc.Instance["menu_precision_fp16"];
         PrecisionInt8Radio.Content = Loc.Instance["menu_precision_int8"];
 
         SegmentationSectionHeader.Text = Loc.Instance["settings_section_segmentation"];
-        SegmentationVadLabel.Text = Loc.Instance["settings_segmentation_vad"];
-        SegmentationVadDescription.Text = Loc.Instance["settings_segmentation_vad_desc"];
-        SegmentationDiarizationLabel.Text = Loc.Instance["settings_segmentation_diarization"];
-        SegmentationDiarizationDescription.Text = Loc.Instance["settings_segmentation_diarization_desc"];
+        SegmentationSileroLabel.Text = Loc.Instance["settings_segmentation_vad"];
+        SegmentationSileroDescription.Text = Loc.Instance["settings_segmentation_vad_desc"];
+        SegmentationSortformerLabel.Text = Loc.Instance["settings_segmentation_diarization"];
+        SegmentationSortformerDescription.Text = Loc.Instance["settings_segmentation_diarization_desc"];
+        SegmentationDiariZenLabel.Text = Loc.Instance["settings_segmentation_diarizen"];
+        SegmentationDiariZenDescription.Text = Loc.Instance["settings_segmentation_diarizen_desc"];
+        GatedSegmentationHintText.Text = "Additional gated segmentation models can be enabled from Models.";
 
         EditorSectionHeader.Text = Loc.Instance["settings_section_editor"];
         EditorPlaybackModeLabel.Text = Loc.Instance["settings_editor_playback_mode"];
@@ -91,5 +96,19 @@ public partial class SettingsWindow : Window
         Loc.Instance.PropertyChanged -= OnLocalePropertyChanged;
         ThemeManager.ThemeChanged -= OnThemeChanged;
         base.OnClosed(e);
+    }
+
+    private async Task OpenGatedModelsAsync()
+    {
+        if (DataContext is not SettingsViewModel vm)
+            return;
+
+        var dialog = new GatedModelsDialog(vm);
+        await dialog.ShowDialog(this);
+    }
+
+    private async void OpenGatedModels_Click(object? sender, RoutedEventArgs e)
+    {
+        await OpenGatedModelsAsync();
     }
 }

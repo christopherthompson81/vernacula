@@ -11,40 +11,99 @@ namespace ParakeetCSharp.Services;
 
 internal class ModelManagerService
 {
-    private const string RepoBase =
+    private readonly record struct ModelAsset(string LocalRelativePath, string RemoteRelativePath);
+
+    private const string CoreRepoBase =
         "https://huggingface.co/christopherthompson81/sortformer_parakeet_onnx/resolve/main";
 
-    private static readonly string[] DiarizationFiles =
-        ["diar_streaming_sortformer_4spk-v2.1.onnx", Config.VadFile];
+    private const string DiariZenRepoBase =
+        "https://huggingface.co/christopherthompson81/diarizen_onnx/resolve/main";
 
-    private static readonly string[] AsrFilesInt8 =
-        ["nemo128.onnx", "encoder-model.int8.onnx", "decoder_joint-model.int8.onnx",
-         "vocab.txt", "config.json"];
+    private static readonly ModelAsset[] CoreDiarizationFiles =
+        [
+            new("diar_streaming_sortformer_4spk-v2.1.onnx", "diar_streaming_sortformer_4spk-v2.1.onnx"),
+            new(Config.VadFile, Config.VadFile),
+        ];
 
-    private static readonly string[] AsrFilesFp32 =
-        ["nemo128.onnx", "encoder-model.onnx", "encoder-model.onnx.data",
-         "decoder_joint-model.onnx", "vocab.txt", "config.json"];
+    private static readonly ModelAsset[] DiariZenFiles =
+        [
+            new(Path.Combine("diarizen", Config.DiariZenFile), Config.DiariZenFile),
+            new(Path.Combine("diarizen", $"{Config.DiariZenFile}.data"), $"{Config.DiariZenFile}.data"),
+            new(Path.Combine("diarizen", Config.DiariZenEmbedderFile), Config.DiariZenEmbedderFile),
+            new(Path.Combine("diarizen", Config.DiariZenLdaDir, "lda.bin"), $"{Config.DiariZenLdaDir}/lda.bin"),
+            new(Path.Combine("diarizen", Config.DiariZenLdaDir, "mean1.bin"), $"{Config.DiariZenLdaDir}/mean1.bin"),
+            new(Path.Combine("diarizen", Config.DiariZenLdaDir, "mean2.bin"), $"{Config.DiariZenLdaDir}/mean2.bin"),
+            new(Path.Combine("diarizen", Config.DiariZenLdaDir, "plda_mu.bin"), $"{Config.DiariZenLdaDir}/plda_mu.bin"),
+            new(Path.Combine("diarizen", Config.DiariZenLdaDir, "plda_psi.bin"), $"{Config.DiariZenLdaDir}/plda_psi.bin"),
+            new(Path.Combine("diarizen", Config.DiariZenLdaDir, "plda_tr.bin"), $"{Config.DiariZenLdaDir}/plda_tr.bin"),
+        ];
+
+    private static readonly ModelAsset[] AsrFilesInt8 =
+        [
+            new("nemo128.onnx", "nemo128.onnx"),
+            new("encoder-model.int8.onnx", "encoder-model.int8.onnx"),
+            new("decoder_joint-model.int8.onnx", "decoder_joint-model.int8.onnx"),
+            new("vocab.txt", "vocab.txt"),
+            new("config.json", "config.json")
+        ];
+
+    private static readonly ModelAsset[] AsrFilesFp32 =
+        [
+            new("nemo128.onnx", "nemo128.onnx"),
+            new("encoder-model.onnx", "encoder-model.onnx"),
+            new("encoder-model.onnx.data", "encoder-model.onnx.data"),
+            new("decoder_joint-model.onnx", "decoder_joint-model.onnx"),
+            new("vocab.txt", "vocab.txt"),
+            new("config.json", "config.json")
+        ];
 
     private readonly SettingsService _settings;
     private readonly HttpClient _http = new(new HttpClientHandler { AllowAutoRedirect = true });
 
     public ModelManagerService(SettingsService settings) => _settings = settings;
 
-    private string[] AllFiles() =>
-        [.. DiarizationFiles,
+    private ModelAsset[] CoreFiles() =>
+        [.. CoreDiarizationFiles,
          .. (_settings.Current.Precision == ModelPrecision.Int8 ? AsrFilesInt8 : AsrFilesFp32)];
 
     public IReadOnlyList<string> GetMissingFiles()
     {
         string dir = _settings.GetModelsDir();
-        return AllFiles().Where(f => !File.Exists(Path.Combine(dir, f))).ToList();
+        return CoreFiles()
+            .Where(asset => !File.Exists(Path.Combine(dir, asset.LocalRelativePath)))
+            .Select(asset => asset.LocalRelativePath)
+            .ToList();
     }
 
     public IReadOnlyList<string> GetPresentFiles()
     {
         string dir = _settings.GetModelsDir();
-        return AllFiles().Where(f => File.Exists(Path.Combine(dir, f))).ToList();
+        return CoreFiles()
+            .Where(asset => File.Exists(Path.Combine(dir, asset.LocalRelativePath)))
+            .Select(asset => asset.LocalRelativePath)
+            .ToList();
     }
+
+    public IReadOnlyList<string> GetMissingDiariZenFiles(string? diarizenDir = null)
+    {
+        string dir = diarizenDir ?? _settings.GetDiariZenModelsDir();
+        return DiariZenFiles
+            .Where(asset => !File.Exists(Path.Combine(dir, Path.GetRelativePath("diarizen", asset.LocalRelativePath))))
+            .Select(asset => Path.GetRelativePath("diarizen", asset.LocalRelativePath))
+            .ToList();
+    }
+
+    public IReadOnlyList<string> GetPresentDiariZenFiles(string? diarizenDir = null)
+    {
+        string dir = diarizenDir ?? _settings.GetDiariZenModelsDir();
+        return DiariZenFiles
+            .Where(asset => File.Exists(Path.Combine(dir, Path.GetRelativePath("diarizen", asset.LocalRelativePath))))
+            .Select(asset => Path.GetRelativePath("diarizen", asset.LocalRelativePath))
+            .ToList();
+    }
+
+    public bool AreDiariZenModelsPresent(string? diarizenDir = null) =>
+        GetMissingDiariZenFiles(diarizenDir).Count == 0;
 
     public bool AllModelsPresent() => GetMissingFiles().Count == 0;
 
@@ -74,21 +133,25 @@ internal class ModelManagerService
         catch { return null; }
 
         string dir     = _settings.GetModelsDir();
-        var outdated   = new List<string>();
-        var toCheck    = manifest.Where(kv => File.Exists(Path.Combine(dir, kv.Key))).ToList();
-        int total      = toCheck.Count;
+        var outdated = new List<string>();
+        var toCheck = CoreFiles()
+            .Where(asset => manifest.ContainsKey(asset.RemoteRelativePath)
+                && File.Exists(Path.Combine(dir, asset.LocalRelativePath)))
+            .ToList();
+        int total = toCheck.Count;
 
         for (int i = 0; i < total; i++)
         {
             ct.ThrowIfCancellationRequested();
-            var (fileName, expectedHash) = toCheck[i];
-            progress?.Report((fileName, i, total));
+            var asset = toCheck[i];
+            string expectedHash = manifest[asset.RemoteRelativePath];
+            progress?.Report((asset.LocalRelativePath, i, total));
 
-            string path       = Path.Combine(dir, fileName);
+            string path       = Path.Combine(dir, asset.LocalRelativePath);
             string actualHash = await Task.Run(() => ComputeMd5(path), ct);
 
             if (!string.Equals(actualHash, expectedHash, StringComparison.OrdinalIgnoreCase))
-                outdated.Add(fileName);
+                outdated.Add(asset.LocalRelativePath);
         }
         return outdated;
     }
@@ -230,8 +293,38 @@ internal class ModelManagerService
         string dir = _settings.GetModelsDir();
         Directory.CreateDirectory(dir);
 
-        var missing = GetMissingFiles();
-        int total   = missing.Count;
+        var missing = CoreFiles()
+            .Where(asset => !File.Exists(Path.Combine(dir, asset.LocalRelativePath)))
+            .ToList();
+        await DownloadMissingAssetsAsync(dir, missing, CoreRepoBase, progress, ct);
+    }
+
+    public async Task DownloadMissingDiariZenModelsAsync(
+        IProgress<DownloadProgress> progress,
+        string? diarizenDir = null,
+        CancellationToken ct = default)
+    {
+        string dir = diarizenDir ?? _settings.GetDiariZenModelsDir();
+        Directory.CreateDirectory(dir);
+
+        var missing = DiariZenFiles
+            .Where(asset => !File.Exists(Path.Combine(dir, Path.GetRelativePath("diarizen", asset.LocalRelativePath))))
+            .Select(asset => new ModelAsset(
+                Path.GetRelativePath("diarizen", asset.LocalRelativePath),
+                asset.RemoteRelativePath))
+            .ToList();
+
+        await DownloadMissingAssetsAsync(dir, missing, DiariZenRepoBase, progress, ct);
+    }
+
+    private async Task DownloadMissingAssetsAsync(
+        string dir,
+        IReadOnlyList<ModelAsset> missing,
+        string repoBase,
+        IProgress<DownloadProgress> progress,
+        CancellationToken ct)
+    {
+        int total = missing.Count;
         if (total == 0) return;
 
         // Phase 1: HEAD each file to get its size so we can compute a byte-weighted grand total.
@@ -241,7 +334,7 @@ internal class ModelManagerService
             ct.ThrowIfCancellationRequested();
             try
             {
-                using var req  = new HttpRequestMessage(HttpMethod.Head, $"{RepoBase}/{missing[i]}");
+                using var req  = new HttpRequestMessage(HttpMethod.Head, $"{repoBase}/{missing[i].RemoteRelativePath}");
                 using var resp = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct);
                 fileSizes[i] = resp.Content.Headers.ContentLength ?? 0;
             }
@@ -254,10 +347,12 @@ internal class ModelManagerService
         for (int i = 0; i < total; i++)
         {
             ct.ThrowIfCancellationRequested();
-            string fileName = missing[i];
-            string url      = $"{RepoBase}/{fileName}";
-            string destPath = Path.Combine(dir, fileName);
+            var asset = missing[i];
+            string fileName = asset.LocalRelativePath;
+            string url      = $"{repoBase}/{asset.RemoteRelativePath}";
+            string destPath = Path.Combine(dir, asset.LocalRelativePath);
             string tmpPath  = destPath + ".download";
+            Directory.CreateDirectory(Path.GetDirectoryName(destPath)!);
 
             // Check for a partial download to resume
             long resumeFrom = File.Exists(tmpPath) ? new FileInfo(tmpPath).Length : 0;
