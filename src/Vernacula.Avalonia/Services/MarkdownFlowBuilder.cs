@@ -334,13 +334,19 @@ internal static class MarkdownFlowBuilder
             {
                 textBlock.Inlines!.Add(new InlineUIContainer
                 {
-                    Child = new Image
+                    Child = new Border
                     {
-                        Source = LoadBitmap(segment.IconUri),
-                        Width = 16,
-                        Height = 16,
-                        Stretch = Stretch.Uniform,
+                        Background = new SolidColorBrush(Color.Parse("#3A404A")),
+                        CornerRadius = new CornerRadius(3),
+                        Padding = new Thickness(3),
                         VerticalAlignment = VerticalAlignment.Center,
+                        Child = new Image
+                        {
+                            Source = LoadBitmap(segment.IconUri),
+                            Width = 16,
+                            Height = 16,
+                            Stretch = Stretch.Uniform,
+                        },
                     },
                     BaselineAlignment = BaselineAlignment.Center,
                 });
