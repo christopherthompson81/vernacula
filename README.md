@@ -29,7 +29,7 @@ Powered by NVIDIA's [Parakeet TDT](https://huggingface.co/nvidia/parakeet-tdt-0.
 
 ### Demo
 
-<video src="screenshots/vernacula-desktop_usage_demo.mp4" controls width="100%"></video>
+[![Demo video](screenshots/demo_thumbnail.png)](screenshots/vernacula-desktop_usage_demo.mp4)
 
 ### Screenshots
 
