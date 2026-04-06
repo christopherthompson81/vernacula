@@ -94,14 +94,7 @@
             <Setter Property="VerticalAlignment" Value="Center" />
             <Setter Property="Stretch" Value="Uniform" />
         </Style>
-        <Style Selector="TextBlock.speaker-menu-icon">
-            <Setter Property="FontFamily" Value="Segoe MDL2 Assets" />
-            <Setter Property="FontSize" Value="18" />
-            <Setter Property="HorizontalAlignment" Value="Center" />
-            <Setter Property="VerticalAlignment" Value="Center" />
-            <Setter Property="TextAlignment" Value="Center" />
-        </Style>
-        <Style Selector="CheckBox">
+<Style Selector="CheckBox">
             <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
             <Setter Property="Background" Value="Transparent" />
             <Setter Property="Padding" Value="4,2" />
@@ -406,8 +399,8 @@
                                                 Classes="secondary-button action-button"
                                                 Click="SpeakerMenu_Click"
                                                 ToolTip.Tip="{Binding AddSpeakerTooltip}">
-                                            <TextBlock Classes="speaker-menu-icon"
-                                                       Text="&#xE77B;" />
+                                            <Image Classes="action-icon-image"
+                                                   Source="{Binding AddSpeakerIconImage}" />
                                         </Button>
                                         <TextBlock Grid.Column="3"
                                                    Text="{Binding TimeRangeText}"

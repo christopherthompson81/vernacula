@@ -483,7 +483,7 @@ internal static class MarkdownFlowBuilder
 
         return codePoint switch
         {
-            0xE77B => (null, null, ((char)codePoint).ToString()),
+            0xE77B => (null, "avares://Vernacula.Avalonia/Assets/toolbar_icons/add_speaker.png", null),
             0xE916 => (null, "avares://Vernacula.Avalonia/Assets/toolbar_icons/adjust_times.png", null),
             0xEA39 => (null, "avares://Vernacula.Avalonia/Assets/toolbar_icons/suppress.png", null),
             0xE72B => (null, "avares://Vernacula.Avalonia/Assets/toolbar_icons/merge_prev.png", null),
