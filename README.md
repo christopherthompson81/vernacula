@@ -20,7 +20,7 @@
 ## Vernacula Desktop App
 
 <p align="center">
-  <img src="src/Vernacula.Avalonia/Assets/vern_waveform.png" width="180" alt="Vernacula-Desktop" />
+  <img src="src/Vernacula.Avalonia/Assets/vern_waveform.png" width="400" alt="Vernacula-Desktop" />
 </p>
 
 Vernacula offers a desktop, graphical interface called. Vernacula-Desktop converts audio files into accurate, multi-speaker transcripts — entirely on your own computer. No cloud uploads, no subscriptions, no privacy concerns.
