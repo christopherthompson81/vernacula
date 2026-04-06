@@ -142,6 +142,14 @@ public static class Config
     public static readonly double MinLogMel = (1000.0 - 0.0) / (200.0 / 3.0);
     public static readonly double LogStep   = Math.Log(6.4) / 27.0;
 
+    // ── Denoiser (DeepFilterNet3) ─────────────────────────────────────────────
+    /// <summary>DeepFilterNet3 encoder model (ERB+spec features → skip connections + embedding).</summary>
+    public const string Dfn3EncFile    = "enc.onnx";
+    /// <summary>DeepFilterNet3 ERB decoder model (embedding+skips → ERB mask).</summary>
+    public const string Dfn3ErbDecFile = "erb_dec.onnx";
+    /// <summary>DeepFilterNet3 DF decoder model (embedding+c0 → deep filter coefficients).</summary>
+    public const string Dfn3DfDecFile  = "df_dec.onnx";
+
     // ── VAD (Silero) ──────────────────────────────────────────────────────────
     public const string VadFile            = "silero_vad.onnx";
     public const int    VadWindowSamples   = 512;
