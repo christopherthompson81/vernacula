@@ -158,7 +158,8 @@
                                                          Converter={StaticResource InvBoolToVis}}">
 
                             <!-- NVIDIA GPU -->
-                            <Grid Margin="0,0,0,6">
+                            <Grid Margin="0,0,0,6"
+                                  IsVisible="{Binding GpuDetected, Converter={StaticResource BoolToVis}}"  >
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="22" />
                                     <ColumnDefinition Width="*"  />

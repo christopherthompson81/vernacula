@@ -34,7 +34,12 @@ public class BoolToStatusBrushConverter : IValueConverter
 
         string key = b ? "GreenBrush" : FalseBrushKey;
         var app = Avalonia.Application.Current;
-        return app?.Resources[key] as IBrush ?? Brushes.Transparent;
+        if (app?.Resources.TryGetResource(key, null, out var res) == true)
+        {
+            if (res is IBrush brush) return brush;
+            if (res is Color color)  return new SolidColorBrush(color);
+        }
+        return Brushes.Transparent;
     }
 
     public object? ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture)

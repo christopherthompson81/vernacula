@@ -114,7 +114,7 @@
                                     CornerRadius="3"
                                     VerticalAlignment="Center">
                                 <Path x:Name="CheckMark"
-                                      Data="M 3 8 L 6.5 11.5 L 13 4.5"
+                                      Data="M 2 7 L 5 10 L 11 3"
                                       Stroke="{StaticResource EditorButtonTextBrush}"
                                       StrokeThickness="2"
                                       IsVisible="False" />
