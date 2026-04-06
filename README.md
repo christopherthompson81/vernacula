@@ -93,6 +93,15 @@ huggingface-cli download christopherthompson81/sortformer_parakeet_onnx --local-
 
 ---
 
+## Running Vernacula-Desktop
+```bash
+cd src/Vernacula.Avalonia
+
+dotnet run 
+```
+
+
+
 ## Building
 
 All projects are built with `dotnet build`. The `EP` property selects the ONNX Runtime execution provider:
