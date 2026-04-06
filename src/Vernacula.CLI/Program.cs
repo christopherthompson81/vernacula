@@ -16,6 +16,8 @@ string  diarization     = "sortformer"; // sortformer, diarizen, or vad
 float   ahcThreshold    = Config.DiariZenAhcThreshold;
 bool    showBenchmark   = false;
 bool    skipAsr         = false;
+string  denoiser        = "none";       // none, dfn3
+string? denoiserModels  = null;         // defaults to <modelDir>/deepfilternet3
 ModelPrecision precision = ModelPrecision.Fp32;
 
 for (int i = 0; i < args.Length; i++)
@@ -39,6 +41,15 @@ for (int i = 0; i < args.Length; i++)
         case "--ahc-threshold": ahcThreshold = float.Parse(args[++i]); break;
         case "--benchmark":     showBenchmark = true; break;
         case "--skip-asr":      skipAsr = true; break;
+        case "--denoiser":
+            denoiser = args[++i].ToLowerInvariant();
+            if (denoiser is not ("none" or "dfn3"))
+            {
+                Console.Error.WriteLine($"Unknown denoiser: {denoiser}. Choose: none, dfn3.");
+                return 1;
+            }
+            break;
+        case "--denoiser-models": denoiserModels = args[++i]; break;
         case "--precision":
             precision = args[++i].ToLowerInvariant() switch {
                 "int8" => ModelPrecision.Int8,
@@ -105,10 +116,55 @@ try
     Console.Write("Loading audio... ");
     var swLoad = Stopwatch.StartNew();
     var (rawSamples, sampleRate, channels) = AudioUtils.ReadAudio(audioPath);
-    float[] audio = AudioUtils.AudioTo16000Mono(rawSamples, sampleRate, channels);
     swLoad.Stop();
+
+    // ── Phase 1b: Denoising (optional) ───────────────────────────────────────
+
+    var swDenoise = Stopwatch.StartNew();
+    float[] audio;
+    if (denoiser == "dfn3")
+    {
+        string dfn3Dir = denoiserModels ?? Path.Combine(modelDir, "deepfilternet3");
+        if (!Directory.Exists(dfn3Dir))
+        {
+            Console.Error.WriteLine($"\nError: DeepFilterNet3 models not found: {dfn3Dir}");
+            Console.Error.WriteLine("Copy enc.onnx, erb_dec.onnx, df_dec.onnx to that directory.");
+            return 1;
+        }
+
+        Console.Write("denoising... ");
+        float[] mono48k = DeepFilterNet3Denoiser.ResampleTo48k(
+            AudioUtils.DownmixToMono(rawSamples, channels), sampleRate);
+        int hopSize = 480;
+        int padded  = ((mono48k.Length + hopSize - 1) / hopSize) * hopSize;
+        if (padded != mono48k.Length) Array.Resize(ref mono48k, padded);
+
+        int lastStep = 0;
+        var denoiseProgress = new Progress<(int current, int total)>(p =>
+        {
+            if (p.current > lastStep)
+            {
+                Console.Write($"\rDenoising ({p.current * 100 / p.total}%)... ");
+                lastStep = p.current;
+            }
+        });
+
+        using var dfn3 = new DeepFilterNet3Denoiser(dfn3Dir);
+        float[] enhanced48k = dfn3.Denoise(mono48k, denoiseProgress);
+        audio = DeepFilterNet3Denoiser.ResampleFrom48k(enhanced48k, Config.SampleRate);
+        swDenoise.Stop();
+        double audioDurForDenoise = mono48k.Length / 48_000.0;
+        Console.WriteLine($"\rDenoising... done ({swDenoise.ElapsedMilliseconds}ms, " +
+                          $"RT factor: {swDenoise.Elapsed.TotalSeconds / audioDurForDenoise:F3}x)");
+    }
+    else
+    {
+        audio = AudioUtils.AudioTo16000Mono(rawSamples, sampleRate, channels);
+        swDenoise.Stop();
+    }
+
     double audioDurationSec = audio.Length / (double)Config.SampleRate;
-    Console.WriteLine($"{audioDurationSec:F1}s ({swLoad.ElapsedMilliseconds}ms)");
+    Console.WriteLine($"Audio: {audioDurationSec:F1}s (load: {swLoad.ElapsedMilliseconds}ms)");
 
     cts.Token.ThrowIfCancellationRequested();
 
@@ -236,10 +292,13 @@ try
 
     if (showBenchmark)
     {
-        long   totalMs = swDiar.ElapsedMilliseconds + swAsr.ElapsedMilliseconds;
-        double rtf     = (totalMs / 1000.0) / audioDurationSec;
+        long   denoisMs = denoiser == "dfn3" ? swDenoise.ElapsedMilliseconds : 0;
+        long   totalMs  = denoisMs + swDiar.ElapsedMilliseconds + swAsr.ElapsedMilliseconds;
+        double rtf      = (totalMs / 1000.0) / audioDurationSec;
         Console.WriteLine();
         Console.WriteLine($"Audio duration  : {audioDurationSec:F2}s");
+        if (denoiser == "dfn3")
+            Console.WriteLine($"Denoising (DFN3): {denoisMs}ms  (RTF: {denoisMs / 1000.0 / audioDurationSec:F4})");
         Console.WriteLine($"Diarization/VAD : {swDiar.ElapsedMilliseconds}ms");
         Console.WriteLine($"ASR             : {swAsr.ElapsedMilliseconds}ms");
         Console.WriteLine($"Total           : {totalMs}ms");
@@ -328,6 +387,8 @@ static void PrintUsage()
     Console.WriteLine("  --diarization <backend>            Diarization backend: sortformer, diarizen, vad");
     Console.WriteLine("                                     (default: sortformer)");
     Console.WriteLine("  --vad                              Use VAD instead of diarization (deprecated)");
+    Console.WriteLine("  --denoiser <none|dfn3>             Pre-processing denoiser (default: none)");
+    Console.WriteLine("  --denoiser-models <dir>            Path to denoiser ONNX models (default: <model>/deepfilternet3)");
     Console.WriteLine("  --precision <fp32|int8>            Model precision (default: fp32)");
     Console.WriteLine("  --skip-asr                         Export diarization/VAD segments without transcription");
     Console.WriteLine("  --benchmark                        Print timing / RTF after transcription");

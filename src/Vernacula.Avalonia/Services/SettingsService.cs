@@ -77,6 +77,9 @@ internal class SettingsService
             ? Path.Combine(GetModelsDir(), "diarizen")
             : Current.DiariZenModelsDir;
 
+    public string GetDenoiserModelsDir() =>
+        Path.Combine(GetModelsDir(), "deepfilternet3");
+
     public string GetJobsDir()
     {
         string dir = Path.Combine(

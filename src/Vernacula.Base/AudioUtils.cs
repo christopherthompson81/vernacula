@@ -223,28 +223,34 @@ public static class AudioUtils
         return (list.ToArray(), sampleRate, channels);
     }
 
+    /// <summary>ASR target sample rate (same as Config.SampleRate, exposed for external callers).</summary>
+    public const int AsrSampleRate = Config.SampleRate;
+
+    /// <summary>
+    /// Downmix interleaved multi-channel audio to mono by averaging channels.
+    /// If channels == 1, returns the input array directly (no copy).
+    /// </summary>
+    public static float[] DownmixToMono(float[] audio, int channels)
+    {
+        if (channels == 1) return audio;
+        float[] mono = new float[audio.Length / channels];
+        for (int i = 0; i < mono.Length; i++)
+        {
+            float sum = 0f;
+            for (int c = 0; c < channels; c++)
+                sum += audio[i * channels + c];
+            mono[i] = sum / channels;
+        }
+        return mono;
+    }
+
     /// <summary>
     /// Downmix to mono and resample to 16 kHz.
     /// Mirrors utils.py audio_to_16000_mono().
     /// </summary>
     public static float[] AudioTo16000Mono(float[] audio, int sampleRate, int channels)
     {
-        float[] mono;
-        if (channels == 1)
-        {
-            mono = audio;
-        }
-        else
-        {
-            mono = new float[audio.Length / channels];
-            for (int i = 0; i < mono.Length; i++)
-            {
-                float sum = 0f;
-                for (int c = 0; c < channels; c++)
-                    sum += audio[i * channels + c];
-                mono[i] = sum / channels;
-            }
-        }
+        float[] mono = DownmixToMono(audio, channels);
 
         if (sampleRate == Config.SampleRate)
             return mono;

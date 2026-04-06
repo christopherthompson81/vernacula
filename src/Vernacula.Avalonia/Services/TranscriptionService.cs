@@ -83,7 +83,7 @@ internal class TranscriptionService
         if (denoiserMode == DenoiserMode.DeepFilterNet3)
         {
             progress.Report(new TranscriptionProgress(
-                TranscriptionPhase.LoadingAudio, 0, 1, Loc.Instance["progress_denoising"]));
+                TranscriptionPhase.Denoising, 0, 4, Loc.Instance["progress_denoising"]));
 
             ct.ThrowIfCancellationRequested();
 
@@ -100,8 +100,13 @@ internal class TranscriptionService
                 if (padded != mono48k.Length)
                     Array.Resize(ref mono48k, padded);
 
-                using var denoiser = new DFN3Denoiser(denoiserModelsDir);
-                float[] enhanced48k = denoiser.Denoise(mono48k);
+                var denoiseProgress = new Progress<(int current, int total)>(p =>
+                    progress.Report(new TranscriptionProgress(
+                        TranscriptionPhase.Denoising, p.current, p.total,
+                        Loc.Instance["progress_denoising"])));
+
+                using var denoiser = new DFN3Denoiser(denoiserModelsDir, Vernacula.Base.Models.ExecutionProvider.Auto);
+                float[] enhanced48k = denoiser.Denoise(mono48k, denoiseProgress);
 
                 // Resample to 16 kHz for ASR
                 return DFN3Denoiser.ResampleFrom48k(enhanced48k, Vernacula.Base.AudioUtils.AsrSampleRate);

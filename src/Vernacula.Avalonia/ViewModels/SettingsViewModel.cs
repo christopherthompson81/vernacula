@@ -33,6 +33,10 @@ internal partial class SettingsViewModel : ObservableObject
     private SegmentationMode _selectedSegmentation;
 
     [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(IsDenoiserNone), nameof(IsDenoiserDfn3))]
+    private DenoiserMode _selectedDenoiser;
+
+    [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(IsEditorSingle), nameof(IsEditorAutoAdvance), nameof(IsEditorContinuous))]
     private PlaybackMode _selectedEditorPlaybackMode;
 
@@ -57,6 +61,8 @@ internal partial class SettingsViewModel : ObservableObject
     public bool IsSileroVad         => SelectedSegmentation == SegmentationMode.SileroVad;
     public bool IsSortformer        => SelectedSegmentation == SegmentationMode.Sortformer;
     public bool IsDiariZen          => SelectedSegmentation == SegmentationMode.DiariZen;
+    public bool IsDenoiserNone      => SelectedDenoiser == DenoiserMode.None;
+    public bool IsDenoiserDfn3      => SelectedDenoiser == DenoiserMode.DeepFilterNet3;
     public bool ShowDiariZenInSegmentation => HasAcceptedDiariZenNotice;
     public bool IsEditorSingle      => SelectedEditorPlaybackMode == PlaybackMode.Single;
     public bool IsEditorAutoAdvance => SelectedEditorPlaybackMode == PlaybackMode.AutoAdvance;
@@ -118,6 +124,7 @@ internal partial class SettingsViewModel : ObservableObject
         _selectedSegmentation         = svc.Current.Segmentation == SegmentationMode.DiariZen && !svc.IsGatedModelAccepted(DiariZenGatedModelId)
             ? SegmentationMode.Sortformer
             : svc.Current.Segmentation;
+        _selectedDenoiser             = svc.Current.Denoiser;
         _selectedEditorPlaybackMode   = svc.Current.EditorPlaybackMode;
         _selectedLanguage             = svc.Current.Language;
         _selectedLanguageInfo         = Loc.Languages.FirstOrDefault(l => l.Code == svc.Current.Language) 
@@ -171,6 +178,12 @@ internal partial class SettingsViewModel : ObservableObject
         OnSegmentationChanged?.Invoke();
     }
 
+    partial void OnSelectedDenoiserChanged(DenoiserMode value)
+    {
+        _svc.Current.Denoiser = value;
+        _svc.Save();
+    }
+
     partial void OnSelectedEditorPlaybackModeChanged(PlaybackMode value)
     {
         _svc.Current.EditorPlaybackMode = value;
@@ -212,6 +225,7 @@ internal partial class SettingsViewModel : ObservableObject
     [RelayCommand] private void SetTheme(string n)              { if (Enum.TryParse<AppTheme>(n,         out var t)) SelectedTheme              = t; }
     [RelayCommand] private void SetPrecision(string n)          { if (Enum.TryParse<ModelPrecision>(n,   out var p)) SelectedPrecision          = p; }
     [RelayCommand] private void SetSegmentation(string n)       { if (Enum.TryParse<SegmentationMode>(n, out var s)) SelectedSegmentation       = s; }
+    [RelayCommand] private void SetDenoiser(string n)           { if (Enum.TryParse<DenoiserMode>(n,     out var d)) SelectedDenoiser           = d; }
     [RelayCommand] private void SetEditorPlaybackMode(string n) { if (Enum.TryParse<PlaybackMode>(n,     out var m)) SelectedEditorPlaybackMode = m; }
     [RelayCommand] private void SetLanguage(string l)           => SelectedLanguage = l;
 
