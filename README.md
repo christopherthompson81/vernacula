@@ -1,17 +1,27 @@
 # Vernacula
 
 <p align="center">
-  <img src="src/Vernacula.Avalonia/Assets/parakeet.png" width="180" alt="Parakeet Transcription" />
-</p>
-
-<p align="center">
   A .NET 10 speech pipeline library and toolset for local, offline inference using ONNX models.<br/>
   No cloud. No telemetry. Runs entirely on your hardware.
+</p>
+
+<p>
+  Construct audio pipelines including:
+  <ul>
+    <li>Denoising</li>
+    <li>Segmetation (VAD, Diarization)</li>
+    <li>Speaker Identification (Diarization)</li>
+    <li>Speech Recognition (ASR)</li>
+  </ul>
 </p>
 
 ---
 
 ## Parakeet Transcription — Desktop App
+
+<p align="center">
+  <img src="src/Vernacula.Avalonia/Assets/parakeet.png" width="180" alt="Parakeet Transcription" />
+</p>
 
 Vernacula offers a desktop, graphical interface called **Parakeet Transcription**. Parakeet Transcription converts audio files into accurate, multi-speaker transcripts — entirely on your own computer. No cloud uploads, no subscriptions, no privacy concerns.
 
