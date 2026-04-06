@@ -33,9 +33,3 @@ Ko so modeli pripravljeni, postaneta gumba `New Transcription` in `Bulk Add Jobs
 ## Napake pri prenosu
 
 Če prenos ne uspe, vrstica stanja prikaže `Download failed: <reason>`. Preverite internetno povezavo in znova kliknite `Download Missing Models` za ponovni poskus. Aplikacija se nadaljuje od zadnje uspešno prenesene datoteke.
-
-## Sprememba natančnosti
-
-Datoteke modelov, ki jih je treba prenesti, so odvisne od izbrane **Model Precision**. Če jo želite spremeniti, pojdite na `Settings… > Models > Model Precision`. Če preklopite natančnost po prenosu, je treba novi nabor datotek prenesti ločeno. Glejte [Izbira natančnosti uteži modela](model_precision.md).
-
----

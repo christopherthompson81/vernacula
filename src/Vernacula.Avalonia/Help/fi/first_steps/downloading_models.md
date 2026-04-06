@@ -33,9 +33,3 @@ Voit keskeyttää käynnissä olevan latauksen napsauttamalla `Cancel`. Tilarivi
 ## Latausvirheet
 
 Jos lataus epäonnistuu, tilarivissä näkyy `Download failed: <reason>`. Tarkista internetyhteytesi ja napsauta `Download Missing Models` uudelleen yrittääksesi uudelleen. Sovellus jatkaa viimeksi onnistuneesti valmistuneen tiedoston jälkeen.
-
-## Tarkkuuden muuttaminen
-
-Ladattavat mallitiedostot riippuvat valitusta **Model Precision** -asetuksesta. Voit muuttaa sitä menemällä kohtaan `Settings… > Models > Model Precision`. Jos vaihdat tarkkuutta lataamisen jälkeen, uusi tiedostosarja on ladattava erikseen. Katso [Mallipainon tarkkuuden valitseminen](model_precision.md).
-
----

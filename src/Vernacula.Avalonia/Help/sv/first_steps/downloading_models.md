@@ -33,9 +33,3 @@ Om du vill stoppa en pågående nedladdning klickar du på `Cancel`. Statusraden
 ## Nedladdningsfel
 
 Om en nedladdning misslyckas visas `Download failed: <reason>` i statusraden. Kontrollera din internetanslutning och klicka på `Download Missing Models` igen för att försöka på nytt. Programmet återupptar nedladdningen från den senast slutförda filen.
-
-## Ändra precision
-
-Vilka modellfiler som behöver laddas ned beror på vald **Model Precision**. Om du vill ändra den går du till `Settings… > Models > Model Precision`. Om du byter precision efter att ha laddat ned filer måste den nya uppsättningen filer laddas ned separat. Se [Välja precision för modellvikter](model_precision.md).
-
----

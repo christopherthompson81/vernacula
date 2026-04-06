@@ -31,7 +31,6 @@ Pełne instrukcje dotyczące konfiguracji CUDA znajdziesz w artykule [Instalacja
 
 Ta sekcja służy do zarządzania plikami modeli AI wymaganymi do transkrypcji.
 
-- **Precyzja modelu** — wybierz `INT8 (smaller download)` lub `FP32 (more accurate)`. Zobacz [Wybór precyzji wag modelu](model_precision.md).
 - **Pobieranie brakujących modeli** — pobiera pliki modeli, których nie ma jeszcze na dysku. Pasek postępu i wiersz stanu śledzą pobieranie każdego pliku.
 - **Sprawdzanie aktualizacji** — sprawdza, czy dostępne są nowsze wagi modeli. Baner z informacją o aktualizacji pojawia się również automatycznie na ekranie głównym po wykryciu zaktualizowanych wag.
 

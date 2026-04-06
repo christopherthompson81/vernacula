@@ -31,7 +31,6 @@ Pentru instrucțiuni complete de configurare CUDA, consultați [Instalarea CUDA 
 
 Această secțiune gestionează fișierele modelelor AI necesare pentru transcriere.
 
-- **Precizia modelului** — alegeți `INT8 (smaller download)` sau `FP32 (more accurate)`. Consultați [Alegerea preciziei greutăților modelului](model_precision.md).
 - **Descărcarea modelelor lipsă** — descarcă orice fișiere de model care nu se află încă pe disc. O bară de progres și o linie de stare urmăresc fiecare fișier pe măsură ce se descarcă.
 - **Verificarea actualizărilor** — verifică dacă sunt disponibile greutăți de model mai noi. Un banner de actualizare apare, de asemenea, automat pe ecranul principal când sunt detectate greutăți actualizate.
 

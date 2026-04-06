@@ -33,9 +33,3 @@ Om een lopende download te stoppen, klikt u op `Cancel`. De statusregel toont da
 ## Downloadfouten
 
 Als een download mislukt, toont de statusregel `Download failed: <reason>`. Controleer uw internetverbinding en klik opnieuw op `Download Missing Models` om het opnieuw te proberen. De applicatie hervat vanaf het laatste succesvol voltooide bestand.
-
-## Precisie Wijzigen
-
-Welke modelbestanden gedownload moeten worden, is afhankelijk van de geselecteerde **Model Precision**. Om dit te wijzigen, gaat u naar `Settings… > Models > Model Precision`. Als u van precisie wisselt nadat u bestanden heeft gedownload, moet de nieuwe set bestanden afzonderlijk worden gedownload. Zie [Modelgewichtprecisie Kiezen](model_precision.md).
-
----

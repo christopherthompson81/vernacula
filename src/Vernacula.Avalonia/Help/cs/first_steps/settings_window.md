@@ -31,7 +31,6 @@ Kompletní pokyny k nastavení CUDA naleznete v části [Instalace CUDA a cuDNN]
 
 Tato část spravuje soubory modelů AI potřebné pro přepis.
 
-- **Přesnost modelu** — vyberte `INT8 (smaller download)` nebo `FP32 (more accurate)`. Viz [Výběr přesnosti vah modelu](model_precision.md).
 - **Stáhnout chybějící modely** — stáhne všechny soubory modelů, které dosud nejsou uloženy na disku. Průběh stahování každého souboru je sledován ukazatelem průběhu a stavovým řádkem.
 - **Zkontrolovat aktualizace** — zkontroluje, zda jsou dostupné novější váhy modelů. Na domovské obrazovce se také automaticky zobrazí banner s upozorněním na aktualizaci, pokud jsou zjištěny aktualizované váhy.
 

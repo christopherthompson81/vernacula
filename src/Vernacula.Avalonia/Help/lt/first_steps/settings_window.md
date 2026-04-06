@@ -31,7 +31,6 @@ Išsamias CUDA diegimo instrukcijas rasite skyriuje [CUDA ir cuDNN diegimas](cud
 
 Šiame skyriuje tvarkomos transkribavimui reikalingos DI modelių bylos.
 
-- **Modelio tikslumas** — pasirinkite `INT8 (smaller download)` arba `FP32 (more accurate)`. Žr. [Modelio svorių tikslumo pasirinkimas](model_precision.md).
 - **Atsisiųsti trūkstamus modelius** — atsisiunčia modelių bylas, kurių dar nėra diske. Eigos juosta ir būsenos eilutė rodo kiekvienos bylos atsisiuntimo eigą.
 - **Tikrinti naujinimus** — tikrina, ar yra naujesnių modelių svorių. Naujinimo pranešimas taip pat automatiškai rodomas pradžios ekrane, kai aptinkami atnaujinti svoriai.
 

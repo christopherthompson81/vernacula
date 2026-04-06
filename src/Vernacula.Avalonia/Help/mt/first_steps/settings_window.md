@@ -31,7 +31,6 @@ Għal istruzzjonijiet sħaħ dwar is-setup ta' CUDA, ara [L-Installazzjoni ta' C
 
 Din it-taqsima timmaniġġja l-fajls tal-mudell AI meħtieġa għat-traskrizzjoni.
 
-- **Model Precision** — agħżel `INT8 (smaller download)` jew `FP32 (more accurate)`. Ara [L-Għażla tal-Preċiżjoni tal-Piż tal-Mudell](model_precision.md).
 - **Download Missing Models** — itniżżel kull fajl tal-mudell li mhuwiex preżenti fuq id-diska. Bar tal-progress u linja ta' status isegwu kull fajl waqt it-tniżżil.
 - **Check for Updates** — jiċċekkja jekk hemmx piżijiet tal-mudell aktar ġodda disponibbli. Banner ta' aġġornament jidher ukoll fuq l-iskrin ewlieni awtomatikament meta jiġu detettati piżijiet aġġornati.
 

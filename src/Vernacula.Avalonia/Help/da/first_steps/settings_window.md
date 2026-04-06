@@ -31,7 +31,6 @@ For en fuldstændig vejledning til CUDA-opsætning, se [Installation af CUDA og 
 
 Dette afsnit administrerer de AI-modelfiler, der kræves til transskription.
 
-- **Modelpræcision** — vælg `INT8 (smaller download)` eller `FP32 (more accurate)`. Se [Valg af modelvægtpræcision](model_precision.md).
 - **Download Missing Models** — downloader eventuelle modelfiler, der endnu ikke er til stede på disken. En statuslinje og et statusfelt viser fremgangen for hver fil under download.
 - **Check for Updates** — kontrollerer, om der er nyere modelvægte tilgængelige. Et opdateringsbanner vises også automatisk på startskærmen, når opdaterede vægte registreres.
 

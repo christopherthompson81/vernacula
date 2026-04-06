@@ -31,7 +31,6 @@ Täydelliset CUDA-asennusohjeet löydät sivulta [CUDA:n ja cuDNN:n asentaminen]
 
 Tässä osiossa hallitaan litterointiin tarvittavia tekoälymallin tiedostoja.
 
-- **Mallin tarkkuus** — valitse `INT8 (smaller download)` tai `FP32 (more accurate)`. Katso [Mallin painotarkkuuden valitseminen](model_precision.md).
 - **Lataa puuttuvat mallit** — lataa mallitiedostot, joita ei vielä ole levyllä. Edistymispalkki ja tilarivi seuraavat jokaisen tiedoston latautumista.
 - **Tarkista päivitykset** — tarkistaa, onko uudempia mallipainoja saatavilla. Päivitysilmoitus näkyy myös automaattisesti aloitusnäytöllä, kun uusia painoja havaitaan.
 

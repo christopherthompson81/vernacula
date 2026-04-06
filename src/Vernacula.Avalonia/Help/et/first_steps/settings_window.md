@@ -31,7 +31,6 @@ Täielikud CUDA seadistusjuhised leiate siit: [CUDA ja cuDNN installimine](cuda_
 
 See jaotis haldab transkriptsiooniks vajalikke AI-mudelite faile.
 
-- **Mudeli täpsus** — valige `INT8 (smaller download)` või `FP32 (more accurate)`. Vt [Mudeli kaalu täpsuse valimine](model_precision.md).
 - **Puuduvate mudelite allalaadimine** — laadib alla mudelite failid, mida kettal veel ei ole. Edenemisriba ja olekurida jälgivad iga faili allalaadimist.
 - **Uuenduste kontrollimine** — kontrollib, kas saadaval on uuemad mudelikaalud. Uuenduste bänner ilmub ka automaatselt avakuval, kui uuendatud kaalud tuvastatakse.
 

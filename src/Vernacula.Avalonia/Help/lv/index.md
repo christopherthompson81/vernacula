@@ -16,7 +16,6 @@ Sagatavojiet lietojumprogrammu lietošanai.
 - [Valodas izvēle](first_steps/language.md)
 - [Dizaina izvēle](first_steps/theme.md)
 - [Modeļu lejupielāde](first_steps/downloading_models.md)
-- [Modeļa svaru precizitātes izvēle](first_steps/model_precision.md)
 - [CUDA un cuDNN instalēšana GPU paātrinājumam](first_steps/cuda_installation.md)
 
 ## Darbības

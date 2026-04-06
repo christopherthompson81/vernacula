@@ -33,9 +33,3 @@ Hvis du vil stoppe en igangværende hentning, skal du klikke på `Cancel`. Statu
 ## Hentningsfejl
 
 Hvis en hentning mislykkes, viser statuslinjen `Download failed: <reason>`. Kontrollér din internetforbindelse, og klik på `Download Missing Models` igen for at prøve på ny. Applikationen genoptager hentningen fra den sidst fuldført hentede fil.
-
-## Ændring af præcision
-
-Hvilke modelfiler der skal hentes, afhænger af den valgte **Model Precision**. For at ændre den skal du gå til `Settings… > Models > Model Precision`. Hvis du skifter præcision efter at have hentet filer, skal det nye sæt filer hentes separat. Se [Valg af modelvægtpræcision](model_precision.md).
-
----

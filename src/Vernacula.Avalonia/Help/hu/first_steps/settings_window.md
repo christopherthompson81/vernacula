@@ -31,7 +31,6 @@ A teljes CUDA-telepítési útmutatóért lásd: [A CUDA és cuDNN telepítése]
 
 Ez a szakasz az átiratozáshoz szükséges AI-modellfájlokat kezeli.
 
-- **Modell pontossága** — válassz a `INT8 (kisebb letöltés)` vagy az `FP32 (pontosabb)` lehetőség közül. Lásd: [Modellsúly-pontosság kiválasztása](model_precision.md).
 - **Hiányzó modellek letöltése** — letölti azokat a modellfájlokat, amelyek még nem találhatók meg a lemezen. Egy folyamatjelző sáv és egy állapotsor követi az egyes fájlok letöltését.
 - **Frissítések keresése** — ellenőrzi, hogy elérhetők-e újabb modellsúlyok. Ha frissített súlyok észlelhetők, a kezdőképernyőn automatikusan megjelenik egy frissítési értesítés is.
 

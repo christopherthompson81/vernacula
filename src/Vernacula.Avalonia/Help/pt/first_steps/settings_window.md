@@ -31,7 +31,6 @@ Para instruções completas de configuração do CUDA, consulte [Instalando CUDA
 
 Esta seção gerencia os arquivos de modelo de IA necessários para a transcrição.
 
-- **Precisão do Modelo** — escolha `INT8 (smaller download)` ou `FP32 (more accurate)`. Consulte [Escolhendo a Precisão dos Pesos do Modelo](model_precision.md).
 - **Baixar Modelos Ausentes** — baixa os arquivos de modelo que ainda não estão presentes no disco. Uma barra de progresso e uma linha de status acompanham cada arquivo durante o download.
 - **Verificar Atualizações** — verifica se há versões mais recentes dos pesos dos modelos disponíveis. Um banner de atualização também é exibido automaticamente na tela inicial quando pesos atualizados são detectados.
 

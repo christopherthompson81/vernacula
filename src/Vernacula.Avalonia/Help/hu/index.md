@@ -16,7 +16,6 @@ Az alkalmazás használatra kész állapotba hozása.
 - [Nyelv kiválasztása](first_steps/language.md)
 - [Téma kiválasztása](first_steps/theme.md)
 - [Modellek letöltése](first_steps/downloading_models.md)
-- [Modell súlypontossságának kiválasztása](first_steps/model_precision.md)
 - [CUDA és cuDNN telepítése GPU-gyorsításhoz](first_steps/cuda_installation.md)
 
 ## Műveletek

@@ -16,7 +16,6 @@ Gør applikationen klar til brug.
 - [Valg af sprog](first_steps/language.md)
 - [Valg af tema](first_steps/theme.md)
 - [Downloading af modeller](first_steps/downloading_models.md)
-- [Valg af modelvægtpræcision](first_steps/model_precision.md)
 - [Installation af CUDA og cuDNN til GPU-acceleration](first_steps/cuda_installation.md)
 
 ## Handlinger

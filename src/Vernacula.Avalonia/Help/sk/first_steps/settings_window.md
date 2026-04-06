@@ -31,7 +31,6 @@ Správa o **strope dávky** udáva, koľko sekúnd zvuku sa spracuje v každom b
 
 Táto časť spravuje súbory modelov AI potrebné na prepis.
 
-- **Presnosť modelu** — vyberte `INT8 (smaller download)` alebo `FP32 (more accurate)`. Pozrite si [Výber presnosti váh modelu](model_precision.md).
 - **Stiahnuť chýbajúce modely** — stiahne všetky súbory modelov, ktoré ešte nie sú prítomné na disku. Priebeh sťahovania každého súboru sleduje panel priebehu a stavový riadok.
 - **Skontrolovať aktualizácie** — skontroluje, či sú dostupné novšie váhy modelov. Banner s aktualizáciou sa tiež automaticky zobrazí na domovskej obrazovke, keď sú rozpoznané aktualizované váhy.
 

@@ -33,9 +33,3 @@ Ak chcete zastaviť prebiehajúce sťahovanie, kliknite na `Cancel`. Stavový ri
 ## Chyby pri sťahovaní
 
 Ak sťahovanie zlyhá, stavový riadok zobrazí správu `Download failed: <reason>`. Skontrolujte internetové pripojenie a opätovným kliknutím na `Download Missing Models` skúste sťahovanie zopakovať. Aplikácia pokračuje od posledného úspešne stiahnutého súboru.
-
-## Zmena presnosti
-
-Súbory modelov, ktoré je potrebné stiahnuť, závisia od zvolenej **Model Precision**. Ak ju chcete zmeniť, prejdite do `Settings… > Models > Model Precision`. Ak zmeníte presnosť po stiahnutí modelov, novú sadu súborov je potrebné stiahnuť samostatne. Pozrite si [Výber presnosti váh modelu](model_precision.md).
-
----

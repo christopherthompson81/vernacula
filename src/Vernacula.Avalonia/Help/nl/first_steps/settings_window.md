@@ -31,7 +31,6 @@ Zie [CUDA en cuDNN installeren](cuda_installation.md) voor volledige installatie
 
 Dit gedeelte beheert de AI-modelbestanden die nodig zijn voor transcriptie.
 
-- **Modelnauwkeurigheid** — kies `INT8 (smaller download)` of `FP32 (more accurate)`. Zie [De precisie van modelgewichten kiezen](model_precision.md).
 - **Ontbrekende modellen downloaden** — downloadt modelbestanden die nog niet aanwezig zijn op de schijf. Een voortgangsbalk en een statusregel volgen elk bestand tijdens het downloaden.
 - **Controleren op updates** — controleert of er nieuwere modelgewichten beschikbaar zijn. Er verschijnt ook automatisch een updatebanner op het startscherm wanneer bijgewerkte gewichten worden gedetecteerd.
 

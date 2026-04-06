@@ -31,7 +31,6 @@ Eine vollständige Anleitung zur CUDA-Einrichtung finden Sie unter [CUDA und cuD
 
 Dieser Abschnitt verwaltet die KI-Modelldateien, die für die Transkription benötigt werden.
 
-- **Modellgenauigkeit** — wählen Sie `INT8 (smaller download)` oder `FP32 (more accurate)`. Weitere Informationen finden Sie unter [Modellgewichtgenauigkeit auswählen](model_precision.md).
 - **Fehlende Modelle herunterladen** — lädt alle Modelldateien herunter, die noch nicht auf dem Datenträger vorhanden sind. Ein Fortschrittsbalken und eine Statuszeile verfolgen jede Datei während des Downloads.
 - **Auf Updates prüfen** — prüft, ob neuere Modellgewichte verfügbar sind. Wenn aktualisierte Gewichte erkannt werden, erscheint auf dem Startbildschirm automatisch ein Aktualisierungshinweis.
 

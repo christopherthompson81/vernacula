@@ -16,7 +16,6 @@ Pripremite aplikaciju za upotrebu.
 - [Odabir jezika](first_steps/language.md)
 - [Odabir teme](first_steps/theme.md)
 - [Preuzimanje modela](first_steps/downloading_models.md)
-- [Odabir preciznosti težina modela](first_steps/model_precision.md)
 - [Instalacija CUDA i cuDNN za GPU ubrzanje](first_steps/cuda_installation.md)
 
 ## Operacije

@@ -16,7 +16,6 @@ Valmistage rakendus kasutamiseks ette.
 - [Keele valimine](first_steps/language.md)
 - [Kujunduse valimine](first_steps/theme.md)
 - [Mudelite allalaadimine](first_steps/downloading_models.md)
-- [Mudeli kaalude täpsuse valimine](first_steps/model_precision.md)
 - [CUDA ja cuDNN installimine GPU kiirenduse jaoks](first_steps/cuda_installation.md)
 
 ## Toimingud

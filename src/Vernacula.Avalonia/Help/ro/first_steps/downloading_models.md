@@ -33,9 +33,3 @@ Pentru a opri o descărcare în curs, faceți clic pe `Cancel`. Linia de stare v
 ## Erori de Descărcare
 
 Dacă o descărcare eșuează, linia de stare afișează `Download failed: <reason>`. Verificați conexiunea la internet și faceți clic din nou pe `Download Missing Models` pentru a reîncerca. Aplicația reia descărcarea de la ultimul fișier finalizat cu succes.
-
-## Schimbarea Preciziei
-
-Fișierele de model care trebuie descărcate depind de **Model Precision** selectată. Pentru a o modifica, mergeți la `Settings… > Models > Model Precision`. Dacă schimbați precizia după descărcare, noul set de fișiere trebuie descărcat separat. Consultați [Alegerea Preciziei Greutăților Modelului](model_precision.md).
-
----

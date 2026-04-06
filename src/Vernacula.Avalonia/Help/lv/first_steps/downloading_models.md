@@ -33,9 +33,3 @@ Lai apturētu lejupielādi, noklikšķiniet uz `Cancel`. Statusa rindiņā tiks 
 ## Lejupielādes kļūdas
 
 Ja lejupielāde neizdodas, statusa rindiņā tiek parādīts `Download failed: <reason>`. Pārbaudiet interneta savienojumu un vēlreiz noklikšķiniet uz `Download Missing Models`, lai mēģinātu vēlreiz. Lietojumprogramma atsāk lejupielādi no pēdējā veiksmīgi pabeigtā faila.
-
-## Precizitātes maiņa
-
-Lejupielādējamie modeļu faili ir atkarīgi no izvēlētās **Model Precision**. Lai to mainītu, dodieties uz `Settings… > Models > Model Precision`. Ja precizitāti maināt pēc lejupielādes, jaunais failu komplekts ir jālejupielādē atsevišķi. Skatiet [Modeļu svara precizitātes izvēle](model_precision.md).
-
----

@@ -16,7 +16,6 @@ Prepare a aplicação para uso.
 - [Escolhendo um Idioma](first_steps/language.md)
 - [Escolhendo um Tema](first_steps/theme.md)
 - [Baixando Modelos](first_steps/downloading_models.md)
-- [Escolhendo a Precisão dos Pesos do Modelo](first_steps/model_precision.md)
 - [Instalando CUDA e cuDNN para Aceleração por GPU](first_steps/cuda_installation.md)
 
 ## Operações

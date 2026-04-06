@@ -31,7 +31,6 @@ For full CUDA setup instructions, see [Installing CUDA and cuDNN](cuda_installat
 
 This section manages the AI model files required for transcription.
 
-- **Model Precision** — choose `INT8 (smaller download)` or `FP32 (more accurate)`. See [Picking Model Weight Precision](model_precision.md).
 - **Download Missing Models** — downloads any model files not yet present on disk. A progress bar and status line track each file as it downloads.
 - **Check for Updates** — checks whether newer model weights are available. An update banner also appears on the home screen automatically when updated weights are detected.
 

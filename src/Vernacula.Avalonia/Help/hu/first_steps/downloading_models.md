@@ -33,9 +33,3 @@ A folyamatban lévő letöltés leállításához kattintson a `Cancel` gombra. 
 ## Letöltési hibák
 
 Ha egy letöltés meghiúsul, az állapotsor a `Download failed: <reason>` üzenetet jeleníti meg. Ellenőrizze az internetkapcsolatát, majd kattintson ismét a `Download Missing Models` gombra az újrapróbálkozáshoz. Az alkalmazás az utoljára sikeresen befejezett fájltól folytatja a letöltést.
-
-## A pontosság megváltoztatása
-
-A letöltendő modellfájlok a kiválasztott **Model Precision** beállítástól függnek. A módosításhoz lépjen a `Settings… > Models > Model Precision` menüpontra. Ha a letöltés után vált pontossági szintet, az új fájlkészletet külön kell letölteni. Lásd: [Modellsúly-pontosság kiválasztása](model_precision.md).
-
----

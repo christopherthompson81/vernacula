@@ -16,7 +16,6 @@ Iġġib l-applikazzjoni lesta għall-użu.
 - [Għażla ta' Lingwa](first_steps/language.md)
 - [Għażla ta' Tema](first_steps/theme.md)
 - [Niżżel il-Mudelli](first_steps/downloading_models.md)
-- [Għażla tal-Preċiżjoni tal-Piż tal-Mudell](first_steps/model_precision.md)
 - [Installazzjoni ta' CUDA u cuDNN għall-Aċċellerazzjoni tal-GPU](first_steps/cuda_installation.md)
 
 ## Operazzjonijiet

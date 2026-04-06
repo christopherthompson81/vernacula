@@ -31,7 +31,6 @@ Za celotna navodila za namestitev CUDA glejte [Namestitev CUDA in cuDNN](cuda_in
 
 Ta razdelek upravlja datoteke modelov UI, potrebne za prepisovanje.
 
-- **Natančnost modela** — izberite `INT8 (smaller download)` ali `FP32 (more accurate)`. Glejte [Izbira natančnosti uteži modela](model_precision.md).
 - **Prenos manjkajočih modelov** — prenese vse datoteke modelov, ki še niso prisotne na disku. Vrstica napredka in vrstica stanja sledita vsaki datoteki med prenosom.
 - **Preverjanje posodobitev** — preveri, ali so na voljo novejše uteži modela. Ko so zaznane posodobljene uteži, se na domačem zaslonu samodejno prikaže tudi pasica za posodobitev.
 

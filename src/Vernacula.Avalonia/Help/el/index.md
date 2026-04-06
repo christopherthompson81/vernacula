@@ -16,7 +16,6 @@ topic_id: help_index
 - [Επιλογή Γλώσσας](first_steps/language.md)
 - [Επιλογή Θέματος](first_steps/theme.md)
 - [Λήψη Μοντέλων](first_steps/downloading_models.md)
-- [Επιλογή Ακρίβειας Βαρών Μοντέλου](first_steps/model_precision.md)
 - [Εγκατάσταση CUDA και cuDNN για Επιτάχυνση GPU](first_steps/cuda_installation.md)
 
 ## Λειτουργίες

@@ -11,7 +11,7 @@ namespace Vernacula.App.Services;
 /// <param name="Title">Display name shown in the sidebar.</param>
 /// <param name="ResourcePath">
 ///   Language-neutral path relative to the per-language Help folder,
-///   e.g. "first_steps/model_precision.md" or "index.md".
+///   e.g. "first_steps/downloading_models.md" or "index.md".
 ///   Loaded at runtime via Avalonia's AssetLoader:
 ///   avares://Vernacula.Avalonia/Help/{lang}/{ResourcePath}
 /// </param>
@@ -35,7 +35,6 @@ internal static class HelpService
             new HelpTopic("first_steps_language",           "Language",                      "first_steps/language.md"),
             new HelpTopic("first_steps_theme",              "Theme",                         "first_steps/theme.md"),
             new HelpTopic("first_steps_downloading_models", "Downloading Models",            "first_steps/downloading_models.md"),
-            new HelpTopic("first_steps_model_precision",    "Model Weight Precision",        "first_steps/model_precision.md"),
             new HelpTopic("first_steps_cuda_installation",  "CUDA & cuDNN Installation",     "first_steps/cuda_installation.md"),
         ]),
         new HelpGroup("help_group_operations",

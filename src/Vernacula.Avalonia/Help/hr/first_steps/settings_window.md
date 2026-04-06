@@ -31,7 +31,6 @@ Za potpune upute za postavljanje CUDA-e, pogledajte [Instalacija CUDA-e i cuDNN-
 
 Ovaj odjeljak upravlja datotekama AI modela potrebnim za transkripciju.
 
-- **Preciznost modela** — odaberite `INT8 (smaller download)` ili `FP32 (more accurate)`. Pogledajte [Odabir preciznosti težina modela](model_precision.md).
 - **Preuzimanje nedostajućih modela** — preuzima sve datoteke modela koje još nisu prisutne na disku. Traka napretka i statusna linija prate svaku datoteku tijekom preuzimanja.
 - **Provjera ažuriranja** — provjerava jesu li dostupne novije težine modela. Natpis o ažuriranju također se automatski pojavljuje na početnom zaslonu kada se otkriju ažurirane težine.
 

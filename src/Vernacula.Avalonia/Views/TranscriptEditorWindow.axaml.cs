@@ -13,6 +13,7 @@ using Avalonia.Platform;
 using Avalonia.Threading;
 using Avalonia.VisualTree;
 using Vernacula.Base;
+using Vernacula.Base.Models;
 using Vernacula.App.Models;
 using Vernacula.App.Services;
 using Vernacula.App.ViewModels;
@@ -84,7 +85,7 @@ public partial class TranscriptEditorWindow : Window
             _vocab = new VocabService(modelsDir);
         }
 
-        var (encoderFile, _) = Config.GetAsrFiles(App.Current.Settings.Current.Precision);
+        var (encoderFile, _) = Config.GetAsrFiles(ModelPrecision.Fp32);
         _asrModelsAvailable = File.Exists(Path.Combine(modelsDir, encoderFile));
 
         Loaded += OnLoaded;
@@ -1200,7 +1201,7 @@ public partial class TranscriptEditorWindow : Window
         try
         {
             string modelsDir = App.Current.Settings.GetModelsDir();
-            var (encoderFile, decoderJointFile) = Config.GetAsrFiles(App.Current.Settings.Current.Precision);
+            var (encoderFile, decoderJointFile) = Config.GetAsrFiles(ModelPrecision.Fp32);
 
             var result = await Task.Run(() => _vm.PerformRedoAsr(card.Index, modelsDir, encoderFile, decoderJointFile));
             if (result is null)

@@ -38,15 +38,6 @@ internal class ModelManagerService
             new(Path.Combine("diarizen", Config.DiariZenLdaDir, "plda_tr.bin"), $"{Config.DiariZenLdaDir}/plda_tr.bin"),
         ];
 
-    private static readonly ModelAsset[] AsrFilesInt8 =
-        [
-            new("nemo128.onnx", "nemo128.onnx"),
-            new("encoder-model.int8.onnx", "encoder-model.int8.onnx"),
-            new("decoder_joint-model.int8.onnx", "decoder_joint-model.int8.onnx"),
-            new("vocab.txt", "vocab.txt"),
-            new("config.json", "config.json")
-        ];
-
     private static readonly ModelAsset[] AsrFilesFp32 =
         [
             new("nemo128.onnx", "nemo128.onnx"),
@@ -62,9 +53,8 @@ internal class ModelManagerService
 
     public ModelManagerService(SettingsService settings) => _settings = settings;
 
-    private ModelAsset[] CoreFiles() =>
-        [.. CoreDiarizationFiles,
-         .. (_settings.Current.Precision == ModelPrecision.Int8 ? AsrFilesInt8 : AsrFilesFp32)];
+    private static ModelAsset[] CoreFiles() =>
+        [.. CoreDiarizationFiles, .. AsrFilesFp32];
 
     public IReadOnlyList<string> GetMissingFiles()
     {

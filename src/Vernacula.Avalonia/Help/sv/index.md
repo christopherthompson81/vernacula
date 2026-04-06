@@ -16,7 +16,6 @@ Gör programmet redo att användas.
 - [Välja språk](first_steps/language.md)
 - [Välja tema](first_steps/theme.md)
 - [Ladda ned modeller](first_steps/downloading_models.md)
-- [Välja viktprecision för modell](first_steps/model_precision.md)
 - [Installera CUDA och cuDNN för GPU-acceleration](first_steps/cuda_installation.md)
 
 ## Åtgärder

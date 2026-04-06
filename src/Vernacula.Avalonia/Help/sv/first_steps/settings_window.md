@@ -31,7 +31,6 @@ För fullständiga installationsanvisningar för CUDA, se [Installera CUDA och c
 
 Det här avsnittet hanterar de AI-modellfiler som krävs för transkription.
 
-- **Modellprecision** — välj `INT8 (smaller download)` eller `FP32 (more accurate)`. Se [Välja precision för modellvikter](model_precision.md).
 - **Ladda ned saknade modeller** — laddar ned modellfiler som ännu inte finns på disk. Ett förloppsindikator och en statusrad visar varje fil allt eftersom den laddas ned.
 - **Sök efter uppdateringar** — kontrollerar om nyare modellvikter finns tillgängliga. En uppdateringsbanner visas även automatiskt på startskärmen när uppdaterade vikter identifieras.
 

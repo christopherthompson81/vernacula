@@ -16,7 +16,6 @@ Bereid de toepassing voor op gebruik.
 - [Een Taal Kiezen](first_steps/language.md)
 - [Een Thema Kiezen](first_steps/theme.md)
 - [Modellen Downloaden](first_steps/downloading_models.md)
-- [Modelgewichtprecisie Kiezen](first_steps/model_precision.md)
 - [CUDA en cuDNN Installeren voor GPU-versnelling](first_steps/cuda_installation.md)
 
 ## Bewerkingen

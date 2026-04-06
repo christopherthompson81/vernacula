@@ -33,9 +33,3 @@ Pour interrompre un téléchargement en cours, cliquez sur `Cancel`. La ligne d'
 ## Erreurs de téléchargement
 
 Si un téléchargement échoue, la ligne d'état affiche `Download failed: <reason>`. Vérifiez votre connexion Internet et cliquez à nouveau sur `Download Missing Models` pour réessayer. L'application reprend à partir du dernier fichier téléchargé avec succès.
-
-## Modifier la précision
-
-Les fichiers de modèles à télécharger dépendent de la **Model Precision** sélectionnée. Pour la modifier, accédez à `Settings… > Models > Model Precision`. Si vous changez la précision après avoir téléchargé les fichiers, le nouvel ensemble de fichiers doit être téléchargé séparément. Consultez [Choisir la précision des poids du modèle](model_precision.md).
-
----

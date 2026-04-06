@@ -33,9 +33,3 @@ Um einen laufenden Download zu stoppen, klicken Sie auf `Cancel`. Die Statuszeil
 ## Download-Fehler
 
 Schlägt ein Download fehl, zeigt die Statuszeile `Download failed: <reason>` an. Überprüfen Sie Ihre Internetverbindung und klicken Sie erneut auf `Download Missing Models`, um den Vorgang zu wiederholen. Die Anwendung setzt dabei bei der zuletzt erfolgreich abgeschlossenen Datei an.
-
-## Genauigkeit ändern
-
-Welche Modelldateien heruntergeladen werden müssen, hängt von der ausgewählten **Model Precision** ab. Um diese zu ändern, navigieren Sie zu `Settings… > Models > Model Precision`. Wenn Sie die Genauigkeit nach dem Herunterladen wechseln, muss der neue Dateisatz separat heruntergeladen werden. Weitere Informationen finden Sie unter [Modellgewichtgenauigkeit auswählen](model_precision.md).
-
----

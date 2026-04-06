@@ -33,9 +33,3 @@ Biex tieqaf tniżżil li jkun għaddej, ikklikkja `Cancel`. Il-linja ta' status 
 ## Żbalji fit-Tniżżil
 
 Jekk tniżżil jiffranka, il-linja ta' status turi `Download failed: <reason>`. Iċċekkja l-konnessjoni tal-internet tiegħek u ikklikkja `Download Missing Models` mill-ġdid biex terġa' tipprova. L-applikazzjoni tibda mill-ġdid mill-aħħar fajl li ntemm b'suċċess.
-
-## Bidel il-Preċiżjoni
-
-Il-fajls tal-mudell li jeħtieġu jitniżżlu jiddependu fuq il-**Model Precision** magħżula. Biex tibdilha, mur `Settings… > Models > Model Precision`. Jekk tbiddel il-preċiżjoni wara t-tniżżil, is-sett ġdid ta' fajls irid jitniżżel separatament. Ara [Tagħżel il-Preċiżjoni tal-Piż tal-Mudell](model_precision.md).
-
----

@@ -16,7 +16,6 @@ Valmistele sovellus käyttöä varten.
 - [Kielen valitseminen](first_steps/language.md)
 - [Teeman valitseminen](first_steps/theme.md)
 - [Mallien lataaminen](first_steps/downloading_models.md)
-- [Mallin painotarkkuuden valitseminen](first_steps/model_precision.md)
 - [CUDA:n ja cuDNN:n asentaminen GPU-kiihdytystä varten](first_steps/cuda_installation.md)
 
 ## Toiminnot

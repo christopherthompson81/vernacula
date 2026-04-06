@@ -34,6 +34,3 @@ To stop a download in progress, click `Cancel`. The status line will show `Downl
 
 If a download fails, the status line shows `Download failed: <reason>`. Check your internet connection and click `Download Missing Models` again to retry. The application resumes from the last successfully completed file.
 
-## Changing Precision
-
-The model files that need to be downloaded depend on the selected **Model Precision**. To change it, go to `Settings… > Models > Model Precision`. If you switch precision after downloading, the new set of files must be downloaded separately. See [Picking Model Weight Precision](model_precision.md).

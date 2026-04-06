@@ -16,7 +16,6 @@ Paruoškite programą naudojimui.
 - [Kalbos pasirinkimas](first_steps/language.md)
 - [Temos pasirinkimas](first_steps/theme.md)
 - [Modelių atsisiuntimas](first_steps/downloading_models.md)
-- [Modelio svorių tikslumo pasirinkimas](first_steps/model_precision.md)
 - [CUDA ir cuDNN įdiegimas GPU spartinimui](first_steps/cuda_installation.md)
 
 ## Operacijos

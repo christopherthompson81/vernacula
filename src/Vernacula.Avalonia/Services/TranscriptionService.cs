@@ -181,7 +181,7 @@ internal class TranscriptionService
             var seenSpeakers = new HashSet<string>();
 
             var (encoderFile, decoderJointFile) =
-                Config.GetAsrFiles(_settings.Current.Precision);
+                Config.GetAsrFiles(ModelPrecision.Fp32);
             using var parakeet = new ParakeetAsr(modelsDir, encoderFile, decoderJointFile);
 
             using var streamer = new SortformerStreamer(modelsDir);
@@ -443,7 +443,7 @@ internal class TranscriptionService
         if (!asrDone && !inlineAsrDone)
         {
             var (encoderFile, decoderJointFile) =
-                Config.GetAsrFiles(_settings.Current.Precision);
+                Config.GetAsrFiles(ModelPrecision.Fp32);
 
             using var parakeet = new ParakeetAsr(modelsDir, encoderFile, decoderJointFile);
             var segsSubset = segs.GetRange(startSeg, segs.Count - startSeg);

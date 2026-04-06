@@ -33,9 +33,3 @@ Norėdami sustabdyti vykdomą atsisiuntimą, spustelėkite `Cancel`. Būsenos ei
 ## Atsisiuntimo klaidos
 
 Jei atsisiuntimas nepavyksta, būsenos eilutėje rodoma `Download failed: <reason>`. Patikrinkite interneto ryšį ir dar kartą spustelėkite `Download Missing Models`, kad bandytumėte iš naujo. Programa tęsia atsisiuntimą nuo paskutinio sėkmingai užbaigto failo.
-
-## Tikslumo keitimas
-
-Atsisiunčiami modelių failai priklauso nuo pasirinkto **Model Precision** nustatymo. Norėdami jį pakeisti, eikite į `Settings… > Models > Model Precision`. Jei pakeičiate tikslumą po atsisiuntimo, naują failų rinkinį reikia atsisiųsti atskirai. Žr. [Modelio svorių tikslumo pasirinkimas](model_precision.md).
-
----

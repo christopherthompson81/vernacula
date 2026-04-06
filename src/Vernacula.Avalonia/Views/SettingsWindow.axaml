@@ -381,31 +381,6 @@
                                 HorizontalAlignment="Left"
                                 Margin="0,0,0,16" />
 
-                        <!-- Precision -->
-                        <Separator Background="{DynamicResource OverlayBrush}" Margin="0,0,0,12" />
-                        <TextBlock x:Name="ModelPrecisionLabel"
-                                   Text="{Binding Source={x:Static local:Loc.Instance}, Path=[menu_model_precision]}"
-                                   Foreground="{DynamicResource TextBrush}"
-                                   FontWeight="SemiBold"
-                                   Margin="0,0,0,8" />
-                        <StackPanel Orientation="Horizontal">
-                            <RadioButton x:Name="PrecisionFp32Radio"
-                                         Content="{Binding Source={x:Static local:Loc.Instance}, Path=[menu_precision_fp16]}"
-                                         Foreground="{DynamicResource TextBrush}"
-                                         GroupName="Precision"
-                                         IsChecked="{Binding IsFp32, Mode=OneWay}"
-                                         Command="{Binding SetPrecisionCommand}"
-                                         CommandParameter="Fp32"
-                                         Margin="0,0,20,0" />
-                            <RadioButton x:Name="PrecisionInt8Radio"
-                                         Content="{Binding Source={x:Static local:Loc.Instance}, Path=[menu_precision_int8]}"
-                                         Foreground="{DynamicResource TextBrush}"
-                                         GroupName="Precision"
-                                         IsChecked="{Binding IsInt8, Mode=OneWay}"
-                                         Command="{Binding SetPrecisionCommand}"
-                                         CommandParameter="Int8" />
-                        </StackPanel>
-
                     </StackPanel>
                 </Border>
 

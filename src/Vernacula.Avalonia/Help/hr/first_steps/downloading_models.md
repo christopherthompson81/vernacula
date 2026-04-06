@@ -33,9 +33,3 @@ Za zaustavljanje preuzimanja u tijeku kliknite `Cancel`. Statusni redak prikazat
 ## Greške pri preuzimanju
 
 Ako preuzimanje ne uspije, statusni redak prikazuje `Download failed: <reason>`. Provjerite internetsku vezu i kliknite `Download Missing Models` ponovo za ponovni pokušaj. Aplikacija nastavlja od posljednje uspješno dovršene datoteke.
-
-## Promjena preciznosti
-
-Datoteke modela koje je potrebno preuzeti ovise o odabranoj **Model Precision**. Za promjenu idite na `Settings… > Models > Model Precision`. Ako promijenite preciznost nakon preuzimanja, novi skup datoteka mora se preuzeti zasebno. Pogledajte [Odabir preciznosti težina modela](model_precision.md).
-
----

@@ -16,7 +16,6 @@ Machen Sie die Anwendung bereit zur Verwendung.
 - [Sprache auswählen](first_steps/language.md)
 - [Design auswählen](first_steps/theme.md)
 - [Modelle herunterladen](first_steps/downloading_models.md)
-- [Modellgewichtspräzision auswählen](first_steps/model_precision.md)
 - [CUDA und cuDNN für GPU-Beschleunigung installieren](first_steps/cuda_installation.md)
 
 ## Funktionen

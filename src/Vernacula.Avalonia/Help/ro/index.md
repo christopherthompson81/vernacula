@@ -16,7 +16,6 @@ Pregătiți aplicația pentru utilizare.
 - [Alegerea unei limbi](first_steps/language.md)
 - [Alegerea unei teme](first_steps/theme.md)
 - [Descărcarea modelelor](first_steps/downloading_models.md)
-- [Alegerea preciziei greutăților modelului](first_steps/model_precision.md)
 - [Instalarea CUDA și cuDNN pentru accelerare GPU](first_steps/cuda_installation.md)
 
 ## Operațiuni

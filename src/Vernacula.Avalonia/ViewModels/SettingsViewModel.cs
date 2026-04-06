@@ -18,15 +18,11 @@ internal partial class SettingsViewModel : ObservableObject
     private readonly SettingsService     _svc;
     private readonly ModelManagerService _modelMgr;
 
-    // ── Theme / Precision / Language ─────────────────────────────────────────
+    // ── Theme / Language ─────────────────────────────────────────────────────
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(IsDark), nameof(IsLight))]
     private AppTheme _selectedTheme;
-
-    [ObservableProperty]
-    [NotifyPropertyChangedFor(nameof(IsInt8), nameof(IsFp32))]
-    private ModelPrecision _selectedPrecision;
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(IsSileroVad), nameof(IsSortformer), nameof(IsDiariZen))]
@@ -43,8 +39,6 @@ internal partial class SettingsViewModel : ObservableObject
     [ObservableProperty] private string             _selectedLanguage;
     [ObservableProperty] private Loc.LanguageInfo?  _selectedLanguageInfo;
 
-    /// <summary>Called after precision changes so callers can re-check model file lists.</summary>
-    public Action? OnPrecisionChanged  { get; set; }
     /// <summary>Called after a successful download so Home can refresh its model status.</summary>
     public Action? AfterDownload       { get; set; }
     /// <summary>Called after segmentation mode or DiariZen status changes.</summary>
@@ -56,8 +50,6 @@ internal partial class SettingsViewModel : ObservableObject
 
     public bool IsDark              => SelectedTheme == AppTheme.Dark;
     public bool IsLight             => SelectedTheme == AppTheme.Light;
-    public bool IsInt8              => SelectedPrecision == ModelPrecision.Int8;
-    public bool IsFp32              => SelectedPrecision == ModelPrecision.Fp32;
     public bool IsSileroVad         => SelectedSegmentation == SegmentationMode.SileroVad;
     public bool IsSortformer        => SelectedSegmentation == SegmentationMode.Sortformer;
     public bool IsDiariZen          => SelectedSegmentation == SegmentationMode.DiariZen;
@@ -120,7 +112,6 @@ internal partial class SettingsViewModel : ObservableObject
         _svc                   = svc;
         _modelMgr              = modelMgr;
         _selectedTheme                = svc.Current.Theme;
-        _selectedPrecision            = svc.Current.Precision;
         _selectedSegmentation         = svc.Current.Segmentation == SegmentationMode.DiariZen && !svc.IsGatedModelAccepted(DiariZenGatedModelId)
             ? SegmentationMode.Sortformer
             : svc.Current.Segmentation;
@@ -158,14 +149,6 @@ internal partial class SettingsViewModel : ObservableObject
         _svc.Current.Theme = value;
         _svc.Save();
         ThemeManager.Apply(value);
-    }
-
-    partial void OnSelectedPrecisionChanged(ModelPrecision value)
-    {
-        _svc.Current.Precision = value;
-        _svc.Save();
-        OnPrecisionChanged?.Invoke();
-        _ = CheckModelsAsync();
     }
 
     partial void OnSelectedSegmentationChanged(SegmentationMode value)
@@ -223,7 +206,6 @@ internal partial class SettingsViewModel : ObservableObject
     }
 
     [RelayCommand] private void SetTheme(string n)              { if (Enum.TryParse<AppTheme>(n,         out var t)) SelectedTheme              = t; }
-    [RelayCommand] private void SetPrecision(string n)          { if (Enum.TryParse<ModelPrecision>(n,   out var p)) SelectedPrecision          = p; }
     [RelayCommand] private void SetSegmentation(string n)       { if (Enum.TryParse<SegmentationMode>(n, out var s)) SelectedSegmentation       = s; }
     [RelayCommand] private void SetDenoiser(string n)           { if (Enum.TryParse<DenoiserMode>(n,     out var d)) SelectedDenoiser           = d; }
     [RelayCommand] private void SetEditorPlaybackMode(string n) { if (Enum.TryParse<PlaybackMode>(n,     out var m)) SelectedEditorPlaybackMode = m; }

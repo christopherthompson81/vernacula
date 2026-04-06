@@ -33,9 +33,3 @@ Aby zatrzymać trwające pobieranie, kliknij `Cancel`. Wiersz stanu wyświetli k
 ## Błędy pobierania
 
 Jeśli pobieranie nie powiedzie się, wiersz stanu wyświetli komunikat `Download failed: <reason>`. Sprawdź połączenie internetowe i kliknij ponownie `Download Missing Models`, aby ponowić próbę. Aplikacja wznawia pobieranie od ostatniego pomyślnie ukończonego pliku.
-
-## Zmiana precyzji
-
-Pliki modeli, które należy pobrać, zależą od wybranej opcji **Model Precision**. Aby ją zmienić, przejdź do `Settings… > Models > Model Precision`. Jeśli zmienisz precyzję po pobraniu modeli, nowy zestaw plików musi zostać pobrany osobno. Zobacz [Wybór precyzji wag modelu](model_precision.md).
-
----

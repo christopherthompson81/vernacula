@@ -16,7 +16,6 @@ Pripravte aplikáciu na používanie.
 - [Výber jazyka](first_steps/language.md)
 - [Výber motívu](first_steps/theme.md)
 - [Sťahovanie modelov](first_steps/downloading_models.md)
-- [Výber presnosti váh modelu](first_steps/model_precision.md)
 - [Inštalácia CUDA a cuDNN pre akceleráciu pomocou GPU](first_steps/cuda_installation.md)
 
 ## Operácie

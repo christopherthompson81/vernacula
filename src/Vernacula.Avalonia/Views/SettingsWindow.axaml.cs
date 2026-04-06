@@ -63,11 +63,7 @@ public partial class SettingsWindow : Window
         CancelDownloadButton.Content = Loc.Instance["btn_cancel"];
         CheckUpdatesButton.Content = Loc.Instance["btn_check_updates"];
         OpenGatedModelsButton.Content = "Manage Gated Models";
-        ModelPrecisionLabel.Text = Loc.Instance["menu_model_precision"];
-        PrecisionFp32Radio.Content = Loc.Instance["menu_precision_fp16"];
-        PrecisionInt8Radio.Content = Loc.Instance["menu_precision_int8"];
-
-        SegmentationSectionHeader.Text = Loc.Instance["settings_section_segmentation"];
+SegmentationSectionHeader.Text = Loc.Instance["settings_section_segmentation"];
         SegmentationSileroLabel.Text = Loc.Instance["settings_segmentation_vad"];
         SegmentationSileroDescription.Text = Loc.Instance["settings_segmentation_vad_desc"];
         SegmentationSortformerLabel.Text = Loc.Instance["settings_segmentation_diarization"];

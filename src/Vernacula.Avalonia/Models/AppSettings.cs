@@ -8,7 +8,6 @@ public enum PlaybackMode { Single, AutoAdvance, Continuous }
 public class AppSettings
 {
     public AppTheme           Theme               { get; set; } = AppTheme.Dark;
-    public ModelPrecision     Precision           { get; set; } = ModelPrecision.Fp32;
     public SegmentationMode   Segmentation        { get; set; } = SegmentationMode.SileroVad;
     public DenoiserMode       Denoiser            { get; set; } = DenoiserMode.None;
     public PlaybackMode       EditorPlaybackMode  { get; set; } = PlaybackMode.Continuous;

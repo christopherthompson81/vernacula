@@ -191,8 +191,7 @@ internal partial class MainViewModel : ObservableObject
             CurrentPanel = AppPanel.Home;
         };
 
-        // Re-check model presence when precision changes or after a download
-        Settings.OnPrecisionChanged = () => _ = Home.CheckModelsAsync();
+        // Re-check model presence after a download
         Settings.AfterDownload      = () => _ = Home.CheckModelsAsync();
         Settings.OnSegmentationChanged = () => _ = Home.CheckModelsAsync();
 

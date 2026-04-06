@@ -33,9 +33,3 @@ Allalaadimise peatamiseks klõpsake `Cancel`. Olekureal kuvatakse `Download canc
 ## Allalaadimise vead
 
 Kui allalaadimine ebaõnnestub, kuvatakse olekureal `Download failed: <reason>`. Kontrollige oma internetiühendust ja klõpsake uuesti `Download Missing Models`, et proovida uuesti. Rakendus jätkab viimasest edukalt lõpetatud failist.
-
-## Täpsuse muutmine
-
-Alla laaditavad mudelifailid sõltuvad valitud **Model Precision** seadistusest. Selle muutmiseks minge `Settings… > Models > Model Precision`. Kui vahetate täpsust pärast allalaadimist, tuleb uus failikomplekt eraldi alla laadida. Vaadake [Mudeli kaalu täpsuse valimine](model_precision.md).
-
----

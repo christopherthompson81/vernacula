@@ -16,7 +16,6 @@ Get the application ready to use.
 - [Picking a Language](first_steps/language.md)
 - [Picking a Theme](first_steps/theme.md)
 - [Downloading Models](first_steps/downloading_models.md)
-- [Picking Model Weight Precision](first_steps/model_precision.md)
 - [Installing CUDA and cuDNN for GPU Acceleration](first_steps/cuda_installation.md)
 
 ## Operations

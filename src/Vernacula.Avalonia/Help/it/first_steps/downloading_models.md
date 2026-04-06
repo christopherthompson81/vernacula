@@ -33,9 +33,3 @@ Per interrompere un download in corso, fare clic su `Cancel`. La riga di stato m
 ## Errori di download
 
 Se un download non riesce, la riga di stato mostra `Download failed: <reason>`. Verificare la connessione Internet e fare nuovamente clic su `Download Missing Models` per riprovare. L'applicazione riprende dall'ultimo file completato con successo.
-
-## Modifica della precisione
-
-I file del modello da scaricare dipendono dalla **Model Precision** selezionata. Per modificarla, andare su `Settings… > Models > Model Precision`. Se si cambia la precisione dopo aver effettuato il download, il nuovo set di file deve essere scaricato separatamente. Vedere [Selezione della precisione dei pesi del modello](model_precision.md).
-
----
