@@ -6,7 +6,7 @@ topic_id: first_steps_downloading_models
 
 # Hentning af modeller
 
-Parakeet Transskription kræver AI-modelfiler for at kunne køre. Disse følger ikke med applikationen og skal hentes, inden du foretager din første transskription.
+Vernacula-Desktop kræver AI-modelfiler for at kunne køre. Disse følger ikke med applikationen og skal hentes, inden du foretager din første transskription.
 
 ## Modelstatus (startskærm)
 

@@ -9,11 +9,11 @@ internal class SettingsService
 
     private static readonly string SettingsPath = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-        "Parakeet", "settings.json");
+        "Vernacula", "settings.json");
 
     private static readonly string DefaultModelsDir = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-        "Parakeet", "models");
+        "Vernacula", "models");
 
     public AppSettings Current { get; private set; } = new();
 
@@ -84,12 +84,12 @@ internal class SettingsService
     {
         string dir = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "Parakeet", "jobs");
+            "Vernacula", "jobs");
         Directory.CreateDirectory(dir);
         return dir;
     }
 
     public string GetControlDbPath() => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-        "Parakeet", "parakeet.db");
+        "Vernacula", "vernacula.db");
 }

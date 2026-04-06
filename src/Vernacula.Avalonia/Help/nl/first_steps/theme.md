@@ -6,7 +6,7 @@ topic_id: first_steps_theme
 
 # Een thema kiezen
 
-Parakeet Transcription biedt een donker en een licht thema. Het actieve thema wordt aangegeven met een vinkje in het menu.
+Vernacula-Desktop biedt een donker en een licht thema. Het actieve thema wordt aangegeven met een vinkje in het menu.
 
 ## Het thema wijzigen
 

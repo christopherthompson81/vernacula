@@ -6,7 +6,7 @@ topic_id: first_steps_downloading_models
 
 # Modeļu lejupielāde
 
-Parakeet Transcription darbībai nepieciešami AI modeļu faili. Tie nav iekļauti lietojumprogrammā un ir jālejupielādē pirms pirmās transkripcijas.
+Vernacula-Desktop darbībai nepieciešami AI modeļu faili. Tie nav iekļauti lietojumprogrammā un ir jālejupielādē pirms pirmās transkripcijas.
 
 ## Modeļu statuss (sākuma ekrāns)
 

@@ -12,8 +12,8 @@ namespace Vernacula.App.Services;
 /// <param name="ResourcePath">
 ///   Language-neutral path relative to the per-language Help folder,
 ///   e.g. "first_steps/model_precision.md" or "index.md".
-///   The full manifest resource name is built at load time:
-///   "parakeet_csharp.Help.{lang}." + path.Replace('/','.')
+///   Loaded at runtime via Avalonia's AssetLoader:
+///   avares://Vernacula.Avalonia/Help/{lang}/{ResourcePath}
 /// </param>
 internal record HelpTopic(string TopicId, string Title, string ResourcePath);
 

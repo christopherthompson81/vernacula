@@ -6,7 +6,7 @@ topic_id: first_steps_downloading_models
 
 # Mallien lataaminen
 
-Parakeet Transcription tarvitsee toimiakseen tekoälymallitiedostoja. Nämä eivät sisälly sovellukseen, vaan ne on ladattava ennen ensimmäistä transkriptiota.
+Vernacula-Desktop tarvitsee toimiakseen tekoälymallitiedostoja. Nämä eivät sisälly sovellukseen, vaan ne on ladattava ennen ensimmäistä transkriptiota.
 
 ## Mallien tila (aloitusnäyttö)
 

@@ -6,7 +6,7 @@ topic_id: first_steps_language
 
 # Għażla ta' Lingwa
 
-Parakeet Transcription jappoġġja lingwi tal-wiri multipli għall-interface tal-utent tiegħu.
+Vernacula-Desktop jappoġġja lingwi tal-wiri multipli għall-interface tal-utent tiegħu.
 
 ## Kif Tibdel il-Lingwa
 

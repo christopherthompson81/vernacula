@@ -6,7 +6,7 @@ topic_id: first_steps_downloading_models
 
 # Modellek letöltése
 
-A Parakeet Transcription működéséhez AI-modellfájlokra van szükség. Ezek nem részei az alkalmazáscsomagnak, ezért az első átírás előtt le kell tölteni őket.
+A Vernacula-Desktop működéséhez AI-modellfájlokra van szükség. Ezek nem részei az alkalmazáscsomagnak, ezért az első átírás előtt le kell tölteni őket.
 
 ## Modell állapota (kezdőképernyő)
 

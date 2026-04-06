@@ -6,7 +6,7 @@ topic_id: first_steps_downloading_models
 
 # Preuzimanje modela
 
-Parakeet Transcription zahtijeva datoteke AI modela za rad. Te datoteke nisu uključene u aplikaciju i moraju se preuzeti prije prve transkripcije.
+Vernacula-Desktop zahtijeva datoteke AI modela za rad. Te datoteke nisu uključene u aplikaciju i moraju se preuzeti prije prve transkripcije.
 
 ## Status modela (početni zaslon)
 

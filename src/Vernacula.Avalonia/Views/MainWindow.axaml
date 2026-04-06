@@ -5,7 +5,7 @@
         xmlns:v="using:Vernacula.App.Views"
         xmlns:local="using:Vernacula.App"
         x:DataType="vm:MainViewModel"
-        Title="Parakeet Transcription"
+        Title="Vernacula-Desktop"
         Icon="avares://Vernacula.Avalonia/Assets/icon.ico"
         Width="920" Height="840"
         MinWidth="700" MinHeight="500"

@@ -204,7 +204,7 @@
   "dlg_filter_db": "Βάση Δεδομένων SQLite|*.db",
 
   "menu_help_contents": "_Περιεχόμενα Βοήθειας",
-  "help_window_title": "Parakeet Transcription — Βοήθεια",
+  "help_window_title": "Vernacula-Desktop — Βοήθεια",
 
   "help_group_first_steps": "Πρώτα Βήματα",
   "help_group_operations": "Λειτουργίες",
@@ -223,8 +223,8 @@
   "help_topic_operations_pausing_resuming_removing": "Παύση / Συνέχιση / Αφαίρεση",
   "help_topic_operations_bulk_add_jobs": "Προσθήκη Εργασιών σε Μάζα",
 
-  "about_title": "Σχετικά με το Parakeet Transcription",
-  "about_heading": "Parakeet Transcription",
+  "about_title": "Σχετικά με το Vernacula-Desktop",
+  "about_heading": "Vernacula-Desktop",
   "about_version": "Έκδοση {version}",
   "about_description": "Μεταγραφή ήχου με τεχνητή νοημοσύνη\nμε αυτόματο διαχωρισμό ομιλητών,\nπου εκτελείται εξ ολοκλήρου στη συσκευή σας.",
   "about_tech": "NeMo Parakeet ASR · Sortformer · ONNX Runtime",

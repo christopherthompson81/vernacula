@@ -1,12 +1,12 @@
 ---
 title: "L-Installazzjoni ta' CUDA u cuDNN għall-Aċċelerazzjoni tal-GPU"
-description: "Kif twaqqaf NVIDIA CUDA u cuDNN sabiex Parakeet Transcription ikun jista' juża l-GPU tiegħek."
+description: "Kif twaqqaf NVIDIA CUDA u cuDNN sabiex Vernacula-Desktop ikun jista' juża l-GPU tiegħek."
 topic_id: first_steps_cuda_installation
 ---
 
 # L-Installazzjoni ta' CUDA u cuDNN għall-Aċċelerazzjoni tal-GPU
 
-Parakeet Transcription jista' juża GPU ta' NVIDIA biex jaċċelera t-traskrizzjoni b'mod sinifikanti. L-aċċelerazzjoni tal-GPU teħtieġ li l-NVIDIA CUDA Toolkit u l-libreriji runtime ta' cuDNN ikunu installati fuq is-sistema tiegħek.
+Vernacula-Desktop jista' juża GPU ta' NVIDIA biex jaċċelera t-traskrizzjoni b'mod sinifikanti. L-aċċelerazzjoni tal-GPU teħtieġ li l-NVIDIA CUDA Toolkit u l-libreriji runtime ta' cuDNN ikunu installati fuq is-sistema tiegħek.
 
 ## Rekwiżiti
 
@@ -18,7 +18,7 @@ Parakeet Transcription jista' juża GPU ta' NVIDIA biex jaċċelera t-traskrizzj
 
 ### 1. Installa l-CUDA Toolkit
 
-Niżżel u mexxi l-installer tal-CUDA Toolkit mis-sit web tal-iżviluppaturi ta' NVIDIA. Matul l-installazzjoni, aċċetta l-paths default. L-installer jistabbilixxi l-varjabbli ambjentali `CUDA_PATH` awtomatikament — Parakeet juża din il-varjabbli biex isib il-libreriji tal-CUDA.
+Niżżel u mexxi l-installer tal-CUDA Toolkit mis-sit web tal-iżviluppaturi ta' NVIDIA. Matul l-installazzjoni, aċċetta l-paths default. L-installer jistabbilixxi l-varjabbli ambjentali `CUDA_PATH` awtomatikament — Vernacula-Desktop juża din il-varjabbli biex isib il-libreriji tal-CUDA.
 
 ### 2. Installa cuDNN
 
@@ -28,7 +28,7 @@ Inkella, installa cuDNN billi tuża l-installer ta' NVIDIA cuDNN jekk ikun dispo
 
 ### 3. Erġa' Ibda l-Applikazzjoni
 
-Agħlaq u erġa' iftaħ Parakeet Transcription wara l-installazzjoni. L-applikazzjoni tiċċekkja għal CUDA meta tibda.
+Agħlaq u erġa' iftaħ Vernacula-Desktop wara l-installazzjoni. L-applikazzjoni tiċċekkja għal CUDA meta tibda.
 
 ## L-Istat tal-GPU fis-Settings
 
@@ -59,6 +59,6 @@ Meta CUDA ikun attiv, it-taqsima **Hardware & Performance** turi wkoll il-limitu
 
 ## It-Tħaddim Mingħajr GPU
 
-Jekk CUDA ma jkunx disponibbli, Parakeet jaqa' lura awtomatikament għall-ipproċessar tal-CPU. It-traskrizzjoni xorta taħdem iżda tkun aktar bil-mod, speċjalment għal fajls ta' awdjo twal.
+Jekk CUDA ma jkunx disponibbli, Vernacula-Desktop jaqa' lura awtomatikament għall-ipproċessar tal-CPU. It-traskrizzjoni xorta taħdem iżda tkun aktar bil-mod, speċjalment għal fajls ta' awdjo twal.
 
 ---

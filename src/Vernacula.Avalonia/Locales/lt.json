@@ -204,7 +204,7 @@
   "dlg_filter_db": "SQLite duomenų bazė|*.db",
 
   "menu_help_contents": "_Pagalbos turinys",
-  "help_window_title": "Parakeet Transcription — Pagalba",
+  "help_window_title": "Vernacula-Desktop — Pagalba",
 
   "help_group_first_steps": "Pirmieji žingsniai",
   "help_group_operations": "Operacijos",
@@ -223,8 +223,8 @@
   "help_topic_operations_pausing_resuming_removing": "Pauzė / Tęsti / Pašalinti",
   "help_topic_operations_bulk_add_jobs": "Masinis darbų pridėjimas",
 
-  "about_title": "Apie Parakeet Transcription",
-  "about_heading": "Parakeet Transcription",
+  "about_title": "Apie Vernacula-Desktop",
+  "about_heading": "Vernacula-Desktop",
   "about_version": "Versija {version}",
   "about_description": "AI palaikoma garso transkripcija su\nautomatine kalbėtojų diarizacija,\nviskas vyksta jūsų įrenginyje.",
   "about_tech": "NeMo Parakeet ASR · Sortformer · ONNX Runtime",

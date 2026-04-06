@@ -6,7 +6,7 @@ topic_id: first_steps_downloading_models
 
 # Mudelite allalaadimine
 
-Parakeet Transcription vajab töötamiseks AI-mudelite faile. Need ei ole rakendusega kaasas ja tuleb enne esimest transkriptsiooni alla laadida.
+Vernacula-Desktop vajab töötamiseks AI-mudelite faile. Need ei ole rakendusega kaasas ja tuleb enne esimest transkriptsiooni alla laadida.
 
 ## Mudeli olek (avakuva)
 

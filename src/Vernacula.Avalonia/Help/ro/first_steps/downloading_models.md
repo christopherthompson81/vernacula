@@ -6,7 +6,7 @@ topic_id: first_steps_downloading_models
 
 # Descărcarea Modelelor
 
-Parakeet Transcription necesită fișiere de model AI pentru a funcționa. Acestea nu sunt incluse în aplicație și trebuie descărcate înainte de prima transcriere.
+Vernacula-Desktop necesită fișiere de model AI pentru a funcționa. Acestea nu sunt incluse în aplicație și trebuie descărcate înainte de prima transcriere.
 
 ## Starea Modelelor (Ecranul Principal)
 

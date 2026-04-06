@@ -6,7 +6,7 @@ topic_id: first_steps_theme
 
 # Výběr motivu
 
-Parakeet Transcription nabízí tmavý a světlý motiv. Aktivní motiv je v nabídce označen zaškrtnutím.
+Vernacula-Desktop nabízí tmavý a světlý motiv. Aktivní motiv je v nabídce označen zaškrtnutím.
 
 ## Jak změnit motiv
 

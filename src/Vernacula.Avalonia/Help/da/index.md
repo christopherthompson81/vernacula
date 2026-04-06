@@ -1,12 +1,12 @@
 ---
-title: "Parakeet Transskription — Hjælp"
+title: "Vernacula-Desktop — Hjælp"
 description: "Oversigt og navigation for alle hjælpeemner."
 topic_id: help_index
 ---
 
-# Parakeet Transskription Hjælp
+# Vernacula-Desktop Hjælp
 
-Parakeet Transskription er en AI-drevet lydtransskriptionsapplikation med automatisk taler-diarisering. Al behandling foregår udelukkende på din enhed.
+Vernacula-Desktop er en AI-drevet lydtransskriptionsapplikation med automatisk taler-diarisering. Al behandling foregår udelukkende på din enhed.
 
 ## Første trin
 

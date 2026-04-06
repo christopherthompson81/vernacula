@@ -6,7 +6,7 @@ topic_id: first_steps_theme
 
 # Picking a Theme
 
-Parakeet Transcription offers Dark and Light themes. The active theme is indicated by a checkmark in the menu.
+Vernacula-Desktop offers Dark and Light themes. The active theme is indicated by a checkmark in the menu.
 
 ## How to Change the Theme
 

@@ -6,7 +6,7 @@ topic_id: first_steps_theme
 
 # Temos pasirinkimas
 
-Parakeet Transcription siūlo tamsią ir šviesią temas. Aktyvi tema pažymėta varnele meniu.
+Vernacula-Desktop siūlo tamsią ir šviesią temas. Aktyvi tema pažymėta varnele meniu.
 
 ## Kaip pakeisti temą
 

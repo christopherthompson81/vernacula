@@ -6,7 +6,7 @@ topic_id: first_steps_language
 
 # Picking a Language
 
-Parakeet Transcription supports multiple display languages for its user interface.
+Vernacula-Desktop supports multiple display languages for its user interface.
 
 ## How to Change the Language
 

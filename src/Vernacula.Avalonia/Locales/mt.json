@@ -204,7 +204,7 @@
   "dlg_filter_db": "Bażi tad-dejta SQLite|*.db",
 
   "menu_help_contents": "_Kontenuti tal-Għajnuna",
-  "help_window_title": "Parakeet Transcription — Għajnuna",
+  "help_window_title": "Vernacula-Desktop — Għajnuna",
 
   "help_group_first_steps": "L-ewwel Passi",
   "help_group_operations": "Operazzjonijiet",
@@ -223,8 +223,8 @@
   "help_topic_operations_pausing_resuming_removing": "Twaqqif / Għid il-Bidu / Neħħi",
   "help_topic_operations_bulk_add_jobs": "Żieda bl-ingrossa ta' Xogħlijiet",
 
-  "about_title": "Dwar Parakeet Transcription",
-  "about_heading": "Parakeet Transcription",
+  "about_title": "Dwar Vernacula-Desktop",
+  "about_heading": "Vernacula-Desktop",
   "about_version": "Verżjoni {version}",
   "about_description": "Transkrizzjoni tal-awdjo b'AI\nb'djarizazzjoni awtomatika tal-kelliema,\ntaħdem kompletament fuq l-apparat tiegħek.",
   "about_tech": "NeMo Parakeet ASR · Sortformer · ONNX Runtime",

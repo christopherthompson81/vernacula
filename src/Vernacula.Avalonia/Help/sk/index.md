@@ -1,12 +1,12 @@
 ---
-title: "Parakeet Transcription — Pomocník"
+title: "Vernacula-Desktop — Pomocník"
 description: "Prehľad a navigácia pre všetky témy pomocníka."
 topic_id: help_index
 ---
 
-# Pomocník aplikácie Parakeet Transcription
+# Pomocník aplikácie Vernacula-Desktop
 
-Parakeet Transcription je aplikácia na prepis zvuku poháňaná umelou inteligenciou s automatickou diarizáciou hovoriacich. Všetko spracovanie prebieha výhradne na vašom zariadení.
+Vernacula-Desktop je aplikácia na prepis zvuku poháňaná umelou inteligenciou s automatickou diarizáciou hovoriacich. Všetko spracovanie prebieha výhradne na vašom zariadení.
 
 ## Prvé kroky
 

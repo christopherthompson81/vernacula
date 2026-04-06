@@ -1,4 +1,4 @@
-# Parakeet Full-Pipeline Benchmark
+# Vernacula Full-Pipeline Benchmark
 
 Compares **CUDA**, **DirectML**, and **CPU** execution providers by running the real production pipeline:
 **Sortformer diarization → per-segment Parakeet ASR**.
@@ -19,7 +19,7 @@ this benchmark does the same.
 
 | File | Description |
 |---|---|
-| `ParakeetBenchmark.csproj` | Console project; `EP` build property selects the OnnxRuntime package |
+| `Vernacula.CLI.csproj` | Console project; `EP` build property selects the OnnxRuntime package |
 | `Program.cs` | Main benchmark: arg parsing, session loading, pipeline loop, reporting |
 | `BenchmarkSortformer.cs` | Adapted `SortformerStreamer`; EP-configurable, `ResetState()` for run isolation |
 | `BenchmarkAudioUtils.cs` | Self-contained mel spectrogram pipeline (no WPF/ClosedXML deps) |
@@ -74,19 +74,19 @@ dotnet run   -c Release -p:EP=Cpu -p:Platform=x64 -- --audio <file> --model <mod
 
 ```
 dotnet run -c Release -p:EP=Cuda -p:Platform=x64 -- ^
-  --audio "C:\audio\sample.wav" --model "C:\models\parakeet" --warmup 3 --runs 10
+  --audio "C:\audio\sample.wav" --model "C:\models\vernacula" --warmup 3 --runs 10
 ```
 
 For a quick smoke test on a long file:
 ```
 dotnet run -c Release -p:EP=Cuda -p:Platform=x64 -- ^
-  --audio "C:\audio\long.wav" --model "C:\models\parakeet" --max-duration 120 --runs 5
+  --audio "C:\audio\long.wav" --model "C:\models\vernacula" --max-duration 120 --runs 5
 ```
 
 To test encoder batching on diarized segments:
 ```
 dotnet run -c Release -p:EP=Cuda -p:Platform=x64 -- ^
-  --audio "C:\audio\sample.wav" --model "C:\models\parakeet" ^
+  --audio "C:\audio\sample.wav" --model "C:\models\vernacula" ^
   --encoder-batch-size 8 --length-bucket-ms 1000 --runs 10
 ```
 

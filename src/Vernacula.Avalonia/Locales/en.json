@@ -170,7 +170,7 @@
   "dlg_filter_db": "SQLite Database|*.db",
 
   "menu_help_contents": "Help Contents",
-  "help_window_title": "Parakeet Transcription — Help",
+  "help_window_title": "Vernacula-Desktop — Help",
 
   "help_group_first_steps": "First Steps",
   "help_group_operations": "Operations",
@@ -229,8 +229,8 @@
   "settings_model_warning": "Models missing — download them here to enable transcription.",
   "home_update_available": "Updated model weights are available. Open Settings to update.",
 
-  "about_title": "About Parakeet Transcription",
-  "about_heading": "Parakeet Transcription",
+  "about_title": "About Vernacula-Desktop",
+  "about_heading": "Vernacula-Desktop",
   "about_version": "Version {version}",
   "about_description": "AI-powered audio transcription with\nautomatic speaker diarization,\nrunning entirely on your device.",
   "about_tech": "NeMo Parakeet ASR · Sortformer · ONNX Runtime",

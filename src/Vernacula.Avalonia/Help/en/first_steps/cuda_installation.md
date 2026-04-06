@@ -1,12 +1,12 @@
 ---
 title: "Installing CUDA and cuDNN for GPU Acceleration"
-description: "How to set up NVIDIA CUDA and cuDNN so Parakeet Transcription can use your GPU."
+description: "How to set up NVIDIA CUDA and cuDNN so Vernacula-Desktop can use your GPU."
 topic_id: first_steps_cuda_installation
 ---
 
 # Installing CUDA and cuDNN for GPU Acceleration
 
-Parakeet Transcription can use an NVIDIA GPU to accelerate transcription significantly. GPU acceleration requires the NVIDIA CUDA Toolkit and cuDNN runtime libraries to be installed on your system.
+Vernacula-Desktop can use an NVIDIA GPU to accelerate transcription significantly. GPU acceleration requires the NVIDIA CUDA Toolkit and cuDNN runtime libraries to be installed on your system.
 
 ## Requirements
 
@@ -18,7 +18,7 @@ Parakeet Transcription can use an NVIDIA GPU to accelerate transcription signifi
 
 ### 1. Install the CUDA Toolkit
 
-Download and run the CUDA Toolkit installer from the NVIDIA developer website. During installation, accept the default paths. The installer sets the `CUDA_PATH` environment variable automatically — Parakeet uses this variable to locate the CUDA libraries.
+Download and run the CUDA Toolkit installer from the NVIDIA developer website. During installation, accept the default paths. The installer sets the `CUDA_PATH` environment variable automatically — Vernacula-Desktop uses this variable to locate the CUDA libraries.
 
 ### 2. Install cuDNN
 
@@ -28,7 +28,7 @@ Alternatively, install cuDNN using the NVIDIA cuDNN installer if one is availabl
 
 ### 3. Restart the Application
 
-Close and reopen Parakeet Transcription after installation. The application checks for CUDA on startup.
+Close and reopen Vernacula-Desktop after installation. The application checks for CUDA on startup.
 
 ## GPU Status in Settings
 
@@ -59,4 +59,4 @@ When CUDA is active, the **Hardware & Performance** section also shows the curre
 
 ## Running Without a GPU
 
-If CUDA is not available, Parakeet falls back to CPU processing automatically. Transcription still works but will be slower, especially for long audio files.
+If CUDA is not available, Vernacula-Desktop falls back to CPU processing automatically. Transcription still works but will be slower, especially for long audio files.

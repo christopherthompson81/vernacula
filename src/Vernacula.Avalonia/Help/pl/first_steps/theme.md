@@ -6,7 +6,7 @@ topic_id: first_steps_theme
 
 # Wybór motywu
 
-Parakeet Transcription oferuje motywy ciemny i jasny. Aktywny motyw jest oznaczony znacznikiem wyboru w menu.
+Vernacula-Desktop oferuje motywy ciemny i jasny. Aktywny motyw jest oznaczony znacznikiem wyboru w menu.
 
 ## Jak zmienić motyw
 

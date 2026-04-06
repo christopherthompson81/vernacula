@@ -6,7 +6,7 @@ topic_id: first_steps_theme
 
 # Teeman valitseminen
 
-Parakeet Transcription tarjoaa tumman ja vaalean teeman. Aktiivinen teema on merkitty valintamerkillä valikossa.
+Vernacula-Desktop tarjoaa tumman ja vaalean teeman. Aktiivinen teema on merkitty valintamerkillä valikossa.
 
 ## Teeman vaihtaminen
 

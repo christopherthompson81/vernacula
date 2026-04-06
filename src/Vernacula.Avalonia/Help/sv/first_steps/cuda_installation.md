@@ -1,12 +1,12 @@
 ---
 title: "Installera CUDA och cuDNN för GPU-acceleration"
-description: "Hur du konfigurerar NVIDIA CUDA och cuDNN så att Parakeet Transcription kan använda din GPU."
+description: "Hur du konfigurerar NVIDIA CUDA och cuDNN så att Vernacula-Desktop kan använda din GPU."
 topic_id: first_steps_cuda_installation
 ---
 
 # Installera CUDA och cuDNN för GPU-acceleration
 
-Parakeet Transcription kan använda en NVIDIA GPU för att påskynda transkriberingen avsevärt. GPU-acceleration kräver att NVIDIA CUDA Toolkit och cuDNN-körtidsbibliotek är installerade på ditt system.
+Vernacula-Desktop kan använda en NVIDIA GPU för att påskynda transkriberingen avsevärt. GPU-acceleration kräver att NVIDIA CUDA Toolkit och cuDNN-körtidsbibliotek är installerade på ditt system.
 
 ## Krav
 
@@ -18,7 +18,7 @@ Parakeet Transcription kan använda en NVIDIA GPU för att påskynda transkriber
 
 ### 1. Installera CUDA Toolkit
 
-Ladda ned och kör CUDA Toolkit-installationsprogrammet från NVIDIAs utvecklarwebbplats. Godkänn standardsökvägarna under installationen. Installationsprogrammet ställer automatiskt in miljövariabeln `CUDA_PATH` — Parakeet använder den här variabeln för att hitta CUDA-biblioteken.
+Ladda ned och kör CUDA Toolkit-installationsprogrammet från NVIDIAs utvecklarwebbplats. Godkänn standardsökvägarna under installationen. Installationsprogrammet ställer automatiskt in miljövariabeln `CUDA_PATH` — Vernacula-Desktop använder den här variabeln för att hitta CUDA-biblioteken.
 
 ### 2. Installera cuDNN
 
@@ -28,7 +28,7 @@ Du kan också installera cuDNN med NVIDIAs cuDNN-installationsprogram om ett så
 
 ### 3. Starta om programmet
 
-Stäng och öppna Parakeet Transcription igen efter installationen. Programmet söker efter CUDA vid start.
+Stäng och öppna Vernacula-Desktop igen efter installationen. Programmet söker efter CUDA vid start.
 
 ## GPU-status i inställningarna
 
@@ -59,6 +59,6 @@ När CUDA är aktivt visar avsnittet **Hardware & Performance** också det aktue
 
 ## Köra utan GPU
 
-Om CUDA inte är tillgängligt faller Parakeet automatiskt tillbaka på CPU-bearbetning. Transkriberingen fungerar fortfarande men går långsammare, särskilt för långa ljudfiler.
+Om CUDA inte är tillgängligt faller Vernacula-Desktop automatiskt tillbaka på CPU-bearbetning. Transkriberingen fungerar fortfarande men går långsammare, särskilt för långa ljudfiler.
 
 ---

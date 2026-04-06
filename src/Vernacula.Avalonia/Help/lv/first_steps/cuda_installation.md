@@ -1,12 +1,12 @@
 ---
 title: "CUDA un cuDNN instalēšana GPU paātrināšanai"
-description: "Kā iestatīt NVIDIA CUDA un cuDNN, lai Parakeet Transcription varētu izmantot jūsu GPU."
+description: "Kā iestatīt NVIDIA CUDA un cuDNN, lai Vernacula-Desktop varētu izmantot jūsu GPU."
 topic_id: first_steps_cuda_installation
 ---
 
 # CUDA un cuDNN instalēšana GPU paātrināšanai
 
-Parakeet Transcription var izmantot NVIDIA GPU, lai ievērojami paātrinātu transkripciju. GPU paātrināšanai nepieciešams, lai jūsu sistēmā būtu instalēts NVIDIA CUDA Toolkit un cuDNN izpildlaika bibliotēkas.
+Vernacula-Desktop var izmantot NVIDIA GPU, lai ievērojami paātrinātu transkripciju. GPU paātrināšanai nepieciešams, lai jūsu sistēmā būtu instalēts NVIDIA CUDA Toolkit un cuDNN izpildlaika bibliotēkas.
 
 ## Prasības
 
@@ -18,7 +18,7 @@ Parakeet Transcription var izmantot NVIDIA GPU, lai ievērojami paātrinātu tra
 
 ### 1. Instalējiet CUDA Toolkit
 
-Lejupielādējiet un palaidiet CUDA Toolkit instalētāju no NVIDIA izstrādātāju vietnes. Instalēšanas laikā akceptējiet noklusējuma ceļus. Instalētājs automātiski iestata `CUDA_PATH` vides mainīgo — Parakeet izmanto šo mainīgo, lai atrastu CUDA bibliotēkas.
+Lejupielādējiet un palaidiet CUDA Toolkit instalētāju no NVIDIA izstrādātāju vietnes. Instalēšanas laikā akceptējiet noklusējuma ceļus. Instalētājs automātiski iestata `CUDA_PATH` vides mainīgo — Vernacula-Desktop izmanto šo mainīgo, lai atrastu CUDA bibliotēkas.
 
 ### 2. Instalējiet cuDNN
 
@@ -28,7 +28,7 @@ Alternatīvi, instalējiet cuDNN, izmantojot NVIDIA cuDNN instalētāju, ja tād
 
 ### 3. Restartējiet lietojumprogrammu
 
-Aizveriet un atkārtoti atveriet Parakeet Transcription pēc instalēšanas. Lietojumprogramma pārbauda CUDA klātbūtni startēšanas laikā.
+Aizveriet un atkārtoti atveriet Vernacula-Desktop pēc instalēšanas. Lietojumprogramma pārbauda CUDA klātbūtni startēšanas laikā.
 
 ## GPU statuss iestatījumos
 
@@ -59,6 +59,6 @@ Kad CUDA ir aktīvs, sadaļa **Hardware & Performance** rāda arī pašreizējo 
 
 ## Darbība bez GPU
 
-Ja CUDA nav pieejams, Parakeet automātiski pārslēdzas uz CPU apstrādi. Transkripcija joprojām darbojas, taču būs lēnāka, īpaši gariem audio failiem.
+Ja CUDA nav pieejams, Vernacula-Desktop automātiski pārslēdzas uz CPU apstrādi. Transkripcija joprojām darbojas, taču būs lēnāka, īpaši gariem audio failiem.
 
 ---

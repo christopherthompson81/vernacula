@@ -204,7 +204,7 @@
   "dlg_filter_db": "SQLite-tietokanta|*.db",
 
   "menu_help_contents": "_Ohje Sisältö",
-  "help_window_title": "Parakeet Transcription — Ohje",
+  "help_window_title": "Vernacula-Desktop — Ohje",
 
   "help_group_first_steps": "Ensimmäiset Askeleet",
   "help_group_operations": "Toiminnot",
@@ -223,8 +223,8 @@
   "help_topic_operations_pausing_resuming_removing": "Pysäytä / Jatka / Poista",
   "help_topic_operations_bulk_add_jobs": "Lisää Tehtäviä Massasti",
 
-  "about_title": "Tietoja Parakeet Transcriptionistä",
-  "about_heading": "Parakeet Transcription",
+  "about_title": "Tietoja Vernacula-Desktopistä",
+  "about_heading": "Vernacula-Desktop",
   "about_version": "Versio {version}",
   "about_description": "Teoälypohjainen äänitiedostojen transkribointi\nautomaattisella puhujan erittelyllä,\nkoko käsittely laitteessasi.",
   "about_tech": "NeMo Parakeet ASR · Sortformer · ONNX Runtime",

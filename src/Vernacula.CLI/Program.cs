@@ -378,7 +378,7 @@ static string SrtTime(double seconds)
 
 static void PrintUsage()
 {
-    Console.WriteLine("Usage: parakeet-cli --audio <file> --model <dir> [options]");
+    Console.WriteLine("Usage: vernacula-cli --audio <file> --model <dir> [options]");
     Console.WriteLine();
     Console.WriteLine("Options:");
     Console.WriteLine("  --segments <path>                  Load pre-computed segments JSON, skip diarization");

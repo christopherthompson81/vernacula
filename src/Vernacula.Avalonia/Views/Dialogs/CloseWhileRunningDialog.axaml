@@ -6,7 +6,7 @@
         CanResize="False"
         WindowStartupLocation="CenterOwner"
         ShowInTaskbar="False"
-        Title="Close Parakeet?">
+        Title="Close Vernacula-Desktop?">
     <Border Background="{DynamicResource BgBrush}" Padding="20">
         <StackPanel Spacing="16">
             <TextBlock Text="Transcription jobs are still running or queued."

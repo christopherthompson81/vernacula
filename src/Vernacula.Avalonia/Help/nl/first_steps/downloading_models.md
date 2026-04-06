@@ -6,7 +6,7 @@ topic_id: first_steps_downloading_models
 
 # Modellen Downloaden
 
-Parakeet Transcription vereist AI-modelbestanden om te kunnen werken. Deze worden niet meegeleverd met de applicatie en moeten worden gedownload vóór uw eerste transcriptie.
+Vernacula-Desktop vereist AI-modelbestanden om te kunnen werken. Deze worden niet meegeleverd met de applicatie en moeten worden gedownload vóór uw eerste transcriptie.
 
 ## Modelstatus (Startscherm)
 

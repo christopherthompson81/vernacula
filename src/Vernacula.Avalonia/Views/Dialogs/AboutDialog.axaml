@@ -15,9 +15,9 @@
             <ColumnDefinition Width="*" />
         </Grid.ColumnDefinitions>
 
-        <!-- Parakeet image, left-aligned -->
+        <!-- Vern mascot image, left-aligned -->
         <Image Grid.Column="0"
-               Source="avares://Vernacula.Avalonia/Assets/parakeet.png"
+               Source="avares://Vernacula.Avalonia/Assets/vern_waveform.png"
                Height="140"
                VerticalAlignment="Center"
                Margin="0,0,20,0"

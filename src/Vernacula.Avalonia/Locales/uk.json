@@ -204,7 +204,7 @@
   "dlg_filter_db": "База даних SQLite|*.db",
 
   "menu_help_contents": "_Зміст довідки",
-  "help_window_title": "Parakeet Transcription — Довідка",
+  "help_window_title": "Vernacula-Desktop — Довідка",
 
   "help_group_first_steps": "Перші кроки",
   "help_group_operations": "Операції",
@@ -223,8 +223,8 @@
   "help_topic_operations_pausing_resuming_removing": "Пауза / Відновлення / Видалення",
   "help_topic_operations_bulk_add_jobs": "Масове додавання завдань",
 
-  "about_title": "Про Parakeet Transcription",
-  "about_heading": "Parakeet Transcription",
+  "about_title": "Про Vernacula-Desktop",
+  "about_heading": "Vernacula-Desktop",
   "about_version": "Версія {version}",
   "about_description": "Транскрипція аудіо з підтримкою AI\nз автоматичною діаризацією мовців,\nповністю працює на вашому пристрої.",
   "about_tech": "NeMo Parakeet ASR · Sortformer · ONNX Runtime",

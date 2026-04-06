@@ -6,7 +6,7 @@ topic_id: first_steps_theme
 
 # Odabir teme
 
-Parakeet Transcription nudi tamnu i svijetlu temu. Aktivna tema označena je kvačicom u izborniku.
+Vernacula-Desktop nudi tamnu i svijetlu temu. Aktivna tema označena je kvačicom u izborniku.
 
 ## Kako promijeniti temu
 

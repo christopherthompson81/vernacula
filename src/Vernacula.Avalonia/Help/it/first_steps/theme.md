@@ -6,7 +6,7 @@ topic_id: first_steps_theme
 
 # Scegliere un tema
 
-Parakeet Transcription offre i temi Scuro e Chiaro. Il tema attivo è indicato da un segno di spunta nel menu.
+Vernacula-Desktop offre i temi Scuro e Chiaro. Il tema attivo è indicato da un segno di spunta nel menu.
 
 ## Come cambiare il tema
 

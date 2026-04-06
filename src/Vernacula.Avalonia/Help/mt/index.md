@@ -1,12 +1,12 @@
 ---
-title: "Parakeet Transcription — Għajnuna"
+title: "Vernacula-Desktop — Għajnuna"
 description: "Ħarsa ġenerali u navigazzjoni għall-argumenti kollha tal-għajnuna."
 topic_id: help_index
 ---
 
-# Għajnuna dwar Parakeet Transcription
+# Għajnuna dwar Vernacula-Desktop
 
-Parakeet Transcription huwa applikazzjoni ta' traskrizzjoni tal-awdjo bl-użu tal-intelliġenza artifiċjali, b'diarizzazzjoni awtomatika tal-kelliema. L-ipproċessar kollu jsir fuq it-tagħmir tiegħek biss.
+Vernacula-Desktop huwa applikazzjoni ta' traskrizzjoni tal-awdjo bl-użu tal-intelliġenza artifiċjali, b'diarizzazzjoni awtomatika tal-kelliema. L-ipproċessar kollu jsir fuq it-tagħmir tiegħek biss.
 
 ## L-Ewwel Passi
 

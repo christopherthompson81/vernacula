@@ -204,7 +204,7 @@
   "dlg_filter_db": "Podatkovna baza SQLite|*.db",
 
   "menu_help_contents": "_Vsebina pomoči",
-  "help_window_title": "Parakeet Transcription — Pomoč",
+  "help_window_title": "Vernacula-Desktop — Pomoč",
 
   "help_group_first_steps": "Prvi koraki",
   "help_group_operations": "Operacije",
@@ -223,8 +223,8 @@
   "help_topic_operations_pausing_resuming_removing": "Premor / Nadaljevanje / Odstranjevanje",
   "help_topic_operations_bulk_add_jobs": "Množično dodajanje opravil",
 
-  "about_title": "O Parakeet Transcription",
-  "about_heading": "Parakeet Transcription",
+  "about_title": "O Vernacula-Desktop",
+  "about_heading": "Vernacula-Desktop",
   "about_version": "Različica {version}",
   "about_description": "Transkripcija zvoka z AI\nz avtomatsko diarizacijo govorcev,\nv celoti deluje na vaši napravi.",
   "about_tech": "NeMo Parakeet ASR · Sortformer · ONNX Runtime",

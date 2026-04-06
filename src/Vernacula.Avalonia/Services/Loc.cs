@@ -59,7 +59,7 @@ public sealed class Loc : INotifyPropertyChanged
 
     private static Dictionary<string, string> LoadLocale(string lang)
     {
-        // Assembly name = project file name ("parakeet_csharp"), not the CLR namespace.
+        // Search by suffix — assembly name (Vernacula.Avalonia) is not hardcoded here.
         var assembly = Assembly.GetExecutingAssembly();
         var suffix   = $".Locales.{lang}.json";
         var name     = assembly.GetManifestResourceNames()

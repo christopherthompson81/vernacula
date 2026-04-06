@@ -6,7 +6,7 @@ topic_id: first_steps_downloading_models
 
 # Qed Tniżżel il-Mudelli
 
-Parakeet Transcription jeħtieġ fajls tal-mudell tal-AI biex jaħdem. Dawn ma jinkludux mal-applikazzjoni u jridu jitniżżlu qabel l-ewwel traskrizzjoni tiegħek.
+Vernacula-Desktop jeħtieġ fajls tal-mudell tal-AI biex jaħdem. Dawn ma jinkludux mal-applikazzjoni u jridu jitniżżlu qabel l-ewwel traskrizzjoni tiegħek.
 
 ## Status tal-Mudell (Skrin tad-Dar)
 

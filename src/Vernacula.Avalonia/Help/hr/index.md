@@ -1,12 +1,12 @@
 ---
-title: "Parakeet Transkripcija — Pomoć"
+title: "Vernacula-Desktop — Pomoć"
 description: "Pregled i navigacija za sve teme pomoći."
 topic_id: help_index
 ---
 
-# Pomoć za Parakeet Transkripciju
+# Pomoć za Vernacula-Desktop
 
-Parakeet Transkripcija je aplikacija za transkripciju zvuka pokretana umjetnom inteligencijom s automatskom dijatizacijom govornika. Sva obrada odvija se isključivo na vašem uređaju.
+Vernacula-Desktop je aplikacija za transkripciju zvuka pokretana umjetnom inteligencijom s automatskom dijatizacijom govornika. Sva obrada odvija se isključivo na vašem uređaju.
 
 ## Prvi koraci
 

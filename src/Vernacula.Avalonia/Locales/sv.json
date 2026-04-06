@@ -204,7 +204,7 @@
   "dlg_filter_db": "SQLite-databas|*.db",
 
   "menu_help_contents": "_Hjälpinnehåll",
-  "help_window_title": "Parakeet Transcription — Hjälp",
+  "help_window_title": "Vernacula-Desktop — Hjälp",
 
   "help_group_first_steps": "Första steg",
   "help_group_operations": "Operationer",
@@ -223,8 +223,8 @@
   "help_topic_operations_pausing_resuming_removing": "Pausa / Återuppta / Bortta",
   "help_topic_operations_bulk_add_jobs": "Bulk-lägg till jobb",
 
-  "about_title": "Om Parakeet Transcription",
-  "about_heading": "Parakeet Transcription",
+  "about_title": "Om Vernacula-Desktop",
+  "about_heading": "Vernacula-Desktop",
   "about_version": "Version {version}",
   "about_description": "AI-drivet audio transkription med\nautomatisk diarisation av talare,\nkörs helt på din enhet.",
   "about_tech": "NeMo Parakeet ASR · Sortformer · ONNX Runtime",

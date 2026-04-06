@@ -6,7 +6,7 @@ topic_id: first_steps_theme
 
 # Alegerea unei teme
 
-Parakeet Transcription oferă temele Întunecat și Luminos. Tema activă este indicată printr-o bifă în meniu.
+Vernacula-Desktop oferă temele Întunecat și Luminos. Tema activă este indicată printr-o bifă în meniu.
 
 ## Cum să schimbați tema
 

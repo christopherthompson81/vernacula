@@ -205,7 +205,7 @@
 
 
   "menu_help_contents": "_Съдържание на помощта",
-  "help_window_title": "Parakeet Transcription — Помощ",
+  "help_window_title": "Vernacula-Desktop — Помощ",
 
   "help_group_first_steps": "Първи стъпки",
   "help_group_operations": "Операции",
@@ -224,8 +224,8 @@
   "help_topic_operations_pausing_resuming_removing": "Пауза / Продължи / Премахни",
   "help_topic_operations_bulk_add_jobs": "Масово добавяне на задачи",
 
-  "about_title": "За Parakeet Transcription",
-  "about_heading": "Parakeet Transcription",
+  "about_title": "За Vernacula-Desktop",
+  "about_heading": "Vernacula-Desktop",
   "about_version": "Версия {version}",
   "about_description": "AI‑подавана аудио транскрипция с\nавтоматична диаризация на говорителите,\nработаваща изцяло на вашето устройство.",
   "about_tech": "NeMo Parakeet ASR · Sortformer · ONNX Runtime",

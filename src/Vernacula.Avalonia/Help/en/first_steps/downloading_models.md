@@ -6,7 +6,7 @@ topic_id: first_steps_downloading_models
 
 # Downloading Models
 
-Parakeet Transcription requires AI model files to run. These are not bundled with the application and must be downloaded before your first transcription.
+Vernacula-Desktop requires AI model files to run. These are not bundled with the application and must be downloaded before your first transcription.
 
 ## Model Status (Home Screen)
 

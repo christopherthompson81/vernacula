@@ -1,12 +1,12 @@
 ---
 title: "CUDA:n ja cuDNN:n asentaminen GPU-kiihdytystä varten"
-description: "Kuinka määrittää NVIDIA CUDA ja cuDNN, jotta Parakeet Transcription voi käyttää GPU:ta."
+description: "Kuinka määrittää NVIDIA CUDA ja cuDNN, jotta Vernacula-Desktop voi käyttää GPU:ta."
 topic_id: first_steps_cuda_installation
 ---
 
 # CUDA:n ja cuDNN:n asentaminen GPU-kiihdytystä varten
 
-Parakeet Transcription voi käyttää NVIDIA GPU:ta transkription merkittävään nopeuttamiseen. GPU-kiihdytys edellyttää, että NVIDIA CUDA Toolkit ja cuDNN-ajonaikaiset kirjastot on asennettu järjestelmääsi.
+Vernacula-Desktop voi käyttää NVIDIA GPU:ta transkription merkittävään nopeuttamiseen. GPU-kiihdytys edellyttää, että NVIDIA CUDA Toolkit ja cuDNN-ajonaikaiset kirjastot on asennettu järjestelmääsi.
 
 ## Vaatimukset
 
@@ -18,7 +18,7 @@ Parakeet Transcription voi käyttää NVIDIA GPU:ta transkription merkittävää
 
 ### 1. Asenna CUDA Toolkit
 
-Lataa ja suorita CUDA Toolkit -asennusohjelma NVIDIA:n kehittäjäsivustolta. Hyväksy asennuksen aikana oletuspolut. Asennusohjelma asettaa `CUDA_PATH`-ympäristömuuttujan automaattisesti — Parakeet käyttää tätä muuttujaa CUDA-kirjastojen paikantamiseen.
+Lataa ja suorita CUDA Toolkit -asennusohjelma NVIDIA:n kehittäjäsivustolta. Hyväksy asennuksen aikana oletuspolut. Asennusohjelma asettaa `CUDA_PATH`-ympäristömuuttujan automaattisesti — Vernacula-Desktop käyttää tätä muuttujaa CUDA-kirjastojen paikantamiseen.
 
 ### 2. Asenna cuDNN
 
@@ -28,7 +28,7 @@ Vaihtoehtoisesti voit asentaa cuDNN:n NVIDIA:n cuDNN-asennusohjelmalla, jos se o
 
 ### 3. Käynnistä sovellus uudelleen
 
-Sulje ja avaa Parakeet Transcription uudelleen asennuksen jälkeen. Sovellus tarkistaa CUDA:n olemassaolon käynnistyksen yhteydessä.
+Sulje ja avaa Vernacula-Desktop uudelleen asennuksen jälkeen. Sovellus tarkistaa CUDA:n olemassaolon käynnistyksen yhteydessä.
 
 ## GPU-tila asetuksissa
 
@@ -59,6 +59,6 @@ Kun CUDA on aktiivinen, **Hardware & Performance** -osiossa näkyy myös nykyine
 
 ## Käyttö ilman GPU:ta
 
-Jos CUDA ei ole käytettävissä, Parakeet siirtyy automaattisesti käyttämään suoritinta. Transkriptio toimii edelleen, mutta on hitaampaa — erityisesti pitkien äänitiedostojen kohdalla.
+Jos CUDA ei ole käytettävissä, Vernacula-Desktop siirtyy automaattisesti käyttämään suoritinta. Transkriptio toimii edelleen, mutta on hitaampaa — erityisesti pitkien äänitiedostojen kohdalla.
 
 ---

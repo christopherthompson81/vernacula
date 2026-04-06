@@ -6,7 +6,7 @@ topic_id: first_steps_language
 
 # Scegliere una lingua
 
-Parakeet Transcription supporta più lingue di visualizzazione per la sua interfaccia utente.
+Vernacula-Desktop supporta più lingue di visualizzazione per la sua interfaccia utente.
 
 ## Come cambiare la lingua
 

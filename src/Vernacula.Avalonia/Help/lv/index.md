@@ -1,12 +1,12 @@
 ---
-title: "Parakeet Transcription — Palīdzība"
+title: "Vernacula-Desktop — Palīdzība"
 description: "Pārskats un navigācija visām palīdzības tēmām."
 topic_id: help_index
 ---
 
-# Parakeet Transcription Palīdzība
+# Vernacula-Desktop Palīdzība
 
-Parakeet Transcription ir ar mākslīgo intelektu darbināma audio transkripcijas lietojumprogramma ar automātisku runātāju diarizāciju. Visa apstrāde notiek pilnībā jūsu ierīcē.
+Vernacula-Desktop ir ar mākslīgo intelektu darbināma audio transkripcijas lietojumprogramma ar automātisku runātāju diarizāciju. Visa apstrāde notiek pilnībā jūsu ierīcē.
 
 ## Pirmie soļi
 

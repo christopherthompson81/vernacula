@@ -6,7 +6,7 @@ topic_id: first_steps_downloading_models
 
 # Stahování modelů
 
-Parakeet Transcription ke svému chodu vyžaduje soubory modelů AI. Ty nejsou součástí instalace aplikace a před prvním přepisem je nutné je stáhnout.
+Vernacula-Desktop ke svému chodu vyžaduje soubory modelů AI. Ty nejsou součástí instalace aplikace a před prvním přepisem je nutné je stáhnout.
 
 ## Stav modelů (domovská obrazovka)
 

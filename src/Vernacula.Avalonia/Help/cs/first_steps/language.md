@@ -6,7 +6,7 @@ topic_id: first_steps_language
 
 # Výběr jazyka
 
-Parakeet Transcription podporuje více jazyků zobrazení uživatelského rozhraní.
+Vernacula-Desktop podporuje více jazyků zobrazení uživatelského rozhraní.
 
 ## Jak změnit jazyk
 

@@ -6,7 +6,7 @@ topic_id: first_steps_language
 
 # Kielen valitseminen
 
-Parakeet Transcription tukee useita näyttökieliä käyttöliittymässään.
+Vernacula-Desktop tukee useita näyttökieliä käyttöliittymässään.
 
 ## Kielen vaihtaminen
 

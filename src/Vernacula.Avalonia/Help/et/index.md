@@ -1,12 +1,12 @@
 ---
-title: "Parakeet Transcription — Abi"
+title: "Vernacula-Desktop — Abi"
 description: "Kõigi abiteemade ülevaade ja navigeerimine."
 topic_id: help_index
 ---
 
-# Parakeet Transcription'i abi
+# Vernacula-Desktop'i abi
 
-Parakeet Transcription on tehisintellektipõhine helitranskriptsioonitarkvara automaatse kõneleja tuvastamisega. Kogu töötlemine toimub täielikult teie seadmes.
+Vernacula-Desktop on tehisintellektipõhine helitranskriptsioonitarkvara automaatse kõneleja tuvastamisega. Kogu töötlemine toimub täielikult teie seadmes.
 
 ## Esimesed sammud
 

@@ -6,7 +6,7 @@ topic_id: first_steps_downloading_models
 
 # Modelle herunterladen
 
-Parakeet Transcription benötigt KI-Modelldateien, um zu funktionieren. Diese sind nicht im Installationspaket enthalten und müssen vor der ersten Transkription heruntergeladen werden.
+Vernacula-Desktop benötigt KI-Modelldateien, um zu funktionieren. Diese sind nicht im Installationspaket enthalten und müssen vor der ersten Transkription heruntergeladen werden.
 
 ## Modellstatus (Startbildschirm)
 

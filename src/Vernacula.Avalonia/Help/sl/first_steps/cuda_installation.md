@@ -1,12 +1,12 @@
 ---
 title: "Namestitev CUDA in cuDNN za pospeševanje z GPU"
-description: "Kako nastaviti NVIDIA CUDA in cuDNN, da lahko Parakeet Transcription uporablja vaš GPU."
+description: "Kako nastaviti NVIDIA CUDA in cuDNN, da lahko Vernacula-Desktop uporablja vaš GPU."
 topic_id: first_steps_cuda_installation
 ---
 
 # Namestitev CUDA in cuDNN za pospeševanje z GPU
 
-Parakeet Transcription lahko za občutno pospeševanje prepisovanja uporabi grafično kartico NVIDIA GPU. Pospeševanje z GPU zahteva, da sta na vašem sistemu nameščena NVIDIA CUDA Toolkit in knjižnice cuDNN.
+Vernacula-Desktop lahko za občutno pospeševanje prepisovanja uporabi grafično kartico NVIDIA GPU. Pospeševanje z GPU zahteva, da sta na vašem sistemu nameščena NVIDIA CUDA Toolkit in knjižnice cuDNN.
 
 ## Zahteve
 
@@ -18,7 +18,7 @@ Parakeet Transcription lahko za občutno pospeševanje prepisovanja uporabi graf
 
 ### 1. Namestite CUDA Toolkit
 
-Prenesite in zaženite namestitveni program CUDA Toolkit s spletnega mesta za razvijalce NVIDIA. Med namestitvijo sprejmite privzete poti. Namestitveni program samodejno nastavi okoljsko spremenljivko `CUDA_PATH` — Parakeet jo uporablja za iskanje knjižnic CUDA.
+Prenesite in zaženite namestitveni program CUDA Toolkit s spletnega mesta za razvijalce NVIDIA. Med namestitvijo sprejmite privzete poti. Namestitveni program samodejno nastavi okoljsko spremenljivko `CUDA_PATH` — Vernacula-Desktop jo uporablja za iskanje knjižnic CUDA.
 
 ### 2. Namestite cuDNN
 
@@ -28,7 +28,7 @@ Druga možnost je, da cuDNN namestite z namestitvenim programom NVIDIA cuDNN, č
 
 ### 3. Znova zaženite aplikacijo
 
-Po namestitvi zaprite in znova odprite Parakeet Transcription. Aplikacija ob zagonu preveri prisotnost CUDA.
+Po namestitvi zaprite in znova odprite Vernacula-Desktop. Aplikacija ob zagonu preveri prisotnost CUDA.
 
 ## Stanje GPU v nastavitvah
 
@@ -59,6 +59,6 @@ Ko je CUDA aktiven, razdelek **Hardware & Performance** prikaže tudi trenutno d
 
 ## Delovanje brez GPU
 
-Če CUDA ni na voljo, Parakeet samodejno preklopi na obdelavo s procesorjem (CPU). Prepisovanje še vedno deluje, vendar bo počasnejše, zlasti pri dolgih zvočnih datotekah.
+Če CUDA ni na voljo, Vernacula-Desktop samodejno preklopi na obdelavo s procesorjem (CPU). Prepisovanje še vedno deluje, vendar bo počasnejše, zlasti pri dolgih zvočnih datotekah.
 
 ---

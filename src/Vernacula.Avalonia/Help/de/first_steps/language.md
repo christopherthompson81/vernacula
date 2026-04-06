@@ -6,7 +6,7 @@ topic_id: first_steps_language
 
 # Eine Sprache auswählen
 
-Parakeet Transcription unterstützt mehrere Anzeigesprachen für seine Benutzeroberfläche.
+Vernacula-Desktop unterstützt mehrere Anzeigesprachen für seine Benutzeroberfläche.
 
 ## So ändern Sie die Sprache
 

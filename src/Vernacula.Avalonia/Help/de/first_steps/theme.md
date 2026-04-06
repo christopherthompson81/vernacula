@@ -6,7 +6,7 @@ topic_id: first_steps_theme
 
 # Ein Design auswählen
 
-Parakeet Transcription bietet ein dunkles und ein helles Design an. Das aktive Design ist im Menü durch ein Häkchen gekennzeichnet.
+Vernacula-Desktop bietet ein dunkles und ein helles Design an. Das aktive Design ist im Menü durch ein Häkchen gekennzeichnet.
 
 ## So ändern Sie das Design
 

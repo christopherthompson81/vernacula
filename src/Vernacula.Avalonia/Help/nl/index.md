@@ -1,12 +1,12 @@
 ---
-title: "Parakeet Transcription — Help"
+title: "Vernacula-Desktop — Help"
 description: "Overzicht en navigatie voor alle helponderwerpen."
 topic_id: help_index
 ---
 
-# Parakeet Transcription Help
+# Vernacula-Desktop Help
 
-Parakeet Transcription is een AI-gestuurde audio-transcriptietoepassing met automatische spreker-diarisering. Alle verwerking vindt volledig op uw apparaat plaats.
+Vernacula-Desktop is een AI-gestuurde audio-transcriptietoepassing met automatische spreker-diarisering. Alle verwerking vindt volledig op uw apparaat plaats.
 
 ## Eerste Stappen
 

@@ -204,7 +204,7 @@
   "dlg_filter_db": "SQLite Andmebaas|*.db",
 
   "menu_help_contents": "_Abi Sisu",
-  "help_window_title": "Parakeet Transcription — Abi",
+  "help_window_title": "Vernacula-Desktop — Abi",
 
   "help_group_first_steps": "Esimesed Sammud",
   "help_group_operations": "Toimingud",
@@ -223,8 +223,8 @@
   "help_topic_operations_pausing_resuming_removing": "Peatamine / Jätkamine / Eemaldamine",
   "help_topic_operations_bulk_add_jobs": "Massiline Ülesannete Lisamine",
 
-  "about_title": "Parakeet Transcription Teave",
-  "about_heading": "Parakeet Transcription",
+  "about_title": "Vernacula-Desktop Teave",
+  "about_heading": "Vernacula-Desktop",
   "about_version": "Versioon {version}",
   "about_description": "AI-põhine heli transkribeerimine\nautomaatse kõnelejate eristamisega,\ntöötab täielikult teie seadmes.",
   "about_tech": "NeMo Parakeet ASR · Sortformer · ONNX Runtime",

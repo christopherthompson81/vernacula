@@ -6,7 +6,7 @@ topic_id: first_steps_downloading_models
 
 # Téléchargement des modèles
 
-Parakeet Transcription nécessite des fichiers de modèles IA pour fonctionner. Ceux-ci ne sont pas inclus dans l'application et doivent être téléchargés avant votre première transcription.
+Vernacula-Desktop nécessite des fichiers de modèles IA pour fonctionner. Ceux-ci ne sont pas inclus dans l'application et doivent être téléchargés avant votre première transcription.
 
 ## État des modèles (écran d'accueil)
 

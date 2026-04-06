@@ -6,7 +6,7 @@ topic_id: first_steps_language
 
 # Een taal kiezen
 
-Parakeet Transcription ondersteunt meerdere weergavetalen voor de gebruikersinterface.
+Vernacula-Desktop ondersteunt meerdere weergavetalen voor de gebruikersinterface.
 
 ## De taal wijzigen
 

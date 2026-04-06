@@ -6,7 +6,7 @@ topic_id: first_steps_downloading_models
 
 # Pobieranie modeli
 
-Parakeet Transcription wymaga plików modeli AI do działania. Nie są one dołączone do aplikacji i muszą zostać pobrane przed pierwszą transkrypcją.
+Vernacula-Desktop wymaga plików modeli AI do działania. Nie są one dołączone do aplikacji i muszą zostać pobrane przed pierwszą transkrypcją.
 
 ## Stan modeli (ekran główny)
 

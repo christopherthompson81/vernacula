@@ -1,12 +1,12 @@
 ---
-title: "Parakeet Transcription — Help"
+title: "Vernacula-Desktop — Help"
 description: "Overview and navigation for all help topics."
 topic_id: help_index
 ---
 
-# Parakeet Transcription Help
+# Vernacula-Desktop Help
 
-Parakeet Transcription is an AI-powered audio transcription application with automatic speaker diarization. All processing runs entirely on your device.
+Vernacula-Desktop is an AI-powered audio transcription application with automatic speaker diarization. All processing runs entirely on your device.
 
 ## First Steps
 

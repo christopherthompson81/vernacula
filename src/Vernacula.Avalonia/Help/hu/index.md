@@ -1,12 +1,12 @@
 ---
-title: "Parakeet Transcription — Súgó"
+title: "Vernacula-Desktop — Súgó"
 description: "Áttekintés és navigáció az összes súgótémakörhöz."
 topic_id: help_index
 ---
 
-# Parakeet Transcription Súgó
+# Vernacula-Desktop Súgó
 
-A Parakeet Transcription egy mesterséges intelligencia alapú hangátirat-készítő alkalmazás, automatikus beszélőazonosítással. Az összes feldolgozás teljes egészében az eszközödön fut.
+A Vernacula-Desktop egy mesterséges intelligencia alapú hangátirat-készítő alkalmazás, automatikus beszélőazonosítással. Az összes feldolgozás teljes egészében az eszközödön fut.
 
 ## Első lépések
 

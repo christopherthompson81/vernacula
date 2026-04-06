@@ -6,7 +6,7 @@ topic_id: first_steps_theme
 
 # Motīva izvēle
 
-Parakeet Transcription piedāvā tumšo un gaišo motīvu. Aktīvais motīvs ir atzīmēts ar ķeksīti izvēlnē.
+Vernacula-Desktop piedāvā tumšo un gaišo motīvu. Aktīvais motīvs ir atzīmēts ar ķeksīti izvēlnē.
 
 ## Kā mainīt motīvu
 

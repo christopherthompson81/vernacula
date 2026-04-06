@@ -6,7 +6,7 @@ topic_id: first_steps_language
 
 # Kalbos pasirinkimas
 
-Parakeet Transcription palaiko kelias vartotojo sąsajos rodymo kalbas.
+Vernacula-Desktop palaiko kelias vartotojo sąsajos rodymo kalbas.
 
 ## Kaip pakeisti kalbą
 

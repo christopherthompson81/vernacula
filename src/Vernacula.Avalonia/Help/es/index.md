@@ -1,12 +1,12 @@
 ---
-title: "Parakeet Transcription — Ayuda"
+title: "Vernacula-Desktop — Ayuda"
 description: "Descripción general y navegación para todos los temas de ayuda."
 topic_id: help_index
 ---
 
-# Ayuda de Parakeet Transcription
+# Ayuda de Vernacula-Desktop
 
-Parakeet Transcription es una aplicación de transcripción de audio impulsada por inteligencia artificial con diarización automática de hablantes. Todo el procesamiento se ejecuta completamente en tu dispositivo.
+Vernacula-Desktop es una aplicación de transcripción de audio impulsada por inteligencia artificial con diarización automática de hablantes. Todo el procesamiento se ejecuta completamente en tu dispositivo.
 
 ## Primeros pasos
 

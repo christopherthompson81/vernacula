@@ -57,22 +57,22 @@ public sealed class DiariZenDiarizer : IDisposable
             .ToArray();
     private static readonly bool UseConstrainedCentroidAssignment =
         !string.Equals(
-            Environment.GetEnvironmentVariable("PARAKEET_DIARIZEN_DISABLE_CONSTRAINED_ASSIGNMENT"),
+            Environment.GetEnvironmentVariable("VERNACULA_DIARIZEN_DISABLE_CONSTRAINED_ASSIGNMENT"),
             "1",
             StringComparison.Ordinal);
     private static readonly bool DisablePostSmoothing =
         string.Equals(
-            Environment.GetEnvironmentVariable("PARAKEET_DIARIZEN_DISABLE_POST_SMOOTHING"),
+            Environment.GetEnvironmentVariable("VERNACULA_DIARIZEN_DISABLE_POST_SMOOTHING"),
             "1",
             StringComparison.Ordinal);
     private static readonly bool DisableGapFill =
         string.Equals(
-            Environment.GetEnvironmentVariable("PARAKEET_DIARIZEN_DISABLE_GAP_FILL"),
+            Environment.GetEnvironmentVariable("VERNACULA_DIARIZEN_DISABLE_GAP_FILL"),
             "1",
             StringComparison.Ordinal);
     private static readonly bool DisableShortRegionRemoval =
         string.Equals(
-            Environment.GetEnvironmentVariable("PARAKEET_DIARIZEN_DISABLE_SHORT_REGION_REMOVAL"),
+            Environment.GetEnvironmentVariable("VERNACULA_DIARIZEN_DISABLE_SHORT_REGION_REMOVAL"),
             "1",
             StringComparison.Ordinal);
     private static readonly int MinActiveFramesForEmbed = GetMinActiveFramesForEmbed();
@@ -551,7 +551,7 @@ public sealed class DiariZenDiarizer : IDisposable
         if (debugFrames is null)
             return;
 
-        string? outputPath = Environment.GetEnvironmentVariable("PARAKEET_DIARIZEN_DEBUG_RECON_PATH");
+        string? outputPath = Environment.GetEnvironmentVariable("VERNACULA_DIARIZEN_DEBUG_RECON_PATH");
         if (string.IsNullOrWhiteSpace(outputPath))
             return;
 
@@ -570,7 +570,7 @@ public sealed class DiariZenDiarizer : IDisposable
         startFrame = 0;
         endFrame = 0;
 
-        string? raw = Environment.GetEnvironmentVariable("PARAKEET_DIARIZEN_DEBUG_RECON_WINDOW");
+        string? raw = Environment.GetEnvironmentVariable("VERNACULA_DIARIZEN_DEBUG_RECON_WINDOW");
         if (string.IsNullOrWhiteSpace(raw))
             return false;
 
@@ -589,7 +589,7 @@ public sealed class DiariZenDiarizer : IDisposable
 
     private static int GetMinActiveFramesForEmbed()
     {
-        string? raw = Environment.GetEnvironmentVariable("PARAKEET_DIARIZEN_MIN_ACTIVE_FRAMES_FOR_EMBED");
+        string? raw = Environment.GetEnvironmentVariable("VERNACULA_DIARIZEN_MIN_ACTIVE_FRAMES_FOR_EMBED");
         return int.TryParse(raw, out int parsed) && parsed >= 0
             ? parsed
             : DefaultMinActiveFramesForEmbed;
@@ -599,7 +599,7 @@ public sealed class DiariZenDiarizer : IDisposable
         List<double> startTimes,
         Dictionary<(int chunkIdx, int localSpeaker), int> localToGlobal)
     {
-        string? outputPath = Environment.GetEnvironmentVariable("PARAKEET_DIARIZEN_DEBUG_ASSIGN_PATH");
+        string? outputPath = Environment.GetEnvironmentVariable("VERNACULA_DIARIZEN_DEBUG_ASSIGN_PATH");
         if (string.IsNullOrWhiteSpace(outputPath))
             return;
 
@@ -632,7 +632,7 @@ public sealed class DiariZenDiarizer : IDisposable
         List<double> startTimes,
         List<float[,]> perChunkBinary)
     {
-        string? outputPath = Environment.GetEnvironmentVariable("PARAKEET_DIARIZEN_DEBUG_LOCAL_PATH");
+        string? outputPath = Environment.GetEnvironmentVariable("VERNACULA_DIARIZEN_DEBUG_LOCAL_PATH");
         if (string.IsNullOrWhiteSpace(outputPath))
             return;
 
@@ -692,7 +692,7 @@ public sealed class DiariZenDiarizer : IDisposable
         List<EmbeddingJob> jobs,
         EmbeddingJobResult[] results)
     {
-        string? outputPath = Environment.GetEnvironmentVariable("PARAKEET_DIARIZEN_DEBUG_EMBED_PATH");
+        string? outputPath = Environment.GetEnvironmentVariable("VERNACULA_DIARIZEN_DEBUG_EMBED_PATH");
         if (string.IsNullOrWhiteSpace(outputPath))
             return;
 

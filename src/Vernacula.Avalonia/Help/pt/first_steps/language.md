@@ -6,7 +6,7 @@ topic_id: first_steps_language
 
 # Escolhendo um Idioma
 
-O Parakeet Transcription oferece suporte a vários idiomas de exibição para sua interface de usuário.
+O Vernacula-Desktop oferece suporte a vários idiomas de exibição para sua interface de usuário.
 
 ## Como Alterar o Idioma
 

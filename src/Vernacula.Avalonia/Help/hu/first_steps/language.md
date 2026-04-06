@@ -6,7 +6,7 @@ topic_id: first_steps_language
 
 # Nyelv kiválasztása
 
-A Parakeet Transcription több megjelenítési nyelvet támogat a felhasználói felületén.
+A Vernacula-Desktop több megjelenítési nyelvet támogat a felhasználói felületén.
 
 ## A nyelv megváltoztatása
 

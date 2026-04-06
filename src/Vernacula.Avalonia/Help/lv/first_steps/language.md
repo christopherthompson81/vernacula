@@ -6,7 +6,7 @@ topic_id: first_steps_language
 
 # Valodas izvēle
 
-Parakeet Transcription atbalsta vairākas displeja valodas lietotāja saskarnei.
+Vernacula-Desktop atbalsta vairākas displeja valodas lietotāja saskarnei.
 
 ## Kā mainīt valodu
 

@@ -189,7 +189,7 @@ public static class Config
 
     public static int GetDiariZenSegmentationIntraOpThreads()
     {
-        const string envVar = "PARAKEET_DIARIZEN_SEG_THREADS";
+        const string envVar = "VERNACULA_DIARIZEN_SEG_THREADS";
         string? raw = Environment.GetEnvironmentVariable(envVar);
         if (int.TryParse(raw, out int parsed) && parsed > 0)
             return parsed;
@@ -199,7 +199,7 @@ public static class Config
 
     public static int? GetDiariZenSegmentationMaxWorkers()
     {
-        const string envVar = "PARAKEET_DIARIZEN_SEG_MAX_WORKERS";
+        const string envVar = "VERNACULA_DIARIZEN_SEG_MAX_WORKERS";
         string? raw = Environment.GetEnvironmentVariable(envVar);
         if (int.TryParse(raw, out int parsed) && parsed > 0)
             return parsed;
@@ -209,7 +209,7 @@ public static class Config
 
     public static int GetDiariZenSegmentationBatchSize()
     {
-        const string envVar = "PARAKEET_DIARIZEN_SEG_BATCH_SIZE";
+        const string envVar = "VERNACULA_DIARIZEN_SEG_BATCH_SIZE";
         string? raw = Environment.GetEnvironmentVariable(envVar);
         if (int.TryParse(raw, out int parsed) && parsed > 0)
             return parsed;
@@ -219,7 +219,7 @@ public static class Config
 
     public static int GetDiariZenEmbeddingGpuSafetyMb()
     {
-        const string envVar = "PARAKEET_DIARIZEN_EMBED_GPU_SAFETY_MB";
+        const string envVar = "VERNACULA_DIARIZEN_EMBED_GPU_SAFETY_MB";
         string? raw = Environment.GetEnvironmentVariable(envVar);
         if (int.TryParse(raw, out int parsed) && parsed >= 0)
             return parsed;
@@ -229,7 +229,7 @@ public static class Config
 
     public static int GetDiariZenEmbeddingIntraOpThreads()
     {
-        const string envVar = "PARAKEET_DIARIZEN_EMBED_THREADS";
+        const string envVar = "VERNACULA_DIARIZEN_EMBED_THREADS";
         string? raw = Environment.GetEnvironmentVariable(envVar);
         if (int.TryParse(raw, out int parsed) && parsed > 0)
             return parsed;
@@ -239,7 +239,7 @@ public static class Config
 
     public static int? GetDiariZenEmbeddingMaxWorkers()
     {
-        const string envVar = "PARAKEET_DIARIZEN_EMBED_MAX_WORKERS";
+        const string envVar = "VERNACULA_DIARIZEN_EMBED_MAX_WORKERS";
         string? raw = Environment.GetEnvironmentVariable(envVar);
         if (int.TryParse(raw, out int parsed) && parsed > 0)
             return parsed;
@@ -258,7 +258,7 @@ public static class Config
 
     public static int GetDiariZenEmbeddingGpuMaxBatchSize()
     {
-        const string envVar = "PARAKEET_DIARIZEN_EMBED_GPU_MAX_BATCH_SIZE";
+        const string envVar = "VERNACULA_DIARIZEN_EMBED_GPU_MAX_BATCH_SIZE";
         string? raw = Environment.GetEnvironmentVariable(envVar);
         if (int.TryParse(raw, out int parsed) && parsed > 0)
             return parsed;
@@ -268,7 +268,7 @@ public static class Config
 
     public static int GetDiariZenEmbeddingGpuMaxBatchFrames()
     {
-        const string envVar = "PARAKEET_DIARIZEN_EMBED_GPU_MAX_BATCH_FRAMES";
+        const string envVar = "VERNACULA_DIARIZEN_EMBED_GPU_MAX_BATCH_FRAMES";
         string? raw = Environment.GetEnvironmentVariable(envVar);
         if (int.TryParse(raw, out int parsed) && parsed > 0)
             return parsed;
@@ -278,7 +278,7 @@ public static class Config
 
     public static int GetDiariZenEmbeddingGpuBytesPerFrameEstimate()
     {
-        const string envVar = "PARAKEET_DIARIZEN_EMBED_GPU_BYTES_PER_FRAME";
+        const string envVar = "VERNACULA_DIARIZEN_EMBED_GPU_BYTES_PER_FRAME";
         string? raw = Environment.GetEnvironmentVariable(envVar);
         if (int.TryParse(raw, out int parsed) && parsed > 0)
             return parsed;
@@ -288,7 +288,7 @@ public static class Config
 
     public static int GetDiariZenFillShortGapFrames()
     {
-        const string envVar = "PARAKEET_DIARIZEN_FILL_SHORT_GAP_FRAMES";
+        const string envVar = "VERNACULA_DIARIZEN_FILL_SHORT_GAP_FRAMES";
         string? raw = Environment.GetEnvironmentVariable(envVar);
         if (int.TryParse(raw, out int parsed) && parsed >= 0)
             return parsed;
@@ -298,7 +298,7 @@ public static class Config
 
     public static int GetDiariZenMergeGapFrames()
     {
-        const string envVar = "PARAKEET_DIARIZEN_MERGE_GAP_FRAMES";
+        const string envVar = "VERNACULA_DIARIZEN_MERGE_GAP_FRAMES";
         string? raw = Environment.GetEnvironmentVariable(envVar);
         if (int.TryParse(raw, out int parsed) && parsed >= 0)
             return parsed;
@@ -352,7 +352,7 @@ public static class Config
 
     public static int GetDiariZenMinRegionFrames()
     {
-        const string envVar = "PARAKEET_DIARIZEN_MIN_REGION_FRAMES";
+        const string envVar = "VERNACULA_DIARIZEN_MIN_REGION_FRAMES";
         string? raw = Environment.GetEnvironmentVariable(envVar);
         if (int.TryParse(raw, out int parsed) && parsed >= 1)
             return parsed;

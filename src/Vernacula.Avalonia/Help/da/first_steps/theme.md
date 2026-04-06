@@ -6,7 +6,7 @@ topic_id: first_steps_theme
 
 # Vælg et tema
 
-Parakeet Transcription tilbyder mørke og lyse temaer. Det aktive tema er markeret med et flueben i menuen.
+Vernacula-Desktop tilbyder mørke og lyse temaer. Det aktive tema er markeret med et flueben i menuen.
 
 ## Sådan skifter du tema
 

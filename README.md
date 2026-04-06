@@ -88,7 +88,7 @@ Download with `huggingface-cli` or `git lfs`:
 # Install huggingface_hub if needed
 pip install huggingface_hub
 
-huggingface-cli download christopherthompson81/sortformer_parakeet_onnx --local-dir ~/models/parakeet
+huggingface-cli download christopherthompson81/sortformer_parakeet_onnx --local-dir ~/models/vernacula
 ```
 
 ---
@@ -126,7 +126,7 @@ dotnet build -c Release -p:EP=Cuda -p:Platform=x64
 # Or publish as self-contained (recommended for desktop install)
 dotnet publish -c Release -p:EP=Cuda -p:Platform=x64 \
   -r linux-x64 --self-contained true \
-  -o ~/apps/parakeet
+  -o ~/apps/vernacula-desktop
 ```
 
 ---
@@ -166,16 +166,16 @@ Diagnostics:
 ```bash
 # Basic transcription with Sortformer diarization
 dotnet run --project src/Vernacula.CLI -p:EP=Cuda -- \
-  --audio meeting.wav --model ~/models/parakeet
+  --audio meeting.wav --model ~/models/vernacula
 
 # SRT output using DiariZen
 dotnet run --project src/Vernacula.CLI -p:EP=Cuda -- \
-  --audio interview.flac --model ~/models/parakeet \
+  --audio interview.flac --model ~/models/vernacula \
   --diarization diarizen --export-format srt --output interview.srt
 
 # CPU-only, int8 quantized models
 dotnet run --project src/Vernacula.CLI -p:EP=Cpu -- \
-  --audio recording.wav --model ~/models/parakeet --precision int8
+  --audio recording.wav --model ~/models/vernacula --precision int8
 ```
 
 ---
@@ -194,7 +194,7 @@ The default build targets CUDA but falls back to CPU automatically if no NVIDIA 
 
 To install to a custom location:
 ```bash
-./install.sh --prefix /opt/parakeet
+./install.sh --prefix /opt/vernacula-desktop
 ```
 
 > **Note:** The first launch opens a model download dialog. Model sizes:
@@ -202,7 +202,7 @@ To install to a custom location:
 > - Core int8: ~820 MB
 > - DiariZen add-on: ~310 MB
 >
-> Models are stored in `~/.local/share/Parakeet/models/`.
+> Models are stored in `~/.local/share/Vernacula/models/`.
 
 ---
 
@@ -212,14 +212,14 @@ DiariZen's segmentation and embedding pipeline can be tuned via environment vari
 
 | Variable | Description |
 |---|---|
-| `PARAKEET_DIARIZEN_SEG_THREADS` | Segmentation intra-op thread count |
-| `PARAKEET_DIARIZEN_SEG_MAX_WORKERS` | Max parallel segmentation workers |
-| `PARAKEET_DIARIZEN_SEG_BATCH_SIZE` | Segmentation batch size |
-| `PARAKEET_DIARIZEN_EMBED_THREADS` | Embedding intra-op thread count |
-| `PARAKEET_DIARIZEN_EMBED_MAX_WORKERS` | Max parallel embedding workers |
-| `PARAKEET_DIARIZEN_EMBED_GPU_SAFETY_MB` | GPU memory safety margin (MB) |
-| `PARAKEET_DIARIZEN_EMBED_GPU_MAX_BATCH_SIZE` | Max embedding batch size |
-| `PARAKEET_DIARIZEN_EMBED_GPU_MAX_BATCH_FRAMES` | Max frames per embedding batch |
+| `VERNACULA_DIARIZEN_SEG_THREADS` | Segmentation intra-op thread count |
+| `VERNACULA_DIARIZEN_SEG_MAX_WORKERS` | Max parallel segmentation workers |
+| `VERNACULA_DIARIZEN_SEG_BATCH_SIZE` | Segmentation batch size |
+| `VERNACULA_DIARIZEN_EMBED_THREADS` | Embedding intra-op thread count |
+| `VERNACULA_DIARIZEN_EMBED_MAX_WORKERS` | Max parallel embedding workers |
+| `VERNACULA_DIARIZEN_EMBED_GPU_SAFETY_MB` | GPU memory safety margin (MB) |
+| `VERNACULA_DIARIZEN_EMBED_GPU_MAX_BATCH_SIZE` | Max embedding batch size |
+| `VERNACULA_DIARIZEN_EMBED_GPU_MAX_BATCH_FRAMES` | Max frames per embedding batch |
 
 ---
 

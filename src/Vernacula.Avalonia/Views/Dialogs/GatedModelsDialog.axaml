@@ -87,12 +87,12 @@
 
                     <TextBlock TextWrapping="Wrap"
                                Foreground="{DynamicResource SubtextBrush}">
-                        Speaker diarization model with external weights that are published separately from Parakeet.
+                        Speaker diarization model with external weights that are published separately from Vernacula-Desktop.
                     </TextBlock>
 
                     <TextBlock TextWrapping="Wrap"
                                Foreground="{DynamicResource TextBrush}">
-                        DiariZen support in Parakeet uses external model weights that are not bundled with this app and are not covered by Parakeet's software license.
+                        DiariZen support in Vernacula-Desktop uses external model weights that are not bundled with this app and are not covered by Vernacula-Desktop's software license.
                     </TextBlock>
 
                     <StackPanel Spacing="4">

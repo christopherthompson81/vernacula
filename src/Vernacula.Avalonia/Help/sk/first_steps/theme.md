@@ -6,7 +6,7 @@ topic_id: first_steps_theme
 
 # Výber témy
 
-Parakeet Transcription ponúka tmavú a svetlú tému. Aktívna téma je označená zaškrtnutím v ponuke.
+Vernacula-Desktop ponúka tmavú a svetlú tému. Aktívna téma je označená zaškrtnutím v ponuke.
 
 ## Ako zmeniť tému
 

@@ -6,7 +6,7 @@ topic_id: first_steps_theme
 
 # Välja ett tema
 
-Parakeet Transcription erbjuder mörkt och ljust tema. Det aktiva temat visas med en bockmarkering i menyn.
+Vernacula-Desktop erbjuder mörkt och ljust tema. Det aktiva temat visas med en bockmarkering i menyn.
 
 ## Hur du byter tema
 

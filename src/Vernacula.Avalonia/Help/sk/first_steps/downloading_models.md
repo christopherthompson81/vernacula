@@ -6,7 +6,7 @@ topic_id: first_steps_downloading_models
 
 # Sťahovanie modelov
 
-Parakeet Transcription na svoju činnosť vyžaduje súbory AI modelov. Tieto súbory nie sú súčasťou aplikácie a musia byť stiahnuté pred prvým prepisom.
+Vernacula-Desktop na svoju činnosť vyžaduje súbory AI modelov. Tieto súbory nie sú súčasťou aplikácie a musia byť stiahnuté pred prvým prepisom.
 
 ## Stav modelov (domovská obrazovka)
 

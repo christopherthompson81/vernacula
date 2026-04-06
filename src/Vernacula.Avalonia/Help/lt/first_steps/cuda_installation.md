@@ -1,12 +1,12 @@
 ---
 title: "CUDA ir cuDNN įdiegimas GPU spartinimui"
-description: "Kaip sukonfigūruoti NVIDIA CUDA ir cuDNN, kad Parakeet Transcription galėtų naudoti jūsų GPU."
+description: "Kaip sukonfigūruoti NVIDIA CUDA ir cuDNN, kad Vernacula-Desktop galėtų naudoti jūsų GPU."
 topic_id: first_steps_cuda_installation
 ---
 
 # CUDA ir cuDNN įdiegimas GPU spartinimui
 
-Parakeet Transcription gali naudoti NVIDIA GPU, kad žymiai pagreitintų transkripciją. GPU spartinimui reikalinga, kad jūsų sistemoje būtų įdiegti NVIDIA CUDA Toolkit ir cuDNN vykdymo bibliotekos.
+Vernacula-Desktop gali naudoti NVIDIA GPU, kad žymiai pagreitintų transkripciją. GPU spartinimui reikalinga, kad jūsų sistemoje būtų įdiegti NVIDIA CUDA Toolkit ir cuDNN vykdymo bibliotekos.
 
 ## Reikalavimai
 
@@ -18,7 +18,7 @@ Parakeet Transcription gali naudoti NVIDIA GPU, kad žymiai pagreitintų transkr
 
 ### 1. Įdiekite CUDA Toolkit
 
-Atsisiųskite ir paleiskite CUDA Toolkit diegimo programą iš NVIDIA kūrėjų svetainės. Diegimo metu palikite numatytuosius kelius. Diegimo programa automatiškai nustato aplinkos kintamąjį `CUDA_PATH` — Parakeet naudoja šį kintamąjį CUDA bibliotekoms rasti.
+Atsisiųskite ir paleiskite CUDA Toolkit diegimo programą iš NVIDIA kūrėjų svetainės. Diegimo metu palikite numatytuosius kelius. Diegimo programa automatiškai nustato aplinkos kintamąjį `CUDA_PATH` — Vernacula-Desktop naudoja šį kintamąjį CUDA bibliotekoms rasti.
 
 ### 2. Įdiekite cuDNN
 
@@ -28,7 +28,7 @@ Arba įdiekite cuDNN naudodami NVIDIA cuDNN diegimo programą, jei ji prieinama 
 
 ### 3. Paleiskite programą iš naujo
 
-Po įdiegimo uždarykite ir vėl atidarykite Parakeet Transcription. Programa tikrina CUDA prieinamumą paleidimo metu.
+Po įdiegimo uždarykite ir vėl atidarykite Vernacula-Desktop. Programa tikrina CUDA prieinamumą paleidimo metu.
 
 ## GPU būsena nustatymuose
 
@@ -59,6 +59,6 @@ Kai CUDA veikia, skyriuje **Hardware & Performance** taip pat rodoma dabartinė 
 
 ## Naudojimas be GPU
 
-Jei CUDA nėra prieinama, Parakeet automatiškai pereina prie apdorojimo naudojant CPU. Transkripcija vis tiek veikia, tačiau bus lėtesnė, ypač ilgiems garso failams.
+Jei CUDA nėra prieinama, Vernacula-Desktop automatiškai pereina prie apdorojimo naudojant CPU. Transkripcija vis tiek veikia, tačiau bus lėtesnė, ypač ilgiems garso failams.
 
 ---

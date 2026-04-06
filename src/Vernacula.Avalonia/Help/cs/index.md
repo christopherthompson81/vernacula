@@ -1,12 +1,12 @@
 ---
-title: "Parakeet Transcription — Nápověda"
+title: "Vernacula-Desktop — Nápověda"
 description: "Přehled a navigace pro všechna témata nápovědy."
 topic_id: help_index
 ---
 
-# Nápověda k aplikaci Parakeet Transcription
+# Nápověda k aplikaci Vernacula-Desktop
 
-Parakeet Transcription je aplikace pro přepis zvuku poháněná umělou inteligencí s automatickou diarizací mluvčích. Veškeré zpracování probíhá výhradně na vašem zařízení.
+Vernacula-Desktop je aplikace pro přepis zvuku poháněná umělou inteligencí s automatickou diarizací mluvčích. Veškeré zpracování probíhá výhradně na vašem zařízení.
 
 ## První kroky
 

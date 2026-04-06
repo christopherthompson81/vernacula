@@ -6,7 +6,7 @@ topic_id: first_steps_language
 
 # Selectarea unei limbi
 
-Parakeet Transcription acceptă mai multe limbi de afișare pentru interfața sa.
+Vernacula-Desktop acceptă mai multe limbi de afișare pentru interfața sa.
 
 ## Cum se schimbă limba
 

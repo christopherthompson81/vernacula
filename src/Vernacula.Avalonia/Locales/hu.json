@@ -204,7 +204,7 @@
   "dlg_filter_db": "SQLite Adatbázis|*.db",
 
   "menu_help_contents": "_Súgó Tartalom",
-  "help_window_title": "Parakeet Transcription — Súgó",
+  "help_window_title": "Vernacula-Desktop — Súgó",
 
   "help_group_first_steps": "Első Lépések",
   "help_group_operations": "Műveletek",
@@ -223,8 +223,8 @@
   "help_topic_operations_pausing_resuming_removing": "Szünet / Folytatás / Eltávolítás",
   "help_topic_operations_bulk_add_jobs": "Feladatok Tömeges Hozzáadása",
 
-  "about_title": "Névjegy a Parakeet Transcription-ről",
-  "about_heading": "Parakeet Transcription",
+  "about_title": "Névjegy a Vernacula-Desktop-ről",
+  "about_heading": "Vernacula-Desktop",
   "about_version": "{version} verzió",
   "about_description": "Mesterséges intelligenciával működő hangátírás\nautomatikus beszélőfelismeréssel,\nkizárólag az Ön eszközén fut.",
   "about_tech": "NeMo Parakeet ASR · Sortformer · ONNX Runtime",

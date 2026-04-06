@@ -6,7 +6,7 @@ topic_id: first_steps_downloading_models
 
 # Ladda ned modeller
 
-Parakeet Transcription kräver AI-modellfiler för att fungera. Dessa medföljer inte programmet och måste laddas ned innan din första transkribering.
+Vernacula-Desktop kräver AI-modellfiler för att fungera. Dessa medföljer inte programmet och måste laddas ned innan din första transkribering.
 
 ## Modellstatus (startskärmen)
 

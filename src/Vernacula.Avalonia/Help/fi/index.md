@@ -1,12 +1,12 @@
 ---
-title: "Parakeet Transcription — Ohje"
+title: "Vernacula-Desktop — Ohje"
 description: "Yleiskatsaus ja navigointi kaikkiin ohjeaiheisiin."
 topic_id: help_index
 ---
 
-# Parakeet Transcription -ohje
+# Vernacula-Desktop -ohje
 
-Parakeet Transcription on tekoälypohjainen äänen litterointisovellus, jossa on automaattinen puhujan tunnistus. Kaikki käsittely tapahtuu kokonaan laitteellasi.
+Vernacula-Desktop on tekoälypohjainen äänen litterointisovellus, jossa on automaattinen puhujan tunnistus. Kaikki käsittely tapahtuu kokonaan laitteellasi.
 
 ## Ensiaskeleet
 

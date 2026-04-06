@@ -6,7 +6,7 @@ topic_id: first_steps_theme
 
 # Teema valimine
 
-Parakeet Transcription pakub tumedat ja heledat teemat. Aktiivne teema on menüüs märgitud linnukesega.
+Vernacula-Desktop pakub tumedat ja heledat teemat. Aktiivne teema on menüüs märgitud linnukesega.
 
 ## Kuidas teemat muuta
 

@@ -6,7 +6,7 @@ topic_id: first_steps_language
 
 # Selección de idioma
 
-Parakeet Transcription admite varios idiomas de visualización para su interfaz de usuario.
+Vernacula-Desktop admite varios idiomas de visualización para su interfaz de usuario.
 
 ## Cómo cambiar el idioma
 

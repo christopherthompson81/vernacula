@@ -204,7 +204,7 @@
   "dlg_filter_db": "SQLite datubāze|*.db",
 
   "menu_help_contents": "_Palīdzības saturu",
-  "help_window_title": "Parakeet Transcription — Palīdzība",
+  "help_window_title": "Vernacula-Desktop — Palīdzība",
 
   "help_group_first_steps": "Pirmie soļi",
   "help_group_operations": "Darbības",
@@ -223,8 +223,8 @@
   "help_topic_operations_pausing_resuming_removing": "Darbu pauzēšana / atsākšana / noņemšana",
   "help_topic_operations_bulk_add_jobs": "Masveida darbu pievienošana",
 
-  "about_title": "Par Parakeet Transcription",
-  "about_heading": "Parakeet Transcription",
+  "about_title": "Par Vernacula-Desktop",
+  "about_heading": "Vernacula-Desktop",
   "about_version": "Versija {version}",
   "about_description": "Ar AI aprīkota audio transkripcija ar\nautomātisku runātāju diarizāciju,\nkas notiek pilnībā uz jūsu ierīces.",
   "about_tech": "NeMo Parakeet ASR · Sortformer · ONNX Runtime",

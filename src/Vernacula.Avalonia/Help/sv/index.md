@@ -1,12 +1,12 @@
 ---
-title: "Parakeet Transcription — Hjälp"
+title: "Vernacula-Desktop — Hjälp"
 description: "Översikt och navigering för alla hjälpavsnitt."
 topic_id: help_index
 ---
 
-# Hjälp för Parakeet Transcription
+# Hjälp för Vernacula-Desktop
 
-Parakeet Transcription är ett AI-drivet ljudtranskriberingsprogram med automatisk talaridentifiering. All bearbetning sker helt och hållet på din enhet.
+Vernacula-Desktop är ett AI-drivet ljudtranskriberingsprogram med automatisk talaridentifiering. All bearbetning sker helt och hållet på din enhet.
 
 ## Första stegen
 

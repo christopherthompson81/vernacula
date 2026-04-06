@@ -1,12 +1,12 @@
 ---
 title: "CUDA und cuDNN für GPU-Beschleunigung installieren"
-description: "So richten Sie NVIDIA CUDA und cuDNN ein, damit Parakeet Transcription Ihre GPU nutzen kann."
+description: "So richten Sie NVIDIA CUDA und cuDNN ein, damit Vernacula-Desktop Ihre GPU nutzen kann."
 topic_id: first_steps_cuda_installation
 ---
 
 # CUDA und cuDNN für GPU-Beschleunigung installieren
 
-Parakeet Transcription kann eine NVIDIA GPU verwenden, um die Transkription erheblich zu beschleunigen. Die GPU-Beschleunigung erfordert, dass das NVIDIA CUDA Toolkit und die cuDNN-Laufzeitbibliotheken auf Ihrem System installiert sind.
+Vernacula-Desktop kann eine NVIDIA GPU verwenden, um die Transkription erheblich zu beschleunigen. Die GPU-Beschleunigung erfordert, dass das NVIDIA CUDA Toolkit und die cuDNN-Laufzeitbibliotheken auf Ihrem System installiert sind.
 
 ## Voraussetzungen
 
@@ -18,7 +18,7 @@ Parakeet Transcription kann eine NVIDIA GPU verwenden, um die Transkription erhe
 
 ### 1. Das CUDA Toolkit installieren
 
-Laden Sie das CUDA Toolkit-Installationsprogramm von der NVIDIA-Entwicklerwebsite herunter und führen Sie es aus. Akzeptieren Sie während der Installation die Standardpfade. Das Installationsprogramm setzt die Umgebungsvariable `CUDA_PATH` automatisch — Parakeet verwendet diese Variable, um die CUDA-Bibliotheken zu finden.
+Laden Sie das CUDA Toolkit-Installationsprogramm von der NVIDIA-Entwicklerwebsite herunter und führen Sie es aus. Akzeptieren Sie während der Installation die Standardpfade. Das Installationsprogramm setzt die Umgebungsvariable `CUDA_PATH` automatisch — Vernacula-Desktop verwendet diese Variable, um die CUDA-Bibliotheken zu finden.
 
 ### 2. cuDNN installieren
 
@@ -28,7 +28,7 @@ Alternativ können Sie cuDNN mithilfe des NVIDIA cuDNN-Installationsprogramms in
 
 ### 3. Die Anwendung neu starten
 
-Schließen Sie Parakeet Transcription nach der Installation und öffnen Sie es erneut. Die Anwendung prüft beim Start, ob CUDA vorhanden ist.
+Schließen Sie Vernacula-Desktop nach der Installation und öffnen Sie es erneut. Die Anwendung prüft beim Start, ob CUDA vorhanden ist.
 
 ## GPU-Status in den Einstellungen
 
@@ -59,6 +59,6 @@ Wenn CUDA aktiv ist, zeigt der Abschnitt **Hardware & Performance** außerdem di
 
 ## Betrieb ohne GPU
 
-Wenn CUDA nicht verfügbar ist, wechselt Parakeet automatisch zur CPU-Verarbeitung. Die Transkription funktioniert weiterhin, ist jedoch langsamer — insbesondere bei langen Audiodateien.
+Wenn CUDA nicht verfügbar ist, wechselt Vernacula-Desktop automatisch zur CPU-Verarbeitung. Die Transkription funktioniert weiterhin, ist jedoch langsamer — insbesondere bei langen Audiodateien.
 
 ---

@@ -6,7 +6,7 @@ topic_id: first_steps_downloading_models
 
 # Modelių atsisiuntimas
 
-Norint paleisti „Parakeet Transcription", reikalingi AI modelių failai. Jie nėra įtraukti į programos diegimo paketą ir turi būti atsisiųsti prieš pirmąją transkripciją.
+Norint paleisti „Vernacula-Desktop", reikalingi AI modelių failai. Jie nėra įtraukti į programos diegimo paketą ir turi būti atsisiųsti prieš pirmąją transkripciją.
 
 ## Modelių būsena (pagrindinis ekranas)
 

@@ -6,7 +6,7 @@ topic_id: first_steps_language
 
 # Keele valimine
 
-Parakeet Transcription toetab kasutajaliideses mitut kuvamiskeelt.
+Vernacula-Desktop toetab kasutajaliideses mitut kuvamiskeelt.
 
 ## Kuidas keelt muuta
 

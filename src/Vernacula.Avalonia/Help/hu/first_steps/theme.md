@@ -6,7 +6,7 @@ topic_id: first_steps_theme
 
 # Téma kiválasztása
 
-A Parakeet Transcription Sötét és Világos témát kínál. Az aktív témát pipa jelzi a menüben.
+A Vernacula-Desktop Sötét és Világos témát kínál. Az aktív témát pipa jelzi a menüben.
 
 ## A téma megváltoztatása
 

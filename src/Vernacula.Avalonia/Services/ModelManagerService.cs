@@ -227,7 +227,7 @@ internal class ModelManagerService
     {
         string logPath  = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "Parakeet", "cuda_debug.txt");
+            "Vernacula", "cuda_debug.txt");
         Directory.CreateDirectory(Path.GetDirectoryName(logPath)!);
 
         string modelFile = Path.Combine(_settings.GetModelsDir(), "nemo128.onnx");

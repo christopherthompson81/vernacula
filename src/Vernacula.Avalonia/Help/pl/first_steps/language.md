@@ -6,7 +6,7 @@ topic_id: first_steps_language
 
 # Wybór języka
 
-Parakeet Transcription obsługuje wiele języków wyświetlania interfejsu użytkownika.
+Vernacula-Desktop obsługuje wiele języków wyświetlania interfejsu użytkownika.
 
 ## Jak zmienić język
 

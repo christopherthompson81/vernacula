@@ -6,7 +6,7 @@ topic_id: first_steps_language
 
 # Choisir une langue
 
-Parakeet Transcription prend en charge plusieurs langues d'affichage pour son interface utilisateur.
+Vernacula-Desktop prend en charge plusieurs langues d'affichage pour son interface utilisateur.
 
 ## Comment modifier la langue
 

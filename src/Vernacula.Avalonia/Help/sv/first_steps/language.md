@@ -6,7 +6,7 @@ topic_id: first_steps_language
 
 # Välja språk
 
-Parakeet Transcription stöder flera visningsspråk för sitt användargränssnitt.
+Vernacula-Desktop stöder flera visningsspråk för sitt användargränssnitt.
 
 ## Hur du ändrar språket
 

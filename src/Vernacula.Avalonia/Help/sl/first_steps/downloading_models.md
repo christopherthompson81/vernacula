@@ -6,7 +6,7 @@ topic_id: first_steps_downloading_models
 
 # Prenos modelov
 
-Parakeet Transcription za delovanje potrebuje datoteke modelov umetne inteligence. Te niso vključene v aplikacijo in jih je treba prenesti pred prvo transkripcijo.
+Vernacula-Desktop za delovanje potrebuje datoteke modelov umetne inteligence. Te niso vključene v aplikacijo in jih je treba prenesti pred prvo transkripcijo.
 
 ## Stanje modelov (domači zaslon)
 

@@ -1,12 +1,12 @@
 ---
 title: "CUDA en cuDNN installeren voor GPU-versnelling"
-description: "Hoe u NVIDIA CUDA en cuDNN instelt zodat Parakeet Transcription uw GPU kan gebruiken."
+description: "Hoe u NVIDIA CUDA en cuDNN instelt zodat Vernacula-Desktop uw GPU kan gebruiken."
 topic_id: first_steps_cuda_installation
 ---
 
 # CUDA en cuDNN installeren voor GPU-versnelling
 
-Parakeet Transcription kan een NVIDIA GPU gebruiken om de transcriptie aanzienlijk te versnellen. GPU-versnelling vereist dat de NVIDIA CUDA Toolkit en de cuDNN-runtimebibliotheken op uw systeem zijn geïnstalleerd.
+Vernacula-Desktop kan een NVIDIA GPU gebruiken om de transcriptie aanzienlijk te versnellen. GPU-versnelling vereist dat de NVIDIA CUDA Toolkit en de cuDNN-runtimebibliotheken op uw systeem zijn geïnstalleerd.
 
 ## Vereisten
 
@@ -18,7 +18,7 @@ Parakeet Transcription kan een NVIDIA GPU gebruiken om de transcriptie aanzienli
 
 ### 1. Installeer de CUDA Toolkit
 
-Download en voer het installatieprogramma van de CUDA Toolkit uit vanaf de NVIDIA-developerwebsite. Accepteer tijdens de installatie de standaardpaden. Het installatieprogramma stelt de omgevingsvariabele `CUDA_PATH` automatisch in — Parakeet gebruikt deze variabele om de CUDA-bibliotheken te vinden.
+Download en voer het installatieprogramma van de CUDA Toolkit uit vanaf de NVIDIA-developerwebsite. Accepteer tijdens de installatie de standaardpaden. Het installatieprogramma stelt de omgevingsvariabele `CUDA_PATH` automatisch in — Vernacula-Desktop gebruikt deze variabele om de CUDA-bibliotheken te vinden.
 
 ### 2. Installeer cuDNN
 
@@ -28,7 +28,7 @@ U kunt cuDNN ook installeren via het NVIDIA cuDNN-installatieprogramma, als dat 
 
 ### 3. Herstart de applicatie
 
-Sluit Parakeet Transcription en open het opnieuw na de installatie. De applicatie controleert bij het opstarten op de aanwezigheid van CUDA.
+Sluit Vernacula-Desktop en open het opnieuw na de installatie. De applicatie controleert bij het opstarten op de aanwezigheid van CUDA.
 
 ## GPU-status in Instellingen
 
@@ -59,6 +59,6 @@ Wanneer CUDA actief is, toont het gedeelte **Hardware & Performance** ook het hu
 
 ## Uitvoeren zonder GPU
 
-Als CUDA niet beschikbaar is, schakelt Parakeet automatisch over op CPU-verwerking. Transcriptie werkt dan nog steeds, maar zal trager zijn, vooral bij lange audiobestanden.
+Als CUDA niet beschikbaar is, schakelt Vernacula-Desktop automatisch over op CPU-verwerking. Transcriptie werkt dan nog steeds, maar zal trager zijn, vooral bij lange audiobestanden.
 
 ---

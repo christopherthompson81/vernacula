@@ -6,7 +6,7 @@ topic_id: first_steps_theme
 
 # Choisir un thème
 
-Parakeet Transcription propose des thèmes Sombre et Clair. Le thème actif est indiqué par une coche dans le menu.
+Vernacula-Desktop propose des thèmes Sombre et Clair. Le thème actif est indiqué par une coche dans le menu.
 
 ## Comment changer de thème
 

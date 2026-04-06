@@ -16,7 +16,7 @@
 
             <TextBlock TextWrapping="Wrap"
                        Foreground="{DynamicResource TextBrush}">
-                DiariZen support in Parakeet uses external model weights that are not bundled with this app and are not covered by Parakeet's software license.
+                DiariZen support in Vernacula-Desktop uses external model weights that are not bundled with this app and are not covered by Vernacula-Desktop's software license.
             </TextBlock>
 
             <TextBlock TextWrapping="Wrap"
@@ -39,7 +39,7 @@
 
             <TextBlock TextWrapping="Wrap"
                        Foreground="{DynamicResource SubtextBrush}">
-                Parakeet can use an external weights folder that you provide, or download those external weights only after your explicit confirmation. This notice is stored locally on this device so the app knows you accepted it.
+                Vernacula-Desktop can use an external weights folder that you provide, or download those external weights only after your explicit confirmation. This notice is stored locally on this device so the app knows you accepted it.
             </TextBlock>
 
             <CheckBox x:Name="AgreementCheckBox"
