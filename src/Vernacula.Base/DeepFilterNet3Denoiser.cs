@@ -9,16 +9,20 @@ using Vernacula.Base.Models;
 namespace Vernacula.Base;
 
 /// <summary>
-/// Offline batch denoiser using DeepFilterNet3 ONNX models.
+/// Chunked streaming denoiser using DeepFilterNet3 ONNX models.
 ///
 /// Pipeline (mirrors libdf Rust implementation):
 ///   1. Frame-by-frame STFT (vorbis window, fft=960, hop=480 @ 48 kHz)
 ///   2. ERB features: mean-norm'd log power in 32 ERB bands
 ///   3. Spec features: unit-norm'd complex first 96 bins
-///   4. ONNX inference: enc → erb_dec + df_dec
+///   4. ONNX inference (chunked, ChunkFrames per call):
+///      enc → erb_dec + df_dec, GRU state carried across chunks
 ///   5. Apply ERB mask to spectrum
 ///   6. Apply deep-filter coefficients to first 96 bins (order=5, lookahead=2)
 ///   7. ISTFT with overlap-add
+///
+/// Streaming models expose GRU hidden state as explicit inputs/outputs,
+/// allowing chunked inference (ChunkFrames ≈ 1 s) for better GPU utilisation.
 /// </summary>
 public sealed class DeepFilterNet3Denoiser : IDisposable
 {
@@ -34,6 +38,17 @@ public sealed class DeepFilterNet3Denoiser : IDisposable
     private const float NormAlpha   = 0.99f;
     private const float WNorm       = 1f / FftSize;
     private const float LogEps      = 1e-10f;
+
+    // ── Chunked streaming inference ───────────────────────────────────────────
+    // GRU hidden state shapes (from export_df3_streaming.py):
+    //   h_enc: [1, 1, 256]  — enc emb_gru,   1 layer
+    //   h_erb: [2, 1, 256]  — erb_dec emb_gru, 2 layers
+    //   h_df:  [2, 1, 256]  — df_dec df_gru,  2 layers
+    private const int ChunkFrames  = 500;    // ~5 s per chunk @ 48 kHz / 480 hop
+    private const int HSize        = 256;
+    private const int HEncElems    = 1 * 1 * HSize;   // 256 floats
+    private const int HErbElems    = 2 * 1 * HSize;   // 512 floats
+    private const int HDfElems     = 2 * 1 * HSize;   // 512 floats
 
     // ERB band widths computed by libdf's erb_fb(48000, 960, 32, 2).
     // Verified via df_state.erb_widths() → sum = 481 = FreqBins.
@@ -131,24 +146,20 @@ public sealed class DeepFilterNet3Denoiser : IDisposable
     /// <summary>
     /// Denoise mono audio at 48 kHz.  Returns enhanced audio at 48 kHz.
     /// Input length must be a multiple of HopSize (480 samples).
-    /// <paramref name="progress"/> receives (current, total) with total=4 at each pipeline stage.
+    /// <paramref name="progress"/> receives (current, total) where total = nChunks + 2.
     /// </summary>
     public float[] Denoise(float[] audio48k, IProgress<(int current, int total)>? progress = null)
     {
-        const int totalSteps = 4;
         int nFrames = audio48k.Length / HopSize;
         if (nFrames == 0) return audio48k;
 
         // ── Analysis STFT ────────────────────────────────────────────────────
-        // spec[t, f] = complex spectrum frame t, bin f.  shape: (nFrames, 481).
         var (specRe, specIm) = AnalysisStft(audio48k, nFrames);
 
         // ── Feature extraction ────────────────────────────────────────────────
-        // feat_erb[t, b]: ERB power features, shape (nFrames, 32)
-        // feat_spec_re/im[t, b]: unit-norm'd spec, shape (nFrames, 96)
-        float[] featErbFlat       = new float[nFrames * NbErb];
-        float[] featSpecReFlat    = new float[nFrames * NbDf];
-        float[] featSpecImFlat    = new float[nFrames * NbDf];
+        float[] featErbFlat    = new float[nFrames * NbErb];
+        float[] featSpecReFlat = new float[nFrames * NbDf];
+        float[] featSpecImFlat = new float[nFrames * NbDf];
 
         float[] meanNormState = (float[])MeanNormInit.Clone();
         float[] unitNormState = (float[])UnitNormInit.Clone();
@@ -159,32 +170,63 @@ public sealed class DeepFilterNet3Denoiser : IDisposable
             ComputeSpecFeatures(specRe, specIm, t, nFrames, unitNormState,
                                 featSpecReFlat, featSpecImFlat);
         }
-        progress?.Report((1, totalSteps));   // 25% — STFT + features done
 
-        // ── ONNX inference ────────────────────────────────────────────────────
-        // enc inputs: feat_erb (1,1,T,32), feat_spec (1,2,T,96)
-        // enc outputs: e0 (1,64,T,32), e1 (1,64,T,16), e2 (1,64,T,8), e3 (1,64,T,8),
-        //              emb (1,T,512), c0 (1,64,T,96), lsnr (1,T,1)
-        var encOutputs = RunEnc(featErbFlat, featSpecReFlat, featSpecImFlat, nFrames);
-        var (e0, e1, e2, e3, emb, c0) = encOutputs;
-        progress?.Report((2, totalSteps));   // 50% — encoder done
+        // ── Chunked ONNX inference ────────────────────────────────────────────
+        // Process in chunks of ChunkFrames, carrying GRU state across chunks.
+        // Assemble full mask and coef arrays; masks are applied to the full spectrum.
+        int nChunks   = (nFrames + ChunkFrames - 1) / ChunkFrames;
+        int totalSteps = nChunks + 2;    // STFT(1) + chunks(nChunks) + synthesis(1)
+        progress?.Report((1, totalSteps));
 
-        // erb_dec inputs: emb (1,T,512), e3,e2,e1,e0
-        // erb_dec output: m (1,1,T,32)  — ERB mask
-        float[] m = RunErbDec(emb, e3, e2, e1, e0, nFrames);
+        float[] mAll     = new float[nFrames * NbErb];
+        float[] coefsAll = new float[nFrames * NbDf * DfOrder * 2];
 
-        // df_dec inputs: emb (1,T,512), c0 (1,64,T,96)
-        // df_dec output: coefs (1,T,96,10)  — deep-filter coefs [re,im interleaved]
-        float[] coefs = RunDfDec(emb, c0, nFrames);
-        progress?.Report((3, totalSteps));   // 75% — decoders done
+        // Zero-initialised GRU hidden states
+        float[] hEnc = new float[HEncElems];
+        float[] hErb = new float[HErbElems];
+        float[] hDf  = new float[HDfElems];
 
-        // ── Apply masks ───────────────────────────────────────────────────────
-        ApplyErbMask(specRe, specIm, m, nFrames);
-        ApplyDeepFilter(specRe, specIm, coefs, nFrames);
+        for (int chunk = 0; chunk < nChunks; chunk++)
+        {
+            int frameStart = chunk * ChunkFrames;
+            int chunkT     = Math.Min(ChunkFrames, nFrames - frameStart);
+
+            // Slice feature arrays for this chunk
+            float[] cFeatErb   = new float[chunkT * NbErb];
+            float[] cFeatSpecRe = new float[chunkT * NbDf];
+            float[] cFeatSpecIm = new float[chunkT * NbDf];
+            Array.Copy(featErbFlat,    frameStart * NbErb, cFeatErb,    0, chunkT * NbErb);
+            Array.Copy(featSpecReFlat, frameStart * NbDf,  cFeatSpecRe, 0, chunkT * NbDf);
+            Array.Copy(featSpecImFlat, frameStart * NbDf,  cFeatSpecIm, 0, chunkT * NbDf);
+
+            // Encoder
+            var (e0, e1, e2, e3, emb, c0, hEncOut) =
+                RunEnc(cFeatErb, cFeatSpecRe, cFeatSpecIm, chunkT, hEnc);
+            hEnc = hEncOut;
+
+            // ERB decoder
+            var (m, hErbOut) = RunErbDec(emb, e3, e2, e1, e0, chunkT, hErb);
+            hErb = hErbOut;
+
+            // DF decoder
+            var (coefs, hDfOut) = RunDfDec(emb, c0, chunkT, hDf);
+            hDf = hDfOut;
+
+            // Accumulate results
+            Array.Copy(m,     0, mAll,     frameStart * NbErb,           chunkT * NbErb);
+            Array.Copy(coefs, 0, coefsAll, frameStart * NbDf * DfOrder * 2,
+                                           chunkT * NbDf * DfOrder * 2);
+
+            progress?.Report((chunk + 2, totalSteps));
+        }
+
+        // ── Apply masks (full spectrum) ───────────────────────────────────────
+        ApplyErbMask(specRe, specIm, mAll, nFrames);
+        ApplyDeepFilter(specRe, specIm, coefsAll, nFrames);
 
         // ── Synthesis ISTFT ───────────────────────────────────────────────────
         var result = SynthesisIstft(specRe, specIm, nFrames);
-        progress?.Report((4, totalSteps));   // 100% — synthesis done
+        progress?.Report((totalSteps, totalSteps));
         return result;
     }
 
@@ -294,67 +336,81 @@ public sealed class DeepFilterNet3Denoiser : IDisposable
 
     // ── ONNX inference ────────────────────────────────────────────────────────
 
-    private (float[] e0, float[] e1, float[] e2, float[] e3, float[] emb, float[] c0)
-        RunEnc(float[] featErbFlat, float[] featSpecRe, float[] featSpecIm, int T)
-    {
-        // feat_erb: (1, 1, T, 32) — layout [batch, channel, time, erb]
-        var erbTensor = new DenseTensor<float>(featErbFlat, [1, 1, T, NbErb]);
+    // ── Streaming ONNX inference (explicit GRU state I/O) ────────────────────
 
-        // feat_spec: (1, 2, T, 96) — channel 0 = real, channel 1 = imag
-        // featSpecRe/Im are in (T, NbDf) row-major; need to interleave into (1, 2, T, 96)
+    private (float[] e0, float[] e1, float[] e2, float[] e3, float[] emb, float[] c0,
+             float[] hEncOut)
+        RunEnc(float[] featErbFlat, float[] featSpecRe, float[] featSpecIm, int T,
+               float[] hEnc)
+    {
+        // feat_erb: (1, 1, T, 32)
+        var erbTensor  = new DenseTensor<float>(featErbFlat, [1, 1, T, NbErb]);
+
+        // feat_spec: (1, 2, T, 96) — re channel then im channel
         float[] featSpecFlat = new float[2 * T * NbDf];
-        Array.Copy(featSpecRe, 0, featSpecFlat, 0,          T * NbDf);
-        Array.Copy(featSpecIm, 0, featSpecFlat, T * NbDf,   T * NbDf);
+        Array.Copy(featSpecRe, 0, featSpecFlat, 0,        T * NbDf);
+        Array.Copy(featSpecIm, 0, featSpecFlat, T * NbDf, T * NbDf);
         var specTensor = new DenseTensor<float>(featSpecFlat, [1, 2, T, NbDf]);
+
+        // h_enc: (1, 1, 256)
+        var hEncTensor = new DenseTensor<float>(hEnc, [1, 1, HSize]);
 
         var inputs = new List<NamedOnnxValue>
         {
             NamedOnnxValue.CreateFromTensor("feat_erb",  erbTensor),
             NamedOnnxValue.CreateFromTensor("feat_spec", specTensor),
+            NamedOnnxValue.CreateFromTensor("h_enc",     hEncTensor),
         };
 
         using var outputs = _enc.Run(inputs);
         return (
-            e0:  outputs.First(o => o.Name == "e0").AsEnumerable<float>().ToArray(),
-            e1:  outputs.First(o => o.Name == "e1").AsEnumerable<float>().ToArray(),
-            e2:  outputs.First(o => o.Name == "e2").AsEnumerable<float>().ToArray(),
-            e3:  outputs.First(o => o.Name == "e3").AsEnumerable<float>().ToArray(),
-            emb: outputs.First(o => o.Name == "emb").AsEnumerable<float>().ToArray(),
-            c0:  outputs.First(o => o.Name == "c0").AsEnumerable<float>().ToArray()
+            e0:      outputs.First(o => o.Name == "e0").AsEnumerable<float>().ToArray(),
+            e1:      outputs.First(o => o.Name == "e1").AsEnumerable<float>().ToArray(),
+            e2:      outputs.First(o => o.Name == "e2").AsEnumerable<float>().ToArray(),
+            e3:      outputs.First(o => o.Name == "e3").AsEnumerable<float>().ToArray(),
+            emb:     outputs.First(o => o.Name == "emb").AsEnumerable<float>().ToArray(),
+            c0:      outputs.First(o => o.Name == "c0").AsEnumerable<float>().ToArray(),
+            hEncOut: outputs.First(o => o.Name == "h_enc_out").AsEnumerable<float>().ToArray()
         );
     }
 
-    private float[] RunErbDec(
-        float[] emb, float[] e3, float[] e2, float[] e1, float[] e0, int T)
+    private (float[] m, float[] hErbOut)
+        RunErbDec(float[] emb, float[] e3, float[] e2, float[] e1, float[] e0, int T,
+                  float[] hErb)
     {
-        // emb: (1, T, 512)  e3: (1, 64, T, 8)  e2: (1, 64, T, 8)
-        // e1:  (1, 64, T, 16)  e0: (1, 64, T, 32)
+        // emb: (1,T,512) — note: emb dim=512 from enc output (emb_out_dim)
         var inputs = new List<NamedOnnxValue>
         {
-            NamedOnnxValue.CreateFromTensor("emb", new DenseTensor<float>(emb, [1, T, 512])),
-            NamedOnnxValue.CreateFromTensor("e3",  new DenseTensor<float>(e3,  [1, 64, T, 8])),
-            NamedOnnxValue.CreateFromTensor("e2",  new DenseTensor<float>(e2,  [1, 64, T, 8])),
-            NamedOnnxValue.CreateFromTensor("e1",  new DenseTensor<float>(e1,  [1, 64, T, 16])),
-            NamedOnnxValue.CreateFromTensor("e0",  new DenseTensor<float>(e0,  [1, 64, T, 32])),
+            NamedOnnxValue.CreateFromTensor("emb",   new DenseTensor<float>(emb,  [1, T, 512])),
+            NamedOnnxValue.CreateFromTensor("e3",    new DenseTensor<float>(e3,   [1, 64, T, 8])),
+            NamedOnnxValue.CreateFromTensor("e2",    new DenseTensor<float>(e2,   [1, 64, T, 8])),
+            NamedOnnxValue.CreateFromTensor("e1",    new DenseTensor<float>(e1,   [1, 64, T, 16])),
+            NamedOnnxValue.CreateFromTensor("e0",    new DenseTensor<float>(e0,   [1, 64, T, 32])),
+            NamedOnnxValue.CreateFromTensor("h_erb", new DenseTensor<float>(hErb, [2, 1, HSize])),
         };
 
         using var outputs = _erbDec.Run(inputs);
-        // m: (1, 1, T, 32) — ERB mask, sigmoid-activated [0,1]
-        return outputs.First().AsEnumerable<float>().ToArray();
+        return (
+            m:       outputs.First(o => o.Name == "m").AsEnumerable<float>().ToArray(),
+            hErbOut: outputs.First(o => o.Name == "h_erb_out").AsEnumerable<float>().ToArray()
+        );
     }
 
-    private float[] RunDfDec(float[] emb, float[] c0, int T)
+    private (float[] coefs, float[] hDfOut)
+        RunDfDec(float[] emb, float[] c0, int T, float[] hDf)
     {
-        // emb: (1, T, 512)  c0: (1, 64, T, 96)
         var inputs = new List<NamedOnnxValue>
         {
-            NamedOnnxValue.CreateFromTensor("emb", new DenseTensor<float>(emb, [1, T, 512])),
-            NamedOnnxValue.CreateFromTensor("c0",  new DenseTensor<float>(c0,  [1, 64, T, NbDf])),
+            NamedOnnxValue.CreateFromTensor("emb",  new DenseTensor<float>(emb, [1, T, 512])),
+            NamedOnnxValue.CreateFromTensor("c0",   new DenseTensor<float>(c0,  [1, 64, T, NbDf])),
+            NamedOnnxValue.CreateFromTensor("h_df", new DenseTensor<float>(hDf, [2, 1, HSize])),
         };
 
         using var outputs = _dfDec.Run(inputs);
-        // coefs: (1, T, 96, 10) — DfOrder*2 re/im interleaved taps per (t,f)
-        return outputs.First().AsEnumerable<float>().ToArray();
+        return (
+            coefs:   outputs.First(o => o.Name == "coefs").AsEnumerable<float>().ToArray(),
+            hDfOut:  outputs.First(o => o.Name == "h_df_out").AsEnumerable<float>().ToArray()
+        );
     }
 
     // ── Mask and filter application ───────────────────────────────────────────
