@@ -13,7 +13,7 @@
 
 ## Parakeet Transcription — Desktop App
 
-**Parakeet Transcription** converts audio files into accurate, multi-speaker transcripts — entirely on your own computer. No cloud uploads, no subscriptions, no privacy concerns.
+Vernacula offers a desktop, graphical interface called **Parakeet Transcription**. Parakeet Transcription converts audio files into accurate, multi-speaker transcripts — entirely on your own computer. No cloud uploads, no subscriptions, no privacy concerns.
 
 Powered by NVIDIA's [Parakeet TDT](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2) and [Sortformer](https://huggingface.co/nvidia/diar_sortformer_4spk-v2.1) models, it delivers a **Word Error Rate of 4.85** on Google's FLEURS benchmark — among the best available anywhere. Most modern computers will transcribe one hour of audio in about five minutes. GPU-accelerated systems will be even faster.
 
@@ -238,16 +238,18 @@ DiariZen's segmentation and embedding pipeline can be tuned via environment vari
 
 ### Throughput
 
-10-minute English audio file, fp32 models, AMD Ryzen 7 7840U (CPU). RTF < 1.0 = faster than real-time.
+10-minute English audio file, fp32 models. RTF < 1.0 = faster than real-time.
 
-| Backend | Diarization | ASR | Total | RTF |
-|---|---|---|---|---|
-| Silero VAD | 2.1s | 50.5s | 52.7s | **0.088** |
-| Sortformer | 33.2s | 49.2s | 82.4s | **0.137** |
-| DiariZen | 502.0s | 55.8s | 557.8s | 0.930 |
-| Sortformer — NVIDIA RTX 3090 | — | — | — | — |
+| Backend | Hardware | Diarization | ASR | Total | RTF |
+|---|---|---|---|---|---|
+| Silero VAD | AMD Ryzen 7 7840U | 2.1s | 50.5s | 52.7s | **0.088** |
+| Sortformer | AMD Ryzen 7 7840U | 33.2s | 49.2s | 82.4s | **0.137** |
+| DiariZen | AMD Ryzen 7 7840U | 502.0s | 55.8s | 557.8s | 0.930 |
+| Silero VAD | NVIDIA RTX 3090 | 2.1s | 5.4s | 7.4s | **0.012** |
+| Sortformer | NVIDIA RTX 3090 | 16.0s | 5.5s | 21.4s | **0.036** |
+| DiariZen | NVIDIA RTX 3090 | 16.8s | 5.4s | 22.2s | **0.037** |
 
-> DiariZen is CPU-bound by the segmentation and embedding pipeline. GPU acceleration (CUDA) reduces diarization time dramatically. RTX 3090 results pending.
+> DiariZen's segmentation and embedding pipeline is heavily GPU-accelerated — CUDA reduces diarization time from 502s to 16.8s (~30×) and brings total runtime in line with Sortformer.
 
 ### Accuracy (DER)
 
