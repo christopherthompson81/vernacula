@@ -1,0 +1,31 @@
+# Requirements for DiariZen ONNX export and parity testing
+#
+# Tested parity environment:
+#   python==3.10
+#   torch==2.1.1
+#   torchvision==0.16.1
+#   torchaudio==2.1.1
+#
+# Newer torchaudio releases can break the local DiariZen/pyannote fork's
+# import path expectations (for example `torchaudio.AudioMetaData`).
+torch==2.1.1
+torchvision==0.16.1
+torchaudio==2.1.1
+onnx>=1.17
+onnxscript>=0.3
+onnxruntime>=1.16
+huggingface_hub>=0.20
+toml>=0.10
+numpy<2.0  # Required for pyannote-audio compatibility
+scipy>=1.10
+soundfile>=0.12
+matplotlib
+lightning
+torchmetrics
+psutil
+accelerate
+
+# Local DiariZen code is required by the export scripts.
+# Run:
+#   pip install -e /path/to/DiariZen/pyannote-audio
+#   pip install -e /path/to/DiariZen
