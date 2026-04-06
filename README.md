@@ -23,12 +23,27 @@
   <img src="src/Vernacula.Avalonia/Assets/vern_waveform.png" width="400" alt="Vernacula-Desktop" />
 </p>
 
-Vernacula-Desktop converts audio files into accurate, multi-speaker transcripts — entirely on your own computer. No cloud uploads, no subscriptions, no privacy concerns.
+Vernacula-Desktop converts audio files into accurate, multi-speaker transcripts — entirely on your own computer. No cloud uploads, no subscriptions, no privacy concerns. Works on Linux, Mac, and Windows (Android, iOS, and WebAssembly are untested).
 
 Powered by NVIDIA's [Parakeet TDT](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2) and [Sortformer](https://huggingface.co/nvidia/diar_sortformer_4spk-v2.1) models, it delivers a **Word Error Rate of 4.85** on Google's FLEURS benchmark — among the best available anywhere. Most modern computers will transcribe one hour of audio in about five minutes. GPU-accelerated systems will be even faster.
 
-<!-- Screenshots -->
-<!-- Add screenshots here once available -->
+### Demo
+
+<video src="screenshots/vernacula-desktop_usage_demo.mp4" controls width="100%"></video>
+
+### Screenshots
+
+**Jobs view** — queue and manage transcription jobs
+
+![Jobs view](screenshots/jobs_view.png)
+
+**Results view** — review the completed transcript with speaker labels and timestamps
+
+![Results view](screenshots/results_view.png)
+
+**Transcript editor** — correct text, adjust timing, and verify segments with audio playback
+
+![Transcript editor view](screenshots/transcript_editor_view.png)
 
 - Local, private transcription — audio never leaves your computer
 - Multi-speaker detection — identifies and labels up to four speakers
