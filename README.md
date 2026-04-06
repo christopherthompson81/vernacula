@@ -17,13 +17,13 @@
 
 ---
 
-## Parakeet Transcription — Desktop App
+## Vernacula Desktop App
 
 <p align="center">
-  <img src="src/Vernacula.Avalonia/Assets/parakeet.png" width="180" alt="Parakeet Transcription" />
+  <img src="src/Vernacula.Avalonia/Assets/vern_waveform.png" width="180" alt="Vernacula-Desktop" />
 </p>
 
-Vernacula offers a desktop, graphical interface called **Parakeet Transcription**. Parakeet Transcription converts audio files into accurate, multi-speaker transcripts — entirely on your own computer. No cloud uploads, no subscriptions, no privacy concerns.
+Vernacula offers a desktop, graphical interface called. Vernacula-Desktop converts audio files into accurate, multi-speaker transcripts — entirely on your own computer. No cloud uploads, no subscriptions, no privacy concerns.
 
 Powered by NVIDIA's [Parakeet TDT](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2) and [Sortformer](https://huggingface.co/nvidia/diar_sortformer_4spk-v2.1) models, it delivers a **Word Error Rate of 4.85** on Google's FLEURS benchmark — among the best available anywhere. Most modern computers will transcribe one hour of audio in about five minutes. GPU-accelerated systems will be even faster.
 
@@ -34,7 +34,7 @@ Powered by NVIDIA's [Parakeet TDT](https://huggingface.co/nvidia/parakeet-tdt-0.
 - Multi-speaker detection — identifies and labels up to four speakers
 - No audio length limits — streaming and segmentation handle indefinite file lengths
 - Queue multiple files; pause and resume long transcription jobs
-- Automatic punctuation and capitalisation
+- Automatic punctuation and capitalization
 - Transcript editor with confidence colouring, audio playback, and segment editing
 - Wide format support — common audio formats plus MP4, MOV, MKV, AVI, WMV, FLV, MTS, and more
 - Export to XLSX, CSV, JSON, SRT, Markdown, DOCX, and SQLite3
@@ -52,7 +52,7 @@ Built with [Avalonia UI](https://avaloniaui.net/) — runs on any Linux desktop 
 |---|---|---|
 | `Vernacula.Base` | Core inference library — ASR, diarization, VAD, audio utilities | MIT |
 | `Vernacula.CLI` | Command-line transcription tool | MIT |
-| `Vernacula.Avalonia` | Desktop GUI app for Linux (Parakeet Transcription) | PolyForm Shield 1.0.0 |
+| `Vernacula.Avalonia` | Desktop GUI app for Linux (Vernacula-Desktop) | PolyForm Shield 1.0.0 |
 
 Built around the [NVIDIA Parakeet TDT](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2) ASR model with pluggable backends for each pipeline stage.
 
