@@ -100,10 +100,11 @@ internal class TranscriptionService
                 {
                     using var vad = new VadSegmenter(modelsDir);
                     return vad.GetSegments(audio);
-                }, ct);
+                }, ct).ConfigureAwait(false);
 
             segs = new List<(double, double, string)>(vadSegs.Count);
             db.InsertSpeaker("speaker_1");
+            db.BeginBulkInsert();
             for (int i = 0; i < vadSegs.Count; i++)
             {
                 ct.ThrowIfCancellationRequested();
@@ -116,7 +117,6 @@ internal class TranscriptionService
                     startTimeF:           AudioUtils.SecondsToHhMmSs(Math.Round(start)),
                     endTimeF:             AudioUtils.SecondsToHhMmSs(Math.Round(end)),
                     asrContent: null, content: null, tokens: null, timestamps: null, logprobs: null);
-
                 onSegmentAdded(new SegmentRow
                 {
                     SegmentId          = i,
@@ -127,7 +127,7 @@ internal class TranscriptionService
                 });
                 segs.Add((start, end, "speaker_1"));
             }
-
+            db.CommitBulkInsert();
             db.MarkDiarizationComplete();
 
             progress.Report(new TranscriptionProgress(
@@ -168,7 +168,7 @@ internal class TranscriptionService
 
             while (true)
             {
-                bool hasChunk = await sortformerTask;
+                bool hasChunk = await sortformerTask.ConfigureAwait(false);
                 if (!hasChunk) break;
 
                 ct.ThrowIfCancellationRequested();
@@ -222,7 +222,7 @@ internal class TranscriptionService
                     var preprocessTask = Task.Run(() => parakeet.PrepareBatch(newSegs, audio), ct);
 
                     // Await CPU preprocessing (Sortformer GPU is running in parallel).
-                    var preparedBatch = await preprocessTask;
+                    var preparedBatch = await preprocessTask.ConfigureAwait(false);
 
                     // GPU encode + decode (Sortformer may still be running; ONNX Runtime
                     // serialises sessions on the same CUDA device via stream ordering).
@@ -319,11 +319,12 @@ internal class TranscriptionService
                                 DiariZenDiarizationPercentWeight,
                                 diarizationFraction)));
                     });
-            }, ct);
+            }, ct).ConfigureAwait(false);
 
             segs = new List<(double, double, string)>(diarSegments.Count);
             var seenSpeakers = new HashSet<string>();
 
+            db.BeginBulkInsert();
             foreach (var seg in diarSegments)
             {
                 ct.ThrowIfCancellationRequested();
@@ -357,7 +358,7 @@ internal class TranscriptionService
                 });
                 segs.Add((seg.Start, seg.End, spkId));
             }
-
+            db.CommitBulkInsert();
             db.MarkDiarizationComplete();
 
             progress.Report(new TranscriptionProgress(

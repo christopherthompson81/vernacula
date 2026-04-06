@@ -93,6 +93,8 @@ internal sealed class TranscriptionDb : IDisposable
     {
         _conn = new SqliteConnection($"Data Source={databasePath};Pooling=false");
         _conn.Open();
+        Execute("PRAGMA journal_mode=WAL");
+        Execute("PRAGMA synchronous=NORMAL");
 
         Execute(CreateMetadata);
         Execute(CreateResults);
@@ -116,12 +118,12 @@ internal sealed class TranscriptionDb : IDisposable
     /// </summary>
     private void MigrateToCardLayer()
     {
-        using var checkCards = _conn.CreateCommand();
+        using var checkCards = CreateCmd();
         checkCards.CommandText = "SELECT count(*) FROM segment_cards";
         long cardCount = (long)(checkCards.ExecuteScalar() ?? 0L);
         if (cardCount > 0) return;
 
-        using var checkResults = _conn.CreateCommand();
+        using var checkResults = CreateCmd();
         checkResults.CommandText = "SELECT count(*) FROM results";
         long resultCount = (long)(checkResults.ExecuteScalar() ?? 0L);
         if (resultCount == 0) return;
@@ -152,7 +154,7 @@ internal sealed class TranscriptionDb : IDisposable
 
     public void InsertMetadata(string key, string value)
     {
-        using var cmd = _conn.CreateCommand();
+        using var cmd = CreateCmd();
         cmd.CommandText = "INSERT INTO metadata(key, value) VALUES ($key, $val)";
         cmd.Parameters.AddWithValue("$key", key);
         cmd.Parameters.AddWithValue("$val", value);
@@ -161,7 +163,7 @@ internal sealed class TranscriptionDb : IDisposable
 
     public void UpdateMetadata(string key, string value)
     {
-        using var cmd = _conn.CreateCommand();
+        using var cmd = CreateCmd();
         cmd.CommandText = "UPDATE metadata SET value = $val WHERE key = $key";
         cmd.Parameters.AddWithValue("$key", key);
         cmd.Parameters.AddWithValue("$val", value);
@@ -170,7 +172,7 @@ internal sealed class TranscriptionDb : IDisposable
 
     public string? GetMetadata(string key)
     {
-        using var cmd = _conn.CreateCommand();
+        using var cmd = CreateCmd();
         cmd.CommandText = "SELECT value FROM metadata WHERE key = $key";
         cmd.Parameters.AddWithValue("$key", key);
         return cmd.ExecuteScalar() as string;
@@ -204,7 +206,7 @@ internal sealed class TranscriptionDb : IDisposable
         string? timestamps,
         string? logprobs)
     {
-        using var cmd = _conn.CreateCommand();
+        using var cmd = CreateCmd();
         cmd.CommandText = """
             INSERT INTO results
                 (diarization_speaker_id, speaker_id,
@@ -235,7 +237,7 @@ internal sealed class TranscriptionDb : IDisposable
         string? timestamps,
         string? logprobs)
     {
-        using var cmd = _conn.CreateCommand();
+        using var cmd = CreateCmd();
         cmd.CommandText = """
             UPDATE results
             SET asr_content = $asr,
@@ -259,7 +261,7 @@ internal sealed class TranscriptionDb : IDisposable
     /// <summary>Creates a new card row and returns its card_id.</summary>
     public int CreateCard(int speakerId, double playStart, double playEnd)
     {
-        using var cmd = _conn.CreateCommand();
+        using var cmd = CreateCmd();
         cmd.CommandText = """
             INSERT INTO segment_cards (sort_order, speaker_id, play_start, play_end)
             VALUES ((SELECT coalesce(max(sort_order), 0) + 1 FROM segment_cards),
@@ -276,7 +278,7 @@ internal sealed class TranscriptionDb : IDisposable
     public void AddCardSource(int cardId, int resultId,
         int tokenStart, int? tokenEnd, int tsFrameOffset, int sourceOrder)
     {
-        using var cmd = _conn.CreateCommand();
+        using var cmd = CreateCmd();
         cmd.CommandText = """
             INSERT INTO card_sources
                 (card_id, result_id, token_start, token_end, ts_frame_offset, source_order)
@@ -301,7 +303,7 @@ internal sealed class TranscriptionDb : IDisposable
         string? timestamps,
         string? logprobs)
     {
-        using var cmd = _conn.CreateCommand();
+        using var cmd = CreateCmd();
         cmd.CommandText = """
             INSERT INTO results
                 (diarization_speaker_id, speaker_id, start_time, end_time,
@@ -326,7 +328,7 @@ internal sealed class TranscriptionDb : IDisposable
     /// <summary>Removes all source mappings for a card without deleting the card itself.</summary>
     public void DeleteCardSources(int cardId)
     {
-        using var cmd = _conn.CreateCommand();
+        using var cmd = CreateCmd();
         cmd.CommandText = "DELETE FROM card_sources WHERE card_id = $id";
         cmd.Parameters.AddWithValue("$id", cardId);
         cmd.ExecuteNonQuery();
@@ -340,13 +342,13 @@ internal sealed class TranscriptionDb : IDisposable
     {
         foreach (int id in resultIds)
         {
-            using var check = _conn.CreateCommand();
+            using var check = CreateCmd();
             check.CommandText = "SELECT count(*) FROM card_sources WHERE result_id = $id";
             check.Parameters.AddWithValue("$id", id);
             long count = (long)(check.ExecuteScalar() ?? 0L);
             if (count > 0) continue;
 
-            using var del = _conn.CreateCommand();
+            using var del = CreateCmd();
             del.CommandText = "DELETE FROM results WHERE result_id = $id";
             del.Parameters.AddWithValue("$id", id);
             del.ExecuteNonQuery();
@@ -356,12 +358,12 @@ internal sealed class TranscriptionDb : IDisposable
     /// <summary>Deletes a card and its source mappings.</summary>
     public void DeleteCard(int cardId)
     {
-        using var cmd1 = _conn.CreateCommand();
+        using var cmd1 = CreateCmd();
         cmd1.CommandText = "DELETE FROM card_sources WHERE card_id = $id";
         cmd1.Parameters.AddWithValue("$id", cardId);
         cmd1.ExecuteNonQuery();
 
-        using var cmd2 = _conn.CreateCommand();
+        using var cmd2 = CreateCmd();
         cmd2.CommandText = "DELETE FROM segment_cards WHERE card_id = $id";
         cmd2.Parameters.AddWithValue("$id", cardId);
         cmd2.ExecuteNonQuery();
@@ -369,7 +371,7 @@ internal sealed class TranscriptionDb : IDisposable
 
     public void UpdateCardContent(int cardId, string? content)
     {
-        using var cmd = _conn.CreateCommand();
+        using var cmd = CreateCmd();
         cmd.CommandText = "UPDATE segment_cards SET content = $c WHERE card_id = $id";
         cmd.Parameters.AddWithValue("$c",  (object?)content ?? DBNull.Value);
         cmd.Parameters.AddWithValue("$id", cardId);
@@ -378,7 +380,7 @@ internal sealed class TranscriptionDb : IDisposable
 
     public void UpdateCardTimes(int cardId, double playStart, double playEnd)
     {
-        using var cmd = _conn.CreateCommand();
+        using var cmd = CreateCmd();
         cmd.CommandText = "UPDATE segment_cards SET play_start = $ps, play_end = $pe WHERE card_id = $id";
         cmd.Parameters.AddWithValue("$ps", playStart);
         cmd.Parameters.AddWithValue("$pe", playEnd);
@@ -388,7 +390,7 @@ internal sealed class TranscriptionDb : IDisposable
 
     public void UpdateCardSpeaker(int cardId, int speakerId)
     {
-        using var cmd = _conn.CreateCommand();
+        using var cmd = CreateCmd();
         cmd.CommandText = "UPDATE segment_cards SET speaker_id = $spk WHERE card_id = $id";
         cmd.Parameters.AddWithValue("$spk", speakerId);
         cmd.Parameters.AddWithValue("$id",  cardId);
@@ -397,7 +399,7 @@ internal sealed class TranscriptionDb : IDisposable
 
     public void UpdateCardVerified(int cardId, bool verified)
     {
-        using var cmd = _conn.CreateCommand();
+        using var cmd = CreateCmd();
         cmd.CommandText = "UPDATE segment_cards SET verified = $v WHERE card_id = $id";
         cmd.Parameters.AddWithValue("$v",  verified ? 1 : 0);
         cmd.Parameters.AddWithValue("$id", cardId);
@@ -406,7 +408,7 @@ internal sealed class TranscriptionDb : IDisposable
 
     public void UpdateCardSuppressed(int cardId, bool suppressed)
     {
-        using var cmd = _conn.CreateCommand();
+        using var cmd = CreateCmd();
         cmd.CommandText = "UPDATE segment_cards SET suppressed = $v WHERE card_id = $id";
         cmd.Parameters.AddWithValue("$v",  suppressed ? 1 : 0);
         cmd.Parameters.AddWithValue("$id", cardId);
@@ -422,7 +424,7 @@ internal sealed class TranscriptionDb : IDisposable
         double order = 1.0;
         foreach (int cardId in cardIdsInOrder)
         {
-            using var cmd = _conn.CreateCommand();
+            using var cmd = CreateCmd();
             cmd.CommandText = "UPDATE segment_cards SET sort_order = $so WHERE card_id = $id";
             cmd.Parameters.AddWithValue("$so", order++);
             cmd.Parameters.AddWithValue("$id", cardId);
@@ -440,7 +442,7 @@ internal sealed class TranscriptionDb : IDisposable
             int resultId, int tokenStart, int? tokenEnd, int tsFrameOffset, int sourceOrder,
             string? tokensJson, string? timestampsJson, string? logprobsJson, string asrContent)>();
 
-        using var cmd = _conn.CreateCommand();
+        using var cmd = CreateCmd();
         cmd.CommandText = """
             SELECT c.card_id, c.sort_order, c.speaker_id, s.name,
                    c.play_start, c.play_end, c.content, c.verified, c.suppressed,
@@ -550,7 +552,7 @@ internal sealed class TranscriptionDb : IDisposable
 
     public void InsertSpeaker(string name)
     {
-        using var cmd = _conn.CreateCommand();
+        using var cmd = CreateCmd();
         cmd.CommandText = "INSERT INTO speakers(name) VALUES ($name)";
         cmd.Parameters.AddWithValue("$name", name);
         cmd.ExecuteNonQuery();
@@ -559,7 +561,7 @@ internal sealed class TranscriptionDb : IDisposable
     /// <summary>Inserts a new speaker row and returns its new speaker_id.</summary>
     public int AddSpeaker(string name)
     {
-        using var cmd = _conn.CreateCommand();
+        using var cmd = CreateCmd();
         cmd.CommandText = "INSERT INTO speakers(name) VALUES ($name); SELECT last_insert_rowid();";
         cmd.Parameters.AddWithValue("$name", name);
         return Convert.ToInt32(cmd.ExecuteScalar());
@@ -567,7 +569,7 @@ internal sealed class TranscriptionDb : IDisposable
 
     public void UpdateSpeaker(int speakerId, string name)
     {
-        using var cmd = _conn.CreateCommand();
+        using var cmd = CreateCmd();
         cmd.CommandText = "UPDATE speakers SET name = $name WHERE speaker_id = $id";
         cmd.Parameters.AddWithValue("$name", name);
         cmd.Parameters.AddWithValue("$id",   speakerId);
@@ -578,7 +580,7 @@ internal sealed class TranscriptionDb : IDisposable
     public List<(int SpeakerId, string Name)> GetSpeakers()
     {
         var result = new List<(int, string)>();
-        using var cmd = _conn.CreateCommand();
+        using var cmd = CreateCmd();
         cmd.CommandText = "SELECT speaker_id, name FROM speakers ORDER BY speaker_id";
         using var r = cmd.ExecuteReader();
         while (r.Read())
@@ -592,7 +594,7 @@ internal sealed class TranscriptionDb : IDisposable
     public List<(double start, double end, string spkId)> GetSegments()
     {
         var segs = new List<(double, double, string)>();
-        using var cmd = _conn.CreateCommand();
+        using var cmd = CreateCmd();
         cmd.CommandText = """
             SELECT c.play_start, c.play_end,
                    'speaker_' || (c.speaker_id - 1) AS speaker_id
@@ -610,7 +612,7 @@ internal sealed class TranscriptionDb : IDisposable
     public List<(string speaker, double startSec, double endSec, string content)> GetTranscriptRows()
     {
         var rows = new List<(string, double, double, string)>();
-        using var cmd = _conn.CreateCommand();
+        using var cmd = CreateCmd();
         cmd.CommandText = """
             SELECT s.name, c.play_start, c.play_end,
                    coalesce(c.content, coalesce(r.asr_content, ''))
@@ -632,7 +634,7 @@ internal sealed class TranscriptionDb : IDisposable
     public List<IReadOnlyDictionary<string, string>> GetTranscript()
     {
         var rows = new List<IReadOnlyDictionary<string, string>>();
-        using var cmd = _conn.CreateCommand();
+        using var cmd = CreateCmd();
         cmd.CommandText = """
             SELECT s.name, c.play_start, c.play_end,
                    coalesce(c.content, coalesce(r.asr_content, ''))
@@ -661,7 +663,7 @@ internal sealed class TranscriptionDb : IDisposable
     public List<string> GetResultContents()
     {
         var result = new List<string>();
-        using var cmd = _conn.CreateCommand();
+        using var cmd = CreateCmd();
         cmd.CommandText = "SELECT coalesce(content, '') FROM results ORDER BY result_id";
         using var r = cmd.ExecuteReader();
         while (r.Read())
@@ -695,7 +697,7 @@ internal sealed class TranscriptionDb : IDisposable
 
     public bool CheckSpeakers()
     {
-        using var cmd = _conn.CreateCommand();
+        using var cmd = CreateCmd();
         cmd.CommandText = "SELECT count(*) FROM speakers";
         return (long)(cmd.ExecuteScalar() ?? 0L) > 0;
     }
@@ -706,7 +708,7 @@ internal sealed class TranscriptionDb : IDisposable
     /// </summary>
     public (bool done, int startAt) CheckAsr()
     {
-        using var cmd = _conn.CreateCommand();
+        using var cmd = CreateCmd();
         cmd.CommandText = """
             SELECT
                 (SELECT count(*) FROM results)                          AS results_count,
@@ -721,11 +723,28 @@ internal sealed class TranscriptionDb : IDisposable
         return (true, (int)filled);
     }
 
+    // ── Bulk insert transaction ───────────────────────────────────────────────
+
+    private SqliteTransaction? _bulkTx;
+
+    /// <summary>Begin a transaction wrapping a bulk insert batch.</summary>
+    public void BeginBulkInsert()  => _bulkTx = _conn.BeginTransaction();
+
+    /// <summary>Commit the bulk insert transaction.</summary>
+    public void CommitBulkInsert() { _bulkTx?.Commit(); _bulkTx?.Dispose(); _bulkTx = null; }
+
     // ── Helpers ───────────────────────────────────────────────────────────────
+
+    private SqliteCommand CreateCmd()
+    {
+        var cmd = _conn.CreateCommand();
+        if (_bulkTx is not null) cmd.Transaction = _bulkTx;
+        return cmd;
+    }
 
     private void Execute(string sql)
     {
-        using var cmd = _conn.CreateCommand();
+        using var cmd = CreateCmd();
         cmd.CommandText = sql;
         cmd.ExecuteNonQuery();
     }
