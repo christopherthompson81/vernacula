@@ -72,11 +72,15 @@ public sealed class CohereTranscribe : IDisposable
     // segments of similar length land in the same batch, minimising the "straggler"
     // waste where shorter segments keep stepping after they have emitted EOS.
 
-    // Hard upper limit on segments per batch.
-    // B=128 crashes on RTX 3090 (24 GB): decoder_init intermediate activations
-    // scale as B × encTMax and exhaust VRAM after model weights consume ~12 GB.
-    // B=8 is confirmed safe; B=32 keeps four-session ONNX model weights + BFC
-    // arena overhead within budget while giving 4× better GPU utilisation vs B=8.
+    // Hard upper limit on segments per batch.  The VRAM constraint (EstimateKvBytes vs
+    // _vramBudgetForKvBytes) is the primary limiter; this cap handles pathological cases
+    // (thousands of very short segments) or CPU-only builds where VRAM estimation falls
+    // back to 3 GB.
+    //
+    // encoder.onnx accepts input_lengths [B] int64 so the Conformer's self-attention masks
+    // padded positions per item — segments of different lengths can be freely batched.
+    // decoder_init intermediate activations scale as B × encTMax; peak VRAM is estimated
+    // conservatively and the budget check prevents OOM.
     private const int MaxBatchSize = 32;
 
     // VRAM budget for KV-cache tensors AND intermediate activations during the
@@ -213,37 +217,43 @@ public sealed class CohereTranscribe : IDisposable
     }
 
     /// <summary>
-    /// Encoder batch: mel features [B, 128, F_max] → encoder_hidden_states [B, T_enc_max, 1280].
-    /// Segments shorter than F_max are zero-padded on the right.
-    /// Returns the full padded batch tensor and T_enc_max (the decoder uses all T_enc_max
-    /// cross-attention positions; near-zero outputs from padding receive negligible attention).
+    /// Batched encoder: mel features [B, 128, F_max] + lengths [B] → encoder_hidden_states [B, T_enc_max, 1280].
+    ///
+    /// The encoder.onnx graph accepts an <c>input_lengths</c> tensor (int64 [B]) giving the
+    /// actual mel-frame count for each batch item.  The Conformer's self-attention uses this
+    /// to build a padding mask, so zero-padded positions beyond each segment's true length are
+    /// masked out and cannot contaminate the attention of valid positions.  This means segments
+    /// of different lengths can be safely batched without hallucinations or repetition loops.
     /// </summary>
     private (float[] batchHidden, int T_enc_max) RunEncoderBatch(
         IReadOnlyList<(float[] features, int nMels, int F)> melResults)
     {
         int B     = melResults.Count;
-        int nMels = melResults[0].nMels;
+        int nMels = melResults[0].Item2;
         int F_max = 0;
         foreach (var (_, _, F) in melResults) if (F > F_max) F_max = F;
 
-        // Build [B, 128, F_max] — zero-initialised, fill each segment's valid frames.
+        // Build [B, 128, F_max] — zero-initialised so padded positions are silent.
         var batchData = new float[B * nMels * F_max];
+        var lengths   = new long[B];
         for (int b = 0; b < B; b++)
         {
             var (features, _, F) = melResults[b];
             for (int m = 0; m < nMels; m++)
                 Array.Copy(features, m * F, batchData, (b * nMels + m) * F_max, F);
+            lengths[b] = F;   // actual mel frames; encoder uses this for the padding mask
         }
 
-        var batchT = new DenseTensor<float>(batchData, new[] { B, nMels, F_max });
+        var batchT   = new DenseTensor<float>(batchData, new[] { B, nMels, F_max });
+        var lengthsT = new DenseTensor<long>(lengths, new[] { B });
         using var encResults = _encoder.Run(
         [
             NamedOnnxValue.CreateFromTensor("input_features", batchT),
+            NamedOnnxValue.CreateFromTensor("input_lengths",  lengthsT),
         ]);
 
         var hidT      = encResults.First(r => r.Name == "encoder_hidden_states").AsTensor<float>();
         int T_enc_max = hidT.Dimensions[1];
-        // Row-major [B, T_enc_max, dMod] — bulk copy via DenseTensor buffer.
         var batchHidden = ExtractTensorFlatDirect(hidT);
         return (batchHidden, T_enc_max);
     }
@@ -274,12 +284,20 @@ public sealed class CohereTranscribe : IDisposable
         const int encDim = 1280;
 
         // ── Build decoder_init input ──────────────────────────────────────────
-        // With a forced language we send the full context block as a prefix so
-        // decoder_init computes KV for all context positions in one forward pass.
-        // Without forced language we send BOS only and step through the context
-        // block token-by-token in the step loop (existing behaviour).
-        bool usePrefill   = forcedLangTokenId >= 0;
-        int  contextLen   = usePrefill ? 10 : 1;   // number of tokens in the prefix
+        // Always send BOS only and let the model generate the context block
+        // token-by-token in the step loop.  ForceLang intercepts any language
+        // token the model emits (IDs 22–204) and substitutes the forced language;
+        // all other context tokens (emotion, ITN flag, etc.) are left to the model
+        // so it can choose appropriate values for each segment's content.
+        //
+        // NOTE: The full 10-token prefill was tried but caused the model to
+        // produce Chinese annotations ([笑], 嗯) for short non-speech segments
+        // (laughter, filled pauses) because hard-coding noitn + nodiarize etc.
+        // over-constrains the decoding for ambiguous audio.  Auto-generating the
+        // context block with only the language forced gives significantly better
+        // results for those segments.
+        bool usePrefill   = false;
+        int  contextLen   = 1;   // always BOS only for decoder_init
 
         var initTokens = new long[B * contextLen];
         for (int b = 0; b < B; b++)
@@ -613,9 +631,13 @@ public sealed class CohereTranscribe : IDisposable
             // ── Build a variable-size batch bounded by VRAM and MaxBatchSize ──────
             // Grow the batch one segment at a time, stopping when the estimated peak
             // KV-cache size would exceed VramBudgetForKvBytes or MaxBatchSize is hit.
-            // Uses the *worst-case* (longest) segment in the batch for both enc and dec
-            // estimates, which is always the last segment added (since we sort ascending).
-            int batchSize   = 0;
+            // Segments are sorted ascending by duration so the worst-case (longest)
+            // segment drives the KV estimate.
+            // Note: there is no encoder-frame ratio limit because the encoder is now
+            // run per-segment (B=1 each), so Conformer self-attention contamination
+            // from batch padding is no longer an issue.  Padded positions in the
+            // stacked decoder input are zero, contributing zero to cross-attention output.
+            int batchSize    = 0;
             int maxEncFrames = 0;
             int maxDecSteps  = 0;
 
