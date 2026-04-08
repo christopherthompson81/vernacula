@@ -108,6 +108,12 @@ internal sealed class TranscriptionDb : IDisposable
         catch (SqliteException) { /* column already exists */ }
         try { Execute("ALTER TABLE results ADD COLUMN suppressed INTEGER NOT NULL DEFAULT 0"); }
         catch (SqliteException) { /* column already exists */ }
+        try { Execute("ALTER TABLE results ADD COLUMN language TEXT"); }
+        catch (SqliteException) { /* column already exists */ }
+        try { Execute("ALTER TABLE results ADD COLUMN emotion  TEXT"); }
+        catch (SqliteException) { /* column already exists */ }
+        try { Execute("ALTER TABLE results ADD COLUMN asr_meta TEXT"); }
+        catch (SqliteException) { /* column already exists */ }
 
         MigrateToCardLayer();
     }
@@ -204,16 +210,21 @@ internal sealed class TranscriptionDb : IDisposable
         string? content,
         string? tokens,
         string? timestamps,
-        string? logprobs)
+        string? logprobs,
+        string? language = null,
+        string? emotion  = null,
+        string? asrMeta  = null)
     {
         using var cmd = CreateCmd();
         cmd.CommandText = """
             INSERT INTO results
                 (diarization_speaker_id, speaker_id,
                  start_time, end_time, start_time_f, end_time_f,
-                 asr_content, content, tokens, timestamps, logprobs)
+                 asr_content, content, tokens, timestamps, logprobs,
+                 language, emotion, asr_meta)
             VALUES
-                ($dspk, $spk, $st, $et, $stf, $etf, $asr, $con, $tok, $ts, $lp)
+                ($dspk, $spk, $st, $et, $stf, $etf, $asr, $con, $tok, $ts, $lp,
+                 $lang, $emo, $meta)
             """;
         cmd.Parameters.AddWithValue("$dspk", diarizationSpeakerId);
         cmd.Parameters.AddWithValue("$spk",  speakerId);
@@ -221,11 +232,14 @@ internal sealed class TranscriptionDb : IDisposable
         cmd.Parameters.AddWithValue("$et",   endTime);
         cmd.Parameters.AddWithValue("$stf",  startTimeF);
         cmd.Parameters.AddWithValue("$etf",  endTimeF);
-        cmd.Parameters.AddWithValue("$asr",  (object?)asrContent  ?? DBNull.Value);
-        cmd.Parameters.AddWithValue("$con",  (object?)content     ?? DBNull.Value);
-        cmd.Parameters.AddWithValue("$tok",  (object?)tokens      ?? DBNull.Value);
-        cmd.Parameters.AddWithValue("$ts",   (object?)timestamps  ?? DBNull.Value);
-        cmd.Parameters.AddWithValue("$lp",   (object?)logprobs    ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("$asr",  (object?)asrContent ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("$con",  (object?)content    ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("$tok",  (object?)tokens     ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("$ts",   (object?)timestamps ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("$lp",   (object?)logprobs   ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("$lang", (object?)language   ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("$emo",  (object?)emotion    ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("$meta", (object?)asrMeta    ?? DBNull.Value);
         cmd.ExecuteNonQuery();
     }
 
@@ -235,7 +249,10 @@ internal sealed class TranscriptionDb : IDisposable
         string? content,
         string? tokens,
         string? timestamps,
-        string? logprobs)
+        string? logprobs,
+        string? language = null,
+        string? emotion  = null,
+        string? asrMeta  = null)
     {
         using var cmd = CreateCmd();
         cmd.CommandText = """
@@ -244,15 +261,21 @@ internal sealed class TranscriptionDb : IDisposable
                 content     = $con,
                 tokens      = $tok,
                 timestamps  = $ts,
-                logprobs    = $lp
+                logprobs    = $lp,
+                language    = $lang,
+                emotion     = $emo,
+                asr_meta    = $meta
             WHERE result_id = $id
             """;
-        cmd.Parameters.AddWithValue("$asr", (object?)asrContent ?? DBNull.Value);
-        cmd.Parameters.AddWithValue("$con", (object?)content    ?? DBNull.Value);
-        cmd.Parameters.AddWithValue("$tok", (object?)tokens     ?? DBNull.Value);
-        cmd.Parameters.AddWithValue("$ts",  (object?)timestamps ?? DBNull.Value);
-        cmd.Parameters.AddWithValue("$lp",  (object?)logprobs   ?? DBNull.Value);
-        cmd.Parameters.AddWithValue("$id",  resultId);
+        cmd.Parameters.AddWithValue("$asr",  (object?)asrContent ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("$con",  (object?)content    ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("$tok",  (object?)tokens     ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("$ts",   (object?)timestamps ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("$lp",   (object?)logprobs   ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("$lang", (object?)language   ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("$emo",  (object?)emotion    ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("$meta", (object?)asrMeta    ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("$id",   resultId);
         cmd.ExecuteNonQuery();
     }
 
@@ -301,15 +324,20 @@ internal sealed class TranscriptionDb : IDisposable
         string? asrContent,
         string? tokens,
         string? timestamps,
-        string? logprobs)
+        string? logprobs,
+        string? language = null,
+        string? emotion  = null,
+        string? asrMeta  = null)
     {
         using var cmd = CreateCmd();
         cmd.CommandText = """
             INSERT INTO results
                 (diarization_speaker_id, speaker_id, start_time, end_time,
-                 start_time_f, end_time_f, asr_content, content, tokens, timestamps, logprobs)
+                 start_time_f, end_time_f, asr_content, content, tokens, timestamps, logprobs,
+                 language, emotion, asr_meta)
             VALUES
-                ($dspk, $spk, $st, $et, $stf, $etf, $asr, $asr, $tok, $ts, $lp);
+                ($dspk, $spk, $st, $et, $stf, $etf, $asr, $asr, $tok, $ts, $lp,
+                 $lang, $emo, $meta);
             SELECT last_insert_rowid();
             """;
         cmd.Parameters.AddWithValue("$dspk", speakerId);
@@ -322,6 +350,9 @@ internal sealed class TranscriptionDb : IDisposable
         cmd.Parameters.AddWithValue("$tok",  (object?)tokens     ?? DBNull.Value);
         cmd.Parameters.AddWithValue("$ts",   (object?)timestamps ?? DBNull.Value);
         cmd.Parameters.AddWithValue("$lp",   (object?)logprobs   ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("$lang", (object?)language   ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("$emo",  (object?)emotion    ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("$meta", (object?)asrMeta    ?? DBNull.Value);
         return Convert.ToInt32(cmd.ExecuteScalar());
     }
 

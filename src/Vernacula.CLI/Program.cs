@@ -18,6 +18,9 @@ bool    showBenchmark   = false;
 bool    skipAsr         = false;
 string  denoiser        = "none";       // none, dfn3
 string? denoiserModels  = null;         // defaults to <modelDir>/deepfilternet3
+string  asrBackend      = "parakeet";   // parakeet or cohere
+string? cohereModelDir  = null;         // defaults to <modelDir>/cohere_transcribe
+string? cohereLanguage  = null;         // ISO 639-1 forced language (e.g. "en")
 ModelPrecision precision = ModelPrecision.Fp32;
 
 for (int i = 0; i < args.Length; i++)
@@ -50,6 +53,16 @@ for (int i = 0; i < args.Length; i++)
             }
             break;
         case "--denoiser-models": denoiserModels = args[++i]; break;
+        case "--asr":
+            asrBackend = args[++i].ToLowerInvariant();
+            if (asrBackend is not ("parakeet" or "cohere"))
+            {
+                Console.Error.WriteLine($"Unknown ASR backend: {asrBackend}. Choose: parakeet, cohere.");
+                return 1;
+            }
+            break;
+        case "--cohere-model":    cohereModelDir = args[++i]; break;
+        case "--language":        cohereLanguage = args[++i]; break;
         case "--precision":
             precision = args[++i].ToLowerInvariant() switch {
                 "int8" => ModelPrecision.Int8,
@@ -250,6 +263,39 @@ try
         results.AddRange(segs.Select(s => (s.start, s.end, s.spkId, string.Empty)));
         swAsr.Stop();
     }
+    else if (asrBackend == "cohere")
+    {
+        string cohereDir = cohereModelDir
+            ?? (Directory.Exists(Path.Combine(modelDir, "cohere_transcribe"))
+                ? Path.Combine(modelDir, "cohere_transcribe")
+                : modelDir);
+
+        if (!File.Exists(Path.Combine(cohereDir, CohereTranscribe.MelFile)))
+        {
+            Console.Error.WriteLine($"\nError: Cohere model not found in: {cohereDir}");
+            Console.Error.WriteLine($"Expected {CohereTranscribe.MelFile} and related files there.");
+            Console.Error.WriteLine("Use --cohere-model <dir> to specify the directory explicitly.");
+            return 1;
+        }
+
+        using var cohere = new CohereTranscribe(cohereDir);
+        int totalSegs = segs.Count;
+        int completed = 0;
+
+        Console.WriteLine($"Transcribing {totalSegs} segment(s) (Cohere)...");
+        foreach (var (segId, text, _) in cohere.Recognize(segs, audio,
+                     forceLanguage: cohereLanguage))
+        {
+            cts.Token.ThrowIfCancellationRequested();
+            completed++;
+            var (start, end, spkId) = segs[segId];
+            results.Add((start, end, spkId, text));
+            Console.Write($"\r  {completed}/{totalSegs}");
+        }
+
+        Console.WriteLine();
+        swAsr.Stop();
+    }
     else
     {
         var (encoderFile, decoderJointFile) = Config.GetAsrFiles(precision);
@@ -387,9 +433,12 @@ static void PrintUsage()
     Console.WriteLine("  --diarization <backend>            Diarization backend: sortformer, diarizen, vad");
     Console.WriteLine("                                     (default: sortformer)");
     Console.WriteLine("  --vad                              Use VAD instead of diarization (deprecated)");
+    Console.WriteLine("  --asr <parakeet|cohere>            ASR backend (default: parakeet)");
+    Console.WriteLine("  --cohere-model <dir>               Path to Cohere Transcribe model dir (default: <model>/cohere_transcribe)");
+    Console.WriteLine("  --language <code>                  Force language for Cohere ASR (ISO 639-1, e.g. en, fr, de)");
     Console.WriteLine("  --denoiser <none|dfn3>             Pre-processing denoiser (default: none)");
     Console.WriteLine("  --denoiser-models <dir>            Path to denoiser ONNX models (default: <model>/deepfilternet3)");
-    Console.WriteLine("  --precision <fp32|int8>            Model precision (default: fp32)");
+    Console.WriteLine("  --precision <fp32|int8>            Model precision (default: fp32, parakeet only)");
     Console.WriteLine("  --skip-asr                         Export diarization/VAD segments without transcription");
     Console.WriteLine("  --benchmark                        Print timing / RTF after transcription");
     Console.WriteLine("  -h, --help                         Show this help");
