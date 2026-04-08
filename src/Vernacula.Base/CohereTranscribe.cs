@@ -11,9 +11,12 @@ namespace Vernacula.Base;
 ///
 /// Uses four ONNX models in the model directory:
 ///   mel.onnx          waveforms [1,T] → features [1,128,F]
-///   encoder.onnx      features [1,128,F] → encoder_hidden_states [1,T',1280]
-///   decoder_init.onnx BOS token + enc_hidden → logits + 32 KV tensors
-///   decoder_step.onnx single token + past self-KV + fixed cross-KV → next logit + updated self-KV
+///   encoder.onnx      features [B,128,F] → encoder_hidden_states [B,T',1280]
+///   decoder_init.onnx BOS [B,1] + enc_hidden [B,T',1280] → logits [B,1,V] + 32 KV tensors
+///   decoder_step.onnx tokens [B,1] + past self-KV [B,H,t,d] + fixed cross-KV → logits + updated self-KV
+///
+/// All four models are batch-dynamic.  Mel runs B=1 serially (per-segment);
+/// encoder and decoder run over the full segment batch together.
 ///
 /// Vocab is loaded from vocab.json (array of 16384 token strings indexed by ID).
 /// </summary>
@@ -48,8 +51,66 @@ public sealed class CohereTranscribe : IDisposable
     private const int LangIdMin = 22;
     private const int LangIdMax = 204;
 
-    // The Cohere conformer encoder specializes batch=1 internally — encoder
-    // batching is not supported by this model architecture.
+    // Fixed context-block token IDs (from vocab.json).
+    // When a language is forced the entire context block is known upfront;
+    // decoder_init is called once with a 10-token prefix instead of stepping
+    // through the context block one token at a time (saves 9 decoder_step calls).
+    private const int TokStartOfContext    = 7;   // <|startofcontext|>
+    private const int TokStartOfTranscript = 4;   // <|startoftranscript|>
+    private const int TokEmoNeutral        = 17;  // <|emo:neutral|>
+    private const int TokPncOn             = 5;   // <|pnc|>
+    private const int TokNoItn             = 9;   // <|noitn|>
+    private const int TokNoTimestamp       = 11;  // <|notimestamp|>
+    private const int TokNoDiarize         = 13;  // <|nodiarize|>
+
+    // ── Batch sizing ─────────────────────────────────────────────────────────
+    // Both encoder.onnx and decoder_init/step.onnx are fully batch-dynamic.
+    // Batch size is determined dynamically per-batch from the VRAM budget and the
+    // estimated peak KV-cache size of the longest segment in that batch.
+    //
+    // Segments are sorted by ascending audio duration before batching so that
+    // segments of similar length land in the same batch, minimising the "straggler"
+    // waste where shorter segments keep stepping after they have emitted EOS.
+
+    // Hard upper limit on segments per batch.
+    // B=128 crashes on RTX 3090 (24 GB): decoder_init intermediate activations
+    // scale as B × encTMax and exhaust VRAM after model weights consume ~12 GB.
+    // B=8 is confirmed safe; B=32 keeps four-session ONNX model weights + BFC
+    // arena overhead within budget while giving 4× better GPU utilisation vs B=8.
+    private const int MaxBatchSize = 32;
+
+    // VRAM budget for KV-cache tensors AND intermediate activations during the
+    // decoder_init forward pass.  Computed at construction time: free GPU VRAM
+    // (measured after all four ONNX sessions are loaded) minus a 2 GB safety
+    // buffer for CUDA runtime overhead and activation peaks.
+    // Falls back to 3 GB if the CUDA query is unavailable (CPU-only builds).
+    private const long VramSafetyBufferBytes = 2_000_000_000L;
+    private const long VramBudgetFallbackBytes = 3_000_000_000L;
+    private readonly long _vramBudgetForKvBytes;
+
+    // Rough token rate used to estimate the maximum decode depth from audio duration.
+    // ~8 text tokens/s + context-block overhead; capped by maxNewTokens.
+    private const float TokensPerAudioSecond = 10f;
+
+    // Mel spectrogram frame rate and encoder temporal downsampling factor.
+    private const float MelFramesPerSec  = 100f;
+    private const float EncoderDownsample = 8f;
+
+    private static int EstimateEncFrames(double durSec)
+        => Math.Max(1, (int)Math.Ceiling(durSec * MelFramesPerSec / EncoderDownsample));
+
+    private static int EstimateDecSteps(double durSec, int maxNewTokens)
+        => Math.Min(maxNewTokens, (int)Math.Ceiling(durSec * TokensPerAudioSecond) + 16);
+
+    // Peak VRAM for KV tensors at the end of a batch decode.
+    //   Self-KV:  B × NumLayers × 2 × NumHeads × maxDecSteps × HeadDim × 4 bytes
+    //   Cross-KV: B × NumLayers × 2 × NumHeads × maxEncFrames × HeadDim × 4 bytes
+    private static long EstimateKvBytes(int batchSize, int maxEncFrames, int maxDecSteps)
+    {
+        const long bytesPerFloat = 4L;
+        return (long)batchSize * NumLayers * 2 * NumHeads * HeadDim * bytesPerFloat
+               * (maxDecSteps + maxEncFrames);
+    }
 
     // ── Construction ─────────────────────────────────────────────────────────
 
@@ -59,9 +120,9 @@ public sealed class CohereTranscribe : IDisposable
         _mel = new InferenceSession(Path.Combine(modelPath, MelFile), cpuOpts);
 
         var gpuOpts = MakeSessionOptions(ep);
-        _encoder      = new InferenceSession(Path.Combine(modelPath, EncoderFile),     gpuOpts);
-        _decoderInit  = new InferenceSession(Path.Combine(modelPath, DecoderInitFile), gpuOpts);
-        _decoderStep  = new InferenceSession(Path.Combine(modelPath, DecoderStepFile), gpuOpts);
+        _encoder     = new InferenceSession(Path.Combine(modelPath, EncoderFile),     gpuOpts);
+        _decoderInit = new InferenceSession(Path.Combine(modelPath, DecoderInitFile), gpuOpts);
+        _decoderStep = new InferenceSession(Path.Combine(modelPath, DecoderStepFile), gpuOpts);
 
         // Load vocab
         string vocabJson = File.ReadAllText(Path.Combine(modelPath, VocabFile));
@@ -76,6 +137,10 @@ public sealed class CohereTranscribe : IDisposable
         _eosTokenId    = root.GetProperty("eos_token_id").GetInt32();
         _padTokenId    = root.GetProperty("pad_token_id").GetInt32();
         _startTokenId  = root.GetProperty("bos_token_id").GetInt32();
+
+        // Query free VRAM now that all four sessions are loaded so model weights
+        // are already resident on the device.
+        _vramBudgetForKvBytes = QueryVramBudget();
     }
 
     private static SessionOptions MakeSessionOptions(ExecutionProvider ep)
@@ -125,7 +190,7 @@ public sealed class CohereTranscribe : IDisposable
 
     /// <summary>
     /// Mel preprocessing for a single waveform: waveforms [1,T] → features [1,128,F].
-    /// Returns the flat mel features and the valid frame count.
+    /// mel.onnx is B=1 only; callers run this per segment.
     /// </summary>
     private (float[] features, int nMels, int F) RunMel(float[] waveform)
     {
@@ -142,110 +207,249 @@ public sealed class CohereTranscribe : IDisposable
         var featT = results.First(r => r.Name == "features").AsTensor<float>();
         int nMels = featT.Dimensions[1];
         int F     = featT.Dimensions[2];
-
-        var features = new float[nMels * F];
-        for (int m = 0; m < nMels; m++)
-            for (int f = 0; f < F; f++)
-                features[m * F + f] = featT[0, m, f];
-
+        // Batch=1, so the flat layout is already [nMels, F]; bulk copy.
+        var features = ExtractTensorFlatDirect(featT);
         return (features, nMels, F);
     }
 
     /// <summary>
-    /// Encoder: mel features [1, 128, F] → encoder_hidden_states [1, T', 1280].
-    /// Returns the hidden states flat [T', dModel] and T'.
+    /// Encoder batch: mel features [B, 128, F_max] → encoder_hidden_states [B, T_enc_max, 1280].
+    /// Segments shorter than F_max are zero-padded on the right.
+    /// Returns the full padded batch tensor and T_enc_max (the decoder uses all T_enc_max
+    /// cross-attention positions; near-zero outputs from padding receive negligible attention).
     /// </summary>
-    private (float[] hidden, int T_enc) RunEncoder(float[] features, int nMels, int F)
+    private (float[] batchHidden, int T_enc_max) RunEncoderBatch(
+        IReadOnlyList<(float[] features, int nMels, int F)> melResults)
     {
-        var featT = new DenseTensor<float>(features, new[] { 1, nMels, F });
+        int B     = melResults.Count;
+        int nMels = melResults[0].nMels;
+        int F_max = 0;
+        foreach (var (_, _, F) in melResults) if (F > F_max) F_max = F;
 
-        using var results = _encoder.Run(
+        // Build [B, 128, F_max] — zero-initialised, fill each segment's valid frames.
+        var batchData = new float[B * nMels * F_max];
+        for (int b = 0; b < B; b++)
+        {
+            var (features, _, F) = melResults[b];
+            for (int m = 0; m < nMels; m++)
+                Array.Copy(features, m * F, batchData, (b * nMels + m) * F_max, F);
+        }
+
+        var batchT = new DenseTensor<float>(batchData, new[] { B, nMels, F_max });
+        using var encResults = _encoder.Run(
         [
-            NamedOnnxValue.CreateFromTensor("input_features", featT),
+            NamedOnnxValue.CreateFromTensor("input_features", batchT),
         ]);
 
-        var hidT  = results.First(r => r.Name == "encoder_hidden_states").AsTensor<float>();
-        int T_enc = hidT.Dimensions[1];
-        int dMod  = hidT.Dimensions[2];
-
-        var hidden = new float[T_enc * dMod];
-        for (int t = 0; t < T_enc; t++)
-            for (int d = 0; d < dMod; d++)
-                hidden[t * dMod + d] = hidT[0, t, d];
-
-        return (hidden, T_enc);
+        var hidT      = encResults.First(r => r.Name == "encoder_hidden_states").AsTensor<float>();
+        int T_enc_max = hidT.Dimensions[1];
+        // Row-major [B, T_enc_max, dMod] — bulk copy via DenseTensor buffer.
+        var batchHidden = ExtractTensorFlatDirect(hidT);
+        return (batchHidden, T_enc_max);
     }
 
     /// <summary>
-    /// Greedy KV-cache decoder.
-    /// Returns the full token list including decoder_start token.
-    /// When <paramref name="forcedLangTokenId"/> is ≥ 0, any context-block token in the
-    /// language ID range (22–204) is replaced with the forced language token ID so that
-    /// all subsequent decoding is conditioned on the specified language.
+    /// Batched KV-cache greedy decoder with ORT IOBinding.
+    ///
+    /// Key optimisations vs the previous implementation:
+    ///
+    /// 1. IOBinding — cross-KV tensors ([B, H, encTMax, d]) are returned by
+    ///    decoder_init directly into CUDA device memory and bound once to the
+    ///    decoder_step session.  They never cross the PCIe bus.  Self-KV tensors
+    ///    are similarly kept on the GPU between steps (step-output OrtValues bound
+    ///    directly as next-step inputs).
+    ///
+    /// 2. Context-block prefill — when a language is forced, the full 10-token
+    ///    context prefix [BOS, startofcontext, startoftranscript, emo:neutral,
+    ///    lang, lang, pnc, noitn, notimestamp, nodiarize] is fed to decoder_init
+    ///    in one call, collapsing 9 serial decoder_step calls into zero.
+    ///    Without forced language the prefix is just BOS (existing behaviour).
+    ///
+    /// Returns one token list per segment (includes BOS and all context tokens).
     /// </summary>
-    private List<int> GreedyDecode(float[] encoderHidden, int encT,
-                                   int maxTokens = 256, int forcedLangTokenId = -1)
+    private List<int>[] GreedyDecodeBatch(
+        float[] encoderHiddenBatch, int B, int encTMax,
+        int maxTokens = 256, int forcedLangTokenId = -1)
     {
-        const int dModel = 1280;
-        var encT_tensor = new DenseTensor<float>(encoderHidden, new[] { 1, encT, dModel });
-        var bosT        = new DenseTensor<long>(new long[] { _bosTokenId }, new[] { 1, 1 });
+        const int encDim = 1280;
 
-        // ── Decoder init ─────────────────────────────────────────────────────
-        float[] logits;
-        float[][] selfKey  = new float[NumLayers][];
-        float[][] selfVal  = new float[NumLayers][];
-        float[][] crossKey = new float[NumLayers][];
-        float[][] crossVal = new float[NumLayers][];
+        // ── Build decoder_init input ──────────────────────────────────────────
+        // With a forced language we send the full context block as a prefix so
+        // decoder_init computes KV for all context positions in one forward pass.
+        // Without forced language we send BOS only and step through the context
+        // block token-by-token in the step loop (existing behaviour).
+        bool usePrefill   = forcedLangTokenId >= 0;
+        int  contextLen   = usePrefill ? 10 : 1;   // number of tokens in the prefix
 
-        using (var initResults = _decoderInit.Run(
-        [
-            NamedOnnxValue.CreateFromTensor("decoder_input_ids",    bosT),
-            NamedOnnxValue.CreateFromTensor("encoder_hidden_states", encT_tensor),
-        ]))
+        var initTokens = new long[B * contextLen];
+        for (int b = 0; b < B; b++)
         {
-            // Outputs: logits, sk0..7, sv0..7, ck0..7, cv0..7
-            logits = ExtractLogits(initResults, "logits");
-
-            for (int i = 0; i < NumLayers; i++)
+            int o = b * contextLen;
+            initTokens[o] = _bosTokenId;
+            if (usePrefill)
             {
-                selfKey[i]  = ExtractTensorFlat(initResults, $"self_key_{i}");
-                selfVal[i]  = ExtractTensorFlat(initResults, $"self_val_{i}");
-                crossKey[i] = ExtractTensorFlat(initResults, $"cross_key_{i}");
-                crossVal[i] = ExtractTensorFlat(initResults, $"cross_val_{i}");
+                initTokens[o + 1] = TokStartOfContext;
+                initTokens[o + 2] = TokStartOfTranscript;
+                initTokens[o + 3] = TokEmoNeutral;
+                initTokens[o + 4] = forcedLangTokenId;
+                initTokens[o + 5] = forcedLangTokenId;
+                initTokens[o + 6] = TokPncOn;
+                initTokens[o + 7] = TokNoItn;
+                initTokens[o + 8] = TokNoTimestamp;
+                initTokens[o + 9] = TokNoDiarize;
             }
         }
 
-        int firstToken = ForceLang(ArgMax(logits), forcedLangTokenId);
-        var tokens     = new List<int>(maxTokens + 2) { _bosTokenId, firstToken };
-        if (firstToken == _eosTokenId)
-            return tokens;
+        // ── Memory infos ─────────────────────────────────────────────────────
+        using var cudaMemInfo = new OrtMemoryInfo("Cuda", OrtAllocatorType.ArenaAllocator, 0, OrtMemType.Default);
+        using var cpuMemInfo  = new OrtMemoryInfo("Cpu",  OrtAllocatorType.ArenaAllocator, 0, OrtMemType.Default);
+        using var runOpts     = new RunOptions();
 
-        int tPast = 1;  // number of tokens in self-KV (= 1 after init)
+        // ── decoder_init with IOBinding ───────────────────────────────────────
+        // OrtIoBinding.GetOutputValues() returns tensors in BINDING ORDER (the order
+        // BindOutputToDevice was called), not model output order.  Bind in four grouped
+        // passes so the indices the step loop reads match the actual positions:
+        //   [0]       logits
+        //   [1..8]    self_key_0..7
+        //   [9..16]   self_val_0..7
+        //   [17..24]  cross_key_0..7
+        //   [25..32]  cross_val_0..7
+        using var initTokValue = OrtValue.CreateTensorValueFromMemory(
+            initTokens, new long[] { B, contextLen });
+        using var encHidValue  = OrtValue.CreateTensorValueFromMemory(
+            encoderHiddenBatch, new long[] { B, encTMax, encDim });
 
-        // ── Step loop ────────────────────────────────────────────────────────
-        for (int step = 1; step < maxTokens; step++)
+        using var initBinding = _decoderInit.CreateIoBinding();
+        initBinding.BindInput("decoder_input_ids",     initTokValue);
+        initBinding.BindInput("encoder_hidden_states", encHidValue);
+        initBinding.BindOutputToDevice("logits", cpuMemInfo);   // logits read on CPU
+        for (int i = 0; i < NumLayers; i++) initBinding.BindOutputToDevice($"self_key_{i}",  cudaMemInfo);
+        for (int i = 0; i < NumLayers; i++) initBinding.BindOutputToDevice($"self_val_{i}",  cudaMemInfo);
+        for (int i = 0; i < NumLayers; i++) initBinding.BindOutputToDevice($"cross_key_{i}", cudaMemInfo);
+        for (int i = 0; i < NumLayers; i++) initBinding.BindOutputToDevice($"cross_val_{i}", cudaMemInfo);
+        _decoderInit.RunWithBinding(runOpts, initBinding);
+
+        // Keep initOutputs alive for the full decode loop — cross-KV is bound
+        // from it for every step.  Disposed after the loop.
+        var initOutputs = initBinding.GetOutputValues();
+
+        // ── Read first tokens from init logits ────────────────────────────────
+        // Shape: [B, contextLen, vocabSize]; last position = index contextLen-1.
+        int vocabSize;
+        int[] firstTokens;
         {
-            int lastToken = tokens[tokens.Count - 1];
-            var inputs = BuildStepInputs(lastToken, step, tPast, encT,
-                                         selfKey, selfVal, crossKey, crossVal);
+            var shape     = initOutputs[0].GetTensorTypeAndShape().Shape;
+            vocabSize     = (int)shape[2];
+            var logitsSpan = initOutputs[0].GetTensorDataAsSpan<float>();
+            firstTokens   = new int[B];
+            int lastPos   = contextLen - 1;
+            for (int b = 0; b < B; b++)
+            {
+                var slice   = logitsSpan.Slice((b * contextLen + lastPos) * vocabSize, vocabSize);
+                firstTokens[b] = ForceLang(ArgMaxSpan(slice), forcedLangTokenId);
+            }
+        }
 
-            using var stepResults = _decoderStep.Run(inputs);
+        // ── Initialise per-segment token lists ───────────────────────────────
+        var tokens        = new List<int>[B];
+        var finished      = new bool[B];
+        var nextTok       = new long[B];
+        int finishedCount = 0;
 
-            logits = ExtractLogits(stepResults, "logits");
+        for (int b = 0; b < B; b++)
+        {
+            tokens[b] = new List<int>(maxTokens + contextLen + 1);
+            tokens[b].Add(_bosTokenId);
+            if (usePrefill)
+            {
+                tokens[b].Add(TokStartOfContext);
+                tokens[b].Add(TokStartOfTranscript);
+                tokens[b].Add(TokEmoNeutral);
+                tokens[b].Add(forcedLangTokenId);
+                tokens[b].Add(forcedLangTokenId);
+                tokens[b].Add(TokPncOn);
+                tokens[b].Add(TokNoItn);
+                tokens[b].Add(TokNoTimestamp);
+                tokens[b].Add(TokNoDiarize);
+            }
+            tokens[b].Add(firstTokens[b]);
+            nextTok[b] = firstTokens[b];
+            if (firstTokens[b] == _eosTokenId) { finished[b] = true; finishedCount++; }
+        }
+
+        int tPast = contextLen;
+
+        // ── Step loop ─────────────────────────────────────────────────────────
+        // decoder_step output layout (17 tensors, binding order = grouped):
+        //   [0]       logits              float32 CPU
+        //   [1..8]    new_self_key_0..7   float16 CUDA  (grow by 1 each step)
+        //   [9..16]   new_self_val_0..7   float16 CUDA
+        //
+        // A FRESH OrtIoBinding is created each step.  ORT caches the CUDA buffer
+        // allocated by BindOutputToDevice and reuses it on subsequent RunWithBinding
+        // calls; when the Concat output grows by one token the cached shape mismatches
+        // and ORT throws.  Creating a fresh binding each step forces a new allocation
+        // at the correct shape without any caching from the previous step.
+        //
+        // prevStepOutputs keeps the previous step's self-KV OrtValues alive while
+        // they are bound as inputs for the current step.  They are disposed only
+        // after the current step has run and the new self-KV are in hand.
+        IDisposableReadOnlyCollection<OrtValue>? prevStepOutputs = null;
+
+        for (int step = 1; step < maxTokens && finishedCount < B; step++)
+        {
+            var stepToks = new long[B];
+            var stepPos  = new long[B];
+            for (int b = 0; b < B; b++)
+                stepToks[b] = finished[b] ? _eosTokenId : nextTok[b];
+            Array.Fill(stepPos, (long)tPast);
+
+            using var tokVal = OrtValue.CreateTensorValueFromMemory(stepToks, new long[] { B, 1 });
+            using var posVal = OrtValue.CreateTensorValueFromMemory(stepPos,  new long[] { B, 1 });
+
+            // Fresh binding each step — avoids buffer-reuse shape failures on self-KV.
+            // Outputs bound in two grouped passes so GetOutputValues() returns them in the
+            // expected grouped order: [1..8]=new_sk0..7, [9..16]=new_sv0..7.
+            using var stepBinding = _decoderStep.CreateIoBinding();
+            stepBinding.BindOutputToDevice("logits", cpuMemInfo);
+            for (int i = 0; i < NumLayers; i++) stepBinding.BindOutputToDevice($"new_self_key_{i}", cudaMemInfo);
+            for (int i = 0; i < NumLayers; i++) stepBinding.BindOutputToDevice($"new_self_val_{i}", cudaMemInfo);
+            stepBinding.BindInput("decoder_input_ids", tokVal);
+            stepBinding.BindInput("positions",         posVal);
+            for (int i = 0; i < NumLayers; i++)
+            {
+                stepBinding.BindInput($"cross_key_{i}", initOutputs[17 + i]);
+                stepBinding.BindInput($"cross_val_{i}", initOutputs[25 + i]);
+                // self-KV: from init on step 1, from previous step's outputs thereafter.
+                var skSrc = prevStepOutputs is null ? initOutputs[1 + i]             : prevStepOutputs[1 + i];
+                var svSrc = prevStepOutputs is null ? initOutputs[9 + i]             : prevStepOutputs[1 + NumLayers + i];
+                stepBinding.BindInput($"self_key_{i}", skSrc);
+                stepBinding.BindInput($"self_val_{i}", svSrc);
+            }
+
+            _decoderStep.RunWithBinding(runOpts, stepBinding);
+            var curOutputs = stepBinding.GetOutputValues();
             tPast++;
 
-            for (int i = 0; i < NumLayers; i++)
-            {
-                selfKey[i] = ExtractTensorFlat(stepResults, $"new_self_key_{i}");
-                selfVal[i] = ExtractTensorFlat(stepResults, $"new_self_val_{i}");
-            }
+            // Logits are CPU-resident; read argmax without copying.
+            var logitsSpan = curOutputs[0].GetTensorDataAsSpan<float>();
 
-            int nextToken = ForceLang(ArgMax(logits), forcedLangTokenId);
-            tokens.Add(nextToken);
-            if (nextToken == _eosTokenId)
-                break;
+            // Dispose previous self-KV — no longer needed as inputs (new ones are in curOutputs).
+            prevStepOutputs?.Dispose();
+            prevStepOutputs = curOutputs;
+
+            for (int b = 0; b < B; b++)
+            {
+                if (finished[b]) { nextTok[b] = _eosTokenId; continue; }
+                int tok = ForceLang(ArgMaxSpan(logitsSpan.Slice(b * vocabSize, vocabSize)), forcedLangTokenId);
+                nextTok[b] = tok;
+                tokens[b].Add(tok);
+                if (tok == _eosTokenId) { finished[b] = true; finishedCount++; }
+            }
         }
 
+        prevStepOutputs?.Dispose();
+        initOutputs.Dispose();
         return tokens;
     }
 
@@ -254,36 +458,6 @@ public sealed class CohereTranscribe : IDisposable
         forcedLangTokenId >= 0 && token >= LangIdMin && token <= LangIdMax
             ? forcedLangTokenId
             : token;
-
-    private List<NamedOnnxValue> BuildStepInputs(
-        int lastToken, int position, int tPast, int encT,
-        float[][] selfKey, float[][] selfVal,
-        float[][] crossKey, float[][] crossVal)
-    {
-        var inputs = new List<NamedOnnxValue>(2 + NumLayers * 4);
-
-        inputs.Add(NamedOnnxValue.CreateFromTensor("decoder_input_ids",
-            new DenseTensor<long>(new long[] { lastToken }, new[] { 1, 1 })));
-        inputs.Add(NamedOnnxValue.CreateFromTensor("positions",
-            new DenseTensor<long>(new long[] { position }, new[] { 1, 1 })));
-
-        for (int i = 0; i < NumLayers; i++)
-        {
-            inputs.Add(NamedOnnxValue.CreateFromTensor($"self_key_{i}",
-                new DenseTensor<float>(selfKey[i], new[] { 1, NumHeads, tPast, HeadDim })));
-            inputs.Add(NamedOnnxValue.CreateFromTensor($"self_val_{i}",
-                new DenseTensor<float>(selfVal[i], new[] { 1, NumHeads, tPast, HeadDim })));
-        }
-        for (int i = 0; i < NumLayers; i++)
-        {
-            inputs.Add(NamedOnnxValue.CreateFromTensor($"cross_key_{i}",
-                new DenseTensor<float>(crossKey[i], new[] { 1, NumHeads, encT, HeadDim })));
-            inputs.Add(NamedOnnxValue.CreateFromTensor($"cross_val_{i}",
-                new DenseTensor<float>(crossVal[i], new[] { 1, NumHeads, encT, HeadDim })));
-        }
-
-        return inputs;
-    }
 
     // ── Token decoding ───────────────────────────────────────────────────────
 
@@ -426,24 +600,98 @@ public sealed class CohereTranscribe : IDisposable
                     "Use an ISO 639-1 code such as 'en', 'fr', 'de'.");
         }
 
-        for (int i = 0; i < segs.Count; i++)
-        {
-            var (start, end, _) = segs[i];
-            float[] waveform = ExtractSegment(audio, start, end);
+        // Sort segment indices by ascending audio duration so that similar-length
+        // segments land in the same batch, minimising straggler waste (shorter segments
+        // that have emitted EOS still step until the longest segment finishes).
+        int[] order = Enumerable.Range(0, segs.Count)
+            .OrderBy(i => segs[i].end - segs[i].start)
+            .ToArray();
 
-            if (waveform.Length < Config.SampleRate / 10)  // < 100 ms
+        int pos = 0;
+        while (pos < order.Length)
+        {
+            // ── Build a variable-size batch bounded by VRAM and MaxBatchSize ──────
+            // Grow the batch one segment at a time, stopping when the estimated peak
+            // KV-cache size would exceed VramBudgetForKvBytes or MaxBatchSize is hit.
+            // Uses the *worst-case* (longest) segment in the batch for both enc and dec
+            // estimates, which is always the last segment added (since we sort ascending).
+            int batchSize   = 0;
+            int maxEncFrames = 0;
+            int maxDecSteps  = 0;
+
+            while (pos + batchSize < order.Length && batchSize < MaxBatchSize)
             {
-                yield return (i, string.Empty, CohereSegmentMeta.Empty);
-                continue;
+                int candidateIdx    = order[pos + batchSize];
+                var (cs, ce, _)     = segs[candidateIdx];
+                double candDur      = ce - cs;
+                int candEncFrames   = EstimateEncFrames(candDur);
+                int candDecSteps    = EstimateDecSteps(candDur, maxNewTokens);
+
+                // Worst-case across all segments in the prospective batch.
+                int newMaxEnc = Math.Max(maxEncFrames, candEncFrames);
+                int newMaxDec = Math.Max(maxDecSteps,  candDecSteps);
+
+                long kvBytes = EstimateKvBytes(batchSize + 1, newMaxEnc, newMaxDec);
+                if (batchSize > 0 && kvBytes > _vramBudgetForKvBytes)
+                    break;  // adding this segment would exceed the VRAM budget
+
+                maxEncFrames = newMaxEnc;
+                maxDecSteps  = newMaxDec;
+                batchSize++;
             }
 
-            var (features, nMels, F) = RunMel(waveform);
-            var (encHidden, encT)    = RunEncoder(features, nMels, F);
-            var tokens               = GreedyDecode(encHidden, encT, maxNewTokens, forcedLangTokenId);
-            var meta                 = ParseContextBlock(tokens);
-            string text              = DecodeTokens(tokens);
+            // ── Extract waveforms; flag segments too short to encode ──────────────
+            var waveforms = new float[batchSize][];
+            var skipped   = new bool[batchSize];
+            var segIds    = new int[batchSize];
 
-            yield return (i, text, meta);
+            for (int b = 0; b < batchSize; b++)
+            {
+                segIds[b] = order[pos + b];
+                var (start, end, _) = segs[segIds[b]];
+                waveforms[b] = ExtractSegment(audio, start, end);
+                skipped[b]   = waveforms[b].Length < Config.SampleRate / 10;
+            }
+
+            // ── Mel (serial, B=1 only) ────────────────────────────────────────────
+            var melResults = new (float[] features, int nMels, int F)[batchSize];
+            for (int b = 0; b < batchSize; b++)
+                if (!skipped[b])
+                    melResults[b] = RunMel(waveforms[b]);
+
+            // ── Encoder + batched decoder ────────────────────────────────────────
+            // Only pass valid (non-skipped) segments to the encoder.
+            var validMel    = new List<(float[], int, int)>(batchSize);
+            var validBSlots = new List<int>(batchSize);  // b-indices of valid segments
+            for (int b = 0; b < batchSize; b++)
+                if (!skipped[b]) { validMel.Add(melResults[b]); validBSlots.Add(b); }
+
+            List<int>[] batchTokens = [];
+            if (validMel.Count > 0)
+            {
+                var (batchHidden, T_enc_max) = RunEncoderBatch(validMel);
+                batchTokens = GreedyDecodeBatch(
+                    batchHidden, validMel.Count, T_enc_max, maxNewTokens, forcedLangTokenId);
+            }
+
+            // ── Yield results ────────────────────────────────────────────────────
+            int encIdx = 0;
+            for (int b = 0; b < batchSize; b++)
+            {
+                int segId = segIds[b];
+                if (skipped[b])
+                {
+                    yield return (segId, string.Empty, CohereSegmentMeta.Empty);
+                    continue;
+                }
+
+                var tokens = batchTokens[encIdx++];
+                var meta   = ParseContextBlock(tokens);
+                string text = DecodeTokens(tokens);
+                yield return (segId, text, meta);
+            }
+
+            pos += batchSize;
         }
     }
 
@@ -459,40 +707,55 @@ public sealed class CohereTranscribe : IDisposable
         return seg;
     }
 
-    private static float[] ExtractLogits(
-        IDisposableReadOnlyCollection<DisposableNamedOnnxValue> results,
-        string name)
+    // Bulk-copy a Tensor<float> to a flat float[] via DenseTensor buffer when available.
+    private static float[] ExtractTensorFlatDirect(Tensor<float> tensor)
     {
-        var tensor = results.First(r => r.Name == name).AsTensor<float>();
-        // shape [1, 1, vocab_size] — return the last (only) position
-        int vocabSize = tensor.Dimensions[2];
-        var logits = new float[vocabSize];
-        for (int v = 0; v < vocabSize; v++)
-            logits[v] = tensor[0, 0, v];
-        return logits;
-    }
-
-    private static float[] ExtractTensorFlat(
-        IDisposableReadOnlyCollection<DisposableNamedOnnxValue> results,
-        string name)
-    {
-        var tensor = results.First(r => r.Name == name).AsTensor<float>();
         int total = 1;
-        for (int d = 0; d < tensor.Rank; d++)
-            total *= tensor.Dimensions[d];
+        for (int d = 0; d < tensor.Rank; d++) total *= tensor.Dimensions[d];
         var flat = new float[total];
-        for (int i = 0; i < total; i++)
-            flat[i] = tensor.GetValue(i);
+        if (tensor is DenseTensor<float> dense)
+            dense.Buffer.Span.CopyTo(flat);
+        else
+            for (int i = 0; i < total; i++) flat[i] = tensor.GetValue(i);
         return flat;
     }
 
-    private static int ArgMax(float[] arr)
+    private static int ArgMaxSpan(ReadOnlySpan<float> span)
     {
         int idx = 0;
         float max = float.NegativeInfinity;
-        for (int i = 0; i < arr.Length; i++)
-            if (arr[i] > max) { max = arr[i]; idx = i; }
+        for (int i = 0; i < span.Length; i++)
+            if (span[i] > max) { max = span[i]; idx = i; }
         return idx;
+    }
+
+    // ── CUDA VRAM query ───────────────────────────────────────────────────────
+
+    // cudaMemGetInfo returns free and total device memory in bytes.
+    // The DllImport name resolves to libcudart.so on Linux / cudart.dll on Windows.
+    [System.Runtime.InteropServices.DllImport("cudart",
+        EntryPoint            = "cudaMemGetInfo",
+        ExactSpelling         = true,
+        CallingConvention     = System.Runtime.InteropServices.CallingConvention.Cdecl)]
+    private static extern int CudaMemGetInfo(out ulong free, out ulong total);
+
+    /// <summary>
+    /// Queries GPU free memory after all ONNX sessions are loaded and subtracts
+    /// <see cref="VramSafetyBufferBytes"/> as headroom for activations and CUDA
+    /// runtime overhead.  Returns <see cref="VramBudgetFallbackBytes"/> if the
+    /// CUDA runtime is not available (CPU-only builds or non-CUDA EPs).
+    /// </summary>
+    private static long QueryVramBudget()
+    {
+        try
+        {
+            int rc = CudaMemGetInfo(out ulong free, out _);
+            if (rc == 0 && free > VramSafetyBufferBytes)
+                return (long)(free - VramSafetyBufferBytes);
+        }
+        catch (DllNotFoundException) { }
+        catch (EntryPointNotFoundException) { }
+        return VramBudgetFallbackBytes;
     }
 
     // ── IDisposable ───────────────────────────────────────────────────────────
