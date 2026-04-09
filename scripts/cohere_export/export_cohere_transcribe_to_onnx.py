@@ -77,6 +77,11 @@ def parse_args() -> argparse.Namespace:
         help="HuggingFace repo ID (default: CohereLabs/cohere-transcribe-03-2026).",
     )
     parser.add_argument(
+        "--revision",
+        default=None,
+        help="Optional Hugging Face revision or commit hash to pin remote code and weights.",
+    )
+    parser.add_argument(
         "--output-dir",
         type=Path,
         required=True,
@@ -197,17 +202,23 @@ def ensure_output_dir(path: Path, overwrite: bool) -> None:
 # ---------------------------------------------------------------------------
 
 def load_model_and_processor(
-    repo_id: str, device: str, dtype: Any, torch: Any
+    repo_id: str, revision: str | None, device: str, dtype: Any, torch: Any
 ) -> tuple[Any, Any]:
     """Load CohereAsrForConditionalGeneration and its processor."""
     from transformers import AutoProcessor, AutoModelForSpeechSeq2Seq
 
-    print(f"Loading processor from {repo_id} …")
-    processor = AutoProcessor.from_pretrained(repo_id, trust_remote_code=True)
+    revision_suffix = f" @ {revision}" if revision else ""
+    print(f"Loading processor from {repo_id}{revision_suffix} …")
+    processor = AutoProcessor.from_pretrained(
+        repo_id,
+        revision=revision,
+        trust_remote_code=True,
+    )
 
-    print(f"Loading model from {repo_id} onto {device} as {dtype} …")
+    print(f"Loading model from {repo_id}{revision_suffix} onto {device} as {dtype} …")
     model = AutoModelForSpeechSeq2Seq.from_pretrained(
         repo_id,
+        revision=revision,
         trust_remote_code=True,
         dtype=dtype,
         low_cpu_mem_usage=True,
@@ -243,14 +254,19 @@ def make_encoder_wrapper(torch: Any, model: Any, model_dtype: Any = None) -> Any
 
       2. ConvSubsampling.forward (line 170):
              if self._needs_conv_split(x): ...
-         _needs_conv_split checks whether the projected conv output would exceed 2^31
-         elements (a CUDA int32 indexing limit).  For practical batch sizes on modern
-         hardware this is always False.  The @_dynamo_disable decorator means the
-         function cannot be traced symbolically; with B=1 it always traces the non-split
-         branch.  At runtime with B>1 the graph still runs the non-split path, which is
-         correct as long as the projected numel stays under 2^31.
-         Fix: replace _needs_conv_split with a lambda that always returns False.
+             self._check_input_shape(x)
+         These helpers gate large-batch safety checks using Python conditionals. For
+         practical batch sizes on modern hardware the split path is never needed, and
+         tracing those checks bakes export-time constants into the graph.
+         Fix: replace _needs_conv_split with a lambda that always returns False and
+         _check_input_shape with a no-op during export.
          This is safe for batch sizes up to ~100 at typical segment lengths (see below).
+
+      3. RelPositionalEncoding._materialize_pe (line 200):
+             if hasattr(self, "pe") and self.pe.size(1) >= needed_size: ...
+         The cached positional-encoding reuse path converts tensor-dependent shape checks
+         into Python booleans during tracing.  Fix: rebuild the positional encoding
+         deterministically for each traced call instead of branching on the cached buffer.
 
     Safety note for _needs_conv_split=False:
         projected = B * conv_channels * out_T * out_F
@@ -306,9 +322,31 @@ def make_encoder_wrapper(torch: Any, model: Any, model_dtype: Any = None) -> Any
             layer.self_attn,
         )
 
-    # --- Patch 2: ConvSubsampling._needs_conv_split → always False ---
+    # --- Patch 2: ConvSubsampling export guards ---
     # Safe for all practical batch sizes; see docstring above.
-    encoder.pre_encode._needs_conv_split = lambda x: False
+    if hasattr(encoder.pre_encode, "_needs_conv_split"):
+        encoder.pre_encode._needs_conv_split = lambda x: False
+    if hasattr(encoder.pre_encode, "_check_input_shape"):
+        encoder.pre_encode._check_input_shape = lambda x: None
+
+    # --- Patch 3: RelPositionalEncoding._materialize_pe ---
+    # Rebuild the cached buffer unconditionally to avoid tracing Python boolean guards.
+    if hasattr(encoder, "pos_enc") and hasattr(encoder.pos_enc, "_materialize_pe"):
+        def _patched_materialize_pe(self_pos, length: int, device: Any, dtype: Any) -> None:
+            positions = torch.arange(
+                length - 1,
+                -length,
+                -1,
+                dtype=torch.float32,
+                device=device,
+            ).unsqueeze(1)
+            pe = self_pos._create_pe(positions=positions, dtype=dtype)
+            if hasattr(self_pos, "pe"):
+                self_pos.pe = pe
+            else:
+                self_pos.register_buffer("pe", pe, persistent=False)
+
+        encoder.pos_enc._materialize_pe = types.MethodType(_patched_materialize_pe, encoder.pos_enc)
 
     _dtype = model_dtype  # None or torch.float16
 
@@ -650,12 +688,15 @@ def _consolidate_external_data(onnx_path: Path) -> None:
     )
 
     # --- Delete the now-superseded scattered files ---
-    # Also sweep for stale Constant_* files left by previous partial or failed exports.
+    # Also sweep for stale exporter-emitted Constant_* files left by previous
+    # partial or failed exports. Torch may prefix these with node paths such as
+    # `_encoder_pos_enc_Constant_*`, so match any filename containing Constant.
     keep = {onnx_path.resolve(), data_path.resolve()}
     deleted = 0
     candidates = set(scattered)
-    for stale in onnx_path.parent.glob("Constant_*"):
-        candidates.add(stale.resolve())
+    for pattern in ("Constant_*", "*Constant*"):
+        for stale in onnx_path.parent.glob(pattern):
+            candidates.add(stale.resolve())
     for f in candidates:
         if f not in keep and f.exists() and f.is_file():
             f.unlink()
@@ -1535,6 +1576,7 @@ def update_config_with_kv_decoder(output_dir: Path) -> None:
 
 def export_tokenizer_assets(
     repo_id: str,
+    revision: str | None,
     processor: Any,
     output_dir: Path,
 ) -> None:
@@ -1563,6 +1605,7 @@ def export_tokenizer_assets(
     snapshot_dir = Path(
         snapshot_download(
             repo_id=repo_id,
+            revision=revision,
             allow_patterns=[
                 "tokenizer.json",
                 "tokenizer.model",
@@ -1622,7 +1665,7 @@ def main() -> None:
         args.skip_decoder = True
 
     # ---- Load model ---------------------------------------------------------
-    model, processor = load_model_and_processor(args.model_repo, device, dtype, torch)
+    model, processor = load_model_and_processor(args.model_repo, args.revision, device, dtype, torch)
 
     # ---- Build wrappers -----------------------------------------------------
     encoder_wrapper = make_encoder_wrapper(torch, model, model_dtype=dtype).to(device)
@@ -1704,7 +1747,7 @@ def main() -> None:
             print("\nSkipping KV-cache decoder export (--skip-decoder).")
 
     # ---- Config / report ----------------------------------------------------
-    export_tokenizer_assets(args.model_repo, processor, args.output_dir)
+    export_tokenizer_assets(args.model_repo, args.revision, processor, args.output_dir)
 
     config = extract_config(args.model_repo, model, processor, args.opset, args.dtype)
     write_export_report(
@@ -1719,6 +1762,7 @@ def main() -> None:
             "encoder.onnx: input_features [B,128,F] float32 → encoder_hidden_states [B,F/8,1280] float32.",
             "Default decoder export is KV-cache based: decoder_init.onnx + decoder_step.onnx.",
             "Pass --conventional-decoder to export decoder.onnx instead.",
+            "Pass --revision <commit-or-tag> to pin the Hugging Face remote code and model files.",
             "vocab.json is generated from the tokenizer ID mapping; tokenizer.json/model metadata are copied from the Hugging Face snapshot cache when available.",
             "The model is gated on HuggingFace; run `huggingface-cli login` before export.",
         ],

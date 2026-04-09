@@ -41,6 +41,7 @@ Useful options:
 
 - `--device cuda` to export on GPU
 - `--dtype float16` to reduce exported weight size
+- `--revision <commit-or-tag>` to pin Hugging Face remote code and weights
 - `--overwrite` to replace an existing export
 - `--skip-encoder`, `--skip-decoder`, or `--skip-mel` to rerun only part of the export
 - `--conventional-decoder` to export the older `decoder.onnx` path instead of `decoder_init.onnx` + `decoder_step.onnx`
@@ -76,3 +77,4 @@ This produces `decoder.onnx` instead of `decoder_init.onnx` and `decoder_step.on
 
 - The main exporter is the primary supported path today.
 - KV-cache export is now the default decoder mode.
+- If Hugging Face warns that remote-code files changed, rerun with `--revision <commit-hash>` to pin the exact model snapshot you want to trust.
