@@ -98,13 +98,14 @@ internal sealed class JobQueueService
 
         string fileDateStamp = File.GetLastWriteTime(audioPath)
             .ToString("yyyy-MM-dd HH:mm:ss");
+        string asrLanguageCode = GetJobAsrLanguageCode();
 
         Console.WriteLine("[Queue] Inserting job into database...");
         int jobId = _controlDb.InsertNewJob(
-            jobTitle, dbPath, audioPath, sha256, fileDateStamp, streamIndex);
+            jobTitle, dbPath, audioPath, sha256, fileDateStamp, streamIndex, asrLanguageCode);
         Console.WriteLine($"[Queue] Job inserted with ID: {jobId}");
 
-        Enqueue(new QueueEntry(jobId, audioPath, dbPath, streamIndex));
+        Enqueue(new QueueEntry(jobId, audioPath, dbPath, streamIndex, asrLanguageCode));
         JobStatusChanged?.Invoke(jobId, JobStatus.Queued, null, null);
         Console.WriteLine("[Queue] Firing JobStatusChanged (Queued) and TryStartNextAsync");
         _ = TryStartNextAsync();
@@ -116,10 +117,11 @@ internal sealed class JobQueueService
     /// <summary>
     /// Re-adds an existing (failed / cancelled) job back into the run queue.
     /// </summary>
-    public void RequeueJob(int jobId, string dbPath, string audioPath, int streamIndex = -1)
+    public void RequeueJob(int jobId, string dbPath, string audioPath, int streamIndex = -1,
+        string asrLanguageCode = "auto")
     {
         _controlDb.UpdateJobStatus(jobId, JobStatus.Queued);
-        Enqueue(new QueueEntry(jobId, audioPath, dbPath, streamIndex));
+        Enqueue(new QueueEntry(jobId, audioPath, dbPath, streamIndex, asrLanguageCode));
         JobStatusChanged?.Invoke(jobId, JobStatus.Queued, null, null);
         _ = TryStartNextAsync();
     }
@@ -270,6 +272,7 @@ internal sealed class JobQueueService
                 progress,
                 OnSegmentAdded,
                 OnSegmentText,
+                entry.AsrLanguageCode,
                 cts.Token);
 
             sw.Stop();
@@ -301,5 +304,20 @@ internal sealed class JobQueueService
         }
     }
 
-    private record QueueEntry(int JobId, string AudioPath, string DbPath, int StreamIndex = -1);
+    private string GetJobAsrLanguageCode()
+    {
+        if (_settings.Current.AsrBackend != AsrBackend.Cohere)
+            return "auto";
+
+        return string.IsNullOrWhiteSpace(_settings.Current.CohereLanguage)
+            ? "auto"
+            : _settings.Current.CohereLanguage;
+    }
+
+    private record QueueEntry(
+        int JobId,
+        string AudioPath,
+        string DbPath,
+        int StreamIndex = -1,
+        string AsrLanguageCode = "auto");
 }

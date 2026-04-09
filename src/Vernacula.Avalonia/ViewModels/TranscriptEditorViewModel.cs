@@ -1025,7 +1025,7 @@ internal partial class TranscriptEditorViewModel : ObservableObject, IDisposable
             string encoderFile,
             string decoderJointFile,
             string? cohereModelsDir = null,
-            string? cohereLanguage = null)
+            string? cohereLanguageCode = null)
     {
         if (index < 0 || index >= Segments.Count || _dbPath is null || _fullAudio is null)
             return null;
@@ -1061,8 +1061,14 @@ internal partial class TranscriptEditorViewModel : ObservableObject, IDisposable
             if (string.IsNullOrWhiteSpace(cohereModelsDir))
                 return null;
 
+            string? forceLanguage =
+                string.Equals(cohereLanguageCode, "auto", StringComparison.OrdinalIgnoreCase) ||
+                string.IsNullOrWhiteSpace(cohereLanguageCode)
+                    ? null
+                    : cohereLanguageCode;
+
             using var cohere = new CohereTranscribe(cohereModelsDir);
-            foreach (var result in cohere.RecognizeDetailed(asrSeg, mono16k, forceLanguage: cohereLanguage))
+            foreach (var result in cohere.RecognizeDetailed(asrSeg, mono16k, forceLanguage: forceLanguage))
             {
                 text = result.Text;
                 tokens = result.TextTokens.ToList();

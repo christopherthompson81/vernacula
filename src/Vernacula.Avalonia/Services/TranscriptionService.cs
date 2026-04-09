@@ -36,6 +36,7 @@ internal class TranscriptionService
         IProgress<TranscriptionProgress> progress,
         Action<SegmentRow>   onSegmentAdded,
         Action<int, string>  onSegmentText,
+        string               asrLanguageCode,
         CancellationToken    ct)
     {
         // LongRunning spins up a dedicated OS thread. The async lambda allows
@@ -48,7 +49,7 @@ internal class TranscriptionService
                 try
                 {
                     await RunPipelineAsync(audioPath, streamIndex, resultsDbPath,
-                        progress, onSegmentAdded, onSegmentText, ct);
+                        progress, onSegmentAdded, onSegmentText, asrLanguageCode, ct);
                 }
                 catch (Exception ex)
                 {
@@ -66,6 +67,7 @@ internal class TranscriptionService
         IProgress<TranscriptionProgress> progress,
         Action<SegmentRow>  onSegmentAdded,
         Action<int, string> onSegmentText,
+        string              asrLanguageCode,
         CancellationToken   ct)
     {
         Console.WriteLine($"[Transcription] RunPipelineAsync starting for '{audioPath}'");
@@ -129,6 +131,8 @@ internal class TranscriptionService
             _                 => "nvidia/parakeet-tdt-0.6b-v3",
         };
         db.UpdateMetadata("asr_model", asrModelName);
+        db.UpdateMetadata("asr_language_code",
+            string.IsNullOrWhiteSpace(asrLanguageCode) ? "auto" : asrLanguageCode);
 
         // ── Phase 3: Segmentation (Diarization or VAD) ───────────────────────
         List<(double start, double end, string spkId)> segs;
@@ -462,9 +466,11 @@ internal class TranscriptionService
             if (_settings.Current.AsrBackend == AsrBackend.Cohere)
             {
                 string cohereModelsDir = _settings.GetCohereModelsDir();
-                string? forceLanguage = string.IsNullOrWhiteSpace(_settings.Current.CohereLanguage)
-                    ? null
-                    : _settings.Current.CohereLanguage;
+                string? forceLanguage =
+                    string.Equals(asrLanguageCode, "auto", StringComparison.OrdinalIgnoreCase) ||
+                    string.IsNullOrWhiteSpace(asrLanguageCode)
+                        ? null
+                        : asrLanguageCode;
                 using var cohere = new CohereTranscribe(cohereModelsDir);
 
                 foreach (var result in cohere.RecognizeDetailed(

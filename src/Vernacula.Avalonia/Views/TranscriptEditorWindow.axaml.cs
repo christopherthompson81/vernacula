@@ -46,6 +46,7 @@ public partial class TranscriptEditorWindow : Window
     private readonly string _dbPath = "";
     private readonly string _audioBaseName = "";
     private readonly string _jobAsrModel = "nvidia/parakeet-tdt-0.6b-v3";
+    private readonly string _jobAsrLanguageCode = "auto";
     private readonly bool _asrModelsAvailable;
     private readonly bool _showApproximateTimingNotice;
     private bool _isUpdatingUi;
@@ -82,11 +83,18 @@ public partial class TranscriptEditorWindow : Window
 
         string modelsDir = App.Current.Settings.GetModelsDir();
         string? asrModel;
+        string? asrLanguageCode;
         using (var db = new TranscriptionDb(dbPath))
+        {
             asrModel = db.GetMetadata("asr_model");
+            asrLanguageCode = db.GetMetadata("asr_language_code");
+        }
         _jobAsrModel = string.IsNullOrWhiteSpace(asrModel)
             ? "nvidia/parakeet-tdt-0.6b-v3"
             : asrModel;
+        _jobAsrLanguageCode = string.IsNullOrWhiteSpace(asrLanguageCode)
+            ? "auto"
+            : asrLanguageCode;
         _showApproximateTimingNotice = string.Equals(
             _jobAsrModel,
             "CohereLabs/cohere-transcribe-03-2026",
@@ -1236,9 +1244,6 @@ public partial class TranscriptEditorWindow : Window
         {
             string modelsDir = App.Current.Settings.GetModelsDir();
             string cohereModelsDir = App.Current.Settings.GetCohereModelsDir();
-            string? cohereLanguage = string.IsNullOrWhiteSpace(App.Current.Settings.Current.CohereLanguage)
-                ? null
-                : App.Current.Settings.Current.CohereLanguage;
             var (encoderFile, decoderJointFile) = Config.GetAsrFiles(ModelPrecision.Fp32);
 
             var result = await Task.Run(() => _vm.PerformRedoAsr(
@@ -1248,7 +1253,7 @@ public partial class TranscriptEditorWindow : Window
                 encoderFile,
                 decoderJointFile,
                 cohereModelsDir,
-                cohereLanguage));
+                _jobAsrLanguageCode));
             if (result is null)
             {
                 SetCardStatus(card, "Redo ASR did not produce a result.");
