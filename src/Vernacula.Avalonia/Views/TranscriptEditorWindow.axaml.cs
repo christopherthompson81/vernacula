@@ -106,8 +106,11 @@ public partial class TranscriptEditorWindow : Window
             _asrModelsAvailable =
                 File.Exists(Path.Combine(cohereDir, CohereTranscribe.MelFile)) &&
                 File.Exists(Path.Combine(cohereDir, CohereTranscribe.EncoderFile)) &&
+                File.Exists(Path.Combine(cohereDir, $"{CohereTranscribe.EncoderFile}.data")) &&
                 File.Exists(Path.Combine(cohereDir, CohereTranscribe.DecoderInitFile)) &&
+                File.Exists(Path.Combine(cohereDir, $"{CohereTranscribe.DecoderInitFile}.data")) &&
                 File.Exists(Path.Combine(cohereDir, CohereTranscribe.DecoderStepFile)) &&
+                File.Exists(Path.Combine(cohereDir, $"{CohereTranscribe.DecoderStepFile}.data")) &&
                 File.Exists(Path.Combine(cohereDir, CohereTranscribe.VocabFile));
         }
         else
