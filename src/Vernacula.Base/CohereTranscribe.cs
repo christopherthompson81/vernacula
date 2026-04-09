@@ -967,7 +967,7 @@ public sealed class CohereTranscribe : IDisposable
         return work;
     }
 
-    private static CohereRecognitionResult CombineChunkParts(
+    private CohereRecognitionResult CombineChunkParts(
         int segmentId,
         List<ChunkDecodePart> parts)
     {
@@ -976,7 +976,6 @@ public sealed class CohereTranscribe : IDisposable
         var rawTokens = new List<int>();
         var textTokens = new List<int>();
         var textLogprobs = new List<float>();
-        var textBuilder = new StringBuilder();
 
         string? language = null;
         string? emotion = null;
@@ -987,13 +986,6 @@ public sealed class CohereTranscribe : IDisposable
 
         foreach (var part in parts)
         {
-            if (!string.IsNullOrWhiteSpace(part.Text))
-            {
-                if (textBuilder.Length > 0)
-                    textBuilder.Append(' ');
-                textBuilder.Append(part.Text.Trim());
-            }
-
             rawTokens.AddRange(part.RawTokens);
             textTokens.AddRange(part.TextTokens);
             textLogprobs.AddRange(part.TextLogprobs);
@@ -1006,9 +998,11 @@ public sealed class CohereTranscribe : IDisposable
             diarize ??= part.Meta.Diarize;
         }
 
+        string text = DecodeTokens(textTokens);
+
         return new CohereRecognitionResult(
             segmentId,
-            textBuilder.ToString(),
+            text,
             rawTokens,
             textTokens,
             textLogprobs,
