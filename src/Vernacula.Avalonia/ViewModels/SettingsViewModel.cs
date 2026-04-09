@@ -29,6 +29,14 @@ internal partial class SettingsViewModel : ObservableObject
     private SegmentationMode _selectedSegmentation;
 
     [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(IsAsrParakeet), nameof(IsAsrCohere))]
+    private AsrBackend _selectedAsrBackend;
+
+    [ObservableProperty]
+    private CohereLanguageOption? _selectedCohereLanguage;
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(ShowCohereLanguagePicker))]
     [NotifyPropertyChangedFor(nameof(IsDenoiserNone), nameof(IsDenoiserDfn3))]
     private DenoiserMode _selectedDenoiser;
 
@@ -53,6 +61,9 @@ internal partial class SettingsViewModel : ObservableObject
     public bool IsSileroVad         => SelectedSegmentation == SegmentationMode.SileroVad;
     public bool IsSortformer        => SelectedSegmentation == SegmentationMode.Sortformer;
     public bool IsDiariZen          => SelectedSegmentation == SegmentationMode.DiariZen;
+    public bool IsAsrParakeet       => SelectedAsrBackend == AsrBackend.Parakeet;
+    public bool IsAsrCohere         => SelectedAsrBackend == AsrBackend.Cohere;
+    public bool ShowCohereLanguagePicker => SelectedAsrBackend == AsrBackend.Cohere;
     public bool IsDenoiserNone      => SelectedDenoiser == DenoiserMode.None;
     public bool IsDenoiserDfn3      => SelectedDenoiser == DenoiserMode.DeepFilterNet3;
     public bool ShowDiariZenInSegmentation => HasAcceptedDiariZenNotice;
@@ -63,6 +74,26 @@ internal partial class SettingsViewModel : ObservableObject
     public string GatedModelsStatusText => HasUnlockedGatedModels
         ? "Unlocked gated models: DiariZen"
         : "Some optional models require accepting their own license terms before they appear in settings.";
+
+    public record CohereLanguageOption(string Code, string DisplayName);
+    public static readonly IReadOnlyList<CohereLanguageOption> CohereLanguages =
+    [
+        new("",   "Auto-detect"),
+        new("ar", "Arabic"),
+        new("de", "German"),
+        new("el", "Greek"),
+        new("en", "English"),
+        new("es", "Spanish"),
+        new("fr", "French"),
+        new("it", "Italian"),
+        new("ja", "Japanese"),
+        new("ko", "Korean"),
+        new("nl", "Dutch"),
+        new("pl", "Polish"),
+        new("pt", "Portuguese"),
+        new("vi", "Vietnamese"),
+        new("zh", "Chinese"),
+    ];
 
     // ── Hardware check state ─────────────────────────────────────────────────
 
@@ -115,6 +146,9 @@ internal partial class SettingsViewModel : ObservableObject
         _selectedSegmentation         = svc.Current.Segmentation == SegmentationMode.DiariZen && !svc.IsGatedModelAccepted(DiariZenGatedModelId)
             ? SegmentationMode.Sortformer
             : svc.Current.Segmentation;
+        _selectedAsrBackend           = svc.Current.AsrBackend;
+        _selectedCohereLanguage       = CohereLanguages.FirstOrDefault(l => l.Code == svc.Current.CohereLanguage)
+                                        ?? CohereLanguages[0];
         _selectedDenoiser             = svc.Current.Denoiser;
         _selectedEditorPlaybackMode   = svc.Current.EditorPlaybackMode;
         _selectedLanguage             = svc.Current.Language;
@@ -159,6 +193,21 @@ internal partial class SettingsViewModel : ObservableObject
         _svc.Current.Segmentation = value;
         _svc.Save();
         OnSegmentationChanged?.Invoke();
+    }
+
+    partial void OnSelectedAsrBackendChanged(AsrBackend value)
+    {
+        _svc.Current.AsrBackend = value;
+        _svc.Save();
+        OnPropertyChanged(nameof(ShowCohereLanguagePicker));
+        OnSegmentationChanged?.Invoke();
+        _ = CheckModelsAsync();
+    }
+
+    partial void OnSelectedCohereLanguageChanged(CohereLanguageOption? value)
+    {
+        _svc.Current.CohereLanguage = value?.Code ?? "";
+        _svc.Save();
     }
 
     partial void OnSelectedDenoiserChanged(DenoiserMode value)
@@ -207,6 +256,7 @@ internal partial class SettingsViewModel : ObservableObject
 
     [RelayCommand] private void SetTheme(string n)              { if (Enum.TryParse<AppTheme>(n,         out var t)) SelectedTheme              = t; }
     [RelayCommand] private void SetSegmentation(string n)       { if (Enum.TryParse<SegmentationMode>(n, out var s)) SelectedSegmentation       = s; }
+    [RelayCommand] private void SetAsrBackend(string n)         { if (Enum.TryParse<AsrBackend>(n,      out var a)) SelectedAsrBackend         = a; }
     [RelayCommand] private void SetDenoiser(string n)           { if (Enum.TryParse<DenoiserMode>(n,     out var d)) SelectedDenoiser           = d; }
     [RelayCommand] private void SetEditorPlaybackMode(string n) { if (Enum.TryParse<PlaybackMode>(n,     out var m)) SelectedEditorPlaybackMode = m; }
     [RelayCommand] private void SetLanguage(string l)           => SelectedLanguage = l;
@@ -292,6 +342,19 @@ internal partial class SettingsViewModel : ObservableObject
 
     private void ApplyModelStatusText()
     {
+        if (_lastMissing.Count == 0)
+        {
+            ModelStatusText = Loc.Instance.T("model_status_ok", new() { ["count"] = _lastPresent.Count.ToString() });
+            return;
+        }
+
+        if (SelectedAsrBackend == AsrBackend.Cohere)
+        {
+            ModelStatusText = $"Missing {_lastMissing.Count} required model file(s): {string.Join(", ", _lastMissing)}. " +
+                              $"Place Cohere weights under {_svc.GetCohereModelsDir()}.";
+            return;
+        }
+
         ModelStatusText = _lastMissing.Count == 0
             ? Loc.Instance.T("model_status_ok",      new() { ["count"] = _lastPresent.Count.ToString() })
             : Loc.Instance.T("model_status_missing",  new() { ["count"] = _lastMissing.Count.ToString(),
@@ -322,7 +385,7 @@ internal partial class SettingsViewModel : ObservableObject
             missing         = _modelMgr.GetMissingFiles();
             present         = _modelMgr.GetPresentFiles();
             ModelsReady     = missing.Count == 0;
-            DownloadVisible = missing.Count > 0;
+            DownloadVisible = _modelMgr.GetMissingDownloadableFiles().Count > 0;
         });
 
         _lastMissing    = missing;

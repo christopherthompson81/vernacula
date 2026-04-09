@@ -1018,7 +1018,14 @@ internal partial class TranscriptEditorViewModel : ObservableObject, IDisposable
     /// Returns (newResultId, asrContent, tokens, timestamps, logprobs) on success, or null.
     /// </summary>
     public (int newResultId, string asrContent, List<int> tokens, List<int> timestamps, List<float> logprobs)?
-        PerformRedoAsr(int index, string modelsDir, string encoderFile, string decoderJointFile)
+        PerformRedoAsr(
+            int index,
+            string asrModel,
+            string parakeetModelsDir,
+            string encoderFile,
+            string decoderJointFile,
+            string? cohereModelsDir = null,
+            string? cohereLanguageCode = null)
     {
         if (index < 0 || index >= Segments.Count || _dbPath is null || _fullAudio is null)
             return null;
@@ -1036,8 +1043,6 @@ internal partial class TranscriptEditorViewModel : ObservableObject, IDisposable
         Array.Copy(_fullAudio, startSample, slice, 0, slice.Length);
         float[] mono16k = AudioUtils.AudioTo16000Mono(slice, _audioSampleRate, _audioChannels);
 
-        // Run ASR — the slice starts at t=0, so pass a 0-based time range
-        using var parakeet = new ParakeetAsr(modelsDir, encoderFile, decoderJointFile);
         var asrSeg = new List<(double start, double end, string spk)>
         {
             (0.0, seg.PlayEnd - seg.PlayStart, $"speaker_{seg.SpeakerId - 1}")
@@ -1047,9 +1052,45 @@ internal partial class TranscriptEditorViewModel : ObservableObject, IDisposable
         List<int> tokens = [];
         List<int> timestamps = [];
         List<float> logprobs = [];
-        foreach (var (_, t, tk, ts, lp) in parakeet.Recognize(asrSeg, mono16k))
+        string? language = null;
+        string? emotion = null;
+        string? asrMeta = null;
+
+        if (string.Equals(asrModel, "CohereLabs/cohere-transcribe-03-2026", StringComparison.Ordinal))
         {
-            text = t; tokens = tk; timestamps = ts; logprobs = lp;
+            if (string.IsNullOrWhiteSpace(cohereModelsDir))
+                return null;
+
+            string? forceLanguage =
+                string.Equals(cohereLanguageCode, "auto", StringComparison.OrdinalIgnoreCase) ||
+                string.IsNullOrWhiteSpace(cohereLanguageCode)
+                    ? null
+                    : cohereLanguageCode;
+
+            using var cohere = new CohereTranscribe(cohereModelsDir);
+            foreach (var result in cohere.RecognizeDetailed(asrSeg, mono16k, forceLanguage: forceLanguage))
+            {
+                text = result.Text;
+                tokens = result.TextTokens.ToList();
+                timestamps = BuildSyntheticTokenTimestamps(seg.PlayEnd - seg.PlayStart, result.TextTokens.Count);
+                logprobs = result.TextLogprobs.ToList();
+                language = result.Meta.Language;
+                emotion = result.Meta.Emotion;
+                asrMeta = result.Meta.ToJson(
+                    rawDecoderTokens: result.RawTokens,
+                    storedTextTokens: result.TextTokens,
+                    syntheticTimestamps: true,
+                    timestampMode: CohereSyntheticTimestampMode);
+            }
+        }
+        else
+        {
+            // Run ASR — the slice starts at t=0, so pass a 0-based time range
+            using var parakeet = new ParakeetAsr(parakeetModelsDir, encoderFile, decoderJointFile);
+            foreach (var (_, t, tk, ts, lp) in parakeet.Recognize(asrSeg, mono16k))
+            {
+                text = t; tokens = tk; timestamps = ts; logprobs = lp;
+            }
         }
 
         // Persist: insert new result, swap card sources, clean up orphaned old results
@@ -1062,7 +1103,10 @@ internal partial class TranscriptEditorViewModel : ObservableObject, IDisposable
                 asrContent: text,
                 tokens:     JsonSerializer.Serialize(tokens),
                 timestamps: JsonSerializer.Serialize(timestamps),
-                logprobs:   JsonSerializer.Serialize(logprobs));
+                logprobs:   JsonSerializer.Serialize(logprobs),
+                language:   language,
+                emotion:    emotion,
+                asrMeta:    asrMeta);
 
             db.DeleteCardSources(seg.CardId);
             db.AddCardSource(seg.CardId, newResultId, 0, null, 0, 0);
@@ -1071,6 +1115,31 @@ internal partial class TranscriptEditorViewModel : ObservableObject, IDisposable
         }
 
         return (newResultId, text, tokens, timestamps, logprobs);
+    }
+
+    private const string CohereSyntheticTimestampMode = "uniform_segment_frames_v1";
+
+    private static List<int> BuildSyntheticTokenTimestamps(double segmentDurationSeconds, int tokenCount)
+    {
+        if (tokenCount <= 0)
+            return [];
+
+        const double frameSeconds = Config.HopLength * 8.0 / Config.SampleRate;
+        int maxFrame = Math.Max((int)Math.Round(segmentDurationSeconds / frameSeconds), 0);
+        if (tokenCount == 1)
+            return [0];
+
+        var timestamps = new List<int>(tokenCount);
+        for (int i = 0; i < tokenCount; i++)
+        {
+            double fraction = i / (double)(tokenCount - 1);
+            int frame = (int)Math.Round(fraction * maxFrame);
+            if (timestamps.Count > 0 && frame < timestamps[^1])
+                frame = timestamps[^1];
+            timestamps.Add(frame);
+        }
+
+        return timestamps;
     }
 
     /// <summary>

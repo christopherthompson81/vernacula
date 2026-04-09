@@ -12,12 +12,21 @@ namespace Vernacula.App.Services;
 internal class ModelManagerService
 {
     private readonly record struct ModelAsset(string LocalRelativePath, string RemoteRelativePath);
+    private readonly record struct AssetRepo(string RepoBase, string ManifestUrl, ModelAsset[] Assets);
+    private readonly record struct RepoAsset(string RepoBase, string LocalRelativePath, string RemoteRelativePath);
 
     private const string CoreRepoBase =
         "https://huggingface.co/christopherthompson81/sortformer_parakeet_onnx/resolve/main";
+    private const string CoreManifestUrl =
+        "https://huggingface.co/christopherthompson81/sortformer_parakeet_onnx/resolve/main/manifest.json";
 
     private const string DiariZenRepoBase =
         "https://huggingface.co/christopherthompson81/diarizen_onnx/resolve/main";
+
+    private const string CohereRepoBase =
+        "https://huggingface.co/christopherthompson81/cohere-transcribe-03-2026-onnx/resolve/main";
+    private const string CohereManifestUrl =
+        "https://huggingface.co/christopherthompson81/cohere-transcribe-03-2026-onnx/resolve/main/manifest.json";
 
     private static readonly ModelAsset[] CoreDiarizationFiles =
         [
@@ -48,18 +57,48 @@ internal class ModelManagerService
             new("config.json", "config.json")
         ];
 
+    private static readonly ModelAsset[] CohereFiles =
+        [
+            new(Path.Combine("cohere_transcribe", CohereTranscribe.MelFile), CohereTranscribe.MelFile),
+            new(Path.Combine("cohere_transcribe", CohereTranscribe.EncoderFile), CohereTranscribe.EncoderFile),
+            new(Path.Combine("cohere_transcribe", $"{CohereTranscribe.EncoderFile}.data"), $"{CohereTranscribe.EncoderFile}.data"),
+            new(Path.Combine("cohere_transcribe", CohereTranscribe.DecoderInitFile), CohereTranscribe.DecoderInitFile),
+            new(Path.Combine("cohere_transcribe", $"{CohereTranscribe.DecoderInitFile}.data"), $"{CohereTranscribe.DecoderInitFile}.data"),
+            new(Path.Combine("cohere_transcribe", CohereTranscribe.DecoderStepFile), CohereTranscribe.DecoderStepFile),
+            new(Path.Combine("cohere_transcribe", $"{CohereTranscribe.DecoderStepFile}.data"), $"{CohereTranscribe.DecoderStepFile}.data"),
+            new(Path.Combine("cohere_transcribe", CohereTranscribe.VocabFile), CohereTranscribe.VocabFile),
+            new(Path.Combine("cohere_transcribe", CohereTranscribe.ConfigFile), CohereTranscribe.ConfigFile),
+        ];
+
     private readonly SettingsService _settings;
     private readonly HttpClient _http = new(new HttpClientHandler { AllowAutoRedirect = true });
 
     public ModelManagerService(SettingsService settings) => _settings = settings;
 
-    private static ModelAsset[] CoreFiles() =>
-        [.. CoreDiarizationFiles, .. AsrFilesFp32];
+    private AssetRepo[] ActiveRepos() => _settings.Current.AsrBackend switch
+    {
+        AsrBackend.Cohere =>
+        [
+            new AssetRepo(CoreRepoBase, CoreManifestUrl, CoreDiarizationFiles),
+            new AssetRepo(CohereRepoBase, CohereManifestUrl, CohereFiles),
+        ],
+        _ =>
+        [
+            new AssetRepo(CoreRepoBase, CoreManifestUrl, [.. CoreDiarizationFiles, .. AsrFilesFp32]),
+        ],
+    };
+
+    private ModelAsset[] RequiredFiles() =>
+        [.. ActiveRepos().SelectMany(repo => repo.Assets)];
+
+    private RepoAsset[] DownloadableFiles() =>
+        [.. ActiveRepos().SelectMany(repo => repo.Assets.Select(asset =>
+            new RepoAsset(repo.RepoBase, asset.LocalRelativePath, asset.RemoteRelativePath)))];
 
     public IReadOnlyList<string> GetMissingFiles()
     {
         string dir = _settings.GetModelsDir();
-        return CoreFiles()
+        return RequiredFiles()
             .Where(asset => !File.Exists(Path.Combine(dir, asset.LocalRelativePath)))
             .Select(asset => asset.LocalRelativePath)
             .ToList();
@@ -68,8 +107,17 @@ internal class ModelManagerService
     public IReadOnlyList<string> GetPresentFiles()
     {
         string dir = _settings.GetModelsDir();
-        return CoreFiles()
+        return RequiredFiles()
             .Where(asset => File.Exists(Path.Combine(dir, asset.LocalRelativePath)))
+            .Select(asset => asset.LocalRelativePath)
+            .ToList();
+    }
+
+    public IReadOnlyList<string> GetMissingDownloadableFiles()
+    {
+        string dir = _settings.GetModelsDir();
+        return DownloadableFiles()
+            .Where(asset => !File.Exists(Path.Combine(dir, asset.LocalRelativePath)))
             .Select(asset => asset.LocalRelativePath)
             .ToList();
     }
@@ -109,39 +157,50 @@ internal class ModelManagerService
         IProgress<(string fileName, int index, int total)>? progress = null,
         CancellationToken ct = default)
     {
-        string json;
-        try
-        {
-            using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            cts.CancelAfter(TimeSpan.FromSeconds(10));
-            json = await _http.GetStringAsync(Config.ManifestUrl, cts.Token);
-        }
-        catch { return null; }
-
-        Dictionary<string, string> manifest;
-        try   { manifest = ParseManifestHashes(json); }
-        catch { return null; }
-
         string dir     = _settings.GetModelsDir();
         var outdated = new List<string>();
-        var toCheck = CoreFiles()
-            .Where(asset => manifest.ContainsKey(asset.RemoteRelativePath)
-                && File.Exists(Path.Combine(dir, asset.LocalRelativePath)))
-            .ToList();
+        var toCheck = new List<(string localRelativePath, string expectedHash)>();
+
+        foreach (var repo in ActiveRepos())
+        {
+            string json;
+            try
+            {
+                using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                cts.CancelAfter(TimeSpan.FromSeconds(10));
+                json = await _http.GetStringAsync(repo.ManifestUrl, cts.Token);
+            }
+            catch { return null; }
+
+            Dictionary<string, string> manifest;
+            try   { manifest = ParseManifestHashes(json); }
+            catch { return null; }
+
+            foreach (var asset in repo.Assets)
+            {
+                string path = Path.Combine(dir, asset.LocalRelativePath);
+                if (manifest.TryGetValue(asset.RemoteRelativePath, out var expectedHash) &&
+                    expectedHash is not null &&
+                    File.Exists(path))
+                {
+                    toCheck.Add((asset.LocalRelativePath, expectedHash));
+                }
+            }
+        }
+
         int total = toCheck.Count;
 
         for (int i = 0; i < total; i++)
         {
             ct.ThrowIfCancellationRequested();
             var asset = toCheck[i];
-            string expectedHash = manifest[asset.RemoteRelativePath];
-            progress?.Report((asset.LocalRelativePath, i, total));
+            progress?.Report((asset.localRelativePath, i, total));
 
-            string path       = Path.Combine(dir, asset.LocalRelativePath);
+            string path       = Path.Combine(dir, asset.localRelativePath);
             string actualHash = await Task.Run(() => ComputeMd5(path), ct);
 
-            if (!string.Equals(actualHash, expectedHash, StringComparison.OrdinalIgnoreCase))
-                outdated.Add(asset.LocalRelativePath);
+            if (!string.Equals(actualHash, asset.expectedHash, StringComparison.OrdinalIgnoreCase))
+                outdated.Add(asset.localRelativePath);
         }
         return outdated;
     }
@@ -283,10 +342,10 @@ internal class ModelManagerService
         string dir = _settings.GetModelsDir();
         Directory.CreateDirectory(dir);
 
-        var missing = CoreFiles()
+        var missing = DownloadableFiles()
             .Where(asset => !File.Exists(Path.Combine(dir, asset.LocalRelativePath)))
             .ToList();
-        await DownloadMissingAssetsAsync(dir, missing, CoreRepoBase, progress, ct);
+        await DownloadMissingAssetsAsync(dir, missing, progress, ct);
     }
 
     public async Task DownloadMissingDiariZenModelsAsync(
@@ -299,18 +358,18 @@ internal class ModelManagerService
 
         var missing = DiariZenFiles
             .Where(asset => !File.Exists(Path.Combine(dir, Path.GetRelativePath("diarizen", asset.LocalRelativePath))))
-            .Select(asset => new ModelAsset(
+            .Select(asset => new RepoAsset(
+                DiariZenRepoBase,
                 Path.GetRelativePath("diarizen", asset.LocalRelativePath),
                 asset.RemoteRelativePath))
             .ToList();
 
-        await DownloadMissingAssetsAsync(dir, missing, DiariZenRepoBase, progress, ct);
+        await DownloadMissingAssetsAsync(dir, missing, progress, ct);
     }
 
     private async Task DownloadMissingAssetsAsync(
         string dir,
-        IReadOnlyList<ModelAsset> missing,
-        string repoBase,
+        IReadOnlyList<RepoAsset> missing,
         IProgress<DownloadProgress> progress,
         CancellationToken ct)
     {
@@ -324,7 +383,7 @@ internal class ModelManagerService
             ct.ThrowIfCancellationRequested();
             try
             {
-                using var req  = new HttpRequestMessage(HttpMethod.Head, $"{repoBase}/{missing[i].RemoteRelativePath}");
+                using var req  = new HttpRequestMessage(HttpMethod.Head, $"{missing[i].RepoBase}/{missing[i].RemoteRelativePath}");
                 using var resp = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct);
                 fileSizes[i] = resp.Content.Headers.ContentLength ?? 0;
             }
@@ -339,7 +398,7 @@ internal class ModelManagerService
             ct.ThrowIfCancellationRequested();
             var asset = missing[i];
             string fileName = asset.LocalRelativePath;
-            string url      = $"{repoBase}/{asset.RemoteRelativePath}";
+            string url      = $"{asset.RepoBase}/{asset.RemoteRelativePath}";
             string destPath = Path.Combine(dir, asset.LocalRelativePath);
             string tmpPath  = destPath + ".download";
             Directory.CreateDirectory(Path.GetDirectoryName(destPath)!);

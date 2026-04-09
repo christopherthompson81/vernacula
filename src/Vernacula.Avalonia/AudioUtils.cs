@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using ClosedXML.Excel;
 using Vernacula.Base;
@@ -13,6 +14,12 @@ namespace Vernacula.App;
 
 internal static class AudioUtils
 {
+    private static readonly HashSet<string> CrossPlatformFfmpegAudioExtensions =
+        new(StringComparer.OrdinalIgnoreCase)
+        {
+            ".aac", ".flac", ".m4a", ".mp3",
+        };
+
     // ── Mel filterbank (computed once) ───────────────────────────────────────
     public static readonly float[,] MelFilterbank = CreateMelFilterbank();
 
@@ -233,9 +240,13 @@ internal static class AudioUtils
         ReadAudio(string path, int streamIndex = -1)
     {
         string ext = Path.GetExtension(path);
+        bool preferFfmpegForCompressedAudio =
+            !OperatingSystem.IsWindows()
+            && CrossPlatformFfmpegAudioExtensions.Contains(ext);
         bool useFFmpeg = streamIndex >= 0
                       || FFmpegDecoder.VideoExtensions.Contains(ext)
-                      || FFmpegDecoder.FfmpegAudioExtensions.Contains(ext);
+                      || FFmpegDecoder.FfmpegAudioExtensions.Contains(ext)
+                      || preferFfmpegForCompressedAudio;
 
         if (useFFmpeg)
             return FFmpegDecoder.DecodeStream(path, streamIndex >= 0 ? streamIndex : 0);

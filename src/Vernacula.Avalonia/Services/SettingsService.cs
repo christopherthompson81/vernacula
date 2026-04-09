@@ -80,6 +80,9 @@ internal class SettingsService
     public string GetDenoiserModelsDir() =>
         Path.Combine(GetModelsDir(), "deepfilternet3");
 
+    public string GetCohereModelsDir() =>
+        Path.Combine(GetModelsDir(), "cohere_transcribe");
+
     public string GetJobsDir()
     {
         string dir = Path.Combine(

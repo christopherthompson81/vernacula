@@ -84,3 +84,12 @@ Exports DeepFilterNet3 as three streaming ONNX models with explicit GRU hidden-s
 ## diarizen_export/
 
 Exports the DiariZen diarization pipeline: segmentation model, WeSpeaker embedding model, and LDA/PLDA transform parameters. See [diarizen_export/README.md](diarizen_export/README.md) for full documentation.
+
+---
+
+## cohere_export/
+
+Exports `CohereLabs/cohere-transcribe-03-2026` to the ONNX package used by Vernacula. See [cohere_export/README.md](cohere_export/README.md) for full documentation.
+
+- `export_cohere_transcribe_to_onnx.py` — exports the base Cohere encoder, mel frontend, config, tokenizer assets, and by default the KV-cache decoder pair
+- `requirements.txt` — export dependencies

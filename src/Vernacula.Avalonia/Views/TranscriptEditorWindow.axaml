@@ -183,21 +183,35 @@
             <Border DockPanel.Dock="Top"
                     Background="{DynamicResource SurfaceBrush}"
                     Padding="16,10">
-                <DockPanel>
-                    <TextBlock x:Name="HeaderSubtext"
-                               Text="{Binding HeaderSubtext}"
-                               DockPanel.Dock="Right"
-                               Foreground="{DynamicResource SubtextBrush}"
-                               VerticalAlignment="Center"
-                               Margin="12,0,0,0" />
-                    <TextBlock x:Name="HeaderTitle"
-                               Text="{Binding HeaderTitle}"
-                               Foreground="{DynamicResource TextBrush}"
-                               FontSize="18"
-                               FontWeight="SemiBold"
-                               VerticalAlignment="Center"
-                               TextTrimming="CharacterEllipsis" />
-                </DockPanel>
+                <StackPanel Spacing="8">
+                    <DockPanel>
+                        <TextBlock x:Name="HeaderSubtext"
+                                   Text="{Binding HeaderSubtext}"
+                                   DockPanel.Dock="Right"
+                                   Foreground="{DynamicResource SubtextBrush}"
+                                   VerticalAlignment="Center"
+                                   Margin="12,0,0,0" />
+                        <TextBlock x:Name="HeaderTitle"
+                                   Text="{Binding HeaderTitle}"
+                                   Foreground="{DynamicResource TextBrush}"
+                                   FontSize="18"
+                                   FontWeight="SemiBold"
+                                   VerticalAlignment="Center"
+                                   TextTrimming="CharacterEllipsis" />
+                    </DockPanel>
+
+                    <Border Background="{DynamicResource OverlayBrush}"
+                            BorderBrush="{DynamicResource AccentBrush}"
+                            BorderThickness="1"
+                            CornerRadius="999"
+                            Padding="10,4"
+                            HorizontalAlignment="Left"
+                            IsVisible="{Binding ShowHeaderNotice, Converter={StaticResource BoolToVis}}">
+                        <TextBlock Text="{Binding HeaderNotice}"
+                                   Foreground="{DynamicResource TextBrush}"
+                                   FontSize="11" />
+                    </Border>
+                </StackPanel>
             </Border>
 
             <Border x:Name="PlaybackBar"

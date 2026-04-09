@@ -79,7 +79,8 @@ internal partial class MainViewModel : ObservableObject
         // Home → Requeue (resume a failed / cancelled job)
         Home.RequeueJob = job =>
         {
-            queue.RequeueJob(job.JobId, job.ResultsFile, job.AudioFilePath, job.AudioStreamIndex);
+            queue.RequeueJob(job.JobId, job.ResultsFile, job.AudioFilePath, job.AudioStreamIndex,
+                job.AsrLanguageCode, job.AsrModelName);
             RefreshJobsAndSync();
         };
 

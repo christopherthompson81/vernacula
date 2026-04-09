@@ -1,4 +1,6 @@
+using System.Diagnostics;
 using System.Runtime.InteropServices;
+using System.Text.Json;
 using FFmpeg.AutoGen;
 using Vernacula.App.Models;
 
@@ -40,16 +42,64 @@ internal static unsafe class FFmpegDecoder
     {
         if (_initialized) return;
 
-        // Modern .NET places native runtime assets in runtimes/{rid}/native/ —
-        // check that subdirectory first, fall back to the root output folder.
-        string runtimesDir = Path.Combine(rootPath, "runtimes", "win-x64", "native");
-        ffmpeg.RootPath = Directory.Exists(runtimesDir) ? runtimesDir : rootPath;
+        // Modern .NET places native runtime assets in runtimes/{rid}/native/.
+        // Probe the current platform first, then fall back to the output root.
+        string? runtimesDir = FindNativeRuntimeDirectory(rootPath);
+        ffmpeg.RootPath = runtimesDir ?? rootPath;
 
         // avformat_network_init() is only needed for network protocols (HTTP/RTMP/…).
         // We use local-file decoding only, so skip the call to avoid loading DLLs
         // eagerly at startup — they will be loaded on demand on first use instead.
 
         _initialized = true;
+    }
+
+    private static string? FindNativeRuntimeDirectory(string rootPath)
+    {
+        foreach (string rid in EnumerateRuntimeIdentifiers())
+        {
+            string candidate = Path.Combine(rootPath, "runtimes", rid, "native");
+            if (Directory.Exists(candidate))
+                return candidate;
+        }
+
+        return null;
+    }
+
+    private static IEnumerable<string> EnumerateRuntimeIdentifiers()
+    {
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        void Add(string rid)
+        {
+            if (!string.IsNullOrWhiteSpace(rid))
+                seen.Add(rid);
+        }
+
+        Add(RuntimeInformation.RuntimeIdentifier);
+
+        string arch = RuntimeInformation.ProcessArchitecture switch
+        {
+            Architecture.X64 => "x64",
+            Architecture.X86 => "x86",
+            Architecture.Arm64 => "arm64",
+            Architecture.Arm => "arm",
+            Architecture.S390x => "s390x",
+            Architecture.LoongArch64 => "loongarch64",
+            _ => RuntimeInformation.ProcessArchitecture.ToString().ToLowerInvariant(),
+        };
+
+        if (OperatingSystem.IsWindows())
+            Add($"win-{arch}");
+        else if (OperatingSystem.IsMacOS())
+            Add($"osx-{arch}");
+        else if (OperatingSystem.IsLinux())
+        {
+            Add($"linux-{arch}");
+            Add($"linux-musl-{arch}");
+        }
+
+        return seen;
     }
 
     // ── Stream probing ────────────────────────────────────────────────────────
@@ -123,6 +173,19 @@ internal static unsafe class FFmpegDecoder
     public static (float[] samples, int sampleRate, int channels)
         DecodeStream(string filePath, int streamIndex)
     {
+        try
+        {
+            return DecodeStreamAutoGen(filePath, streamIndex);
+        }
+        catch (NotSupportedException)
+        {
+            return DecodeStreamViaCli(filePath, streamIndex);
+        }
+    }
+
+    private static (float[] samples, int sampleRate, int channels)
+        DecodeStreamAutoGen(string filePath, int streamIndex)
+    {
         AVFormatContext* fmtCtx = null;
 
         if (ffmpeg.avformat_open_input(&fmtCtx, filePath, null, null) < 0)
@@ -167,6 +230,132 @@ internal static unsafe class FFmpegDecoder
         {
             ffmpeg.avformat_close_input(&fmtCtx);
         }
+    }
+
+    private static (float[] samples, int sampleRate, int channels)
+        DecodeStreamViaCli(string filePath, int streamIndex)
+    {
+        var stream = ProbeAudioStreamsViaCli(filePath)
+            .FirstOrDefault(s => s.StreamIndex == streamIndex);
+
+        if (stream is null)
+        {
+            stream = ProbeAudioStreamsViaCli(filePath).FirstOrDefault()
+                ?? throw new InvalidOperationException("No audio streams found in file.");
+        }
+
+        string mapSpecifier = $"0:{stream.StreamIndex}";
+        var psi = new ProcessStartInfo("ffmpeg")
+        {
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+        };
+        psi.ArgumentList.Add("-v");
+        psi.ArgumentList.Add("error");
+        psi.ArgumentList.Add("-i");
+        psi.ArgumentList.Add(filePath);
+        psi.ArgumentList.Add("-map");
+        psi.ArgumentList.Add(mapSpecifier);
+        psi.ArgumentList.Add("-f");
+        psi.ArgumentList.Add("f32le");
+        psi.ArgumentList.Add("-acodec");
+        psi.ArgumentList.Add("pcm_f32le");
+        psi.ArgumentList.Add("-");
+
+        using var process = Process.Start(psi)
+            ?? throw new InvalidOperationException("Failed to start ffmpeg process.");
+
+        using var ms = new MemoryStream();
+        process.StandardOutput.BaseStream.CopyTo(ms);
+        string stderr = process.StandardError.ReadToEnd();
+        process.WaitForExit();
+
+        if (process.ExitCode != 0)
+            throw new InvalidOperationException(
+                $"ffmpeg failed to decode audio stream {stream.StreamIndex}: {stderr.Trim()}");
+
+        byte[] raw = ms.ToArray();
+        if (raw.Length % sizeof(float) != 0)
+            throw new InvalidOperationException("Decoded PCM payload had an unexpected size.");
+
+        float[] samples = new float[raw.Length / sizeof(float)];
+        Buffer.BlockCopy(raw, 0, samples, 0, raw.Length);
+        return (samples, stream.SampleRate, stream.Channels);
+    }
+
+    private static List<AudioStreamInfo> ProbeAudioStreamsViaCli(string filePath)
+    {
+        var psi = new ProcessStartInfo("ffprobe")
+        {
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+        };
+        psi.ArgumentList.Add("-v");
+        psi.ArgumentList.Add("error");
+        psi.ArgumentList.Add("-show_streams");
+        psi.ArgumentList.Add("-select_streams");
+        psi.ArgumentList.Add("a");
+        psi.ArgumentList.Add("-of");
+        psi.ArgumentList.Add("json");
+        psi.ArgumentList.Add(filePath);
+
+        using var process = Process.Start(psi)
+            ?? throw new InvalidOperationException("Failed to start ffprobe process.");
+
+        string stdout = process.StandardOutput.ReadToEnd();
+        string stderr = process.StandardError.ReadToEnd();
+        process.WaitForExit();
+
+        if (process.ExitCode != 0)
+            throw new InvalidOperationException(
+                $"ffprobe failed to inspect media file: {stderr.Trim()}");
+
+        using JsonDocument doc = JsonDocument.Parse(stdout);
+        if (!doc.RootElement.TryGetProperty("streams", out JsonElement streamsEl)
+            || streamsEl.ValueKind != JsonValueKind.Array)
+            return new List<AudioStreamInfo>();
+
+        var streams = new List<AudioStreamInfo>();
+        foreach (JsonElement streamEl in streamsEl.EnumerateArray())
+        {
+            int index = streamEl.TryGetProperty("index", out JsonElement indexEl)
+                && indexEl.TryGetInt32(out int parsedIndex)
+                ? parsedIndex
+                : -1;
+            string codec = streamEl.TryGetProperty("codec_name", out JsonElement codecEl)
+                ? codecEl.GetString() ?? "unknown"
+                : "unknown";
+            int channels = streamEl.TryGetProperty("channels", out JsonElement channelsEl)
+                && channelsEl.TryGetInt32(out int parsedChannels)
+                ? parsedChannels
+                : 1;
+            int sampleRate = streamEl.TryGetProperty("sample_rate", out JsonElement sampleRateEl)
+                && int.TryParse(sampleRateEl.GetString(), out int parsedRate)
+                ? parsedRate
+                : 0;
+            double duration = streamEl.TryGetProperty("duration", out JsonElement durationEl)
+                && double.TryParse(durationEl.GetString(), out double parsedDuration)
+                ? parsedDuration
+                : 0;
+
+            string? language = null;
+            string? title = null;
+            if (streamEl.TryGetProperty("tags", out JsonElement tagsEl)
+                && tagsEl.ValueKind == JsonValueKind.Object)
+            {
+                if (tagsEl.TryGetProperty("language", out JsonElement langEl))
+                    language = langEl.GetString();
+                if (tagsEl.TryGetProperty("title", out JsonElement titleEl))
+                    title = titleEl.GetString();
+            }
+
+            streams.Add(new AudioStreamInfo(
+                index, codec, language, title, channels, sampleRate, duration));
+        }
+
+        return streams;
     }
 
     // ── Private helpers ───────────────────────────────────────────────────────

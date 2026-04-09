@@ -4,11 +4,14 @@ namespace Vernacula.App.Models;
 
 public enum AppTheme    { Dark, Light }
 public enum PlaybackMode { Single, AutoAdvance, Continuous }
+public enum AsrBackend { Parakeet, Cohere }
 
 public class AppSettings
 {
     public AppTheme           Theme               { get; set; } = AppTheme.Dark;
     public SegmentationMode   Segmentation        { get; set; } = SegmentationMode.SileroVad;
+    public AsrBackend         AsrBackend          { get; set; } = AsrBackend.Parakeet;
+    public string             CohereLanguage      { get; set; } = "";
     public DenoiserMode       Denoiser            { get; set; } = DenoiserMode.None;
     public PlaybackMode       EditorPlaybackMode  { get; set; } = PlaybackMode.Continuous;
     public string             ModelsDir           { get; set; } = "";
