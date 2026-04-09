@@ -48,18 +48,38 @@ internal class ModelManagerService
             new("config.json", "config.json")
         ];
 
+    private static readonly ModelAsset[] CohereFiles =
+        [
+            new(Path.Combine("cohere_transcribe", CohereTranscribe.MelFile), CohereTranscribe.MelFile),
+            new(Path.Combine("cohere_transcribe", CohereTranscribe.EncoderFile), CohereTranscribe.EncoderFile),
+            new(Path.Combine("cohere_transcribe", $"{CohereTranscribe.EncoderFile}.data"), $"{CohereTranscribe.EncoderFile}.data"),
+            new(Path.Combine("cohere_transcribe", CohereTranscribe.DecoderInitFile), CohereTranscribe.DecoderInitFile),
+            new(Path.Combine("cohere_transcribe", CohereTranscribe.DecoderStepFile), CohereTranscribe.DecoderStepFile),
+            new(Path.Combine("cohere_transcribe", CohereTranscribe.VocabFile), CohereTranscribe.VocabFile),
+            new(Path.Combine("cohere_transcribe", CohereTranscribe.ConfigFile), CohereTranscribe.ConfigFile),
+        ];
+
     private readonly SettingsService _settings;
     private readonly HttpClient _http = new(new HttpClientHandler { AllowAutoRedirect = true });
 
     public ModelManagerService(SettingsService settings) => _settings = settings;
 
-    private static ModelAsset[] CoreFiles() =>
-        [.. CoreDiarizationFiles, .. AsrFilesFp32];
+    private ModelAsset[] RequiredFiles() => _settings.Current.AsrBackend switch
+    {
+        AsrBackend.Cohere   => [.. CoreDiarizationFiles, .. CohereFiles],
+        _                   => [.. CoreDiarizationFiles, .. AsrFilesFp32],
+    };
+
+    private ModelAsset[] DownloadableFiles() => _settings.Current.AsrBackend switch
+    {
+        AsrBackend.Cohere   => [.. CoreDiarizationFiles],
+        _                   => [.. CoreDiarizationFiles, .. AsrFilesFp32],
+    };
 
     public IReadOnlyList<string> GetMissingFiles()
     {
         string dir = _settings.GetModelsDir();
-        return CoreFiles()
+        return RequiredFiles()
             .Where(asset => !File.Exists(Path.Combine(dir, asset.LocalRelativePath)))
             .Select(asset => asset.LocalRelativePath)
             .ToList();
@@ -68,8 +88,17 @@ internal class ModelManagerService
     public IReadOnlyList<string> GetPresentFiles()
     {
         string dir = _settings.GetModelsDir();
-        return CoreFiles()
+        return RequiredFiles()
             .Where(asset => File.Exists(Path.Combine(dir, asset.LocalRelativePath)))
+            .Select(asset => asset.LocalRelativePath)
+            .ToList();
+    }
+
+    public IReadOnlyList<string> GetMissingDownloadableFiles()
+    {
+        string dir = _settings.GetModelsDir();
+        return DownloadableFiles()
+            .Where(asset => !File.Exists(Path.Combine(dir, asset.LocalRelativePath)))
             .Select(asset => asset.LocalRelativePath)
             .ToList();
     }
@@ -124,7 +153,7 @@ internal class ModelManagerService
 
         string dir     = _settings.GetModelsDir();
         var outdated = new List<string>();
-        var toCheck = CoreFiles()
+        var toCheck = DownloadableFiles()
             .Where(asset => manifest.ContainsKey(asset.RemoteRelativePath)
                 && File.Exists(Path.Combine(dir, asset.LocalRelativePath)))
             .ToList();
@@ -283,7 +312,7 @@ internal class ModelManagerService
         string dir = _settings.GetModelsDir();
         Directory.CreateDirectory(dir);
 
-        var missing = CoreFiles()
+        var missing = DownloadableFiles()
             .Where(asset => !File.Exists(Path.Combine(dir, asset.LocalRelativePath)))
             .ToList();
         await DownloadMissingAssetsAsync(dir, missing, CoreRepoBase, progress, ct);

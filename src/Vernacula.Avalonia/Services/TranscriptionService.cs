@@ -10,6 +10,7 @@ namespace Vernacula.App.Services;
 internal class TranscriptionService
 {
     private const double DiariZenDiarizationPercentWeight = 40.0;
+    private const string CohereSyntheticTimestampMode = "uniform_segment_frames_v1";
 
     private readonly SettingsService _settings;
 
@@ -122,6 +123,13 @@ internal class TranscriptionService
         if (!db.CheckMetadata(audioPath))
             db.PopulateMetadata(audioPath);
 
+        string asrModelName = _settings.Current.AsrBackend switch
+        {
+            AsrBackend.Cohere => "CohereLabs/cohere-transcribe-03-2026",
+            _                 => "nvidia/parakeet-tdt-0.6b-v3",
+        };
+        db.UpdateMetadata("asr_model", asrModelName);
+
         // ── Phase 3: Segmentation (Diarization or VAD) ───────────────────────
         List<(double start, double end, string spkId)> segs;
         bool inlineAsrDone = false;
@@ -179,10 +187,14 @@ internal class TranscriptionService
             // ── Sortformer path (streaming diarization with inline ASR) ──────
             segs = new List<(double, double, string)>();
             var seenSpeakers = new HashSet<string>();
-
-            var (encoderFile, decoderJointFile) =
-                Config.GetAsrFiles(ModelPrecision.Fp32);
-            using var parakeet = new ParakeetAsr(modelsDir, encoderFile, decoderJointFile);
+            bool useInlineParakeetAsr = _settings.Current.AsrBackend == AsrBackend.Parakeet;
+            ParakeetAsr? parakeet = null;
+            if (useInlineParakeetAsr)
+            {
+                var (encoderFile, decoderJointFile) =
+                    Config.GetAsrFiles(ModelPrecision.Fp32);
+                parakeet = new ParakeetAsr(modelsDir, encoderFile, decoderJointFile);
+            }
 
             using var streamer = new SortformerStreamer(modelsDir);
             float[,,] melSpec = AudioUtils.LogMelSpectrogram(audio);
@@ -256,7 +268,7 @@ internal class TranscriptionService
                     : Task.Run(() => enumerator.MoveNext(), ct);
 
                 // (b) CPU preprocessing for current segments — runs concurrently with (a).
-                if (newSegs.Count > 0)
+                if (useInlineParakeetAsr && parakeet is not null && newSegs.Count > 0)
                 {
                     int batchSize = newSegs.Count;
                     var preprocessTask = Task.Run(() => parakeet.PrepareBatch(newSegs, audio), ct);
@@ -305,7 +317,8 @@ internal class TranscriptionService
             }
 
             db.MarkDiarizationComplete();
-            inlineAsrDone = true;
+            inlineAsrDone = useInlineParakeetAsr;
+            parakeet?.Dispose();
         }
         else if (!db.CheckDiarization() && segmentationMode == SegmentationMode.DiariZen)
         {
@@ -442,48 +455,105 @@ internal class TranscriptionService
 
         if (!asrDone && !inlineAsrDone)
         {
-            var (encoderFile, decoderJointFile) =
-                Config.GetAsrFiles(ModelPrecision.Fp32);
-
-            using var parakeet = new ParakeetAsr(modelsDir, encoderFile, decoderJointFile);
             var segsSubset = segs.GetRange(startSeg, segs.Count - startSeg);
             int totalSegs  = segs.Count;
             int completed  = startSeg;
 
-            foreach (var (segId, text, tokens, timestamps, logprobs) in
-                parakeet.Recognize(segsSubset, audio))
+            if (_settings.Current.AsrBackend == AsrBackend.Cohere)
             {
-                ct.ThrowIfCancellationRequested();
-                int absId = startSeg + segId;
-                completed++;
+                string cohereModelsDir = _settings.GetCohereModelsDir();
+                string? forceLanguage = string.IsNullOrWhiteSpace(_settings.Current.CohereLanguage)
+                    ? null
+                    : _settings.Current.CohereLanguage;
+                using var cohere = new CohereTranscribe(cohereModelsDir);
 
-                db.UpdateResult(
-                    resultId:   absId + 1,
-                    asrContent: text,
-                    content:    text,
-                    tokens:     JsonSerializer.Serialize(tokens),
-                    timestamps: JsonSerializer.Serialize(timestamps),
-                    logprobs:   JsonSerializer.Serialize(logprobs));
+                foreach (var result in cohere.RecognizeDetailed(
+                    segsSubset, audio, forceLanguage: forceLanguage))
+                {
+                    ct.ThrowIfCancellationRequested();
+                    int absId = startSeg + result.SegmentId;
+                    completed++;
+                    var syntheticTimestamps = BuildSyntheticTokenTimestamps(
+                        segsSubset[result.SegmentId].end - segsSubset[result.SegmentId].start,
+                        result.TextTokens.Count);
 
-                onSegmentText(absId, text);
+                    db.UpdateResult(
+                        resultId:   absId + 1,
+                        asrContent: result.Text,
+                        content:    result.Text,
+                        tokens:     JsonSerializer.Serialize(result.TextTokens),
+                        timestamps: JsonSerializer.Serialize(syntheticTimestamps),
+                        logprobs:   JsonSerializer.Serialize(result.TextLogprobs),
+                        language:   result.Meta.Language,
+                        emotion:    result.Meta.Emotion,
+                        asrMeta:    result.Meta.ToJson(
+                            rawDecoderTokens: result.RawTokens,
+                            storedTextTokens: result.TextTokens,
+                            syntheticTimestamps: true,
+                            timestampMode: CohereSyntheticTimestampMode));
 
-                string asrText = Loc.Instance.T("progress_recognizing_segment", new() {
-                    ["i"]     = completed.ToString(),
-                    ["count"] = totalSegs.ToString() });
-                double? overridePercent = segmentationMode == SegmentationMode.DiariZen
-                    ? ScaleOverallProgress(
-                        DiariZenDiarizationPercentWeight,
-                        100,
-                        totalSegs > 0 ? completed / (double)totalSegs : 1)
-                    : null;
-                progress.Report(new TranscriptionProgress(
-                    TranscriptionPhase.Recognizing,
-                    completed,
-                    totalSegs,
-                    asrText,
-                    absId,
-                    text,
-                    overridePercent));
+                    onSegmentText(absId, result.Text);
+
+                    string asrText = Loc.Instance.T("progress_recognizing_segment", new() {
+                        ["i"]     = completed.ToString(),
+                        ["count"] = totalSegs.ToString() });
+                    double? overridePercent = segmentationMode == SegmentationMode.DiariZen
+                        ? ScaleOverallProgress(
+                            DiariZenDiarizationPercentWeight,
+                            100,
+                            totalSegs > 0 ? completed / (double)totalSegs : 1)
+                        : null;
+                    progress.Report(new TranscriptionProgress(
+                        TranscriptionPhase.Recognizing,
+                        completed,
+                        totalSegs,
+                        asrText,
+                        absId,
+                        result.Text,
+                        overridePercent));
+                }
+            }
+            else
+            {
+                var (encoderFile, decoderJointFile) =
+                    Config.GetAsrFiles(ModelPrecision.Fp32);
+
+                using var parakeet = new ParakeetAsr(modelsDir, encoderFile, decoderJointFile);
+                foreach (var (segId, text, tokens, timestamps, logprobs) in
+                    parakeet.Recognize(segsSubset, audio))
+                {
+                    ct.ThrowIfCancellationRequested();
+                    int absId = startSeg + segId;
+                    completed++;
+
+                    db.UpdateResult(
+                        resultId:   absId + 1,
+                        asrContent: text,
+                        content:    text,
+                        tokens:     JsonSerializer.Serialize(tokens),
+                        timestamps: JsonSerializer.Serialize(timestamps),
+                        logprobs:   JsonSerializer.Serialize(logprobs));
+
+                    onSegmentText(absId, text);
+
+                    string asrText = Loc.Instance.T("progress_recognizing_segment", new() {
+                        ["i"]     = completed.ToString(),
+                        ["count"] = totalSegs.ToString() });
+                    double? overridePercent = segmentationMode == SegmentationMode.DiariZen
+                        ? ScaleOverallProgress(
+                            DiariZenDiarizationPercentWeight,
+                            100,
+                            totalSegs > 0 ? completed / (double)totalSegs : 1)
+                        : null;
+                    progress.Report(new TranscriptionProgress(
+                        TranscriptionPhase.Recognizing,
+                        completed,
+                        totalSegs,
+                        asrText,
+                        absId,
+                        text,
+                        overridePercent));
+                }
             }
         }
 
@@ -557,4 +627,26 @@ internal class TranscriptionService
 
     private static double ScaleOverallProgress(double startPercent, double endPercent, double fraction) =>
         startPercent + (endPercent - startPercent) * Math.Clamp(fraction, 0, 1);
+
+    private static List<int> BuildSyntheticTokenTimestamps(double segmentDurationSeconds, int tokenCount)
+    {
+        if (tokenCount <= 0)
+            return [];
+
+        const double frameSeconds = Config.HopLength * 8.0 / Config.SampleRate;
+        int maxFrame = Math.Max((int)Math.Round(segmentDurationSeconds / frameSeconds), 0);
+        if (tokenCount == 1)
+            return [0];
+
+        var timestamps = new List<int>(tokenCount);
+        for (int i = 0; i < tokenCount; i++)
+        {
+            int frame = (int)Math.Round(i * maxFrame / (double)(tokenCount - 1));
+            if (timestamps.Count > 0 && frame < timestamps[^1])
+                frame = timestamps[^1];
+            timestamps.Add(frame);
+        }
+
+        return timestamps;
+    }
 }

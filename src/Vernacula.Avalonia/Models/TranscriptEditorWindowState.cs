@@ -9,6 +9,8 @@ internal sealed partial class TranscriptEditorWindowState : ObservableObject
 {
     [ObservableProperty] private string _headerTitle = "";
     [ObservableProperty] private string _headerSubtext = "";
+    [ObservableProperty] private string _headerNotice = "";
+    [ObservableProperty] private bool _showHeaderNotice;
     [ObservableProperty] private bool _isLoading;
     [ObservableProperty] private string _playPauseGlyph = "▶";
     [ObservableProperty] private bool _isPlaying;
@@ -39,6 +41,12 @@ internal sealed partial class TranscriptEditorWindowState : ObservableObject
     {
         HeaderTitle = title;
         HeaderSubtext = subtext;
+    }
+
+    public void SetHeaderNotice(string text, bool visible)
+    {
+        HeaderNotice = text;
+        ShowHeaderNotice = visible;
     }
 
     public void SetPlaybackModes(IEnumerable<string> modes, int selectedIndex)

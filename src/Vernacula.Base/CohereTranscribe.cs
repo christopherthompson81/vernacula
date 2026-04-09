@@ -277,7 +277,7 @@ public sealed class CohereTranscribe : IDisposable
     ///
     /// Returns one token list per segment (includes BOS and all context tokens).
     /// </summary>
-    private List<int>[] GreedyDecodeBatch(
+    private (List<int>[] tokens, List<float>[] tokenLogprobs) GreedyDecodeBatch(
         float[] encoderHiddenBatch, int B, int encTMax,
         int maxTokens = 256, int forcedLangTokenId = -1)
     {
@@ -355,21 +355,25 @@ public sealed class CohereTranscribe : IDisposable
         // Shape: [B, contextLen, vocabSize]; last position = index contextLen-1.
         int vocabSize;
         int[] firstTokens;
+        float[] firstLogprobs;
         {
             var shape     = initOutputs[0].GetTensorTypeAndShape().Shape;
             vocabSize     = (int)shape[2];
             var logitsSpan = initOutputs[0].GetTensorDataAsSpan<float>();
             firstTokens   = new int[B];
+            firstLogprobs = new float[B];
             int lastPos   = contextLen - 1;
             for (int b = 0; b < B; b++)
             {
                 var slice   = logitsSpan.Slice((b * contextLen + lastPos) * vocabSize, vocabSize);
                 firstTokens[b] = ForceLang(ArgMaxSpan(slice), forcedLangTokenId);
+                firstLogprobs[b] = SelectedLogProb(slice, firstTokens[b]);
             }
         }
 
         // ── Initialise per-segment token lists ───────────────────────────────
         var tokens        = new List<int>[B];
+        var tokenLogprobs = new List<float>[B];
         var finished      = new bool[B];
         var nextTok       = new long[B];
         int finishedCount = 0;
@@ -377,20 +381,32 @@ public sealed class CohereTranscribe : IDisposable
         for (int b = 0; b < B; b++)
         {
             tokens[b] = new List<int>(maxTokens + contextLen + 1);
+            tokenLogprobs[b] = new List<float>(maxTokens + contextLen + 1);
             tokens[b].Add(_bosTokenId);
+            tokenLogprobs[b].Add(0f);
             if (usePrefill)
             {
                 tokens[b].Add(TokStartOfContext);
+                tokenLogprobs[b].Add(0f);
                 tokens[b].Add(TokStartOfTranscript);
+                tokenLogprobs[b].Add(0f);
                 tokens[b].Add(TokEmoNeutral);
+                tokenLogprobs[b].Add(0f);
                 tokens[b].Add(forcedLangTokenId);
+                tokenLogprobs[b].Add(0f);
                 tokens[b].Add(forcedLangTokenId);
+                tokenLogprobs[b].Add(0f);
                 tokens[b].Add(TokPncOn);
+                tokenLogprobs[b].Add(0f);
                 tokens[b].Add(TokNoItn);
+                tokenLogprobs[b].Add(0f);
                 tokens[b].Add(TokNoTimestamp);
+                tokenLogprobs[b].Add(0f);
                 tokens[b].Add(TokNoDiarize);
+                tokenLogprobs[b].Add(0f);
             }
             tokens[b].Add(firstTokens[b]);
+            tokenLogprobs[b].Add(firstLogprobs[b]);
             nextTok[b] = firstTokens[b];
             if (firstTokens[b] == _eosTokenId) { finished[b] = true; finishedCount++; }
         }
@@ -463,13 +479,14 @@ public sealed class CohereTranscribe : IDisposable
                 int tok = ForceLang(ArgMaxSpan(stepLogits), forcedLangTokenId);
                 nextTok[b] = tok;
                 tokens[b].Add(tok);
+                tokenLogprobs[b].Add(SelectedLogProb(stepLogits, tok));
                 if (tok == _eosTokenId) { finished[b] = true; finishedCount++; }
             }
         }
 
         prevStepOutputs?.Dispose();
         initOutputs.Dispose();
-        return tokens;
+        return (tokens, tokenLogprobs);
     }
 
     // If the decoded token is a language tag and we have a forced language, substitute it.
@@ -477,6 +494,38 @@ public sealed class CohereTranscribe : IDisposable
         forcedLangTokenId >= 0 && token >= LangIdMin && token <= LangIdMax
             ? forcedLangTokenId
             : token;
+
+    private static float SelectedLogProb(ReadOnlySpan<float> logits, int token)
+    {
+        float max = float.NegativeInfinity;
+        for (int i = 0; i < logits.Length; i++)
+            if (logits[i] > max) max = logits[i];
+
+        double sumExp = 0.0;
+        for (int i = 0; i < logits.Length; i++)
+            sumExp += Math.Exp(logits[i] - max);
+
+        return (float)(logits[token] - (Math.Log(sumExp) + max));
+    }
+
+    private static (List<int> textTokens, List<float> textLogprobs) ExtractTextTokenData(
+        IReadOnlyList<int> tokens, IReadOnlyList<float> logprobs)
+    {
+        var textTokens = new List<int>(tokens.Count);
+        var textLogprobs = new List<float>(tokens.Count);
+
+        for (int i = 0; i < tokens.Count; i++)
+        {
+            int token = tokens[i];
+            if (token < ByteFallbackOffset) continue;
+            if (token == 0) continue;
+
+            textTokens.Add(token);
+            textLogprobs.Add(i < logprobs.Count ? logprobs[i] : 0f);
+        }
+
+        return (textTokens, textLogprobs);
+    }
 
     // ── Token decoding ───────────────────────────────────────────────────────
 
@@ -609,6 +658,16 @@ public sealed class CohereTranscribe : IDisposable
         int maxNewTokens = 256,
         string? forceLanguage = null)
     {
+        foreach (var result in RecognizeDetailed(segs, audio, maxNewTokens, forceLanguage))
+            yield return (result.SegmentId, result.Text, result.Meta);
+    }
+
+    public IEnumerable<CohereRecognitionResult> RecognizeDetailed(
+        IReadOnlyList<(double start, double end, string spk)> segs,
+        float[] audio,
+        int maxNewTokens = 256,
+        string? forceLanguage = null)
+    {
         int forcedLangTokenId = -1;
         if (forceLanguage is not null)
         {
@@ -690,11 +749,14 @@ public sealed class CohereTranscribe : IDisposable
                 if (!skipped[b]) { validMel.Add(melResults[b]); validBSlots.Add(b); }
 
             List<int>[] batchTokens = [];
+            List<float>[] batchTokenLogprobs = [];
             if (validMel.Count > 0)
             {
                 var (batchHidden, T_enc_max) = RunEncoderBatch(validMel);
-                batchTokens = GreedyDecodeBatch(
+                var decoded = GreedyDecodeBatch(
                     batchHidden, validMel.Count, T_enc_max, maxNewTokens, forcedLangTokenId);
+                batchTokens = decoded.tokens;
+                batchTokenLogprobs = decoded.tokenLogprobs;
             }
 
             // ── Yield results ────────────────────────────────────────────────────
@@ -704,14 +766,28 @@ public sealed class CohereTranscribe : IDisposable
                 int segId = segIds[b];
                 if (skipped[b])
                 {
-                    yield return (segId, string.Empty, CohereSegmentMeta.Empty);
+                    yield return new CohereRecognitionResult(
+                        segId,
+                        string.Empty,
+                        [],
+                        [],
+                        [],
+                        CohereSegmentMeta.Empty);
                     continue;
                 }
 
                 var tokens = batchTokens[encIdx++];
+                var tokenLogprobs = batchTokenLogprobs[encIdx - 1];
                 var meta   = ParseContextBlock(tokens);
                 string text = DecodeTokens(tokens);
-                yield return (segId, text, meta);
+                var (textTokens, textTokenLogprobs) = ExtractTextTokenData(tokens, tokenLogprobs);
+                yield return new CohereRecognitionResult(
+                    segId,
+                    text,
+                    tokens,
+                    textTokens,
+                    textTokenLogprobs,
+                    meta);
             }
 
             pos += batchSize;
@@ -808,7 +884,11 @@ public sealed record CohereSegmentMeta(
     public static readonly CohereSegmentMeta Empty = new(null, null, null, null, null, null);
 
     /// <summary>Serialises all fields to a compact JSON string for the asr_meta DB column.</summary>
-    public string ToJson() => JsonSerializer.Serialize(new
+    public string ToJson(
+        IReadOnlyList<int>? rawDecoderTokens = null,
+        IReadOnlyList<int>? storedTextTokens = null,
+        bool? syntheticTimestamps = null,
+        string? timestampMode = null) => JsonSerializer.Serialize(new
     {
         language   = Language,
         emotion    = Emotion,
@@ -816,5 +896,17 @@ public sealed record CohereSegmentMeta(
         itn        = Itn,
         timestamps = Timestamps,
         diarize    = Diarize,
+        raw_decoder_tokens = rawDecoderTokens,
+        stored_text_tokens = storedTextTokens,
+        synthetic_timestamps = syntheticTimestamps,
+        timestamp_mode = timestampMode,
     });
 }
+
+public sealed record CohereRecognitionResult(
+    int SegmentId,
+    string Text,
+    IReadOnlyList<int> RawTokens,
+    IReadOnlyList<int> TextTokens,
+    IReadOnlyList<float> TextLogprobs,
+    CohereSegmentMeta Meta);

@@ -46,6 +46,7 @@ public partial class TranscriptEditorWindow : Window
     private readonly string _dbPath = "";
     private readonly string _audioBaseName = "";
     private readonly bool _asrModelsAvailable;
+    private readonly bool _showApproximateTimingNotice;
     private bool _isUpdatingUi;
     private bool _isLoading;
     private bool _suppressSegmentCollectionChanged;
@@ -79,10 +80,20 @@ public partial class TranscriptEditorWindow : Window
         _vm.PlayCommand.CanExecuteChanged += OnPlayCommandCanExecuteChanged;
 
         string modelsDir = App.Current.Settings.GetModelsDir();
-        string vocabPath = Path.Combine(modelsDir, Config.VocabFile);
+        string? asrModel;
+        using (var db = new TranscriptionDb(dbPath))
+            asrModel = db.GetMetadata("asr_model");
+        _showApproximateTimingNotice = string.Equals(
+            asrModel,
+            "CohereLabs/cohere-transcribe-03-2026",
+            StringComparison.Ordinal);
+
+        string vocabPath = string.Equals(asrModel, "CohereLabs/cohere-transcribe-03-2026", StringComparison.Ordinal)
+            ? Path.Combine(modelsDir, "cohere_transcribe", CohereTranscribe.VocabFile)
+            : Path.Combine(modelsDir, Config.VocabFile);
         if (File.Exists(vocabPath))
         {
-            _vocab = new VocabService(modelsDir);
+            _vocab = new VocabService(modelsDir, asrModel);
         }
 
         var (encoderFile, _) = Config.GetAsrFiles(ModelPrecision.Fp32);
@@ -481,6 +492,9 @@ public partial class TranscriptEditorWindow : Window
     private void RefreshHeader()
     {
         _state.SetHeader(_audioBaseName, $"{_vm.Segments.Count} {Loc.Instance["results_segments_label"]}");
+        _state.SetHeaderNotice(
+            "Cohere Transcribe: no word-level timing; token sync is approximate.",
+            _showApproximateTimingNotice);
     }
 
     private void RefreshPlaybackModeCombo()

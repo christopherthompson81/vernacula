@@ -71,7 +71,9 @@ internal partial class HomeViewModel : ObservableObject
         if (ModelsReady)
             ModelStatusText = Loc.Instance.T("model_status_ok", new() { ["count"] = _modelMgr.GetPresentFiles().Count.ToString() });
         else if (ModelsWarning)
-            ModelStatusText = _settings.Current.Segmentation == Vernacula.Base.Models.SegmentationMode.DiariZen
+            ModelStatusText = _settings.Current.AsrBackend == AsrBackend.Cohere
+                ? $"Cohere Transcribe weights are missing. Place them in {_settings.GetCohereModelsDir()}."
+                : _settings.Current.Segmentation == Vernacula.Base.Models.SegmentationMode.DiariZen
                 ? "DiariZen external weights are missing. Open Settings to review the notice and import or download them."
                 : Loc.Instance["settings_model_warning"];
     }
