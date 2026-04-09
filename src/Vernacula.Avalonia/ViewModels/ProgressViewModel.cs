@@ -225,15 +225,17 @@ internal partial class ProgressViewModel : ObservableObject
         string runStamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
         string fileDateStamp = File.GetLastWriteTime(audioPath)
             .ToString("yyyy-MM-dd HH:mm:ss");
+        string asrModelName = GetJobAsrModelName();
         string asrLanguageCode = GetJobAsrLanguageCode();
 
         int jobId = _controlDb.UpsertJob(
-            jobTitle, dbPath, audioPath, sha256, fileDateStamp, runStamp, asrLanguageCode);
+            jobTitle, dbPath, audioPath, sha256, fileDateStamp, runStamp, asrLanguageCode, asrModelName);
 
         CompletedJobId         = jobId;
         CompletedResultsDbPath = dbPath;
 
-        await RunTranscription(audioPath, dbPath, jobId, asrLanguageCode: asrLanguageCode);
+        await RunTranscription(audioPath, dbPath, jobId, asrModelName: asrModelName,
+            asrLanguageCode: asrLanguageCode);
     }
 
     public async Task LoadJob(int jobId, string dbPath, string audioPath, string audioBaseName)
@@ -266,10 +268,10 @@ internal partial class ProgressViewModel : ObservableObject
         IsIndeterminate = true;
         StatusMessage   = Loc.Instance["progress_resuming"];
         _cts            = new CancellationTokenSource();
-        string asrLanguageCode;
-        using (var resultsDb = new TranscriptionDb(dbPath))
-            asrLanguageCode = resultsDb.GetMetadata("asr_language_code") ?? "auto";
-        await RunTranscription(audioPath, dbPath, jobId, asrLanguageCode: asrLanguageCode);
+        string asrModelName = _controlDb.GetJobAsrModelName(jobId);
+        string asrLanguageCode = _controlDb.GetJobAsrLanguageCode(jobId);
+        await RunTranscription(audioPath, dbPath, jobId, asrModelName: asrModelName,
+            asrLanguageCode: asrLanguageCode);
     }
 
     private async Task RunTranscription(
@@ -277,6 +279,7 @@ internal partial class ProgressViewModel : ObservableObject
         string dbPath,
         int jobId,
         int streamIndex = -1,
+        string asrModelName = "nvidia/parakeet-tdt-0.6b-v3",
         string asrLanguageCode = "auto")
     {
         _activeJobId = jobId;
@@ -313,7 +316,7 @@ internal partial class ProgressViewModel : ObservableObject
 
         _runningTask = _svc.RunAsync(
             audioPath, streamIndex, dbPath, progress, OnSegmentAdded, OnSegmentText,
-            asrLanguageCode, _cts!.Token);
+            asrModelName, asrLanguageCode, _cts!.Token);
 
         try
         {
@@ -340,6 +343,12 @@ internal partial class ProgressViewModel : ObservableObject
             _runningTask = null;
         }
     }
+
+    private string GetJobAsrModelName() => _settings.Current.AsrBackend switch
+    {
+        AsrBackend.Cohere => "CohereLabs/cohere-transcribe-03-2026",
+        _                 => "nvidia/parakeet-tdt-0.6b-v3",
+    };
 
     private string GetJobAsrLanguageCode()
     {

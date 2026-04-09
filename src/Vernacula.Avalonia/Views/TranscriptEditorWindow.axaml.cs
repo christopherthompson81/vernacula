@@ -119,7 +119,8 @@ public partial class TranscriptEditorWindow : Window
                 File.Exists(Path.Combine(cohereDir, $"{CohereTranscribe.DecoderInitFile}.data")) &&
                 File.Exists(Path.Combine(cohereDir, CohereTranscribe.DecoderStepFile)) &&
                 File.Exists(Path.Combine(cohereDir, $"{CohereTranscribe.DecoderStepFile}.data")) &&
-                File.Exists(Path.Combine(cohereDir, CohereTranscribe.VocabFile));
+                File.Exists(Path.Combine(cohereDir, CohereTranscribe.VocabFile)) &&
+                File.Exists(Path.Combine(cohereDir, CohereTranscribe.ConfigFile));
         }
         else
         {
@@ -1188,7 +1189,7 @@ public partial class TranscriptEditorWindow : Window
 
         IReadOnlyList<string> tokenTexts = _vocab != null
             ? _vocab.GetTokenRuns(seg.Tokens, seg.Logprobs)
-                .Select(r => string.IsNullOrWhiteSpace(r.text) ? "[]" : r.text)
+                .Select(r => r.text)
                 .ToList()
             : seg.Tokens.Select(t => $"[{t}]").ToList();
 

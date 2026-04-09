@@ -55,7 +55,8 @@ public partial class SplitSegmentDialog : Window
         for (int i = 0; i < _tokenTexts.Count; i++)
         {
             int    capturedIndex = i;
-            string display       = _tokenTexts[i].Replace(" ", "·");
+            bool   hasVisibleText = _tokenTexts[i].Length > 0;
+            string display       = hasVisibleText ? _tokenTexts[i].Replace(" ", "·") : "[]";
 
             var btn = new Button
             {
@@ -67,7 +68,7 @@ public partial class SplitSegmentDialog : Window
             btn.SetValue(ToolTip.TipProperty, $"Token {i}: \"{_tokenTexts[i]}\"  — click to split before this token");
 
             // Token 0 cannot be the start of the second half (would leave empty first half)
-            if (i == 0)
+            if (i == 0 || !hasVisibleText)
             {
                 btn.IsEnabled = false;
                 btn.Opacity   = 0.4;

@@ -36,6 +36,7 @@ internal class TranscriptionService
         IProgress<TranscriptionProgress> progress,
         Action<SegmentRow>   onSegmentAdded,
         Action<int, string>  onSegmentText,
+        string               asrModelName,
         string               asrLanguageCode,
         CancellationToken    ct)
     {
@@ -49,7 +50,7 @@ internal class TranscriptionService
                 try
                 {
                     await RunPipelineAsync(audioPath, streamIndex, resultsDbPath,
-                        progress, onSegmentAdded, onSegmentText, asrLanguageCode, ct);
+                        progress, onSegmentAdded, onSegmentText, asrModelName, asrLanguageCode, ct);
                 }
                 catch (Exception ex)
                 {
@@ -67,6 +68,7 @@ internal class TranscriptionService
         IProgress<TranscriptionProgress> progress,
         Action<SegmentRow>  onSegmentAdded,
         Action<int, string> onSegmentText,
+        string              asrModelName,
         string              asrLanguageCode,
         CancellationToken   ct)
     {
@@ -125,14 +127,12 @@ internal class TranscriptionService
         if (!db.CheckMetadata(audioPath))
             db.PopulateMetadata(audioPath);
 
-        string asrModelName = _settings.Current.AsrBackend switch
-        {
-            AsrBackend.Cohere => "CohereLabs/cohere-transcribe-03-2026",
-            _                 => "nvidia/parakeet-tdt-0.6b-v3",
-        };
         db.UpdateMetadata("asr_model", asrModelName);
         db.UpdateMetadata("asr_language_code",
             string.IsNullOrWhiteSpace(asrLanguageCode) ? "auto" : asrLanguageCode);
+
+        bool useCohereAsr = string.Equals(
+            asrModelName, "CohereLabs/cohere-transcribe-03-2026", StringComparison.Ordinal);
 
         // ── Phase 3: Segmentation (Diarization or VAD) ───────────────────────
         List<(double start, double end, string spkId)> segs;
@@ -191,7 +191,7 @@ internal class TranscriptionService
             // ── Sortformer path (streaming diarization with inline ASR) ──────
             segs = new List<(double, double, string)>();
             var seenSpeakers = new HashSet<string>();
-            bool useInlineParakeetAsr = _settings.Current.AsrBackend == AsrBackend.Parakeet;
+            bool useInlineParakeetAsr = !useCohereAsr;
             ParakeetAsr? parakeet = null;
             if (useInlineParakeetAsr)
             {
@@ -463,7 +463,7 @@ internal class TranscriptionService
             int totalSegs  = segs.Count;
             int completed  = startSeg;
 
-            if (_settings.Current.AsrBackend == AsrBackend.Cohere)
+            if (useCohereAsr)
             {
                 string cohereModelsDir = _settings.GetCohereModelsDir();
                 string? forceLanguage =

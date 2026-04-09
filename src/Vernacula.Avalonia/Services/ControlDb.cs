@@ -45,6 +45,10 @@ internal sealed class ControlDb : IDisposable
         // Migrate: add per-job ASR language snapshot if it does not exist yet
         try { Execute("ALTER TABLE jobs ADD COLUMN asr_language_code TEXT NOT NULL DEFAULT 'auto'"); }
         catch (SqliteException) { /* column already present — ignore */ }
+
+        // Migrate: add per-job ASR model snapshot if it does not exist yet
+        try { Execute("ALTER TABLE jobs ADD COLUMN asr_model_name TEXT NOT NULL DEFAULT 'nvidia/parakeet-tdt-0.6b-v3'"); }
+        catch (SqliteException) { /* column already present — ignore */ }
     }
 
     /// <summary>
@@ -53,7 +57,8 @@ internal sealed class ControlDb : IDisposable
     /// </summary>
     public int UpsertJob(string title, string resultsFile, string audioPath,
                          string sha256, string audioDateStamp, string runDateStamp,
-                         string asrLanguageCode = "auto")
+                         string asrLanguageCode = "auto",
+                         string asrModelName = "nvidia/parakeet-tdt-0.6b-v3")
     {
         using var check = _conn.CreateCommand();
         check.CommandText = "SELECT job_id FROM jobs WHERE results_file = $rf";
@@ -68,12 +73,14 @@ internal sealed class ControlDb : IDisposable
                 SET status = 'running',
                     transcription_run_datestamp = $ts,
                     job_title = $jt,
-                    asr_language_code = $lc
+                    asr_language_code = $lc,
+                    asr_model_name = $am
                 WHERE job_id = $id
                 """;
             upd.Parameters.AddWithValue("$ts", runDateStamp);
             upd.Parameters.AddWithValue("$jt", title);
             upd.Parameters.AddWithValue("$lc", asrLanguageCode);
+            upd.Parameters.AddWithValue("$am", asrModelName);
             upd.Parameters.AddWithValue("$id", existingId);
             upd.ExecuteNonQuery();
             return (int)existingId;
@@ -84,8 +91,8 @@ internal sealed class ControlDb : IDisposable
             INSERT INTO jobs
                 (job_title, results_file, transcription_run_datestamp,
                  audio_file_path, audio_file_sha256sum, audio_file_datestamp,
-                 status, created_at, asr_language_code)
-            VALUES ($jt, $rf, $ts, $ap, $sh, $ad, 'running', $ca, $lc)
+                 status, created_at, asr_language_code, asr_model_name)
+            VALUES ($jt, $rf, $ts, $ap, $sh, $ad, 'running', $ca, $lc, $am)
             """;
         ins.Parameters.AddWithValue("$jt", title);
         ins.Parameters.AddWithValue("$rf", resultsFile);
@@ -95,6 +102,7 @@ internal sealed class ControlDb : IDisposable
         ins.Parameters.AddWithValue("$ad", audioDateStamp);
         ins.Parameters.AddWithValue("$ca", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"));
         ins.Parameters.AddWithValue("$lc", asrLanguageCode);
+        ins.Parameters.AddWithValue("$am", asrModelName);
         ins.ExecuteNonQuery();
 
         using var lastId = _conn.CreateCommand();
@@ -108,20 +116,45 @@ internal sealed class ControlDb : IDisposable
     /// </summary>
     public int InsertNewJob(string title, string resultsFile, string audioPath,
                             string sha256, string audioDateStamp, int streamIndex = -1,
-                            string asrLanguageCode = "auto")
+                            string asrLanguageCode = "auto",
+                            string asrModelName = "nvidia/parakeet-tdt-0.6b-v3")
     {
         using var check = _conn.CreateCommand();
         check.CommandText = "SELECT job_id FROM jobs WHERE results_file = $rf";
         check.Parameters.AddWithValue("$rf", resultsFile);
-        if (check.ExecuteScalar() is long existingId) return (int)existingId;
+        if (check.ExecuteScalar() is long existingId)
+        {
+            using var upd = _conn.CreateCommand();
+            upd.CommandText = """
+                UPDATE jobs
+                SET job_title = $jt,
+                    audio_file_path = $ap,
+                    audio_file_sha256sum = $sh,
+                    audio_file_datestamp = $ad,
+                    stream_index = $si,
+                    asr_language_code = $lc,
+                    asr_model_name = $am
+                WHERE job_id = $id
+                """;
+            upd.Parameters.AddWithValue("$jt", title);
+            upd.Parameters.AddWithValue("$ap", audioPath);
+            upd.Parameters.AddWithValue("$sh", sha256);
+            upd.Parameters.AddWithValue("$ad", audioDateStamp);
+            upd.Parameters.AddWithValue("$si", streamIndex);
+            upd.Parameters.AddWithValue("$lc", asrLanguageCode);
+            upd.Parameters.AddWithValue("$am", asrModelName);
+            upd.Parameters.AddWithValue("$id", existingId);
+            upd.ExecuteNonQuery();
+            return (int)existingId;
+        }
 
         using var ins = _conn.CreateCommand();
         ins.CommandText = """
             INSERT INTO jobs
                 (job_title, results_file, transcription_run_datestamp,
                  audio_file_path, audio_file_sha256sum, audio_file_datestamp,
-                 status, created_at, stream_index, asr_language_code)
-            VALUES ($jt, $rf, NULL, $ap, $sh, $ad, 'queued', $ca, $si, $lc)
+                 status, created_at, stream_index, asr_language_code, asr_model_name)
+            VALUES ($jt, $rf, NULL, $ap, $sh, $ad, 'queued', $ca, $si, $lc, $am)
             """;
         ins.Parameters.AddWithValue("$jt", title);
         ins.Parameters.AddWithValue("$rf", resultsFile);
@@ -131,6 +164,7 @@ internal sealed class ControlDb : IDisposable
         ins.Parameters.AddWithValue("$ca", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"));
         ins.Parameters.AddWithValue("$si", streamIndex);
         ins.Parameters.AddWithValue("$lc", asrLanguageCode);
+        ins.Parameters.AddWithValue("$am", asrModelName);
         ins.ExecuteNonQuery();
 
         using var lastId = _conn.CreateCommand();
@@ -186,6 +220,24 @@ internal sealed class ControlDb : IDisposable
         return result is DBNull or null ? null : (string)result;
     }
 
+    public string GetJobAsrLanguageCode(int jobId)
+    {
+        using var cmd = _conn.CreateCommand();
+        cmd.CommandText = "SELECT asr_language_code FROM jobs WHERE job_id = $id";
+        cmd.Parameters.AddWithValue("$id", jobId);
+        var result = cmd.ExecuteScalar();
+        return result is DBNull or null or "" ? "auto" : (string)result;
+    }
+
+    public string GetJobAsrModelName(int jobId)
+    {
+        using var cmd = _conn.CreateCommand();
+        cmd.CommandText = "SELECT asr_model_name FROM jobs WHERE job_id = $id";
+        cmd.Parameters.AddWithValue("$id", jobId);
+        var result = cmd.ExecuteScalar();
+        return result is DBNull or null or "" ? "nvidia/parakeet-tdt-0.6b-v3" : (string)result;
+    }
+
     public List<JobRecord> GetJobs()
     {
         var jobs = new List<JobRecord>();
@@ -218,6 +270,7 @@ internal sealed class ControlDb : IDisposable
             ResultsFile               = r.GetString(r.GetOrdinal("results_file")),
             AudioFilePath             = r.GetString(r.GetOrdinal("audio_file_path")),
             AudioFileSha256Sum        = r.GetString(r.GetOrdinal("audio_file_sha256sum")),
+            AsrModelName              = GetNullable("asr_model_name") ?? "nvidia/parakeet-tdt-0.6b-v3",
             AsrLanguageCode           = GetNullable("asr_language_code") ?? "auto",
             AudioFileDatestamp        = GetNullable("audio_file_datestamp"),
             TranscriptionRunDatestamp = GetNullable("transcription_run_datestamp"),

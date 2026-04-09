@@ -24,6 +24,7 @@ public class JobRecord : ObservableObject
     public string  ResultsFile               { get; set; } = "";
     public string  AudioFilePath             { get; set; } = "";
     public string  AudioFileSha256Sum        { get; set; } = "";
+    public string  AsrModelName              { get; set; } = "nvidia/parakeet-tdt-0.6b-v3";
     public string  AsrLanguageCode           { get; set; } = "auto";
     public string? AudioFileDatestamp        { get; set; }
     public string? TranscriptionRunDatestamp { get; set; }

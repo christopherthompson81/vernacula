@@ -80,6 +80,9 @@ internal class VocabService
     public IReadOnlyList<(string text, float logprob)> GetTokenRuns(
         IReadOnlyList<int> tokens, IReadOnlyList<float> logprobs)
     {
+        if (_kind == VocabKind.Cohere)
+            return GetCohereTokenRuns(tokens, logprobs);
+
         var runs = new List<(string, float)>(tokens.Count);
         for (int i = 0; i < tokens.Count; i++)
         {
@@ -87,6 +90,23 @@ internal class VocabService
             float  lp   = i < logprobs.Count ? logprobs[i] : 0f;
             runs.Add((text, lp));
         }
+        return runs;
+    }
+
+    private IReadOnlyList<(string text, float logprob)> GetCohereTokenRuns(
+        IReadOnlyList<int> tokens, IReadOnlyList<float> logprobs)
+    {
+        var runs = new List<(string, float)>(tokens.Count);
+        Decoder decoder = Encoding.UTF8.GetDecoder();
+        bool stripLeadingSpace = true;
+
+        for (int i = 0; i < tokens.Count; i++)
+        {
+            string runText = DecodeCohereTokenIncrement(decoder, tokens[i], ref stripLeadingSpace);
+            float lp = i < logprobs.Count ? logprobs[i] : 0f;
+            runs.Add((runText, lp));
+        }
+
         return runs;
     }
 
@@ -136,6 +156,44 @@ internal class VocabService
         }
 
         return value.Replace('\u2581', ' ');
+    }
+
+    private string DecodeCohereTokenIncrement(Decoder decoder, int token, ref bool stripLeadingSpace)
+    {
+        byte[] tokenBytes = GetCohereTokenBytes(token);
+        if (tokenBytes.Length == 0)
+            return "";
+
+        int charCount = decoder.GetCharCount(tokenBytes, 0, tokenBytes.Length, flush: false);
+        if (charCount == 0)
+            return "";
+
+        char[] chars = new char[charCount];
+        decoder.GetChars(tokenBytes, 0, tokenBytes.Length, chars, 0, flush: false);
+        string text = new(chars);
+
+        if (stripLeadingSpace && text.Length > 0)
+        {
+            stripLeadingSpace = false;
+            if (text[0] == ' ')
+                text = text[1..];
+        }
+
+        return text;
+    }
+
+    private byte[] GetCohereTokenBytes(int token)
+    {
+        if (!_vocab.TryGetValue(token, out var value))
+            return [];
+
+        if (value.Length == 6 && value[0] == '<' && value[1] == '0' && value[2] == 'x' && value[5] == '>')
+        {
+            if (TryParseHexByte(value[3], value[4], out byte b))
+                return [b];
+        }
+
+        return Encoding.UTF8.GetBytes(value.Replace('\u2581', ' '));
     }
 
     private static bool TryParseHexByte(char hi, char lo, out byte value)

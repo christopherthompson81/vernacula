@@ -80,7 +80,7 @@ internal partial class MainViewModel : ObservableObject
         Home.RequeueJob = job =>
         {
             queue.RequeueJob(job.JobId, job.ResultsFile, job.AudioFilePath, job.AudioStreamIndex,
-                job.AsrLanguageCode);
+                job.AsrLanguageCode, job.AsrModelName);
             RefreshJobsAndSync();
         };
 
