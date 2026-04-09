@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
+using Microsoft.ML.OnnxRuntime;
 using Vernacula.Base;
 using Vernacula.Base.Models;
 using ParakeetAsr = Vernacula.Base.Parakeet;
@@ -120,7 +121,21 @@ if (outputPath is null)
 // ── Ctrl+C cancellation ───────────────────────────────────────────────────────
 
 using var cts = new CancellationTokenSource();
-Console.CancelKeyPress += (_, e) => { e.Cancel = true; cts.Cancel(); };
+int cancelPressCount = 0;
+Console.CancelKeyPress += (_, e) =>
+{
+    int press = Interlocked.Increment(ref cancelPressCount);
+    if (press == 1)
+    {
+        e.Cancel = true;
+        Console.Error.WriteLine("\nCancellation requested. Press Ctrl+C again to force exit.");
+        cts.Cancel();
+        return;
+    }
+
+    Console.Error.WriteLine("\nForce exiting...");
+    Environment.Exit(130);
+};
 
 try
 {
@@ -283,7 +298,7 @@ try
         int completed = 0;
 
         Console.WriteLine($"Transcribing {totalSegs} segment(s) (Cohere)...");
-        foreach (var (segId, text, _) in cohere.Recognize(segs, audio,
+        foreach (var (segId, text, meta) in cohere.Recognize(segs, audio,
                      forceLanguage: cohereLanguage))
         {
             cts.Token.ThrowIfCancellationRequested();
@@ -356,6 +371,13 @@ catch (OperationCanceledException)
     Console.Error.WriteLine("\nCancelled.");
     return 130;
 }
+catch (OnnxRuntimeException ex) when (IsLikelyOutOfMemory(ex))
+{
+    Console.Error.WriteLine("\nONNX Runtime ran out of memory while loading or running the model.");
+    Console.Error.WriteLine("Free GPU memory and try again, or rerun with a smaller workload / CPU build.");
+    Console.Error.WriteLine(ex.Message);
+    return 1;
+}
 
 return 0;
 
@@ -406,7 +428,7 @@ static string BuildSrt(List<(double start, double end, string spkId, string text
     {
         sb.AppendLine(idx.ToString());
         sb.AppendLine($"{SrtTime(start)} --> {SrtTime(end)}");
-        sb.AppendLine($"[{spkId}] {text}");
+        sb.AppendLine($"[{spkId}] {text}".Trim());
         sb.AppendLine();
         idx++;
     }
@@ -420,6 +442,15 @@ static string SrtTime(double seconds)
 {
     var ts = TimeSpan.FromSeconds(seconds);
     return $"{ts.Hours:D2}:{ts.Minutes:D2}:{ts.Seconds:D2},{ts.Milliseconds:D3}";
+}
+
+static bool IsLikelyOutOfMemory(OnnxRuntimeException ex)
+{
+    string message = ex.Message;
+    return message.Contains("out of memory", StringComparison.OrdinalIgnoreCase)
+        || message.Contains("failed to allocate memory", StringComparison.OrdinalIgnoreCase)
+        || message.Contains("cuda out of memory", StringComparison.OrdinalIgnoreCase)
+        || message.Contains("bfcarena", StringComparison.OrdinalIgnoreCase);
 }
 
 static void PrintUsage()

@@ -459,7 +459,8 @@ public sealed class CohereTranscribe : IDisposable
             for (int b = 0; b < B; b++)
             {
                 if (finished[b]) { nextTok[b] = _eosTokenId; continue; }
-                int tok = ForceLang(ArgMaxSpan(logitsSpan.Slice(b * vocabSize, vocabSize)), forcedLangTokenId);
+                var stepLogits = logitsSpan.Slice(b * vocabSize, vocabSize);
+                int tok = ForceLang(ArgMaxSpan(stepLogits), forcedLangTokenId);
                 nextTok[b] = tok;
                 tokens[b].Add(tok);
                 if (tok == _eosTokenId) { finished[b] = true; finishedCount++; }
