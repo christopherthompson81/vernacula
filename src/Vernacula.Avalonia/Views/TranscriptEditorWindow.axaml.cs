@@ -45,6 +45,7 @@ public partial class TranscriptEditorWindow : Window
     private readonly VocabService? _vocab;
     private readonly string _dbPath = "";
     private readonly string _audioBaseName = "";
+    private readonly string _jobAsrModel = "nvidia/parakeet-tdt-0.6b-v3";
     private readonly bool _asrModelsAvailable;
     private readonly bool _showApproximateTimingNotice;
     private bool _isUpdatingUi;
@@ -83,21 +84,37 @@ public partial class TranscriptEditorWindow : Window
         string? asrModel;
         using (var db = new TranscriptionDb(dbPath))
             asrModel = db.GetMetadata("asr_model");
+        _jobAsrModel = string.IsNullOrWhiteSpace(asrModel)
+            ? "nvidia/parakeet-tdt-0.6b-v3"
+            : asrModel;
         _showApproximateTimingNotice = string.Equals(
-            asrModel,
+            _jobAsrModel,
             "CohereLabs/cohere-transcribe-03-2026",
             StringComparison.Ordinal);
 
-        string vocabPath = string.Equals(asrModel, "CohereLabs/cohere-transcribe-03-2026", StringComparison.Ordinal)
+        string vocabPath = string.Equals(_jobAsrModel, "CohereLabs/cohere-transcribe-03-2026", StringComparison.Ordinal)
             ? Path.Combine(modelsDir, "cohere_transcribe", CohereTranscribe.VocabFile)
             : Path.Combine(modelsDir, Config.VocabFile);
         if (File.Exists(vocabPath))
         {
-            _vocab = new VocabService(modelsDir, asrModel);
+            _vocab = new VocabService(modelsDir, _jobAsrModel);
         }
 
-        var (encoderFile, _) = Config.GetAsrFiles(ModelPrecision.Fp32);
-        _asrModelsAvailable = File.Exists(Path.Combine(modelsDir, encoderFile));
+        if (string.Equals(_jobAsrModel, "CohereLabs/cohere-transcribe-03-2026", StringComparison.Ordinal))
+        {
+            string cohereDir = App.Current.Settings.GetCohereModelsDir();
+            _asrModelsAvailable =
+                File.Exists(Path.Combine(cohereDir, CohereTranscribe.MelFile)) &&
+                File.Exists(Path.Combine(cohereDir, CohereTranscribe.EncoderFile)) &&
+                File.Exists(Path.Combine(cohereDir, CohereTranscribe.DecoderInitFile)) &&
+                File.Exists(Path.Combine(cohereDir, CohereTranscribe.DecoderStepFile)) &&
+                File.Exists(Path.Combine(cohereDir, CohereTranscribe.VocabFile));
+        }
+        else
+        {
+            var (encoderFile, _) = Config.GetAsrFiles(ModelPrecision.Fp32);
+            _asrModelsAvailable = File.Exists(Path.Combine(modelsDir, encoderFile));
+        }
 
         Loaded += OnLoaded;
         Closed += OnClosed;
@@ -1215,9 +1232,20 @@ public partial class TranscriptEditorWindow : Window
         try
         {
             string modelsDir = App.Current.Settings.GetModelsDir();
+            string cohereModelsDir = App.Current.Settings.GetCohereModelsDir();
+            string? cohereLanguage = string.IsNullOrWhiteSpace(App.Current.Settings.Current.CohereLanguage)
+                ? null
+                : App.Current.Settings.Current.CohereLanguage;
             var (encoderFile, decoderJointFile) = Config.GetAsrFiles(ModelPrecision.Fp32);
 
-            var result = await Task.Run(() => _vm.PerformRedoAsr(card.Index, modelsDir, encoderFile, decoderJointFile));
+            var result = await Task.Run(() => _vm.PerformRedoAsr(
+                card.Index,
+                _jobAsrModel,
+                modelsDir,
+                encoderFile,
+                decoderJointFile,
+                cohereModelsDir,
+                cohereLanguage));
             if (result is null)
             {
                 SetCardStatus(card, "Redo ASR did not produce a result.");

@@ -22,6 +22,7 @@ namespace Vernacula.Base;
 /// </summary>
 public sealed class CohereTranscribe : IDisposable
 {
+    private const int EncDim = 1280;
     private const int NumLayers = 8;
     private const int NumHeads  = 8;
     private const int HeadDim   = 128;
@@ -99,9 +100,13 @@ public sealed class CohereTranscribe : IDisposable
     // Mel spectrogram frame rate and encoder temporal downsampling factor.
     private const float MelFramesPerSec  = 100f;
     private const float EncoderDownsample = 8f;
+    private const double MaxAsrSegmentSeconds = 30.0;
 
     private static int EstimateEncFrames(double durSec)
         => Math.Max(1, (int)Math.Ceiling(durSec * MelFramesPerSec / EncoderDownsample));
+
+    private static int EstimateMelFrames(double durSec)
+        => Math.Max(1, (int)Math.Ceiling(durSec * MelFramesPerSec));
 
     private static int EstimateDecSteps(double durSec, int maxNewTokens)
         => Math.Min(maxNewTokens, (int)Math.Ceiling(durSec * TokensPerAudioSecond) + 16);
@@ -114,6 +119,18 @@ public sealed class CohereTranscribe : IDisposable
         const long bytesPerFloat = 4L;
         return (long)batchSize * NumLayers * 2 * NumHeads * HeadDim * bytesPerFloat
                * (maxDecSteps + maxEncFrames);
+    }
+
+    // Peak output allocation of the first encoder conv:
+    //   [B, 256, outT, outF] float32, where outT=(T+1)/2 and outF=(128+1)/2=64.
+    // This is the exact site of the observed OOM in long DiariZen + Cohere runs.
+    private static long EstimateEncoderConvBytes(int batchSize, int maxMelFrames)
+    {
+        const long convChannels = 256L;
+        const long bytesPerFloat = 4L;
+        long outT = (maxMelFrames + 1L) / 2L;
+        const long outF = 64L;
+        return batchSize * convChannels * outT * outF * bytesPerFloat;
     }
 
     // ── Construction ─────────────────────────────────────────────────────────
@@ -246,16 +263,36 @@ public sealed class CohereTranscribe : IDisposable
 
         var batchT   = new DenseTensor<float>(batchData, new[] { B, nMels, F_max });
         var lengthsT = new DenseTensor<long>(lengths, new[] { B });
-        using var encResults = _encoder.Run(
-        [
-            NamedOnnxValue.CreateFromTensor("input_features", batchT),
-            NamedOnnxValue.CreateFromTensor("input_lengths",  lengthsT),
-        ]);
+        try
+        {
+            using var encResults = _encoder.Run(
+            [
+                NamedOnnxValue.CreateFromTensor("input_features", batchT),
+                NamedOnnxValue.CreateFromTensor("input_lengths",  lengthsT),
+            ]);
 
-        var hidT      = encResults.First(r => r.Name == "encoder_hidden_states").AsTensor<float>();
-        int T_enc_max = hidT.Dimensions[1];
-        var batchHidden = ExtractTensorFlatDirect(hidT);
-        return (batchHidden, T_enc_max);
+            var hidT = encResults.First(r => r.Name == "encoder_hidden_states").AsTensor<float>();
+            int T_enc_max = hidT.Dimensions[1];
+            var batchHidden = ExtractTensorFlatDirect(hidT);
+            return (batchHidden, T_enc_max);
+        }
+        catch (OnnxRuntimeException ex) when (IsLikelyOutOfMemory(ex) && B > 1)
+        {
+            int leftCount = B / 2;
+            var left = new (float[] features, int nMels, int F)[leftCount];
+            var right = new (float[] features, int nMels, int F)[B - leftCount];
+            for (int i = 0; i < leftCount; i++) left[i] = melResults[i];
+            for (int i = leftCount; i < B; i++) right[i - leftCount] = melResults[i];
+
+            var (leftHidden, leftT) = RunEncoderBatch(left);
+            var (rightHidden, rightT) = RunEncoderBatch(right);
+            int mergedT = Math.Max(leftT, rightT);
+            var merged = new float[B * mergedT * EncDim];
+
+            CopyEncoderBatchWithPadding(leftHidden, leftCount, leftT, merged, mergedT, 0);
+            CopyEncoderBatchWithPadding(rightHidden, B - leftCount, rightT, merged, mergedT, leftCount);
+            return (merged, mergedT);
+        }
     }
 
     /// <summary>
@@ -678,11 +715,20 @@ public sealed class CohereTranscribe : IDisposable
                     "Use an ISO 639-1 code such as 'en', 'fr', 'de'.");
         }
 
-        // Sort segment indices by ascending audio duration so that similar-length
+        var workItems = BuildWorkItems(segs);
+        var remainingChunks = new int[segs.Count];
+        var chunkParts = new List<ChunkDecodePart>?[segs.Count];
+        foreach (var work in workItems)
+        {
+            remainingChunks[work.OriginalSegmentId]++;
+            chunkParts[work.OriginalSegmentId] ??= [];
+        }
+
+        // Sort work-item indices by ascending audio duration so that similar-length
         // segments land in the same batch, minimising straggler waste (shorter segments
         // that have emitted EOS still step until the longest segment finishes).
-        int[] order = Enumerable.Range(0, segs.Count)
-            .OrderBy(i => segs[i].end - segs[i].start)
+        int[] order = Enumerable.Range(0, workItems.Count)
+            .OrderBy(i => workItems[i].end - workItems[i].start)
             .ToArray();
 
         int pos = 0;
@@ -700,25 +746,31 @@ public sealed class CohereTranscribe : IDisposable
             int batchSize    = 0;
             int maxEncFrames = 0;
             int maxDecSteps  = 0;
+            int maxMelFrames = 0;
 
             while (pos + batchSize < order.Length && batchSize < MaxBatchSize)
             {
                 int candidateIdx    = order[pos + batchSize];
-                var (cs, ce, _)     = segs[candidateIdx];
+                var (_, _, cs, ce, _) = workItems[candidateIdx];
                 double candDur      = ce - cs;
                 int candEncFrames   = EstimateEncFrames(candDur);
+                int candMelFrames   = EstimateMelFrames(candDur);
                 int candDecSteps    = EstimateDecSteps(candDur, maxNewTokens);
 
                 // Worst-case across all segments in the prospective batch.
                 int newMaxEnc = Math.Max(maxEncFrames, candEncFrames);
                 int newMaxDec = Math.Max(maxDecSteps,  candDecSteps);
+                int newMaxMel = Math.Max(maxMelFrames, candMelFrames);
 
                 long kvBytes = EstimateKvBytes(batchSize + 1, newMaxEnc, newMaxDec);
-                if (batchSize > 0 && kvBytes > _vramBudgetForKvBytes)
+                long encBytes = EstimateEncoderConvBytes(batchSize + 1, newMaxMel);
+                long peakBytes = Math.Max(kvBytes, encBytes);
+                if (batchSize > 0 && peakBytes > _vramBudgetForKvBytes)
                     break;  // adding this segment would exceed the VRAM budget
 
                 maxEncFrames = newMaxEnc;
                 maxDecSteps  = newMaxDec;
+                maxMelFrames = newMaxMel;
                 batchSize++;
             }
 
@@ -730,7 +782,7 @@ public sealed class CohereTranscribe : IDisposable
             for (int b = 0; b < batchSize; b++)
             {
                 segIds[b] = order[pos + b];
-                var (start, end, _) = segs[segIds[b]];
+                var (_, _, start, end, _) = workItems[segIds[b]];
                 waveforms[b] = ExtractSegment(audio, start, end);
                 skipped[b]   = waveforms[b].Length < Config.SampleRate / 10;
             }
@@ -763,16 +815,20 @@ public sealed class CohereTranscribe : IDisposable
             int encIdx = 0;
             for (int b = 0; b < batchSize; b++)
             {
-                int segId = segIds[b];
+                int workId = segIds[b];
+                var work = workItems[workId];
                 if (skipped[b])
                 {
-                    yield return new CohereRecognitionResult(
-                        segId,
+                    chunkParts[work.OriginalSegmentId]!.Add(new ChunkDecodePart(
+                        work.ChunkIndex,
                         string.Empty,
                         [],
                         [],
                         [],
-                        CohereSegmentMeta.Empty);
+                        CohereSegmentMeta.Empty));
+                    remainingChunks[work.OriginalSegmentId]--;
+                    if (remainingChunks[work.OriginalSegmentId] == 0)
+                        yield return CombineChunkParts(work.OriginalSegmentId, chunkParts[work.OriginalSegmentId]!);
                     continue;
                 }
 
@@ -781,13 +837,16 @@ public sealed class CohereTranscribe : IDisposable
                 var meta   = ParseContextBlock(tokens);
                 string text = DecodeTokens(tokens);
                 var (textTokens, textTokenLogprobs) = ExtractTextTokenData(tokens, tokenLogprobs);
-                yield return new CohereRecognitionResult(
-                    segId,
+                chunkParts[work.OriginalSegmentId]!.Add(new ChunkDecodePart(
+                    work.ChunkIndex,
                     text,
                     tokens,
                     textTokens,
                     textTokenLogprobs,
-                    meta);
+                    meta));
+                remainingChunks[work.OriginalSegmentId]--;
+                if (remainingChunks[work.OriginalSegmentId] == 0)
+                    yield return CombineChunkParts(work.OriginalSegmentId, chunkParts[work.OriginalSegmentId]!);
             }
 
             pos += batchSize;
@@ -828,6 +887,31 @@ public sealed class CohereTranscribe : IDisposable
         return idx;
     }
 
+    private static void CopyEncoderBatchWithPadding(
+        float[] source,
+        int sourceBatch,
+        int sourceT,
+        float[] destination,
+        int destT,
+        int destBatchOffset)
+    {
+        for (int b = 0; b < sourceBatch; b++)
+        {
+            int srcOffset = b * sourceT * EncDim;
+            int dstOffset = (destBatchOffset + b) * destT * EncDim;
+            Array.Copy(source, srcOffset, destination, dstOffset, sourceT * EncDim);
+        }
+    }
+
+    private static bool IsLikelyOutOfMemory(OnnxRuntimeException ex)
+    {
+        string message = ex.Message ?? string.Empty;
+        return message.Contains("out of memory", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("failed to allocate memory", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("cuda out of memory", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("bfc_arena", StringComparison.OrdinalIgnoreCase);
+    }
+
     // ── CUDA VRAM query ───────────────────────────────────────────────────────
 
     // cudaMemGetInfo returns free and total device memory in bytes.
@@ -855,6 +939,80 @@ public sealed class CohereTranscribe : IDisposable
         catch (DllNotFoundException) { }
         catch (EntryPointNotFoundException) { }
         return VramBudgetFallbackBytes;
+    }
+
+    private static List<SegmentWorkItem> BuildWorkItems(
+        IReadOnlyList<(double start, double end, string spk)> segs)
+    {
+        var work = new List<SegmentWorkItem>(segs.Count);
+        for (int segId = 0; segId < segs.Count; segId++)
+        {
+            var (start, end, spk) = segs[segId];
+            double duration = Math.Max(0, end - start);
+            if (duration <= MaxAsrSegmentSeconds)
+            {
+                work.Add(new SegmentWorkItem(segId, 0, start, end, spk));
+                continue;
+            }
+
+            int chunkCount = Math.Max(1, (int)Math.Ceiling(duration / MaxAsrSegmentSeconds));
+            for (int chunkIndex = 0; chunkIndex < chunkCount; chunkIndex++)
+            {
+                double chunkStart = start + chunkIndex * MaxAsrSegmentSeconds;
+                double chunkEnd = Math.Min(end, chunkStart + MaxAsrSegmentSeconds);
+                work.Add(new SegmentWorkItem(segId, chunkIndex, chunkStart, chunkEnd, spk));
+            }
+        }
+
+        return work;
+    }
+
+    private static CohereRecognitionResult CombineChunkParts(
+        int segmentId,
+        List<ChunkDecodePart> parts)
+    {
+        parts.Sort((a, b) => a.ChunkIndex.CompareTo(b.ChunkIndex));
+
+        var rawTokens = new List<int>();
+        var textTokens = new List<int>();
+        var textLogprobs = new List<float>();
+        var textBuilder = new StringBuilder();
+
+        string? language = null;
+        string? emotion = null;
+        bool? pnc = null;
+        bool? itn = null;
+        bool? timestamps = null;
+        bool? diarize = null;
+
+        foreach (var part in parts)
+        {
+            if (!string.IsNullOrWhiteSpace(part.Text))
+            {
+                if (textBuilder.Length > 0)
+                    textBuilder.Append(' ');
+                textBuilder.Append(part.Text.Trim());
+            }
+
+            rawTokens.AddRange(part.RawTokens);
+            textTokens.AddRange(part.TextTokens);
+            textLogprobs.AddRange(part.TextLogprobs);
+
+            language ??= part.Meta.Language;
+            emotion ??= part.Meta.Emotion;
+            pnc ??= part.Meta.Pnc;
+            itn ??= part.Meta.Itn;
+            timestamps ??= part.Meta.Timestamps;
+            diarize ??= part.Meta.Diarize;
+        }
+
+        return new CohereRecognitionResult(
+            segmentId,
+            textBuilder.ToString(),
+            rawTokens,
+            textTokens,
+            textLogprobs,
+            new CohereSegmentMeta(language, emotion, pnc, itn, timestamps, diarize));
     }
 
     // ── IDisposable ───────────────────────────────────────────────────────────
@@ -905,6 +1063,21 @@ public sealed record CohereSegmentMeta(
 
 public sealed record CohereRecognitionResult(
     int SegmentId,
+    string Text,
+    IReadOnlyList<int> RawTokens,
+    IReadOnlyList<int> TextTokens,
+    IReadOnlyList<float> TextLogprobs,
+    CohereSegmentMeta Meta);
+
+internal sealed record SegmentWorkItem(
+    int OriginalSegmentId,
+    int ChunkIndex,
+    double start,
+    double end,
+    string spk);
+
+internal sealed record ChunkDecodePart(
+    int ChunkIndex,
     string Text,
     IReadOnlyList<int> RawTokens,
     IReadOnlyList<int> TextTokens,
