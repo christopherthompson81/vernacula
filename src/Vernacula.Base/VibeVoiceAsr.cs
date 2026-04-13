@@ -124,7 +124,7 @@ public sealed class VibeVoiceAsr : IDisposable
         _audioEncoderPath = Path.Combine(modelDir, AudioEncoderFile);
         _ep               = ep;
 
-        var gpuOpts = MakeSessionOptions(ep);
+        var gpuOpts = MakeSessionOptions(ep, GraphOptimizationLevel.ORT_ENABLE_EXTENDED);
         _decoder = new InferenceSession(Path.Combine(modelDir, DecoderSingleFile), gpuOpts);
     }
 
@@ -657,10 +657,19 @@ public sealed class VibeVoiceAsr : IDisposable
 
     // ── Session options ───────────────────────────────────────────────────────
 
-    private static SessionOptions MakeSessionOptions(ExecutionProvider ep)
+    // The decoder must use ORT_ENABLE_EXTENDED, not ORT_ENABLE_ALL.
+    // ORT_ENABLE_ALL pattern-matches the Qwen2 BF16 softmax upcast (Cast→Softmax→Cast) and
+    // replaces it with a fused CUDA kernel that computes softmax in BF16 — different numerics
+    // from the original float32 upcast, causing content-word divergence after ~50 decode steps.
+    // ORT_ENABLE_EXTENDED skips attention fusion while still applying GeLU/LayerNorm fusions.
+    // The audio encoder keeps ORT_ENABLE_ALL because it needs memory-layout transforms to fit
+    // the float32 Conv towers within 24 GB VRAM.
+    private static SessionOptions MakeSessionOptions(
+        ExecutionProvider ep,
+        GraphOptimizationLevel optLevel = GraphOptimizationLevel.ORT_ENABLE_ALL)
     {
         var opts = new SessionOptions();
-        opts.GraphOptimizationLevel = GraphOptimizationLevel.ORT_ENABLE_ALL;
+        opts.GraphOptimizationLevel = optLevel;
 
         switch (ep)
         {
