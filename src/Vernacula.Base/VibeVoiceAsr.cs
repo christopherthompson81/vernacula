@@ -55,10 +55,11 @@ public sealed class VibeVoiceAsr : IDisposable
 
     // ── Model dimensions ──────────────────────────────────────────────────────
 
-    private readonly int _numLayers;   // 28
-    private readonly int _numKvHeads;  // 4
-    private readonly int _headDim;     // 128
-    private readonly int _hiddenSize;  // 3584
+    private readonly int _numLayers;          // 28
+    private readonly int _numKvHeads;         // 4
+    private readonly int _headDim;            // 128
+    private readonly int _hiddenSize;         // 3584
+    private readonly int _encoderChunkSamples; // from export-report.json acoustic_tokenizer_chunk_size
 
     // ── Tokenizer ─────────────────────────────────────────────────────────────
 
@@ -89,10 +90,11 @@ public sealed class VibeVoiceAsr : IDisposable
         using var reportDoc = JsonDocument.Parse(File.ReadAllText(reportPath));
         var report = reportDoc.RootElement;
 
-        _numLayers  = report.GetProperty("num_layers").GetInt32();
-        _numKvHeads = report.GetProperty("num_kv_heads").GetInt32();
-        _headDim    = report.GetProperty("head_dim").GetInt32();
-        _hiddenSize = report.GetProperty("hidden_size").GetInt32();
+        _numLayers           = report.GetProperty("num_layers").GetInt32();
+        _numKvHeads          = report.GetProperty("num_kv_heads").GetInt32();
+        _headDim             = report.GetProperty("head_dim").GetInt32();
+        _hiddenSize          = report.GetProperty("hidden_size").GetInt32();
+        _encoderChunkSamples = report.GetProperty("acoustic_tokenizer_chunk_size").GetInt32();
 
         var tok = report.GetProperty("tokenizer");
         _prefixTokenIds       = ReadLongArray(tok.GetProperty("prefix_token_ids"));
@@ -111,12 +113,11 @@ public sealed class VibeVoiceAsr : IDisposable
         _byteLevelDecode = BuildByteLevelDecode();
 
         // Create ORT sessions
-        var cpuOpts = new SessionOptions();
-        cpuOpts.GraphOptimizationLevel = GraphOptimizationLevel.ORT_ENABLE_ALL;
-        _audioEncoder = new InferenceSession(Path.Combine(modelDir, AudioEncoderFile), cpuOpts);
-
+        // Both models need CUDA: audio_encoder.onnx contains BFloat16 MatMul nodes in
+        // the multimodal projector that CPU EP does not implement.
         var gpuOpts = MakeSessionOptions(ep);
-        _decoder = new InferenceSession(Path.Combine(modelDir, DecoderSingleFile), gpuOpts);
+        _audioEncoder = new InferenceSession(Path.Combine(modelDir, AudioEncoderFile), gpuOpts);
+        _decoder      = new InferenceSession(Path.Combine(modelDir, DecoderSingleFile), gpuOpts);
     }
 
     // ── Public API ────────────────────────────────────────────────────────────
@@ -154,8 +155,8 @@ public sealed class VibeVoiceAsr : IDisposable
         // 2 — Build suffix token IDs (contains the audio duration)
         long[] suffixIds = BuildSuffixTokenIds(durationSeconds);
 
-        // 3 — Run audio encoder → BF16 audio embeddings
-        BFloat16[] audioEmbeddings = RunAudioEncoder(audio24k);
+        // 3 — Run audio encoder in chunks → BF16 audio embeddings
+        BFloat16[] audioEmbeddings = RunAudioEncoderChunked(audio24k);
         int numAudioTokens = audioEmbeddings.Length / _hiddenSize;
 
         // 4 — Run decoder (chunked prefill + greedy decode) → raw JSON text
@@ -228,24 +229,54 @@ public sealed class VibeVoiceAsr : IDisposable
     // ── Audio encoder ─────────────────────────────────────────────────────────
 
     /// <summary>
-    /// Runs audio_encoder.onnx and returns the BF16 audio embeddings as a flat array
-    /// in row-major order: [numTokens * hiddenSize].
+    /// Runs audio_encoder.onnx in chunks of _encoderChunkSamples and concatenates
+    /// the BF16 audio embeddings: [numTokens * hiddenSize] in row-major order.
     /// </summary>
-    private BFloat16[] RunAudioEncoder(float[] audio24kPadded)
+    private BFloat16[] RunAudioEncoderChunked(float[] audio24kPadded)
     {
-        int n = audio24kPadded.Length;
-        var inputValues = new DenseTensor<float>(audio24kPadded, new[] { 1, n });
-        var paddingMask = new DenseTensor<float>(Enumerable.Repeat(1f, n).ToArray(), new[] { 1, n });
+        var allEmbeddings = new List<BFloat16>();
+        int total = audio24kPadded.Length;
+        int chunkSize = _encoderChunkSamples; // must be a multiple of AudioStride
 
-        var inputs = new List<NamedOnnxValue>
+        for (int offset = 0; offset < total; offset += chunkSize)
         {
-            NamedOnnxValue.CreateFromTensor("input_values", inputValues),
-            NamedOnnxValue.CreateFromTensor("padding_mask", paddingMask),
-        };
+            int len = Math.Min(chunkSize, total - offset);
+            // Pad the final chunk if shorter than chunkSize so the model sees a
+            // consistent shape; the mask marks the valid region.
+            int paddedLen = ((len + AudioStride - 1) / AudioStride) * AudioStride;
 
-        using var results = _audioEncoder.Run(inputs);
-        var embTensor = results[0].AsTensor<BFloat16>();
-        return embTensor.ToArray();
+            var inputValuesBf16 = new BFloat16[paddedLen];
+            for (int i = 0; i < len; i++)
+                inputValuesBf16[i] = (BFloat16)audio24kPadded[offset + i];
+            // remaining elements stay 0 (default BFloat16 zero)
+
+            var maskBool = new bool[paddedLen];
+            for (int i = 0; i < len; i++) maskBool[i] = true;
+            // false for the padded tail
+
+            var inputValues = new DenseTensor<BFloat16>(inputValuesBf16, new[] { 1, paddedLen });
+            var paddingMask = new DenseTensor<bool>(maskBool,            new[] { 1, paddedLen });
+
+            var inputs = new List<NamedOnnxValue>
+            {
+                NamedOnnxValue.CreateFromTensor("input_values", inputValues),
+                NamedOnnxValue.CreateFromTensor("padding_mask", paddingMask),
+            };
+
+            using var results = _audioEncoder.Run(inputs);
+            var embTensor = results[0].AsTensor<BFloat16>();
+
+            // If we padded the last chunk, trim the extra tokens
+            int expectedTokens = len / AudioStride;
+            int gotTokens      = embTensor.Dimensions[0]; // [numTokens, hiddenSize]
+            int keepTokens     = Math.Min(gotTokens, expectedTokens);
+            int keepElements   = keepTokens * _hiddenSize;
+            var flat           = embTensor.ToArray();
+            for (int i = 0; i < keepElements; i++)
+                allEmbeddings.Add(flat[i]);
+        }
+
+        return [.. allEmbeddings];
     }
 
     // ── Tokenizer helpers ─────────────────────────────────────────────────────
