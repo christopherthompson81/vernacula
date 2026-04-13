@@ -164,6 +164,14 @@ public static class Config
     public const string ManifestUrl =
         "https://huggingface.co/christopherthompson81/sortformer_parakeet_onnx/resolve/main/manifest.json";
 
+    // ── ASR (VibeVoice) ──────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Default subdirectory name (under the main model dir) where VibeVoice-ASR
+    /// models are expected: audio_encoder.onnx, decoder_single.onnx, export-report.json, tokenizer.json.
+    /// </summary>
+    public const string VibeVoiceSubDir = "vibevoice_asr";
+
     // ── ASR (Parakeet) ───────────────────────────────────────────────────────
     public const string PreprocessorFile     = "nemo128.onnx";
     public const string EncoderFile          = "encoder-model.onnx";

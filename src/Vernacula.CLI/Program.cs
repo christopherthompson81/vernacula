@@ -13,15 +13,16 @@ string? modelDir        = null;
 string? outputPath      = null;
 string? segmentsPath    = null;
 string  exportFormat    = "md";
-string  diarization     = "sortformer"; // sortformer, diarizen, or vad
+string? diarization     = null;         // null = pick default for ASR backend
 float   ahcThreshold    = Config.DiariZenAhcThreshold;
 bool    showBenchmark   = false;
 bool    skipAsr         = false;
 string  denoiser        = "none";       // none, dfn3
 string? denoiserModels  = null;         // defaults to <modelDir>/deepfilternet3
-string  asrBackend      = "parakeet";   // parakeet or cohere
+string  asrBackend      = "parakeet";   // parakeet, cohere, or vibevoice
 string? cohereModelDir  = null;         // defaults to <modelDir>/cohere_transcribe
 string? cohereLanguage  = null;         // ISO 639-1 forced language (e.g. "en")
+string? vibevoiceModelDir = null;       // defaults to <modelDir>/vibevoice_asr
 ModelPrecision precision = ModelPrecision.Fp32;
 
 for (int i = 0; i < args.Length; i++)
@@ -35,9 +36,9 @@ for (int i = 0; i < args.Length; i++)
         case "--export-format": exportFormat = args[++i].ToLowerInvariant(); break;
         case "--diarization":
             diarization = args[++i].ToLowerInvariant();
-            if (diarization is not ("sortformer" or "diarizen" or "vad"))
+            if (diarization is not ("sortformer" or "diarizen" or "vad" or "vibevoice-asr-builtin"))
             {
-                Console.Error.WriteLine($"Unknown diarization backend: {diarization}. Choose: sortformer, diarizen, vad.");
+                Console.Error.WriteLine($"Unknown diarization backend: {diarization}. Choose: sortformer, diarizen, vad, vibevoice-asr-builtin.");
                 return 1;
             }
             break;
@@ -56,13 +57,14 @@ for (int i = 0; i < args.Length; i++)
         case "--denoiser-models": denoiserModels = args[++i]; break;
         case "--asr":
             asrBackend = args[++i].ToLowerInvariant();
-            if (asrBackend is not ("parakeet" or "cohere"))
+            if (asrBackend is not ("parakeet" or "cohere" or "vibevoice"))
             {
-                Console.Error.WriteLine($"Unknown ASR backend: {asrBackend}. Choose: parakeet, cohere.");
+                Console.Error.WriteLine($"Unknown ASR backend: {asrBackend}. Choose: parakeet, cohere, vibevoice.");
                 return 1;
             }
             break;
-        case "--cohere-model":    cohereModelDir = args[++i]; break;
+        case "--cohere-model":     cohereModelDir    = args[++i]; break;
+        case "--vibevoice-model":  vibevoiceModelDir = args[++i]; break;
         case "--language":        cohereLanguage = args[++i]; break;
         case "--precision":
             precision = args[++i].ToLowerInvariant() switch {
@@ -84,6 +86,16 @@ if (audioPath is null || modelDir is null)
 {
     Console.Error.WriteLine("Error: --audio and --model are required.");
     PrintUsage();
+    return 1;
+}
+
+// Resolve diarization default based on ASR backend
+diarization ??= asrBackend == "vibevoice" ? "vibevoice-asr-builtin" : "sortformer";
+
+// Validate that vibevoice-asr-builtin is only used with vibevoice ASR
+if (diarization == "vibevoice-asr-builtin" && asrBackend != "vibevoice")
+{
+    Console.Error.WriteLine("Error: --diarization vibevoice-asr-builtin requires --asr vibevoice.");
     return 1;
 }
 
@@ -198,10 +210,17 @@ try
 
     // ── Phase 2: Segmentation (Diarization or VAD) ────────────────────────────
 
+    // When using VibeVoice built-in diarization, Phase 2 is skipped entirely —
+    // the model handles segmentation and speaker assignment internally.
     List<(double start, double end, string spkId)> segs;
     var swDiar = Stopwatch.StartNew();
 
-    if (segmentsPath is not null)
+    if (diarization == "vibevoice-asr-builtin" && segmentsPath is null)
+    {
+        segs = []; // populated in Phase 3
+        swDiar.Stop();
+    }
+    else if (segmentsPath is not null)
     {
         // Load pre-computed segments from JSON — skips diarization entirely.
         // Expected format: [{start, end, speaker}, ...]
@@ -277,6 +296,32 @@ try
     {
         results.AddRange(segs.Select(s => (s.start, s.end, s.spkId, string.Empty)));
         swAsr.Stop();
+    }
+    else if (asrBackend == "vibevoice")
+    {
+        string vibevoiceDir = vibevoiceModelDir
+            ?? (Directory.Exists(Path.Combine(modelDir, Config.VibeVoiceSubDir))
+                ? Path.Combine(modelDir, Config.VibeVoiceSubDir)
+                : modelDir);
+
+        if (!File.Exists(Path.Combine(vibevoiceDir, VibeVoiceAsr.AudioEncoderFile)))
+        {
+            Console.Error.WriteLine($"\nError: VibeVoice-ASR model not found in: {vibevoiceDir}");
+            Console.Error.WriteLine($"Expected {VibeVoiceAsr.AudioEncoderFile} and related files there.");
+            Console.Error.WriteLine("Use --vibevoice-model <dir> to specify the directory explicitly.");
+            return 1;
+        }
+
+        Console.Write("Transcribing (VibeVoice-ASR)... ");
+        using var vibevoice = new VibeVoiceAsr(vibevoiceDir);
+        var vibevoiceSegs = vibevoice.Transcribe(rawSamples, sampleRate, channels,
+            ct: cts.Token);
+        swAsr.Stop();
+
+        foreach (var seg in vibevoiceSegs)
+            results.Add((seg.Start, seg.End, $"speaker_{seg.Speaker}", seg.Content));
+
+        Console.WriteLine($"{results.Count} segment(s) ({swAsr.ElapsedMilliseconds}ms)");
     }
     else if (asrBackend == "cohere")
     {
@@ -461,11 +506,12 @@ static void PrintUsage()
     Console.WriteLine("  --segments <path>                  Load pre-computed segments JSON, skip diarization");
     Console.WriteLine("  --export-format <md|txt|json|srt>  Output format (default: md)");
     Console.WriteLine("  --output <path>                    Override output file path");
-    Console.WriteLine("  --diarization <backend>            Diarization backend: sortformer, diarizen, vad");
-    Console.WriteLine("                                     (default: sortformer)");
+    Console.WriteLine("  --diarization <backend>            Diarization backend: sortformer, diarizen, vad, vibevoice-asr-builtin");
+    Console.WriteLine("                                     (default: sortformer, or vibevoice-asr-builtin when --asr vibevoice)");
     Console.WriteLine("  --vad                              Use VAD instead of diarization (deprecated)");
-    Console.WriteLine("  --asr <parakeet|cohere>            ASR backend (default: parakeet)");
+    Console.WriteLine("  --asr <parakeet|cohere|vibevoice>  ASR backend (default: parakeet)");
     Console.WriteLine("  --cohere-model <dir>               Path to Cohere Transcribe model dir (default: <model>/cohere_transcribe)");
+    Console.WriteLine("  --vibevoice-model <dir>            Path to VibeVoice-ASR model dir (default: <model>/vibevoice_asr)");
     Console.WriteLine("  --language <code>                  Force language for Cohere ASR (ISO 639-1, e.g. en, fr, de)");
     Console.WriteLine("  --denoiser <none|dfn3>             Pre-processing denoiser (default: none)");
     Console.WriteLine("  --denoiser-models <dir>            Path to denoiser ONNX models (default: <model>/deepfilternet3)");
