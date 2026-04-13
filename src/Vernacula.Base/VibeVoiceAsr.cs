@@ -50,7 +50,11 @@ public sealed class VibeVoiceAsr : IDisposable
 
     // ── ORT sessions ─────────────────────────────────────────────────────────
 
-    private readonly InferenceSession _audioEncoder;
+    // The audio encoder is created on demand and disposed after each use so its
+    // GPU arena (dual float32 Conv towers) does not compete with the decoder's
+    // growing KV cache during the autoregressive decode loop.
+    private readonly string           _audioEncoderPath;
+    private readonly ExecutionProvider _ep;
     private readonly InferenceSession _decoder;
 
     // ── Model dimensions ──────────────────────────────────────────────────────
@@ -115,9 +119,13 @@ public sealed class VibeVoiceAsr : IDisposable
         // Create ORT sessions
         // Both models need CUDA: audio_encoder.onnx contains BFloat16 MatMul nodes in
         // the multimodal projector that CPU EP does not implement.
+        // The audio encoder is NOT loaded here — it is created and disposed within each
+        // Transcribe call so its GPU arena is freed before the autoregressive decode loop.
+        _audioEncoderPath = Path.Combine(modelDir, AudioEncoderFile);
+        _ep               = ep;
+
         var gpuOpts = MakeSessionOptions(ep);
-        _audioEncoder = new InferenceSession(Path.Combine(modelDir, AudioEncoderFile), gpuOpts);
-        _decoder      = new InferenceSession(Path.Combine(modelDir, DecoderSingleFile), gpuOpts);
+        _decoder = new InferenceSession(Path.Combine(modelDir, DecoderSingleFile), gpuOpts);
     }
 
     // ── Public API ────────────────────────────────────────────────────────────
@@ -155,8 +163,15 @@ public sealed class VibeVoiceAsr : IDisposable
         // 2 — Build suffix token IDs (contains the audio duration)
         long[] suffixIds = BuildSuffixTokenIds(durationSeconds);
 
-        // 3 — Run audio encoder in chunks → BF16 audio embeddings
-        BFloat16[] audioEmbeddings = RunAudioEncoderChunked(audio24k);
+        // 3 — Run audio encoder in chunks → BF16 audio embeddings.
+        //     The encoder session is created here and disposed immediately after so its
+        //     GPU arena (float32 Conv towers) is freed before the decoder KV cache grows.
+        BFloat16[] audioEmbeddings;
+        {
+            using var audioEncoder = new InferenceSession(
+                _audioEncoderPath, MakeSessionOptions(_ep));
+            audioEmbeddings = RunAudioEncoderChunked(audio24k, audioEncoder);
+        }
         int numAudioTokens = audioEmbeddings.Length / _hiddenSize;
 
         // 4 — Run decoder (chunked prefill + greedy decode) → raw JSON text
@@ -175,7 +190,6 @@ public sealed class VibeVoiceAsr : IDisposable
 
     public void Dispose()
     {
-        _audioEncoder.Dispose();
         _decoder.Dispose();
     }
 
@@ -232,7 +246,7 @@ public sealed class VibeVoiceAsr : IDisposable
     /// Runs audio_encoder.onnx in chunks of _encoderChunkSamples and concatenates
     /// the BF16 audio embeddings: [numTokens * hiddenSize] in row-major order.
     /// </summary>
-    private BFloat16[] RunAudioEncoderChunked(float[] audio24kPadded)
+    private BFloat16[] RunAudioEncoderChunked(float[] audio24kPadded, InferenceSession audioEncoder)
     {
         var allEmbeddings = new List<BFloat16>();
         int total = audio24kPadded.Length;
@@ -263,7 +277,7 @@ public sealed class VibeVoiceAsr : IDisposable
                 NamedOnnxValue.CreateFromTensor("padding_mask", paddingMask),
             };
 
-            using var results = _audioEncoder.Run(inputs);
+            using var results = audioEncoder.Run(inputs);
             var embTensor = results[0].AsTensor<BFloat16>();
 
             // If we padded the last chunk, trim the extra tokens
@@ -308,174 +322,174 @@ public sealed class VibeVoiceAsr : IDisposable
         int maxNewTokens,
         CancellationToken ct)
     {
-        // Initialise 56 empty float32 KV arrays: [1, numKvHeads, 0, headDim]
-        var pastKvs = new float[_numLayers * 2][];
-        for (int i = 0; i < pastKvs.Length; i++)
-            pastKvs[i] = [];
+        using var runOptions  = new RunOptions();
+        using var binding     = _decoder.CreateIoBinding();
+        using var cudaMemInfo = new OrtMemoryInfo("Cuda", OrtAllocatorType.DeviceAllocator, 0, OrtMemType.Default);
 
-        // Prefill
-        long firstToken;
-        (firstToken, pastKvs) = RunPrefill(
-            prefixIds, audioEmbeddings, numAudioTokens, suffixIds,
-            pastKvs, prefillChunkTokens, ct);
-
-        // Greedy decode
-        var generated = new List<long>(256);
-        long nextToken = firstToken;
-
-        for (int step = 0; step < maxNewTokens; step++)
+        // Empty (cache_len = 0) CPU OrtValues for the initial KV inputs
+        OrtValue[] pastKvs = CreateEmptyKvOrtValues();
+        try
         {
-            ct.ThrowIfCancellationRequested();
-            if (nextToken == _eosTokenId || nextToken == _imEndTokenId)
-                break;
-            generated.Add(nextToken);
-            (nextToken, pastKvs) = RunDecoderStep(nextToken, pastKvs);
+            // ── Chunked prefill ───────────────────────────────────────────────
+
+            int    chunkSize = prefillChunkTokens > 0 ? prefillChunkTokens : numAudioTokens;
+            int    numChunks = (numAudioTokens + chunkSize - 1) / Math.Max(1, chunkSize);
+            long[] noIds     = [];
+            long   lastToken = 0;
+
+            for (int ci = 0; ci < numChunks; ci++)
+            {
+                ct.ThrowIfCancellationRequested();
+                int start = ci * chunkSize;
+                int count = Math.Min(chunkSize, numAudioTokens - start);
+
+                long[] pfx = ci == 0             ? prefixIds : noIds;
+                long[] sfx = ci == numChunks - 1 ? suffixIds : noIds;
+
+                var prevKvs = pastKvs;
+                (lastToken, pastKvs) = RunOnce(
+                    pfx, audioEmbeddings, start, count, sfx, pastKvs, binding, runOptions, cudaMemInfo);
+                foreach (var kv in prevKvs) kv.Dispose();
+            }
+
+            // ── Greedy decode ─────────────────────────────────────────────────
+
+            var    generated  = new List<long>(maxNewTokens);
+            long   nextToken  = lastToken;
+            long[] tokenBuf   = new long[1]; // reused each step — avoids per-step allocation
+
+            for (int step = 0; step < maxNewTokens; step++)
+            {
+                ct.ThrowIfCancellationRequested();
+                if (nextToken == _eosTokenId || nextToken == _imEndTokenId) break;
+                generated.Add(nextToken);
+
+                tokenBuf[0] = nextToken;
+                var prevKvs = pastKvs;
+                (nextToken, pastKvs) = RunOnce(
+                    tokenBuf, audioEmbeddings, 0, 0, noIds, pastKvs, binding, runOptions, cudaMemInfo);
+                foreach (var kv in prevKvs) kv.Dispose();
+            }
+
+            return TokensToText(generated);
         }
-
-        return TokensToText(generated);
-    }
-
-    private (long firstToken, float[][] pastKvs) RunPrefill(
-        long[] prefixIds,
-        BFloat16[] audioEmbeddings,
-        int numAudioTokens,
-        long[] suffixIds,
-        float[][] pastKvs,
-        int prefillChunkTokens,
-        CancellationToken ct)
-    {
-        if (prefillChunkTokens <= 0 || numAudioTokens <= prefillChunkTokens)
+        finally
         {
-            // Full prefill in one shot
-            var audioTensor = MakeAudioTensor(audioEmbeddings, 0, numAudioTokens);
-            return RunSinglePrefillChunk(prefixIds, audioTensor, suffixIds, pastKvs);
+            foreach (var kv in pastKvs) kv.Dispose();
         }
-
-        // Chunked prefill
-        int numChunks = (numAudioTokens + prefillChunkTokens - 1) / prefillChunkTokens;
-        long lastToken = 0;
-        long[] emptyIds = [];
-
-        for (int ci = 0; ci < numChunks; ci++)
-        {
-            ct.ThrowIfCancellationRequested();
-            int start = ci * prefillChunkTokens;
-            int end   = Math.Min(start + prefillChunkTokens, numAudioTokens);
-
-            var pfx   = ci == 0             ? prefixIds : emptyIds;
-            var sfx   = ci == numChunks - 1 ? suffixIds : emptyIds;
-            var chunk = MakeAudioTensor(audioEmbeddings, start, end);
-
-            (lastToken, pastKvs) = RunSinglePrefillChunk(pfx, chunk, sfx, pastKvs);
-        }
-
-        return (lastToken, pastKvs);
     }
 
-    private (long firstToken, float[][] pastKvs) RunSinglePrefillChunk(
-        long[] prefixIds,
-        DenseTensor<BFloat16> audioChunk,
-        long[] suffixIds,
-        float[][] pastKvs)
+    /// <summary>
+    /// Runs the decoder once (one prefill chunk or one autoregressive step) using IO binding.
+    ///
+    /// KV cache inputs are OrtValues that may live on CPU (initial empty cache) or on CUDA
+    /// (every subsequent call). Because the outputs are also bound to CUDA, the KV data
+    /// never crosses the PCIe bus after the first step.
+    ///
+    /// Ownership note: GetOutputValues() returns a DisposableList which has no finalizer.
+    /// We extract the KV OrtValues by reference (they stay alive via their SafeHandles),
+    /// dispose the logits OrtValue immediately, and let the bare DisposableList be GC-collected
+    /// without calling Dispose — so the KV OrtValues it contained are not prematurely freed.
+    /// </summary>
+    private (long token, OrtValue[] presentKvs) RunOnce(
+        long[]       prefixIds,
+        BFloat16[]   audioData,
+        int          audioStart,
+        int          audioCount,
+        long[]       suffixIds,
+        OrtValue[]   pastKvs,
+        OrtIoBinding binding,
+        RunOptions   runOptions,
+        OrtMemoryInfo cudaMemInfo)
     {
-        var inputs = BuildDecoderInputs(
-            prefixIds:  prefixIds,
-            audioChunk: audioChunk,
-            suffixIds:  suffixIds,
-            stepToken:  null,
-            pastKvs:    pastKvs);
+        binding.ClearBoundInputs();
 
-        using var outputs = _decoder.Run(inputs);
-        long firstToken = ArgmaxLastRow(outputs[0].AsTensor<BFloat16>());
-        float[][] newKvs = ExtractKvs(outputs);
-        return (firstToken, newKvs);
-    }
-
-    private (long nextToken, float[][] pastKvs) RunDecoderStep(long token, float[][] pastKvs)
-    {
-        // Pass zero-length audio and empty prefix/suffix for pure autoregressive step
-        var emptyAudio = new DenseTensor<BFloat16>(new[] { 0, _hiddenSize });
-        var inputs = BuildDecoderInputs(
-            prefixIds:  [token],
-            audioChunk: emptyAudio,
-            suffixIds:  [],
-            stepToken:  null,
-            pastKvs:    pastKvs);
-
-        using var outputs = _decoder.Run(inputs);
-        long nextToken = ArgmaxLastRow(outputs[0].AsTensor<BFloat16>());
-        float[][] newKvs = ExtractKvs(outputs);
-        return (nextToken, newKvs);
-    }
-
-    // ── Decoder tensor helpers ────────────────────────────────────────────────
-
-    private List<NamedOnnxValue> BuildDecoderInputs(
-        long[]              prefixIds,
-        DenseTensor<BFloat16> audioChunk,
-        long[]              suffixIds,
-        long?               stepToken,
-        float[][]           pastKvs)
-    {
-        var inputs = new List<NamedOnnxValue>(_numLayers * 2 + 3);
-
-        inputs.Add(NamedOnnxValue.CreateFromTensor(
-            "prefix_input_ids",
-            new DenseTensor<long>(prefixIds, new[] { 1, prefixIds.Length })));
-
-        inputs.Add(NamedOnnxValue.CreateFromTensor("audio_embeddings", audioChunk));
-
-        inputs.Add(NamedOnnxValue.CreateFromTensor(
-            "suffix_input_ids",
-            new DenseTensor<long>(suffixIds, new[] { 1, suffixIds.Length })));
-
-        // 56 KV cache tensors
-        int cacheLen = pastKvs.Length > 0 ? pastKvs[0].Length / (_numKvHeads * _headDim) : 0;
+        // Re-register outputs every call: the KV cache grows each step, so the shape
+        // changes and ORT cannot reuse a previously allocated output buffer.
+        binding.ClearBoundOutputs();
+        binding.BindOutputToDevice("logits", OrtMemoryInfo.DefaultInstance);
         for (int i = 0; i < _numLayers; i++)
         {
-            inputs.Add(NamedOnnxValue.CreateFromTensor(
-                $"past_key_{i}",
-                new DenseTensor<float>(pastKvs[i * 2], new[] { 1, _numKvHeads, cacheLen, _headDim })));
-            inputs.Add(NamedOnnxValue.CreateFromTensor(
-                $"past_value_{i}",
-                new DenseTensor<float>(pastKvs[i * 2 + 1], new[] { 1, _numKvHeads, cacheLen, _headDim })));
+            binding.BindOutputToDevice($"present_key_{i}",   cudaMemInfo);
+            binding.BindOutputToDevice($"present_value_{i}", cudaMemInfo);
         }
 
-        return inputs;
+        // prefix_input_ids [1, P]
+        using var prefixOrtVal = OrtValue.CreateTensorValueFromMemory(
+            prefixIds, new long[] { 1, prefixIds.Length });
+        binding.BindInput("prefix_input_ids", prefixOrtVal);
+
+        // audio_embeddings [N, hiddenSize] — zero-length during decode steps
+        // Declared at method scope so it stays alive until after RunWithBinding.
+        int audioElems = audioCount * _hiddenSize;
+        using var audioOrtVal = audioElems > 0
+            ? OrtValue.CreateTensorValueFromMemory(
+                  OrtMemoryInfo.DefaultInstance,
+                  new Memory<BFloat16>(audioData, audioStart * _hiddenSize, audioElems),
+                  new long[] { audioCount, _hiddenSize })
+            : OrtValue.CreateTensorValueFromMemory(
+                  Array.Empty<BFloat16>(), new long[] { 0, _hiddenSize });
+        binding.BindInput("audio_embeddings", audioOrtVal);
+
+        // suffix_input_ids [1, S]
+        using var suffixOrtVal = OrtValue.CreateTensorValueFromMemory(
+            suffixIds, new long[] { 1, suffixIds.Length });
+        binding.BindInput("suffix_input_ids", suffixOrtVal);
+
+        // 56 KV cache inputs — GPU-resident after the first step, no copy
+        for (int i = 0; i < _numLayers; i++)
+        {
+            binding.BindInput($"past_key_{i}",   pastKvs[i * 2]);
+            binding.BindInput($"past_value_{i}", pastKvs[i * 2 + 1]);
+        }
+
+        _decoder.RunWithBinding(runOptions, binding);
+
+        // GetOutputValues() → IDisposableReadOnlyCollection<OrtValue> (a DisposableList).
+        // DisposableList has no finalizer, so skipping `using` is safe: GC collects the
+        // list shell without touching the OrtValues inside it.
+        var outputs = binding.GetOutputValues();
+
+        // outputs[0] = logits (CPU) — read argmax, then free immediately
+        int  seqLen = prefixIds.Length + audioCount + suffixIds.Length;
+        long token  = ArgmaxOrtValue(outputs[0], seqLen);
+        outputs[0].Dispose();
+
+        // outputs[1..56] = present_key/value (CUDA) — take ownership
+        var presentKvs = new OrtValue[_numLayers * 2];
+        for (int i = 0; i < _numLayers * 2; i++)
+            presentKvs[i] = outputs[i + 1];
+
+        return (token, presentKvs);
     }
 
-    private float[][] ExtractKvs(IDisposableReadOnlyCollection<DisposableNamedOnnxValue> outputs)
+    // ── Decoder helpers ───────────────────────────────────────────────────────
+
+    private OrtValue[] CreateEmptyKvOrtValues()
     {
-        // outputs[0] = logits, outputs[1..56] = present_key_0..27, present_value_0..27
-        var kvs = new float[_numLayers * 2][];
-        for (int i = 0; i < _numLayers * 2; i++)
-            kvs[i] = outputs[i + 1].AsTensor<float>().ToArray();
+        // shape [1, numKvHeads, 0, headDim] — zero total elements is valid
+        var    kvs   = new OrtValue[_numLayers * 2];
+        long[] shape = { 1, _numKvHeads, 0, _headDim };
+        for (int i = 0; i < kvs.Length; i++)
+            kvs[i] = OrtValue.CreateTensorValueFromMemory(Array.Empty<float>(), shape);
         return kvs;
     }
 
-    private DenseTensor<BFloat16> MakeAudioTensor(BFloat16[] embeddings, int startToken, int endToken)
+    private static long ArgmaxOrtValue(OrtValue logits, int seqLen)
     {
-        int chunkLen = endToken - startToken;
-        var data = new BFloat16[chunkLen * _hiddenSize];
-        Array.Copy(embeddings, startToken * _hiddenSize, data, 0, data.Length);
-        return new DenseTensor<BFloat16>(data, new[] { chunkLen, _hiddenSize });
-    }
+        // logits: [1, seqLen, vocabSize] flattened row-major, CPU-resident
+        var span      = logits.GetTensorDataAsSpan<BFloat16>();
+        int vocabSize = span.Length / seqLen;      // batch = 1
+        int offset    = (seqLen - 1) * vocabSize;  // last token's logit row
 
-    private static long ArgmaxLastRow(Tensor<BFloat16> logits)
-    {
-        // logits shape: [1, seq_len, vocab_size]
-        int seqLen   = logits.Dimensions[1];
-        int vocabSize = logits.Dimensions[2];
-        int rowOffset = (seqLen - 1) * vocabSize;
-
-        long bestIdx = 0;
+        long  best    = 0;
         float bestVal = float.NegativeInfinity;
         for (int v = 0; v < vocabSize; v++)
         {
-            float val = (float)logits[0, seqLen - 1, v];
-            if (val > bestVal) { bestVal = val; bestIdx = v; }
+            float val = (float)span[offset + v];
+            if (val > bestVal) { bestVal = val; best = v; }
         }
-        return bestIdx;
+        return best;
     }
 
     // ── Token decoding ────────────────────────────────────────────────────────
