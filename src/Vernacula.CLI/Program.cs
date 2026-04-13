@@ -23,6 +23,8 @@ string  asrBackend      = "parakeet";   // parakeet, cohere, or vibevoice
 string? cohereModelDir  = null;         // defaults to <modelDir>/cohere_transcribe
 string? cohereLanguage  = null;         // ISO 639-1 forced language (e.g. "en")
 string? vibevoiceModelDir = null;       // defaults to <modelDir>/vibevoice_asr
+string? profileOutputDir  = null;       // ORT profiling output dir (vibevoice only)
+int     profileMaxTokens  = 200;        // cap maxNewTokens during profiling to stay under ORT 1M event limit
 ModelPrecision precision = ModelPrecision.Fp32;
 
 for (int i = 0; i < args.Length; i++)
@@ -65,6 +67,8 @@ for (int i = 0; i < args.Length; i++)
             break;
         case "--cohere-model":     cohereModelDir    = args[++i]; break;
         case "--vibevoice-model":  vibevoiceModelDir = args[++i]; break;
+        case "--profile":          profileOutputDir  = args[++i]; break;
+        case "--profile-steps":    profileMaxTokens  = int.Parse(args[++i]); break;
         case "--language":        cohereLanguage = args[++i]; break;
         case "--precision":
             precision = args[++i].ToLowerInvariant() switch {
@@ -313,8 +317,9 @@ try
         }
 
         Console.Write("Transcribing (VibeVoice-ASR)... ");
-        using var vibevoice = new VibeVoiceAsr(vibevoiceDir);
+        using var vibevoice = new VibeVoiceAsr(vibevoiceDir, profileOutputDir: profileOutputDir);
         var vibevoiceSegs = vibevoice.Transcribe(rawSamples, sampleRate, channels,
+            maxNewTokens: profileOutputDir is not null ? profileMaxTokens : 8_192,
             ct: cts.Token);
         swAsr.Stop();
 
@@ -512,6 +517,8 @@ static void PrintUsage()
     Console.WriteLine("  --asr <parakeet|cohere|vibevoice>  ASR backend (default: parakeet)");
     Console.WriteLine("  --cohere-model <dir>               Path to Cohere Transcribe model dir (default: <model>/cohere_transcribe)");
     Console.WriteLine("  --vibevoice-model <dir>            Path to VibeVoice-ASR model dir (default: <model>/vibevoice_asr)");
+    Console.WriteLine("  --profile <dir>                    Write ORT Chrome-trace JSON to <dir>/ (vibevoice only; for perf analysis)");
+    Console.WriteLine("  --profile-steps <n>                Cap decode tokens during --profile run (default: 200; ORT limit: ~1M events)");
     Console.WriteLine("  --language <code>                  Force language for Cohere ASR (ISO 639-1, e.g. en, fr, de)");
     Console.WriteLine("  --denoiser <none|dfn3>             Pre-processing denoiser (default: none)");
     Console.WriteLine("  --denoiser-models <dir>            Path to denoiser ONNX models (default: <model>/deepfilternet3)");

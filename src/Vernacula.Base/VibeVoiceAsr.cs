@@ -53,9 +53,17 @@ public sealed class VibeVoiceAsr : IDisposable
     // The audio encoder is created on demand and disposed after each use so its
     // GPU arena (dual float32 Conv towers) does not compete with the decoder's
     // growing KV cache during the autoregressive decode loop.
-    private readonly string           _audioEncoderPath;
+    private readonly string            _audioEncoderPath;
     private readonly ExecutionProvider _ep;
-    private readonly InferenceSession _decoder;
+    private readonly InferenceSession  _decoder;
+
+    // ── Profiling ─────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Directory for ORT Chrome-trace JSON files, or null when profiling is off.
+    /// Files are named encoder_&lt;timestamp&gt;.json and decoder_&lt;timestamp&gt;.json.
+    /// </summary>
+    private readonly string? _profileOutputDir;
 
     // ── Model dimensions ──────────────────────────────────────────────────────
 
@@ -87,8 +95,13 @@ public sealed class VibeVoiceAsr : IDisposable
 
     // ── Construction ──────────────────────────────────────────────────────────
 
-    public VibeVoiceAsr(string modelDir, ExecutionProvider ep = ExecutionProvider.Auto)
+    public VibeVoiceAsr(
+        string modelDir,
+        ExecutionProvider ep = ExecutionProvider.Auto,
+        string? profileOutputDir = null)
     {
+        if (profileOutputDir is not null)
+            Directory.CreateDirectory(profileOutputDir);
         // Load export report
         string reportPath = Path.Combine(modelDir, ExportReportFile);
         using var reportDoc = JsonDocument.Parse(File.ReadAllText(reportPath));
@@ -123,8 +136,10 @@ public sealed class VibeVoiceAsr : IDisposable
         // Transcribe call so its GPU arena is freed before the autoregressive decode loop.
         _audioEncoderPath = Path.Combine(modelDir, AudioEncoderFile);
         _ep               = ep;
+        _profileOutputDir = profileOutputDir;
 
-        var gpuOpts = MakeSessionOptions(ep, GraphOptimizationLevel.ORT_ENABLE_EXTENDED);
+        var gpuOpts = MakeSessionOptions(ep, GraphOptimizationLevel.ORT_ENABLE_EXTENDED,
+            enableProfiling: profileOutputDir is not null);
         _decoder = new InferenceSession(Path.Combine(modelDir, DecoderSingleFile), gpuOpts);
     }
 
@@ -168,9 +183,20 @@ public sealed class VibeVoiceAsr : IDisposable
         //     GPU arena (float32 Conv towers) is freed before the decoder KV cache grows.
         BFloat16[] audioEmbeddings;
         {
+            // Note: SessionOptions.ProfileOutputPathPrefix is not wired to the native
+            // OrtEnableProfiling call in ORT 1.24.2 managed bindings — ORT always writes
+            // to cwd with the default onnxruntime_profile__{timestamp}.json filename.
+            // We rename/move the file ourselves after EndProfiling().
             using var audioEncoder = new InferenceSession(
-                _audioEncoderPath, MakeSessionOptions(_ep));
+                _audioEncoderPath, MakeSessionOptions(_ep, enableProfiling: _profileOutputDir is not null));
             audioEmbeddings = RunAudioEncoderChunked(audio24k, audioEncoder);
+            if (_profileOutputDir is not null)
+            {
+                string rawPath = Path.GetFullPath(audioEncoder.EndProfiling());
+                string destPath = Path.Combine(_profileOutputDir, "encoder_" + Path.GetFileName(rawPath));
+                File.Move(rawPath, destPath, overwrite: true);
+                Console.Error.WriteLine($"[profile] encoder → {destPath}");
+            }
         }
         int numAudioTokens = audioEmbeddings.Length / _hiddenSize;
 
@@ -183,6 +209,14 @@ public sealed class VibeVoiceAsr : IDisposable
             prefillChunkTokens,
             maxNewTokens,
             ct);
+
+        if (_profileOutputDir is not null)
+        {
+            string rawPath = Path.GetFullPath(_decoder.EndProfiling());
+            string destPath = Path.Combine(_profileOutputDir, "decoder_" + Path.GetFileName(rawPath));
+            File.Move(rawPath, destPath, overwrite: true);
+            Console.Error.WriteLine($"[profile] decoder → {destPath}");
+        }
 
         // 5 — Parse VibeVoice JSON output
         return ParseOutput(jsonText);
@@ -666,10 +700,13 @@ public sealed class VibeVoiceAsr : IDisposable
     // the float32 Conv towers within 24 GB VRAM.
     private static SessionOptions MakeSessionOptions(
         ExecutionProvider ep,
-        GraphOptimizationLevel optLevel = GraphOptimizationLevel.ORT_ENABLE_ALL)
+        GraphOptimizationLevel optLevel = GraphOptimizationLevel.ORT_ENABLE_ALL,
+        bool enableProfiling = false)
     {
         var opts = new SessionOptions();
         opts.GraphOptimizationLevel = optLevel;
+        if (enableProfiling)
+            opts.EnableProfiling = true;
 
         switch (ep)
         {
