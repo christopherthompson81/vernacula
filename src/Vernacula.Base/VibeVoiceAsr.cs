@@ -51,10 +51,17 @@ public sealed class VibeVoiceAsr : IDisposable
 
     // ── ORT sessions ─────────────────────────────────────────────────────────
 
-    // The audio encoder is created on demand and disposed after each use so its
-    // GPU arena (dual float32 Conv towers) does not compete with the decoder's
-    // growing KV cache during the autoregressive decode loop.
-    private readonly string            _audioEncoderPath;
+    // The decoder session is kept for the lifetime of this object.
+    //
+    // The encoder session is optional: when persistEncoder = true (segmented mode)
+    // it is loaded once in the constructor and reused across all Transcribe() calls,
+    // avoiding 70+ session-load round-trips.  When persistEncoder = false
+    // (whole-recording built-in path) the encoder is created and disposed inside
+    // each Transcribe() call so its GPU arena (~1–3 GiB) is freed before the
+    // long autoregressive decode loop starts, giving the KV cache more headroom.
+    private InferenceSession?          _audioEncoder;   // null when not persisted
+    private readonly string            _audioEncoderModelPath;
+    private readonly bool              _persistEncoder;
     private readonly ExecutionProvider _ep;
     private readonly InferenceSession  _decoder;
 
@@ -103,6 +110,7 @@ public sealed class VibeVoiceAsr : IDisposable
     public VibeVoiceAsr(
         string modelDir,
         ExecutionProvider ep = ExecutionProvider.Auto,
+        bool persistEncoder = true,
         string? profileOutputDir = null)
     {
         if (profileOutputDir is not null)
@@ -141,14 +149,18 @@ public sealed class VibeVoiceAsr : IDisposable
         (_idToToken, _addedTokenContent) = LoadTokenizerVocab(Path.Combine(modelDir, TokenizerFile));
         _byteLevelDecode = BuildByteLevelDecode();
 
-        // Create ORT sessions
+        // Create ORT sessions.
         // Both models need CUDA: audio_encoder.onnx contains BFloat16 MatMul nodes in
         // the multimodal projector that CPU EP does not implement.
-        // The audio encoder is NOT loaded here — it is created and disposed within each
-        // Transcribe call so its GPU arena is freed before the autoregressive decode loop.
-        _audioEncoderPath = Path.Combine(modelDir, AudioEncoderFile);
-        _ep               = ep;
-        _profileOutputDir = profileOutputDir;
+        _ep                   = ep;
+        _profileOutputDir     = profileOutputDir;
+        _persistEncoder       = persistEncoder;
+        _audioEncoderModelPath = Path.Combine(modelDir, AudioEncoderFile);
+
+        if (persistEncoder)
+            _audioEncoder = new InferenceSession(
+                _audioEncoderModelPath,
+                MakeSessionOptions(ep, enableProfiling: profileOutputDir is not null));
 
         var gpuOpts = MakeSessionOptions(ep, GraphOptimizationLevel.ORT_ENABLE_EXTENDED,
             enableProfiling: profileOutputDir is not null);
@@ -194,24 +206,40 @@ public sealed class VibeVoiceAsr : IDisposable
         long[] suffixIds = BuildSuffixTokenIds(durationSeconds);
 
         // 3 — Run audio encoder in chunks → BF16 audio embeddings.
-        //     The encoder session is created here and disposed immediately after so its
-        //     GPU arena (float32 Conv towers) is freed before the decoder KV cache grows.
+        // Note: SessionOptions.ProfileOutputPathPrefix is not wired to the native
+        // OrtEnableProfiling call in ORT 1.24.2 managed bindings — ORT always writes
+        // to cwd with the default onnxruntime_profile__{timestamp}.json filename.
+        // We rename/move the file ourselves after EndProfiling().
+        //
+        // When the encoder is not persisted (whole-recording built-in path), create
+        // a temporary session scoped to this call so its GPU arena is freed before
+        // the long autoregressive decode loop begins.
         BFloat16[] audioEmbeddings;
+        if (_audioEncoder is not null)
         {
-            // Note: SessionOptions.ProfileOutputPathPrefix is not wired to the native
-            // OrtEnableProfiling call in ORT 1.24.2 managed bindings — ORT always writes
-            // to cwd with the default onnxruntime_profile__{timestamp}.json filename.
-            // We rename/move the file ourselves after EndProfiling().
-            using var audioEncoder = new InferenceSession(
-                _audioEncoderPath, MakeSessionOptions(_ep, enableProfiling: _profileOutputDir is not null));
-            audioEmbeddings = RunAudioEncoderChunked(audio24k, audioEncoder);
+            audioEmbeddings = RunAudioEncoderChunked(audio24k, _audioEncoder);
             if (_profileOutputDir is not null)
             {
-                string rawPath = Path.GetFullPath(audioEncoder.EndProfiling());
+                string rawPath = Path.GetFullPath(_audioEncoder.EndProfiling());
                 string destPath = Path.Combine(_profileOutputDir, "encoder_" + Path.GetFileName(rawPath));
                 File.Move(rawPath, destPath, overwrite: true);
                 Console.Error.WriteLine($"[profile] encoder → {destPath}");
             }
+        }
+        else
+        {
+            using var tempEncoder = new InferenceSession(
+                _audioEncoderModelPath,
+                MakeSessionOptions(_ep, enableProfiling: _profileOutputDir is not null));
+            audioEmbeddings = RunAudioEncoderChunked(audio24k, tempEncoder);
+            if (_profileOutputDir is not null)
+            {
+                string rawPath = Path.GetFullPath(tempEncoder.EndProfiling());
+                string destPath = Path.Combine(_profileOutputDir, "encoder_" + Path.GetFileName(rawPath));
+                File.Move(rawPath, destPath, overwrite: true);
+                Console.Error.WriteLine($"[profile] encoder → {destPath}");
+            }
+            // tempEncoder is disposed here → GPU arena freed before decoder loop
         }
         int numAudioTokens = audioEmbeddings.Length / _hiddenSize;
 
@@ -239,6 +267,7 @@ public sealed class VibeVoiceAsr : IDisposable
 
     public void Dispose()
     {
+        _audioEncoder?.Dispose();
         _decoder.Dispose();
     }
 

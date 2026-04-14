@@ -25,6 +25,8 @@ string? cohereLanguage  = null;         // ISO 639-1 forced language (e.g. "en")
 string? vibevoiceModelDir = null;       // defaults to <modelDir>/vibevoice_asr
 string? profileOutputDir  = null;       // ORT profiling output dir (vibevoice only)
 int     profileMaxTokens  = 200;        // cap maxNewTokens during profiling to stay under ORT 1M event limit
+double  minAsrSeconds     = 5.0;        // minimum group span (seconds) when using segmented VibeVoice ASR
+double  asrBufferSeconds  = 0.0;        // audio padding on each side of a group (seconds)
 ModelPrecision precision = ModelPrecision.Fp32;
 
 for (int i = 0; i < args.Length; i++)
@@ -67,6 +69,8 @@ for (int i = 0; i < args.Length; i++)
             break;
         case "--cohere-model":     cohereModelDir    = args[++i]; break;
         case "--vibevoice-model":  vibevoiceModelDir = args[++i]; break;
+        case "--min-asr-seconds":  minAsrSeconds     = double.Parse(args[++i]); break;
+        case "--asr-buffer":       asrBufferSeconds  = double.Parse(args[++i]); break;
         case "--profile":          profileOutputDir  = args[++i]; break;
         case "--profile-steps":    profileMaxTokens  = int.Parse(args[++i]); break;
         case "--language":        cohereLanguage = args[++i]; break;
@@ -316,17 +320,123 @@ try
             return 1;
         }
 
-        Console.Write("Transcribing (VibeVoice-ASR)... ");
-        using var vibevoice = new VibeVoiceAsr(vibevoiceDir, profileOutputDir: profileOutputDir);
-        var vibevoiceSegs = vibevoice.Transcribe(rawSamples, sampleRate, channels,
-            maxNewTokens: profileOutputDir is not null ? profileMaxTokens : 8_192,
-            ct: cts.Token);
-        swAsr.Stop();
+        // Persist the encoder across calls only in segmented mode (vad / diarizen).
+        // In built-in whole-recording mode the encoder is created and disposed
+        // inside each Transcribe() call so its VRAM is freed before the long decode.
+        bool persistEncoder = diarization != "vibevoice-asr-builtin";
+        using var vibevoice = new VibeVoiceAsr(vibevoiceDir, persistEncoder: persistEncoder,
+            profileOutputDir: profileOutputDir);
 
-        foreach (var seg in vibevoiceSegs)
-            results.Add((seg.Start, seg.End, $"speaker_{seg.Speaker}", seg.Content));
+        if (diarization == "vibevoice-asr-builtin")
+        {
+            // Whole-recording path: VibeVoice handles segmentation internally.
+            Console.Write("Transcribing (VibeVoice-ASR built-in diarization)... ");
+            var vibevoiceSegs = vibevoice.Transcribe(rawSamples, sampleRate, channels,
+                maxNewTokens: profileOutputDir is not null ? profileMaxTokens : 8_192,
+                ct: cts.Token);
+            swAsr.Stop();
 
-        Console.WriteLine($"{results.Count} segment(s) ({swAsr.ElapsedMilliseconds}ms)");
+            foreach (var seg in vibevoiceSegs)
+                results.Add((seg.Start, seg.End, $"speaker_{seg.Speaker}", seg.Content));
+
+            Console.WriteLine($"{results.Count} segment(s) ({swAsr.ElapsedMilliseconds}ms)");
+        }
+        else
+        {
+            // Segmented path: use VAD/diarizer segments from Phase 2, merge short
+            // groups, and run VibeVoice on each group independently.
+            var rawGroups = segs.Select(s => (s.start, s.end)).ToList();
+            var groups    = VadSegmenter.MergeShortGroups(rawGroups, minAsrSeconds);
+
+            Console.WriteLine($"Transcribing {groups.Count} group(s) from {segs.Count} segment(s) " +
+                              $"(VibeVoice-ASR, min {minAsrSeconds:F1}s)...");
+
+            // Collect VibeVoice sub-segments with absolute timestamps.
+            var vibeSegs = new List<(double start, double end, string spkId, string text)>();
+            int completed = 0;
+            foreach (var (grpStart, grpEnd) in groups)
+            {
+                cts.Token.ThrowIfCancellationRequested();
+
+                // Slice raw audio at original sample rate (channel-frame-aligned).
+                // Pad each side by asrBufferSeconds to give VibeVoice context at
+                // group boundaries; the midpoint filter below discards any output
+                // segment whose midpoint falls outside [grpStart, grpEnd], so the
+                // same buffer audio in adjacent groups never produces duplicate text.
+                double sliceStart = Math.Max(0, grpStart - asrBufferSeconds);
+                double sliceEnd   = Math.Min(rawSamples.Length / (double)(sampleRate * channels),
+                                             grpEnd + asrBufferSeconds);
+                int startFrame = (int)(sliceStart * sampleRate);
+                int endFrame   = Math.Min((int)Math.Ceiling(sliceEnd * sampleRate),
+                                          rawSamples.Length / channels);
+                float[] slice  = rawSamples[(startFrame * channels)..(endFrame * channels)];
+                double sliceStartSec = (double)startFrame / sampleRate;
+
+                // Token cap: proportional to the full slice duration (including
+                // buffer) so hallucination loops are still bounded.
+                double sliceDuration = (double)(endFrame - startFrame) / sampleRate;
+                int groupMaxTokens = Math.Min(8_192, (int)(sliceDuration * 40) + 150);
+
+                var groupSegs = vibevoice.Transcribe(slice, sampleRate, channels,
+                    maxNewTokens: groupMaxTokens,
+                    ct: cts.Token);
+
+                // Convert to absolute timestamps and apply midpoint filter.
+                // Only keep segments whose midpoint lies within [grpStart, grpEnd]
+                // — this deduplicates the buffer overlap region between groups.
+                foreach (var seg in groupSegs)
+                {
+                    double absStart = sliceStartSec + seg.Start;
+                    double absEnd   = sliceStartSec + seg.End;
+                    double mid      = (absStart + absEnd) / 2.0;
+                    if (mid >= grpStart && mid <= grpEnd)
+                        vibeSegs.Add((absStart, absEnd, $"speaker_{seg.Speaker}", seg.Content));
+                }
+
+                completed++;
+                Console.Write($"\r  Group {completed}/{groups.Count} → {vibeSegs.Count} sub-segment(s)...");
+            }
+
+            swAsr.Stop();
+
+            // Use VibeVoice's segments directly — they carry accurate timestamps
+            // and meaningful speech boundaries.  Assign each VibeVoice segment the
+            // speaker ID from whichever diarizer segment overlaps it most.
+            //
+            // Attempting to redistribute text back onto the original diarizer
+            // segment boundaries causes blank segments and repeated text: when a
+            // VibeVoice sub-segment spans multiple diarizer segments, all of its
+            // text falls on one bucket and the others stay empty.
+            foreach (var vibe in vibeSegs.OrderBy(v => v.start))
+            {
+                if (string.IsNullOrWhiteSpace(vibe.text))
+                    continue;
+
+                // Find diarizer segment with maximum time overlap.
+                int    bestIdx     = -1;
+                double bestOverlap = 0;
+                for (int i = 0; i < segs.Count; i++)
+                {
+                    double ov = Math.Max(0,
+                        Math.Min(vibe.end, segs[i].end) - Math.Max(vibe.start, segs[i].start));
+                    if (ov > bestOverlap) { bestOverlap = ov; bestIdx = i; }
+                }
+                if (bestIdx < 0) // no overlap — fall back to nearest midpoint
+                {
+                    double vibeMid = (vibe.start + vibe.end) / 2;
+                    bestIdx = 0; double bestDist = double.MaxValue;
+                    for (int i = 0; i < segs.Count; i++)
+                    {
+                        double dist = Math.Abs((segs[i].start + segs[i].end) / 2 - vibeMid);
+                        if (dist < bestDist) { bestDist = dist; bestIdx = i; }
+                    }
+                }
+                results.Add((vibe.start, vibe.end, segs[bestIdx].spkId, vibe.text));
+            }
+
+            Console.WriteLine($"\r  {groups.Count} group(s) → {vibeSegs.Count} VibeVoice sub-segment(s) " +
+                              $"→ {results.Count} output segment(s) ({swAsr.ElapsedMilliseconds}ms)");
+        }
     }
     else if (asrBackend == "cohere")
     {
@@ -517,6 +627,8 @@ static void PrintUsage()
     Console.WriteLine("  --asr <parakeet|cohere|vibevoice>  ASR backend (default: parakeet)");
     Console.WriteLine("  --cohere-model <dir>               Path to Cohere Transcribe model dir (default: <model>/cohere_transcribe)");
     Console.WriteLine("  --vibevoice-model <dir>            Path to VibeVoice-ASR model dir (default: <model>/vibevoice_asr)");
+    Console.WriteLine("  --min-asr-seconds <n>              Minimum audio span (s) per ASR group when using segmented VibeVoice (default: 5.0)");
+    Console.WriteLine("  --asr-buffer <n>                   Seconds of audio padding on each side of a group (default: 0.0); helps boundary transitions");
     Console.WriteLine("  --profile <dir>                    Write ORT Chrome-trace JSON to <dir>/ (vibevoice only; for perf analysis)");
     Console.WriteLine("  --profile-steps <n>                Cap decode tokens during --profile run (default: 200; ORT limit: ~1M events)");
     Console.WriteLine("  --language <code>                  Force language for Cohere ASR (ISO 639-1, e.g. en, fr, de)");
