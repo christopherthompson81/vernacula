@@ -31,10 +31,11 @@ public sealed class VibeVoiceAsr : IDisposable
 {
     // ── File names ────────────────────────────────────────────────────────────
 
-    public const string AudioEncoderFile  = "audio_encoder.onnx";
-    public const string DecoderSingleFile = "decoder_single.onnx";
-    public const string ExportReportFile  = "export-report.json";
-    public const string TokenizerFile     = "tokenizer.json";
+    public const string AudioEncoderFile        = "audio_encoder.onnx";
+    public const string DecoderSingleFile       = "decoder_single.onnx";
+    public const string DecoderSingleStaticFile = "decoder_single_static.onnx";
+    public const string ExportReportFile        = "export-report.json";
+    public const string TokenizerFile           = "tokenizer.json";
 
     // ── Audio ─────────────────────────────────────────────────────────────────
 
@@ -72,7 +73,10 @@ public sealed class VibeVoiceAsr : IDisposable
     private readonly int  _headDim;             // 128
     private readonly int  _hiddenSize;          // 3584
     private readonly int  _encoderChunkSamples; // from export-report.json acoustic_tokenizer_chunk_size
-    private readonly bool _kvCacheIsFloat32;    // true for --f32-kv-cache exports, false for BF16 KV
+    private readonly bool _kvCacheIsFloat32;           // true for --f32-kv-cache exports, false for BF16 KV
+    private readonly bool _staticKvCache;              // true when decoder_single_static.onnx is in use
+    private readonly int  _maxKvTokens;                // pre-allocated KV buffer length (static mode only)
+    private readonly bool _audioEmbeddingIsFloat16;    // true when decoder expects float16 (static export artifact)
 
     // ── Tokenizer ─────────────────────────────────────────────────────────────
 
@@ -115,6 +119,11 @@ public sealed class VibeVoiceAsr : IDisposable
         _encoderChunkSamples = report.GetProperty("acoustic_tokenizer_chunk_size").GetInt32();
         _kvCacheIsFloat32    = report.TryGetProperty("f32_kv_cache", out var f32KvProp)
                                && f32KvProp.GetBoolean();
+        _staticKvCache       = report.TryGetProperty("static_kv_cache", out var staticKvProp)
+                               && staticKvProp.GetBoolean();
+        _maxKvTokens         = _staticKvCache && report.TryGetProperty("static_kv_max_tokens", out var maxTokProp)
+                               ? maxTokProp.GetInt32()
+                               : 0;
 
         var tok = report.GetProperty("tokenizer");
         _prefixTokenIds       = ReadLongArray(tok.GetProperty("prefix_token_ids"));
@@ -143,7 +152,10 @@ public sealed class VibeVoiceAsr : IDisposable
 
         var gpuOpts = MakeSessionOptions(ep, GraphOptimizationLevel.ORT_ENABLE_EXTENDED,
             enableProfiling: profileOutputDir is not null);
-        _decoder = new InferenceSession(Path.Combine(modelDir, DecoderSingleFile), gpuOpts);
+        string decoderFile = _staticKvCache ? DecoderSingleStaticFile : DecoderSingleFile;
+        _decoder = new InferenceSession(Path.Combine(modelDir, decoderFile), gpuOpts);
+        _audioEmbeddingIsFloat16 = _decoder.InputMetadata.TryGetValue("audio_embeddings", out var audioMeta)
+                                   && audioMeta.ElementDataType == TensorElementType.Float16;
     }
 
     // ── Public API ────────────────────────────────────────────────────────────
@@ -363,8 +375,15 @@ public sealed class VibeVoiceAsr : IDisposable
         using var binding     = _decoder.CreateIoBinding();
         using var cudaMemInfo = new OrtMemoryInfo("Cuda", OrtAllocatorType.DeviceAllocator, 0, OrtMemType.Default);
 
-        // Empty (cache_len = 0) CPU OrtValues for the initial KV inputs
-        OrtValue[] pastKvs = CreateEmptyKvOrtValues();
+        // Initial KV tensors:
+        //   dynamic mode  → shape [1, kv_heads, 0, head_dim] (zero-length, grows via Concat)
+        //   static mode   → shape [1, kv_heads, max_tokens, head_dim] (pre-allocated, zero-filled)
+        OrtValue[] pastKvs = CreateInitialKvOrtValues();
+
+        // kv_pos: current fill position in the KV buffers (static mode only).
+        // For dynamic mode this is unused but still tracked so RunOnce has a uniform signature.
+        long kvPos = 0;
+
         try
         {
             // ── Chunked prefill ───────────────────────────────────────────────
@@ -383,10 +402,12 @@ public sealed class VibeVoiceAsr : IDisposable
                 long[] pfx = ci == 0             ? prefixIds : noIds;
                 long[] sfx = ci == numChunks - 1 ? suffixIds : noIds;
 
+                int seqLen = pfx.Length + count + sfx.Length;
                 var prevKvs = pastKvs;
                 (lastToken, pastKvs) = RunOnce(
-                    pfx, audioEmbeddings, start, count, sfx, pastKvs, binding, runOptions, cudaMemInfo);
+                    kvPos, pfx, audioEmbeddings, start, count, sfx, pastKvs, binding, runOptions, cudaMemInfo);
                 foreach (var kv in prevKvs) kv.Dispose();
+                kvPos += seqLen;
             }
 
             // ── Greedy decode ─────────────────────────────────────────────────
@@ -404,8 +425,9 @@ public sealed class VibeVoiceAsr : IDisposable
                 tokenBuf[0] = nextToken;
                 var prevKvs = pastKvs;
                 (nextToken, pastKvs) = RunOnce(
-                    tokenBuf, audioEmbeddings, 0, 0, noIds, pastKvs, binding, runOptions, cudaMemInfo);
+                    kvPos, tokenBuf, audioEmbeddings, 0, 0, noIds, pastKvs, binding, runOptions, cudaMemInfo);
                 foreach (var kv in prevKvs) kv.Dispose();
+                kvPos += 1;  // decode step always produces exactly 1 token position
             }
 
             return TokensToText(generated);
@@ -429,6 +451,7 @@ public sealed class VibeVoiceAsr : IDisposable
     /// without calling Dispose — so the KV OrtValues it contained are not prematurely freed.
     /// </summary>
     private (long token, OrtValue[] presentKvs) RunOnce(
+        long         kvPos,       // Current KV fill position (used only in static-KV mode)
         long[]       prefixIds,
         BFloat16[]   audioData,
         int          audioStart,
@@ -441,8 +464,10 @@ public sealed class VibeVoiceAsr : IDisposable
     {
         binding.ClearBoundInputs();
 
-        // Re-register outputs every call: the KV cache grows each step, so the shape
-        // changes and ORT cannot reuse a previously allocated output buffer.
+        // Re-register outputs every call.
+        // Dynamic mode: KV cache shape grows each step — must resize.
+        // Static mode:  KV cache shape is fixed (max_tokens) — same size every step,
+        //               so ORT's BFC arena reuses the same memory blocks efficiently.
         binding.ClearBoundOutputs();
         binding.BindOutputToDevice("logits", OrtMemoryInfo.DefaultInstance);
         for (int i = 0; i < _numLayers; i++)
@@ -450,6 +475,13 @@ public sealed class VibeVoiceAsr : IDisposable
             binding.BindOutputToDevice($"present_key_{i}",   cudaMemInfo);
             binding.BindOutputToDevice($"present_value_{i}", cudaMemInfo);
         }
+
+        // kv_pos (static mode only): int64 scalar telling the model where to scatter new K/V.
+        using var kvPosOrtVal = _staticKvCache
+            ? OrtValue.CreateTensorValueFromMemory(new long[] { kvPos }, new long[0])
+            : null;
+        if (kvPosOrtVal is not null)
+            binding.BindInput("kv_pos", kvPosOrtVal);
 
         // prefix_input_ids [1, P]
         using var prefixOrtVal = OrtValue.CreateTensorValueFromMemory(
@@ -459,13 +491,37 @@ public sealed class VibeVoiceAsr : IDisposable
         // audio_embeddings [N, hiddenSize] — zero-length during decode steps
         // Declared at method scope so it stays alive until after RunWithBinding.
         int audioElems = audioCount * _hiddenSize;
-        using var audioOrtVal = audioElems > 0
-            ? OrtValue.CreateTensorValueFromMemory(
-                  OrtMemoryInfo.DefaultInstance,
-                  new Memory<BFloat16>(audioData, audioStart * _hiddenSize, audioElems),
-                  new long[] { audioCount, _hiddenSize })
-            : OrtValue.CreateTensorValueFromMemory(
-                  Array.Empty<BFloat16>(), new long[] { 0, _hiddenSize });
+        OrtValue audioOrtVal;
+        Float16[]? audioF16Scratch = null;   // kept alive until after RunWithBinding
+        if (_audioEmbeddingIsFloat16)
+        {
+            if (audioElems > 0)
+            {
+                // Static model exports with float16 audio_embeddings; convert BF16 → F16.
+                audioF16Scratch = new Float16[audioElems];
+                int srcBase = audioStart * _hiddenSize;
+                for (int j = 0; j < audioElems; j++)
+                    audioF16Scratch[j] = (Float16)(float)audioData[srcBase + j];
+                audioOrtVal = OrtValue.CreateTensorValueFromMemory(
+                    audioF16Scratch, new long[] { audioCount, _hiddenSize });
+            }
+            else
+            {
+                audioOrtVal = OrtValue.CreateTensorValueFromMemory(
+                    Array.Empty<Float16>(), new long[] { 0, _hiddenSize });
+            }
+        }
+        else
+        {
+            audioOrtVal = audioElems > 0
+                ? OrtValue.CreateTensorValueFromMemory(
+                      OrtMemoryInfo.DefaultInstance,
+                      new Memory<BFloat16>(audioData, audioStart * _hiddenSize, audioElems),
+                      new long[] { audioCount, _hiddenSize })
+                : OrtValue.CreateTensorValueFromMemory(
+                      Array.Empty<BFloat16>(), new long[] { 0, _hiddenSize });
+        }
+        // audioOrtVal must stay alive until after RunWithBinding — dispose manually below.
         binding.BindInput("audio_embeddings", audioOrtVal);
 
         // suffix_input_ids [1, S]
@@ -481,6 +537,7 @@ public sealed class VibeVoiceAsr : IDisposable
         }
 
         _decoder.RunWithBinding(runOptions, binding);
+        audioOrtVal.Dispose();
 
         // GetOutputValues() → IDisposableReadOnlyCollection<OrtValue> (a DisposableList).
         // DisposableList has no finalizer, so skipping `using` is safe: GC collects the
@@ -502,17 +559,33 @@ public sealed class VibeVoiceAsr : IDisposable
 
     // ── Decoder helpers ───────────────────────────────────────────────────────
 
-    private OrtValue[] CreateEmptyKvOrtValues()
+    private OrtValue[] CreateInitialKvOrtValues()
     {
-        // shape [1, numKvHeads, 0, headDim] — zero total elements is valid.
-        // Element type must match the KV cache dtype baked into the exported model:
-        //   float32 for --f32-kv-cache exports, BFloat16 for the default BF16 KV model.
-        var    kvs   = new OrtValue[_numLayers * 2];
-        long[] shape = { 1, _numKvHeads, 0, _headDim };
-        for (int i = 0; i < kvs.Length; i++)
-            kvs[i] = _kvCacheIsFloat32
-                ? OrtValue.CreateTensorValueFromMemory(Array.Empty<float>(),    shape)
-                : OrtValue.CreateTensorValueFromMemory(Array.Empty<BFloat16>(), shape);
+        // Element type must match the KV cache dtype baked into the exported model.
+        var kvs = new OrtValue[_numLayers * 2];
+
+        if (_staticKvCache)
+        {
+            // Static mode: pre-allocate full-size zero-filled buffers.
+            // Shape [1, numKvHeads, maxKvTokens, headDim] — fixed for all steps.
+            // The CLR zero-initialises all arrays; ORT will copy them to CUDA on first use.
+            long[] shape    = { 1, _numKvHeads, _maxKvTokens, _headDim };
+            long   elements = shape[0] * shape[1] * shape[2] * shape[3];
+            for (int i = 0; i < kvs.Length; i++)
+                kvs[i] = _kvCacheIsFloat32
+                    ? OrtValue.CreateTensorValueFromMemory(new float[elements],    shape)
+                    : OrtValue.CreateTensorValueFromMemory(new BFloat16[elements], shape);
+        }
+        else
+        {
+            // Dynamic mode: zero-length initial tensors; shape grows via Concat each step.
+            long[] shape = { 1, _numKvHeads, 0, _headDim };
+            for (int i = 0; i < kvs.Length; i++)
+                kvs[i] = _kvCacheIsFloat32
+                    ? OrtValue.CreateTensorValueFromMemory(Array.Empty<float>(),    shape)
+                    : OrtValue.CreateTensorValueFromMemory(Array.Empty<BFloat16>(), shape);
+        }
+
         return kvs;
     }
 
