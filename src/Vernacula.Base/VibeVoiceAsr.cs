@@ -67,11 +67,12 @@ public sealed class VibeVoiceAsr : IDisposable
 
     // ── Model dimensions ──────────────────────────────────────────────────────
 
-    private readonly int _numLayers;          // 28
-    private readonly int _numKvHeads;         // 4
-    private readonly int _headDim;            // 128
-    private readonly int _hiddenSize;         // 3584
-    private readonly int _encoderChunkSamples; // from export-report.json acoustic_tokenizer_chunk_size
+    private readonly int  _numLayers;           // 28
+    private readonly int  _numKvHeads;          // 4
+    private readonly int  _headDim;             // 128
+    private readonly int  _hiddenSize;          // 3584
+    private readonly int  _encoderChunkSamples; // from export-report.json acoustic_tokenizer_chunk_size
+    private readonly bool _kvCacheIsFloat32;    // true for --f32-kv-cache exports, false for BF16 KV
 
     // ── Tokenizer ─────────────────────────────────────────────────────────────
 
@@ -112,6 +113,8 @@ public sealed class VibeVoiceAsr : IDisposable
         _headDim             = report.GetProperty("head_dim").GetInt32();
         _hiddenSize          = report.GetProperty("hidden_size").GetInt32();
         _encoderChunkSamples = report.GetProperty("acoustic_tokenizer_chunk_size").GetInt32();
+        _kvCacheIsFloat32    = report.TryGetProperty("f32_kv_cache", out var f32KvProp)
+                               && f32KvProp.GetBoolean();
 
         var tok = report.GetProperty("tokenizer");
         _prefixTokenIds       = ReadLongArray(tok.GetProperty("prefix_token_ids"));
@@ -501,11 +504,15 @@ public sealed class VibeVoiceAsr : IDisposable
 
     private OrtValue[] CreateEmptyKvOrtValues()
     {
-        // shape [1, numKvHeads, 0, headDim] — zero total elements is valid
+        // shape [1, numKvHeads, 0, headDim] — zero total elements is valid.
+        // Element type must match the KV cache dtype baked into the exported model:
+        //   float32 for --f32-kv-cache exports, BFloat16 for the default BF16 KV model.
         var    kvs   = new OrtValue[_numLayers * 2];
         long[] shape = { 1, _numKvHeads, 0, _headDim };
         for (int i = 0; i < kvs.Length; i++)
-            kvs[i] = OrtValue.CreateTensorValueFromMemory(Array.Empty<float>(), shape);
+            kvs[i] = _kvCacheIsFloat32
+                ? OrtValue.CreateTensorValueFromMemory(Array.Empty<float>(),    shape)
+                : OrtValue.CreateTensorValueFromMemory(Array.Empty<BFloat16>(), shape);
         return kvs;
     }
 
