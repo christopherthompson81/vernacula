@@ -589,21 +589,38 @@ public sealed class VibeVoiceAsr : IDisposable
         return kvs;
     }
 
-    private static long ArgmaxOrtValue(OrtValue logits, int seqLen)
+    private long ArgmaxOrtValue(OrtValue logits, int seqLen)
     {
-        // logits: [1, seqLen, vocabSize] flattened row-major, CPU-resident
-        var span      = logits.GetTensorDataAsSpan<BFloat16>();
-        int vocabSize = span.Length / seqLen;      // batch = 1
-        int offset    = (seqLen - 1) * vocabSize;  // last token's logit row
-
-        long  best    = 0;
-        float bestVal = float.NegativeInfinity;
-        for (int v = 0; v < vocabSize; v++)
+        // logits: [1, seqLen, vocabSize] flattened row-major, CPU-resident.
+        // Static model outputs float16 logits; dynamic model outputs bfloat16.
+        if (_audioEmbeddingIsFloat16)
         {
-            float val = (float)span[offset + v];
-            if (val > bestVal) { bestVal = val; best = v; }
+            var span      = logits.GetTensorDataAsSpan<Float16>();
+            int vocabSize = span.Length / seqLen;
+            int offset    = (seqLen - 1) * vocabSize;
+            long  best    = 0;
+            float bestVal = float.NegativeInfinity;
+            for (int v = 0; v < vocabSize; v++)
+            {
+                float val = (float)span[offset + v];
+                if (val > bestVal) { bestVal = val; best = v; }
+            }
+            return best;
         }
-        return best;
+        else
+        {
+            var span      = logits.GetTensorDataAsSpan<BFloat16>();
+            int vocabSize = span.Length / seqLen;
+            int offset    = (seqLen - 1) * vocabSize;
+            long  best    = 0;
+            float bestVal = float.NegativeInfinity;
+            for (int v = 0; v < vocabSize; v++)
+            {
+                float val = (float)span[offset + v];
+                if (val > bestVal) { bestVal = val; best = v; }
+            }
+            return best;
+        }
     }
 
     // ── Token decoding ────────────────────────────────────────────────────────
