@@ -1,0 +1,15 @@
+# VibeVoice-ASR currently lands in bleeding-edge Transformers first.
+# Pin to git main until the required release is available.
+git+https://github.com/huggingface/transformers.git
+accelerate>=1.10,<2
+huggingface_hub>=0.34,<2
+onnx>=1.17,<2
+onnxscript>=0.3,<1
+onnxruntime-gpu>=1.22,<2
+numpy>=1.26,<3
+ml_dtypes>=0.5,<1
+soundfile>=0.12,<1
+librosa>=0.10,<1
+sentencepiece>=0.2,<1
+tiktoken>=0.9,<1
+safetensors>=0.5,<1

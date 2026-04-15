@@ -93,3 +93,13 @@ Exports `CohereLabs/cohere-transcribe-03-2026` to the ONNX package used by Verna
 
 - `export_cohere_transcribe_to_onnx.py` — exports the base Cohere encoder, mel frontend, config, tokenizer assets, and by default the KV-cache decoder pair
 - `requirements.txt` — export dependencies
+
+---
+
+## vibevoice_export/
+
+Exports `microsoft/VibeVoice-ASR-HF` to the ONNX package used by Vernacula. See [vibevoice_export/README.md](vibevoice_export/README.md) for full documentation.
+
+- `export_vibevoice_asr_to_onnx.py` — exports the VibeVoice audio encoder, decoder graph(s), configs, and export report
+- `test_static_kv_parity.py` — compares `decoder_single_static.onnx` against `decoder_single.onnx`
+- `requirements.txt` — export dependencies

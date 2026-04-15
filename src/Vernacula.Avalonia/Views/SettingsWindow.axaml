@@ -434,12 +434,13 @@
                                      IsChecked="{Binding IsAsrVibeVoice, Mode=OneWay}"
                                      Command="{Binding SetAsrBackendCommand}"
                                      CommandParameter="VibeVoice"
-                                     Foreground="{DynamicResource TextBrush}">
+                                     Foreground="{DynamicResource TextBrush}"
+                                     IsEnabled="{Binding CanUseVibeVoiceAsr}">
                             <StackPanel>
-                                <TextBlock Text="VibeVoice-ASR"
+                                <TextBlock Text="{Binding VibeVoiceAsrLabel}"
                                            FontWeight="SemiBold"
                                            Foreground="{DynamicResource TextBrush}" />
-                                <TextBlock Text="Whole-recording ASR with built-in diarization. Requires local weights in the vibevoice_asr models folder."
+                                <TextBlock Text="{Binding VibeVoiceAsrDescription}"
                                            Foreground="{DynamicResource SubtextBrush}"
                                            FontSize="11"
                                            TextWrapping="Wrap" />

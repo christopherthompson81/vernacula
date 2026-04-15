@@ -30,7 +30,7 @@ internal partial class SettingsViewModel : ObservableObject
     private SegmentationMode _selectedSegmentation;
 
     [ObservableProperty]
-    [NotifyPropertyChangedFor(nameof(IsAsrParakeet), nameof(IsAsrCohere), nameof(IsAsrVibeVoice), nameof(ShowStandardSegmentationOptions), nameof(ShowVibeVoiceBuiltinSegmentation), nameof(ShowDiariZenInSegmentation), nameof(ShowGatedSegmentationHint))]
+    [NotifyPropertyChangedFor(nameof(IsAsrParakeet), nameof(IsAsrCohere), nameof(IsAsrVibeVoice), nameof(ShowStandardSegmentationOptions), nameof(ShowVibeVoiceBuiltinSegmentation), nameof(ShowDiariZenInSegmentation), nameof(ShowGatedSegmentationHint), nameof(CanUseVibeVoiceAsr), nameof(VibeVoiceAsrLabel), nameof(VibeVoiceAsrDescription))]
     private AsrBackend _selectedAsrBackend;
 
     [ObservableProperty]
@@ -66,6 +66,11 @@ internal partial class SettingsViewModel : ObservableObject
     public bool IsAsrParakeet       => SelectedAsrBackend == AsrBackend.Parakeet;
     public bool IsAsrCohere         => SelectedAsrBackend == AsrBackend.Cohere;
     public bool IsAsrVibeVoice      => SelectedAsrBackend == AsrBackend.VibeVoice;
+    public bool CanUseVibeVoiceAsr  => CudaEpWorking;
+    public string VibeVoiceAsrLabel => CanUseVibeVoiceAsr ? "VibeVoice-ASR" : "VibeVoice-ASR (Unavailable - CUDA Missing)";
+    public string VibeVoiceAsrDescription => CanUseVibeVoiceAsr
+        ? "Whole-recording ASR with built-in diarization. Requires local weights in the vibevoice_asr models folder."
+        : "Unavailable because the CUDA execution provider check did not pass.";
     public bool ShowCohereLanguagePicker => SelectedAsrBackend == AsrBackend.Cohere;
     public bool IsDenoiserNone      => SelectedDenoiser == DenoiserMode.None;
     public bool IsDenoiserDfn3      => SelectedDenoiser == DenoiserMode.DeepFilterNet3;
@@ -218,6 +223,12 @@ internal partial class SettingsViewModel : ObservableObject
 
     partial void OnSelectedAsrBackendChanged(AsrBackend value)
     {
+        if (value == AsrBackend.VibeVoice && !CanUseVibeVoiceAsr)
+        {
+            SelectedAsrBackend = AsrBackend.Parakeet;
+            return;
+        }
+
         if (value == AsrBackend.VibeVoice && SelectedSegmentation != SegmentationMode.VibeVoiceBuiltin)
             _lastNonVibeSegmentation = NormalizeSegmentationForBackend(SelectedSegmentation, AsrBackend.Parakeet);
 
@@ -315,6 +326,12 @@ internal partial class SettingsViewModel : ObservableObject
             (cudaOk, _)          = _modelMgr.CheckCuda();
         });
         CudaEpWorking = cudaOk;
+        OnPropertyChanged(nameof(CanUseVibeVoiceAsr));
+        OnPropertyChanged(nameof(VibeVoiceAsrLabel));
+        OnPropertyChanged(nameof(VibeVoiceAsrDescription));
+
+        if (!CudaEpWorking && SelectedAsrBackend == AsrBackend.VibeVoice)
+            SelectedAsrBackend = AsrBackend.Parakeet;
 
         // Batch ceiling — query free VRAM (accurate post-load figure)
         var (_, freeMb) = HardwareInfo.GetGpuMemoryMb();
