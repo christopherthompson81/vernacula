@@ -49,6 +49,7 @@ public partial class TranscriptEditorWindow : Window
     private readonly string _jobAsrLanguageCode = "auto";
     private readonly bool _asrModelsAvailable;
     private readonly bool _showApproximateTimingNotice;
+    private readonly string _approximateTimingNoticeText = "";
     private bool _isUpdatingUi;
     private bool _isLoading;
     private bool _suppressSegmentCollectionChanged;
@@ -95,13 +96,14 @@ public partial class TranscriptEditorWindow : Window
         _jobAsrLanguageCode = string.IsNullOrWhiteSpace(asrLanguageCode)
             ? "auto"
             : asrLanguageCode;
-        _showApproximateTimingNotice = string.Equals(
-            _jobAsrModel,
-            "CohereLabs/cohere-transcribe-03-2026",
-            StringComparison.Ordinal);
-
         bool isCohere    = string.Equals(_jobAsrModel, "CohereLabs/cohere-transcribe-03-2026", StringComparison.Ordinal);
         bool isVibeVoice = string.Equals(_jobAsrModel, "vibevoice/vibevoice-asr", StringComparison.Ordinal);
+        _showApproximateTimingNotice = isCohere || isVibeVoice;
+        _approximateTimingNoticeText = isCohere
+            ? "Cohere Transcribe: no word-level timing; token sync is approximate."
+            : isVibeVoice
+                ? "VibeVoice-ASR: no token-level timing; token sync is approximate."
+                : "";
 
         string? vocabPath = isCohere
             ? Path.Combine(modelsDir, "cohere_transcribe", CohereTranscribe.VocabFile)
@@ -535,7 +537,7 @@ public partial class TranscriptEditorWindow : Window
     {
         _state.SetHeader(_audioBaseName, $"{_vm.Segments.Count} {Loc.Instance["results_segments_label"]}");
         _state.SetHeaderNotice(
-            "Cohere Transcribe: no word-level timing; token sync is approximate.",
+            _approximateTimingNoticeText,
             _showApproximateTimingNotice);
     }
 
