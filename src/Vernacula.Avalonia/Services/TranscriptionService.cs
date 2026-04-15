@@ -147,7 +147,8 @@ internal class TranscriptionService
         if (!db.CheckMetadata(audioPath))
             db.PopulateMetadata(audioPath);
 
-        db.UpdateMetadata("asr_model", asrModelName);
+        string effectiveAsrModelName = runVibeVoice ? "vibevoice/vibevoice-asr" : asrModelName;
+        db.UpdateMetadata("asr_model", effectiveAsrModelName);
         db.UpdateMetadata("asr_language_code",
             string.IsNullOrWhiteSpace(asrLanguageCode) ? "auto" : asrLanguageCode);
 
@@ -201,18 +202,16 @@ internal class TranscriptionService
                     if (seenVibeSpeakers.Add(seg.Speaker))
                         db.InsertSpeaker(spkId);
 
-                    // Word-level synthetic tokens let the transcript editor split segments.
-                    // One token per word; timestamps uniformly distributed over the segment.
-                    string[] words     = (seg.Content ?? "").Split(' ', StringSplitOptions.RemoveEmptyEntries);
-                    int      wordCount = Math.Max(1, words.Length);
+                    // VibeVoice does not emit timestamps, so we synthesize them uniformly over
+                    // the segment while preserving the real decoder token ids and logprobs.
+                    int tokenCount = Math.Max(1, Math.Max(seg.TokenIds.Count, seg.TokenLogprobs.Count));
                     const double frameSeconds = Config.HopLength * 8.0 / Config.SampleRate;
                     double segDuration = seg.End - seg.Start;
-                    var syntheticTokens     = new int[wordCount];
-                    var syntheticTimestamps = new int[wordCount];
-                    for (int wi = 0; wi < wordCount; wi++)
+                    var persistedTokens     = seg.TokenIds.Count > 0 ? seg.TokenIds.ToArray() : new int[tokenCount];
+                    var syntheticTimestamps = new int[tokenCount];
+                    for (int wi = 0; wi < tokenCount; wi++)
                     {
-                        syntheticTokens[wi]     = wi;
-                        syntheticTimestamps[wi] = (int)((double)wi / wordCount * segDuration / frameSeconds);
+                        syntheticTimestamps[wi] = (int)((double)wi / tokenCount * segDuration / frameSeconds);
                     }
 
                     db.InsertResult(
@@ -224,9 +223,10 @@ internal class TranscriptionService
                         endTimeF:             AudioUtils.SecondsToHhMmSs(Math.Round(seg.End)),
                         asrContent:           seg.Content,
                         content:              seg.Content,
-                        tokens:               JsonSerializer.Serialize(syntheticTokens),
+                        tokens:               JsonSerializer.Serialize(persistedTokens),
                         timestamps:           JsonSerializer.Serialize(syntheticTimestamps),
-                        logprobs:             null);
+                        logprobs:             JsonSerializer.Serialize(
+                                                  seg.TokenLogprobs.Count > 0 ? seg.TokenLogprobs : seg.WordLogprobs));
                 }
                 db.CommitBulkInsert();
                 db.MarkDiarizationComplete();

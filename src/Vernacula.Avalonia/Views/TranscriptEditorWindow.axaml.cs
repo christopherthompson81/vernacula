@@ -103,11 +103,10 @@ public partial class TranscriptEditorWindow : Window
         bool isCohere    = string.Equals(_jobAsrModel, "CohereLabs/cohere-transcribe-03-2026", StringComparison.Ordinal);
         bool isVibeVoice = string.Equals(_jobAsrModel, "vibevoice/vibevoice-asr", StringComparison.Ordinal);
 
-        // VibeVoice has its own GPT-2 BPE tokenizer — don't load Parakeet vocab for it
         string? vocabPath = isCohere
             ? Path.Combine(modelsDir, "cohere_transcribe", CohereTranscribe.VocabFile)
             : isVibeVoice
-                ? null
+                ? Path.Combine(modelsDir, Config.VibeVoiceSubDir, VibeVoiceAsr.TokenizerFile)
                 : Path.Combine(modelsDir, Config.VocabFile);
         if (vocabPath is not null && File.Exists(vocabPath))
         {
@@ -1201,22 +1200,10 @@ public partial class TranscriptEditorWindow : Window
             return;
         }
 
-        // For VibeVoice, tokens are word indices — show the actual words in the split dialog
         IReadOnlyList<string> tokenTexts;
-        if (string.Equals(_jobAsrModel, "vibevoice/vibevoice-asr", StringComparison.Ordinal)
-            && seg.Content.Length > 0)
-        {
-            string[] words = seg.Content.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-            tokenTexts = words.Length > 0
-                ? words
-                : seg.Tokens.Select(t => $"[{t}]").ToArray();
-        }
-        else
-        {
-            tokenTexts = _vocab != null
-                ? _vocab.GetTokenRuns(seg.Tokens, seg.Logprobs).Select(r => r.text).ToList()
-                : seg.Tokens.Select(t => $"[{t}]").ToList();
-        }
+        tokenTexts = _vocab != null
+            ? _vocab.GetTokenRuns(seg.Tokens, seg.Logprobs).Select(r => r.text).ToList()
+            : seg.Tokens.Select(t => $"[{t}]").ToList();
 
         var dialog = new SplitSegmentDialog(tokenTexts);
         await dialog.ShowDialog(this);

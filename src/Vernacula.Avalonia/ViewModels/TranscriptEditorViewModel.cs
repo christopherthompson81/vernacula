@@ -1092,12 +1092,12 @@ internal partial class TranscriptEditorViewModel : ObservableObject, IDisposable
             using var vibe = new VibeVoiceAsr(vibeVoiceModelsDir, persistEncoder: false);
             var vibeSegs = vibe.Transcribe(mono16k, Config.SampleRate, 1);
             text = string.Join(" ", vibeSegs.Select(s => s.Content));
-            // Word-level synthetic tokens — same scheme used during initial transcription
-            string[] words    = text.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-            int wordCount     = Math.Max(1, words.Length);
-            tokens            = Enumerable.Range(0, wordCount).ToList();
-            timestamps        = BuildSyntheticTokenTimestamps(seg.PlayEnd - seg.PlayStart, wordCount);
-            // logprobs stays [] — VibeVoice does not expose per-token confidences
+            tokens         = vibeSegs.SelectMany(s => s.TokenIds).ToList();
+            logprobs       = vibeSegs.SelectMany(s => s.TokenLogprobs).ToList();
+            int tokenCount = Math.Max(1, Math.Max(tokens.Count, logprobs.Count));
+            if (tokens.Count == 0)
+                tokens = Enumerable.Range(0, tokenCount).ToList();
+            timestamps = BuildSyntheticTokenTimestamps(seg.PlayEnd - seg.PlayStart, tokenCount);
         }
         else
         {

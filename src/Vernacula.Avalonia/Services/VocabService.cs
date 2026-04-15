@@ -13,10 +13,12 @@ namespace Vernacula.App.Services;
 /// </summary>
 internal class VocabService
 {
-    private enum VocabKind { Parakeet, Cohere }
+    private enum VocabKind { Parakeet, Cohere, VibeVoice }
 
     private readonly Dictionary<int, string> _vocab;
     private readonly VocabKind _kind;
+    private readonly Dictionary<int, string> _addedContent = [];
+    private readonly Dictionary<char, byte> _byteLevelDecode = [];
 
     public VocabService(string modelsDir, string? asrModel = null)
     {
@@ -24,6 +26,12 @@ internal class VocabService
         {
             _kind = VocabKind.Cohere;
             _vocab = LoadCohereVocab(Path.Combine(modelsDir, "cohere_transcribe", CohereTranscribe.VocabFile));
+        }
+        else if (string.Equals(asrModel, "vibevoice/vibevoice-asr", StringComparison.Ordinal))
+        {
+            _kind = VocabKind.VibeVoice;
+            (_vocab, _addedContent) = LoadVibeVoiceVocab(Path.Combine(modelsDir, Config.VibeVoiceSubDir, VibeVoiceAsr.TokenizerFile));
+            _byteLevelDecode = BuildByteLevelDecode();
         }
         else
         {
@@ -65,6 +73,27 @@ internal class VocabService
         return vocab;
     }
 
+    private static (Dictionary<int, string> vocab, Dictionary<int, string> addedContent) LoadVibeVoiceVocab(string vocabPath)
+    {
+        var vocab = new Dictionary<int, string>();
+        var addedContent = new Dictionary<int, string>();
+        if (!File.Exists(vocabPath)) return (vocab, addedContent);
+
+        using var doc = JsonDocument.Parse(File.ReadAllText(vocabPath));
+        var root = doc.RootElement;
+
+        foreach (var kv in root.GetProperty("model").GetProperty("vocab").EnumerateObject())
+            vocab[kv.Value.GetInt32()] = kv.Name;
+
+        if (root.TryGetProperty("added_tokens", out var addedTokens))
+        {
+            foreach (var at in addedTokens.EnumerateArray())
+                addedContent[at.GetProperty("id").GetInt32()] = at.GetProperty("content").GetString() ?? "";
+        }
+
+        return (vocab, addedContent);
+    }
+
     // ── Token decoding ────────────────────────────────────────────────────────
 
     public string DecodeTokens(IReadOnlyList<int> tokens)
@@ -72,6 +101,7 @@ internal class VocabService
         return _kind switch
         {
             VocabKind.Cohere   => DecodeCohereTokens(tokens),
+            VocabKind.VibeVoice => DecodeVibeVoiceTokens(tokens),
             _                  => DecodeParakeetTokens(tokens),
         };
     }
@@ -82,6 +112,8 @@ internal class VocabService
     {
         if (_kind == VocabKind.Cohere)
             return GetCohereTokenRuns(tokens, logprobs);
+        if (_kind == VocabKind.VibeVoice)
+            return GetVibeVoiceTokenRuns(tokens, logprobs);
 
         var runs = new List<(string, float)>(tokens.Count);
         for (int i = 0; i < tokens.Count; i++)
@@ -141,6 +173,14 @@ internal class VocabService
         return text.Length > 0 && text[0] == ' ' ? text[1..] : text;
     }
 
+    private string DecodeVibeVoiceTokens(IReadOnlyList<int> tokens)
+    {
+        var bytes = new List<byte>(tokens.Count * 4);
+        foreach (int token in tokens)
+            bytes.AddRange(GetVibeVoiceTokenBytes(token));
+        return Encoding.UTF8.GetString(bytes.ToArray());
+    }
+
     private string DecodeToken(int token)
     {
         if (!_vocab.TryGetValue(token, out var value))
@@ -148,6 +188,9 @@ internal class VocabService
 
         if (_kind == VocabKind.Parakeet)
             return value;
+
+        if (_kind == VocabKind.VibeVoice)
+            return Encoding.UTF8.GetString(GetVibeVoiceTokenBytes(token));
 
         if (value.Length == 6 && value[0] == '<' && value[1] == '0' && value[2] == 'x' && value[5] == '>')
         {
@@ -196,6 +239,50 @@ internal class VocabService
         return Encoding.UTF8.GetBytes(value.Replace('\u2581', ' '));
     }
 
+    private IReadOnlyList<(string text, float logprob)> GetVibeVoiceTokenRuns(
+        IReadOnlyList<int> tokens, IReadOnlyList<float> logprobs)
+    {
+        var runs = new List<(string, float)>(tokens.Count);
+        Decoder decoder = Encoding.UTF8.GetDecoder();
+
+        for (int i = 0; i < tokens.Count; i++)
+        {
+            byte[] tokenBytes = GetVibeVoiceTokenBytes(tokens[i]);
+            string runText;
+            if (tokenBytes.Length == 0)
+            {
+                runText = "";
+            }
+            else
+            {
+                int charCount = decoder.GetCharCount(tokenBytes, 0, tokenBytes.Length, flush: false);
+                char[] chars = new char[charCount];
+                decoder.GetChars(tokenBytes, 0, tokenBytes.Length, chars, 0, flush: false);
+                runText = new string(chars);
+            }
+
+            float lp = i < logprobs.Count ? logprobs[i] : 0f;
+            runs.Add((runText, lp));
+        }
+
+        return runs;
+    }
+
+    private byte[] GetVibeVoiceTokenBytes(int token)
+    {
+        if (_addedContent.TryGetValue(token, out var special))
+            return Encoding.UTF8.GetBytes(special);
+
+        if (!_vocab.TryGetValue(token, out var raw))
+            return [];
+
+        var bytes = new List<byte>(raw.Length);
+        foreach (char ch in raw)
+            if (_byteLevelDecode.TryGetValue(ch, out byte b))
+                bytes.Add(b);
+        return bytes.ToArray();
+    }
+
     private static bool TryParseHexByte(char hi, char lo, out byte value)
     {
         int h = HexVal(hi);
@@ -212,6 +299,28 @@ internal class VocabService
         >= 'A' and <= 'F' => c - 'A' + 10,
         _ => -1,
     };
+
+    private static Dictionary<char, byte> BuildByteLevelDecode()
+    {
+        var printable = new HashSet<int>(
+            Enumerable.Range(33, 94)
+            .Concat(Enumerable.Range(161, 12))
+            .Concat(Enumerable.Range(174, 82)));
+
+        var dict = new Dictionary<char, byte>(280);
+
+        foreach (int b in printable)
+            dict[(char)b] = (byte)b;
+
+        int extra = 0;
+        for (int b = 0; b < 256; b++)
+        {
+            if (!printable.Contains(b))
+                dict[(char)(0x100 + extra++)] = (byte)b;
+        }
+
+        return dict;
+    }
 
     // ── Confidence highlight ──────────────────────────────────────────────────
 

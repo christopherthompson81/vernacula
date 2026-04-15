@@ -244,8 +244,8 @@ public sealed class VibeVoiceAsr : IDisposable
         }
         int numAudioTokens = audioEmbeddings.Length / _hiddenSize;
 
-        // 4 — Run decoder (chunked prefill + greedy decode) → raw JSON text
-        string jsonText = RunDecoder(
+        // 4 — Run decoder (chunked prefill + greedy decode) → raw JSON text + per-segment token/word data
+        var (jsonText, segTokenIds, segTokenLogprobs, segWordLogprobs) = RunDecoder(
             _prefixTokenIds,
             audioEmbeddings,
             numAudioTokens,
@@ -263,8 +263,17 @@ public sealed class VibeVoiceAsr : IDisposable
             Console.Error.WriteLine($"[profile] decoder → {destPath}");
         }
 
-        // 5 — Parse VibeVoice JSON output
-        return ParseOutput(jsonText);
+        // 5 — Parse VibeVoice JSON output and attach per-word logprobs
+        var rawSegs = ParseOutput(jsonText);
+        var result  = new VibeVoiceSegment[rawSegs.Count];
+        for (int i = 0; i < rawSegs.Count; i++)
+            result[i] = rawSegs[i] with
+            {
+                TokenIds      = i < segTokenIds.Length ? segTokenIds[i] : [],
+                TokenLogprobs = i < segTokenLogprobs.Length ? segTokenLogprobs[i] : [],
+                WordLogprobs  = i < segWordLogprobs.Length ? segWordLogprobs[i] : []
+            };
+        return result;
     }
 
     public void Dispose()
@@ -393,7 +402,7 @@ public sealed class VibeVoiceAsr : IDisposable
 
     // ── Decoder ───────────────────────────────────────────────────────────────
 
-    private string RunDecoder(
+    private (string json, int[][] segTokenIds, float[][] segTokenLogprobs, float[][] segWordLogprobs) RunDecoder(
         long[] prefixIds,
         BFloat16[] audioEmbeddings,
         int numAudioTokens,
@@ -423,7 +432,8 @@ public sealed class VibeVoiceAsr : IDisposable
             int    chunkSize = prefillChunkTokens > 0 ? prefillChunkTokens : numAudioTokens;
             int    numChunks = (numAudioTokens + chunkSize - 1) / Math.Max(1, chunkSize);
             long[] noIds     = [];
-            long   lastToken = 0;
+            long   lastToken   = 0;
+            float  lastLogprob = 0f;
 
             for (int ci = 0; ci < numChunks; ci++)
             {
@@ -436,7 +446,7 @@ public sealed class VibeVoiceAsr : IDisposable
 
                 int seqLen = pfx.Length + count + sfx.Length;
                 var prevKvs = pastKvs;
-                (lastToken, pastKvs) = RunOnce(
+                (lastToken, lastLogprob, pastKvs) = RunOnce(
                     kvPos, pfx, audioEmbeddings, start, count, sfx, pastKvs, binding, runOptions, cudaMemInfo);
                 foreach (var kv in prevKvs) kv.Dispose();
                 kvPos += seqLen;
@@ -444,9 +454,11 @@ public sealed class VibeVoiceAsr : IDisposable
 
             // ── Greedy decode ─────────────────────────────────────────────────
 
-            var    generated  = new List<long>(maxNewTokens);
-            long   nextToken  = lastToken;
-            long[] tokenBuf   = new long[1]; // reused each step — avoids per-step allocation
+            var    generated     = new List<long>(maxNewTokens);
+            var    tokenLogprobs = new List<float>(maxNewTokens);
+            long   nextToken     = lastToken;
+            float  nextLogprob   = lastLogprob;  // logprob of nextToken, computed at previous step
+            long[] tokenBuf      = new long[1];  // reused each step — avoids per-step allocation
 
             // Streaming: accumulate decoded bytes and emit complete segments via callback.
             List<byte>? streamBytes   = onSegment is not null ? new List<byte>(4096) : null;
@@ -457,6 +469,7 @@ public sealed class VibeVoiceAsr : IDisposable
                 ct.ThrowIfCancellationRequested();
                 if (nextToken == _eosTokenId || nextToken == _imEndTokenId) break;
                 generated.Add(nextToken);
+                tokenLogprobs.Add(nextLogprob);  // store logprob computed at previous RunOnce call
 
                 // Streaming: decode this token's bytes and check for newly closed segments.
                 if (streamBytes is not null)
@@ -483,13 +496,16 @@ public sealed class VibeVoiceAsr : IDisposable
 
                 tokenBuf[0] = nextToken;
                 var prevKvs = pastKvs;
-                (nextToken, pastKvs) = RunOnce(
+                (nextToken, nextLogprob, pastKvs) = RunOnce(
                     kvPos, tokenBuf, audioEmbeddings, 0, 0, noIds, pastKvs, binding, runOptions, cudaMemInfo);
                 foreach (var kv in prevKvs) kv.Dispose();
                 kvPos += 1;  // decode step always produces exactly 1 token position
             }
 
-            return TokensToText(generated);
+            string jsonText = TokensToText(generated);
+            var    segments = ParseOutput(jsonText);
+            var    segData  = ComputeSegmentTokenData(generated, tokenLogprobs, jsonText, segments);
+            return (jsonText, segData.TokenIds, segData.TokenLogprobs, segData.WordLogprobs);
         }
         finally
         {
@@ -509,7 +525,7 @@ public sealed class VibeVoiceAsr : IDisposable
     /// dispose the logits OrtValue immediately, and let the bare DisposableList be GC-collected
     /// without calling Dispose — so the KV OrtValues it contained are not prematurely freed.
     /// </summary>
-    private (long token, OrtValue[] presentKvs) RunOnce(
+    private (long token, float logprob, OrtValue[] presentKvs) RunOnce(
         long         kvPos,       // Current KV fill position (used only in static-KV mode)
         long[]       prefixIds,
         BFloat16[]   audioData,
@@ -603,9 +619,9 @@ public sealed class VibeVoiceAsr : IDisposable
         // list shell without touching the OrtValues inside it.
         var outputs = binding.GetOutputValues();
 
-        // outputs[0] = logits (CPU) — read argmax, then free immediately
-        int  seqLen = prefixIds.Length + audioCount + suffixIds.Length;
-        long token  = ArgmaxOrtValue(outputs[0], seqLen);
+        // outputs[0] = logits (CPU) — read argmax + logprob, then free immediately
+        int   seqLen = prefixIds.Length + audioCount + suffixIds.Length;
+        var   (token, logprob) = ArgmaxAndLogprobOrtValue(outputs[0], seqLen);
         outputs[0].Dispose();
 
         // outputs[1..56] = present_key/value (CUDA) — take ownership
@@ -613,7 +629,7 @@ public sealed class VibeVoiceAsr : IDisposable
         for (int i = 0; i < _numLayers * 2; i++)
             presentKvs[i] = outputs[i + 1];
 
-        return (token, presentKvs);
+        return (token, logprob, presentKvs);
     }
 
     // ── Decoder helpers ───────────────────────────────────────────────────────
@@ -648,7 +664,11 @@ public sealed class VibeVoiceAsr : IDisposable
         return kvs;
     }
 
-    private long ArgmaxOrtValue(OrtValue logits, int seqLen)
+    /// <summary>
+    /// Returns the argmax token id and its log-probability (log softmax of the last
+    /// position's logits).  Mirrors the Parakeet approach: logprob = logit[best] - logsumexp.
+    /// </summary>
+    private (long token, float logprob) ArgmaxAndLogprobOrtValue(OrtValue logits, int seqLen)
     {
         // logits: [1, seqLen, vocabSize] flattened row-major, CPU-resident.
         // Static model outputs float16 logits; dynamic model outputs bfloat16.
@@ -664,7 +684,11 @@ public sealed class VibeVoiceAsr : IDisposable
                 float val = (float)span[offset + v];
                 if (val > bestVal) { bestVal = val; best = v; }
             }
-            return best;
+            // logsumexp (stable): bestVal is already the max
+            double sumExp = 0.0;
+            for (int v = 0; v < vocabSize; v++)
+                sumExp += Math.Exp((float)span[offset + v] - bestVal);
+            return (best, (float)-Math.Log(sumExp));  // = bestVal - bestVal - log(sumExp)
         }
         else
         {
@@ -678,7 +702,10 @@ public sealed class VibeVoiceAsr : IDisposable
                 float val = (float)span[offset + v];
                 if (val > bestVal) { bestVal = val; best = v; }
             }
-            return best;
+            double sumExp = 0.0;
+            for (int v = 0; v < vocabSize; v++)
+                sumExp += Math.Exp((float)span[offset + v] - bestVal);
+            return (best, (float)-Math.Log(sumExp));
         }
     }
 
@@ -727,6 +754,143 @@ public sealed class VibeVoiceAsr : IDisposable
         }
 
         return Encoding.UTF8.GetString(bytes.ToArray());
+    }
+
+    // ── Per-segment word logprob extraction ──────────────────────────────────
+
+    /// <summary>
+    /// For each parsed segment, locate the generated decoder tokens that produced its
+    /// content span, returning both token-level and word-level confidence arrays.
+    ///
+    /// Strategy:
+    ///   1. Replay AppendTokenBytes to build a char-to-token-index map over fullJson.
+    ///   2. For each segment, locate its "content" field value in fullJson (sequential
+    ///      search — segments appear in generation order).
+    ///   3. For each whitespace-delimited word in the content, average the logprobs of
+    ///      every unique token that contributed at least one character to that word.
+    /// </summary>
+    private (int[][] TokenIds, float[][] TokenLogprobs, float[][] WordLogprobs) ComputeSegmentTokenData(
+        List<long>                     generated,
+        List<float>                    tokenLogprobs,
+        string                         fullJson,
+        IReadOnlyList<VibeVoiceSegment> segments)
+    {
+        var tokenIdsResult      = new int[segments.Count][];
+        var tokenLogprobsResult = new float[segments.Count][];
+        var wordLogprobsResult  = new float[segments.Count][];
+        for (int i = 0; i < segments.Count; i++)
+        {
+            tokenIdsResult[i]      = [];
+            tokenLogprobsResult[i] = [];
+            wordLogprobsResult[i]  = [];
+        }
+
+        if (generated.Count == 0 || segments.Count == 0)
+            return (tokenIdsResult, tokenLogprobsResult, wordLogprobsResult);
+
+        // Build a char-to-token-index map: charToToken[c] = index of the token in `generated`
+        // whose decoded output includes the character at position c in fullJson.
+        var charToToken = new int[fullJson.Length];
+        {
+            int charPos = 0;
+            var tempBuf = new List<byte>(16);
+            for (int ti = 0; ti < generated.Count && charPos < fullJson.Length; ti++)
+            {
+                tempBuf.Clear();
+                AppendTokenBytes(generated[ti], tempBuf);
+                if (tempBuf.Count == 0) continue;
+                string tokenStr = Encoding.UTF8.GetString(tempBuf.ToArray());
+                for (int k = 0; k < tokenStr.Length && charPos < charToToken.Length; k++)
+                    charToToken[charPos++] = ti;
+            }
+        }
+
+        // Locate each segment's content value in the JSON and compute word-level logprobs.
+        // The JSON produced by VibeVoice has used PascalCase keys in practice, but we
+        // accept either casing here because older comments/docs referred to lowercase.
+        const string contentKeyPascal = "\"Content\":\"";
+        const string contentKeyCamel  = "\"content\":\"";
+        int searchFrom = 0;
+
+        for (int si = 0; si < segments.Count; si++)
+        {
+            string content = segments[si].Content;
+            if (string.IsNullOrEmpty(content)) continue;
+
+            int keyIdxPascal = fullJson.IndexOf(contentKeyPascal, searchFrom, StringComparison.Ordinal);
+            int keyIdxCamel  = fullJson.IndexOf(contentKeyCamel,  searchFrom, StringComparison.Ordinal);
+            int keyIdx;
+            int keyLength;
+
+            if (keyIdxPascal >= 0 && (keyIdxCamel < 0 || keyIdxPascal < keyIdxCamel))
+            {
+                keyIdx    = keyIdxPascal;
+                keyLength = contentKeyPascal.Length;
+            }
+            else
+            {
+                keyIdx    = keyIdxCamel;
+                keyLength = contentKeyCamel.Length;
+            }
+
+            if (keyIdx < 0) break;
+
+            int contentCharStart = keyIdx + keyLength;
+            searchFrom = contentCharStart + content.Length;  // advance past this segment
+
+            var tokenIndices = new List<int>();
+            int prevTi = -1;
+            for (int c = contentCharStart; c < searchFrom && c < charToToken.Length; c++)
+            {
+                int ti = charToToken[c];
+                if (ti != prevTi && ti >= 0 && ti < generated.Count)
+                {
+                    tokenIndices.Add(ti);
+                    prevTi = ti;
+                }
+            }
+
+            tokenIdsResult[si] = tokenIndices.Select(ti => checked((int)generated[ti])).ToArray();
+            tokenLogprobsResult[si] = tokenIndices
+                .Where(ti => ti >= 0 && ti < tokenLogprobs.Count)
+                .Select(ti => tokenLogprobs[ti])
+                .ToArray();
+
+            // Split into words and compute the mean logprob of tokens covering each word.
+            string[] words       = content.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            var      wordLogprobs = new float[words.Length];
+            int      wordOffset  = 0;
+
+            for (int wi = 0; wi < words.Length; wi++)
+            {
+                int wordPosInContent = content.IndexOf(words[wi], wordOffset, StringComparison.Ordinal);
+                if (wordPosInContent < 0) { wordOffset += words[wi].Length; continue; }
+
+                int wcStart  = contentCharStart + wordPosInContent;
+                int wcEnd    = wcStart + words[wi].Length;
+                wordOffset   = wordPosInContent + words[wi].Length;
+
+                // Average logprobs of unique tokens covering chars [wcStart, wcEnd).
+                float sum   = 0f;
+                int   count = 0;
+                prevTi = -1;
+                for (int c = wcStart; c < wcEnd && c < charToToken.Length; c++)
+                {
+                    int ti = charToToken[c];
+                    if (ti != prevTi && ti < tokenLogprobs.Count)
+                    {
+                        sum  += tokenLogprobs[ti];
+                        count++;
+                        prevTi = ti;
+                    }
+                }
+                wordLogprobs[wi] = count > 0 ? sum / count : 0f;
+            }
+
+            wordLogprobsResult[si] = wordLogprobs;
+        }
+
+        return (tokenIdsResult, tokenLogprobsResult, wordLogprobsResult);
     }
 
     // ── Output parsing ────────────────────────────────────────────────────────
@@ -912,7 +1076,25 @@ public sealed class VibeVoiceAsr : IDisposable
 // ── Output types ─────────────────────────────────────────────────────────────
 
 /// <summary>A single diarized, timestamped transcription segment from VibeVoice-ASR.</summary>
-public sealed record VibeVoiceSegment(double Start, double End, int Speaker, string Content);
+public sealed record VibeVoiceSegment(double Start, double End, int Speaker, string Content)
+{
+    /// <summary>
+    /// Raw VibeVoice decoder token ids that contributed characters to this segment's Content.
+    /// </summary>
+    public IReadOnlyList<int> TokenIds { get; init; } = [];
+
+    /// <summary>
+    /// Per-token log-probabilities aligned 1:1 with <see cref="TokenIds"/>.
+    /// </summary>
+    public IReadOnlyList<float> TokenLogprobs { get; init; } = [];
+
+    /// <summary>
+     /// Per-word log-probabilities (one entry per whitespace-delimited word in Content).
+     /// Computed from the decoder logits at generation time using the same log-softmax
+    /// formula as Parakeet.  Empty when not yet computed (e.g. streaming callbacks).
+    /// </summary>
+    public IReadOnlyList<float> WordLogprobs { get; init; } = [];
+}
 
 /// <summary>Internal DTO matching the JSON schema VibeVoice generates.</summary>
 file sealed class VibeVoiceRawSegment
