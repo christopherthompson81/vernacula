@@ -194,7 +194,7 @@
                                                        Foreground="{DynamicResource BgBrush}"
                                                        FontWeight="SemiBold"
                                                        FontSize="11"
-                                                       LineHeight="13"
+                                                       LineHeight="16"
                                                        VerticalAlignment="Center" />
                                         </Border>
                                     </DataTemplate>
