@@ -26,10 +26,11 @@ internal partial class SettingsViewModel : ObservableObject
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(IsSileroVad), nameof(IsSortformer), nameof(IsDiariZen), nameof(IsVibeVoiceBuiltin))]
+    [NotifyPropertyChangedFor(nameof(ShowStandardSegmentationOptions), nameof(ShowVibeVoiceBuiltinSegmentation), nameof(ShowDiariZenInSegmentation), nameof(ShowGatedSegmentationHint))]
     private SegmentationMode _selectedSegmentation;
 
     [ObservableProperty]
-    [NotifyPropertyChangedFor(nameof(IsAsrParakeet), nameof(IsAsrCohere), nameof(IsAsrVibeVoice))]
+    [NotifyPropertyChangedFor(nameof(IsAsrParakeet), nameof(IsAsrCohere), nameof(IsAsrVibeVoice), nameof(ShowStandardSegmentationOptions), nameof(ShowVibeVoiceBuiltinSegmentation), nameof(ShowDiariZenInSegmentation), nameof(ShowGatedSegmentationHint))]
     private AsrBackend _selectedAsrBackend;
 
     [ObservableProperty]
@@ -68,7 +69,10 @@ internal partial class SettingsViewModel : ObservableObject
     public bool ShowCohereLanguagePicker => SelectedAsrBackend == AsrBackend.Cohere;
     public bool IsDenoiserNone      => SelectedDenoiser == DenoiserMode.None;
     public bool IsDenoiserDfn3      => SelectedDenoiser == DenoiserMode.DeepFilterNet3;
-    public bool ShowDiariZenInSegmentation => HasAcceptedDiariZenNotice;
+    public bool ShowStandardSegmentationOptions => SelectedAsrBackend != AsrBackend.VibeVoice;
+    public bool ShowVibeVoiceBuiltinSegmentation => SelectedAsrBackend == AsrBackend.VibeVoice;
+    public bool ShowDiariZenInSegmentation => HasAcceptedDiariZenNotice && ShowStandardSegmentationOptions;
+    public bool ShowGatedSegmentationHint => !HasAcceptedDiariZenNotice && ShowStandardSegmentationOptions;
     public bool IsEditorSingle      => SelectedEditorPlaybackMode == PlaybackMode.Single;
     public bool IsEditorAutoAdvance => SelectedEditorPlaybackMode == PlaybackMode.AutoAdvance;
     public bool IsEditorContinuous  => SelectedEditorPlaybackMode == PlaybackMode.Continuous;
@@ -137,6 +141,7 @@ internal partial class SettingsViewModel : ObservableObject
     private bool                      _modelCheckDone = false;
     private double                    _batchSecs      = 0;
     private bool                      _batchIsFallback = true;
+    private SegmentationMode          _lastNonVibeSegmentation = SegmentationMode.Sortformer;
 
     // ── Construction ─────────────────────────────────────────────────────────
 
@@ -145,10 +150,14 @@ internal partial class SettingsViewModel : ObservableObject
         _svc                   = svc;
         _modelMgr              = modelMgr;
         _selectedTheme                = svc.Current.Theme;
-        _selectedSegmentation         = svc.Current.Segmentation == SegmentationMode.DiariZen && !svc.IsGatedModelAccepted(DiariZenGatedModelId)
-            ? SegmentationMode.Sortformer
-            : svc.Current.Segmentation;
         _selectedAsrBackend           = svc.Current.AsrBackend;
+        _selectedSegmentation         = NormalizeSegmentationForBackend(
+            svc.Current.Segmentation == SegmentationMode.DiariZen && !svc.IsGatedModelAccepted(DiariZenGatedModelId)
+                ? SegmentationMode.Sortformer
+                : svc.Current.Segmentation,
+            _selectedAsrBackend);
+        if (_selectedSegmentation != SegmentationMode.VibeVoiceBuiltin)
+            _lastNonVibeSegmentation = _selectedSegmentation;
         _selectedCohereLanguage       = CohereLanguages.FirstOrDefault(l => l.Code == svc.Current.CohereLanguage)
                                         ?? CohereLanguages[0];
         _selectedDenoiser             = svc.Current.Denoiser;
@@ -189,8 +198,18 @@ internal partial class SettingsViewModel : ObservableObject
 
     partial void OnSelectedSegmentationChanged(SegmentationMode value)
     {
+        SegmentationMode normalized = NormalizeSegmentationForBackend(value, SelectedAsrBackend);
+        if (normalized != value)
+        {
+            SelectedSegmentation = normalized;
+            return;
+        }
+
         if (value == SegmentationMode.DiariZen && !HasAcceptedDiariZenNotice)
             return;
+
+        if (value != SegmentationMode.VibeVoiceBuiltin)
+            _lastNonVibeSegmentation = value;
 
         _svc.Current.Segmentation = value;
         _svc.Save();
@@ -199,7 +218,19 @@ internal partial class SettingsViewModel : ObservableObject
 
     partial void OnSelectedAsrBackendChanged(AsrBackend value)
     {
+        if (value == AsrBackend.VibeVoice && SelectedSegmentation != SegmentationMode.VibeVoiceBuiltin)
+            _lastNonVibeSegmentation = NormalizeSegmentationForBackend(SelectedSegmentation, AsrBackend.Parakeet);
+
         _svc.Current.AsrBackend = value;
+        SegmentationMode normalized = NormalizeSegmentationForBackend(SelectedSegmentation, value);
+        if (normalized != SelectedSegmentation)
+            SelectedSegmentation = normalized;
+        else
+        {
+            _svc.Current.Segmentation = normalized;
+            _svc.Save();
+        }
+
         _svc.Save();
         OnPropertyChanged(nameof(ShowCohereLanguagePicker));
         OnSegmentationChanged?.Invoke();
@@ -428,8 +459,30 @@ internal partial class SettingsViewModel : ObservableObject
 
         OnPropertyChanged(nameof(HasAcceptedDiariZenNotice));
         OnPropertyChanged(nameof(ShowDiariZenInSegmentation));
+        OnPropertyChanged(nameof(ShowGatedSegmentationHint));
         OnPropertyChanged(nameof(HasUnlockedGatedModels));
         OnPropertyChanged(nameof(GatedModelsStatusText));
+    }
+
+    private SegmentationMode NormalizeSegmentationForBackend(SegmentationMode requested, AsrBackend backend)
+    {
+        if (backend == AsrBackend.VibeVoice)
+            return SegmentationMode.VibeVoiceBuiltin;
+
+        if (requested == SegmentationMode.VibeVoiceBuiltin)
+            return NormalizeStandardSegmentation(_lastNonVibeSegmentation);
+
+        return NormalizeStandardSegmentation(requested);
+    }
+
+    private SegmentationMode NormalizeStandardSegmentation(SegmentationMode requested)
+    {
+        if (requested == SegmentationMode.DiariZen && !HasAcceptedDiariZenNotice)
+            return SegmentationMode.Sortformer;
+
+        return requested == SegmentationMode.VibeVoiceBuiltin
+            ? SegmentationMode.Sortformer
+            : requested;
     }
 
     internal async Task SetDiariZenModelsDirAsync(string path)

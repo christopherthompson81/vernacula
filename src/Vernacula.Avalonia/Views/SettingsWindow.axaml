@@ -490,7 +490,9 @@
                                      Command="{Binding SetSegmentationCommand}"
                                      CommandParameter="SileroVad"
                                      Foreground="{DynamicResource TextBrush}"
-                                     Margin="0,0,0,4">
+                                     Margin="0,0,0,4"
+                                     IsVisible="{Binding ShowStandardSegmentationOptions,
+                                                         Converter={StaticResource BoolToVis}}">
                             <StackPanel>
                                 <TextBlock x:Name="SegmentationSileroLabel"
                                            Text="{Binding Source={x:Static local:Loc.Instance}, Path=[settings_segmentation_vad]}"
@@ -504,7 +506,9 @@
                             </StackPanel>
                         </RadioButton>
 
-                        <Separator Background="{DynamicResource OverlayBrush}" Margin="0,8,0,8" />
+                        <Separator Background="{DynamicResource OverlayBrush}" Margin="0,8,0,8"
+                                   IsVisible="{Binding ShowStandardSegmentationOptions,
+                                                       Converter={StaticResource BoolToVis}}" />
 
                         <!-- Sortformer option -->
                         <RadioButton GroupName="Segmentation"
@@ -512,7 +516,9 @@
                                      Command="{Binding SetSegmentationCommand}"
                                      CommandParameter="Sortformer"
                                      Foreground="{DynamicResource TextBrush}"
-                                     Margin="0,0,0,4">
+                                     Margin="0,0,0,4"
+                                     IsVisible="{Binding ShowStandardSegmentationOptions,
+                                                         Converter={StaticResource BoolToVis}}">
                             <StackPanel>
                                 <TextBlock x:Name="SegmentationSortformerLabel"
                                            Text="{Binding Source={x:Static local:Loc.Instance}, Path=[settings_segmentation_diarization]}"
@@ -526,7 +532,9 @@
                             </StackPanel>
                         </RadioButton>
 
-                        <Separator Background="{DynamicResource OverlayBrush}" Margin="0,8,0,8" />
+                        <Separator Background="{DynamicResource OverlayBrush}" Margin="0,8,0,8"
+                                   IsVisible="{Binding ShowStandardSegmentationOptions,
+                                                       Converter={StaticResource BoolToVis}}" />
 
                         <TextBlock x:Name="GatedSegmentationHintText"
                                    Text="Additional gated segmentation models can be enabled from Models."
@@ -534,8 +542,8 @@
                                    FontSize="11"
                                    TextWrapping="Wrap"
                                    Margin="0,0,0,8"
-                                   IsVisible="{Binding ShowDiariZenInSegmentation,
-                                                       Converter={StaticResource InvBoolToVis}}" />
+                                   IsVisible="{Binding ShowGatedSegmentationHint,
+                                                       Converter={StaticResource BoolToVis}}" />
 
                         <!-- DiariZen option -->
                         <RadioButton GroupName="Segmentation"
@@ -558,14 +566,18 @@
                             </StackPanel>
                         </RadioButton>
 
-                        <Separator Background="{DynamicResource OverlayBrush}" Margin="0,8,0,8" />
+                        <Separator Background="{DynamicResource OverlayBrush}" Margin="0,8,0,8"
+                                   IsVisible="{Binding ShowStandardSegmentationOptions,
+                                                       Converter={StaticResource BoolToVis}}" />
 
                         <!-- VibeVoice built-in diarization + ASR option -->
                         <RadioButton GroupName="Segmentation"
                                      IsChecked="{Binding IsVibeVoiceBuiltin, Mode=OneWay}"
                                      Command="{Binding SetSegmentationCommand}"
                                      CommandParameter="VibeVoiceBuiltin"
-                                     Foreground="{DynamicResource TextBrush}">
+                                     Foreground="{DynamicResource TextBrush}"
+                                     IsVisible="{Binding ShowVibeVoiceBuiltinSegmentation,
+                                                         Converter={StaticResource BoolToVis}}">
                             <StackPanel>
                                 <TextBlock Text="VibeVoice-ASR (built-in)"
                                            FontWeight="SemiBold"
