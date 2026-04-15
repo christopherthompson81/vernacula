@@ -134,8 +134,7 @@ public partial class TranscriptEditorWindow : Window
             string vibeVoiceDir = App.Current.Settings.GetVibeVoiceModelsDir();
             _asrModelsAvailable =
                 File.Exists(Path.Combine(vibeVoiceDir, VibeVoiceAsr.AudioEncoderFile)) &&
-                (File.Exists(Path.Combine(vibeVoiceDir, VibeVoiceAsr.DecoderSingleStaticFile)) ||
-                 File.Exists(Path.Combine(vibeVoiceDir, VibeVoiceAsr.DecoderSingleFile)));
+                File.Exists(Path.Combine(vibeVoiceDir, VibeVoiceAsr.DecoderSingleFile));
         }
         else
         {

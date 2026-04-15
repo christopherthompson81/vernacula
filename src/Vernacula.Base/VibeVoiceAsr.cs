@@ -111,6 +111,7 @@ public sealed class VibeVoiceAsr : IDisposable
         string modelDir,
         ExecutionProvider ep = ExecutionProvider.Auto,
         bool persistEncoder = true,
+        bool allowStaticKvCache = true,
         string? profileOutputDir = null)
     {
         if (profileOutputDir is not null)
@@ -127,7 +128,8 @@ public sealed class VibeVoiceAsr : IDisposable
         _encoderChunkSamples = report.GetProperty("acoustic_tokenizer_chunk_size").GetInt32();
         _kvCacheIsFloat32    = report.TryGetProperty("f32_kv_cache", out var f32KvProp)
                                && f32KvProp.GetBoolean();
-        _staticKvCache       = report.TryGetProperty("static_kv_cache", out var staticKvProp)
+        _staticKvCache       = allowStaticKvCache
+                               && report.TryGetProperty("static_kv_cache", out var staticKvProp)
                                && staticKvProp.GetBoolean();
         _maxKvTokens         = _staticKvCache && report.TryGetProperty("static_kv_max_tokens", out var maxTokProp)
                                ? maxTokProp.GetInt32()
@@ -806,10 +808,12 @@ public sealed class VibeVoiceAsr : IDisposable
         }
 
         // Locate each segment's content value in the JSON and compute word-level logprobs.
+        // Match against the serialized JSON string, not the decoded content length, so
+        // escaped characters like \" and \\ stay aligned with the generated token span.
         // The JSON produced by VibeVoice has used PascalCase keys in practice, but we
         // accept either casing here because older comments/docs referred to lowercase.
-        const string contentKeyPascal = "\"Content\":\"";
-        const string contentKeyCamel  = "\"content\":\"";
+        const string contentKeyPascal = "\"Content\":";
+        const string contentKeyCamel  = "\"content\":";
         int searchFrom = 0;
 
         for (int si = 0; si < segments.Count; si++)
@@ -835,12 +839,24 @@ public sealed class VibeVoiceAsr : IDisposable
 
             if (keyIdx < 0) break;
 
-            int contentCharStart = keyIdx + keyLength;
-            searchFrom = contentCharStart + content.Length;  // advance past this segment
+            string serializedContent = JsonSerializer.Serialize(content);
+            int serializedContentIdx = fullJson.IndexOf(
+                serializedContent, keyIdx + keyLength, StringComparison.Ordinal);
+            if (serializedContentIdx < 0)
+            {
+                searchFrom = keyIdx + keyLength;
+                continue;
+            }
+
+            int contentCharStart = serializedContentIdx + 1; // skip opening quote
+            int contentCharEnd   = serializedContentIdx + serializedContent.Length - 1; // exclude closing quote
+            searchFrom = serializedContentIdx + serializedContent.Length;
+
+            var (decodedCharStarts, decodedCharEnds) = BuildSerializedJsonCharMap(serializedContent);
 
             var tokenIndices = new List<int>();
             int prevTi = -1;
-            for (int c = contentCharStart; c < searchFrom && c < charToToken.Length; c++)
+            for (int c = contentCharStart; c < contentCharEnd && c < charToToken.Length; c++)
             {
                 int ti = charToToken[c];
                 if (ti != prevTi && ti >= 0 && ti < generated.Count)
@@ -866,8 +882,15 @@ public sealed class VibeVoiceAsr : IDisposable
                 int wordPosInContent = content.IndexOf(words[wi], wordOffset, StringComparison.Ordinal);
                 if (wordPosInContent < 0) { wordOffset += words[wi].Length; continue; }
 
-                int wcStart  = contentCharStart + wordPosInContent;
-                int wcEnd    = wcStart + words[wi].Length;
+                int wordCharEnd = wordPosInContent + words[wi].Length;
+                if (wordPosInContent >= decodedCharStarts.Length || wordCharEnd > decodedCharEnds.Length)
+                {
+                    wordOffset = wordPosInContent + words[wi].Length;
+                    continue;
+                }
+
+                int wcStart  = contentCharStart + decodedCharStarts[wordPosInContent];
+                int wcEnd    = contentCharStart + decodedCharEnds[wordCharEnd - 1];
                 wordOffset   = wordPosInContent + words[wi].Length;
 
                 // Average logprobs of unique tokens covering chars [wcStart, wcEnd).
@@ -891,6 +914,36 @@ public sealed class VibeVoiceAsr : IDisposable
         }
 
         return (tokenIdsResult, tokenLogprobsResult, wordLogprobsResult);
+    }
+
+    private static (int[] starts, int[] ends) BuildSerializedJsonCharMap(string serializedContent)
+    {
+        if (serializedContent.Length < 2)
+            return ([], []);
+
+        var starts = new List<int>(serializedContent.Length);
+        var ends   = new List<int>(serializedContent.Length);
+
+        for (int i = 1; i < serializedContent.Length - 1;)
+        {
+            starts.Add(i - 1); // offsets relative to the first content character
+
+            if (serializedContent[i] == '\\' && i + 1 < serializedContent.Length - 1)
+            {
+                if (serializedContent[i + 1] == 'u' && i + 5 < serializedContent.Length)
+                    i += 6;
+                else
+                    i += 2;
+            }
+            else
+            {
+                i += 1;
+            }
+
+            ends.Add(i - 1); // exclusive offset relative to the first content character
+        }
+
+        return ([.. starts], [.. ends]);
     }
 
     // ── Output parsing ────────────────────────────────────────────────────────

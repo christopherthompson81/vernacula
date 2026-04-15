@@ -167,7 +167,7 @@ internal class TranscriptionService
 
                 IReadOnlyList<VibeVoiceSegment> vibeSegs = await Task.Run(() =>
                 {
-                    using var vibe = new VibeVoiceAsr(vibeVoiceDir);
+                    using var vibe = new VibeVoiceAsr(vibeVoiceDir, allowStaticKvCache: false);
                     return vibe.Transcribe(
                         vibeVoiceAudio, vibeVoiceSampleRate, vibeVoiceChannels,
                         onSegment: seg =>

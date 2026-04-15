@@ -178,7 +178,7 @@ internal class VocabService
         var bytes = new List<byte>(tokens.Count * 4);
         foreach (int token in tokens)
             bytes.AddRange(GetVibeVoiceTokenBytes(token));
-        return Encoding.UTF8.GetString(bytes.ToArray());
+        return TrimVibeVoiceBoundaryQuotes(Encoding.UTF8.GetString(bytes.ToArray()));
     }
 
     private string DecodeToken(int token)
@@ -265,6 +265,20 @@ internal class VocabService
             runs.Add((runText, lp));
         }
 
+        int firstNonEmpty = runs.FindIndex(r => r.Item1.Length > 0);
+        if (firstNonEmpty >= 0 && runs[firstNonEmpty].Item1.StartsWith('"'))
+        {
+            var run = runs[firstNonEmpty];
+            runs[firstNonEmpty] = (run.Item1[1..], run.Item2);
+        }
+
+        int lastNonEmpty = runs.FindLastIndex(r => r.Item1.Length > 0);
+        if (lastNonEmpty >= 0 && runs[lastNonEmpty].Item1.EndsWith('"'))
+        {
+            var run = runs[lastNonEmpty];
+            runs[lastNonEmpty] = (run.Item1[..^1], run.Item2);
+        }
+
         return runs;
     }
 
@@ -320,6 +334,15 @@ internal class VocabService
         }
 
         return dict;
+    }
+
+    private static string TrimVibeVoiceBoundaryQuotes(string text)
+    {
+        if (text.StartsWith('"'))
+            text = text[1..];
+        if (text.EndsWith('"'))
+            text = text[..^1];
+        return text;
     }
 
     // ── Confidence highlight ──────────────────────────────────────────────────

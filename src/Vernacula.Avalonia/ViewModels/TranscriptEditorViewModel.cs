@@ -901,7 +901,7 @@ internal partial class TranscriptEditorViewModel : ObservableObject, IDisposable
             Loc.Instance["editor_unsuppress"],
             canMergePrev: !redoAsrRunning && card.Index > 0,
             canMergeNext: !redoAsrRunning && card.Index < totalCardCount - 1,
-            canSplit: !redoAsrRunning && seg.Tokens.Count > 1,
+            canSplit: !redoAsrRunning && hasVocab && seg.Tokens.Count > 1,
             canRedoAsr: !redoAsrRunning && asrModelsAvailable && HasAudio,
             canAdjustTimes: !redoAsrRunning);
     }
@@ -1089,7 +1089,7 @@ internal partial class TranscriptEditorViewModel : ObservableObject, IDisposable
             if (string.IsNullOrWhiteSpace(vibeVoiceModelsDir))
                 return null;
 
-            using var vibe = new VibeVoiceAsr(vibeVoiceModelsDir, persistEncoder: false);
+            using var vibe = new VibeVoiceAsr(vibeVoiceModelsDir, persistEncoder: false, allowStaticKvCache: false);
             var vibeSegs = vibe.Transcribe(mono16k, Config.SampleRate, 1);
             text = string.Join(" ", vibeSegs.Select(s => s.Content));
             tokens         = vibeSegs.SelectMany(s => s.TokenIds).ToList();
