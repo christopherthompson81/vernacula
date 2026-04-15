@@ -1203,7 +1203,7 @@ public partial class TranscriptEditorWindow : Window
 
         IReadOnlyList<string> tokenTexts;
         tokenTexts = _vocab != null
-            ? _vocab.GetTokenRuns(seg.Tokens, seg.Logprobs).Select(r => r.text).ToList()
+            ? _vocab.GetTokenRuns(seg.Tokens, seg.Logprobs, seg.Content).Select(r => r.text).ToList()
             : seg.Tokens.Select(t => $"[{t}]").ToList();
 
         var dialog = new SplitSegmentDialog(tokenTexts);

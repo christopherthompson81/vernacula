@@ -167,7 +167,10 @@ internal class TranscriptionService
 
                 IReadOnlyList<VibeVoiceSegment> vibeSegs = await Task.Run(() =>
                 {
-                    using var vibe = new VibeVoiceAsr(vibeVoiceDir, allowStaticKvCache: false);
+                    using var vibe = new VibeVoiceAsr(
+                        vibeVoiceDir,
+                        persistEncoder: false,
+                        allowStaticKvCache: false);
                     return vibe.Transcribe(
                         vibeVoiceAudio, vibeVoiceSampleRate, vibeVoiceChannels,
                         onSegment: seg =>
@@ -204,10 +207,10 @@ internal class TranscriptionService
 
                     // VibeVoice does not emit timestamps, so we synthesize them uniformly over
                     // the segment while preserving the real decoder token ids and logprobs.
-                    int tokenCount = Math.Max(1, Math.Max(seg.TokenIds.Count, seg.TokenLogprobs.Count));
+                    int tokenCount = Math.Max(seg.TokenIds.Count, seg.TokenLogprobs.Count);
                     const double frameSeconds = Config.HopLength * 8.0 / Config.SampleRate;
                     double segDuration = seg.End - seg.Start;
-                    var persistedTokens     = seg.TokenIds.Count > 0 ? seg.TokenIds.ToArray() : new int[tokenCount];
+                    var persistedTokens     = seg.TokenIds.Count > 0 ? seg.TokenIds.ToArray() : Array.Empty<int>();
                     var syntheticTimestamps = new int[tokenCount];
                     for (int wi = 0; wi < tokenCount; wi++)
                     {

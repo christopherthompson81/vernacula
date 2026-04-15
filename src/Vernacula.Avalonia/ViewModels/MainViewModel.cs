@@ -13,6 +13,8 @@ internal enum AppPanel { Home, Progress, Results }
 
 internal partial class MainViewModel : ObservableObject
 {
+    private static readonly TimeSpan RunningJobClockInterval = TimeSpan.FromSeconds(1);
+
     [ObservableProperty]
     private AppPanel _currentPanel = AppPanel.Home;
 
@@ -37,6 +39,7 @@ internal partial class MainViewModel : ObservableObject
 
     private readonly JobQueueService _queue;
     private Window? _mainWindow;
+    private DispatcherTimer? _runningJobsClockTimer;
 
     public bool IsAnyJobRunning => _queue.IsAnyJobRunning || Progress.IsRunning;
 
@@ -279,6 +282,9 @@ internal partial class MainViewModel : ObservableObject
                     job.IsIndeterminate = true; // running but no progress event yet
             }
         }
+
+        RefreshRunningJobClocks();
+        UpdateRunningJobClockTimer();
     }
 
     private void ApplyJobStatus(int jobId, JobStatus status, string? error = null,
@@ -295,6 +301,8 @@ internal partial class MainViewModel : ObservableObject
 
         if (status == JobStatus.Running)
         {
+            job.TranscriptionRunStartedAt ??= DateTime.Now;
+            job.RunTimeSeconds = Math.Max(0, (int)(DateTime.Now - job.TranscriptionRunStartedAt.Value).TotalSeconds);
             job.IsIndeterminate = true; // refined when first progress event fires
         }
         else if (status is JobStatus.Complete or JobStatus.Failed or JobStatus.Cancelled)
@@ -303,6 +311,8 @@ internal partial class MainViewModel : ObservableObject
             job.PhaseLabel      = "";
             job.IsIndeterminate = false;
         }
+
+        UpdateRunningJobClockTimer();
     }
 
     private void ApplyJobProgress(int jobId, double percent)
@@ -326,5 +336,42 @@ internal partial class MainViewModel : ObservableObject
             _                               => ""
         };
         job.IsIndeterminate = progress.TotalSteps == 0 || progress.Phase == TranscriptionPhase.LoadingAudio;
+    }
+
+    private void UpdateRunningJobClockTimer()
+    {
+        bool hasRunningJobs = Home.Jobs.Any(j => j.Status == JobStatus.Running);
+        if (!hasRunningJobs)
+        {
+            _runningJobsClockTimer?.Stop();
+            return;
+        }
+
+        _runningJobsClockTimer ??= new DispatcherTimer { Interval = RunningJobClockInterval };
+        _runningJobsClockTimer.Tick -= OnRunningJobClockTick;
+        _runningJobsClockTimer.Tick += OnRunningJobClockTick;
+
+        if (!_runningJobsClockTimer.IsEnabled)
+            _runningJobsClockTimer.Start();
+    }
+
+    private void OnRunningJobClockTick(object? sender, EventArgs e)
+    {
+        RefreshRunningJobClocks();
+        if (!Home.Jobs.Any(j => j.Status == JobStatus.Running))
+            _runningJobsClockTimer?.Stop();
+    }
+
+    private void RefreshRunningJobClocks()
+    {
+        DateTime now = DateTime.Now;
+        foreach (var job in Home.Jobs)
+        {
+            if (job.Status != JobStatus.Running)
+                continue;
+
+            DateTime startedAt = job.TranscriptionRunStartedAt ?? now;
+            job.RunTimeSeconds = Math.Max(0, (int)(now - startedAt).TotalSeconds);
+        }
     }
 }

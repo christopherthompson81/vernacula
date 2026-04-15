@@ -108,12 +108,12 @@ internal class VocabService
 
     /// <summary>Returns (text, logprob) pairs for each token.</summary>
     public IReadOnlyList<(string text, float logprob)> GetTokenRuns(
-        IReadOnlyList<int> tokens, IReadOnlyList<float> logprobs)
+        IReadOnlyList<int> tokens, IReadOnlyList<float> logprobs, string? targetText = null)
     {
         if (_kind == VocabKind.Cohere)
             return GetCohereTokenRuns(tokens, logprobs);
         if (_kind == VocabKind.VibeVoice)
-            return GetVibeVoiceTokenRuns(tokens, logprobs);
+            return GetVibeVoiceTokenRuns(tokens, logprobs, targetText);
 
         var runs = new List<(string, float)>(tokens.Count);
         for (int i = 0; i < tokens.Count; i++)
@@ -240,7 +240,7 @@ internal class VocabService
     }
 
     private IReadOnlyList<(string text, float logprob)> GetVibeVoiceTokenRuns(
-        IReadOnlyList<int> tokens, IReadOnlyList<float> logprobs)
+        IReadOnlyList<int> tokens, IReadOnlyList<float> logprobs, string? targetText)
     {
         var runs = new List<(string, float)>(tokens.Count);
         Decoder decoder = Encoding.UTF8.GetDecoder();
@@ -265,21 +265,7 @@ internal class VocabService
             runs.Add((runText, lp));
         }
 
-        int firstNonEmpty = runs.FindIndex(r => r.Item1.Length > 0);
-        if (firstNonEmpty >= 0 && runs[firstNonEmpty].Item1.StartsWith('"'))
-        {
-            var run = runs[firstNonEmpty];
-            runs[firstNonEmpty] = (run.Item1[1..], run.Item2);
-        }
-
-        int lastNonEmpty = runs.FindLastIndex(r => r.Item1.Length > 0);
-        if (lastNonEmpty >= 0 && runs[lastNonEmpty].Item1.EndsWith('"'))
-        {
-            var run = runs[lastNonEmpty];
-            runs[lastNonEmpty] = (run.Item1[..^1], run.Item2);
-        }
-
-        return runs;
+        return ClipRunsToTargetText(runs, targetText);
     }
 
     private byte[] GetVibeVoiceTokenBytes(int token)
@@ -334,6 +320,55 @@ internal class VocabService
         }
 
         return dict;
+    }
+
+    private static IReadOnlyList<(string text, float logprob)> ClipRunsToTargetText(
+        List<(string text, float logprob)> runs, string? targetText)
+    {
+        if (string.IsNullOrEmpty(targetText) || runs.Count == 0)
+            return runs;
+
+        string combined = string.Concat(runs.Select(r => r.text));
+        int targetStart = combined.IndexOf(targetText, StringComparison.Ordinal);
+        if (targetStart < 0)
+        {
+            string trimmed = TrimVibeVoiceBoundaryQuotes(combined);
+            if (string.Equals(trimmed, targetText, StringComparison.Ordinal))
+            {
+                targetStart = combined.StartsWith('"') ? 1 : 0;
+            }
+            else
+            {
+                return runs;
+            }
+        }
+
+        int targetEnd = targetStart + targetText.Length;
+        var clipped = new List<(string text, float logprob)>(runs.Count);
+        int pos = 0;
+
+        foreach (var run in runs)
+        {
+            int runStart = pos;
+            int runEnd   = pos + run.text.Length;
+            int clipStart = Math.Max(runStart, targetStart);
+            int clipEnd   = Math.Min(runEnd, targetEnd);
+
+            if (clipStart < clipEnd)
+            {
+                int localStart = clipStart - runStart;
+                int localLength = clipEnd - clipStart;
+                clipped.Add((run.text.Substring(localStart, localLength), run.logprob));
+            }
+            else
+            {
+                clipped.Add(("", run.logprob));
+            }
+
+            pos = runEnd;
+        }
+
+        return clipped;
     }
 
     private static string TrimVibeVoiceBoundaryQuotes(string text)

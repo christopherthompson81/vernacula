@@ -1,6 +1,7 @@
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Text.Encodings.Web;
 using Microsoft.ML.OnnxRuntime;
 using Microsoft.ML.OnnxRuntime.Tensors;
 using Vernacula.Base.Models;
@@ -29,6 +30,11 @@ namespace Vernacula.Base;
 /// </summary>
 public sealed class VibeVoiceAsr : IDisposable
 {
+    private static readonly JsonSerializerOptions RelaxedJsonEscaping = new()
+    {
+        Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping
+    };
+
     // ── File names ────────────────────────────────────────────────────────────
 
     public const string AudioEncoderFile        = "audio_encoder.onnx";
@@ -792,7 +798,7 @@ public sealed class VibeVoiceAsr : IDisposable
 
         // Build a char-to-token-index map: charToToken[c] = index of the token in `generated`
         // whose decoded output includes the character at position c in fullJson.
-        var charToToken = new int[fullJson.Length];
+        var charToToken = Enumerable.Repeat(-1, fullJson.Length).ToArray();
         {
             int charPos = 0;
             var tempBuf = new List<byte>(16);
@@ -839,7 +845,7 @@ public sealed class VibeVoiceAsr : IDisposable
 
             if (keyIdx < 0) break;
 
-            string serializedContent = JsonSerializer.Serialize(content);
+            string serializedContent = JsonSerializer.Serialize(content, RelaxedJsonEscaping);
             int serializedContentIdx = fullJson.IndexOf(
                 serializedContent, keyIdx + keyLength, StringComparison.Ordinal);
             if (serializedContentIdx < 0)
@@ -900,7 +906,7 @@ public sealed class VibeVoiceAsr : IDisposable
                 for (int c = wcStart; c < wcEnd && c < charToToken.Length; c++)
                 {
                     int ti = charToToken[c];
-                    if (ti != prevTi && ti < tokenLogprobs.Count)
+                    if (ti >= 0 && ti != prevTi && ti < tokenLogprobs.Count)
                     {
                         sum  += tokenLogprobs[ti];
                         count++;

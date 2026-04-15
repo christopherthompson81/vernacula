@@ -28,6 +28,7 @@ public class JobRecord : ObservableObject
     public string  AsrLanguageCode           { get; set; } = "auto";
     public string? AudioFileDatestamp        { get; set; }
     public string? TranscriptionRunDatestamp { get; set; }
+    public DateTime? TranscriptionRunStartedAt { get; set; }
     public string  CreatedAt                 { get; set; } = "";
 
     private string? _errorMessage;

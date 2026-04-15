@@ -1,5 +1,6 @@
 using Microsoft.Data.Sqlite;
 using Vernacula.App.Models;
+using System.Globalization;
 
 namespace Vernacula.App.Services;
 
@@ -262,7 +263,23 @@ internal sealed class ControlDb : IDisposable
         string? GetNullable(string col) =>
             r.IsDBNull(r.GetOrdinal(col)) ? null : r.GetString(r.GetOrdinal(col));
 
+        static DateTime? ParseStamp(string? value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+                return null;
+
+            return DateTime.TryParseExact(
+                value,
+                "yyyy-MM-dd HH:mm:ss",
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.AssumeLocal,
+                out DateTime parsed)
+                ? parsed
+                : null;
+        }
+
         int siOrd = r.GetOrdinal("stream_index");
+        string? runStamp = GetNullable("transcription_run_datestamp");
         return new JobRecord
         {
             JobId                     = r.GetInt32(r.GetOrdinal("job_id")),
@@ -273,7 +290,8 @@ internal sealed class ControlDb : IDisposable
             AsrModelName              = GetNullable("asr_model_name") ?? "nvidia/parakeet-tdt-0.6b-v3",
             AsrLanguageCode           = GetNullable("asr_language_code") ?? "auto",
             AudioFileDatestamp        = GetNullable("audio_file_datestamp"),
-            TranscriptionRunDatestamp = GetNullable("transcription_run_datestamp"),
+            TranscriptionRunDatestamp = runStamp,
+            TranscriptionRunStartedAt = ParseStamp(runStamp),
             Status = Enum.Parse<JobStatus>(
                 r.GetString(r.GetOrdinal("status")), ignoreCase: true),
             CreatedAt         = r.GetString(r.GetOrdinal("created_at")),

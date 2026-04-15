@@ -941,7 +941,7 @@ internal partial class TranscriptEditorViewModel : ObservableObject, IDisposable
             return;
         }
 
-        var runs = vocab.GetTokenRuns(seg.Tokens, seg.Logprobs)
+        var runs = vocab.GetTokenRuns(seg.Tokens, seg.Logprobs, seg.Content)
             .Select(r => (
                 r.text,
                 VocabService.GetConfidenceHighlight(r.logprob, confidenceLowColor)))
@@ -999,7 +999,7 @@ internal partial class TranscriptEditorViewModel : ObservableObject, IDisposable
             return;
         }
 
-        var runs = vocab.GetTokenRuns(card.Segment.Tokens, card.Segment.Logprobs)
+        var runs = vocab.GetTokenRuns(card.Segment.Tokens, card.Segment.Logprobs, card.Segment.Content)
             .Select(r => (
                 r.text,
                 VocabService.GetConfidenceHighlight(r.logprob, confidenceLowColor)))
@@ -1094,9 +1094,7 @@ internal partial class TranscriptEditorViewModel : ObservableObject, IDisposable
             text = string.Join(" ", vibeSegs.Select(s => s.Content));
             tokens         = vibeSegs.SelectMany(s => s.TokenIds).ToList();
             logprobs       = vibeSegs.SelectMany(s => s.TokenLogprobs).ToList();
-            int tokenCount = Math.Max(1, Math.Max(tokens.Count, logprobs.Count));
-            if (tokens.Count == 0)
-                tokens = Enumerable.Range(0, tokenCount).ToList();
+            int tokenCount = Math.Max(tokens.Count, logprobs.Count);
             timestamps = BuildSyntheticTokenTimestamps(seg.PlayEnd - seg.PlayStart, tokenCount);
         }
         else
@@ -1214,8 +1212,11 @@ internal partial class TranscriptEditorViewModel : ObservableObject, IDisposable
         string firstAsr, secondAsr, firstCon, secondCon;
         if (vocab != null && firstTokens.Count > 0 && secondTokens.Count > 0)
         {
-            firstAsr  = vocab.DecodeTokens(firstTokens);
-            secondAsr = vocab.DecodeTokens(secondTokens);
+            var allRunTexts = vocab.GetTokenRuns(seg.Tokens, seg.Logprobs, seg.AsrContent)
+                .Select(r => r.text)
+                .ToList();
+            firstAsr  = string.Concat(allRunTexts.Take(splitIndex)).Trim();
+            secondAsr = string.Concat(allRunTexts.Skip(splitIndex)).Trim();
             firstCon  = firstAsr;
             secondCon = secondAsr;
         }
