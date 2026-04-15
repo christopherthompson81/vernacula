@@ -83,6 +83,9 @@ internal class SettingsService
     public string GetCohereModelsDir() =>
         Path.Combine(GetModelsDir(), "cohere_transcribe");
 
+    public string GetVibeVoiceModelsDir() =>
+        Path.Combine(GetModelsDir(), "vibevoice_asr");
+
     public string GetJobsDir()
     {
         string dir = Path.Combine(

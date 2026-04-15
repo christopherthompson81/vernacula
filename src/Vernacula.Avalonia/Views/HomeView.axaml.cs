@@ -2,6 +2,7 @@ using Avalonia.Controls;
 using Avalonia.Input;
 using Avalonia.VisualTree;
 using System.ComponentModel;
+using Vernacula.App.Models;
 
 namespace Vernacula.App.Views;
 
@@ -64,5 +65,17 @@ public partial class HomeView : UserControl
         JobsGrid.SelectedItem = null;
         JobsGrid.SelectedIndex = -1;
         Focus();
+    }
+
+    private async void StatusChip_PointerPressed(object? sender, PointerPressedEventArgs e)
+    {
+        if (sender is not Control el) return;
+        if (el.DataContext is not JobRecord { Status: JobStatus.Failed, ErrorMessage: { } error }) return;
+
+        var clipboard = TopLevel.GetTopLevel(this)?.Clipboard;
+        if (clipboard is not null)
+            await clipboard.SetTextAsync(error);
+
+        e.Handled = true;
     }
 }

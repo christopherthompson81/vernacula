@@ -428,6 +428,24 @@
                             </StackPanel>
                         </RadioButton>
 
+                        <Separator Background="{DynamicResource OverlayBrush}" Margin="0,8,0,8" />
+
+                        <RadioButton GroupName="AsrBackend"
+                                     IsChecked="{Binding IsAsrVibeVoice, Mode=OneWay}"
+                                     Command="{Binding SetAsrBackendCommand}"
+                                     CommandParameter="VibeVoice"
+                                     Foreground="{DynamicResource TextBrush}">
+                            <StackPanel>
+                                <TextBlock Text="VibeVoice-ASR"
+                                           FontWeight="SemiBold"
+                                           Foreground="{DynamicResource TextBrush}" />
+                                <TextBlock Text="Whole-recording ASR with built-in diarization. Requires local weights in the vibevoice_asr models folder."
+                                           Foreground="{DynamicResource SubtextBrush}"
+                                           FontSize="11"
+                                           TextWrapping="Wrap" />
+                            </StackPanel>
+                        </RadioButton>
+
                         <StackPanel Margin="24,10,0,0"
                                     IsVisible="{Binding ShowCohereLanguagePicker}">
                             <TextBlock Text="Forced Language"
@@ -534,6 +552,25 @@
                                            Foreground="{DynamicResource TextBrush}" />
                                 <TextBlock x:Name="SegmentationDiariZenDescription"
                                            Text="{Binding Source={x:Static local:Loc.Instance}, Path=[settings_segmentation_diarizen_desc]}"
+                                           Foreground="{DynamicResource SubtextBrush}"
+                                           FontSize="11"
+                                           TextWrapping="Wrap" />
+                            </StackPanel>
+                        </RadioButton>
+
+                        <Separator Background="{DynamicResource OverlayBrush}" Margin="0,8,0,8" />
+
+                        <!-- VibeVoice built-in diarization + ASR option -->
+                        <RadioButton GroupName="Segmentation"
+                                     IsChecked="{Binding IsVibeVoiceBuiltin, Mode=OneWay}"
+                                     Command="{Binding SetSegmentationCommand}"
+                                     CommandParameter="VibeVoiceBuiltin"
+                                     Foreground="{DynamicResource TextBrush}">
+                            <StackPanel>
+                                <TextBlock Text="VibeVoice-ASR (built-in)"
+                                           FontWeight="SemiBold"
+                                           Foreground="{DynamicResource TextBrush}" />
+                                <TextBlock Text="Whole-recording model with built-in diarization and ASR. Overrides the ASR backend selection. Requires weights in the vibevoice_asr models folder."
                                            Foreground="{DynamicResource SubtextBrush}"
                                            FontSize="11"
                                            TextWrapping="Wrap" />

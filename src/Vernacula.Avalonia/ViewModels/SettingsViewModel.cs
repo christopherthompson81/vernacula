@@ -25,11 +25,11 @@ internal partial class SettingsViewModel : ObservableObject
     private AppTheme _selectedTheme;
 
     [ObservableProperty]
-    [NotifyPropertyChangedFor(nameof(IsSileroVad), nameof(IsSortformer), nameof(IsDiariZen))]
+    [NotifyPropertyChangedFor(nameof(IsSileroVad), nameof(IsSortformer), nameof(IsDiariZen), nameof(IsVibeVoiceBuiltin))]
     private SegmentationMode _selectedSegmentation;
 
     [ObservableProperty]
-    [NotifyPropertyChangedFor(nameof(IsAsrParakeet), nameof(IsAsrCohere))]
+    [NotifyPropertyChangedFor(nameof(IsAsrParakeet), nameof(IsAsrCohere), nameof(IsAsrVibeVoice))]
     private AsrBackend _selectedAsrBackend;
 
     [ObservableProperty]
@@ -61,8 +61,10 @@ internal partial class SettingsViewModel : ObservableObject
     public bool IsSileroVad         => SelectedSegmentation == SegmentationMode.SileroVad;
     public bool IsSortformer        => SelectedSegmentation == SegmentationMode.Sortformer;
     public bool IsDiariZen          => SelectedSegmentation == SegmentationMode.DiariZen;
+    public bool IsVibeVoiceBuiltin  => SelectedSegmentation == SegmentationMode.VibeVoiceBuiltin;
     public bool IsAsrParakeet       => SelectedAsrBackend == AsrBackend.Parakeet;
     public bool IsAsrCohere         => SelectedAsrBackend == AsrBackend.Cohere;
+    public bool IsAsrVibeVoice      => SelectedAsrBackend == AsrBackend.VibeVoice;
     public bool ShowCohereLanguagePicker => SelectedAsrBackend == AsrBackend.Cohere;
     public bool IsDenoiserNone      => SelectedDenoiser == DenoiserMode.None;
     public bool IsDenoiserDfn3      => SelectedDenoiser == DenoiserMode.DeepFilterNet3;
@@ -352,6 +354,13 @@ internal partial class SettingsViewModel : ObservableObject
         {
             ModelStatusText = $"Missing {_lastMissing.Count} required model file(s): {string.Join(", ", _lastMissing)}. " +
                               $"Place Cohere weights under {_svc.GetCohereModelsDir()}.";
+            return;
+        }
+
+        if (SelectedAsrBackend == AsrBackend.VibeVoice)
+        {
+            ModelStatusText = $"Missing {_lastMissing.Count} required model file(s): {string.Join(", ", _lastMissing)}. " +
+                              $"Place VibeVoice-ASR weights under {_svc.GetVibeVoiceModelsDir()}.";
             return;
         }
 

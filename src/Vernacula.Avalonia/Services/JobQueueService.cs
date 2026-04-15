@@ -308,8 +308,9 @@ internal sealed class JobQueueService
 
     private string GetJobAsrModelName() => _settings.Current.AsrBackend switch
     {
-        AsrBackend.Cohere => "CohereLabs/cohere-transcribe-03-2026",
-        _                 => "nvidia/parakeet-tdt-0.6b-v3",
+        AsrBackend.Cohere     => "CohereLabs/cohere-transcribe-03-2026",
+        AsrBackend.VibeVoice  => "vibevoice/vibevoice-asr",
+        _                     => "nvidia/parakeet-tdt-0.6b-v3",
     };
 
     private string GetJobAsrLanguageCode()

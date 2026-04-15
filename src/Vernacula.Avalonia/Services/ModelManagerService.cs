@@ -70,30 +70,54 @@ internal class ModelManagerService
             new(Path.Combine("cohere_transcribe", CohereTranscribe.ConfigFile), CohereTranscribe.ConfigFile),
         ];
 
+    // VibeVoice-ASR files must be placed manually in the vibevoice_asr subdirectory.
+    // Each .onnx has a single aggregated companion .data file produced by the export script.
+    private static readonly ModelAsset[] VibeVoiceFiles =
+        [
+            new(Path.Combine(Config.VibeVoiceSubDir, VibeVoiceAsr.AudioEncoderFile),                       VibeVoiceAsr.AudioEncoderFile),
+            new(Path.Combine(Config.VibeVoiceSubDir, VibeVoiceAsr.DecoderSingleFile),                      VibeVoiceAsr.DecoderSingleFile),
+            new(Path.Combine(Config.VibeVoiceSubDir, $"{VibeVoiceAsr.DecoderSingleFile}.data"),             $"{VibeVoiceAsr.DecoderSingleFile}.data"),
+            new(Path.Combine(Config.VibeVoiceSubDir, VibeVoiceAsr.ExportReportFile),                       VibeVoiceAsr.ExportReportFile),
+            new(Path.Combine(Config.VibeVoiceSubDir, VibeVoiceAsr.TokenizerFile),                          VibeVoiceAsr.TokenizerFile),
+        ];
+
     private readonly SettingsService _settings;
     private readonly HttpClient _http = new(new HttpClientHandler { AllowAutoRedirect = true });
 
     public ModelManagerService(SettingsService settings) => _settings = settings;
 
-    private AssetRepo[] ActiveRepos() => _settings.Current.AsrBackend switch
+    private AssetRepo[] ActiveRepos()
     {
-        AsrBackend.Cohere =>
-        [
-            new AssetRepo(CoreRepoBase, CoreManifestUrl, CoreDiarizationFiles),
-            new AssetRepo(CohereRepoBase, CohereManifestUrl, CohereFiles),
-        ],
-        _ =>
-        [
-            new AssetRepo(CoreRepoBase, CoreManifestUrl, [.. CoreDiarizationFiles, .. AsrFilesFp32]),
-        ],
-    };
+        // VibeVoice is triggered by either the ASR backend or the segmentation mode.
+        // Files must be placed manually; no auto-download URL is configured (empty RepoBase).
+        if (_settings.Current.AsrBackend == AsrBackend.VibeVoice ||
+            _settings.Current.Segmentation == SegmentationMode.VibeVoiceBuiltin)
+        {
+            return [new AssetRepo("", "", VibeVoiceFiles)];
+        }
+
+        return _settings.Current.AsrBackend switch
+        {
+            AsrBackend.Cohere =>
+            [
+                new AssetRepo(CoreRepoBase, CoreManifestUrl, CoreDiarizationFiles),
+                new AssetRepo(CohereRepoBase, CohereManifestUrl, CohereFiles),
+            ],
+            _ =>
+            [
+                new AssetRepo(CoreRepoBase, CoreManifestUrl, [.. CoreDiarizationFiles, .. AsrFilesFp32]),
+            ],
+        };
+    }
 
     private ModelAsset[] RequiredFiles() =>
         [.. ActiveRepos().SelectMany(repo => repo.Assets)];
 
     private RepoAsset[] DownloadableFiles() =>
-        [.. ActiveRepos().SelectMany(repo => repo.Assets.Select(asset =>
-            new RepoAsset(repo.RepoBase, asset.LocalRelativePath, asset.RemoteRelativePath)))];
+        [.. ActiveRepos()
+            .Where(repo => !string.IsNullOrEmpty(repo.RepoBase))
+            .SelectMany(repo => repo.Assets.Select(asset =>
+                new RepoAsset(repo.RepoBase, asset.LocalRelativePath, asset.RemoteRelativePath)))];
 
     public IReadOnlyList<string> GetMissingFiles()
     {

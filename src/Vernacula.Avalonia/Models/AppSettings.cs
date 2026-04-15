@@ -4,7 +4,7 @@ namespace Vernacula.App.Models;
 
 public enum AppTheme    { Dark, Light }
 public enum PlaybackMode { Single, AutoAdvance, Continuous }
-public enum AsrBackend { Parakeet, Cohere }
+public enum AsrBackend { Parakeet, Cohere, VibeVoice }
 
 public class AppSettings
 {

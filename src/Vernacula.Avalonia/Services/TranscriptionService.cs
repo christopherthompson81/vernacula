@@ -82,8 +82,18 @@ internal class TranscriptionService
         ct.ThrowIfCancellationRequested();
         var (rawSamples, sampleRate, channels) = AudioUtils.ReadAudio(audioPath, streamIndex);
 
+        // ── ASR backend / segmentation flags ─────────────────────────────────
+        bool useVibeVoiceAsr  = string.Equals(asrModelName, "vibevoice/vibevoice-asr", StringComparison.Ordinal);
+        bool useCohereAsr     = string.Equals(asrModelName, "CohereLabs/cohere-transcribe-03-2026", StringComparison.Ordinal);
+        var  segmentationMode = _settings.Current.Segmentation;
+        bool runVibeVoice     = useVibeVoiceAsr || segmentationMode == SegmentationMode.VibeVoiceBuiltin;
+
         // ── Phase 1b: Denoising (optional) ────────────────────────────────────
+        // For VibeVoice, also track the audio to pass to Transcribe() — it accepts any sample rate.
         float[] audio;
+        float[] vibeVoiceAudio;
+        int     vibeVoiceSampleRate;
+        int     vibeVoiceChannels;
         var denoiserMode = _settings.Current.Denoiser;
         if (denoiserMode == DenoiserMode.DeepFilterNet3)
         {
@@ -116,10 +126,20 @@ internal class TranscriptionService
                 // Resample to 16 kHz for ASR
                 return DFN3Denoiser.ResampleFrom48k(enhanced48k, Vernacula.Base.AudioUtils.AsrSampleRate);
             }, ct);
+            // VibeVoice uses the denoised 16 kHz mono audio directly.
+            vibeVoiceAudio      = audio;
+            vibeVoiceSampleRate = Vernacula.Base.AudioUtils.AsrSampleRate;
+            vibeVoiceChannels   = 1;
         }
         else
         {
-            audio = AudioUtils.AudioTo16000Mono(rawSamples, sampleRate, channels);
+            // VibeVoice accepts raw audio at any sample rate; skip the 16 kHz conversion.
+            vibeVoiceAudio      = rawSamples;
+            vibeVoiceSampleRate = sampleRate;
+            vibeVoiceChannels   = channels;
+            audio = runVibeVoice
+                ? Array.Empty<float>()   // not used on the VibeVoice path
+                : AudioUtils.AudioTo16000Mono(rawSamples, sampleRate, channels);
         }
 
         // ── Phase 2: Open results DB ──────────────────────────────────────────
@@ -131,14 +151,96 @@ internal class TranscriptionService
         db.UpdateMetadata("asr_language_code",
             string.IsNullOrWhiteSpace(asrLanguageCode) ? "auto" : asrLanguageCode);
 
-        bool useCohereAsr = string.Equals(
-            asrModelName, "CohereLabs/cohere-transcribe-03-2026", StringComparison.Ordinal);
+        // ── VibeVoice: combined diarization + ASR in a single model pass ────────
+        if (runVibeVoice)
+        {
+            if (!db.CheckDiarization())
+            {
+                progress.Report(new TranscriptionProgress(
+                    TranscriptionPhase.Recognizing, 0, 1, "Running VibeVoice-ASR…"));
+
+                ct.ThrowIfCancellationRequested();
+                string vibeVoiceDir = _settings.GetVibeVoiceModelsDir();
+                IReadOnlyList<VibeVoiceSegment> vibeSegs = await Task.Run(() =>
+                {
+                    using var vibe = new VibeVoiceAsr(vibeVoiceDir);
+                    return vibe.Transcribe(vibeVoiceAudio, vibeVoiceSampleRate, vibeVoiceChannels, ct: ct);
+                }, ct).ConfigureAwait(false);
+
+                db.BeginBulkInsert();
+                var seenVibeSpeakers = new HashSet<int>();
+                for (int i = 0; i < vibeSegs.Count; i++)
+                {
+                    ct.ThrowIfCancellationRequested();
+                    var    seg      = vibeSegs[i];
+                    string spkId   = $"speaker_{seg.Speaker}";
+                    int diarSpkId  = seg.Speaker + 1;
+
+                    if (seenVibeSpeakers.Add(seg.Speaker))
+                        db.InsertSpeaker(spkId);
+
+                    db.InsertResult(
+                        diarizationSpeakerId: diarSpkId,
+                        speakerId:            diarSpkId,
+                        startTime:            seg.Start,
+                        endTime:              seg.End,
+                        startTimeF:           AudioUtils.SecondsToHhMmSs(Math.Round(seg.Start)),
+                        endTimeF:             AudioUtils.SecondsToHhMmSs(Math.Round(seg.End)),
+                        asrContent:           seg.Content,
+                        content:              seg.Content,
+                        tokens:               "[]",
+                        timestamps:           "[]",
+                        logprobs:             null);
+
+                    onSegmentAdded(new SegmentRow
+                    {
+                        SegmentId          = i,
+                        SpeakerTag         = spkId,
+                        SpeakerDisplayName = spkId,
+                        StartTime          = seg.Start,
+                        EndTime            = seg.End,
+                    });
+                    onSegmentText(i, seg.Content);
+
+                    string vibeText = Loc.Instance.T("progress_recognizing_segment", new() {
+                        ["i"]     = (i + 1).ToString(),
+                        ["count"] = vibeSegs.Count.ToString() });
+                    progress.Report(new TranscriptionProgress(
+                        TranscriptionPhase.Recognizing, i + 1, vibeSegs.Count, vibeText, i, seg.Content));
+                }
+                db.CommitBulkInsert();
+                db.MarkDiarizationComplete();
+            }
+            else
+            {
+                // Resume path: diarization + ASR already complete — just notify the UI.
+                var existingSegs  = db.GetSegments();
+                var existingTexts = db.GetResultContents();
+                for (int i = 0; i < existingSegs.Count; i++)
+                {
+                    var (start, end, spkId) = existingSegs[i];
+                    onSegmentAdded(new SegmentRow
+                    {
+                        SegmentId          = i,
+                        SpeakerTag         = spkId,
+                        SpeakerDisplayName = spkId,
+                        StartTime          = start,
+                        EndTime            = end,
+                    });
+                    if (i < existingTexts.Count)
+                        onSegmentText(i, existingTexts[i]);
+                }
+            }
+
+            progress.Report(new TranscriptionProgress(
+                TranscriptionPhase.Done, 1, 1,
+                Loc.Instance["transcription_complete"], OverridePercent: 100));
+            return;
+        }
 
         // ── Phase 3: Segmentation (Diarization or VAD) ───────────────────────
         List<(double start, double end, string spkId)> segs;
         bool inlineAsrDone = false;
-
-        var segmentationMode = _settings.Current.Segmentation;
 
         if (!db.CheckDiarization() && segmentationMode == SegmentationMode.SileroVad)
         {

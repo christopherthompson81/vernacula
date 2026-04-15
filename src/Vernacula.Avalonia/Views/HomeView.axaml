@@ -183,11 +183,13 @@
                                         <Border Background="{Binding StatusBrush}"
                                                 BorderBrush="{Binding StatusBrush}"
                                                 BorderThickness="1"
-                                                HorizontalAlignment="Left"
+                                                HorizontalAlignment="Center"
                                                 VerticalAlignment="Center"
                                                 Padding="6,1"
                                                 MinHeight="0"
-                                                CornerRadius="999">
+                                                CornerRadius="999"
+                                                Cursor="Hand"
+                                                PointerPressed="StatusChip_PointerPressed">
                                             <TextBlock Text="{Binding StatusLabel}"
                                                        Foreground="{DynamicResource BgBrush}"
                                                        FontWeight="SemiBold"
