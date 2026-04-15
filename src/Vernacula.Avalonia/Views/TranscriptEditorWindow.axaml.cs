@@ -100,15 +100,21 @@ public partial class TranscriptEditorWindow : Window
             "CohereLabs/cohere-transcribe-03-2026",
             StringComparison.Ordinal);
 
-        string vocabPath = string.Equals(_jobAsrModel, "CohereLabs/cohere-transcribe-03-2026", StringComparison.Ordinal)
+        bool isCohere    = string.Equals(_jobAsrModel, "CohereLabs/cohere-transcribe-03-2026", StringComparison.Ordinal);
+        bool isVibeVoice = string.Equals(_jobAsrModel, "vibevoice/vibevoice-asr", StringComparison.Ordinal);
+
+        // VibeVoice has its own GPT-2 BPE tokenizer — don't load Parakeet vocab for it
+        string? vocabPath = isCohere
             ? Path.Combine(modelsDir, "cohere_transcribe", CohereTranscribe.VocabFile)
-            : Path.Combine(modelsDir, Config.VocabFile);
-        if (File.Exists(vocabPath))
+            : isVibeVoice
+                ? null
+                : Path.Combine(modelsDir, Config.VocabFile);
+        if (vocabPath is not null && File.Exists(vocabPath))
         {
             _vocab = new VocabService(modelsDir, _jobAsrModel);
         }
 
-        if (string.Equals(_jobAsrModel, "CohereLabs/cohere-transcribe-03-2026", StringComparison.Ordinal))
+        if (isCohere)
         {
             string cohereDir = App.Current.Settings.GetCohereModelsDir();
             _asrModelsAvailable =
@@ -121,6 +127,14 @@ public partial class TranscriptEditorWindow : Window
                 File.Exists(Path.Combine(cohereDir, $"{CohereTranscribe.DecoderStepFile}.data")) &&
                 File.Exists(Path.Combine(cohereDir, CohereTranscribe.VocabFile)) &&
                 File.Exists(Path.Combine(cohereDir, CohereTranscribe.ConfigFile));
+        }
+        else if (isVibeVoice)
+        {
+            string vibeVoiceDir = App.Current.Settings.GetVibeVoiceModelsDir();
+            _asrModelsAvailable =
+                File.Exists(Path.Combine(vibeVoiceDir, VibeVoiceAsr.AudioEncoderFile)) &&
+                (File.Exists(Path.Combine(vibeVoiceDir, VibeVoiceAsr.DecoderSingleStaticFile)) ||
+                 File.Exists(Path.Combine(vibeVoiceDir, VibeVoiceAsr.DecoderSingleFile)));
         }
         else
         {
@@ -1187,11 +1201,22 @@ public partial class TranscriptEditorWindow : Window
             return;
         }
 
-        IReadOnlyList<string> tokenTexts = _vocab != null
-            ? _vocab.GetTokenRuns(seg.Tokens, seg.Logprobs)
-                .Select(r => r.text)
-                .ToList()
-            : seg.Tokens.Select(t => $"[{t}]").ToList();
+        // For VibeVoice, tokens are word indices — show the actual words in the split dialog
+        IReadOnlyList<string> tokenTexts;
+        if (string.Equals(_jobAsrModel, "vibevoice/vibevoice-asr", StringComparison.Ordinal)
+            && seg.Content.Length > 0)
+        {
+            string[] words = seg.Content.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            tokenTexts = words.Length > 0
+                ? words
+                : seg.Tokens.Select(t => $"[{t}]").ToArray();
+        }
+        else
+        {
+            tokenTexts = _vocab != null
+                ? _vocab.GetTokenRuns(seg.Tokens, seg.Logprobs).Select(r => r.text).ToList()
+                : seg.Tokens.Select(t => $"[{t}]").ToList();
+        }
 
         var dialog = new SplitSegmentDialog(tokenTexts);
         await dialog.ShowDialog(this);
@@ -1254,7 +1279,8 @@ public partial class TranscriptEditorWindow : Window
                 encoderFile,
                 decoderJointFile,
                 cohereModelsDir,
-                _jobAsrLanguageCode));
+                _jobAsrLanguageCode,
+                vibeVoiceModelsDir: App.Current.Settings.GetVibeVoiceModelsDir()));
             if (result is null)
             {
                 SetCardStatus(card, "Redo ASR did not produce a result.");

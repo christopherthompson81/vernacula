@@ -901,7 +901,7 @@ internal partial class TranscriptEditorViewModel : ObservableObject, IDisposable
             Loc.Instance["editor_unsuppress"],
             canMergePrev: !redoAsrRunning && card.Index > 0,
             canMergeNext: !redoAsrRunning && card.Index < totalCardCount - 1,
-            canSplit: !redoAsrRunning && hasVocab && seg.Tokens.Count > 1,
+            canSplit: !redoAsrRunning && seg.Tokens.Count > 1,
             canRedoAsr: !redoAsrRunning && asrModelsAvailable && HasAudio,
             canAdjustTimes: !redoAsrRunning);
     }
@@ -1025,7 +1025,8 @@ internal partial class TranscriptEditorViewModel : ObservableObject, IDisposable
             string encoderFile,
             string decoderJointFile,
             string? cohereModelsDir = null,
-            string? cohereLanguageCode = null)
+            string? cohereLanguageCode = null,
+            string? vibeVoiceModelsDir = null)
     {
         if (index < 0 || index >= Segments.Count || _dbPath is null || _fullAudio is null)
             return null;
@@ -1082,6 +1083,21 @@ internal partial class TranscriptEditorViewModel : ObservableObject, IDisposable
                     syntheticTimestamps: true,
                     timestampMode: CohereSyntheticTimestampMode);
             }
+        }
+        else if (string.Equals(asrModel, "vibevoice/vibevoice-asr", StringComparison.Ordinal))
+        {
+            if (string.IsNullOrWhiteSpace(vibeVoiceModelsDir))
+                return null;
+
+            using var vibe = new VibeVoiceAsr(vibeVoiceModelsDir, persistEncoder: false);
+            var vibeSegs = vibe.Transcribe(mono16k, Config.SampleRate, 1);
+            text = string.Join(" ", vibeSegs.Select(s => s.Content));
+            // Word-level synthetic tokens — same scheme used during initial transcription
+            string[] words    = text.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            int wordCount     = Math.Max(1, words.Length);
+            tokens            = Enumerable.Range(0, wordCount).ToList();
+            timestamps        = BuildSyntheticTokenTimestamps(seg.PlayEnd - seg.PlayStart, wordCount);
+            // logprobs stays [] — VibeVoice does not expose per-token confidences
         }
         else
         {

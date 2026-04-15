@@ -201,6 +201,20 @@ internal class TranscriptionService
                     if (seenVibeSpeakers.Add(seg.Speaker))
                         db.InsertSpeaker(spkId);
 
+                    // Word-level synthetic tokens let the transcript editor split segments.
+                    // One token per word; timestamps uniformly distributed over the segment.
+                    string[] words     = (seg.Content ?? "").Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                    int      wordCount = Math.Max(1, words.Length);
+                    const double frameSeconds = Config.HopLength * 8.0 / Config.SampleRate;
+                    double segDuration = seg.End - seg.Start;
+                    var syntheticTokens     = new int[wordCount];
+                    var syntheticTimestamps = new int[wordCount];
+                    for (int wi = 0; wi < wordCount; wi++)
+                    {
+                        syntheticTokens[wi]     = wi;
+                        syntheticTimestamps[wi] = (int)((double)wi / wordCount * segDuration / frameSeconds);
+                    }
+
                     db.InsertResult(
                         diarizationSpeakerId: diarSpkId,
                         speakerId:            diarSpkId,
@@ -210,8 +224,8 @@ internal class TranscriptionService
                         endTimeF:             AudioUtils.SecondsToHhMmSs(Math.Round(seg.End)),
                         asrContent:           seg.Content,
                         content:              seg.Content,
-                        tokens:               "[]",
-                        timestamps:           "[]",
+                        tokens:               JsonSerializer.Serialize(syntheticTokens),
+                        timestamps:           JsonSerializer.Serialize(syntheticTimestamps),
                         logprobs:             null);
                 }
                 db.CommitBulkInsert();
