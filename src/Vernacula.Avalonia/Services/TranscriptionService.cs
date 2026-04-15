@@ -157,24 +157,46 @@ internal class TranscriptionService
             if (!db.CheckDiarization())
             {
                 progress.Report(new TranscriptionProgress(
-                    TranscriptionPhase.Recognizing, 0, 1, "Running VibeVoice-ASR…"));
+                    TranscriptionPhase.Recognizing, 0, 100, "Running VibeVoice-ASR…"));
 
                 ct.ThrowIfCancellationRequested();
-                string vibeVoiceDir = _settings.GetVibeVoiceModelsDir();
+                string vibeVoiceDir  = _settings.GetVibeVoiceModelsDir();
+                double vibeDuration  = (double)vibeVoiceAudio.Length / vibeVoiceSampleRate / Math.Max(1, vibeVoiceChannels);
+                int    streamSegIdx  = 0;
+
                 IReadOnlyList<VibeVoiceSegment> vibeSegs = await Task.Run(() =>
                 {
                     using var vibe = new VibeVoiceAsr(vibeVoiceDir);
-                    return vibe.Transcribe(vibeVoiceAudio, vibeVoiceSampleRate, vibeVoiceChannels, ct: ct);
+                    return vibe.Transcribe(
+                        vibeVoiceAudio, vibeVoiceSampleRate, vibeVoiceChannels,
+                        onSegment: seg =>
+                        {
+                            int    i     = streamSegIdx++;
+                            string spkId = $"speaker_{seg.Speaker}";
+                            onSegmentAdded(new SegmentRow
+                            {
+                                SegmentId          = i,
+                                SpeakerTag         = spkId,
+                                SpeakerDisplayName = spkId,
+                                StartTime          = seg.Start,
+                                EndTime            = seg.End,
+                            });
+                            onSegmentText(i, seg.Content);
+                            double pct = vibeDuration > 0 ? seg.End / vibeDuration * 100.0 : 0;
+                            progress.Report(new TranscriptionProgress(
+                                TranscriptionPhase.Recognizing, 0, 100,
+                                $"{seg.End:F1}s / {vibeDuration:F1}s",
+                                i, seg.Content, OverridePercent: pct));
+                        },
+                        ct: ct);
                 }, ct).ConfigureAwait(false);
 
                 db.BeginBulkInsert();
                 var seenVibeSpeakers = new HashSet<int>();
-                for (int i = 0; i < vibeSegs.Count; i++)
+                foreach (var seg in vibeSegs)
                 {
-                    ct.ThrowIfCancellationRequested();
-                    var    seg      = vibeSegs[i];
-                    string spkId   = $"speaker_{seg.Speaker}";
-                    int diarSpkId  = seg.Speaker + 1;
+                    string spkId    = $"speaker_{seg.Speaker}";
+                    int diarSpkId   = seg.Speaker + 1;
 
                     if (seenVibeSpeakers.Add(seg.Speaker))
                         db.InsertSpeaker(spkId);
@@ -191,22 +213,6 @@ internal class TranscriptionService
                         tokens:               "[]",
                         timestamps:           "[]",
                         logprobs:             null);
-
-                    onSegmentAdded(new SegmentRow
-                    {
-                        SegmentId          = i,
-                        SpeakerTag         = spkId,
-                        SpeakerDisplayName = spkId,
-                        StartTime          = seg.Start,
-                        EndTime            = seg.End,
-                    });
-                    onSegmentText(i, seg.Content);
-
-                    string vibeText = Loc.Instance.T("progress_recognizing_segment", new() {
-                        ["i"]     = (i + 1).ToString(),
-                        ["count"] = vibeSegs.Count.ToString() });
-                    progress.Report(new TranscriptionProgress(
-                        TranscriptionPhase.Recognizing, i + 1, vibeSegs.Count, vibeText, i, seg.Content));
                 }
                 db.CommitBulkInsert();
                 db.MarkDiarizationComplete();

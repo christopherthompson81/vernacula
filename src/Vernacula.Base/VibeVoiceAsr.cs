@@ -195,6 +195,7 @@ public sealed class VibeVoiceAsr : IDisposable
         int channels,
         int prefillChunkTokens = 512,
         int maxNewTokens = 8_192,
+        Action<VibeVoiceSegment>? onSegment = null,
         CancellationToken ct = default)
     {
         // 1 — Resample to 24 kHz mono and pad to acoustic tokenizer stride
@@ -251,6 +252,7 @@ public sealed class VibeVoiceAsr : IDisposable
             suffixIds,
             prefillChunkTokens,
             maxNewTokens,
+            onSegment,
             ct);
 
         if (_profileOutputDir is not null)
@@ -398,6 +400,7 @@ public sealed class VibeVoiceAsr : IDisposable
         long[] suffixIds,
         int prefillChunkTokens,
         int maxNewTokens,
+        Action<VibeVoiceSegment>? onSegment,
         CancellationToken ct)
     {
         using var runOptions  = new RunOptions();
@@ -445,11 +448,38 @@ public sealed class VibeVoiceAsr : IDisposable
             long   nextToken  = lastToken;
             long[] tokenBuf   = new long[1]; // reused each step — avoids per-step allocation
 
+            // Streaming: accumulate decoded bytes and emit complete segments via callback.
+            List<byte>? streamBytes   = onSegment is not null ? new List<byte>(4096) : null;
+            int         streamEmitted = 0;
+
             for (int step = 0; step < maxNewTokens; step++)
             {
                 ct.ThrowIfCancellationRequested();
                 if (nextToken == _eosTokenId || nextToken == _imEndTokenId) break;
                 generated.Add(nextToken);
+
+                // Streaming: decode this token's bytes and check for newly closed segments.
+                if (streamBytes is not null)
+                {
+                    AppendTokenBytes(nextToken, streamBytes);
+
+                    // Only parse when a '}' appears in the last few appended bytes.
+                    bool mightClose = false;
+                    for (int bi = Math.Max(0, streamBytes.Count - 8); bi < streamBytes.Count; bi++)
+                        if (streamBytes[bi] == (byte)'}') { mightClose = true; break; }
+
+                    if (mightClose)
+                    {
+                        string current    = Encoding.UTF8.GetString(streamBytes.ToArray());
+                        int    arrayStart = current.IndexOf('[');
+                        if (arrayStart >= 0)
+                        {
+                            var partial = ParsePartialJson(current[arrayStart..]);
+                            while (streamEmitted < partial.Count)
+                                onSegment!(partial[streamEmitted++]);
+                        }
+                    }
+                }
 
                 tokenBuf[0] = nextToken;
                 var prevKvs = pastKvs;
@@ -653,6 +683,21 @@ public sealed class VibeVoiceAsr : IDisposable
     }
 
     // ── Token decoding ────────────────────────────────────────────────────────
+
+    private void AppendTokenBytes(long tokenId, List<byte> buffer)
+    {
+        int iid = (int)tokenId;
+        if (_addedTokenContent.TryGetValue(iid, out string? special))
+        {
+            buffer.AddRange(Encoding.UTF8.GetBytes(special));
+            return;
+        }
+        string? raw = iid >= 0 && iid < _idToToken.Length ? _idToToken[iid] : null;
+        if (raw is null) return;
+        foreach (char ch in raw)
+            if (_byteLevelDecode.TryGetValue(ch, out byte b))
+                buffer.Add(b);
+    }
 
     private string TokensToText(List<long> tokenIds)
     {

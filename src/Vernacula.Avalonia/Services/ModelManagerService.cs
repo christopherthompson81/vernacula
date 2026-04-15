@@ -75,8 +75,8 @@ internal class ModelManagerService
     private static readonly ModelAsset[] VibeVoiceFiles =
         [
             new(Path.Combine(Config.VibeVoiceSubDir, VibeVoiceAsr.AudioEncoderFile),                       VibeVoiceAsr.AudioEncoderFile),
-            new(Path.Combine(Config.VibeVoiceSubDir, VibeVoiceAsr.DecoderSingleFile),                      VibeVoiceAsr.DecoderSingleFile),
-            new(Path.Combine(Config.VibeVoiceSubDir, $"{VibeVoiceAsr.DecoderSingleFile}.data"),             $"{VibeVoiceAsr.DecoderSingleFile}.data"),
+            new(Path.Combine(Config.VibeVoiceSubDir, VibeVoiceAsr.DecoderSingleStaticFile),                  VibeVoiceAsr.DecoderSingleStaticFile),
+            new(Path.Combine(Config.VibeVoiceSubDir, $"{VibeVoiceAsr.DecoderSingleStaticFile}.data"),       $"{VibeVoiceAsr.DecoderSingleStaticFile}.data"),
             new(Path.Combine(Config.VibeVoiceSubDir, VibeVoiceAsr.ExportReportFile),                       VibeVoiceAsr.ExportReportFile),
             new(Path.Combine(Config.VibeVoiceSubDir, VibeVoiceAsr.TokenizerFile),                          VibeVoiceAsr.TokenizerFile),
         ];
