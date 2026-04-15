@@ -84,6 +84,12 @@
             <Setter Property="Background" Value="{DynamicResource OverlayBrush}" />
         </Style>
 
+        <Style Selector="RadioButton:disabled">
+            <Setter Property="Foreground" Value="{DynamicResource SubtextBrush}" />
+            <Setter Property="Background" Value="{DynamicResource SurfaceBrush}" />
+            <Setter Property="Opacity" Value="0.68" />
+        </Style>
+
         <Style Selector="RadioButton /template/ ContentPresenter">
             <Setter Property="TextElement.Foreground" Value="{DynamicResource TextBrush}" />
         </Style>
@@ -94,6 +100,10 @@
 
         <Style Selector="RadioButton:pressed /template/ ContentPresenter">
             <Setter Property="TextElement.Foreground" Value="{DynamicResource TextBrush}" />
+        </Style>
+
+        <Style Selector="RadioButton:disabled /template/ ContentPresenter">
+            <Setter Property="TextElement.Foreground" Value="{DynamicResource SubtextBrush}" />
         </Style>
 
         <Style Selector="RadioButton:not(:checked) /template/ Ellipse#OuterRing">
@@ -108,12 +118,25 @@
             <Setter Property="IsVisible" Value="True" />
         </Style>
 
+        <Style Selector="RadioButton:disabled /template/ Ellipse#OuterRing">
+            <Setter Property="Stroke" Value="{DynamicResource SecondaryBrush}" />
+        </Style>
+
+        <Style Selector="RadioButton:disabled /template/ Ellipse#InnerDot">
+            <Setter Property="Fill" Value="{DynamicResource SecondaryBrush}" />
+        </Style>
+
         <Style Selector="RadioButton:not(:checked):pointerover /template/ Ellipse#OuterRing">
             <Setter Property="Stroke" Value="{DynamicResource TextBrush}" />
         </Style>
 
         <Style Selector="RadioButton:checked:pointerover /template/ Ellipse#OuterRing">
             <Setter Property="Stroke" Value="{DynamicResource AccentBrush}" />
+        </Style>
+
+        <Style Selector="RadioButton:disabled TextBlock">
+            <Setter Property="Foreground" Value="{DynamicResource SubtextBrush}" />
+            <Setter Property="Opacity" Value="0.9" />
         </Style>
 
         <Style Selector="Button.link-button">
