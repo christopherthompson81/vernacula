@@ -36,7 +36,6 @@ internal class ModelManagerService
     private static readonly ModelAsset[] CoreDiarizationFiles =
         [
             new(Path.Combine(Config.SortformerSubDir, Config.SortformerFile), Config.SortformerFile),
-            new(Path.Combine(Config.SortformerSubDir, Config.SortformerDataFile), Config.SortformerDataFile),
             new(Path.Combine(Config.VadSubDir, Config.VadFile), Config.VadFile),
         ];
 
@@ -209,6 +208,13 @@ internal class ModelManagerService
 
             foreach (var asset in repo.Assets)
             {
+                // Skip Sortformer models — the user may have replaced them with
+                // custom exports (e.g. ORT-optimised graphs) whose hashes won't
+                // match the remote manifest.
+                if (asset.LocalRelativePath.Contains(Config.SortformerSubDir, StringComparison.OrdinalIgnoreCase) ||
+                    asset.LocalRelativePath == Config.SortformerFile)
+                    continue;
+
                 string path = Path.Combine(dir, asset.LocalRelativePath);
                 if (manifest.TryGetValue(asset.RemoteRelativePath, out var expectedHash) &&
                     expectedHash is not null &&

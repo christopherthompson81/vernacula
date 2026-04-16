@@ -5,6 +5,7 @@ using Avalonia.Markup.Xaml;
 using Vernacula.App.Services;
 using Vernacula.App.ViewModels;
 using Vernacula.App.Views;
+using Vernacula.Base;
 
 namespace Vernacula.App;
 
@@ -107,6 +108,27 @@ public partial class App : Application
         ModelManager  = new ModelManagerService(Settings);
         Transcription = new TranscriptionService(Settings);
         JobQueue      = new JobQueueService(Transcription, ControlDb, Settings);
+
+        // Warm up Sortformer model on a background thread so the first
+        // transcription starts without the usual ONNX Runtime initialisation
+        // delay (graph optimisation, CUDA/DML provider setup, memory alloc).
+        Task.Run(() =>
+        {
+            try
+            {
+                var sortformerDir = Settings.GetSortformerModelsDir();
+                if (Directory.Exists(sortformerDir))
+                {
+                    using var streamer = new SortformerStreamer(sortformerDir);
+                    streamer.Warmup();
+                    Console.WriteLine("[App] Sortformer model warmup complete.");
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[App] Sortformer warmup failed (non-fatal): {ex.Message}");
+            }
+        });
 
         if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
         {

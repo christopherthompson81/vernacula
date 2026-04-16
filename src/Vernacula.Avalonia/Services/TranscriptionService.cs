@@ -265,7 +265,6 @@ internal class TranscriptionService
 
         // ── Phase 3: Segmentation (Diarization or VAD) ───────────────────────
         List<(double start, double end, string spkId)> segs;
-        bool inlineAsrDone = false;
 
         if (!db.CheckDiarization() && segmentationMode == SegmentationMode.SileroVad)
         {
@@ -315,141 +314,92 @@ internal class TranscriptionService
         }
         else if (!db.CheckDiarization() && segmentationMode == SegmentationMode.Sortformer)
         {
-            // ── Sortformer path (streaming diarization with inline ASR) ──────
+            // ── Sortformer path (batch diarization — discrete step) ───────────
+            // Runs Sortformer to completion, then ASR runs separately in Phase 4.
+            // This matches the CLI approach and simplifies the pipeline.
             segs = new List<(double, double, string)>();
             var seenSpeakers = new HashSet<string>();
-            bool useInlineParakeetAsr = !useCohereAsr;
-            ParakeetAsr? parakeet = null;
-            if (useInlineParakeetAsr)
+
+            ct.ThrowIfCancellationRequested();
+
+            // ONNX Runtime InferenceSession construction is expensive (graph
+            // optimization, memory allocation, CUDA/DML provider setup).  Report
+            // progress before it so the UI doesn't appear frozen.
+            progress.Report(new TranscriptionProgress(
+                TranscriptionPhase.Diarizing, 0, 1,
+                Loc.Instance["progress_loading_sortformer_model"]));
+
+            var (streamer, melSpec, totalFrames, chunkStride, numChunks) =
+                await Task.Run(() =>
+                {
+                    var s = new SortformerStreamer(sortformerModelsDir);
+                    var m = AudioUtils.LogMelSpectrogram(audio);
+                    var p = s.GetPredParams(m);
+                    return (s, m, p.totalFrames, p.chunkStride, p.numChunks);
+                }, ct).ConfigureAwait(false);
+
+            // Process all chunks and collect predictions (mimics Diarize() with progress).
+            var allPreds = new List<float[,]>(numChunks);
+            int chunkIdx = 0;
+
+            await Task.Run(() =>
             {
-                var (encoderFile, decoderJointFile) =
-                    Config.GetAsrFiles(ModelPrecision.Fp32);
-                parakeet = new ParakeetAsr(parakeetModelsDir, encoderFile, decoderJointFile);
-            }
+                foreach (var (nc, idx, chunkPreds) in
+                    streamer.GetPreds(melSpec, totalFrames, chunkStride, numChunks))
+                {
+                    ct.ThrowIfCancellationRequested();
+                    allPreds.Add(chunkPreds);
+                    chunkIdx = idx + 1;
 
-            using var streamer = new SortformerStreamer(sortformerModelsDir);
-            float[,,] melSpec = AudioUtils.LogMelSpectrogram(audio);
-            var (totalFrames, chunkStride, numChunks) = streamer.GetPredParams(melSpec);
+                    // Marshal progress callback to UI thread via the progress reporter.
+                    string diarText = Loc.Instance.T("progress_identifying_speakers", new() {
+                        ["i"]     = chunkIdx.ToString(),
+                        ["count"] = numChunks.ToString() });
+                    progress.Report(new TranscriptionProgress(
+                        TranscriptionPhase.Diarizing, chunkIdx, numChunks, diarText));
+                }
+            }, ct).ConfigureAwait(false);
 
-            int chunkIdx     = 0;
-            int asrSegOffset = 0;
-            int completedAsr = 0;
+            // Filter and binarize predictions into speaker segments.
+            var (numPredFrames, medFiltered) = streamer.FilterPreds(allPreds, totalFrames);
+            segs = streamer.BinarizePredToSegments(numPredFrames, medFiltered);
 
-            // ── Pipelined inline ASR ──────────────────────────────────────────
-            // After Sortformer yields a chunk we immediately:
-            //   (a) kick off the next Sortformer chunk on a thread-pool thread (GPU)
-            //   (b) run CPU preprocessing for the current batch on another pool thread
-            // (a) and (b) run concurrently, hiding mel-feature extraction time inside
-            // Sortformer's GPU inference window.
-
-            using var enumerator =
-                streamer.GetIncrementalSegments(melSpec, totalFrames, chunkStride, numChunks)
-                        .GetEnumerator();
-
-            // Start the very first Sortformer chunk on a pool thread right away.
-            Task<bool> sortformerTask = Task.Run(() => enumerator.MoveNext(), ct);
-
-            while (true)
+            // Insert all segments into DB and notify UI.
+            db.BeginBulkInsert();
+            int segIdx = 0;
+            foreach (var (start, end, spkId) in segs)
             {
-                bool hasChunk = await sortformerTask.ConfigureAwait(false);
-                if (!hasChunk) break;
-
                 ct.ThrowIfCancellationRequested();
-                var  newSegs     = enumerator.Current;
-                bool isLastChunk = chunkIdx == numChunks - 1;
+                int diarSpkId = int.Parse(spkId.Replace("speaker_", "")) + 1;
 
-                // Report diarization progress scaled to 0..(numChunks/(numChunks+1))
-                string diarText = Loc.Instance.T("progress_identifying_speakers", new() {
-                    ["i"]     = (chunkIdx + 1).ToString(),
-                    ["count"] = numChunks.ToString() });
-                progress.Report(new TranscriptionProgress(
-                    TranscriptionPhase.Diarizing, chunkIdx + 1, numChunks + 1, diarText));
-                chunkIdx++;
+                db.InsertResult(
+                    diarizationSpeakerId: diarSpkId,
+                    speakerId:            diarSpkId,
+                    startTime:            start,
+                    endTime:              end,
+                    startTimeF:           AudioUtils.SecondsToHhMmSs(Math.Round(start)),
+                    endTimeF:             AudioUtils.SecondsToHhMmSs(Math.Round(end)),
+                    asrContent: null, content: null, tokens: null, timestamps: null, logprobs: null);
 
-                // Insert newly-committed segments into DB and notify UI
-                foreach (var (start, end, spkId) in newSegs)
+                if (seenSpeakers.Add(spkId))
+                    db.InsertSpeaker(spkId);
+
+                onSegmentAdded(new SegmentRow
                 {
-                    int diarSpkId = int.Parse(spkId.Replace("speaker_", "")) + 1;
-                    db.InsertResult(
-                        diarizationSpeakerId: diarSpkId,
-                        speakerId:            diarSpkId,
-                        startTime:            start,
-                        endTime:              end,
-                        startTimeF:           AudioUtils.SecondsToHhMmSs(Math.Round(start)),
-                        endTimeF:             AudioUtils.SecondsToHhMmSs(Math.Round(end)),
-                        asrContent: null, content: null, tokens: null, timestamps: null, logprobs: null);
-
-                    if (seenSpeakers.Add(spkId))
-                        db.InsertSpeaker(spkId);
-
-                    onSegmentAdded(new SegmentRow
-                    {
-                        SegmentId          = segs.Count,
-                        SpeakerTag         = spkId,
-                        SpeakerDisplayName = spkId,
-                        StartTime          = start,
-                        EndTime            = end,
-                    });
-                    segs.Add((start, end, spkId));
-                }
-
-                // (a) Next Sortformer chunk — starts immediately on a pool thread (GPU).
-                sortformerTask = isLastChunk
-                    ? Task.FromResult(false)
-                    : Task.Run(() => enumerator.MoveNext(), ct);
-
-                // (b) CPU preprocessing for current segments — runs concurrently with (a).
-                if (useInlineParakeetAsr && parakeet is not null && newSegs.Count > 0)
-                {
-                    int batchSize = newSegs.Count;
-                    var preprocessTask = Task.Run(() => parakeet.PrepareBatch(newSegs, audio), ct);
-
-                    // Await CPU preprocessing (Sortformer GPU is running in parallel).
-                    var preparedBatch = await preprocessTask.ConfigureAwait(false);
-
-                    // GPU encode + decode (Sortformer may still be running; ONNX Runtime
-                    // serialises sessions on the same CUDA device via stream ordering).
-                    if (preparedBatch != null)
-                    {
-                        int batchCompleted = 0;
-                        foreach (var (segId, text, tokens, timestamps, logprobs) in
-                            parakeet.RecognizePrepared(preparedBatch))
-                        {
-                            ct.ThrowIfCancellationRequested();
-                            int absId = asrSegOffset + segId;
-                            completedAsr++;
-                            batchCompleted++;
-
-                            db.UpdateResult(
-                                resultId:   absId + 1,
-                                asrContent: text,
-                                content:    text,
-                                tokens:     JsonSerializer.Serialize(tokens),
-                                timestamps: JsonSerializer.Serialize(timestamps),
-                                logprobs:   JsonSerializer.Serialize(logprobs));
-
-                            onSegmentText(absId, text);
-
-                            if (isLastChunk)
-                            {
-                                string asrText = Loc.Instance.T("progress_recognizing_segment", new() {
-                                    ["i"]     = completedAsr.ToString(),
-                                    ["count"] = segs.Count.ToString() });
-                                progress.Report(new TranscriptionProgress(
-                                    TranscriptionPhase.Recognizing,
-                                    numChunks * batchSize + batchCompleted,
-                                    (numChunks + 1) * batchSize,
-                                    asrText, absId, text));
-                            }
-                        }
-                        asrSegOffset += batchSize;
-                    }
-                }
+                    SegmentId          = segIdx,
+                    SpeakerTag         = spkId,
+                    SpeakerDisplayName = spkId,
+                    StartTime          = start,
+                    EndTime            = end,
+                });
+                segIdx++;
             }
+            db.CommitBulkInsert();
 
             db.MarkDiarizationComplete();
-            inlineAsrDone = useInlineParakeetAsr;
-            parakeet?.Dispose();
+            progress.Report(new TranscriptionProgress(
+                TranscriptionPhase.Diarizing, 1, 1,
+                Loc.Instance.T("progress_vad_complete", new() { ["count"] = segs.Count.ToString() })));
         }
         else if (!db.CheckDiarization() && segmentationMode == SegmentationMode.DiariZen)
         {
@@ -584,7 +534,7 @@ internal class TranscriptionService
                 onSegmentText(i, existingTexts[i]);
         }
 
-        if (!asrDone && !inlineAsrDone)
+        if (!asrDone)
         {
             var segsSubset = segs.GetRange(startSeg, segs.Count - startSeg);
             int totalSegs  = segs.Count;

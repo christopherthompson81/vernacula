@@ -27,6 +27,7 @@ string? profileOutputDir  = null;       // ORT profiling output dir (vibevoice o
 int     profileMaxTokens  = 200;        // cap maxNewTokens during profiling to stay under ORT 1M event limit
 double  minAsrSeconds     = 5.0;        // minimum group span (seconds) when using segmented VibeVoice ASR
 double  asrBufferSeconds  = 0.0;        // audio padding on each side of a group (seconds)
+bool    profileSortformer = false;      // --profile-sortformer: print fine-grained timing for Sortformer
 ModelPrecision precision = ModelPrecision.Fp32;
 
 for (int i = 0; i < args.Length; i++)
@@ -73,6 +74,7 @@ for (int i = 0; i < args.Length; i++)
         case "--asr-buffer":       asrBufferSeconds  = double.Parse(args[++i]); break;
         case "--profile":          profileOutputDir  = args[++i]; break;
         case "--profile-steps":    profileMaxTokens  = int.Parse(args[++i]); break;
+        case "--profile-sortformer": profileSortformer = true; break;
         case "--language":        cohereLanguage = args[++i]; break;
         case "--precision":
             precision = args[++i].ToLowerInvariant() switch {
@@ -285,12 +287,72 @@ try
     }
     else // sortformer (default)
     {
-        Console.Write("Diarizing (Sortformer)... ");
-        using var sortformer = new SortformerStreamer(modelDir);
-        segs = sortformer.Diarize(audio,
-            (idx, total) => Console.Write($"\r  Diarizing chunk {idx}/{total}..."));
-        swDiar.Stop();
-        Console.WriteLine($"\rDiarizing (Sortformer)... {segs.Count} segment(s) ({swDiar.ElapsedMilliseconds}ms)");
+        if (profileSortformer)
+        {
+            // ── Profiled Sortformer path ──────────────────────────────────────
+            var sw = Stopwatch.StartNew();
+
+            var sw1 = Stopwatch.StartNew();
+            Console.Write("Loading Sortformer model... ");
+            using var sortformer = new SortformerStreamer(modelDir);
+            Console.WriteLine($"DONE ({sw1.ElapsedMilliseconds,6} ms)");
+
+            var sw2 = Stopwatch.StartNew();
+            Console.Write("Computing mel spectrogram... ");
+            float[,,] melSpec = AudioUtils.LogMelSpectrogram(audio);
+            Console.WriteLine($"DONE ({sw2.ElapsedMilliseconds,6} ms)");
+
+            var sw3 = Stopwatch.StartNew();
+            Console.Write("Computing pred params... ");
+            var (totalFrames, chunkStride, numChunks) = sortformer.GetPredParams(melSpec);
+            Console.WriteLine($"DONE ({sw3.ElapsedMilliseconds,6} ms)  (frames={totalFrames}, chunks={numChunks})");
+
+            var sw4 = Stopwatch.StartNew();
+            Console.Write("Processing chunks (ONNX inference)... ");
+            var allPreds = new List<float[,]>(numChunks);
+            int chunkIdx = 0;
+            foreach (var (nc, idx, chunkPreds) in sortformer.GetPreds(melSpec, totalFrames, chunkStride, numChunks))
+            {
+                allPreds.Add(chunkPreds);
+                chunkIdx = idx + 1;
+                Console.Write($"\r  chunk {chunkIdx}/{numChunks}...");
+            }
+            Console.WriteLine($"\rDONE ({sw4.ElapsedMilliseconds,6} ms)  ({numChunks} chunks)");
+
+            var sw5 = Stopwatch.StartNew();
+            Console.Write("Filtering predictions (median filter)... ");
+            var (numPredFrames, medFiltered) = sortformer.FilterPreds(allPreds, totalFrames);
+            Console.WriteLine($"DONE ({sw5.ElapsedMilliseconds,6} ms)");
+
+            var sw6 = Stopwatch.StartNew();
+            Console.Write("Binarizing segments... ");
+            segs = sortformer.BinarizePredToSegments(numPredFrames, medFiltered);
+            Console.WriteLine($"DONE ({sw6.ElapsedMilliseconds,6} ms)  ({segs.Count} segments)");
+
+            sw.Stop();
+            Console.WriteLine();
+            Console.WriteLine(new string('=', 64));
+            Console.WriteLine("Sortformer profile breakdown:");
+            Console.WriteLine(new string('=', 64));
+            Console.WriteLine($"  1. ONNX Runtime model load   : {sw1.ElapsedMilliseconds,6} ms");
+            Console.WriteLine($"  2. Mel spectrogram           : {sw2.ElapsedMilliseconds,6} ms");
+            Console.WriteLine($"  3. Pred params               : {sw3.ElapsedMilliseconds,6} ms");
+            Console.WriteLine($"  4. Chunk inference (all)     : {sw4.ElapsedMilliseconds,6} ms  ({sw4.ElapsedMilliseconds / numChunks,6} ms/chunk)");
+            Console.WriteLine($"  5. Median filter             : {sw5.ElapsedMilliseconds,6} ms");
+            Console.WriteLine($"  6. Binarization              : {sw6.ElapsedMilliseconds,6} ms");
+            Console.WriteLine(new string('-', 64));
+            Console.WriteLine($"  TOTAL Sortformer             : {sw.ElapsedMilliseconds,6} ms");
+            Console.WriteLine(new string('=', 64));
+        }
+        else
+        {
+            Console.Write("Diarizing (Sortformer)... ");
+            using var sortformer = new SortformerStreamer(modelDir);
+            segs = sortformer.Diarize(audio,
+                (idx, total) => Console.Write($"\r  Diarizing chunk {idx}/{total}..."));
+            swDiar.Stop();
+            Console.WriteLine($"\rDiarizing (Sortformer)... {segs.Count} segment(s) ({swDiar.ElapsedMilliseconds}ms)");
+        }
     }
 
     cts.Token.ThrowIfCancellationRequested();
@@ -637,6 +699,7 @@ static void PrintUsage()
     Console.WriteLine("  --precision <fp32|int8>            Model precision (default: fp32, parakeet only)");
     Console.WriteLine("  --skip-asr                         Export diarization/VAD segments without transcription");
     Console.WriteLine("  --benchmark                        Print timing / RTF after transcription");
+    Console.WriteLine("  --profile-sortformer               Print fine-grained timing breakdown for Sortformer");
     Console.WriteLine("  -h, --help                         Show this help");
     Console.WriteLine();
     Console.WriteLine("Build: dotnet build -c Release -p:EP=Cuda|DirectML|Cpu -p:Platform=x64");

@@ -154,6 +154,7 @@
   "progress_queued_waiting": "Waiting in queue…",
   "progress_cancelled": "Cancelled.",
   "progress_identifying_speakers": "Identifying speakers... chunk {i}/{count}",
+  "progress_loading_sortformer_model": "Loading Sortformer model…",
   "progress_detecting_speech": "Detecting speech segments…",
   "progress_diarizing_diarizen": "Diarizing speakers with DiariZen…",
   "progress_vad_complete": "Detected {count} speech segment(s).",

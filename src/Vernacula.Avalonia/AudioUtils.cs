@@ -152,12 +152,12 @@ internal static class AudioUtils
         int nFrames = (padded_len - nFft) / hopLength + 1;
         var spec    = new float[freqBins, nFrames];
 
-        var frame = new Complex32[nFft];
-
-        for (int i = 0; i < nFrames; i++)
+        // Parallelise over frames — each FFT is independent.
+        var poStft = new ParallelOptions { MaxDegreeOfParallelism = Math.Max(2, Environment.ProcessorCount - 1) };
+        Parallel.For(0, nFrames, poStft, i =>
         {
             int start = i * hopLength;
-            // Fill complex frame with windowed samples
+            var frame = new Complex32[nFft];
             for (int j = 0; j < nFft; j++)
                 frame[j] = new Complex32((float)(padded[start + j] * fftWindow[j]), 0f);
 
@@ -169,7 +169,7 @@ internal static class AudioUtils
                 float im = frame[k].Imaginary;
                 spec[k, i] = re * re + im * im;
             }
-        }
+        });
 
         return spec;
     }
@@ -188,20 +188,25 @@ internal static class AudioUtils
 
         // mel_spec = MelFilterbank @ sp  →  (NMels, nFrames)
         var melSpec = new float[Config.NMels, nFrames];
-        for (int m = 0; m < Config.NMels; m++)
-            for (int t = 0; t < nFrames; t++)
+        var poMel = new ParallelOptions { MaxDegreeOfParallelism = Math.Max(2, Environment.ProcessorCount - 1) };
+        Parallel.For(0, nFrames, poMel, t =>
+        {
+            for (int m = 0; m < Config.NMels; m++)
             {
                 float sum = 0f;
                 for (int k = 0; k < freqBins; k++)
                     sum += MelFilterbank[m, k] * sp[k, t];
                 melSpec[m, t] = sum;
             }
+        });
 
         // log(mel + guard), transpose to (1, T, NMels)
         var result = new float[1, nFrames, Config.NMels];
-        for (int t = 0; t < nFrames; t++)
+        Parallel.For(0, nFrames, poMel, t =>
+        {
             for (int m = 0; m < Config.NMels; m++)
                 result[0, t, m] = (float)Math.Log(melSpec[m, t] + Config.LogZeroGuard);
+        });
 
         return result;
     }

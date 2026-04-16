@@ -65,6 +65,23 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--fixed-spkcache-frames", type=int, default=188, help="Fixed speaker-cache frames for --static-streaming-batch1")
     parser.add_argument("--fixed-fifo-frames", type=int, default=124, help="Fixed FIFO frames for --static-streaming-batch1")
+    parser.add_argument(
+        "--ort-optimize",
+        action="store_true",
+        help=(
+            "After export, run ONNX Runtime's graph optimiser (ORT_ENABLE_EXTENDED) on the "
+            "model and write the optimised graph back in place.  This removes the 10-30 s "
+            "load-time graph-optimisation delay that would otherwise occur at runtime."
+        ),
+    )
+    parser.add_argument(
+        "--ort-optimize-output",
+        metavar="PATH",
+        help=(
+            "Like --ort-optimize but write the optimised graph to a separate file instead "
+            "of overwriting the original.  Useful to keep the unoptimised model as a fallback."
+        ),
+    )
     parser.add_argument("--overwrite", action="store_true", help="Overwrite an existing output file")
     return parser.parse_args()
 
@@ -320,6 +337,41 @@ def main() -> None:
     with report_path.open("w", encoding="utf-8", newline="\n") as handle:
         json.dump(asdict(metadata), handle, indent=2, ensure_ascii=False)
         handle.write("\n")
+
+    # ── ONNX Runtime graph optimisation (export-time) ─────────────────────
+    if args.ort_optimize or args.ort_optimize_output:
+        try:
+            import onnxruntime as ort  # noqa: F401
+            from onnxruntime.tools import optimize_onnx  # type: ignore[attr-defined]
+            from onnxruntime import GraphOptimizationLevel, EnableAllEpus  # type: ignore[attr-defined]
+
+            source = str(output_path)
+            if args.ort_optimize_output:
+                target = str(Path(args.ort_optimize_output).resolve())
+            else:
+                target = str(output_path)
+
+            # ORT_ENABLE_EXTENDED removes dead code, fuses layers, picks optimal
+            # kernels etc.  The result is written to <target>.  When --ort-optimize
+            # is given the optimised file overwrites the original, so every
+            # subsequent load (C# or otherwise) is instantaneous.
+            optimize_onnx(
+                src=source,
+                dst=target,
+                opt_level=GraphOptimizationLevel.ORT_ENABLE_EXTENDED,
+                enable_all_ep=True,
+            )
+            metadata.notes.append(
+                f"ORT graph optimisation applied (ORT_ENABLE_EXTENDED).  Optimised model: {target}"
+            )
+            print(f"[ort-optimize] {source} -> {target}")
+        except ImportError:
+            print(
+                "[ort-optimize] onnxruntime not available — skipping. "
+                "Install onnxruntime to enable export-time optimisation.",
+            )
+        except Exception as exc:
+            print(f"[ort-optimize] FAILED: {exc}")
 
     print(output_path)
     print(report_path)

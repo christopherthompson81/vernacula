@@ -33,6 +33,16 @@ public sealed class SortformerStreamer : IDisposable
 
     // ── Construction ─────────────────────────────────────────────────────────
 
+    /// <summary>
+    /// Path to a cached, graph-optimised model file.  When set (the default
+    /// is <c>sortformer.optimised.onnx</c> alongside the original model), ONNX
+    /// Runtime will save the optimised graph on first load and load it directly
+    /// on subsequent runs, skipping the expensive graph-optimisation step that
+    /// causes the 10-30 second lead-in delay.  Set to <see langword="null"/> to
+    /// disable caching.
+    /// </summary>
+    public string? OptimisedModelPath { get; set; }
+
     public SortformerStreamer(string modelPath, ExecutionProvider ep = ExecutionProvider.Auto)
     {
         var opts = new SessionOptions();
@@ -60,6 +70,19 @@ public sealed class SortformerStreamer : IDisposable
         }
 
         string resolvedModelPath = Config.GetSortformerModelPath(modelPath);
+
+        // Cache the graph-optimised model on disk so that subsequent loads skip
+        // the expensive ORT graph optimisation step (typically 10-30 s).
+        // ONNX Runtime will run graph optimisation on first load and save the
+        // result to this path; on subsequent loads it loads the optimised graph
+        // directly, bypassing the optimiser entirely.
+        if (string.IsNullOrEmpty(OptimisedModelPath))
+        {
+            string dir  = Path.GetDirectoryName(resolvedModelPath) ?? modelPath;
+            OptimisedModelPath = Path.Combine(dir, "sortformer.optimised.onnx");
+        }
+        opts.OptimizedModelFilePath = OptimisedModelPath;
+
         _session = new InferenceSession(resolvedModelPath, opts);
         ResetState();
     }
@@ -655,6 +678,25 @@ public sealed class SortformerStreamer : IDisposable
         Array.Sort(tmp);
         int mid = length / 2;
         return (length % 2 == 0) ? (tmp[mid - 1] + tmp[mid]) / 2f : tmp[mid];
+    }
+
+    // ── Warmup ────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Perform a single dummy inference to trigger expensive ONNX Runtime
+    /// initialisation (graph optimisation, CUDA/DML provider setup, memory
+    /// allocation) so that the first real chunk processes without the usual
+    /// lead-in delay.
+    /// </summary>
+    /// <param name="ct">Optional cancellation token.</param>
+    public void Warmup(CancellationToken ct = default)
+    {
+        // Create a tiny dummy mel spectrogram — one chunk of zeros is enough
+        // to exercise the full inference path without meaningful compute.
+        int chunkStride = Config.ChunkLength * Config.Subsampling;
+        var dummyMel = new float[1, chunkStride, Config.NMels];
+
+        ProcessChunk(0, chunkStride, chunkStride, dummyMel);
     }
 
     // ── IDisposable ───────────────────────────────────────────────────────────

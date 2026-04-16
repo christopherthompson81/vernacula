@@ -1,3 +1,6 @@
+using System.Runtime.CompilerServices;
+using System.Runtime.Intrinsics;
+using System.Runtime.Intrinsics.X86;
 using System.Security.Cryptography;
 using MathNet.Numerics;
 using MathNet.Numerics.IntegralTransforms;
@@ -132,11 +135,12 @@ public static class AudioUtils
 
         int nFrames = (paddedLen - nFft) / hopLength + 1;
         var spec    = new float[freqBins, nFrames];
-        var frame   = new Complex32[nFft];
 
-        for (int i = 0; i < nFrames; i++)
+        // Parallelise over frames — each FFT is independent.
+        Parallel.For(0, nFrames, i =>
         {
             int start = i * hopLength;
+            var frame = new Complex32[nFft];
             for (int j = 0; j < nFft; j++)
                 frame[j] = new Complex32((float)(padded[start + j] * fftWindow[j]), 0f);
 
@@ -148,7 +152,7 @@ public static class AudioUtils
                 float im = frame[k].Imaginary;
                 spec[k, i] = re * re + im * im;
             }
-        }
+        });
 
         return spec;
     }
@@ -166,19 +170,26 @@ public static class AudioUtils
         int nFrames  = sp.GetLength(1);
 
         var melSpec = new float[Config.NMels, nFrames];
-        for (int m = 0; m < Config.NMels; m++)
-            for (int t = 0; t < nFrames; t++)
+        // Parallelise over frames — each frame's mel dot-products are independent.
+        var poMel = new ParallelOptions { MaxDegreeOfParallelism = Math.Max(2, Environment.ProcessorCount - 1) };
+        Parallel.For(0, nFrames, poMel, t =>
+        {
+            for (int m = 0; m < Config.NMels; m++)
             {
                 float sum = 0f;
                 for (int k = 0; k < freqBins; k++)
                     sum += MelFilterbank[m, k] * sp[k, t];
                 melSpec[m, t] = sum;
             }
+        });
 
         var result = new float[1, nFrames, Config.NMels];
-        for (int t = 0; t < nFrames; t++)
+        // Parallelise log transform over frames.
+        Parallel.For(0, nFrames, poMel, t =>
+        {
             for (int m = 0; m < Config.NMels; m++)
                 result[0, t, m] = (float)Math.Log(melSpec[m, t] + Config.LogZeroGuard);
+        });
 
         return result;
     }
