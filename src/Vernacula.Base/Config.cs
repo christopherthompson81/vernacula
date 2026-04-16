@@ -15,6 +15,12 @@ public static class Config
     public const string SortformerFile = "diar_streaming_sortformer_4spk-v2.1.onnx";
     public const string SortformerDataFile = "diar_streaming_sortformer_4spk-v2.1.onnx.data";
     public const string SortformerModelOverrideEnvVar = "VERNACULA_SORTFORMER_MODEL_FILE";
+    /// <summary>
+    /// Expected MD5 hash of the Sortformer model file as published in the
+    /// remote manifest.  Used by the model-version guard to detect outdated
+    /// or corrupted model files on disk.
+    /// </summary>
+    public const string SortformerModelExpectedMd5 = "647a22cef31f59dc2c314fa783b2581d";
 
     public const int    NFft            = 512;
     public const int    WinLength       = 400;

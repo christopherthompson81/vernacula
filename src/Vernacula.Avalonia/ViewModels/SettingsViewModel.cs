@@ -390,32 +390,46 @@ internal partial class SettingsViewModel : ObservableObject
             UpdateBannerText = Loc.Instance["settings_models_up_to_date"];
     }
 
-    private void ApplyModelStatusText()
+    private void ApplyModelStatusText(string? sortformerWarning = null)
     {
-        if (_lastMissing.Count == 0)
+        if (_lastMissing.Count == 0 && string.IsNullOrEmpty(sortformerWarning))
         {
             ModelStatusText = Loc.Instance.T("model_status_ok", new() { ["count"] = _lastPresent.Count.ToString() });
             return;
         }
 
-        if (SelectedAsrBackend == AsrBackend.Cohere)
+        if (_lastMissing.Count > 0)
         {
-            ModelStatusText = $"Missing {_lastMissing.Count} required model file(s): {string.Join(", ", _lastMissing)}. " +
-                              $"Place Cohere weights under {_svc.GetCohereModelsDir()}.";
+            if (SelectedAsrBackend == AsrBackend.Cohere)
+            {
+                ModelStatusText = $"Missing {_lastMissing.Count} required model file(s): {string.Join(", ", _lastMissing)}. " +
+                                  $"Place Cohere weights under {_svc.GetCohereModelsDir()}.";
+                return;
+            }
+
+            if (SelectedAsrBackend == AsrBackend.VibeVoice)
+            {
+                ModelStatusText = $"Missing {_lastMissing.Count} required model file(s): {string.Join(", ", _lastMissing)}. " +
+                                  $"Use Download Missing Models, or place VibeVoice-ASR weights under {_svc.GetVibeVoiceModelsDir()}.";
+                return;
+            }
+
+            ModelStatusText = Loc.Instance.T("model_status_missing",
+                new() { ["count"] = _lastMissing.Count.ToString(),
+                        ["files"] = string.Join(", ", _lastMissing) });
+            if (!string.IsNullOrEmpty(sortformerWarning))
+                ModelStatusText += $"  ({sortformerWarning})";
             return;
         }
 
-        if (SelectedAsrBackend == AsrBackend.VibeVoice)
+        // All files present but Sortformer model is outdated
+        if (!string.IsNullOrEmpty(sortformerWarning))
         {
-            ModelStatusText = $"Missing {_lastMissing.Count} required model file(s): {string.Join(", ", _lastMissing)}. " +
-                              $"Use Download Missing Models, or place VibeVoice-ASR weights under {_svc.GetVibeVoiceModelsDir()}.";
+            ModelStatusText = $"{Loc.Instance.T("model_status_ok", new() { ["count"] = _lastPresent.Count.ToString() })}  {sortformerWarning}";
             return;
         }
 
-        ModelStatusText = _lastMissing.Count == 0
-            ? Loc.Instance.T("model_status_ok",      new() { ["count"] = _lastPresent.Count.ToString() })
-            : Loc.Instance.T("model_status_missing",  new() { ["count"] = _lastMissing.Count.ToString(),
-                                                               ["files"] = string.Join(", ", _lastMissing) });
+        ModelStatusText = Loc.Instance.T("model_status_ok", new() { ["count"] = _lastPresent.Count.ToString() });
     }
 
     private void ApplyDiariZenStatusText()
@@ -437,6 +451,8 @@ internal partial class SettingsViewModel : ObservableObject
         ModelStatusBrush = Application.Current!.Resources["SubtextBrush"] as IBrush ?? Brushes.Gray;
 
         IReadOnlyList<string> missing = [], present = [];
+        string? sortformerWarning = null;
+
         await Task.Run(() =>
         {
             missing         = _modelMgr.GetMissingFiles();
@@ -445,13 +461,22 @@ internal partial class SettingsViewModel : ObservableObject
             DownloadVisible = _modelMgr.GetMissingDownloadableFiles().Count > 0;
         });
 
+        // Check Sortformer model version (non-blocking — does not block on network)
+        try
+        {
+            var result = await _modelMgr.CheckSortformerModelAsync();
+            if (result.HasValue && result.Value.isCorrect == false)
+                sortformerWarning = result.Value.message;
+        }
+        catch { /* Network or other error — silently skip */ }
+
         _lastMissing    = missing;
         _lastPresent    = present;
         _modelCheckDone = true;
-        ApplyModelStatusText();
+        ApplyModelStatusText(sortformerWarning);
 
-        ModelStatusBrush = Application.Current.Resources[missing.Count == 0 ? "GreenBrush" : "YellowBrush"] as IBrush
-                           ?? (missing.Count == 0 ? Brushes.LimeGreen : Brushes.Goldenrod);
+        ModelStatusBrush = Application.Current.Resources[missing.Count == 0 && sortformerWarning == null ? "GreenBrush" : "YellowBrush"] as IBrush
+                           ?? (missing.Count == 0 && sortformerWarning == null ? Brushes.LimeGreen : Brushes.Goldenrod);
     }
 
     internal async Task CheckDiariZenModelsAsync()

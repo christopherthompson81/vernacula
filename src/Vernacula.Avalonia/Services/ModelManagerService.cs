@@ -208,11 +208,11 @@ internal class ModelManagerService
 
             foreach (var asset in repo.Assets)
             {
-                // Skip Sortformer models — the user may have replaced them with
-                // custom exports (e.g. ORT-optimised graphs) whose hashes won't
-                // match the remote manifest.
-                if (asset.LocalRelativePath.Contains(Config.SortformerSubDir, StringComparison.OrdinalIgnoreCase) ||
-                    asset.LocalRelativePath == Config.SortformerFile)
+                // Skip Sortformer .onnx.data files — ONNX Runtime regenerates
+                // these as external weights at runtime, so their hashes will
+                // never match the manifest.  The main .onnx model file is
+                // checked normally below.
+                if (asset.LocalRelativePath.EndsWith(Config.SortformerDataFile, StringComparison.OrdinalIgnoreCase))
                     continue;
 
                 string path = Path.Combine(dir, asset.LocalRelativePath);
@@ -257,6 +257,49 @@ internal class ModelManagerService
         using var md5    = MD5.Create();
         using var stream = File.OpenRead(filePath);
         return Convert.ToHexString(md5.ComputeHash(stream)).ToLowerInvariant();
+    }
+
+    /// <summary>
+    /// Checks whether the Sortformer model file on disk matches the expected
+    /// version (by MD5 hash).  Returns a tuple of (isCorrectVersion, message):
+    ///  - (true, _)  = the model file hash matches the manifest
+    ///  - (false, _) = the model is outdated, corrupted, or missing
+    /// Returns (null, _) if the check cannot be performed (offline, no file, etc.)
+    /// so callers can silently skip it.
+    /// </summary>
+    public async Task<(bool? isCorrect, string message)?> CheckSortformerModelAsync(
+        CancellationToken ct = default)
+    {
+        string modelPath = Path.Combine(_settings.GetModelsDir(),
+            Path.Combine(Config.SortformerSubDir, Config.SortformerFile));
+
+        if (!File.Exists(modelPath))
+            return (false, $"{Config.SortformerFile} not found.");
+
+        // Fetch the manifest to get the expected hash
+        string json;
+        try
+        {
+            using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            cts.CancelAfter(TimeSpan.FromSeconds(10));
+            json = await _http.GetStringAsync(CoreManifestUrl, cts.Token);
+        }
+        catch { return null; }
+
+        Dictionary<string, string> manifest;
+        try { manifest = ParseManifestHashes(json); }
+        catch { return null; }
+
+        if (!manifest.TryGetValue(Config.SortformerFile, out var expectedHash) ||
+            string.IsNullOrEmpty(expectedHash))
+            return null;
+
+        string actualHash = await Task.Run(() => ComputeMd5(modelPath), ct);
+
+        if (string.Equals(actualHash, expectedHash, StringComparison.OrdinalIgnoreCase))
+            return (true, $"{Config.SortformerFile} is up to date.");
+
+        return (false, $"{Config.SortformerFile} is outdated (expected {expectedHash[..8]}…, got {actualHash[..8]}…).");
     }
 
     /// <summary>
