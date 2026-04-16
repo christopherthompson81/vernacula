@@ -69,7 +69,7 @@ internal partial class SettingsViewModel : ObservableObject
     public bool CanUseVibeVoiceAsr  => CudaEpWorking;
     public string VibeVoiceAsrLabel => CanUseVibeVoiceAsr ? "VibeVoice-ASR" : "VibeVoice-ASR (Unavailable - CUDA Missing)";
     public string VibeVoiceAsrDescription => CanUseVibeVoiceAsr
-        ? "Whole-recording ASR with built-in diarization. Requires local weights in the vibevoice_asr models folder."
+        ? "Whole-recording ASR with built-in diarization. Downloads into the vibevoice_asr models folder."
         : "Unavailable because the CUDA execution provider check did not pass.";
     public bool ShowCohereLanguagePicker => SelectedAsrBackend == AsrBackend.Cohere;
     public bool IsDenoiserNone      => SelectedDenoiser == DenoiserMode.None;
@@ -408,7 +408,7 @@ internal partial class SettingsViewModel : ObservableObject
         if (SelectedAsrBackend == AsrBackend.VibeVoice)
         {
             ModelStatusText = $"Missing {_lastMissing.Count} required model file(s): {string.Join(", ", _lastMissing)}. " +
-                              $"Place VibeVoice-ASR weights under {_svc.GetVibeVoiceModelsDir()}.";
+                              $"Use Download Missing Models, or place VibeVoice-ASR weights under {_svc.GetVibeVoiceModelsDir()}.";
             return;
         }
 

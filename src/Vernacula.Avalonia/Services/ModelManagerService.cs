@@ -28,6 +28,11 @@ internal class ModelManagerService
     private const string CohereManifestUrl =
         "https://huggingface.co/christopherthompson81/cohere-transcribe-03-2026-onnx/resolve/main/manifest.json";
 
+    private const string VibeVoiceRepoBase =
+        "https://huggingface.co/christopherthompson81/vibevoice-asr-onnx/resolve/main";
+    private const string VibeVoiceManifestUrl =
+        "https://huggingface.co/christopherthompson81/vibevoice-asr-onnx/resolve/main/manifest.json";
+
     private static readonly ModelAsset[] CoreDiarizationFiles =
         [
             new("diar_streaming_sortformer_4spk-v2.1.onnx", "diar_streaming_sortformer_4spk-v2.1.onnx"),
@@ -70,13 +75,16 @@ internal class ModelManagerService
             new(Path.Combine("cohere_transcribe", CohereTranscribe.ConfigFile), CohereTranscribe.ConfigFile),
         ];
 
-    // VibeVoice-ASR files must be placed manually in the vibevoice_asr subdirectory.
-    // Each .onnx has a single aggregated companion .data file produced by the export script.
     private static readonly ModelAsset[] VibeVoiceFiles =
         [
             new(Path.Combine(Config.VibeVoiceSubDir, VibeVoiceAsr.AudioEncoderFile),                       VibeVoiceAsr.AudioEncoderFile),
+            new(Path.Combine(Config.VibeVoiceSubDir, $"{VibeVoiceAsr.AudioEncoderFile}.data"),            $"{VibeVoiceAsr.AudioEncoderFile}.data"),
             new(Path.Combine(Config.VibeVoiceSubDir, VibeVoiceAsr.DecoderSingleFile),                     VibeVoiceAsr.DecoderSingleFile),
             new(Path.Combine(Config.VibeVoiceSubDir, $"{VibeVoiceAsr.DecoderSingleFile}.data"),            $"{VibeVoiceAsr.DecoderSingleFile}.data"),
+            new(Path.Combine(Config.VibeVoiceSubDir, "config.json"),                                      "config.json"),
+            new(Path.Combine(Config.VibeVoiceSubDir, "processor_config.json"),                            "processor_config.json"),
+            new(Path.Combine(Config.VibeVoiceSubDir, "tokenizer_config.json"),                            "tokenizer_config.json"),
+            new(Path.Combine(Config.VibeVoiceSubDir, "chat_template.jinja"),                              "chat_template.jinja"),
             new(Path.Combine(Config.VibeVoiceSubDir, VibeVoiceAsr.ExportReportFile),                       VibeVoiceAsr.ExportReportFile),
             new(Path.Combine(Config.VibeVoiceSubDir, VibeVoiceAsr.TokenizerFile),                          VibeVoiceAsr.TokenizerFile),
         ];
@@ -88,12 +96,10 @@ internal class ModelManagerService
 
     private AssetRepo[] ActiveRepos()
     {
-        // VibeVoice is triggered by either the ASR backend or the segmentation mode.
-        // Files must be placed manually; no auto-download URL is configured (empty RepoBase).
         if (_settings.Current.AsrBackend == AsrBackend.VibeVoice ||
             _settings.Current.Segmentation == SegmentationMode.VibeVoiceBuiltin)
         {
-            return [new AssetRepo("", "", VibeVoiceFiles)];
+            return [new AssetRepo(VibeVoiceRepoBase, VibeVoiceManifestUrl, VibeVoiceFiles)];
         }
 
         return _settings.Current.AsrBackend switch

@@ -239,6 +239,26 @@ internal sealed class ControlDb : IDisposable
         return result is DBNull or null or "" ? "nvidia/parakeet-tdt-0.6b-v3" : (string)result;
     }
 
+    public DateTime? GetJobRunStartedAt(int jobId)
+    {
+        using var cmd = _conn.CreateCommand();
+        cmd.CommandText = "SELECT transcription_run_datestamp FROM jobs WHERE job_id = $id";
+        cmd.Parameters.AddWithValue("$id", jobId);
+        var result = cmd.ExecuteScalar();
+        if (result is DBNull or null)
+            return null;
+
+        string value = (string)result;
+        return DateTime.TryParseExact(
+            value,
+            "yyyy-MM-dd HH:mm:ss",
+            CultureInfo.InvariantCulture,
+            DateTimeStyles.AssumeLocal,
+            out DateTime parsed)
+            ? parsed
+            : null;
+    }
+
     public List<JobRecord> GetJobs()
     {
         var jobs = new List<JobRecord>();

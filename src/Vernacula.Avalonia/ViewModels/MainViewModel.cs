@@ -37,6 +37,7 @@ internal partial class MainViewModel : ObservableObject
         OnPropertyChanged(nameof(CurrentPanelViewModel));
     }
 
+    private readonly ControlDb _controlDb;
     private readonly JobQueueService _queue;
     private Window? _mainWindow;
     private DispatcherTimer? _runningJobsClockTimer;
@@ -59,6 +60,7 @@ internal partial class MainViewModel : ObservableObject
         JobQueueService      queue,
         ExportService        export)
     {
+        _controlDb = controlDb;
         _queue   = queue;
         Settings = new SettingsViewModel(settings, modelManager);
         Home     = new HomeViewModel(modelManager, controlDb, settings);
@@ -301,7 +303,7 @@ internal partial class MainViewModel : ObservableObject
 
         if (status == JobStatus.Running)
         {
-            job.TranscriptionRunStartedAt ??= DateTime.Now;
+            job.TranscriptionRunStartedAt ??= _controlDb.GetJobRunStartedAt(jobId) ?? DateTime.Now;
             job.RunTimeSeconds = Math.Max(0, (int)(DateTime.Now - job.TranscriptionRunStartedAt.Value).TotalSeconds);
             job.IsIndeterminate = true; // refined when first progress event fires
         }
