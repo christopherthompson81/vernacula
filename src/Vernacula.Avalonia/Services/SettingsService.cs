@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Vernacula.Base;
 using Vernacula.App.Models;
 
 namespace Vernacula.App.Services;
@@ -48,6 +49,8 @@ internal class SettingsService
         {
             Current.AcceptedGatedModels.Add(DiariZenGatedModelId);
         }
+
+        MigrateLegacyModelLayout();
     }
 
     public bool IsGatedModelAccepted(string modelId) =>
@@ -78,7 +81,16 @@ internal class SettingsService
             : Current.DiariZenModelsDir;
 
     public string GetDenoiserModelsDir() =>
-        Path.Combine(GetModelsDir(), "deepfilternet3");
+        Path.Combine(GetModelsDir(), Config.Dfn3SubDir);
+
+    public string GetParakeetModelsDir() =>
+        Path.Combine(GetModelsDir(), Config.ParakeetSubDir);
+
+    public string GetSortformerModelsDir() =>
+        Path.Combine(GetModelsDir(), Config.SortformerSubDir);
+
+    public string GetSileroModelsDir() =>
+        Path.Combine(GetModelsDir(), Config.VadSubDir);
 
     public string GetCohereModelsDir() =>
         Path.Combine(GetModelsDir(), "cohere_transcribe");
@@ -98,4 +110,48 @@ internal class SettingsService
     public string GetControlDbPath() => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
         "Vernacula", "vernacula.db");
+
+    private void MigrateLegacyModelLayout()
+    {
+        string rootDir = GetModelsDir();
+        if (!Directory.Exists(rootDir))
+            return;
+
+        MoveLegacyModelFiles(rootDir, GetParakeetModelsDir(),
+        [
+            Config.PreprocessorFile,
+            Config.EncoderFile,
+            $"{Config.EncoderFile}.data",
+            Config.DecoderJointFile,
+            Config.VocabFile,
+            Config.AsrConfigFile,
+        ]);
+
+        MoveLegacyModelFiles(rootDir, GetSortformerModelsDir(),
+        [
+            Config.SortformerFile,
+        ]);
+
+        MoveLegacyModelFiles(rootDir, GetSileroModelsDir(),
+        [
+            Config.VadFile,
+        ]);
+    }
+
+    private static void MoveLegacyModelFiles(string sourceRoot, string targetDir, IEnumerable<string> fileNames)
+    {
+        foreach (string fileName in fileNames)
+        {
+            string sourcePath = Path.Combine(sourceRoot, fileName);
+            if (!File.Exists(sourcePath))
+                continue;
+
+            string destPath = Path.Combine(targetDir, fileName);
+            if (File.Exists(destPath))
+                continue;
+
+            Directory.CreateDirectory(Path.GetDirectoryName(destPath)!);
+            File.Move(sourcePath, destPath);
+        }
+    }
 }

@@ -35,8 +35,8 @@ internal class ModelManagerService
 
     private static readonly ModelAsset[] CoreDiarizationFiles =
         [
-            new("diar_streaming_sortformer_4spk-v2.1.onnx", "diar_streaming_sortformer_4spk-v2.1.onnx"),
-            new(Config.VadFile, Config.VadFile),
+            new(Path.Combine(Config.SortformerSubDir, Config.SortformerFile), Config.SortformerFile),
+            new(Path.Combine(Config.VadSubDir, Config.VadFile), Config.VadFile),
         ];
 
     private static readonly ModelAsset[] DiariZenFiles =
@@ -54,12 +54,12 @@ internal class ModelManagerService
 
     private static readonly ModelAsset[] AsrFilesFp32 =
         [
-            new("nemo128.onnx", "nemo128.onnx"),
-            new("encoder-model.onnx", "encoder-model.onnx"),
-            new("encoder-model.onnx.data", "encoder-model.onnx.data"),
-            new("decoder_joint-model.onnx", "decoder_joint-model.onnx"),
-            new("vocab.txt", "vocab.txt"),
-            new("config.json", "config.json")
+            new(Path.Combine(Config.ParakeetSubDir, Config.PreprocessorFile), Config.PreprocessorFile),
+            new(Path.Combine(Config.ParakeetSubDir, Config.EncoderFile), Config.EncoderFile),
+            new(Path.Combine(Config.ParakeetSubDir, $"{Config.EncoderFile}.data"), $"{Config.EncoderFile}.data"),
+            new(Path.Combine(Config.ParakeetSubDir, Config.DecoderJointFile), Config.DecoderJointFile),
+            new(Path.Combine(Config.ParakeetSubDir, Config.VocabFile), Config.VocabFile),
+            new(Path.Combine(Config.ParakeetSubDir, Config.AsrConfigFile), Config.AsrConfigFile)
         ];
 
     private static readonly ModelAsset[] CohereFiles =
@@ -309,10 +309,10 @@ internal class ModelManagerService
             "Vernacula", "cuda_debug.txt");
         Directory.CreateDirectory(Path.GetDirectoryName(logPath)!);
 
-        string modelFile = Path.Combine(_settings.GetModelsDir(), "nemo128.onnx");
+        string modelFile = Path.Combine(_settings.GetParakeetModelsDir(), Config.PreprocessorFile);
         if (!File.Exists(modelFile))
         {
-            string msg = $"nemo128.onnx not found at: {modelFile}";
+            string msg = $"{Config.PreprocessorFile} not found at: {modelFile}";
             File.WriteAllText(logPath, msg);
             return (false, msg);
         }

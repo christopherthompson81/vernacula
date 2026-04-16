@@ -73,7 +73,9 @@ internal class TranscriptionService
         CancellationToken   ct)
     {
         Console.WriteLine($"[Transcription] RunPipelineAsync starting for '{audioPath}'");
-        string modelsDir = _settings.GetModelsDir();
+        string parakeetModelsDir = _settings.GetParakeetModelsDir();
+        string sortformerModelsDir = _settings.GetSortformerModelsDir();
+        string sileroModelsDir = _settings.GetSileroModelsDir();
 
         // ── Phase 1: Load audio ───────────────────────────────────────────────
         progress.Report(new TranscriptionProgress(
@@ -275,7 +277,7 @@ internal class TranscriptionService
             List<(double, double)> vadSegs = await Task.Run(
                 () =>
                 {
-                    using var vad = new VadSegmenter(modelsDir);
+                    using var vad = new VadSegmenter(sileroModelsDir);
                     return vad.GetSegments(audio);
                 }, ct).ConfigureAwait(false);
 
@@ -322,10 +324,10 @@ internal class TranscriptionService
             {
                 var (encoderFile, decoderJointFile) =
                     Config.GetAsrFiles(ModelPrecision.Fp32);
-                parakeet = new ParakeetAsr(modelsDir, encoderFile, decoderJointFile);
+                parakeet = new ParakeetAsr(parakeetModelsDir, encoderFile, decoderJointFile);
             }
 
-            using var streamer = new SortformerStreamer(modelsDir);
+            using var streamer = new SortformerStreamer(sortformerModelsDir);
             float[,,] melSpec = AudioUtils.LogMelSpectrogram(audio);
             var (totalFrames, chunkStride, numChunks) = streamer.GetPredParams(melSpec);
 
@@ -649,7 +651,7 @@ internal class TranscriptionService
                 var (encoderFile, decoderJointFile) =
                     Config.GetAsrFiles(ModelPrecision.Fp32);
 
-                using var parakeet = new ParakeetAsr(modelsDir, encoderFile, decoderJointFile);
+                using var parakeet = new ParakeetAsr(parakeetModelsDir, encoderFile, decoderJointFile);
                 foreach (var (segId, text, tokens, timestamps, logprobs) in
                     parakeet.Recognize(segsSubset, audio))
                 {

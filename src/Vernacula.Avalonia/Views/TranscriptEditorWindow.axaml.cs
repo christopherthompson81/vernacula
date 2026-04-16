@@ -83,6 +83,7 @@ public partial class TranscriptEditorWindow : Window
         _vm.PlayCommand.CanExecuteChanged += OnPlayCommandCanExecuteChanged;
 
         string modelsDir = App.Current.Settings.GetModelsDir();
+        string parakeetModelsDir = App.Current.Settings.GetParakeetModelsDir();
         string? asrModel;
         string? asrLanguageCode;
         using (var db = new TranscriptionDb(dbPath))
@@ -109,10 +110,12 @@ public partial class TranscriptEditorWindow : Window
             ? Path.Combine(modelsDir, "cohere_transcribe", CohereTranscribe.VocabFile)
             : isVibeVoice
                 ? Path.Combine(modelsDir, Config.VibeVoiceSubDir, VibeVoiceAsr.TokenizerFile)
-                : Path.Combine(modelsDir, Config.VocabFile);
+                : Path.Combine(parakeetModelsDir, Config.VocabFile);
         if (vocabPath is not null && File.Exists(vocabPath))
         {
-            _vocab = new VocabService(modelsDir, _jobAsrModel);
+            _vocab = new VocabService(
+                isCohere || isVibeVoice ? App.Current.Settings.GetModelsDir() : parakeetModelsDir,
+                _jobAsrModel);
         }
 
         if (isCohere)
@@ -139,7 +142,7 @@ public partial class TranscriptEditorWindow : Window
         else
         {
             var (encoderFile, _) = Config.GetAsrFiles(ModelPrecision.Fp32);
-            _asrModelsAvailable = File.Exists(Path.Combine(modelsDir, encoderFile));
+            _asrModelsAvailable = File.Exists(Path.Combine(parakeetModelsDir, encoderFile));
         }
 
         Loaded += OnLoaded;
@@ -1256,7 +1259,7 @@ public partial class TranscriptEditorWindow : Window
 
         try
         {
-            string modelsDir = App.Current.Settings.GetModelsDir();
+            string modelsDir = App.Current.Settings.GetParakeetModelsDir();
             string cohereModelsDir = App.Current.Settings.GetCohereModelsDir();
             var (encoderFile, decoderJointFile) = Config.GetAsrFiles(ModelPrecision.Fp32);
 

@@ -11,6 +11,7 @@ public static class Config
     public const int SampleRate = 16_000;
 
     // ── Diarization (Sortformer) ─────────────────────────────────────────────
+    public const string SortformerSubDir = "sortformer";
     public const string SortformerFile = "diar_streaming_sortformer_4spk-v2.1.onnx";
 
     public const int    NFft            = 512;
@@ -143,6 +144,7 @@ public static class Config
     public static readonly double LogStep   = Math.Log(6.4) / 27.0;
 
     // ── Denoiser (DeepFilterNet3) ─────────────────────────────────────────────
+    public const string Dfn3SubDir = "deepfilternet3";
     /// <summary>DeepFilterNet3 encoder model (ERB+spec features → skip connections + embedding).</summary>
     public const string Dfn3EncFile    = "enc.onnx";
     /// <summary>DeepFilterNet3 ERB decoder model (embedding+skips → ERB mask).</summary>
@@ -151,6 +153,7 @@ public static class Config
     public const string Dfn3DfDecFile  = "df_dec.onnx";
 
     // ── VAD (Silero) ──────────────────────────────────────────────────────────
+    public const string VadSubDir         = "silero";
     public const string VadFile            = "silero_vad.onnx";
     public const int    VadWindowSamples   = 512;
     public const int    VadContextSamples  = 64;
@@ -173,6 +176,7 @@ public static class Config
     public const string VibeVoiceSubDir = "vibevoice_asr";
 
     // ── ASR (Parakeet) ───────────────────────────────────────────────────────
+    public const string ParakeetSubDir       = "parakeet";
     public const string PreprocessorFile     = "nemo128.onnx";
     public const string EncoderFile          = "encoder-model.onnx";
     public const string DecoderJointFile     = "decoder_joint-model.onnx";
