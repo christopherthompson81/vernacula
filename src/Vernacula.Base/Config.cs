@@ -13,6 +13,8 @@ public static class Config
     // ── Diarization (Sortformer) ─────────────────────────────────────────────
     public const string SortformerSubDir = "sortformer";
     public const string SortformerFile = "diar_streaming_sortformer_4spk-v2.1.onnx";
+    public const string SortformerDataFile = "diar_streaming_sortformer_4spk-v2.1.onnx.data";
+    public const string SortformerModelOverrideEnvVar = "VERNACULA_SORTFORMER_MODEL_FILE";
 
     public const int    NFft            = 512;
     public const int    WinLength       = 400;
@@ -198,6 +200,17 @@ public static class Config
         precision == ModelPrecision.Int8
             ? (EncoderFileInt8, DecoderJointFileInt8)
             : (EncoderFile,     DecoderJointFile);
+
+    public static string GetSortformerModelPath(string modelDir)
+    {
+        string? overridePath = Environment.GetEnvironmentVariable(SortformerModelOverrideEnvVar);
+        if (string.IsNullOrWhiteSpace(overridePath))
+            return Path.Combine(modelDir, SortformerFile);
+
+        return Path.IsPathRooted(overridePath)
+            ? overridePath
+            : Path.Combine(modelDir, overridePath);
+    }
 
     public static int GetDiariZenSegmentationIntraOpThreads()
     {

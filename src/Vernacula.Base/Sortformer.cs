@@ -59,7 +59,8 @@ public sealed class SortformerStreamer : IDisposable
                 break;
         }
 
-        _session = new InferenceSession(Path.Combine(modelPath, Config.SortformerFile), opts);
+        string resolvedModelPath = Config.GetSortformerModelPath(modelPath);
+        _session = new InferenceSession(resolvedModelPath, opts);
         ResetState();
     }
 

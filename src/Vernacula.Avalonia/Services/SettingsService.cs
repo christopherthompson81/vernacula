@@ -130,6 +130,7 @@ internal class SettingsService
         MoveLegacyModelFiles(rootDir, GetSortformerModelsDir(),
         [
             Config.SortformerFile,
+            Config.SortformerDataFile,
         ]);
 
         MoveLegacyModelFiles(rootDir, GetSileroModelsDir(),

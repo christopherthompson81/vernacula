@@ -12,6 +12,8 @@ It now covers both models in your pipeline:
 - `export_parakeet_nemo_to_onnx.py`: exports Parakeet `.nemo` to the split ONNX package used by Vernacula.
 - `export_sortformer_nemo_to_onnx.py`: exports streaming Sortformer `.nemo` to the same six-input / three-output ONNX contract used by Vernacula's inference code.
 - `export_silero_vad_to_onnx.py`: exports Silero VAD to ONNX.
+- `benchmark_sortformer_rtf.py`: benchmarks Sortformer NeMo-vs-ONNX diarization RTF on CPU or CUDA.
+- `compare_sortformer_chunk_outputs.py`: compares two Sortformer backends chunk-by-chunk to locate streaming parity drift.
 - `tune_nemo128_export.py`: runs multiple preprocessor export candidates and scores them against a legacy reference — use this if the default export mode needs tuning.
 - `setup_nemo_export_env.py`: creates the Python export venv.
 - `requirements.txt`: export dependencies.
@@ -26,6 +28,9 @@ NeMo requires a specific Python version range — `3.14` is too new for a depend
 python3 scripts/nemo_export/setup_nemo_export_env.py
 source .venv-nemo-export/bin/activate
 ```
+
+When CUDA is requested, the setup script installs `onnxruntime-gpu` so the
+Sortformer benchmark can exercise the CUDA execution provider in the same venv.
 
 Install with a specific CUDA build or CPU-only:
 
@@ -139,9 +144,105 @@ The custom Sortformer exporter in this folder works around both issues by:
 - replacing the problematic concat logic with an ONNX-friendly implementation
 - using the legacy `torch.onnx.export(..., dynamo=False)` path, which succeeded here where the newer exporter did not
 
+The exporter now defaults `--chunk-frames` to `992`, which matches
+Vernacula's streaming runtime contract (`124` subsampled frames at 8x
+subsampling). This matters for `torch.export`, because the example input shape
+can become part of the exported constraints.
+
+To evaluate newer exporter paths, you can also sweep `--dynamo` and `--opset`:
+
+```bash
+python scripts/nemo_export/export_sortformer_nemo_to_onnx.py \
+  --nemo ~/models/diar_streaming_sortformer_4spk-v2.1.nemo \
+  --output ~/models/diar_streaming_sortformer_4spk-v2.1.opset18.dynamo.onnx \
+  --opset 18 \
+  --chunk-frames 992 \
+  --dynamo true \
+  --optimize true \
+  --overwrite
+```
+
+You can also export a batch-1 streaming-specialized candidate with fixed input
+tensor shapes for `chunk`, `spkcache`, and `fifo`:
+
+```bash
+python scripts/nemo_export/export_sortformer_nemo_to_onnx.py \
+  --nemo ~/models/diar_streaming_sortformer_4spk-v2.1.nemo \
+  --output ~/models/diar_streaming_sortformer_4spk-v2.1.static-b1.onnx \
+  --opset 17 \
+  --static-streaming-batch1 \
+  --fixed-spkcache-frames 188 \
+  --fixed-fifo-frames 124 \
+  --overwrite
+```
+
+This candidate keeps logical length inputs but trims the fixed-size cache/fifo
+buffers before concatenation, which is useful when investigating whether a more
+static streaming contract gives ORT or TensorRT a better graph.
+
+For a safer structure-only experiment that keeps dynamic time dimensions but
+specializes the graph to batch size 1, use:
+
+```bash
+python scripts/nemo_export/export_sortformer_nemo_to_onnx.py \
+  --nemo ~/models/diar_streaming_sortformer_4spk-v2.1.nemo \
+  --output ~/models/diar_streaming_sortformer_4spk-v2.1.dynamic-b1.onnx \
+  --opset 17 \
+  --dynamic-streaming-batch1 \
+  --overwrite
+```
+
+## Sortformer Benchmark
+
+Use the benchmark harness to compare the NeMo reference and exported ONNX model
+on the same audio with the same external log-mel frontend.
+
+```bash
+python scripts/nemo_export/benchmark_sortformer_rtf.py \
+  --audio data/diarizen_parity/en-US_sample_01_first90.wav \
+  --nemo ~/models/diar_streaming_sortformer_4spk-v2.1.nemo \
+  --onnx ~/.local/share/Vernacula/models/sortformer/diar_streaming_sortformer_4spk-v2.1.onnx \
+  --runtime both \
+  --device cuda \
+  --warmup-runs 1 \
+  --timed-runs 5
+```
+
+Notes:
+
+- `--runtime nemo` benchmarks only the PyTorch/NeMo reference.
+- `--runtime onnx` benchmarks only the exported ONNX graph.
+- `--runtime both` runs both and prints comparable RTF metrics.
+- Reported timings split `feature`, `inference`, and `postprocess`, plus total
+  pipeline RTF against the original audio duration.
+- `--ort-profile profile.json` saves an ONNX Runtime profile for the ONNX path.
+- `--ort-provider tensorrt` tries TensorRT first and falls back to CUDA if engine build fails.
+
+## Sortformer Chunk Comparison
+
+When a candidate export is faster but loses parity, compare it against a known
+good backend chunk-by-chunk:
+
+```bash
+python scripts/nemo_export/compare_sortformer_chunk_outputs.py \
+  --audio data/diarizen_parity/en-US_sample_01_first90.wav \
+  --lhs-runtime onnx \
+  --lhs-model data/hf_cache/diar_streaming_sortformer_4spk-v2.1.dynamic-b1.onnx \
+  --lhs-label legacy \
+  --rhs-runtime onnx \
+  --rhs-model data/hf_cache/diar_streaming_sortformer_4spk-v2.1.dynamic-b1.opset18.dynamo.onnx \
+  --rhs-label dynamo \
+  --device cuda \
+  --json-out data/diarizen_parity/sortformer_dynamic_b1_drift.json
+```
+
+The report captures per-chunk raw prediction deltas, embedding deltas, chunk
+prediction deltas, and the streaming cache/fifo lengths before each step so you
+can see whether divergence starts in the model outputs or in later state
+evolution.
+
 ## References
 
 - [Parakeet export guidance discussion](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2/discussions/9)
 - [NeMo transducer ONNX example](https://raw.githubusercontent.com/NVIDIA/NeMo/main/examples/asr/export/transducer/infer_transducer_onnx.py)
 - [NeMo Sortformer issue](https://github.com/NVIDIA/NeMo/issues/15077)
-

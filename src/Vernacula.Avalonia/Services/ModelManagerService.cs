@@ -36,6 +36,7 @@ internal class ModelManagerService
     private static readonly ModelAsset[] CoreDiarizationFiles =
         [
             new(Path.Combine(Config.SortformerSubDir, Config.SortformerFile), Config.SortformerFile),
+            new(Path.Combine(Config.SortformerSubDir, Config.SortformerDataFile), Config.SortformerDataFile),
             new(Path.Combine(Config.VadSubDir, Config.VadFile), Config.VadFile),
         ];
 

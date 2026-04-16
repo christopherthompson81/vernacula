@@ -7,7 +7,8 @@ the required dependencies.
 
 PyTorch is installed from the CUDA-specific index by default so that GPU
 acceleration is available during export.  Pass --cuda-version "" to install
-the CPU wheel instead.
+the CPU wheel instead. ONNX Runtime is installed as `onnxruntime-gpu` when a
+CUDA build is requested, and plain `onnxruntime` otherwise.
 
 Usage:
     python scripts/nemo_export/setup_nemo_export_env.py
@@ -58,6 +59,9 @@ def main() -> None:
         torch_index = f"https://download.pytorch.org/whl/{args.cuda_version}"
         print(f"\nInstalling PyTorch with CUDA ({args.cuda_version}) from {torch_index}")
         run(python, "-m", "pip", "install", "torch", "--index-url", torch_index)
+        run(python, "-m", "pip", "install", "onnxruntime-gpu>=1.20,<2")
+    else:
+        run(python, "-m", "pip", "install", "onnxruntime>=1.20,<2")
 
     run(python, "-m", "pip", "install", "-r", str(REQUIREMENTS))
 

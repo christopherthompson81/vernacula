@@ -3,5 +3,5 @@ obj/
 .vs/
 *.user
 *.suo
-.venv/
+.venv*/
 **/__pycache__/
