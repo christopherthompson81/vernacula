@@ -2,6 +2,9 @@ using Microsoft.ML.OnnxRuntime;
 using Microsoft.ML.OnnxRuntime.Tensors;
 using Vernacula.Base.Models;
 
+// ── Buffer pooling for median filter ──────────────────────────────────────────
+using System.Buffers;
+
 namespace Vernacula.Base;
 
 /// <summary>
@@ -21,6 +24,14 @@ namespace Vernacula.Base;
 public sealed class SortformerStreamer : IDisposable
 {
     private readonly InferenceSession _session;
+
+    // ── Reusable buffers for chunk processing (eliminates per-chunk allocations) ──
+    private float[]? _chunkDataBuffer;
+    private float[]? _predsFlatBuffer;
+    private float[]? _embsFlatBuffer;
+    private float[,]? _chunkEmbsBuffer;
+    private float[,]? _chunkPredsBuffer;
+    private float[,]? _fpBuffer;
 
     // ── Streaming state ───────────────────────────────────────────────────────
 
@@ -99,6 +110,53 @@ public sealed class SortformerStreamer : IDisposable
         _fifoPreds     = new float[1, 0, Config.NumSpeakers];
         _meanSilEmb    = new float[Config.EmbeddingDimension];
         _nSilFrames    = 0;
+
+        // Clear reusable buffers so they reallocate to the right size for the new run
+        _chunkDataBuffer = null;
+        _predsFlatBuffer = null;
+        _embsFlatBuffer = null;
+        _chunkEmbsBuffer = null;
+        _chunkPredsBuffer = null;
+        _fpBuffer = null;
+    }
+
+    /// <summary>
+    /// Ensure reusable buffers are allocated with at least the given capacity.
+    /// </summary>
+    private void EnsureChunkBuffer(int capacity)
+    {
+        if (_chunkDataBuffer is null || _chunkDataBuffer.Length < capacity)
+            _chunkDataBuffer = new float[capacity];
+    }
+
+    private void EnsurePredsBuffer(long length)
+    {
+        if (_predsFlatBuffer is null || _predsFlatBuffer.Length < length)
+            _predsFlatBuffer = new float[length];
+    }
+
+    private void EnsureEmbsBuffer(long length)
+    {
+        if (_embsFlatBuffer is null || _embsFlatBuffer.Length < length)
+            _embsFlatBuffer = new float[length];
+    }
+
+    private void EnsureChunkEmbsBuffer(int t, int d)
+    {
+        if (_chunkEmbsBuffer is null || _chunkEmbsBuffer.GetLength(0) < t || _chunkEmbsBuffer.GetLength(1) < d)
+            _chunkEmbsBuffer = new float[t, d];
+    }
+
+    private void EnsureChunkPredsBuffer(int t, int s)
+    {
+        if (_chunkPredsBuffer is null || _chunkPredsBuffer.GetLength(0) < t || _chunkPredsBuffer.GetLength(1) < s)
+            _chunkPredsBuffer = new float[t, s];
+    }
+
+    private void EnsureFpBuffer(int t, int s)
+    {
+        if (_fpBuffer is null || _fpBuffer.GetLength(0) < t || _fpBuffer.GetLength(1) < s)
+            _fpBuffer = new float[t, s];
     }
 
     // ── Silence profile ───────────────────────────────────────────────────────
@@ -260,6 +318,7 @@ public sealed class SortformerStreamer : IDisposable
     /// Process one chunk using a pre-computed full-file mel spectrogram.
     /// Slices frames [start, end) directly — no per-chunk FFT computation.
     /// Returns chunk_preds (validFrames, NumSpeakers).
+    /// Uses reusable internal buffers to minimize per-chunk allocations.
     /// </summary>
     public float[,] ProcessChunk(int idx, int chunkStride, int totalFrames, float[,,] melSpec)
     {
@@ -270,15 +329,23 @@ public sealed class SortformerStreamer : IDisposable
         int D          = Config.EmbeddingDimension;
         int nMelFrames = melSpec.GetLength(1);
 
+        // Use reusable chunk data buffer
+        EnsureChunkBuffer(chunkStride * Config.NMels);
+        var chunkData = _chunkDataBuffer!;
+        // Clear only the portion we'll use (important for padding rows)
+        Array.Clear(chunkData, 0, chunkStride * Config.NMels);
+
         // Slice frames [start, end) from the pre-computed spectrogram.
-        // Remaining rows stay zero (padding for the last chunk).
-        var chunkData = new float[chunkStride * Config.NMels];
         for (int t = 0; t < currentLen; t++)
         {
             int srcRow = start + t;
             if (srcRow < nMelFrames)
+            {
+                int dstOffset = t * Config.NMels;
+                int srcOffset = srcRow * Config.NMels;
                 for (int m = 0; m < Config.NMels; m++)
-                    chunkData[t * Config.NMels + m] = melSpec[0, srcRow, m];
+                    chunkData[dstOffset + m] = melSpec[0, srcRow, m];
+            }
         }
 
         var spkcache = _spkcache!;
@@ -311,8 +378,12 @@ public sealed class SortformerStreamer : IDisposable
 
         int predsLen  = (int)predsT.Length;
         int embsLen   = (int)embsT.Length;
-        var predsFlat = new float[predsLen];
-        var embsFlat  = new float[embsLen];
+
+        // Use reusable flat buffers instead of allocating per-chunk
+        EnsurePredsBuffer(predsLen);
+        EnsureEmbsBuffer(embsLen);
+        var predsFlat = _predsFlatBuffer!;
+        var embsFlat  = _embsFlatBuffer!;
         for (int i = 0; i < predsLen; i++) predsFlat[i] = predsT.GetValue(i);
         for (int i = 0; i < embsLen;  i++) embsFlat[i]  = embsT.GetValue(i);
 
@@ -332,8 +403,14 @@ public sealed class SortformerStreamer : IDisposable
 
         int ceLen = Math.Min(validFrames, embTOut);
 
-        var chunkEmbs  = new float[ceLen, D];
-        var chunkPreds = new float[cpLen, S];
+        // Use reusable output buffers
+        EnsureChunkEmbsBuffer(ceLen, D);
+        EnsureChunkPredsBuffer(cpLen, S);
+        EnsureFpBuffer(fpLen > 0 ? fpLen : 1, S);
+
+        var chunkEmbs  = _chunkEmbsBuffer!;
+        var chunkPreds = _chunkPredsBuffer!;
+        var fp = _fpBuffer!;
 
         for (int t = 0; t < ceLen; t++)
             for (int d = 0; d < D; d++)
@@ -343,7 +420,6 @@ public sealed class SortformerStreamer : IDisposable
             for (int s = 0; s < S; s++)
                 chunkPreds[t, s] = predsFlat[(cpStart + t) * S + s];
 
-        var fp = new float[fpLen, S];
         for (int t = 0; t < fpLen; t++)
             for (int s = 0; s < S; s++)
                 fp[t, s] = predsFlat[(fpStart + t) * S + s];
@@ -384,7 +460,12 @@ public sealed class SortformerStreamer : IDisposable
                 CompressCache();
         }
 
-        return chunkPreds;
+        // Return a copy since the buffer will be reused for the next chunk
+        var result = new float[cpLen, S];
+        for (int t = 0; t < cpLen; t++)
+            for (int s = 0; s < S; s++)
+                result[t, s] = chunkPreds[t, s];
+        return result;
     }
 
     // ── Incremental segmentation ──────────────────────────────────────────────
@@ -516,7 +597,9 @@ public sealed class SortformerStreamer : IDisposable
 
         int half     = Config.Window / 2;
         var filtered = new float[totT, S];
-        var window   = new float[Config.Window];
+
+        // Single reusable window buffer — avoids allocating one per frame per speaker
+        var window = new float[Config.Window];
 
         for (int spk = 0; spk < S; spk++)
             for (int t = 0; t < totT; t++)
@@ -673,11 +756,35 @@ public sealed class SortformerStreamer : IDisposable
 
     private static float Median(float[] data, int length)
     {
-        if (length == 0) return 0f;
-        var tmp = data[..length];
-        Array.Sort(tmp);
-        int mid = length / 2;
-        return (length % 2 == 0) ? (tmp[mid - 1] + tmp[mid]) / 2f : tmp[mid];
+        if (length <= 0) return 0f;
+        if (length == 1) return data[0];
+        if (length == 2) return (data[0] + data[1]) * 0.5f;
+
+        // Copy only the used portion into a sorted buffer (avoids slice allocation)
+        var tmp = ArrayPool<float>.Shared.Rent(length);
+        Array.Copy(data, tmp, length);
+
+        // Insertion sort — faster than Array.Sort for small arrays (window ≤ 11)
+        for (int i = 1; i < length; i++)
+        {
+            float key = tmp[i];
+            int j = i - 1;
+            while (j >= 0 && tmp[j] > key)
+            {
+                tmp[j + 1] = tmp[j];
+                j--;
+            }
+            tmp[j + 1] = key;
+        }
+
+        float result;
+        if (length % 2 == 0)
+            result = (tmp[length / 2 - 1] + tmp[length / 2]) * 0.5f;
+        else
+            result = tmp[length / 2];
+
+        ArrayPool<float>.Shared.Return(tmp);
+        return result;
     }
 
     // ── Warmup ────────────────────────────────────────────────────────────────
