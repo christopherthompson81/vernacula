@@ -27,6 +27,7 @@ public sealed class Qwen3Asr : IDisposable
 {
     public const string EncoderFile = "encoder.onnx";
     public const string EncoderBatchedFile = "encoder_batched.onnx";
+    public const string DecoderFile = "decoder.onnx";
     public const string DecoderInitFile = "decoder_init.onnx";
     public const string DecoderInitBatchedFile = "decoder_init_batched.onnx";
     public const string DecoderStepFile = "decoder_step.onnx";
@@ -126,7 +127,8 @@ public sealed class Qwen3Asr : IDisposable
 
     private readonly InferenceSession _encoder;
     private readonly InferenceSession _decoderInit;
-    private readonly InferenceSession _decoderStep;
+    private readonly InferenceSession? _decoderStep;
+    private readonly InferenceSession? _decoder;
     private readonly InferenceSession? _encoderBatched;
     private readonly InferenceSession? _decoderInitBatched;
     private readonly bool _useCudaIoBinding;
@@ -134,6 +136,9 @@ public sealed class Qwen3Asr : IDisposable
     private readonly string _modelPath;
     private readonly ExecutionProvider _executionProvider;
     private readonly int _hiddenSize;
+    private readonly int _nLayers;
+    private readonly int _nKvHeads;
+    private readonly int _headDim;
     private readonly int _vocabSize;
     private readonly int _baseVocabSize;
     private readonly int[] _eosTokenIds;
@@ -155,6 +160,9 @@ public sealed class Qwen3Asr : IDisposable
         var specialTokens = root.GetProperty("special_tokens");
 
         _hiddenSize = decoderConfig.GetProperty("hidden_size").GetInt32();
+        _nLayers    = decoderConfig.GetProperty("num_layers").GetInt32();
+        _nKvHeads   = decoderConfig.GetProperty("num_key_value_heads").GetInt32();
+        _headDim    = decoderConfig.GetProperty("head_dim").GetInt32();
         _vocabSize = decoderConfig.GetProperty("vocab_size").GetInt32();
         _baseVocabSize = root.GetProperty("embed_tokens_shape")[0].GetInt32();
         _eosTokenIds = specialTokens.GetProperty("eos_token_ids").EnumerateArray().Select(e => e.GetInt32()).ToArray();
@@ -163,28 +171,53 @@ public sealed class Qwen3Asr : IDisposable
         var encoderOpts = MakeSessionOptions(ep, GraphOptimizationLevel.ORT_ENABLE_EXTENDED, out bool encoderUsesCuda);
         var decoderOpts = MakeSessionOptions(ep, GraphOptimizationLevel.ORT_ENABLE_EXTENDED, out bool decoderUsesCuda);
 
-        bool hasBatchedFiles = File.Exists(Path.Combine(modelPath, EncoderBatchedFile)) &&
-                               File.Exists(Path.Combine(modelPath, DecoderInitBatchedFile));
-        _preferBatched = preferBatched && hasBatchedFiles;
+        bool hasUnified       = File.Exists(Path.Combine(modelPath, DecoderFile));
+        bool hasBatchedEncoder = File.Exists(Path.Combine(modelPath, EncoderBatchedFile));
+        bool hasBatchedInit   = File.Exists(Path.Combine(modelPath, DecoderInitBatchedFile));
+        _preferBatched = preferBatched && hasBatchedEncoder && (hasBatchedInit || hasUnified);
 
-        if (_preferBatched)
+        if (hasUnified)
         {
-            // Load only batched encoder + decoder_init + shared decoder_step.
-            // Skipping serial encoder/decoder_init avoids peak VRAM from 5 → 3 sessions.
-            _encoder      = null!;
-            _decoderInit  = null!;
-            _encoderBatched      = new InferenceSession(Path.Combine(modelPath, EncoderBatchedFile),      encoderOpts);
-            _decoderInitBatched  = new InferenceSession(Path.Combine(modelPath, DecoderInitBatchedFile),  decoderOpts);
+            // Unified decoder.onnx replaces decoder_init + decoder_step — only one session.
+            _decoder          = new InferenceSession(Path.Combine(modelPath, DecoderFile), decoderOpts);
+            _decoderInit      = null!;
+            _decoderStep      = null;
+            _decoderInitBatched = null;
+            _useCudaIoBinding = false;
+
+            if (_preferBatched)
+            {
+                _encoder        = null!;
+                _encoderBatched = new InferenceSession(Path.Combine(modelPath, EncoderBatchedFile), encoderOpts);
+            }
+            else
+            {
+                _encoder        = new InferenceSession(Path.Combine(modelPath, EncoderFile), encoderOpts);
+                _encoderBatched = null;
+            }
+        }
+        else if (_preferBatched)
+        {
+            // Batched split path: encoder_batched + decoder_init_batched + decoder_step.
+            _decoder             = null;
+            _encoder             = null!;
+            _decoderInit         = null!;
+            _encoderBatched      = new InferenceSession(Path.Combine(modelPath, EncoderBatchedFile),     encoderOpts);
+            _decoderInitBatched  = new InferenceSession(Path.Combine(modelPath, DecoderInitBatchedFile), decoderOpts);
+            _decoderStep         = new InferenceSession(Path.Combine(modelPath, DecoderStepFile),        decoderOpts);
             _useCudaIoBinding    = false;
         }
         else
         {
-            _encoder     = new InferenceSession(Path.Combine(modelPath, EncoderFile),     encoderOpts);
-            _decoderInit = new InferenceSession(Path.Combine(modelPath, DecoderInitFile), decoderOpts);
-            _useCudaIoBinding = encoderUsesCuda && decoderUsesCuda;
+            // Serial split path: encoder + decoder_init + decoder_step.
+            _decoder         = null;
+            _encoder         = new InferenceSession(Path.Combine(modelPath, EncoderFile),     encoderOpts);
+            _decoderInit     = new InferenceSession(Path.Combine(modelPath, DecoderInitFile), decoderOpts);
+            _decoderStep     = new InferenceSession(Path.Combine(modelPath, DecoderStepFile), decoderOpts);
+            _encoderBatched     = null;
+            _decoderInitBatched = null;
+            _useCudaIoBinding   = encoderUsesCuda && decoderUsesCuda;
         }
-
-        _decoderStep = new InferenceSession(Path.Combine(modelPath, DecoderStepFile), decoderOpts);
 
         string embedPath = Path.Combine(modelPath, EmbedTokensFile);
         _embedMmf = MemoryMappedFile.CreateFromFile(embedPath, FileMode.Open, null, 0, MemoryMappedFileAccess.Read);
@@ -321,9 +354,11 @@ public sealed class Qwen3Asr : IDisposable
             List<int> promptIds = BuildPromptIds(audioTokenCount);
             int audioOffset = GetAudioPadStart(promptIds);
 
-            var (rawTokens, rawLogprobs) = _useCudaIoBinding
-                ? DecodeWithIoBinding(promptIds, audioOffset, audioFeatures, audioTokenCount, maxNewTokens)
-                : DecodeOnCpu(promptIds, audioOffset, audioFeatures, audioTokenCount, maxNewTokens);
+            var (rawTokens, rawLogprobs) = _decoder is not null
+                ? DecodeOnCpuUnified(promptIds, audioOffset, audioFeatures, audioTokenCount, maxNewTokens)
+                : _useCudaIoBinding
+                    ? DecodeWithIoBinding(promptIds, audioOffset, audioFeatures, audioTokenCount, maxNewTokens)
+                    : DecodeOnCpu(promptIds, audioOffset, audioFeatures, audioTokenCount, maxNewTokens);
 
             var (textTokens, textLogprobs) = ExtractTextTokens(rawTokens, rawLogprobs);
             string rawText = DecodeTokens(textTokens);
@@ -452,7 +487,7 @@ public sealed class Qwen3Asr : IDisposable
         float[] audio,
         int maxNewTokens = 256)
     {
-        if (_encoderBatched is null || _decoderInitBatched is null)
+        if (_encoderBatched is null || (_decoderInitBatched is null && _decoder is null))
         {
             foreach (var r in RecognizeDetailed(segs, audio, maxNewTokens))
                 yield return r;
@@ -536,37 +571,73 @@ public sealed class Qwen3Asr : IDisposable
                 Array.Copy(audioFeaturesSource, srcBase, audioFeatures, dstBase, _hiddenSize);
             }
 
-            // ── Batched decoder_init ─────────────────────────────────────────
-            List<int> prompt   = BuildPromptIds(maxAudioTokens);
+            // ── Batched prefill ──────────────────────────────────────────────
+            List<int> prompt    = BuildPromptIds(maxAudioTokens);
             int       audioOffset = GetAudioPadStart(prompt);
-            int       seqLen   = prompt.Count;
+            int       seqLen    = prompt.Count;
 
-            var inputIds    = new long[take * seqLen];
             var positionIds = new long[take * seqLen];
             for (int b = 0; b < take; b++)
             for (int t = 0; t < seqLen; t++)
-            {
-                inputIds   [b * seqLen + t] = prompt[t];
                 positionIds[b * seqLen + t] = t;
+
+            float[] batchedLogits;
+            float[] batchedKeys;
+            float[] batchedValues;
+
+            if (_decoder is not null)
+            {
+                // Unified decoder: build input_embeds from embedding lookup + per-item audio scatter.
+                float[] inputEmbeds = new float[take * seqLen * _hiddenSize];
+                var tmpEmbed = new float[_hiddenSize];
+                for (int b = 0; b < take; b++)
+                {
+                    for (int t = 0; t < seqLen; t++)
+                    {
+                        ReadTokenEmbedding(prompt[t], tmpEmbed);
+                        Array.Copy(tmpEmbed, 0, inputEmbeds, (b * seqLen + t) * _hiddenSize, _hiddenSize);
+                    }
+                    int audioLen = (int)audioLengths[b];
+                    for (int t = 0; t < audioLen; t++)
+                        Array.Copy(audioFeatures, (b * maxAudioTokens + t) * _hiddenSize,
+                                   inputEmbeds,   (b * seqLen + audioOffset + t) * _hiddenSize, _hiddenSize);
+                }
+
+                float[] emptyKv = [];
+                float[] prefillMask = BuildCausalMask(seqLen, 0);
+                using var initResults = _decoder.Run(
+                [
+                    NamedOnnxValue.CreateFromTensor("input_embeds",   new DenseTensor<float>(inputEmbeds, [take, seqLen, _hiddenSize])),
+                    NamedOnnxValue.CreateFromTensor("position_ids",   new DenseTensor<long>(positionIds,  [take, seqLen])),
+                    NamedOnnxValue.CreateFromTensor("attention_mask", new DenseTensor<float>(prefillMask, [1, 1, seqLen, seqLen])),
+                    NamedOnnxValue.CreateFromTensor("past_keys",      new DenseTensor<float>(emptyKv,     [_nLayers, take, _nKvHeads, 0, _headDim])),
+                    NamedOnnxValue.CreateFromTensor("past_values",    new DenseTensor<float>(emptyKv,     [_nLayers, take, _nKvHeads, 0, _headDim])),
+                ]);
+                batchedLogits = ExtractTensor(initResults.First(r => r.Name == "logits").AsTensor<float>());
+                batchedKeys   = ExtractTensor(initResults.First(r => r.Name == "present_keys").AsTensor<float>());
+                batchedValues = ExtractTensor(initResults.First(r => r.Name == "present_values").AsTensor<float>());
+            }
+            else
+            {
+                var inputIds = new long[take * seqLen];
+                for (int b = 0; b < take; b++)
+                for (int t = 0; t < seqLen; t++)
+                    inputIds[b * seqLen + t] = prompt[t];
+
+                using var initResults = _decoderInitBatched!.Run(
+                [
+                    NamedOnnxValue.CreateFromTensor("input_ids",      new DenseTensor<long> (inputIds,     [take, seqLen])),
+                    NamedOnnxValue.CreateFromTensor("position_ids",   new DenseTensor<long> (positionIds,  [take, seqLen])),
+                    NamedOnnxValue.CreateFromTensor("audio_features", new DenseTensor<float>(audioFeatures,[take, maxAudioTokens, _hiddenSize])),
+                    NamedOnnxValue.CreateFromTensor("audio_lengths",  new DenseTensor<long> (audioLengths, [take])),
+                    NamedOnnxValue.CreateFromTensor("audio_offset",   new DenseTensor<long> (new long[] { audioOffset }, [1])),
+                ]);
+                batchedLogits = ExtractTensor(initResults.First(r => r.Name == "logits").AsTensor<float>());
+                batchedKeys   = ExtractTensor(initResults.First(r => r.Name == "present_keys").AsTensor<float>());
+                batchedValues = ExtractTensor(initResults.First(r => r.Name == "present_values").AsTensor<float>());
             }
 
-            using var initResults = _decoderInitBatched.Run(
-            [
-                NamedOnnxValue.CreateFromTensor("input_ids",      new DenseTensor<long> (inputIds,     [take, seqLen])),
-                NamedOnnxValue.CreateFromTensor("position_ids",   new DenseTensor<long> (positionIds,  [take, seqLen])),
-                NamedOnnxValue.CreateFromTensor("audio_features", new DenseTensor<float>(audioFeatures,[take, maxAudioTokens, _hiddenSize])),
-                NamedOnnxValue.CreateFromTensor("audio_lengths",  new DenseTensor<long> (audioLengths, [take])),
-                NamedOnnxValue.CreateFromTensor("audio_offset",   new DenseTensor<long> (new long[] { audioOffset }, [1])),
-            ]);
-
-            float[] batchedLogits = ExtractTensor(initResults.First(r => r.Name == "logits").AsTensor<float>());
-            float[] batchedKeys   = ExtractTensor(initResults.First(r => r.Name == "present_keys").AsTensor<float>());
-            float[] batchedValues = ExtractTensor(initResults.First(r => r.Name == "present_values").AsTensor<float>());
-
-            int vocabSize      = batchedLogits.Length / (take * seqLen);
-            const int NLayers  = 28;
-            const int NKvHeads = 8;
-            const int HdDim    = 128;
+            int vocabSize = batchedLogits.Length / (take * seqLen);
 
             // Extract first token per sequence from batched prefill logits
             var seqTokens    = new List<int>  [take];
@@ -593,9 +664,10 @@ public sealed class Qwen3Asr : IDisposable
             float[] pastValues = batchedValues;
             int pastSeqLen     = seqLen;
 
-            var batchEmbeds = new float[take * _hiddenSize];
-            var stepPosArr  = new long[take];
-            var tmpEmbed    = new float[_hiddenSize];
+            var batchEmbeds  = new float[take * _hiddenSize];
+            var stepPosArr   = new long[take];
+            var tmpStepEmbed = new float[_hiddenSize];
+            var stepSession  = _decoder ?? _decoderStep!;
 
             for (int step = 0; step < maxNewTokens - 1; step++)
             {
@@ -604,18 +676,26 @@ public sealed class Qwen3Asr : IDisposable
                 long pos = seqLen + step;
                 for (int b = 0; b < take; b++)
                 {
-                    ReadTokenEmbedding(seqNextToken[b], tmpEmbed);
-                    Array.Copy(tmpEmbed, 0, batchEmbeds, b * _hiddenSize, _hiddenSize);
+                    ReadTokenEmbedding(seqNextToken[b], tmpStepEmbed);
+                    Array.Copy(tmpStepEmbed, 0, batchEmbeds, b * _hiddenSize, _hiddenSize);
                     stepPosArr[b] = pos;
                 }
 
-                using var stepOutputs = _decoderStep.Run(
-                [
-                    NamedOnnxValue.CreateFromTensor("input_embeds", new DenseTensor<float>(batchEmbeds, [take, 1, _hiddenSize])),
-                    NamedOnnxValue.CreateFromTensor("position_ids", new DenseTensor<long> (stepPosArr,  [take, 1])),
-                    NamedOnnxValue.CreateFromTensor("past_keys",    new DenseTensor<float>(pastKeys,    [NLayers, take, NKvHeads, pastSeqLen, HdDim])),
-                    NamedOnnxValue.CreateFromTensor("past_values",  new DenseTensor<float>(pastValues,  [NLayers, take, NKvHeads, pastSeqLen, HdDim])),
-                ]);
+                IEnumerable<NamedOnnxValue> stepInputs = _decoder is not null
+                    ? [
+                        NamedOnnxValue.CreateFromTensor("input_embeds",   new DenseTensor<float>(batchEmbeds,              [take, 1, _hiddenSize])),
+                        NamedOnnxValue.CreateFromTensor("position_ids",   new DenseTensor<long> (stepPosArr,               [take, 1])),
+                        NamedOnnxValue.CreateFromTensor("attention_mask", new DenseTensor<float>(new float[pastSeqLen + 1],[1, 1, 1, pastSeqLen + 1])),
+                        NamedOnnxValue.CreateFromTensor("past_keys",      new DenseTensor<float>(pastKeys,                 [_nLayers, take, _nKvHeads, pastSeqLen, _headDim])),
+                        NamedOnnxValue.CreateFromTensor("past_values",    new DenseTensor<float>(pastValues,               [_nLayers, take, _nKvHeads, pastSeqLen, _headDim])),
+                      ]
+                    : [
+                        NamedOnnxValue.CreateFromTensor("input_embeds", new DenseTensor<float>(batchEmbeds, [take, 1, _hiddenSize])),
+                        NamedOnnxValue.CreateFromTensor("position_ids", new DenseTensor<long> (stepPosArr,  [take, 1])),
+                        NamedOnnxValue.CreateFromTensor("past_keys",    new DenseTensor<float>(pastKeys,    [_nLayers, take, _nKvHeads, pastSeqLen, _headDim])),
+                        NamedOnnxValue.CreateFromTensor("past_values",  new DenseTensor<float>(pastValues,  [_nLayers, take, _nKvHeads, pastSeqLen, _headDim])),
+                      ];
+                using var stepOutputs = stepSession.Run(stepInputs.ToList());
 
                 float[] stepLogits = ExtractTensor(stepOutputs.First(r => r.Name == "logits").AsTensor<float>());
                 pastKeys   = ExtractTensor(stepOutputs.First(r => r.Name == "present_keys").AsTensor<float>());
@@ -646,6 +726,17 @@ public sealed class Qwen3Asr : IDisposable
         }
     }
 
+    // Build a [1,1,seqLen,pastSeqLen+seqLen] causal mask (upper-tri -inf; past positions zero).
+    private static float[] BuildCausalMask(int seqLen, int pastSeqLen)
+    {
+        int totalLen = pastSeqLen + seqLen;
+        float[] mask = new float[seqLen * totalLen]; // broadcast batch dim from C# side
+        for (int q = 0; q < seqLen; q++)
+            for (int k = pastSeqLen + q + 1; k < totalLen; k++)
+                mask[q * totalLen + k] = float.NegativeInfinity;
+        return mask;
+    }
+
     private int ArgMaxSpan(Span<float> logits, out float logprob)
     {
         int   best    = 0;
@@ -661,7 +752,7 @@ public sealed class Qwen3Asr : IDisposable
     }
 
     public bool HasExperimentalBatchingArtifacts()
-        => _encoderBatched is not null && _decoderInitBatched is not null;
+        => _encoderBatched is not null && (_decoderInitBatched is not null || _decoder is not null);
 
     public QwenExperimentalBatchBenchmark BenchmarkExperimentalBatching(
         IReadOnlyList<(double start, double end, string spk)> segs,
@@ -870,7 +961,7 @@ public sealed class Qwen3Asr : IDisposable
             ReadTokenEmbedding(nextToken, tokenEmbed);
             stepPos[0] = promptIds.Count + rawTokens.Count - 1L;
 
-            using var stepOutputs = _decoderStep.Run(
+            using var stepOutputs = _decoderStep!.Run(
             [
                 NamedOnnxValue.CreateFromTensor("input_embeds", new DenseTensor<float>(tokenEmbed, [1, 1, _hiddenSize])),
                 NamedOnnxValue.CreateFromTensor("position_ids", new DenseTensor<long>(stepPos, [1, 1])),
@@ -880,6 +971,82 @@ public sealed class Qwen3Asr : IDisposable
 
             logits = ExtractTensor(stepOutputs.First(r => r.Name == "logits").AsTensor<float>());
             pastKeys = ExtractTensor(stepOutputs.First(r => r.Name == "present_keys").AsTensor<float>());
+            pastValues = ExtractTensor(stepOutputs.First(r => r.Name == "present_values").AsTensor<float>());
+            pastSeqLen++;
+
+            nextToken = ArgMaxLastLogits(logits, 1, out nextLogprob);
+            rawTokens.Add(nextToken);
+            rawLogprobs.Add(nextLogprob);
+        }
+
+        return (rawTokens, rawLogprobs);
+    }
+
+    private (List<int> rawTokens, List<float> rawLogprobs) DecodeOnCpuUnified(
+        IReadOnlyList<int> promptIds,
+        int audioOffset,
+        float[] audioFeatures,
+        int audioTokenCount,
+        int maxNewTokens)
+    {
+        int seqLen = promptIds.Count;
+
+        // Build input_embeds: embedding lookup for all prompt tokens, then scatter audio features.
+        float[] inputEmbeds = new float[seqLen * _hiddenSize];
+        var tmpEmbed = new float[_hiddenSize];
+        for (int t = 0; t < seqLen; t++)
+        {
+            ReadTokenEmbedding(promptIds[t], tmpEmbed);
+            Array.Copy(tmpEmbed, 0, inputEmbeds, t * _hiddenSize, _hiddenSize);
+        }
+        Array.Copy(audioFeatures, 0, inputEmbeds, audioOffset * _hiddenSize, audioTokenCount * _hiddenSize);
+
+        long[] positionIds = Enumerable.Range(0, seqLen).Select(i => (long)i).ToArray();
+        float[] emptyKv = [];
+
+        // Prefill causal mask: upper-triangular -inf [1, 1, seqLen, seqLen]
+        float[] prefillMask = BuildCausalMask(seqLen, 0);
+
+        using var initOutputs = _decoder!.Run(
+        [
+            NamedOnnxValue.CreateFromTensor("input_embeds",   new DenseTensor<float>(inputEmbeds,  [1, seqLen, _hiddenSize])),
+            NamedOnnxValue.CreateFromTensor("position_ids",   new DenseTensor<long>(positionIds,   [1, seqLen])),
+            NamedOnnxValue.CreateFromTensor("attention_mask", new DenseTensor<float>(prefillMask,  [1, 1, seqLen, seqLen])),
+            NamedOnnxValue.CreateFromTensor("past_keys",      new DenseTensor<float>(emptyKv,      [_nLayers, 1, _nKvHeads, 0, _headDim])),
+            NamedOnnxValue.CreateFromTensor("past_values",    new DenseTensor<float>(emptyKv,      [_nLayers, 1, _nKvHeads, 0, _headDim])),
+        ]);
+
+        float[] logits     = ExtractTensor(initOutputs.First(r => r.Name == "logits").AsTensor<float>());
+        float[] pastKeys   = ExtractTensor(initOutputs.First(r => r.Name == "present_keys").AsTensor<float>());
+        float[] pastValues = ExtractTensor(initOutputs.First(r => r.Name == "present_values").AsTensor<float>());
+        int pastSeqLen     = seqLen;
+
+        var rawTokens   = new List<int>(maxNewTokens);
+        var rawLogprobs = new List<float>(maxNewTokens);
+        long[] stepPos  = [0L];
+
+        int nextToken = ArgMaxLastLogits(logits, seqLen, out float nextLogprob);
+        rawTokens.Add(nextToken);
+        rawLogprobs.Add(nextLogprob);
+
+        while (rawTokens.Count < maxNewTokens && !IsEos(nextToken))
+        {
+            ReadTokenEmbedding(nextToken, tmpEmbed);
+            stepPos[0] = seqLen + rawTokens.Count - 1L;
+            // Step mask: all-zeros [1, 1, 1, pastSeqLen+1] — single query attends to all past
+            float[] stepMask = new float[pastSeqLen + 1];
+
+            using var stepOutputs = _decoder.Run(
+            [
+                NamedOnnxValue.CreateFromTensor("input_embeds",   new DenseTensor<float>(tmpEmbed,  [1, 1, _hiddenSize])),
+                NamedOnnxValue.CreateFromTensor("position_ids",   new DenseTensor<long>(stepPos,    [1, 1])),
+                NamedOnnxValue.CreateFromTensor("attention_mask", new DenseTensor<float>(stepMask,  [1, 1, 1, pastSeqLen + 1])),
+                NamedOnnxValue.CreateFromTensor("past_keys",      new DenseTensor<float>(pastKeys,  [_nLayers, 1, _nKvHeads, pastSeqLen, _headDim])),
+                NamedOnnxValue.CreateFromTensor("past_values",    new DenseTensor<float>(pastValues,[_nLayers, 1, _nKvHeads, pastSeqLen, _headDim])),
+            ]);
+
+            logits     = ExtractTensor(stepOutputs.First(r => r.Name == "logits").AsTensor<float>());
+            pastKeys   = ExtractTensor(stepOutputs.First(r => r.Name == "present_keys").AsTensor<float>());
             pastValues = ExtractTensor(stepOutputs.First(r => r.Name == "present_values").AsTensor<float>());
             pastSeqLen++;
 
@@ -941,7 +1108,7 @@ public sealed class Qwen3Asr : IDisposable
 
             using var tokenEmbedValue = OrtValue.CreateTensorValueFromMemory(tokenEmbed, [1, 1, _hiddenSize]);
             using var stepPosValue = OrtValue.CreateTensorValueFromMemory(stepPos, [1, 1]);
-            using var stepBinding = _decoderStep.CreateIoBinding();
+            using var stepBinding = _decoderStep!.CreateIoBinding();
             stepBinding.BindInput("input_embeds", tokenEmbedValue);
             stepBinding.BindInput("position_ids", stepPosValue);
             stepBinding.BindInput("past_keys", prevOutputs![1]);
@@ -1305,7 +1472,8 @@ public sealed class Qwen3Asr : IDisposable
     {
         _embedAccessor.Dispose();
         _embedMmf.Dispose();
-        _decoderStep.Dispose();
+        _decoder?.Dispose();
+        _decoderStep?.Dispose();
         _decoderInitBatched?.Dispose();
         _encoderBatched?.Dispose();
         _decoderInit?.Dispose();

@@ -32,6 +32,7 @@ from src.decoder_wrapper import (
     export_decoder_init_batched,
     export_decoder_step,
     export_decoder_step_static,
+    export_decoder_unified,
 )
 from src.encoder_wrapper import export_encoder, export_encoder_batched
 from optimize_qwen3_asr_graphs import optimize_exported_package
@@ -282,6 +283,11 @@ def main():
         help="Pre-allocated token capacity for decoder_step_static.onnx",
     )
     parser.add_argument(
+        "--export-unified-decoder",
+        action="store_true",
+        help="Export decoder.onnx — a single graph for both prefill and step (replaces decoder_init + decoder_step)",
+    )
+    parser.add_argument(
         "--no-share-weights",
         action="store_true",
         help="Keep the default decoder_init external-data filename instead of renaming it",
@@ -389,6 +395,27 @@ def main():
                     final_data = os.path.join(args.output, "decoder_init.onnx.data")
                     if init_data != final_data:
                         os.rename(init_data, final_data)
+
+    if args.export_unified_decoder:
+        print("\n=== Exporting unified decoder ===")
+        unified_path = os.path.join(args.output, "decoder.onnx")
+        export_decoder_unified(model, unified_path, opset_version=args.opset, device=args.device)
+
+        if args.dtype == "fp16":
+            print("\n=== Converting unified decoder to FP16 ===")
+            _convert_to_fp16(args.output, ["decoder.onnx"])
+
+        unified_data = unified_path + ".data"
+        if os.path.exists(unified_data):
+            unified_model = onnx.load(unified_path, load_external_data=True)
+            proto_size = sum(len(tensor.raw_data) for tensor in unified_model.graph.initializer)
+            if proto_size < 1_800_000_000:
+                print("  Inlining unified decoder weights into .onnx proto...")
+                onnx.save(unified_model, unified_path)
+                os.remove(unified_data)
+                print(f"  decoder.onnx: {os.path.getsize(unified_path) / 1e6:.1f} MB (self-contained)")
+            else:
+                print(f"  decoder.onnx too large to inline ({proto_size / 1e6:.0f} MB), keeping external data")
 
     if args.export_static_step:
         print("\n=== Exporting decoder (static step) ===")

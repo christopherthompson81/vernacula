@@ -1,9 +1,17 @@
 """
 Wrapper modules for Qwen3-ASR decoder export to ONNX.
 
-The export uses split decoder graphs:
-- `decoder_init.onnx` for prompt prefill
-- `decoder_step.onnx` for autoregressive decoding with explicit KV cache I/O
+Two decoder export strategies are available:
+
+Split (legacy):
+- `decoder_init.onnx` — prompt prefill (input_ids + audio_features → logits + KV cache)
+- `decoder_step.onnx` — autoregressive step (token embed + KV cache → logits + KV cache)
+
+Unified (preferred):
+- `decoder.onnx` — single graph for both prefill and step.
+  The caller builds `input_embeds` on the host (embedding lookup + audio scatter)
+  and passes a zero-length KV cache on the first (prefill) call.
+  Subsequent calls pass the growing KV cache exactly like the split `decoder_step`.
 """
 
 from __future__ import annotations
@@ -494,6 +502,157 @@ def export_decoder_step(model, output_path: str, opset_version: int = 17, device
 
     fixed = fix_reshape_allowzero(output_path)
     print(f"Decoder step exported to {output_path} (fixed {fixed} Reshape allowzero attrs)")
+
+
+class DecoderUnifiedWrapper(nn.Module):
+    """
+    Single decoder graph covering both prompt prefill and autoregressive decode.
+
+    The caller is responsible for building ``input_embeds`` on the host:
+    embed all ``input_ids`` via the ``embed_tokens`` matrix, then scatter the
+    encoder's ``audio_features`` into the audio-pad positions.  A zero-length
+    KV cache (``past_seq_len = 0``) is passed on the first (prefill) call;
+    the returned ``present_keys / present_values`` are fed back on every
+    subsequent step call.
+
+    Inputs
+    ------
+    input_embeds : [batch, seq_len, hidden_size]
+    position_ids : [batch, seq_len]
+    past_keys    : [nlayers, batch, nkvheads, past_seq_len, head_dim]
+    past_values  : [nlayers, batch, nkvheads, past_seq_len, head_dim]
+
+    Outputs
+    -------
+    logits         : [batch, seq_len, vocab_size]
+    present_keys   : [nlayers, batch, nkvheads, past_seq_len+seq_len, head_dim]
+    present_values : [nlayers, batch, nkvheads, past_seq_len+seq_len, head_dim]
+    """
+
+    def __init__(self, text_model, lm_head, text_config):
+        super().__init__()
+        self.layers = text_model.layers
+        self.norm = text_model.norm
+        self.rotary_emb = text_model.rotary_emb
+        self.lm_head = lm_head
+        self.num_kv_groups = text_config.num_attention_heads // text_config.num_key_value_heads
+
+    def forward(
+        self,
+        input_embeds: torch.Tensor,
+        position_ids: torch.Tensor,
+        attention_mask: torch.Tensor,
+        past_keys: torch.Tensor,
+        past_values: torch.Tensor,
+    ):
+        pos_3d = position_ids.unsqueeze(0).expand(3, -1, -1)
+        cos, sin = self.rotary_emb(input_embeds, pos_3d)
+
+        hidden_states = input_embeds
+        all_keys = []
+        all_values = []
+
+        for index, layer in enumerate(self.layers):
+            hidden_states, key_states, value_states = _decoder_layer_forward(
+                layer,
+                hidden_states,
+                cos,
+                sin,
+                attention_mask,
+                past_key=past_keys[index],
+                past_value=past_values[index],
+                num_kv_groups=self.num_kv_groups,
+            )
+            all_keys.append(key_states)
+            all_values.append(value_states)
+
+        hidden_states = self.norm(hidden_states)
+        logits = self.lm_head(hidden_states)
+
+        present_keys = torch.stack(all_keys, dim=0)
+        present_values = torch.stack(all_values, dim=0)
+        return logits, present_keys, present_values
+
+
+def export_decoder_unified(model, output_path: str, opset_version: int = 18, device: str = "cpu"):
+    """Export a single decoder graph that handles both prefill (past_seq_len=0) and autoregressive decode."""
+    text_config = model.config.thinker_config.text_config
+    hidden_size = text_config.hidden_size
+    num_layers = text_config.num_hidden_layers
+    num_kv_heads = text_config.num_key_value_heads
+    head_dim = text_config.head_dim
+
+    text_model = model.thinker.model
+    lm_head = model.thinker.lm_head
+    wrapper = DecoderUnifiedWrapper(text_model, lm_head, text_config).eval().to(device)
+
+    # Trace with a step-shaped dummy (past_seq_len=100, seq_len=1).
+    # The attention_mask is passed in from the caller so the graph contains no
+    # dynamic shape computations — the mask is built on the host before each call:
+    #   prefill  → upper-triangular [1, 1, seq_len, seq_len]
+    #   step     → all-zeros        [1, 1, 1, past_seq_len+1]
+    past_seq_len = 100
+    dummy_embeds = torch.randn(1, 1, hidden_size, device=device, dtype=torch.float32)
+    dummy_pos = torch.tensor([[past_seq_len]], device=device, dtype=torch.long)
+    dummy_mask = torch.zeros(1, 1, 1, past_seq_len + 1, device=device, dtype=torch.float32)
+    dummy_past_keys = torch.randn(
+        num_layers, 1, num_kv_heads, past_seq_len, head_dim, device=device, dtype=torch.float32
+    )
+    dummy_past_values = torch.randn(
+        num_layers, 1, num_kv_heads, past_seq_len, head_dim, device=device, dtype=torch.float32
+    )
+
+    with torch.no_grad():
+        torch.onnx.export(
+            wrapper,
+            (dummy_embeds, dummy_pos, dummy_mask, dummy_past_keys, dummy_past_values),
+            output_path,
+            input_names=["input_embeds", "position_ids", "attention_mask", "past_keys", "past_values"],
+            output_names=["logits", "present_keys", "present_values"],
+            dynamic_axes={
+                "input_embeds":    {0: "batch", 1: "seq_len"},
+                "position_ids":    {0: "batch", 1: "seq_len"},
+                "attention_mask":  {0: "batch", 2: "seq_len", 3: "total_seq_len"},
+                "past_keys":       {1: "batch", 3: "past_seq_len"},
+                "past_values":     {1: "batch", 3: "past_seq_len"},
+                "logits":          {0: "batch", 1: "seq_len"},
+                "present_keys":    {1: "batch", 3: "total_seq_len"},
+                "present_values":  {1: "batch", 3: "total_seq_len"},
+            },
+            opset_version=opset_version,
+            do_constant_folding=True,
+            dynamo=False,
+        )
+
+    import glob
+    import os
+    import onnx
+    from .onnx_fixup import fix_reshape_allowzero
+
+    fixed = fix_reshape_allowzero(output_path)
+
+    # The legacy tracer may scatter weights into many individual sidecar files.
+    # Consolidate everything into a single <output>.data file so the package stays tidy.
+    loaded = onnx.load(output_path, load_external_data=True)
+    data_path = output_path + ".data"
+    if os.path.exists(data_path):
+        os.remove(data_path)
+    onnx.save_model(
+        loaded,
+        output_path,
+        save_as_external_data=True,
+        all_tensors_to_one_file=True,
+        location=os.path.basename(data_path),
+        size_threshold=1024,
+    )
+    # Remove stale individual weight sidecar files left by the legacy tracer
+    model_dir = os.path.dirname(output_path)
+    sidecar_patterns = ["layers.*.weight", "norm.weight", "onnx__MatMul_*"]
+    for pattern in sidecar_patterns:
+        for f in glob.glob(os.path.join(model_dir, pattern)):
+            os.remove(f)
+
+    print(f"Unified decoder exported to {output_path} (fixed {fixed} Reshape allowzero attrs)")
 
 
 def export_decoder_step_static(
