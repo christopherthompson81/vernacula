@@ -179,22 +179,29 @@ public sealed class Qwen3Asr : IDisposable
 
         if (hasUnified)
         {
-            // Unified decoder.onnx replaces decoder_init + decoder_step — only one session.
-            _decoder          = new InferenceSession(Path.Combine(modelPath, DecoderFile), decoderOpts);
             _decoderInit      = null!;
-            _decoderStep      = null;
-            _decoderInitBatched = null;
             _useCudaIoBinding = false;
 
             if (_preferBatched)
             {
+                // Batched path keeps a single unified decoder session for
+                // autoregressive continuation and uses the dedicated batched
+                // prefill export only for the initial prompt pass.
+                _decoder = new InferenceSession(Path.Combine(modelPath, DecoderFile), decoderOpts);
                 _encoder        = null!;
                 _encoderBatched = new InferenceSession(Path.Combine(modelPath, EncoderBatchedFile), encoderOpts);
+                _decoderInitBatched = hasBatchedInit
+                    ? new InferenceSession(Path.Combine(modelPath, DecoderInitBatchedFile), decoderOpts)
+                    : null;
+                _decoderStep = null;
             }
             else
             {
+                _decoder        = new InferenceSession(Path.Combine(modelPath, DecoderFile), decoderOpts);
                 _encoder        = new InferenceSession(Path.Combine(modelPath, EncoderFile), encoderOpts);
                 _encoderBatched = null;
+                _decoderInitBatched = null;
+                _decoderStep = null;
             }
         }
         else if (_preferBatched)
@@ -565,7 +572,7 @@ public sealed class Qwen3Asr : IDisposable
             int     sourceTokensPerBatch    = audioFeaturesTensor.Dimensions[1];
             float[] audioFeatures           = new float[take * maxAudioTokens * _hiddenSize];
             for (int b = 0; b < take; b++)
-            for (int t = 0; t < maxAudioTokens; t++)
+            for (int t = 0; t < (int)audioLengths[b]; t++)
             {
                 int srcBase = (b * sourceTokensPerBatch + t) * _hiddenSize;
                 int dstBase = (b * maxAudioTokens      + t) * _hiddenSize;
@@ -586,7 +593,29 @@ public sealed class Qwen3Asr : IDisposable
             float[] batchedKeys;
             float[] batchedValues;
 
-            if (_decoder is not null)
+            if (_decoderInitBatched is not null)
+            {
+                var inputIds = new long[take * seqLen];
+                for (int b = 0; b < take; b++)
+                {
+                    List<int> perItemPrompt = BuildPromptIds((int)audioLengths[b]);
+                    for (int t = 0; t < perItemPrompt.Count; t++)
+                        inputIds[b * seqLen + t] = perItemPrompt[t];
+                }
+
+                using var initResults = _decoderInitBatched.Run(
+                [
+                    NamedOnnxValue.CreateFromTensor("input_ids",      new DenseTensor<long> (inputIds,     [take, seqLen])),
+                    NamedOnnxValue.CreateFromTensor("position_ids",   new DenseTensor<long> (positionIds,  [take, seqLen])),
+                    NamedOnnxValue.CreateFromTensor("audio_features", new DenseTensor<float>(audioFeatures,[take, maxAudioTokens, _hiddenSize])),
+                    NamedOnnxValue.CreateFromTensor("audio_lengths",  new DenseTensor<long> (audioLengths, [take])),
+                    NamedOnnxValue.CreateFromTensor("audio_offset",   new DenseTensor<long> (new long[] { audioOffset }, [1])),
+                ]);
+                batchedLogits = ExtractTensor(initResults.First(r => r.Name == "logits").AsTensor<float>());
+                batchedKeys   = ExtractTensor(initResults.First(r => r.Name == "present_keys").AsTensor<float>());
+                batchedValues = ExtractTensor(initResults.First(r => r.Name == "present_values").AsTensor<float>());
+            }
+            else if (_decoder is not null)
             {
                 // Unified decoder: build input_embeds from embedding lookup + per-item audio scatter.
                 float[] inputEmbeds = new float[take * seqLen * _hiddenSize];
@@ -622,8 +651,11 @@ public sealed class Qwen3Asr : IDisposable
             {
                 var inputIds = new long[take * seqLen];
                 for (int b = 0; b < take; b++)
-                for (int t = 0; t < seqLen; t++)
-                    inputIds[b * seqLen + t] = prompt[t];
+                {
+                    List<int> perItemPrompt = BuildPromptIds((int)audioLengths[b]);
+                    for (int t = 0; t < perItemPrompt.Count; t++)
+                        inputIds[b * seqLen + t] = perItemPrompt[t];
+                }
 
                 using var initResults = _decoderInitBatched!.Run(
                 [
@@ -644,74 +676,51 @@ public sealed class Qwen3Asr : IDisposable
             var seqTokens    = new List<int>  [take];
             var seqLogprobs  = new List<float>[take];
             var seqDone      = new bool[take];
-            var seqNextToken = new int[take];
+            var seqPromptLens = new int[take];
 
             for (int b = 0; b < take; b++)
             {
+                int promptLen = BuildPromptIds((int)audioLengths[b]).Count;
+                seqPromptLens[b] = promptLen;
                 seqTokens[b]   = new List<int>  (maxNewTokens);
                 seqLogprobs[b] = new List<float>(maxNewTokens);
-                int logitOffset = b * seqLen * vocabSize + (seqLen - 1) * vocabSize;
+                int logitOffset = b * seqLen * vocabSize + (promptLen - 1) * vocabSize;
                 int firstToken  = ArgMaxSpan(batchedLogits.AsSpan(logitOffset, vocabSize), out float firstLogprob);
                 seqTokens[b].Add(firstToken);
                 seqLogprobs[b].Add(firstLogprob);
-                seqNextToken[b] = firstToken;
                 seqDone[b]      = IsEos(firstToken);
             }
 
-            // ── Joint batched autoregressive decode ──────────────────────────
-            // All sequences share the same pastSeqLen (same prefill prompt length),
-            // so their KV caches stay in lockstep — no slicing needed.
-            float[] pastKeys   = batchedKeys;
-            float[] pastValues = batchedValues;
-            int pastSeqLen     = seqLen;
-
-            var batchEmbeds  = new float[take * _hiddenSize];
-            var stepPosArr   = new long[take];
-            var tmpStepEmbed = new float[_hiddenSize];
-            var stepSession  = _decoder ?? _decoderStep!;
-
-            for (int step = 0; step < maxNewTokens - 1; step++)
+            // ── Serial autoregressive continuation from batched prefill ──────
+            // The encoder + prefill passes batch cleanly and provide the useful
+            // throughput win. Continue decoding each sequence independently from
+            // its own sliced KV cache so the generated text exactly follows the
+            // known-good serial decoder path.
+            for (int b = 0; b < take; b++)
             {
-                if (Array.TrueForAll(seqDone, d => d)) break;
-
-                long pos = seqLen + step;
-                for (int b = 0; b < take; b++)
+                if (!seqDone[b] && seqTokens[b].Count < maxNewTokens)
                 {
-                    ReadTokenEmbedding(seqNextToken[b], tmpStepEmbed);
-                    Array.Copy(tmpStepEmbed, 0, batchEmbeds, b * _hiddenSize, _hiddenSize);
-                    stepPosArr[b] = pos;
-                }
-
-                IEnumerable<NamedOnnxValue> stepInputs = _decoder is not null
-                    ? [
-                        NamedOnnxValue.CreateFromTensor("input_embeds",   new DenseTensor<float>(batchEmbeds,              [take, 1, _hiddenSize])),
-                        NamedOnnxValue.CreateFromTensor("position_ids",   new DenseTensor<long> (stepPosArr,               [take, 1])),
-                        NamedOnnxValue.CreateFromTensor("attention_mask", new DenseTensor<float>(new float[pastSeqLen + 1],[1, 1, 1, pastSeqLen + 1])),
-                        NamedOnnxValue.CreateFromTensor("past_keys",      new DenseTensor<float>(pastKeys,                 [_nLayers, take, _nKvHeads, pastSeqLen, _headDim])),
-                        NamedOnnxValue.CreateFromTensor("past_values",    new DenseTensor<float>(pastValues,               [_nLayers, take, _nKvHeads, pastSeqLen, _headDim])),
-                      ]
-                    : [
-                        NamedOnnxValue.CreateFromTensor("input_embeds", new DenseTensor<float>(batchEmbeds, [take, 1, _hiddenSize])),
-                        NamedOnnxValue.CreateFromTensor("position_ids", new DenseTensor<long> (stepPosArr,  [take, 1])),
-                        NamedOnnxValue.CreateFromTensor("past_keys",    new DenseTensor<float>(pastKeys,    [_nLayers, take, _nKvHeads, pastSeqLen, _headDim])),
-                        NamedOnnxValue.CreateFromTensor("past_values",  new DenseTensor<float>(pastValues,  [_nLayers, take, _nKvHeads, pastSeqLen, _headDim])),
-                      ];
-                using var stepOutputs = stepSession.Run(stepInputs.ToList());
-
-                float[] stepLogits = ExtractTensor(stepOutputs.First(r => r.Name == "logits").AsTensor<float>());
-                pastKeys   = ExtractTensor(stepOutputs.First(r => r.Name == "present_keys").AsTensor<float>());
-                pastValues = ExtractTensor(stepOutputs.First(r => r.Name == "present_values").AsTensor<float>());
-                pastSeqLen++;
-
-                int stepVocabSize = stepLogits.Length / take; // [take, 1, vocab] flat
-                for (int b = 0; b < take; b++)
-                {
-                    if (seqDone[b]) continue;
-                    int nextToken = ArgMaxSpan(stepLogits.AsSpan(b * stepVocabSize, stepVocabSize), out float logprob);
-                    seqNextToken[b] = nextToken;
-                    seqTokens[b].Add(nextToken);
-                    seqLogprobs[b].Add(logprob);
-                    seqDone[b] = IsEos(nextToken) || seqTokens[b].Count >= maxNewTokens;
+                    int promptLen = seqPromptLens[b];
+                    float[] seqPastKeys = SliceBatchKv(
+                        past: batchedKeys,
+                        batchSize: take,
+                        batchIndex: b,
+                        sourceSeqLen: seqLen,
+                        targetSeqLen: promptLen);
+                    float[] seqPastValues = SliceBatchKv(
+                        past: batchedValues,
+                        batchSize: take,
+                        batchIndex: b,
+                        sourceSeqLen: seqLen,
+                        targetSeqLen: promptLen);
+                    ContinueDecodeFromPrefill(
+                        seqTokens[b],
+                        seqLogprobs[b],
+                        seqTokens[b][^1],
+                        seqPastKeys,
+                        seqPastValues,
+                        promptLen,
+                        maxNewTokens);
                 }
             }
 
@@ -1057,6 +1066,88 @@ public sealed class Qwen3Asr : IDisposable
         }
 
         return (rawTokens, rawLogprobs);
+    }
+
+    private void ContinueDecodeFromPrefill(
+        List<int> rawTokens,
+        List<float> rawLogprobs,
+        int nextToken,
+        float[] pastKeys,
+        float[] pastValues,
+        int promptSeqLen,
+        int maxNewTokens)
+    {
+        if (rawTokens.Count == 0 || rawTokens.Count >= maxNewTokens || IsEos(nextToken))
+            return;
+
+        int pastSeqLen = promptSeqLen;
+        var tokenEmbed = new float[_hiddenSize];
+        long[] stepPos = [0L];
+
+        while (rawTokens.Count < maxNewTokens && !IsEos(nextToken))
+        {
+            ReadTokenEmbedding(nextToken, tokenEmbed);
+            stepPos[0] = promptSeqLen + rawTokens.Count - 1L;
+
+            if (_decoder is not null)
+            {
+                float[] stepMask = new float[pastSeqLen + 1];
+                using var stepOutputs = _decoder.Run(
+                [
+                    NamedOnnxValue.CreateFromTensor("input_embeds",   new DenseTensor<float>(tokenEmbed,  [1, 1, _hiddenSize])),
+                    NamedOnnxValue.CreateFromTensor("position_ids",   new DenseTensor<long>(stepPos,     [1, 1])),
+                    NamedOnnxValue.CreateFromTensor("attention_mask", new DenseTensor<float>(stepMask,   [1, 1, 1, pastSeqLen + 1])),
+                    NamedOnnxValue.CreateFromTensor("past_keys",      new DenseTensor<float>(pastKeys,   [_nLayers, 1, _nKvHeads, pastSeqLen, _headDim])),
+                    NamedOnnxValue.CreateFromTensor("past_values",    new DenseTensor<float>(pastValues, [_nLayers, 1, _nKvHeads, pastSeqLen, _headDim])),
+                ]);
+
+                float[] logits = ExtractTensor(stepOutputs.First(r => r.Name == "logits").AsTensor<float>());
+                pastKeys = ExtractTensor(stepOutputs.First(r => r.Name == "present_keys").AsTensor<float>());
+                pastValues = ExtractTensor(stepOutputs.First(r => r.Name == "present_values").AsTensor<float>());
+                pastSeqLen++;
+
+                nextToken = ArgMaxLastLogits(logits, 1, out float nextLogprob);
+                rawTokens.Add(nextToken);
+                rawLogprobs.Add(nextLogprob);
+            }
+            else
+            {
+                using var stepOutputs = _decoderStep!.Run(
+                [
+                    NamedOnnxValue.CreateFromTensor("input_embeds", new DenseTensor<float>(tokenEmbed, [1, 1, _hiddenSize])),
+                    NamedOnnxValue.CreateFromTensor("position_ids", new DenseTensor<long>(stepPos, [1, 1])),
+                    NamedOnnxValue.CreateFromTensor("past_keys", new DenseTensor<float>(pastKeys, [_nLayers, 1, _nKvHeads, pastSeqLen, _headDim])),
+                    NamedOnnxValue.CreateFromTensor("past_values", new DenseTensor<float>(pastValues, [_nLayers, 1, _nKvHeads, pastSeqLen, _headDim])),
+                ]);
+
+                float[] logits = ExtractTensor(stepOutputs.First(r => r.Name == "logits").AsTensor<float>());
+                pastKeys = ExtractTensor(stepOutputs.First(r => r.Name == "present_keys").AsTensor<float>());
+                pastValues = ExtractTensor(stepOutputs.First(r => r.Name == "present_values").AsTensor<float>());
+                pastSeqLen++;
+
+                nextToken = ArgMaxLastLogits(logits, 1, out float nextLogprob);
+                rawTokens.Add(nextToken);
+                rawLogprobs.Add(nextLogprob);
+            }
+        }
+    }
+
+    private float[] SliceBatchKv(float[] past, int batchSize, int batchIndex, int sourceSeqLen, int targetSeqLen)
+    {
+        int sourcePerSequenceSize = _nKvHeads * sourceSeqLen * _headDim;
+        int targetPerSequenceSize = _nKvHeads * targetSeqLen * _headDim;
+        float[] sliced = new float[_nLayers * targetPerSequenceSize];
+        int destinationOffset = 0;
+
+        for (int layer = 0; layer < _nLayers; layer++)
+        {
+            int layerOffset = layer * batchSize * sourcePerSequenceSize;
+            int sourceOffset = layerOffset + batchIndex * sourcePerSequenceSize;
+            Array.Copy(past, sourceOffset, sliced, destinationOffset, targetPerSequenceSize);
+            destinationOffset += targetPerSequenceSize;
+        }
+
+        return sliced;
     }
 
     private (List<int> rawTokens, List<float> rawLogprobs) DecodeWithIoBinding(

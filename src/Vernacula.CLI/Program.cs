@@ -23,6 +23,7 @@ string  asrBackend      = "parakeet";   // parakeet, cohere, qwen3asr, or vibevo
 string? cohereModelDir  = null;         // defaults to <modelDir>/cohere_transcribe
 string? cohereLanguage  = null;         // ISO 639-1 forced language (e.g. "en")
 string? qwen3AsrModelDir = null;        // defaults to <modelDir>/qwen3asr
+bool    forceQwen3AsrSerial = false;    // --qwen3asr-serial disables experimental batching
 string? vibevoiceModelDir = null;       // defaults to <modelDir>/vibevoice_asr
 string? profileOutputDir  = null;       // ORT profiling output dir (vibevoice only)
 int     profileMaxTokens  = 200;        // cap maxNewTokens during profiling to stay under ORT 1M event limit
@@ -71,6 +72,7 @@ for (int i = 0; i < args.Length; i++)
             break;
         case "--cohere-model":     cohereModelDir    = args[++i]; break;
         case "--qwen3asr-model":   qwen3AsrModelDir  = args[++i]; break;
+        case "--qwen3asr-serial":  forceQwen3AsrSerial = true; break;
         case "--vibevoice-model":  vibevoiceModelDir = args[++i]; break;
         case "--min-asr-seconds":  minAsrSeconds     = double.Parse(args[++i]); break;
         case "--asr-buffer":       asrBufferSeconds  = double.Parse(args[++i]); break;
@@ -553,13 +555,16 @@ try
 
         bool hasExperimentalQwenBatchingArtifacts;
         {
-            bool hasBatchedFiles = File.Exists(Path.Combine(qwen3AsrDir, Qwen3Asr.EncoderBatchedFile)) &&
+            bool hasBatchedFiles = !forceQwen3AsrSerial &&
+                                   File.Exists(Path.Combine(qwen3AsrDir, Qwen3Asr.EncoderBatchedFile)) &&
                                    File.Exists(Path.Combine(qwen3AsrDir, Qwen3Asr.DecoderInitBatchedFile));
             using var qwen3Asr = new Qwen3Asr(qwen3AsrDir, preferBatched: hasBatchedFiles);
             int totalSegs = segs.Count;
             int completed = 0;
             hasExperimentalQwenBatchingArtifacts = qwen3Asr.HasExperimentalBatchingArtifacts();
-            string batchNote = hasExperimentalQwenBatchingArtifacts ? " (batched encoder+prefill)" : "";
+            string batchNote = forceQwen3AsrSerial
+                ? " (serial forced)"
+                : hasExperimentalQwenBatchingArtifacts ? " (batched encoder+prefill)" : "";
 
             Console.WriteLine($"Transcribing {totalSegs} segment(s) (Qwen3-ASR{batchNote})...");
             var recognitionResults = hasExperimentalQwenBatchingArtifacts
@@ -778,6 +783,7 @@ static void PrintUsage()
     Console.WriteLine("  --asr <parakeet|cohere|qwen3asr|vibevoice>  ASR backend (default: parakeet)");
     Console.WriteLine("  --cohere-model <dir>               Path to Cohere Transcribe model dir (default: <model>/cohere_transcribe)");
     Console.WriteLine("  --qwen3asr-model <dir>             Path to Qwen3-ASR model dir (default: <model>/qwen3asr)");
+    Console.WriteLine("  --qwen3asr-serial                  Force serial Qwen3-ASR, disabling experimental batching");
     Console.WriteLine("  --vibevoice-model <dir>            Path to VibeVoice-ASR model dir (default: <model>/vibevoice_asr)");
     Console.WriteLine("  --min-asr-seconds <n>              Minimum audio span (s) per ASR group when using segmented VibeVoice (default: 5.0)");
     Console.WriteLine("  --asr-buffer <n>                   Seconds of audio padding on each side of a group (default: 0.0); helps boundary transitions");

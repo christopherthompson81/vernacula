@@ -29,8 +29,6 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import NamedTuple
-
 import numpy as np
 import onnxruntime as ort
 
@@ -41,6 +39,7 @@ if str(SCRIPT_DIR) not in sys.path:
 from profile_qwen3_asr_pipeline import load_audio, make_session  # noqa: E402
 from src.mel import log_mel_spectrogram  # noqa: E402
 from src.prompt import build_prompt_ids, get_audio_pad_range  # noqa: E402
+from src.unified_batch import DecoderConfig, build_prefill_inputs  # noqa: E402
 
 
 def parse_csv_ints(raw: str) -> list[int]:
@@ -169,13 +168,6 @@ def attach_decoder_inputs(batch: BatchInputs, audio_feature_lengths: np.ndarray)
     )
 
 
-class DecoderConfig(NamedTuple):
-    hidden_size: int
-    num_layers: int
-    num_kv_heads: int
-    head_dim: int
-
-
 def load_decoder_config(onnx_dir: str) -> DecoderConfig:
     config_path = Path(onnx_dir) / "config.json"
     config = json.loads(config_path.read_text())
@@ -196,15 +188,6 @@ def load_embed_tokens(onnx_dir: str) -> np.ndarray:
     return np.fromfile(embed_path, dtype=np.float32).reshape(vocab_size, hidden_size)
 
 
-def build_causal_mask(seq_len: int, past_seq_len: int) -> np.ndarray:
-    total_len = past_seq_len + seq_len
-    mask = np.zeros((1, 1, seq_len, total_len), dtype=np.float32)
-    for q in range(seq_len):
-        mask[0, 0, q, past_seq_len + q + 1:] = float("-inf")
-    return mask
-
-
-
 def build_unified_decoder_inputs_with_kv(
     base_batch: BatchInputs,
     audio_features: np.ndarray,
@@ -213,29 +196,8 @@ def build_unified_decoder_inputs_with_kv(
     cfg: DecoderConfig,
 ) -> tuple[dict[str, np.ndarray], int]:
     """Build inputs for decoder.onnx (unified prefill call with zero-size past KV)."""
-    batch_size = base_batch.batch_size
-    max_audio_tokens = int(audio_feature_lengths.max())
-    prompt_ids = build_prompt_ids(max_audio_tokens)
-    audio_start, _ = get_audio_pad_range(prompt_ids)
-    seq_len = len(prompt_ids)
-
-    base_embeds = embed_table[prompt_ids]
-    input_embeds = np.tile(base_embeds[np.newaxis], (batch_size, 1, 1)).copy()
-    for b in range(batch_size):
-        audio_len = int(audio_feature_lengths[b])
-        input_embeds[b, audio_start:audio_start + audio_len] = audio_features[b, :audio_len]
-
-    position_ids = np.tile(np.arange(seq_len, dtype=np.int64)[np.newaxis], (batch_size, 1))
-    attention_mask = build_causal_mask(seq_len, 0)
-    empty_kv = np.zeros((cfg.num_layers, batch_size, cfg.num_kv_heads, 0, cfg.head_dim), dtype=np.float32)
-
-    return {
-        "input_embeds": input_embeds,
-        "position_ids": position_ids,
-        "attention_mask": attention_mask,
-        "past_keys": empty_kv,
-        "past_values": empty_kv.copy(),
-    }, max_audio_tokens
+    decoder_inputs, _ = build_prefill_inputs(audio_features, audio_feature_lengths, embed_table, cfg)
+    return decoder_inputs, int(audio_feature_lengths.max())
 
 
 def timed_run(session: ort.InferenceSession, outputs: list[str], inputs: dict[str, np.ndarray]) -> tuple[list[np.ndarray], float]:

@@ -9,7 +9,8 @@ This folder is intentionally the "start here" subset of [andrewleech/qwen3-asr-o
 - `export_qwen3_asr_to_onnx.py` - exports `encoder.onnx`, `decoder_init.onnx`, `decoder_step.onnx`, `embed_tokens.bin`, tokenizer assets, and config files
 - `optimize_qwen3_asr_graphs.py` - applies ORT transformer fusions to an exported package in place
 - `profile_qwen3_asr_pipeline.py` - profiles the exported ONNX package and reports which stages dominate runtime
-- `sweep_qwen3_asr_batching.py` - sweeps `encoder_batched.onnx` and `decoder_init_batched.onnx` on CUDA to map safe / unsafe batching regions and fit a first-pass VRAM heuristic
+- `sweep_qwen3_asr_batching.py` - sweeps `encoder_batched.onnx` and the available batched decoder prefill path (`decoder.onnx` preferred, `decoder_init_batched.onnx` legacy) on CUDA to map safe / unsafe batching regions and fit a first-pass VRAM heuristic
+- `verify_qwen3_asr_unified_batch_parity.py` - verifies mixed-length serial vs batched parity using `decoder.onnx` only
 - `src/` - helper modules vendored from the upstream exporter and kept local to this workflow
 - `requirements.txt` - Python dependencies for the export environment
 
@@ -117,6 +118,21 @@ This runs each sweep point in a fresh child process so CUDA allocator state does
 
 Use this to derive a conservative runtime heuristic for choosing Qwen batch counts from free VRAM and planned batch duration.
 
+## Unified Batch Parity
+
+Verify mixed-length parity with the single-decoder path:
+
+```bash
+python public/scripts/qwen3asr_export/verify_qwen3_asr_unified_batch_parity.py \
+  --onnx-dir ./models/qwen3-asr-1.7b \
+  --audio ./sample.wav \
+  --segments-json ./segments.json
+```
+
+The verifier uses `decoder.onnx` for both prefill and autoregressive decode, builds
+per-row prompts on the host, pads them on the right, and compacts the KV cache
+between decode steps so shorter rows do not keep fake padding positions alive.
+
 ## Graph Optimization
 
 Apply ORT transformer fusions to an exported package:
@@ -138,4 +154,4 @@ This applies the same style of offline fusions used upstream:
 - The helper modules stay local under `src/` so we can patch the export flow without depending on an external checkout.
 - In practice the current PyTorch exporter emits opset 18 kernels for this model family, so `--opset 18` is the recommended setting.
 - The main export now applies the proven offline ORT graph fusions by default after writing the ONNX files.
-- The experimental batching artifacts currently have exact ORT parity with the single-item graphs for duplicated-input batch tests.
+- The unified decoder path now has a dedicated mixed-length parity verifier; use that before changing the C# batching runtime.
