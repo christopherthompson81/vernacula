@@ -58,6 +58,7 @@ public sealed class Qwen3Asr : IDisposable
     private readonly int _vocabSize;
     private readonly int _baseVocabSize;
     private readonly int[] _eosTokenIds;
+    private readonly HashSet<int> _eosTokenIdSet;
     private readonly MemoryMappedFile _embedMmf;
     private readonly MemoryMappedViewAccessor _embedAccessor;
     private readonly string?[] _idToToken;
@@ -76,6 +77,7 @@ public sealed class Qwen3Asr : IDisposable
         _vocabSize = decoderConfig.GetProperty("vocab_size").GetInt32();
         _baseVocabSize = root.GetProperty("embed_tokens_shape")[0].GetInt32();
         _eosTokenIds = specialTokens.GetProperty("eos_token_ids").EnumerateArray().Select(e => e.GetInt32()).ToArray();
+        _eosTokenIdSet = [.. _eosTokenIds];
 
         var encoderOpts = MakeSessionOptions(ep, GraphOptimizationLevel.ORT_ENABLE_EXTENDED, out bool encoderUsesCuda);
         var decoderOpts = MakeSessionOptions(ep, GraphOptimizationLevel.ORT_ENABLE_EXTENDED, out bool decoderUsesCuda);
@@ -119,10 +121,7 @@ public sealed class Qwen3Asr : IDisposable
             }
 
             int length = endSample - startSample;
-            var waveform = new float[length];
-            Array.Copy(audio, startSample, waveform, 0, length);
-
-            float[] mel = ComputeLogMelSpectrogram(waveform, out int melFrames);
+            float[] mel = ComputeLogMelSpectrogram(audio, startSample, length, out int melFrames);
             float[] audioFeatures = RunEncoder(mel, melFrames, out int audioTokenCount);
 
             List<int> promptIds = BuildPromptIds(audioTokenCount);
@@ -210,6 +209,8 @@ public sealed class Qwen3Asr : IDisposable
         float[] pastKeys = ExtractTensor(initOutputs.First(r => r.Name == "present_keys").AsTensor<float>());
         float[] pastValues = ExtractTensor(initOutputs.First(r => r.Name == "present_values").AsTensor<float>());
         int pastSeqLen = promptIds.Count;
+        var tokenEmbed = new float[_hiddenSize];
+        long[] stepPos = [0L];
 
         var rawTokens = new List<int>(maxNewTokens);
         var rawLogprobs = new List<float>(maxNewTokens);
@@ -221,8 +222,8 @@ public sealed class Qwen3Asr : IDisposable
 
         while (rawTokens.Count < maxNewTokens && !IsEos(nextToken))
         {
-            float[] tokenEmbed = ReadTokenEmbedding(nextToken);
-            long[] stepPos = [promptIds.Count + rawTokens.Count - 1L];
+            ReadTokenEmbedding(nextToken, tokenEmbed);
+            stepPos[0] = promptIds.Count + rawTokens.Count - 1L;
 
             using var stepOutputs = _decoderStep.Run(
             [
@@ -278,6 +279,8 @@ public sealed class Qwen3Asr : IDisposable
         var initOutputs = initBinding.GetOutputValues();
         var rawTokens = new List<int>(maxNewTokens);
         var rawLogprobs = new List<float>(maxNewTokens);
+        var tokenEmbed = new float[_hiddenSize];
+        long[] stepPos = [0L];
 
         int nextToken = ArgMaxLastLogits(initOutputs[0], promptIds.Count, out float nextLogprob);
         rawTokens.Add(nextToken);
@@ -288,8 +291,8 @@ public sealed class Qwen3Asr : IDisposable
 
         while (rawTokens.Count < maxNewTokens && !IsEos(nextToken))
         {
-            float[] tokenEmbed = ReadTokenEmbedding(nextToken);
-            long[] stepPos = [promptIds.Count + rawTokens.Count - 1L];
+            ReadTokenEmbedding(nextToken, tokenEmbed);
+            stepPos[0] = promptIds.Count + rawTokens.Count - 1L;
 
             using var tokenEmbedValue = OrtValue.CreateTensorValueFromMemory(tokenEmbed, [1, 1, _hiddenSize]);
             using var stepPosValue = OrtValue.CreateTensorValueFromMemory(stepPos, [1, 1]);
@@ -366,12 +369,10 @@ public sealed class Qwen3Asr : IDisposable
         return best;
     }
 
-    private float[] ReadTokenEmbedding(int tokenId)
+    private void ReadTokenEmbedding(int tokenId, float[] destination)
     {
-        var embedding = new float[_hiddenSize];
         long byteOffset = (long)tokenId * _hiddenSize * sizeof(float);
-        _embedAccessor.ReadArray(byteOffset, embedding, 0, _hiddenSize);
-        return embedding;
+        _embedAccessor.ReadArray(byteOffset, destination, 0, _hiddenSize);
     }
 
     private static (List<int> textTokens, List<float> textLogprobs) ExtractTextTokens(
@@ -414,7 +415,7 @@ public sealed class Qwen3Asr : IDisposable
         return text.Length > 0 && text[0] == ' ' ? text[1..] : text;
     }
 
-    private bool IsEos(int token) => _eosTokenIds.Contains(token);
+    private bool IsEos(int token) => _eosTokenIdSet.Contains(token);
 
     private static List<int> BuildPromptIds(int audioTokenCount)
     {
@@ -451,44 +452,52 @@ public sealed class Qwen3Asr : IDisposable
         throw new InvalidOperationException("Prompt does not contain <|audio_pad|> tokens.");
     }
 
-    private static float[] ComputeLogMelSpectrogram(float[] signal, out int framesOut)
+    private static float[] ComputeLogMelSpectrogram(float[] signal, int start, int length, out int framesOut)
     {
         int pad = NFft / 2;
-        float[] padded = ReflectPad(signal, pad);
+        float[] padded = ReflectPad(signal, start, length, pad);
         int frameCount = ((padded.Length - NFft) / HopLength) + 1;
         int keptFrames = Math.Max(frameCount - 1, 1);
         int freqBins = (NFft / 2) + 1;
         var mel = new float[NMels * keptFrames];
-        var fft = new Complex32[NFft];
-
-        float maxLog = float.NegativeInfinity;
-        for (int frame = 0; frame < frameCount; frame++)
-        {
-            int start = frame * HopLength;
-            Array.Clear(fft, 0, fft.Length);
-            for (int i = 0; i < NFft; i++)
-                fft[i] = new Complex32((float)(padded[start + i] * HannWindow[i]), 0f);
-
-            Fourier.Forward(fft, FourierOptions.NoScaling);
-
-            if (frame >= keptFrames)
-                continue;
-
-            for (int m = 0; m < NMels; m++)
+        Parallel.For(
+            0,
+            frameCount,
+            () => new Complex32[NFft],
+            (frame, _, fft) =>
             {
-                double sum = 0;
-                for (int k = 0; k < freqBins; k++)
+                int startIndex = frame * HopLength;
+                Array.Clear(fft, 0, fft.Length);
+                for (int i = 0; i < NFft; i++)
+                    fft[i] = new Complex32((float)(padded[startIndex + i] * HannWindow[i]), 0f);
+
+                Fourier.Forward(fft, FourierOptions.NoScaling);
+
+                if (frame < keptFrames)
                 {
-                    float re = fft[k].Real;
-                    float im = fft[k].Imaginary;
-                    sum += MelFilterbank[m, k] * (re * re + im * im);
+                    for (int m = 0; m < NMels; m++)
+                    {
+                        double sum = 0;
+                        for (int k = 0; k < freqBins; k++)
+                        {
+                            float re = fft[k].Real;
+                            float im = fft[k].Imaginary;
+                            sum += MelFilterbank[m, k] * (re * re + im * im);
+                        }
+
+                        mel[m * keptFrames + frame] = MathF.Log10(MathF.Max((float)sum, 1e-10f));
+                    }
                 }
 
-                float log = MathF.Log10(MathF.Max((float)sum, 1e-10f));
-                mel[m * keptFrames + frame] = log;
-                if (log > maxLog)
-                    maxLog = log;
-            }
+                return fft;
+            },
+            _ => { });
+
+        float maxLog = float.NegativeInfinity;
+        for (int i = 0; i < mel.Length; i++)
+        {
+            if (mel[i] > maxLog)
+                maxLog = mel[i];
         }
 
         float floor = MathF.Max(maxLog - LogClampSpan, LogFloor);
@@ -499,20 +508,20 @@ public sealed class Qwen3Asr : IDisposable
         return mel;
     }
 
-    private static float[] ReflectPad(float[] signal, int pad)
+    private static float[] ReflectPad(float[] signal, int start, int length, int pad)
     {
-        if (signal.Length == 0)
+        if (length == 0)
             return new float[pad * 2];
 
-        var padded = new float[signal.Length + (pad * 2)];
-        Array.Copy(signal, 0, padded, pad, signal.Length);
+        var padded = new float[length + (pad * 2)];
+        Array.Copy(signal, start, padded, pad, length);
 
         for (int i = 0; i < pad; i++)
         {
-            int leftSrc = Math.Min(signal.Length - 1, pad - i);
-            int rightSrc = Math.Max(0, signal.Length - 2 - i);
-            padded[i] = signal[leftSrc];
-            padded[pad + signal.Length + i] = signal[rightSrc];
+            int leftSrc = Math.Min(length - 1, pad - i);
+            int rightSrc = Math.Max(0, length - 2 - i);
+            padded[i] = signal[start + leftSrc];
+            padded[pad + length + i] = signal[start + rightSrc];
         }
 
         return padded;
