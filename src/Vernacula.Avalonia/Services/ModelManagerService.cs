@@ -75,6 +75,20 @@ internal class ModelManagerService
             new(Path.Combine("cohere_transcribe", CohereTranscribe.ConfigFile), CohereTranscribe.ConfigFile),
         ];
 
+    private static readonly ModelAsset[] Qwen3AsrFiles =
+        [
+            new(Path.Combine(Config.Qwen3AsrSubDir, Qwen3Asr.EncoderFile), Qwen3Asr.EncoderFile),
+            new(Path.Combine(Config.Qwen3AsrSubDir, Qwen3Asr.DecoderInitFile), Qwen3Asr.DecoderInitFile),
+            new(Path.Combine(Config.Qwen3AsrSubDir, $"{Qwen3Asr.DecoderInitFile}.data"), $"{Qwen3Asr.DecoderInitFile}.data"),
+            new(Path.Combine(Config.Qwen3AsrSubDir, Qwen3Asr.DecoderStepFile), Qwen3Asr.DecoderStepFile),
+            new(Path.Combine(Config.Qwen3AsrSubDir, $"{Qwen3Asr.DecoderStepFile}.data"), $"{Qwen3Asr.DecoderStepFile}.data"),
+            new(Path.Combine(Config.Qwen3AsrSubDir, Qwen3Asr.EmbedTokensFile), Qwen3Asr.EmbedTokensFile),
+            new(Path.Combine(Config.Qwen3AsrSubDir, Qwen3Asr.TokenizerFile), Qwen3Asr.TokenizerFile),
+            new(Path.Combine(Config.Qwen3AsrSubDir, "tokenizer_config.json"), "tokenizer_config.json"),
+            new(Path.Combine(Config.Qwen3AsrSubDir, Qwen3Asr.ConfigFile), Qwen3Asr.ConfigFile),
+            new(Path.Combine(Config.Qwen3AsrSubDir, "preprocessor_config.json"), "preprocessor_config.json"),
+        ];
+
     private static readonly ModelAsset[] VibeVoiceFiles =
         [
             new(Path.Combine(Config.VibeVoiceSubDir, VibeVoiceAsr.AudioEncoderFile),                       VibeVoiceAsr.AudioEncoderFile),
@@ -108,6 +122,11 @@ internal class ModelManagerService
             [
                 new AssetRepo(CoreRepoBase, CoreManifestUrl, CoreDiarizationFiles),
                 new AssetRepo(CohereRepoBase, CohereManifestUrl, CohereFiles),
+            ],
+            AsrBackend.Qwen3Asr =>
+            [
+                new AssetRepo(CoreRepoBase, CoreManifestUrl, CoreDiarizationFiles),
+                new AssetRepo("", "", Qwen3AsrFiles),
             ],
             _ =>
             [
@@ -193,6 +212,9 @@ internal class ModelManagerService
 
         foreach (var repo in ActiveRepos())
         {
+            if (string.IsNullOrWhiteSpace(repo.ManifestUrl))
+                continue;
+
             string json;
             try
             {

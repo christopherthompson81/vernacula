@@ -74,6 +74,7 @@ internal class TranscriptionService
     {
         Console.WriteLine($"[Transcription] RunPipelineAsync starting for '{audioPath}'");
         string parakeetModelsDir = _settings.GetParakeetModelsDir();
+        string qwen3AsrModelsDir = _settings.GetQwen3AsrModelsDir();
         string sortformerModelsDir = _settings.GetSortformerModelsDir();
         string sileroModelsDir = _settings.GetSileroModelsDir();
 
@@ -87,6 +88,7 @@ internal class TranscriptionService
         // ── ASR backend / segmentation flags ─────────────────────────────────
         bool useVibeVoiceAsr  = string.Equals(asrModelName, "vibevoice/vibevoice-asr", StringComparison.Ordinal);
         bool useCohereAsr     = string.Equals(asrModelName, "CohereLabs/cohere-transcribe-03-2026", StringComparison.Ordinal);
+        bool useQwen3Asr      = string.Equals(asrModelName, "Qwen/Qwen3-ASR-1.7B", StringComparison.Ordinal);
         var  segmentationMode = _settings.Current.Segmentation;
         bool runVibeVoice     = useVibeVoiceAsr || segmentationMode == SegmentationMode.VibeVoiceBuiltin;
 
@@ -574,6 +576,47 @@ internal class TranscriptionService
                             storedTextTokens: result.TextTokens,
                             syntheticTimestamps: true,
                             timestampMode: CohereSyntheticTimestampMode));
+
+                    onSegmentText(absId, result.Text);
+
+                    string asrText = Loc.Instance.T("progress_recognizing_segment", new() {
+                        ["i"]     = completed.ToString(),
+                        ["count"] = totalSegs.ToString() });
+                    double? overridePercent = segmentationMode == SegmentationMode.DiariZen
+                        ? ScaleOverallProgress(
+                            DiariZenDiarizationPercentWeight,
+                            100,
+                            totalSegs > 0 ? completed / (double)totalSegs : 1)
+                        : null;
+                    progress.Report(new TranscriptionProgress(
+                        TranscriptionPhase.Recognizing,
+                        completed,
+                        totalSegs,
+                        asrText,
+                        absId,
+                        result.Text,
+                        overridePercent));
+                }
+            }
+            else if (useQwen3Asr)
+            {
+                using var qwen3Asr = new Qwen3Asr(qwen3AsrModelsDir);
+                foreach (var result in qwen3Asr.RecognizeDetailed(segsSubset, audio))
+                {
+                    ct.ThrowIfCancellationRequested();
+                    int absId = startSeg + result.SegmentId;
+                    completed++;
+                    var syntheticTimestamps = BuildSyntheticTokenTimestamps(
+                        segsSubset[result.SegmentId].end - segsSubset[result.SegmentId].start,
+                        result.TextTokens.Count);
+
+                    db.UpdateResult(
+                        resultId:   absId + 1,
+                        asrContent: result.Text,
+                        content:    result.Text,
+                        tokens:     JsonSerializer.Serialize(result.TextTokens),
+                        timestamps: JsonSerializer.Serialize(syntheticTimestamps),
+                        logprobs:   JsonSerializer.Serialize(result.TextLogprobs));
 
                     onSegmentText(absId, result.Text);
 

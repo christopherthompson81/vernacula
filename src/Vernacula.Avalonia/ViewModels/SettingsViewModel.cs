@@ -30,7 +30,7 @@ internal partial class SettingsViewModel : ObservableObject
     private SegmentationMode _selectedSegmentation;
 
     [ObservableProperty]
-    [NotifyPropertyChangedFor(nameof(IsAsrParakeet), nameof(IsAsrCohere), nameof(IsAsrVibeVoice), nameof(ShowStandardSegmentationOptions), nameof(ShowVibeVoiceBuiltinSegmentation), nameof(ShowDiariZenInSegmentation), nameof(ShowGatedSegmentationHint), nameof(CanUseVibeVoiceAsr), nameof(VibeVoiceAsrLabel), nameof(VibeVoiceAsrDescription))]
+    [NotifyPropertyChangedFor(nameof(IsAsrParakeet), nameof(IsAsrCohere), nameof(IsAsrQwen3Asr), nameof(IsAsrVibeVoice), nameof(ShowStandardSegmentationOptions), nameof(ShowVibeVoiceBuiltinSegmentation), nameof(ShowDiariZenInSegmentation), nameof(ShowGatedSegmentationHint), nameof(CanUseVibeVoiceAsr), nameof(VibeVoiceAsrLabel), nameof(VibeVoiceAsrDescription))]
     private AsrBackend _selectedAsrBackend;
 
     [ObservableProperty]
@@ -65,6 +65,7 @@ internal partial class SettingsViewModel : ObservableObject
     public bool IsVibeVoiceBuiltin  => SelectedSegmentation == SegmentationMode.VibeVoiceBuiltin;
     public bool IsAsrParakeet       => SelectedAsrBackend == AsrBackend.Parakeet;
     public bool IsAsrCohere         => SelectedAsrBackend == AsrBackend.Cohere;
+    public bool IsAsrQwen3Asr       => SelectedAsrBackend == AsrBackend.Qwen3Asr;
     public bool IsAsrVibeVoice      => SelectedAsrBackend == AsrBackend.VibeVoice;
     public bool CanUseVibeVoiceAsr  => CudaEpWorking;
     public string VibeVoiceAsrLabel => CanUseVibeVoiceAsr ? "VibeVoice-ASR" : "VibeVoice-ASR (Unavailable - CUDA Missing)";
@@ -404,6 +405,13 @@ internal partial class SettingsViewModel : ObservableObject
             {
                 ModelStatusText = $"Missing {_lastMissing.Count} required model file(s): {string.Join(", ", _lastMissing)}. " +
                                   $"Place Cohere weights under {_svc.GetCohereModelsDir()}.";
+                return;
+            }
+
+            if (SelectedAsrBackend == AsrBackend.Qwen3Asr)
+            {
+                ModelStatusText = $"Missing {_lastMissing.Count} required model file(s): {string.Join(", ", _lastMissing)}. " +
+                                  $"Place Qwen3-ASR weights under {_svc.GetQwen3AsrModelsDir()}.";
                 return;
             }
 

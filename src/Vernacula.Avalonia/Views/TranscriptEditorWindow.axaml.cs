@@ -98,23 +98,28 @@ public partial class TranscriptEditorWindow : Window
             ? "auto"
             : asrLanguageCode;
         bool isCohere    = string.Equals(_jobAsrModel, "CohereLabs/cohere-transcribe-03-2026", StringComparison.Ordinal);
+        bool isQwen3Asr  = string.Equals(_jobAsrModel, "Qwen/Qwen3-ASR-1.7B", StringComparison.Ordinal);
         bool isVibeVoice = string.Equals(_jobAsrModel, "vibevoice/vibevoice-asr", StringComparison.Ordinal);
-        _showApproximateTimingNotice = isCohere || isVibeVoice;
+        _showApproximateTimingNotice = isCohere || isQwen3Asr || isVibeVoice;
         _approximateTimingNoticeText = isCohere
             ? "Cohere Transcribe: no word-level timing; token sync is approximate."
+            : isQwen3Asr
+                ? "Qwen3-ASR: no word-level timing; token sync is approximate."
             : isVibeVoice
                 ? "VibeVoice-ASR: no token-level timing; token sync is approximate."
                 : "";
 
         string? vocabPath = isCohere
             ? Path.Combine(modelsDir, "cohere_transcribe", CohereTranscribe.VocabFile)
+            : isQwen3Asr
+                ? Path.Combine(modelsDir, Config.Qwen3AsrSubDir, Qwen3Asr.TokenizerFile)
             : isVibeVoice
                 ? Path.Combine(modelsDir, Config.VibeVoiceSubDir, VibeVoiceAsr.TokenizerFile)
                 : Path.Combine(parakeetModelsDir, Config.VocabFile);
         if (vocabPath is not null && File.Exists(vocabPath))
         {
             _vocab = new VocabService(
-                isCohere || isVibeVoice ? App.Current.Settings.GetModelsDir() : parakeetModelsDir,
+                isCohere || isQwen3Asr || isVibeVoice ? App.Current.Settings.GetModelsDir() : parakeetModelsDir,
                 _jobAsrModel);
         }
 
@@ -138,6 +143,19 @@ public partial class TranscriptEditorWindow : Window
             _asrModelsAvailable =
                 File.Exists(Path.Combine(vibeVoiceDir, VibeVoiceAsr.AudioEncoderFile)) &&
                 File.Exists(Path.Combine(vibeVoiceDir, VibeVoiceAsr.DecoderSingleFile));
+        }
+        else if (isQwen3Asr)
+        {
+            string qwenDir = App.Current.Settings.GetQwen3AsrModelsDir();
+            _asrModelsAvailable =
+                File.Exists(Path.Combine(qwenDir, Qwen3Asr.EncoderFile)) &&
+                File.Exists(Path.Combine(qwenDir, Qwen3Asr.DecoderInitFile)) &&
+                File.Exists(Path.Combine(qwenDir, $"{Qwen3Asr.DecoderInitFile}.data")) &&
+                File.Exists(Path.Combine(qwenDir, Qwen3Asr.DecoderStepFile)) &&
+                File.Exists(Path.Combine(qwenDir, $"{Qwen3Asr.DecoderStepFile}.data")) &&
+                File.Exists(Path.Combine(qwenDir, Qwen3Asr.EmbedTokensFile)) &&
+                File.Exists(Path.Combine(qwenDir, Qwen3Asr.TokenizerFile)) &&
+                File.Exists(Path.Combine(qwenDir, Qwen3Asr.ConfigFile));
         }
         else
         {
@@ -1271,6 +1289,7 @@ public partial class TranscriptEditorWindow : Window
                 decoderJointFile,
                 cohereModelsDir,
                 _jobAsrLanguageCode,
+                qwen3AsrModelsDir: App.Current.Settings.GetQwen3AsrModelsDir(),
                 vibeVoiceModelsDir: App.Current.Settings.GetVibeVoiceModelsDir()));
             if (result is null)
             {

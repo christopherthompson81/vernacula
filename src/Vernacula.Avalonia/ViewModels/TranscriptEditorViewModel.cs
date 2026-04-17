@@ -1026,6 +1026,7 @@ internal partial class TranscriptEditorViewModel : ObservableObject, IDisposable
             string decoderJointFile,
             string? cohereModelsDir = null,
             string? cohereLanguageCode = null,
+            string? qwen3AsrModelsDir = null,
             string? vibeVoiceModelsDir = null)
     {
         if (index < 0 || index >= Segments.Count || _dbPath is null || _fullAudio is null)
@@ -1096,6 +1097,20 @@ internal partial class TranscriptEditorViewModel : ObservableObject, IDisposable
             logprobs       = vibeSegs.SelectMany(s => s.TokenLogprobs).ToList();
             int tokenCount = Math.Max(tokens.Count, logprobs.Count);
             timestamps = BuildSyntheticTokenTimestamps(seg.PlayEnd - seg.PlayStart, tokenCount);
+        }
+        else if (string.Equals(asrModel, "Qwen/Qwen3-ASR-1.7B", StringComparison.Ordinal))
+        {
+            if (string.IsNullOrWhiteSpace(qwen3AsrModelsDir))
+                return null;
+
+            using var qwen3Asr = new Qwen3Asr(qwen3AsrModelsDir);
+            foreach (var result in qwen3Asr.RecognizeDetailed(asrSeg, mono16k))
+            {
+                text = result.Text;
+                tokens = result.TextTokens.ToList();
+                timestamps = BuildSyntheticTokenTimestamps(seg.PlayEnd - seg.PlayStart, result.TextTokens.Count);
+                logprobs = result.TextLogprobs.ToList();
+            }
         }
         else
         {

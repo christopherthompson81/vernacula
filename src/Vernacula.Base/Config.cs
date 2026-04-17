@@ -183,6 +183,9 @@ public static class Config
     /// </summary>
     public const string VibeVoiceSubDir = "vibevoice_asr";
 
+    // ── ASR (Qwen3-ASR) ──────────────────────────────────────────────────────
+    public const string Qwen3AsrSubDir = "qwen3asr";
+
     // ── ASR (Parakeet) ───────────────────────────────────────────────────────
     public const string ParakeetSubDir       = "parakeet";
     public const string PreprocessorFile     = "nemo128.onnx";

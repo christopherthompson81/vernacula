@@ -454,6 +454,24 @@
                         <Separator Background="{DynamicResource OverlayBrush}" Margin="0,8,0,8" />
 
                         <RadioButton GroupName="AsrBackend"
+                                     IsChecked="{Binding IsAsrQwen3Asr, Mode=OneWay}"
+                                     Command="{Binding SetAsrBackendCommand}"
+                                     CommandParameter="Qwen3Asr"
+                                     Foreground="{DynamicResource TextBrush}">
+                            <StackPanel>
+                                <TextBlock Text="Qwen3-ASR 1.7B"
+                                           FontWeight="SemiBold"
+                                           Foreground="{DynamicResource TextBrush}" />
+                                <TextBlock Text="Optimized dynamic-decoder path. Place the exported package in the qwen3asr models folder."
+                                           Foreground="{DynamicResource SubtextBrush}"
+                                           FontSize="11"
+                                           TextWrapping="Wrap" />
+                            </StackPanel>
+                        </RadioButton>
+
+                        <Separator Background="{DynamicResource OverlayBrush}" Margin="0,8,0,8" />
+
+                        <RadioButton GroupName="AsrBackend"
                                      IsChecked="{Binding IsAsrVibeVoice, Mode=OneWay}"
                                      Command="{Binding SetAsrBackendCommand}"
                                      CommandParameter="VibeVoice"
