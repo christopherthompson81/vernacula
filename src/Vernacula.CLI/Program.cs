@@ -363,6 +363,7 @@ try
 
     var results = new List<(double start, double end, string spkId, string text)>(segs.Count);
     var swAsr = Stopwatch.StartNew();
+    QwenExperimentalBatchBenchmark? qwenBatchBenchmark = null;
 
     if (skipAsr)
     {
@@ -550,22 +551,51 @@ try
             return 1;
         }
 
-        using var qwen3Asr = new Qwen3Asr(qwen3AsrDir);
-        int totalSegs = segs.Count;
-        int completed = 0;
-
-        Console.WriteLine($"Transcribing {totalSegs} segment(s) (Qwen3-ASR)...");
-        foreach (var result in qwen3Asr.RecognizeDetailed(segs, audio))
+        bool hasExperimentalQwenBatchingArtifacts;
         {
-            cts.Token.ThrowIfCancellationRequested();
-            completed++;
-            var (start, end, spkId) = segs[result.SegmentId];
-            results.Add((start, end, spkId, result.Text));
-            Console.Write($"\r  {completed}/{totalSegs}");
+            bool hasBatchedFiles = File.Exists(Path.Combine(qwen3AsrDir, Qwen3Asr.EncoderBatchedFile)) &&
+                                   File.Exists(Path.Combine(qwen3AsrDir, Qwen3Asr.DecoderInitBatchedFile));
+            using var qwen3Asr = new Qwen3Asr(qwen3AsrDir, preferBatched: hasBatchedFiles);
+            int totalSegs = segs.Count;
+            int completed = 0;
+            hasExperimentalQwenBatchingArtifacts = qwen3Asr.HasExperimentalBatchingArtifacts();
+            string batchNote = hasExperimentalQwenBatchingArtifacts ? " (batched encoder+prefill)" : "";
+
+            Console.WriteLine($"Transcribing {totalSegs} segment(s) (Qwen3-ASR{batchNote})...");
+            var recognitionResults = hasExperimentalQwenBatchingArtifacts
+                ? qwen3Asr.RecognizeBatchedDetailed(segs, audio)
+                : qwen3Asr.RecognizeDetailed(segs, audio);
+
+            foreach (var result in recognitionResults)
+            {
+                cts.Token.ThrowIfCancellationRequested();
+                completed++;
+                var (start, end, spkId) = segs[result.SegmentId];
+                results.Add((start, end, spkId, result.Text));
+                Console.Write($"\r  {completed}/{totalSegs}");
+            }
         }
 
         Console.WriteLine();
         swAsr.Stop();
+
+        if (showBenchmark)
+        {
+            if (hasExperimentalQwenBatchingArtifacts)
+            {
+                Console.Write("Benchmarking experimental Qwen batching... ");
+                qwenBatchBenchmark = Qwen3Asr.BenchmarkExperimentalBatching(
+                    qwen3AsrDir,
+                    ExecutionProvider.Auto,
+                    segs,
+                    audio);
+                Console.WriteLine("done");
+            }
+            else
+            {
+                Console.WriteLine("Experimental Qwen batching artifacts not found; skipping batching benchmark.");
+            }
+        }
     }
     else
     {
@@ -620,6 +650,31 @@ try
         Console.WriteLine($"ASR             : {swAsr.ElapsedMilliseconds}ms");
         Console.WriteLine($"Total           : {totalMs}ms");
         Console.WriteLine($"Real-time factor: {rtf:F4}  (< 1.0 = faster than real-time)");
+
+        if (qwenBatchBenchmark is not null)
+        {
+            double serialStageMs = qwenBatchBenchmark.SerialEncoderMilliseconds + qwenBatchBenchmark.SerialPrefillMilliseconds;
+            double batchedStageMs = qwenBatchBenchmark.BatchedEncoderMilliseconds + qwenBatchBenchmark.BatchedPrefillMilliseconds;
+            double speedup = batchedStageMs > 0 ? serialStageMs / batchedStageMs : 0;
+
+            Console.WriteLine();
+            Console.WriteLine("Qwen Experimental Batching (encoder + prefill only):");
+            Console.WriteLine($"  Free VRAM      : {qwenBatchBenchmark.FreeGpuMemoryMb} MB");
+            Console.WriteLine($"  Segments       : {qwenBatchBenchmark.SegmentCount}");
+            Console.WriteLine($"  Batch runs     : {qwenBatchBenchmark.BatchRuns}");
+            Console.WriteLine($"  Seconds ceiling: {qwenBatchBenchmark.TotalSecondsCeiling:F0}s");
+            Console.WriteLine($"  Serial encoder : {qwenBatchBenchmark.SerialEncoderMilliseconds:F1}ms");
+            Console.WriteLine($"  Serial prefill : {qwenBatchBenchmark.SerialPrefillMilliseconds:F1}ms");
+            Console.WriteLine($"  Batched encoder: {qwenBatchBenchmark.BatchedEncoderMilliseconds:F1}ms");
+            Console.WriteLine($"  Batched prefill: {qwenBatchBenchmark.BatchedPrefillMilliseconds:F1}ms");
+            Console.WriteLine($"  Stage speedup  : {speedup:F2}x");
+            foreach (var batch in qwenBatchBenchmark.Batches)
+            {
+                Console.WriteLine(
+                    $"    batch segs={batch.SegmentCount}, total={batch.TotalSeconds:F1}s, max={batch.MaxSegmentSeconds:F1}s, " +
+                    $"encoder={batch.EncoderMilliseconds:F1}ms, prefill={batch.PrefillMilliseconds:F1}ms");
+            }
+        }
     }
 }
 catch (OperationCanceledException)

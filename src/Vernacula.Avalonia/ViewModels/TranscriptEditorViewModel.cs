@@ -1110,6 +1110,12 @@ internal partial class TranscriptEditorViewModel : ObservableObject, IDisposable
                 tokens = result.TextTokens.ToList();
                 timestamps = BuildSyntheticTokenTimestamps(seg.PlayEnd - seg.PlayStart, result.TextTokens.Count);
                 logprobs = result.TextLogprobs.ToList();
+                language = result.Language;
+                asrMeta = JsonSerializer.Serialize(new
+                {
+                    raw_decoder_text = result.RawText,
+                    parsed_language = result.Language,
+                });
             }
         }
         else

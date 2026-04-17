@@ -221,6 +221,23 @@ public static class AudioUtils
     /// </summary>
     public static (float[] samples, int sampleRate, int channels) ReadAudio(string path)
     {
+        if (!OperatingSystem.IsWindows() &&
+            string.Equals(Path.GetExtension(path), ".wav", StringComparison.OrdinalIgnoreCase))
+        {
+            using var wavReader = new WaveFileReader(path);
+            ISampleProvider sampleProvider = wavReader.ToSampleProvider();
+            int wavSampleRate = sampleProvider.WaveFormat.SampleRate;
+            int wavChannels = sampleProvider.WaveFormat.Channels;
+
+            var wavSamples = new List<float>(wavSampleRate * wavChannels * 10);
+            var wavBuffer = new float[8192];
+            int wavRead;
+            while ((wavRead = sampleProvider.Read(wavBuffer, 0, wavBuffer.Length)) > 0)
+                for (int i = 0; i < wavRead; i++) wavSamples.Add(wavBuffer[i]);
+
+            return (wavSamples.ToArray(), wavSampleRate, wavChannels);
+        }
+
         using var reader = new AudioFileReader(path);
         int sampleRate = reader.WaveFormat.SampleRate;
         int channels   = reader.WaveFormat.Channels;

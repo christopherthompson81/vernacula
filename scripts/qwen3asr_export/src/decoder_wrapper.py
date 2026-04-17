@@ -200,6 +200,74 @@ class DecoderInitWrapper(nn.Module):
         return logits, present_keys, present_values
 
 
+class DecoderInitBatchedWrapper(nn.Module):
+    def __init__(self, text_model, lm_head, text_config):
+        super().__init__()
+        self.embed_tokens = text_model.embed_tokens
+        self.layers = text_model.layers
+        self.norm = text_model.norm
+        self.rotary_emb = text_model.rotary_emb
+        self.lm_head = lm_head
+        self.num_kv_groups = text_config.num_attention_heads // text_config.num_key_value_heads
+
+    def forward(
+        self,
+        input_ids: torch.Tensor,
+        position_ids: torch.Tensor,
+        audio_features: torch.Tensor,
+        audio_lengths: torch.Tensor,
+        audio_offset: torch.Tensor,
+    ):
+        input_embeds = self.embed_tokens(input_ids)
+
+        batch_size, audio_len, hidden_size = audio_features.shape
+        start_index = audio_offset[0]
+        audio_positions = torch.arange(audio_len, device=input_ids.device).unsqueeze(0).expand(batch_size, -1)
+        valid_mask = (audio_positions < audio_lengths.unsqueeze(1)).unsqueeze(-1)
+        indices = audio_positions.unsqueeze(-1).expand(batch_size, audio_len, hidden_size) + start_index
+        target_slice = torch.gather(input_embeds, 1, indices)
+        scatter_values = torch.where(valid_mask, audio_features, target_slice)
+        input_embeds = input_embeds.scatter(1, indices, scatter_values)
+
+        _, seq_len = input_embeds.shape[:2]
+
+        pos_3d = position_ids.unsqueeze(0).expand(3, -1, -1)
+        cos, sin = self.rotary_emb(input_embeds, pos_3d)
+
+        causal_mask = torch.full(
+            (seq_len, seq_len),
+            torch.finfo(input_embeds.dtype).min,
+            device=input_embeds.device,
+            dtype=input_embeds.dtype,
+        )
+        causal_mask = torch.triu(causal_mask, diagonal=1).unsqueeze(0).unsqueeze(0)
+
+        hidden_states = input_embeds
+        all_keys = []
+        all_values = []
+
+        for layer in self.layers:
+            hidden_states, key_states, value_states = _decoder_layer_forward(
+                layer,
+                hidden_states,
+                cos,
+                sin,
+                causal_mask,
+                past_key=None,
+                past_value=None,
+                num_kv_groups=self.num_kv_groups,
+            )
+            all_keys.append(key_states)
+            all_values.append(value_states)
+
+        hidden_states = self.norm(hidden_states)
+        logits = self.lm_head(hidden_states)
+
+        present_keys = torch.stack(all_keys, dim=0)
+        present_values = torch.stack(all_values, dim=0)
+        return logits, present_keys, present_values
+
+
 class DecoderStepWrapper(nn.Module):
     def __init__(self, text_model, lm_head, text_config):
         super().__init__()
@@ -333,6 +401,51 @@ def export_decoder_init(model, output_path: str, opset_version: int = 17, device
 
     fixed = fix_reshape_allowzero(output_path)
     print(f"Decoder init exported to {output_path} (fixed {fixed} Reshape allowzero attrs)")
+
+
+def export_decoder_init_batched(model, output_path: str, opset_version: int = 18, device: str = "cpu"):
+    """Export an experimental decoder prefill graph that accepts per-item audio lengths."""
+    text_config = model.config.thinker_config.text_config
+    hidden_size = text_config.hidden_size
+
+    text_model = model.thinker.model
+    lm_head = model.thinker.lm_head
+    wrapper = DecoderInitBatchedWrapper(text_model, lm_head, text_config).eval().to(device)
+
+    batch_size = 2
+    seq_len = 120
+    audio_len = 96
+    audio_offset_value = 9
+    dummy_ids = torch.zeros(batch_size, seq_len, device=device, dtype=torch.long)
+    dummy_pos = torch.arange(seq_len, device=device, dtype=torch.long).unsqueeze(0).expand(batch_size, -1)
+    dummy_audio = torch.randn(batch_size, audio_len, hidden_size, device=device, dtype=torch.float32)
+    dummy_audio_lengths = torch.tensor([96, 61], device=device, dtype=torch.long)
+    dummy_offset = torch.tensor([audio_offset_value], device=device, dtype=torch.long)
+
+    with torch.no_grad():
+        torch.onnx.export(
+            wrapper,
+            (dummy_ids, dummy_pos, dummy_audio, dummy_audio_lengths, dummy_offset),
+            output_path,
+            input_names=["input_ids", "position_ids", "audio_features", "audio_lengths", "audio_offset"],
+            output_names=["logits", "present_keys", "present_values"],
+            dynamic_axes={
+                "input_ids": {0: "batch", 1: "seq_len"},
+                "position_ids": {0: "batch", 1: "seq_len"},
+                "audio_features": {0: "batch", 1: "audio_len"},
+                "audio_lengths": {0: "batch"},
+                "logits": {0: "batch", 1: "seq_len"},
+                "present_keys": {1: "batch", 3: "seq_len"},
+                "present_values": {1: "batch", 3: "seq_len"},
+            },
+            opset_version=opset_version,
+            do_constant_folding=True,
+        )
+
+    from .onnx_fixup import fix_reshape_allowzero
+
+    fixed = fix_reshape_allowzero(output_path)
+    print(f"Batched decoder init exported to {output_path} (fixed {fixed} Reshape allowzero attrs)")
 
 
 def export_decoder_step(model, output_path: str, opset_version: int = 17, device: str = "cpu"):

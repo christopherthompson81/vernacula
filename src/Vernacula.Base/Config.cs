@@ -213,12 +213,17 @@ public static class Config
     public static string GetSortformerModelPath(string modelDir)
     {
         string? overridePath = Environment.GetEnvironmentVariable(SortformerModelOverrideEnvVar);
-        if (string.IsNullOrWhiteSpace(overridePath))
-            return Path.Combine(modelDir, SortformerFile);
+        if (!string.IsNullOrWhiteSpace(overridePath))
+        {
+            return Path.IsPathRooted(overridePath)
+                ? overridePath
+                : Path.Combine(modelDir, overridePath);
+        }
 
-        return Path.IsPathRooted(overridePath)
-            ? overridePath
-            : Path.Combine(modelDir, overridePath);
+        string subDirPath = Path.Combine(modelDir, SortformerSubDir, SortformerFile);
+        return File.Exists(subDirPath)
+            ? subDirPath
+            : Path.Combine(modelDir, SortformerFile);
     }
 
     public static int GetDiariZenSegmentationIntraOpThreads()

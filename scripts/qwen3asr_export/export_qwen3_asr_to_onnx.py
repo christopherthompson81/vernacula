@@ -27,8 +27,13 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
-from src.decoder_wrapper import export_decoder_init, export_decoder_step, export_decoder_step_static
-from src.encoder_wrapper import export_encoder
+from src.decoder_wrapper import (
+    export_decoder_init,
+    export_decoder_init_batched,
+    export_decoder_step,
+    export_decoder_step_static,
+)
+from src.encoder_wrapper import export_encoder, export_encoder_batched
 from optimize_qwen3_asr_graphs import optimize_exported_package
 from src.prompt import (
     ASR_TEXT_TOKEN_ID,
@@ -256,6 +261,11 @@ def main():
     parser.add_argument("--skip-encoder", action="store_true", help="Skip encoder export")
     parser.add_argument("--skip-decoder", action="store_true", help="Skip decoder export")
     parser.add_argument(
+        "--export-batching-artifacts",
+        action="store_true",
+        help="Also export experimental encoder_batched.onnx and decoder_init_batched.onnx",
+    )
+    parser.add_argument(
         "--skip-graph-optimization",
         action="store_true",
         help="Skip the offline ORT graph fusions normally applied after export",
@@ -294,65 +304,91 @@ def main():
     print("\nVerifying special token IDs...")
     verify_special_tokens(args.model)
 
-    if not args.skip_encoder:
-        print("\n=== Exporting encoder ===")
-        encoder_path = os.path.join(args.output, "encoder.onnx")
-        export_encoder(model, encoder_path, opset_version=args.opset, device=args.device)
+    export_any_encoder = (not args.skip_encoder) or args.export_batching_artifacts
+    if export_any_encoder:
+        if args.skip_encoder:
+            print("\n=== Skipping standard encoder export; emitting requested experimental encoder artifacts ===")
+        else:
+            print("\n=== Exporting encoder ===")
+            encoder_path = os.path.join(args.output, "encoder.onnx")
+            export_encoder(model, encoder_path, opset_version=args.opset, device=args.device)
 
-        encoder_data = encoder_path + ".data"
-        if os.path.exists(encoder_data):
-            print("  Embedding encoder weights into .onnx proto...")
-            encoder_model = onnx.load(encoder_path, load_external_data=True)
-            onnx.save(encoder_model, encoder_path)
-            os.remove(encoder_data)
+            encoder_data = encoder_path + ".data"
+            if os.path.exists(encoder_data):
+                print("  Embedding encoder weights into .onnx proto...")
+                encoder_model = onnx.load(encoder_path, load_external_data=True)
+                onnx.save(encoder_model, encoder_path)
+                os.remove(encoder_data)
 
-        if args.dtype == "fp16":
-            print("\n=== Converting encoder to FP16 ===")
-            _convert_to_fp16(args.output, ["encoder.onnx"])
+            if args.dtype == "fp16":
+                print("\n=== Converting encoder to FP16 ===")
+                _convert_to_fp16(args.output, ["encoder.onnx"])
 
-    export_any_decoder = (not args.skip_decoder) or args.export_static_step
+        if args.export_batching_artifacts:
+            print("\n=== Exporting batched encoder (experimental) ===")
+            export_encoder_batched(
+                model,
+                os.path.join(args.output, "encoder_batched.onnx"),
+                opset_version=args.opset,
+                device=args.device,
+            )
 
-    if not args.skip_decoder:
-        print("\n=== Exporting decoder (init) ===")
-        export_decoder_init(
-            model,
-            os.path.join(args.output, "decoder_init.onnx"),
-            opset_version=args.opset,
-            device=args.device,
-        )
+    export_any_decoder = (not args.skip_decoder) or args.export_static_step or args.export_batching_artifacts
 
-        print("\n=== Exporting decoder (step) ===")
-        export_decoder_step(
-            model,
-            os.path.join(args.output, "decoder_step.onnx"),
-            opset_version=args.opset,
-            device=args.device,
-        )
+    if export_any_decoder:
+        if args.skip_decoder:
+            print("\n=== Skipping standard decoder export; emitting requested experimental decoder artifacts ===")
+        else:
+            print("\n=== Exporting decoder (init) ===")
+            export_decoder_init(
+                model,
+                os.path.join(args.output, "decoder_init.onnx"),
+                opset_version=args.opset,
+                device=args.device,
+            )
 
-        if args.dtype == "fp16":
-            print("\n=== Converting decoders to FP16 ===")
-            _convert_to_fp16(args.output, ["decoder_init.onnx", "decoder_step.onnx"])
+        if args.export_batching_artifacts:
+            print("\n=== Exporting decoder (init, batched experimental) ===")
+            export_decoder_init_batched(
+                model,
+                os.path.join(args.output, "decoder_init_batched.onnx"),
+                opset_version=args.opset,
+                device=args.device,
+            )
 
-        step_path = os.path.join(args.output, "decoder_step.onnx")
-        step_data = step_path + ".data"
-        if os.path.exists(step_data):
-            step_model = onnx.load(step_path, load_external_data=True)
-            proto_size = sum(len(tensor.raw_data) for tensor in step_model.graph.initializer)
-            if proto_size < 1_800_000_000:
-                print("  Inlining decoder_step weights into .onnx proto...")
-                onnx.save(step_model, step_path)
-                os.remove(step_data)
-                print(f"  decoder_step.onnx: {os.path.getsize(step_path) / 1e6:.1f} MB (self-contained)")
-            else:
-                print(f"  decoder_step too large to inline ({proto_size / 1e6:.0f} MB), keeping external data")
+        if not args.skip_decoder:
+            print("\n=== Exporting decoder (step) ===")
+            export_decoder_step(
+                model,
+                os.path.join(args.output, "decoder_step.onnx"),
+                opset_version=args.opset,
+                device=args.device,
+            )
 
-        if not args.no_share_weights:
-            init_path = os.path.join(args.output, "decoder_init.onnx")
-            init_data = init_path + ".data"
-            if os.path.exists(init_data):
-                final_data = os.path.join(args.output, "decoder_init.onnx.data")
-                if init_data != final_data:
-                    os.rename(init_data, final_data)
+            if args.dtype == "fp16":
+                print("\n=== Converting decoders to FP16 ===")
+                _convert_to_fp16(args.output, ["decoder_init.onnx", "decoder_step.onnx"])
+
+            step_path = os.path.join(args.output, "decoder_step.onnx")
+            step_data = step_path + ".data"
+            if os.path.exists(step_data):
+                step_model = onnx.load(step_path, load_external_data=True)
+                proto_size = sum(len(tensor.raw_data) for tensor in step_model.graph.initializer)
+                if proto_size < 1_800_000_000:
+                    print("  Inlining decoder_step weights into .onnx proto...")
+                    onnx.save(step_model, step_path)
+                    os.remove(step_data)
+                    print(f"  decoder_step.onnx: {os.path.getsize(step_path) / 1e6:.1f} MB (self-contained)")
+                else:
+                    print(f"  decoder_step too large to inline ({proto_size / 1e6:.0f} MB), keeping external data")
+
+            if not args.no_share_weights:
+                init_path = os.path.join(args.output, "decoder_init.onnx")
+                init_data = init_path + ".data"
+                if os.path.exists(init_data):
+                    final_data = os.path.join(args.output, "decoder_init.onnx.data")
+                    if init_data != final_data:
+                        os.rename(init_data, final_data)
 
     if args.export_static_step:
         print("\n=== Exporting decoder (static step) ===")

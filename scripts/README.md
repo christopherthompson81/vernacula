@@ -113,4 +113,5 @@ Exports `Qwen/Qwen3-ASR-0.6B` and `Qwen/Qwen3-ASR-1.7B` to the ONNX package we c
 - `export_qwen3_asr_to_onnx.py` — exports the Qwen3-ASR encoder, split KV-cache decoders, tokenizer assets, and config files
 - `optimize_qwen3_asr_graphs.py` — applies ORT transformer fusions to the exported encoder and decoders
 - `profile_qwen3_asr_pipeline.py` — profiles mel, encoder, decoder prefill, and decode-step timings for an exported ONNX package
+- `sweep_qwen3_asr_batching.py` — sweeps the experimental batched encoder / decoder-prefill graphs on CUDA to map safe VRAM-dependent batch sizes
 - `requirements.txt` — export dependencies

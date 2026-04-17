@@ -76,17 +76,20 @@ def optimize_exported_package(model_dir: str, *, skip_encoder: bool = False, ski
     if not skip_encoder:
         encoder_cfg = config.get("encoder")
         if encoder_cfg is not None:
-            optimize_graph(
-                os.path.join(model_dir, "encoder.onnx"),
-                encoder_cfg["num_heads"],
-                encoder_cfg["hidden_size"],
-                use_external_data=False,
-            )
+            for encoder_name in ("encoder", "encoder_batched"):
+                path = os.path.join(model_dir, f"{encoder_name}.onnx")
+                if os.path.exists(path):
+                    optimize_graph(
+                        path,
+                        encoder_cfg["num_heads"],
+                        encoder_cfg["hidden_size"],
+                        use_external_data=False,
+                    )
 
     if not skip_decoders:
         decoder_cfg = config.get("decoder")
         if decoder_cfg is not None:
-            for decoder_name in ("decoder_init", "decoder_step"):
+            for decoder_name in ("decoder_init", "decoder_init_batched", "decoder_step"):
                 path = os.path.join(model_dir, f"{decoder_name}.onnx")
                 if os.path.exists(path):
                     optimize_graph(

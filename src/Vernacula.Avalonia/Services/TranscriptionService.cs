@@ -616,7 +616,13 @@ internal class TranscriptionService
                         content:    result.Text,
                         tokens:     JsonSerializer.Serialize(result.TextTokens),
                         timestamps: JsonSerializer.Serialize(syntheticTimestamps),
-                        logprobs:   JsonSerializer.Serialize(result.TextLogprobs));
+                        logprobs:   JsonSerializer.Serialize(result.TextLogprobs),
+                        language:   result.Language,
+                        asrMeta:    JsonSerializer.Serialize(new
+                        {
+                            raw_decoder_text = result.RawText,
+                            parsed_language = result.Language,
+                        }));
 
                     onSegmentText(absId, result.Text);
 
