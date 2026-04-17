@@ -52,17 +52,18 @@ public sealed class Qwen3Asr : IDisposable
     private const int UserTokenId = 882;
     private const int AssistantTokenId = 77091;
     private const string LanguagePrefix = "language ";
-    private const long BatchSizingReferenceFreeVramMb = 22_800;
-    private const double BatchSizingReferenceTotalSecondsCeiling = 192.0;
+    private const long BatchSizingReferenceFreeVramMb = 22_673;
+    private const double BatchSizingReferenceTotalSecondsCeiling = 224.0;
 
     private static readonly float[,] MelFilterbank = CreateMelFilterbank();
     private static readonly double[] HannWindow = Window.HannPeriodic(NFft);
+    // Frontier calibrated for decoder.onnx (unified) on RTX 3090 with 22,673 MB free.
+    // Sweep: 2–32s segments × 1–16 batch. OOM boundaries: >14 at 16s, >10 at 24s, >8 at 32s.
     private static readonly (double MaxSegmentSeconds, int ReferenceBatchCap)[] ExperimentalBatchFrontier =
     [
-        (20.0, 10),
-        (24.0, 9),
-        (28.0, 8),
-        (32.0, 7),
+        (16.0, 14),
+        (24.0, 10),
+        (32.0,  8),
         (double.PositiveInfinity, 6),
     ];
     private static readonly string[] SpokenLanguageNames =

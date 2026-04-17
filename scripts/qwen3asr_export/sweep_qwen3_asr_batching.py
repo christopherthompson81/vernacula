@@ -5,11 +5,15 @@ VRAM heuristic for batch sizing.
 
 The current export only batches the encoder and decoder prefill. This tool:
   1. builds synthetic segment batches by trimming/repeating one reference clip
-  2. runs encoder_batched.onnx and decoder_init_batched.onnx
+  2. runs encoder_batched.onnx and decoder.onnx (unified) or decoder_init_batched.onnx (legacy)
   3. records success / failure, latency, and rough VRAM deltas
   4. fits a simple linear model over successful runs
 
 The fitted model is intended as a sizing heuristic, not a guarantee.
+
+Decoder selection (auto-detected from --onnx-dir):
+  decoder.onnx             unified decoder — takes input_embeds + attention_mask + past KV
+  decoder_init_batched.onnx  legacy split decoder — takes input_ids + audio_features
 """
 
 from __future__ import annotations
@@ -25,6 +29,7 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import NamedTuple
 
 import numpy as np
 import onnxruntime as ort
@@ -33,9 +38,9 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
-from profile_qwen3_asr_pipeline import load_audio, make_session
-from src.mel import log_mel_spectrogram
-from src.prompt import build_prompt_ids, get_audio_pad_range
+from profile_qwen3_asr_pipeline import load_audio, make_session  # noqa: E402
+from src.mel import log_mel_spectrogram  # noqa: E402
+from src.prompt import build_prompt_ids, get_audio_pad_range  # noqa: E402
 
 
 def parse_csv_ints(raw: str) -> list[int]:
@@ -110,7 +115,6 @@ class BatchInputs:
 def build_batch_inputs(audio: np.ndarray, durations_s: list[float]) -> BatchInputs:
     mel_items: list[np.ndarray] = []
     mel_lengths: list[int] = []
-    audio_token_lengths: list[int] = []
 
     for seconds in durations_s:
         target_samples = max(1, int(round(seconds * 16000.0)))
@@ -163,6 +167,75 @@ def attach_decoder_inputs(batch: BatchInputs, audio_feature_lengths: np.ndarray)
         max_audio_seconds=batch.max_audio_seconds,
         batch_size=batch.batch_size,
     )
+
+
+class DecoderConfig(NamedTuple):
+    hidden_size: int
+    num_layers: int
+    num_kv_heads: int
+    head_dim: int
+
+
+def load_decoder_config(onnx_dir: str) -> DecoderConfig:
+    config_path = Path(onnx_dir) / "config.json"
+    config = json.loads(config_path.read_text())
+    dec = config["decoder"]
+    return DecoderConfig(
+        hidden_size=dec["hidden_size"],
+        num_layers=dec["num_layers"],
+        num_kv_heads=dec["num_key_value_heads"],
+        head_dim=dec["head_dim"],
+    )
+
+
+def load_embed_tokens(onnx_dir: str) -> np.ndarray:
+    config_path = Path(onnx_dir) / "config.json"
+    config = json.loads(config_path.read_text())
+    vocab_size, hidden_size = config["embed_tokens_shape"]
+    embed_path = Path(onnx_dir) / "embed_tokens.bin"
+    return np.fromfile(embed_path, dtype=np.float32).reshape(vocab_size, hidden_size)
+
+
+def build_causal_mask(seq_len: int, past_seq_len: int) -> np.ndarray:
+    total_len = past_seq_len + seq_len
+    mask = np.zeros((1, 1, seq_len, total_len), dtype=np.float32)
+    for q in range(seq_len):
+        mask[0, 0, q, past_seq_len + q + 1:] = float("-inf")
+    return mask
+
+
+
+def build_unified_decoder_inputs_with_kv(
+    base_batch: BatchInputs,
+    audio_features: np.ndarray,
+    audio_feature_lengths: np.ndarray,
+    embed_table: np.ndarray,
+    cfg: DecoderConfig,
+) -> tuple[dict[str, np.ndarray], int]:
+    """Build inputs for decoder.onnx (unified prefill call with zero-size past KV)."""
+    batch_size = base_batch.batch_size
+    max_audio_tokens = int(audio_feature_lengths.max())
+    prompt_ids = build_prompt_ids(max_audio_tokens)
+    audio_start, _ = get_audio_pad_range(prompt_ids)
+    seq_len = len(prompt_ids)
+
+    base_embeds = embed_table[prompt_ids]
+    input_embeds = np.tile(base_embeds[np.newaxis], (batch_size, 1, 1)).copy()
+    for b in range(batch_size):
+        audio_len = int(audio_feature_lengths[b])
+        input_embeds[b, audio_start:audio_start + audio_len] = audio_features[b, :audio_len]
+
+    position_ids = np.tile(np.arange(seq_len, dtype=np.int64)[np.newaxis], (batch_size, 1))
+    attention_mask = build_causal_mask(seq_len, 0)
+    empty_kv = np.zeros((cfg.num_layers, batch_size, cfg.num_kv_heads, 0, cfg.head_dim), dtype=np.float32)
+
+    return {
+        "input_embeds": input_embeds,
+        "position_ids": position_ids,
+        "attention_mask": attention_mask,
+        "past_keys": empty_kv,
+        "past_values": empty_kv.copy(),
+    }, max_audio_tokens
 
 
 def timed_run(session: ort.InferenceSession, outputs: list[str], inputs: dict[str, np.ndarray]) -> tuple[list[np.ndarray], float]:
@@ -299,8 +372,17 @@ def run_single_point(
     settle_s: float,
 ) -> dict[str, object]:
     providers = get_cuda_providers()
+
+    unified_path = Path(onnx_dir) / "decoder.onnx"
+    split_path = Path(onnx_dir) / "decoder_init_batched.onnx"
+    use_unified = unified_path.exists()
+    decoder_file = unified_path if use_unified else split_path
+
     encoder = make_session(str(Path(onnx_dir) / "encoder_batched.onnx"), providers, enable_profiling=False)
-    decoder = make_session(str(Path(onnx_dir) / "decoder_init_batched.onnx"), providers, enable_profiling=False)
+    decoder = make_session(str(decoder_file), providers, enable_profiling=False)
+
+    cfg = load_decoder_config(onnx_dir) if use_unified else None
+    embed_table = load_embed_tokens(onnx_dir) if use_unified else None
 
     audio, _ = load_audio(audio_path)
     durations_s = [duration_s] * batch_size
@@ -332,20 +414,26 @@ def run_single_point(
             free_after_encoder = force_gpu_settle(settle_s)
             free_after_encoder_values.append(-1 if free_after_encoder is None else free_after_encoder)
 
-            batch = attach_decoder_inputs(base_batch, audio_feature_lengths)
-            max_audio_tokens = batch.max_audio_tokens
-            padded_audio_features = audio_features[:, : batch.max_audio_tokens, :]
-
-            _, decoder_s = timed_run(
-                decoder,
-                ["logits", "present_keys", "present_values"],
-                {
+            if use_unified:
+                decoder_inputs, max_audio_tokens = build_unified_decoder_inputs_with_kv(
+                    base_batch, audio_features, audio_feature_lengths, embed_table, cfg
+                )
+            else:
+                batch = attach_decoder_inputs(base_batch, audio_feature_lengths)
+                max_audio_tokens = batch.max_audio_tokens
+                padded_audio_features = audio_features[:, : batch.max_audio_tokens, :]
+                decoder_inputs = {
                     "input_ids": batch.input_ids,
                     "position_ids": batch.position_ids,
                     "audio_features": padded_audio_features,
                     "audio_lengths": batch.audio_lengths,
                     "audio_offset": batch.audio_offset,
-                },
+                }
+
+            _, decoder_s = timed_run(
+                decoder,
+                ["logits", "present_keys", "present_values"],
+                decoder_inputs,
             )
 
             free_after_decoder = force_gpu_settle(settle_s)
@@ -379,6 +467,7 @@ def run_single_point(
         "total_audio_seconds": duration_s * batch_size,
         "max_audio_seconds": duration_s,
         "status": status,
+        "decoder_mode": "unified" if use_unified else "split",
         "max_audio_tokens": max_audio_tokens,
         "encoder_ms_median": statistics.median(encoder_ms_values) if encoder_ms_values else None,
         "decoder_init_ms_median": statistics.median(decoder_ms_values) if decoder_ms_values else None,
@@ -432,7 +521,7 @@ def run_single_point_subprocess(args: argparse.Namespace, duration_s: float, bat
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Sweep Qwen3-ASR batching artifacts and fit a VRAM heuristic.")
-    parser.add_argument("--onnx-dir", required=True, help="Directory containing encoder_batched.onnx and decoder_init_batched.onnx")
+    parser.add_argument("--onnx-dir", required=True, help="Directory containing encoder_batched.onnx and decoder.onnx (unified) or decoder_init_batched.onnx (legacy)")
     parser.add_argument("--audio", required=True, help="Reference audio file used to synthesize sweep batches")
     parser.add_argument("--durations-seconds", default="2,4,8,12,16,24,32", help="Comma-separated segment durations to test")
     parser.add_argument("--batch-sizes", default="1,2,4,6,8,10,12", help="Comma-separated batch sizes to test")
@@ -463,11 +552,13 @@ def main() -> None:
 
     onnx_dir = Path(args.onnx_dir)
     encoder_path = onnx_dir / "encoder_batched.onnx"
-    decoder_path = onnx_dir / "decoder_init_batched.onnx"
+    unified_decoder_path = onnx_dir / "decoder.onnx"
+    split_decoder_path = onnx_dir / "decoder_init_batched.onnx"
     if not encoder_path.exists():
         raise FileNotFoundError(encoder_path)
-    if not decoder_path.exists():
-        raise FileNotFoundError(decoder_path)
+    if not unified_decoder_path.exists() and not split_decoder_path.exists():
+        raise FileNotFoundError(f"Neither {unified_decoder_path} nor {split_decoder_path} found")
+    decoder_mode = "unified" if unified_decoder_path.exists() else "split"
     durations = parse_csv_floats(args.durations_seconds)
     batch_sizes = parse_csv_ints(args.batch_sizes)
 
@@ -477,6 +568,7 @@ def main() -> None:
 
     total_mb, initial_free_mb = initial_gpu
     print(f"GPU memory at start: total={total_mb} MB free={initial_free_mb} MB")
+    print(f"Decoder mode: {decoder_mode}")
     print(f"Testing durations={durations} seconds batch_sizes={batch_sizes}")
 
     rows: list[dict[str, object]] = []
