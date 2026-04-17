@@ -605,9 +605,21 @@ public sealed class Qwen3Asr : IDisposable
                 float[] unifiedBatchedLogits = ExtractTensor(initResults.First(r => r.Name == "logits").AsTensor<float>());
                 float[] presentKeys = ExtractTensor(initResults.First(r => r.Name == "present_keys").AsTensor<float>());
                 float[] presentValues = ExtractTensor(initResults.First(r => r.Name == "present_values").AsTensor<float>());
-                float[] pastKeys = CompactPrefillKv(presentKeys, unifiedSeqLengths, take);
-                float[] pastValues = CompactPrefillKv(presentValues, unifiedSeqLengths, take);
+                int maxKvSeqCapacity = unifiedSeqLengths.Max() + maxNewTokens - 1;
+                int kvCapacity = _nLayers * take * _nKvHeads * maxKvSeqCapacity * _headDim;
+                float[] pastKeys = new float[kvCapacity];
+                float[] pastValues = new float[kvCapacity];
+                CompactPrefillKvInto(presentKeys, unifiedSeqLengths, take, pastKeys);
+                CompactPrefillKvInto(presentValues, unifiedSeqLengths, take, pastValues);
                 int[] pastLengths = [.. unifiedSeqLengths];
+                int[] nextLengths = new int[take];
+                bool[] activeMask = new bool[take];
+                float[] nextKeysBuffer = new float[kvCapacity];
+                float[] nextValuesBuffer = new float[kvCapacity];
+                float[] stepEmbeds = new float[take * _hiddenSize];
+                var tokenEmbed = new float[_hiddenSize];
+                long[] stepPos = new long[take];
+                float[] stepMaskBuffer = new float[take * (maxKvSeqCapacity + 1)];
 
                 int unifiedVocabSize = unifiedBatchedLogits.Length / (take * unifiedSeqLengths.Max());
                 var unifiedSeqTokens = new List<int>[take];
@@ -629,34 +641,32 @@ public sealed class Qwen3Asr : IDisposable
 
                 for (int step = 1; step < maxNewTokens && unifiedSeqDone.Any(done => !done); step++)
                 {
-                    float[] stepEmbeds = new float[take * _hiddenSize];
-                    var tokenEmbed = new float[_hiddenSize];
                     for (int b = 0; b < take; b++)
                     {
                         ReadTokenEmbedding(nextTokens[b], tokenEmbed);
                         Array.Copy(tokenEmbed, 0, stepEmbeds, b * _hiddenSize, _hiddenSize);
                     }
 
-                    long[] stepPos = new long[take];
                     for (int b = 0; b < take; b++)
                         stepPos[b] = pastLengths[b];
 
                     int maxPastLen = pastLengths.Max();
-                    float[] stepMask = BuildBatchStepAttentionMask(pastLengths, maxPastLen);
+                    int stepMaskLength = take * (maxPastLen + 1);
+                    BuildBatchStepAttentionMaskInto(stepMaskBuffer, stepMaskLength, pastLengths, maxPastLen);
+                    int pastKvLength = _nLayers * take * _nKvHeads * maxPastLen * _headDim;
 
                     using var stepOutputs = _decoder.Run(
                     [
                         NamedOnnxValue.CreateFromTensor("input_embeds",   new DenseTensor<float>(stepEmbeds, [take, 1, _hiddenSize])),
                         NamedOnnxValue.CreateFromTensor("position_ids",   new DenseTensor<long>(stepPos,     [take, 1])),
-                        NamedOnnxValue.CreateFromTensor("attention_mask", new DenseTensor<float>(stepMask,   [take, 1, 1, maxPastLen + 1])),
-                        NamedOnnxValue.CreateFromTensor("past_keys",      new DenseTensor<float>(pastKeys,   [_nLayers, take, _nKvHeads, maxPastLen, _headDim])),
-                        NamedOnnxValue.CreateFromTensor("past_values",    new DenseTensor<float>(pastValues, [_nLayers, take, _nKvHeads, maxPastLen, _headDim])),
+                        NamedOnnxValue.CreateFromTensor("attention_mask", new DenseTensor<float>(stepMaskBuffer.AsMemory(0, stepMaskLength), [take, 1, 1, maxPastLen + 1])),
+                        NamedOnnxValue.CreateFromTensor("past_keys",      new DenseTensor<float>(pastKeys.AsMemory(0, pastKvLength),   [_nLayers, take, _nKvHeads, maxPastLen, _headDim])),
+                        NamedOnnxValue.CreateFromTensor("past_values",    new DenseTensor<float>(pastValues.AsMemory(0, pastKvLength), [_nLayers, take, _nKvHeads, maxPastLen, _headDim])),
                     ]);
 
                     float[] stepLogits = ExtractTensor(stepOutputs.First(r => r.Name == "logits").AsTensor<float>());
                     float[] stepPresentKeys = ExtractTensor(stepOutputs.First(r => r.Name == "present_keys").AsTensor<float>());
                     float[] stepPresentValues = ExtractTensor(stepOutputs.First(r => r.Name == "present_values").AsTensor<float>());
-                    bool[] activeMask = new bool[take];
                     for (int b = 0; b < take; b++)
                         activeMask[b] = !unifiedSeqDone[b];
 
@@ -673,7 +683,19 @@ public sealed class Qwen3Asr : IDisposable
                             unifiedSeqDone[b] = true;
                     }
 
-                    CompactStepKv(stepPresentKeys, stepPresentValues, pastLengths, activeMask, take, out pastKeys, out pastValues, out pastLengths);
+                    CompactStepKvInto(
+                        stepPresentKeys,
+                        stepPresentValues,
+                        pastLengths,
+                        activeMask,
+                        take,
+                        nextKeysBuffer,
+                        nextValuesBuffer,
+                        nextLengths);
+
+                    (pastKeys, nextKeysBuffer) = (nextKeysBuffer, pastKeys);
+                    (pastValues, nextValuesBuffer) = (nextValuesBuffer, pastValues);
+                    (pastLengths, nextLengths) = (nextLengths, pastLengths);
                 }
 
                 for (int b = 0; b < take; b++)
@@ -959,10 +981,10 @@ public sealed class Qwen3Asr : IDisposable
         return mask;
     }
 
-    private float[] CompactPrefillKv(float[] present, int[] seqLengths, int batchSize)
+    private void CompactPrefillKvInto(float[] present, int[] seqLengths, int batchSize, float[] target)
     {
         int maxSeqLen = seqLengths.Max();
-        float[] compact = new float[_nLayers * batchSize * _nKvHeads * maxSeqLen * _headDim];
+        Array.Clear(target, 0, _nLayers * batchSize * _nKvHeads * maxSeqLen * _headDim);
 
         for (int layer = 0; layer < _nLayers; layer++)
         for (int b = 0; b < batchSize; b++)
@@ -971,31 +993,29 @@ public sealed class Qwen3Asr : IDisposable
             int validLen = seqLengths[b];
             int sourceBase = (((layer * batchSize + b) * _nKvHeads + head) * maxSeqLen) * _headDim;
             int destBase = sourceBase;
-            Array.Copy(present, sourceBase, compact, destBase, validLen * _headDim);
+            Array.Copy(present, sourceBase, target, destBase, validLen * _headDim);
         }
-
-        return compact;
     }
 
-    private void CompactStepKv(
+    private void CompactStepKvInto(
         float[] presentKeys,
         float[] presentValues,
         int[] pastLengths,
         bool[] activeMask,
         int batchSize,
-        out float[] nextKeys,
-        out float[] nextValues,
-        out int[] nextLengths)
+        float[] nextKeys,
+        float[] nextValues,
+        int[] nextLengths)
     {
         int appendIndex = pastLengths.Max();
-        nextLengths = (int[])pastLengths.Clone();
+        Array.Copy(pastLengths, nextLengths, batchSize);
         for (int b = 0; b < batchSize; b++)
             if (activeMask[b])
                 nextLengths[b]++;
 
         int maxNextLen = nextLengths.Max();
-        nextKeys = new float[_nLayers * batchSize * _nKvHeads * maxNextLen * _headDim];
-        nextValues = new float[_nLayers * batchSize * _nKvHeads * maxNextLen * _headDim];
+        Array.Clear(nextKeys, 0, _nLayers * batchSize * _nKvHeads * maxNextLen * _headDim);
+        Array.Clear(nextValues, 0, _nLayers * batchSize * _nKvHeads * maxNextLen * _headDim);
 
         for (int layer = 0; layer < _nLayers; layer++)
         for (int b = 0; b < batchSize; b++)
@@ -1027,6 +1047,19 @@ public sealed class Qwen3Asr : IDisposable
                     destBase + validPastLen * _headDim,
                     _headDim);
             }
+        }
+    }
+
+    private static void BuildBatchStepAttentionMaskInto(float[] buffer, int usedLength, int[] pastLengths, int maxPastLen)
+    {
+        Array.Fill(buffer, float.MinValue, 0, usedLength);
+
+        for (int b = 0; b < pastLengths.Length; b++)
+        {
+            int offset = b * (maxPastLen + 1);
+            for (int k = 0; k < pastLengths[b]; k++)
+                buffer[offset + k] = 0f;
+            buffer[offset + maxPastLen] = 0f;
         }
     }
 
