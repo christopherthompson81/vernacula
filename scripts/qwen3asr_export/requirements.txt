@@ -1,0 +1,10 @@
+torch>=2.2
+transformers>=4.48
+onnx>=1.16
+onnxruntime>=1.17
+onnxscript
+numpy
+soundfile
+librosa
+huggingface_hub
+qwen-asr==0.0.6
