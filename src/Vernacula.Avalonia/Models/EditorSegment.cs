@@ -18,6 +18,7 @@ internal partial class EditorSegment : ObservableObject
     private double _playEnd;
 
     public string AsrContent { get; set; } = "";
+    public string? Language  { get; set; }
 
     [ObservableProperty]
     private string _content = "";

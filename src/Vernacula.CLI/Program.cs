@@ -19,9 +19,12 @@ bool    showBenchmark   = false;
 bool    skipAsr         = false;
 string  denoiser        = "none";       // none, dfn3
 string? denoiserModels  = null;         // defaults to <modelDir>/deepfilternet3
-string  asrBackend      = "parakeet";   // parakeet, cohere, or vibevoice
+string  asrBackend      = "parakeet";   // parakeet, cohere, qwen3asr, or vibevoice
 string? cohereModelDir  = null;         // defaults to <modelDir>/cohere_transcribe
 string? cohereLanguage  = null;         // ISO 639-1 forced language (e.g. "en")
+string? qwen3AsrModelDir = null;        // defaults to <modelDir>/qwen3asr
+bool    forceQwen3AsrSerial = false;    // --qwen3asr-serial disables experimental batching
+GraphOptimizationLevel qwen3AsrOrtOptLevel = GraphOptimizationLevel.ORT_ENABLE_EXTENDED;
 string? vibevoiceModelDir = null;       // defaults to <modelDir>/vibevoice_asr
 string? profileOutputDir  = null;       // ORT profiling output dir (vibevoice only)
 int     profileMaxTokens  = 200;        // cap maxNewTokens during profiling to stay under ORT 1M event limit
@@ -62,13 +65,30 @@ for (int i = 0; i < args.Length; i++)
         case "--denoiser-models": denoiserModels = args[++i]; break;
         case "--asr":
             asrBackend = args[++i].ToLowerInvariant();
-            if (asrBackend is not ("parakeet" or "cohere" or "vibevoice"))
+            if (asrBackend is not ("parakeet" or "cohere" or "qwen3asr" or "vibevoice"))
             {
-                Console.Error.WriteLine($"Unknown ASR backend: {asrBackend}. Choose: parakeet, cohere, vibevoice.");
+                Console.Error.WriteLine($"Unknown ASR backend: {asrBackend}. Choose: parakeet, cohere, qwen3asr, vibevoice.");
                 return 1;
             }
             break;
         case "--cohere-model":     cohereModelDir    = args[++i]; break;
+        case "--qwen3asr-model":   qwen3AsrModelDir  = args[++i]; break;
+        case "--qwen3asr-serial":  forceQwen3AsrSerial = true; break;
+        case "--qwen3asr-ort-opt":
+            string qwenOptLevel = args[++i].ToLowerInvariant();
+            qwen3AsrOrtOptLevel = qwenOptLevel switch
+            {
+                "extended" => GraphOptimizationLevel.ORT_ENABLE_EXTENDED,
+                "basic" => GraphOptimizationLevel.ORT_ENABLE_BASIC,
+                "disabled" => GraphOptimizationLevel.ORT_DISABLE_ALL,
+                _ => (GraphOptimizationLevel)(-1),
+            };
+            if ((int)qwen3AsrOrtOptLevel == -1)
+            {
+                Console.Error.WriteLine($"Unknown Qwen ORT optimization level: {qwenOptLevel}. Choose: extended, basic, disabled.");
+                return 1;
+            }
+            break;
         case "--vibevoice-model":  vibevoiceModelDir = args[++i]; break;
         case "--min-asr-seconds":  minAsrSeconds     = double.Parse(args[++i]); break;
         case "--asr-buffer":       asrBufferSeconds  = double.Parse(args[++i]); break;
@@ -361,6 +381,7 @@ try
 
     var results = new List<(double start, double end, string spkId, string text)>(segs.Count);
     var swAsr = Stopwatch.StartNew();
+    QwenExperimentalBatchBenchmark? qwenBatchBenchmark = null;
 
     if (skipAsr)
     {
@@ -533,6 +554,75 @@ try
         Console.WriteLine();
         swAsr.Stop();
     }
+    else if (asrBackend == "qwen3asr")
+    {
+        string qwen3AsrDir = qwen3AsrModelDir
+            ?? (Directory.Exists(Path.Combine(modelDir, Config.Qwen3AsrSubDir))
+                ? Path.Combine(modelDir, Config.Qwen3AsrSubDir)
+                : modelDir);
+
+        if (!File.Exists(Path.Combine(qwen3AsrDir, Qwen3Asr.EncoderFile)))
+        {
+            Console.Error.WriteLine($"\nError: Qwen3-ASR model not found in: {qwen3AsrDir}");
+            Console.Error.WriteLine($"Expected {Qwen3Asr.EncoderFile} and related files there.");
+            Console.Error.WriteLine("Use --qwen3asr-model <dir> to specify the directory explicitly.");
+            return 1;
+        }
+
+        bool hasExperimentalQwenBatchingArtifacts;
+        {
+            bool hasBatchedFiles = !forceQwen3AsrSerial &&
+                                   File.Exists(Path.Combine(qwen3AsrDir, Qwen3Asr.EncoderBatchedFile)) &&
+                                   (File.Exists(Path.Combine(qwen3AsrDir, Qwen3Asr.DecoderFile)) ||
+                                    File.Exists(Path.Combine(qwen3AsrDir, Qwen3Asr.DecoderInitBatchedFile)));
+            using var qwen3Asr = new Qwen3Asr(
+                qwen3AsrDir,
+                preferBatched: hasBatchedFiles,
+                optimizationLevel: qwen3AsrOrtOptLevel);
+            int totalSegs = segs.Count;
+            int completed = 0;
+            hasExperimentalQwenBatchingArtifacts = qwen3Asr.HasExperimentalBatchingArtifacts();
+            string batchNote = forceQwen3AsrSerial
+                ? " (serial forced)"
+                : hasExperimentalQwenBatchingArtifacts ? " (batched encoder+prefill)" : "";
+
+            Console.WriteLine($"Transcribing {totalSegs} segment(s) (Qwen3-ASR{batchNote})...");
+            var recognitionResults = hasExperimentalQwenBatchingArtifacts
+                ? qwen3Asr.RecognizeBatchedDetailed(segs, audio)
+                : qwen3Asr.RecognizeDetailed(segs, audio);
+
+            foreach (var result in recognitionResults)
+            {
+                cts.Token.ThrowIfCancellationRequested();
+                completed++;
+                var (start, end, spkId) = segs[result.SegmentId];
+                results.Add((start, end, spkId, result.Text));
+                Console.Write($"\r  {completed}/{totalSegs}");
+            }
+        }
+
+        Console.WriteLine();
+        swAsr.Stop();
+
+        if (showBenchmark)
+        {
+            if (hasExperimentalQwenBatchingArtifacts)
+            {
+                Console.Write("Benchmarking experimental Qwen batching... ");
+                qwenBatchBenchmark = Qwen3Asr.BenchmarkExperimentalBatching(
+                    qwen3AsrDir,
+                    ExecutionProvider.Auto,
+                    segs,
+                    audio,
+                    qwen3AsrOrtOptLevel);
+                Console.WriteLine("done");
+            }
+            else
+            {
+                Console.WriteLine("Experimental Qwen batching artifacts not found; skipping batching benchmark.");
+            }
+        }
+    }
     else
     {
         var (encoderFile, decoderJointFile) = Config.GetAsrFiles(precision);
@@ -586,6 +676,31 @@ try
         Console.WriteLine($"ASR             : {swAsr.ElapsedMilliseconds}ms");
         Console.WriteLine($"Total           : {totalMs}ms");
         Console.WriteLine($"Real-time factor: {rtf:F4}  (< 1.0 = faster than real-time)");
+
+        if (qwenBatchBenchmark is not null)
+        {
+            double serialStageMs = qwenBatchBenchmark.SerialEncoderMilliseconds + qwenBatchBenchmark.SerialPrefillMilliseconds;
+            double batchedStageMs = qwenBatchBenchmark.BatchedEncoderMilliseconds + qwenBatchBenchmark.BatchedPrefillMilliseconds;
+            double speedup = batchedStageMs > 0 ? serialStageMs / batchedStageMs : 0;
+
+            Console.WriteLine();
+            Console.WriteLine("Qwen Experimental Batching (encoder + prefill only):");
+            Console.WriteLine($"  Free VRAM      : {qwenBatchBenchmark.FreeGpuMemoryMb} MB");
+            Console.WriteLine($"  Segments       : {qwenBatchBenchmark.SegmentCount}");
+            Console.WriteLine($"  Batch runs     : {qwenBatchBenchmark.BatchRuns}");
+            Console.WriteLine($"  Seconds ceiling: {qwenBatchBenchmark.TotalSecondsCeiling:F0}s");
+            Console.WriteLine($"  Serial encoder : {qwenBatchBenchmark.SerialEncoderMilliseconds:F1}ms");
+            Console.WriteLine($"  Serial prefill : {qwenBatchBenchmark.SerialPrefillMilliseconds:F1}ms");
+            Console.WriteLine($"  Batched encoder: {qwenBatchBenchmark.BatchedEncoderMilliseconds:F1}ms");
+            Console.WriteLine($"  Batched prefill: {qwenBatchBenchmark.BatchedPrefillMilliseconds:F1}ms");
+            Console.WriteLine($"  Stage speedup  : {speedup:F2}x");
+            foreach (var batch in qwenBatchBenchmark.Batches)
+            {
+                Console.WriteLine(
+                    $"    batch segs={batch.SegmentCount}, total={batch.TotalSeconds:F1}s, max={batch.MaxSegmentSeconds:F1}s, " +
+                    $"encoder={batch.EncoderMilliseconds:F1}ms, prefill={batch.PrefillMilliseconds:F1}ms");
+            }
+        }
     }
 }
 catch (OperationCanceledException)
@@ -686,8 +801,12 @@ static void PrintUsage()
     Console.WriteLine("  --diarization <backend>            Diarization backend: sortformer, diarizen, vad, vibevoice-asr-builtin");
     Console.WriteLine("                                     (default: sortformer, or vibevoice-asr-builtin when --asr vibevoice)");
     Console.WriteLine("  --vad                              Use VAD instead of diarization (deprecated)");
-    Console.WriteLine("  --asr <parakeet|cohere|vibevoice>  ASR backend (default: parakeet)");
+    Console.WriteLine("  --asr <parakeet|cohere|qwen3asr|vibevoice>  ASR backend (default: parakeet)");
     Console.WriteLine("  --cohere-model <dir>               Path to Cohere Transcribe model dir (default: <model>/cohere_transcribe)");
+    Console.WriteLine("  --qwen3asr-model <dir>             Path to Qwen3-ASR model dir (default: <model>/qwen3asr)");
+    Console.WriteLine("  --qwen3asr-serial                  Force serial Qwen3-ASR, disabling experimental batching");
+    Console.WriteLine("  --qwen3asr-ort-opt <extended|basic|disabled>");
+    Console.WriteLine("                                     ONNX Runtime graph optimization level for Qwen3-ASR");
     Console.WriteLine("  --vibevoice-model <dir>            Path to VibeVoice-ASR model dir (default: <model>/vibevoice_asr)");
     Console.WriteLine("  --min-asr-seconds <n>              Minimum audio span (s) per ASR group when using segmented VibeVoice (default: 5.0)");
     Console.WriteLine("  --asr-buffer <n>                   Seconds of audio padding on each side of a group (default: 0.0); helps boundary transitions");

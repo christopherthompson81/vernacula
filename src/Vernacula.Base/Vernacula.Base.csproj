@@ -20,7 +20,7 @@
        provide their own variant at runtime without package duplication.
        The managed assembly version here must match what the consuming app provides at runtime. -->
   <ItemGroup Condition="'$(EP)' == 'Cuda' AND !($([MSBuild]::IsOSPlatform('OSX')) AND $([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture) == 'X64')">
-    <PackageReference Include="Microsoft.ML.OnnxRuntime.Gpu" Version="1.24.2"
+    <PackageReference Include="Microsoft.ML.OnnxRuntime.Gpu" Version="1.24.4"
                       PrivateAssets="all" />
   </ItemGroup>
   <ItemGroup Condition="'$(EP)' == 'DirectML'">
@@ -28,7 +28,7 @@
                       PrivateAssets="all" />
   </ItemGroup>
   <ItemGroup Condition="'$(EP)' == 'Cpu' AND !($([MSBuild]::IsOSPlatform('OSX')) AND $([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture) == 'X64')">
-    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.24.2"
+    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.24.4"
                       PrivateAssets="all" />
   </ItemGroup>
   <!-- macOS x64 (Intel): 1.24.x dropped osx-x64 native support; pin to 1.19.2 to match runtime -->

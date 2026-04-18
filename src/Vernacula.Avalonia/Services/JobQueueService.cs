@@ -309,18 +309,21 @@ internal sealed class JobQueueService
     private string GetJobAsrModelName() => _settings.Current.AsrBackend switch
     {
         AsrBackend.Cohere     => "CohereLabs/cohere-transcribe-03-2026",
+        AsrBackend.Qwen3Asr   => "Qwen/Qwen3-ASR-1.7B",
         AsrBackend.VibeVoice  => "vibevoice/vibevoice-asr",
         _                     => "nvidia/parakeet-tdt-0.6b-v3",
     };
 
     private string GetJobAsrLanguageCode()
     {
-        if (_settings.Current.AsrBackend != AsrBackend.Cohere)
-            return "auto";
-
-        return string.IsNullOrWhiteSpace(_settings.Current.CohereLanguage)
-            ? "auto"
-            : _settings.Current.CohereLanguage;
+        return _settings.Current.AsrBackend switch
+        {
+            AsrBackend.Cohere   => string.IsNullOrWhiteSpace(_settings.Current.CohereLanguage)
+                                       ? "auto" : _settings.Current.CohereLanguage,
+            AsrBackend.Qwen3Asr => string.IsNullOrWhiteSpace(_settings.Current.Qwen3AsrLanguage)
+                                       ? "auto" : _settings.Current.Qwen3AsrLanguage,
+            _                   => "auto",
+        };
     }
 
     private record QueueEntry(

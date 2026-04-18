@@ -82,6 +82,7 @@ internal partial class TranscriptEditorViewModel : ObservableObject, IDisposable
                 Sources            = row.Sources,
                 Verified           = row.Verified,
                 IsSuppressed       = row.IsSuppressed,
+                Language           = row.Language,
             });
         }
 
@@ -1017,7 +1018,7 @@ internal partial class TranscriptEditorViewModel : ObservableObject, IDisposable
     /// <para>MUST be called from a background thread — loads and runs the ONNX model.</para>
     /// Returns (newResultId, asrContent, tokens, timestamps, logprobs) on success, or null.
     /// </summary>
-    public (int newResultId, string asrContent, List<int> tokens, List<int> timestamps, List<float> logprobs)?
+    public (int newResultId, string asrContent, List<int> tokens, List<int> timestamps, List<float> logprobs, string? language)?
         PerformRedoAsr(
             int index,
             string asrModel,
@@ -1026,7 +1027,9 @@ internal partial class TranscriptEditorViewModel : ObservableObject, IDisposable
             string decoderJointFile,
             string? cohereModelsDir = null,
             string? cohereLanguageCode = null,
-            string? vibeVoiceModelsDir = null)
+            string? qwen3AsrModelsDir = null,
+            string? vibeVoiceModelsDir = null,
+            string? qwen3AsrLanguageCode = null)
     {
         if (index < 0 || index >= Segments.Count || _dbPath is null || _fullAudio is null)
             return null;
@@ -1097,6 +1100,29 @@ internal partial class TranscriptEditorViewModel : ObservableObject, IDisposable
             int tokenCount = Math.Max(tokens.Count, logprobs.Count);
             timestamps = BuildSyntheticTokenTimestamps(seg.PlayEnd - seg.PlayStart, tokenCount);
         }
+        else if (string.Equals(asrModel, "Qwen/Qwen3-ASR-1.7B", StringComparison.Ordinal))
+        {
+            if (string.IsNullOrWhiteSpace(qwen3AsrModelsDir))
+                return null;
+
+            string? qwenForceLanguage = string.IsNullOrEmpty(qwen3AsrLanguageCode) || string.Equals(qwen3AsrLanguageCode, "Auto", StringComparison.OrdinalIgnoreCase)
+                ? null : qwen3AsrLanguageCode;
+
+            using var qwen3Asr = new Qwen3Asr(qwen3AsrModelsDir);
+            foreach (var result in qwen3Asr.RecognizeDetailed(asrSeg, mono16k, forceLanguage: qwenForceLanguage))
+            {
+                text = result.Text;
+                tokens = result.TextTokens.ToList();
+                timestamps = BuildSyntheticTokenTimestamps(seg.PlayEnd - seg.PlayStart, result.TextTokens.Count);
+                logprobs = result.TextLogprobs.ToList();
+                language = result.Language;
+                asrMeta = JsonSerializer.Serialize(new
+                {
+                    raw_decoder_text = result.RawText,
+                    parsed_language = result.Language,
+                });
+            }
+        }
         else
         {
             // Run ASR — the slice starts at t=0, so pass a 0-based time range
@@ -1128,7 +1154,7 @@ internal partial class TranscriptEditorViewModel : ObservableObject, IDisposable
             db.DeleteOrphanedResults(oldResultIds);
         }
 
-        return (newResultId, text, tokens, timestamps, logprobs);
+        return (newResultId, text, tokens, timestamps, logprobs, language);
     }
 
     private const string CohereSyntheticTimestampMode = "uniform_segment_frames_v1";
@@ -1161,7 +1187,7 @@ internal partial class TranscriptEditorViewModel : ObservableObject, IDisposable
     /// <see cref="PerformRedoAsr"/> completes.
     /// </summary>
     public void ApplyRedoAsr(int index, int newResultId, string asrContent,
-        List<int> tokens, List<int> timestamps, List<float> logprobs)
+        List<int> tokens, List<int> timestamps, List<float> logprobs, string? language = null)
     {
         if (index < 0 || index >= Segments.Count) return;
         var seg = Segments[index];
@@ -1170,6 +1196,7 @@ internal partial class TranscriptEditorViewModel : ObservableObject, IDisposable
         seg.Tokens     = tokens;
         seg.Timestamps = timestamps;
         seg.Logprobs   = logprobs;
+        seg.Language   = language;
         seg.Sources    = new List<CardSource>
         {
             new CardSource(newResultId, 0, null, 0, 0)

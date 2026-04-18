@@ -347,6 +347,7 @@ internal partial class ProgressViewModel : ObservableObject
     private string GetJobAsrModelName() => _settings.Current.AsrBackend switch
     {
         AsrBackend.Cohere => "CohereLabs/cohere-transcribe-03-2026",
+        AsrBackend.Qwen3Asr => "Qwen/Qwen3-ASR-1.7B",
         _                 => "nvidia/parakeet-tdt-0.6b-v3",
     };
 

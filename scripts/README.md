@@ -103,3 +103,15 @@ Exports `microsoft/VibeVoice-ASR-HF` to the ONNX package used by Vernacula. See 
 - `export_vibevoice_asr_to_onnx.py` — exports the VibeVoice audio encoder, decoder graph(s), configs, and export report
 - `test_static_kv_parity.py` — compares `decoder_single_static.onnx` against `decoder_single.onnx`
 - `requirements.txt` — export dependencies
+
+---
+
+## qwen3asr_export/
+
+Exports `Qwen/Qwen3-ASR-0.6B` and `Qwen/Qwen3-ASR-1.7B` to the ONNX package we can iterate on for Vernacula. This starts from the public `andrewleech/qwen3-asr-onnx` export flow, trimmed down to the core export path. See [qwen3asr_export/README.md](qwen3asr_export/README.md) for full documentation.
+
+- `export_qwen3_asr_to_onnx.py` — exports the Qwen3-ASR encoder, split KV-cache decoders, tokenizer assets, and config files
+- `optimize_qwen3_asr_graphs.py` — applies ORT transformer fusions to the exported encoder and decoders
+- `profile_qwen3_asr_pipeline.py` — profiles mel, encoder, decoder prefill, and decode-step timings for an exported ONNX package
+- `sweep_qwen3_asr_batching.py` — sweeps the experimental batched encoder / decoder-prefill graphs on CUDA to map safe VRAM-dependent batch sizes
+- `requirements.txt` — export dependencies

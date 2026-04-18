@@ -183,6 +183,9 @@ public static class Config
     /// </summary>
     public const string VibeVoiceSubDir = "vibevoice_asr";
 
+    // ── ASR (Qwen3-ASR) ──────────────────────────────────────────────────────
+    public const string Qwen3AsrSubDir = "qwen3asr";
+
     // ── ASR (Parakeet) ───────────────────────────────────────────────────────
     public const string ParakeetSubDir       = "parakeet";
     public const string PreprocessorFile     = "nemo128.onnx";
@@ -210,12 +213,17 @@ public static class Config
     public static string GetSortformerModelPath(string modelDir)
     {
         string? overridePath = Environment.GetEnvironmentVariable(SortformerModelOverrideEnvVar);
-        if (string.IsNullOrWhiteSpace(overridePath))
-            return Path.Combine(modelDir, SortformerFile);
+        if (!string.IsNullOrWhiteSpace(overridePath))
+        {
+            return Path.IsPathRooted(overridePath)
+                ? overridePath
+                : Path.Combine(modelDir, overridePath);
+        }
 
-        return Path.IsPathRooted(overridePath)
-            ? overridePath
-            : Path.Combine(modelDir, overridePath);
+        string subDirPath = Path.Combine(modelDir, SortformerSubDir, SortformerFile);
+        return File.Exists(subDirPath)
+            ? subDirPath
+            : Path.Combine(modelDir, SortformerFile);
     }
 
     public static int GetDiariZenSegmentationIntraOpThreads()

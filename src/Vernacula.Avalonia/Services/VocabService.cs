@@ -13,7 +13,7 @@ namespace Vernacula.App.Services;
 /// </summary>
 internal class VocabService
 {
-    private enum VocabKind { Parakeet, Cohere, VibeVoice }
+    private enum VocabKind { Parakeet, Cohere, Qwen3Asr, VibeVoice }
 
     private readonly Dictionary<int, string> _vocab;
     private readonly VocabKind _kind;
@@ -31,6 +31,12 @@ internal class VocabService
         {
             _kind = VocabKind.VibeVoice;
             (_vocab, _addedContent) = LoadVibeVoiceVocab(Path.Combine(modelsDir, Config.VibeVoiceSubDir, VibeVoiceAsr.TokenizerFile));
+            _byteLevelDecode = BuildByteLevelDecode();
+        }
+        else if (string.Equals(asrModel, "Qwen/Qwen3-ASR-1.7B", StringComparison.Ordinal))
+        {
+            _kind = VocabKind.Qwen3Asr;
+            (_vocab, _addedContent) = LoadVibeVoiceVocab(Path.Combine(modelsDir, Config.Qwen3AsrSubDir, Qwen3Asr.TokenizerFile));
             _byteLevelDecode = BuildByteLevelDecode();
         }
         else
@@ -101,6 +107,7 @@ internal class VocabService
         return _kind switch
         {
             VocabKind.Cohere   => DecodeCohereTokens(tokens),
+            VocabKind.Qwen3Asr => DecodeQwen3AsrTokens(tokens),
             VocabKind.VibeVoice => DecodeVibeVoiceTokens(tokens),
             _                  => DecodeParakeetTokens(tokens),
         };
@@ -112,6 +119,8 @@ internal class VocabService
     {
         if (_kind == VocabKind.Cohere)
             return GetCohereTokenRuns(tokens, logprobs);
+        if (_kind == VocabKind.Qwen3Asr)
+            return GetQwen3AsrTokenRuns(tokens, logprobs);
         if (_kind == VocabKind.VibeVoice)
             return GetVibeVoiceTokenRuns(tokens, logprobs, targetText);
 
@@ -181,6 +190,15 @@ internal class VocabService
         return TrimVibeVoiceBoundaryQuotes(Encoding.UTF8.GetString(bytes.ToArray()));
     }
 
+    private string DecodeQwen3AsrTokens(IReadOnlyList<int> tokens)
+    {
+        var bytes = new List<byte>(tokens.Count * 4);
+        foreach (int token in tokens)
+            bytes.AddRange(GetQwen3AsrTokenBytes(token));
+        string text = Encoding.UTF8.GetString(bytes.ToArray());
+        return text.Length > 0 && text[0] == ' ' ? text[1..] : text;
+    }
+
     private string DecodeToken(int token)
     {
         if (!_vocab.TryGetValue(token, out var value))
@@ -191,6 +209,8 @@ internal class VocabService
 
         if (_kind == VocabKind.VibeVoice)
             return Encoding.UTF8.GetString(GetVibeVoiceTokenBytes(token));
+        if (_kind == VocabKind.Qwen3Asr)
+            return Encoding.UTF8.GetString(GetQwen3AsrTokenBytes(token));
 
         if (value.Length == 6 && value[0] == '<' && value[1] == '0' && value[2] == 'x' && value[5] == '>')
         {
@@ -268,10 +288,61 @@ internal class VocabService
         return ClipRunsToTargetText(runs, targetText);
     }
 
+    private IReadOnlyList<(string text, float logprob)> GetQwen3AsrTokenRuns(
+        IReadOnlyList<int> tokens, IReadOnlyList<float> logprobs)
+    {
+        var runs = new List<(string, float)>(tokens.Count);
+        Decoder decoder = Encoding.UTF8.GetDecoder();
+        bool stripLeadingSpace = true;
+
+        for (int i = 0; i < tokens.Count; i++)
+        {
+            byte[] tokenBytes = GetQwen3AsrTokenBytes(tokens[i]);
+            string runText;
+            if (tokenBytes.Length == 0)
+            {
+                runText = "";
+            }
+            else
+            {
+                int charCount = decoder.GetCharCount(tokenBytes, 0, tokenBytes.Length, flush: false);
+                char[] chars = new char[charCount];
+                decoder.GetChars(tokenBytes, 0, tokenBytes.Length, chars, 0, flush: false);
+                runText = new string(chars);
+                if (stripLeadingSpace && runText.Length > 0)
+                {
+                    stripLeadingSpace = false;
+                    if (runText[0] == ' ')
+                        runText = runText[1..];
+                }
+            }
+
+            float lp = i < logprobs.Count ? logprobs[i] : 0f;
+            runs.Add((runText, lp));
+        }
+
+        return runs;
+    }
+
     private byte[] GetVibeVoiceTokenBytes(int token)
     {
         if (_addedContent.TryGetValue(token, out var special))
             return Encoding.UTF8.GetBytes(special);
+
+        if (!_vocab.TryGetValue(token, out var raw))
+            return [];
+
+        var bytes = new List<byte>(raw.Length);
+        foreach (char ch in raw)
+            if (_byteLevelDecode.TryGetValue(ch, out byte b))
+                bytes.Add(b);
+        return bytes.ToArray();
+    }
+
+    private byte[] GetQwen3AsrTokenBytes(int token)
+    {
+        if (_addedContent.TryGetValue(token, out _))
+            return [];
 
         if (!_vocab.TryGetValue(token, out var raw))
             return [];

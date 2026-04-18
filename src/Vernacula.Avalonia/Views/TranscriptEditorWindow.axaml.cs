@@ -48,6 +48,7 @@ public partial class TranscriptEditorWindow : Window
     private readonly string _jobAsrModel = "nvidia/parakeet-tdt-0.6b-v3";
     private readonly string _jobAsrLanguageCode = "auto";
     private readonly bool _asrModelsAvailable;
+    private readonly bool _isQwen3Asr;
     private readonly bool _showApproximateTimingNotice;
     private readonly string _approximateTimingNoticeText = "";
     private bool _isUpdatingUi;
@@ -98,23 +99,29 @@ public partial class TranscriptEditorWindow : Window
             ? "auto"
             : asrLanguageCode;
         bool isCohere    = string.Equals(_jobAsrModel, "CohereLabs/cohere-transcribe-03-2026", StringComparison.Ordinal);
+        bool isQwen3Asr  = string.Equals(_jobAsrModel, "Qwen/Qwen3-ASR-1.7B", StringComparison.Ordinal);
         bool isVibeVoice = string.Equals(_jobAsrModel, "vibevoice/vibevoice-asr", StringComparison.Ordinal);
-        _showApproximateTimingNotice = isCohere || isVibeVoice;
+        _isQwen3Asr = isQwen3Asr;
+        _showApproximateTimingNotice = isCohere || isQwen3Asr || isVibeVoice;
         _approximateTimingNoticeText = isCohere
             ? "Cohere Transcribe: no word-level timing; token sync is approximate."
+            : isQwen3Asr
+                ? "Qwen3-ASR: no word-level timing; token sync is approximate."
             : isVibeVoice
                 ? "VibeVoice-ASR: no token-level timing; token sync is approximate."
                 : "";
 
         string? vocabPath = isCohere
             ? Path.Combine(modelsDir, "cohere_transcribe", CohereTranscribe.VocabFile)
+            : isQwen3Asr
+                ? Path.Combine(modelsDir, Config.Qwen3AsrSubDir, Qwen3Asr.TokenizerFile)
             : isVibeVoice
                 ? Path.Combine(modelsDir, Config.VibeVoiceSubDir, VibeVoiceAsr.TokenizerFile)
                 : Path.Combine(parakeetModelsDir, Config.VocabFile);
         if (vocabPath is not null && File.Exists(vocabPath))
         {
             _vocab = new VocabService(
-                isCohere || isVibeVoice ? App.Current.Settings.GetModelsDir() : parakeetModelsDir,
+                isCohere || isQwen3Asr || isVibeVoice ? App.Current.Settings.GetModelsDir() : parakeetModelsDir,
                 _jobAsrModel);
         }
 
@@ -138,6 +145,19 @@ public partial class TranscriptEditorWindow : Window
             _asrModelsAvailable =
                 File.Exists(Path.Combine(vibeVoiceDir, VibeVoiceAsr.AudioEncoderFile)) &&
                 File.Exists(Path.Combine(vibeVoiceDir, VibeVoiceAsr.DecoderSingleFile));
+        }
+        else if (isQwen3Asr)
+        {
+            string qwenDir = App.Current.Settings.GetQwen3AsrModelsDir();
+            _asrModelsAvailable =
+                File.Exists(Path.Combine(qwenDir, Qwen3Asr.EncoderFile)) &&
+                File.Exists(Path.Combine(qwenDir, Qwen3Asr.DecoderInitFile)) &&
+                File.Exists(Path.Combine(qwenDir, $"{Qwen3Asr.DecoderInitFile}.data")) &&
+                File.Exists(Path.Combine(qwenDir, Qwen3Asr.DecoderStepFile)) &&
+                File.Exists(Path.Combine(qwenDir, $"{Qwen3Asr.DecoderStepFile}.data")) &&
+                File.Exists(Path.Combine(qwenDir, Qwen3Asr.EmbedTokensFile)) &&
+                File.Exists(Path.Combine(qwenDir, Qwen3Asr.TokenizerFile)) &&
+                File.Exists(Path.Combine(qwenDir, Qwen3Asr.ConfigFile));
         }
         else
         {
@@ -303,6 +323,7 @@ public partial class TranscriptEditorWindow : Window
         for (int i = 0; i < _vm.Segments.Count; i++)
         {
             var state = new TranscriptEditorCardState(_vm.Segments[i], i);
+            state.ShowLanguageChip = _isQwen3Asr;
             AssignActionButtonImages(state);
             state.RedoAsrSpinnerImage = GetRedoAsrSpinnerImage();
             RefreshCardState(state, preserveDrafts: false);
@@ -1271,7 +1292,9 @@ public partial class TranscriptEditorWindow : Window
                 decoderJointFile,
                 cohereModelsDir,
                 _jobAsrLanguageCode,
-                vibeVoiceModelsDir: App.Current.Settings.GetVibeVoiceModelsDir()));
+                qwen3AsrModelsDir: App.Current.Settings.GetQwen3AsrModelsDir(),
+                vibeVoiceModelsDir: App.Current.Settings.GetVibeVoiceModelsDir(),
+                qwen3AsrLanguageCode: _isQwen3Asr ? card.SelectedRedoLanguage?.Code : null));
             if (result is null)
             {
                 SetCardStatus(card, "Redo ASR did not produce a result.");
@@ -1279,7 +1302,10 @@ public partial class TranscriptEditorWindow : Window
             }
 
             _vm.ApplyRedoAsr(card.Index, result.Value.newResultId, result.Value.asrContent,
-                result.Value.tokens, result.Value.timestamps, result.Value.logprobs);
+                result.Value.tokens, result.Value.timestamps, result.Value.logprobs, result.Value.language);
+
+            if (_isQwen3Asr)
+                card.SelectedRedoLanguage = TranscriptEditorCardState.MatchLanguageOption(result.Value.language);
 
             card.DraftContent = card.Segment.Content;
             DataChanged?.Invoke();

@@ -3,6 +3,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:conv="using:Vernacula.App.Converters"
         xmlns:local="using:Vernacula.App"
+        xmlns:models="using:Vernacula.App.Models"
         Title="{local:Loc editor_heading}"
         Width="1040" Height="820"
         MinWidth="820" MinHeight="560"
@@ -499,6 +500,20 @@
                                                 </Canvas>
                                             </Grid>
                                         </Button>
+                                        <ComboBox Margin="0,0,8,8"
+                                                  Height="26"
+                                                  MinWidth="100"
+                                                  VerticalAlignment="Center"
+                                                  IsVisible="{Binding ShowLanguageChip}"
+                                                  ItemsSource="{x:Static models:TranscriptEditorCardState.Qwen3AsrLanguages}"
+                                                  SelectedItem="{Binding SelectedRedoLanguage, Mode=TwoWay}"
+                                                  ToolTip.Tip="{local:Loc editor_redo_asr_language}">
+                                            <ComboBox.ItemTemplate>
+                                                <DataTemplate>
+                                                    <TextBlock Text="{Binding DisplayName}" />
+                                                </DataTemplate>
+                                            </ComboBox.ItemTemplate>
+                                        </ComboBox>
                                     </WrapPanel>
 
                                     <Grid ColumnDefinitions="*,*"

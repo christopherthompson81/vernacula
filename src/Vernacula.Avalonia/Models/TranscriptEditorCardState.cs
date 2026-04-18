@@ -3,6 +3,7 @@ using System.Linq;
 using Avalonia.Media;
 using Avalonia.Media.Imaging;
 using CommunityToolkit.Mvvm.ComponentModel;
+using Vernacula.App.ViewModels;
 
 namespace Vernacula.App.Models;
 
@@ -13,6 +14,8 @@ internal sealed partial class TranscriptEditorCardState : ObservableObject
         public override string ToString() => Name;
     }
 
+    public static IReadOnlyList<AsrLanguageOption> Qwen3AsrLanguages => SettingsViewModel.Qwen3AsrLanguages;
+
     public TranscriptEditorCardState(EditorSegment segment, int index)
     {
         Segment = segment;
@@ -21,6 +24,16 @@ internal sealed partial class TranscriptEditorCardState : ObservableObject
         _draftContent = segment.Content;
         _timeRangeText = FormatTimeRange(segment.PlayStart, segment.PlayEnd);
         _suppressButtonText = "Suppress";
+        _selectedRedoLanguage = MatchLanguageOption(segment.Language);
+    }
+
+    internal static AsrLanguageOption MatchLanguageOption(string? language)
+    {
+        if (string.IsNullOrEmpty(language)) return Qwen3AsrLanguages[0];
+        return Qwen3AsrLanguages.FirstOrDefault(l =>
+                   string.Equals(l.DisplayName, language, StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(l.Code,        language, StringComparison.OrdinalIgnoreCase))
+               ?? Qwen3AsrLanguages[0];
     }
 
     internal EditorSegment Segment { get; }
@@ -35,6 +48,8 @@ internal sealed partial class TranscriptEditorCardState : ObservableObject
     public ObservableCollection<TranscriptEditorTextRunState> AdjacentRuns { get; } = [];
 
     [ObservableProperty] private bool _isFocused;
+    [ObservableProperty] private AsrLanguageOption? _selectedRedoLanguage;
+    public bool ShowLanguageChip { get; set; }
     [ObservableProperty] private string _draftSpeakerName;
     [ObservableProperty] private string _draftContent;
     [ObservableProperty] private SpeakerChoice? _selectedSpeaker;

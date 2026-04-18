@@ -77,6 +77,8 @@ internal partial class HomeViewModel : ObservableObject
 
         if (_settings.Current.AsrBackend == AsrBackend.Cohere)
             ModelStatusText = $"Cohere Transcribe weights are missing. Place them in {_settings.GetCohereModelsDir()}.";
+        else if (_settings.Current.AsrBackend == AsrBackend.Qwen3Asr)
+            ModelStatusText = $"Qwen3-ASR weights are missing. Place them in {_settings.GetQwen3AsrModelsDir()}.";
         else if (_settings.Current.AsrBackend == AsrBackend.VibeVoice ||
                  _settings.Current.Segmentation == Vernacula.Base.Models.SegmentationMode.VibeVoiceBuiltin)
             ModelStatusText = $"VibeVoice-ASR weights are missing. Use Download Missing Models, or place them in {_settings.GetVibeVoiceModelsDir()}.";

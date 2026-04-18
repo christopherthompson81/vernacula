@@ -95,6 +95,9 @@ internal class SettingsService
     public string GetCohereModelsDir() =>
         Path.Combine(GetModelsDir(), "cohere_transcribe");
 
+    public string GetQwen3AsrModelsDir() =>
+        Path.Combine(GetModelsDir(), Config.Qwen3AsrSubDir);
+
     public string GetVibeVoiceModelsDir() =>
         Path.Combine(GetModelsDir(), "vibevoice_asr");
 
