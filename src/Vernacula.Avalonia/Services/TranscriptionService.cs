@@ -600,8 +600,14 @@ internal class TranscriptionService
             }
             else if (useQwen3Asr)
             {
-                using var qwen3Asr = new Qwen3Asr(qwen3AsrModelsDir);
-                foreach (var result in qwen3Asr.RecognizeDetailed(segsSubset, audio))
+                bool hasBatchedFiles = File.Exists(Path.Combine(qwen3AsrModelsDir, Qwen3Asr.EncoderBatchedFile)) &&
+                                       (File.Exists(Path.Combine(qwen3AsrModelsDir, Qwen3Asr.DecoderFile)) ||
+                                        File.Exists(Path.Combine(qwen3AsrModelsDir, Qwen3Asr.DecoderInitBatchedFile)));
+                using var qwen3Asr = new Qwen3Asr(qwen3AsrModelsDir, preferBatched: hasBatchedFiles);
+                var recognitionResults = hasBatchedFiles
+                    ? qwen3Asr.RecognizeBatchedDetailed(segsSubset, audio)
+                    : qwen3Asr.RecognizeDetailed(segsSubset, audio);
+                foreach (var result in recognitionResults)
                 {
                     ct.ThrowIfCancellationRequested();
                     int absId = startSeg + result.SegmentId;
