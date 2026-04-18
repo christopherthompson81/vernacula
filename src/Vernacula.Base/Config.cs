@@ -186,6 +186,44 @@ public static class Config
     // ── ASR (Qwen3-ASR) ──────────────────────────────────────────────────────
     public const string Qwen3AsrSubDir = "qwen3asr";
 
+    // ── Language identification (VoxLingua107 ECAPA-TDNN) ────────────────────
+    /// <summary>
+    /// Directory (relative to models dir) for the language-ID model.
+    /// </summary>
+    public const string VoxLinguaSubDir   = "voxlingua107";
+    /// <summary>
+    /// Single-file FP32 ONNX with Conv1D-based STFT and MVN folded in.
+    /// Input: <c>audio [batch, samples]</c> float32 at 16 kHz, mono.
+    /// Outputs: <c>logits [batch, 107]</c> and <c>embedding [batch, 256]</c>.
+    /// </summary>
+    public const string VoxLinguaModelFile  = "voxlingua107.onnx";
+    /// <summary>
+    /// Companion JSON mapping class index (0..106) → {iso, name}.
+    /// </summary>
+    public const string VoxLinguaLangMapFile = "lang_map.json";
+    /// <summary>
+    /// Default clip duration fed to the model. Phase 6 of the perf
+    /// investigation landed on 15 s as the accuracy plateau — longer
+    /// clips don't meaningfully help, and doubling to 30 s doubles
+    /// compute for ≤ 0.5 pp accuracy gain.
+    /// </summary>
+    public const int    VoxLinguaDefaultClipSeconds = 15;
+    /// <summary>
+    /// If the top-1 softmax probability falls below this threshold on a
+    /// 15 s clip, the result is flagged ambiguous and the caller may
+    /// escalate to a longer sample (if one is available) before
+    /// committing to a language. Phase 6 showed confusable languages
+    /// (Slavic family, Germanic family) sit around 0.55, confident
+    /// picks at ≥ 0.8.
+    /// </summary>
+    public const float  VoxLinguaAmbiguityThreshold = 0.60f;
+    /// <summary>
+    /// Clip duration used for the escalation re-run when a 15 s
+    /// classification is ambiguous. Capped by the actual available
+    /// longest VAD segment.
+    /// </summary>
+    public const int    VoxLinguaEscalationClipSeconds = 60;
+
     // ── ASR (Parakeet) ───────────────────────────────────────────────────────
     public const string ParakeetSubDir       = "parakeet";
     public const string PreprocessorFile     = "nemo128.onnx";
