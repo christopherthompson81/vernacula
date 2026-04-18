@@ -660,6 +660,64 @@
                     </StackPanel>
                 </Border>
 
+                <!-- ─── Language Identification ───────────────────────────────── -->
+                <TextBlock Text="Language Identification"
+                           Classes="section-heading" />
+
+                <Border Background="{DynamicResource SurfaceBrush}"
+                        CornerRadius="8" Padding="16">
+                    <StackPanel Spacing="10">
+
+                        <CheckBox IsChecked="{Binding LidEnabled, Mode=TwoWay}"
+                                  IsEnabled="{Binding VoxLinguaReady}"
+                                  Foreground="{DynamicResource TextBrush}">
+                            <StackPanel>
+                                <TextBlock Text="Detect spoken language before transcribing"
+                                           FontWeight="SemiBold"
+                                           Foreground="{DynamicResource TextBrush}" />
+                                <TextBlock Text="Runs VoxLingua107 on the longest speech segment; pre-fills the force-language picker and surfaces the result in job metadata. Does not override your ASR backend choice."
+                                           Foreground="{DynamicResource SubtextBrush}"
+                                           TextWrapping="Wrap"
+                                           FontSize="11"
+                                           Margin="0,2,0,0" />
+                            </StackPanel>
+                        </CheckBox>
+
+                        <!-- Status + location -->
+                        <TextBlock Text="{Binding VoxLinguaStatusText}"
+                                   Foreground="{Binding VoxLinguaStatusBrush}"
+                                   TextWrapping="Wrap" />
+                        <TextBlock Text="{Binding VoxLinguaModelsLocationText}"
+                                   Foreground="{DynamicResource SubtextBrush}"
+                                   FontSize="10"
+                                   TextWrapping="Wrap" />
+
+                        <!-- Download progress (only during active download) -->
+                        <StackPanel Spacing="4"
+                                    IsVisible="{Binding IsDownloadingVoxLingua}">
+                            <ProgressBar Value="{Binding VoxLinguaDownloadPercent}"
+                                         Minimum="0"
+                                         Maximum="100" />
+                            <TextBlock Text="{Binding VoxLinguaDownloadStatusText}"
+                                       Foreground="{DynamicResource SubtextBrush}"
+                                       FontSize="11"
+                                       TextWrapping="Wrap" />
+                        </StackPanel>
+
+                        <!-- Download + cancel buttons -->
+                        <WrapPanel Orientation="Horizontal">
+                            <Button Content="Download language-ID model"
+                                    Command="{Binding DownloadVoxLinguaModelsCommand}"
+                                    IsEnabled="{Binding !IsDownloadingVoxLingua}"
+                                    Margin="0,0,8,0" />
+                            <Button Content="Cancel"
+                                    Classes="secondary-button"
+                                    Command="{Binding CancelVoxLinguaDownloadCommand}"
+                                    IsVisible="{Binding IsDownloadingVoxLingua}" />
+                        </WrapPanel>
+                    </StackPanel>
+                </Border>
+
                 <!-- ─── Noise Reduction ───────────────────────────────────────── -->
                 <TextBlock x:Name="DenoiserSectionHeader"
                            Text="{Binding Source={x:Static local:Loc.Instance}, Path=[settings_section_denoiser]}"
