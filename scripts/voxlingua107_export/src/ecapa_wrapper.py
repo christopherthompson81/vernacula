@@ -38,8 +38,11 @@ class VoxLinguaONNX(nn.Module):
         # audio: [B, T]
         feats = self.compute_features(audio)  # [B, T', 80]
 
-        # SpeechBrain's InputNormalization expects per-utterance length fractions;
-        # for full-clip inference all samples are valid so the fraction is 1.0.
+        # Per-utterance mean-variance normalisation. Every row is full-length
+        # (this graph doesn't support variable-length batching — Phase 5
+        # confirmed batching isn't a useful lever on either provider for
+        # this architecture in ORT). Match the original scalar-size call so
+        # the dynamo-exported graph structure doesn't regress.
         lens = torch.ones(audio.size(0), dtype=audio.dtype, device=audio.device)
         feats = self.mean_var_norm(feats, lens)
 

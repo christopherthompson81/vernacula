@@ -136,7 +136,8 @@ def main() -> None:
             **stats,
         }
         rows.append(row)
-        print(f"{graph_opt:<20s}  {intra:>5d}  {mode:>11s}  {inter if mode=='PARALLEL' else '-':>5}  "
+        inter_display = inter if mode == "PARALLEL" else "-"
+        print(f"{graph_opt:<20s}  {intra:>5d}  {mode:>11s}  {inter_display:>5}  "
               f"{stats['p50_ms']:>8.2f}  {stats['p95_ms']:>8.2f}  {stats['load_ms']:>8.2f}",
               file=sys.stderr)
 

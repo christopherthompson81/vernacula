@@ -106,7 +106,7 @@ def main() -> None:
             chs = chunks(audio, duration, args.max_chunks)
             if not chs:
                 print(f"{duration:>8.0f}s  {expected_iso:>10s}  "
-                      f"(clip too short: {len(audio)/16000:.1f}s)",
+                      f"(clip too short: {len(audio) / 16000:.1f}s)",
                       file=sys.stderr)
                 continue
 
