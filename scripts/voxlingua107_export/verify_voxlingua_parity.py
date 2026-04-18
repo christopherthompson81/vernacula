@@ -59,8 +59,11 @@ def softmax(logits: np.ndarray) -> np.ndarray:
     return exp / np.sum(exp, axis=-1, keepdims=True)
 
 
-def verify(model_dir: Path, clips: list[Path], savedir: Path) -> int:
-    onnx_path = model_dir / "voxlingua107.onnx"
+def verify(model_dir: Path, clips: list[Path], savedir: Path,
+           onnx_name: str = "voxlingua107.onnx",
+           provider: str = "cpu",
+           prob_tolerance: float = PROB_TOLERANCE) -> int:
+    onnx_path = model_dir / onnx_name
     lang_map_path = model_dir / "lang_map.json"
     if not onnx_path.exists():
         raise SystemExit(f"{onnx_path} not found — run export_voxlingua_to_onnx.py first")
@@ -73,8 +76,9 @@ def verify(model_dir: Path, clips: list[Path], savedir: Path) -> int:
     ref_model = VoxLinguaONNX(classifier).eval()
 
     lang_map = json.loads(lang_map_path.read_text(encoding="utf-8"))
-    print(f"[parity] loading ONNX model from {onnx_path}")
-    session = ort.InferenceSession(str(onnx_path), providers=["CPUExecutionProvider"])
+    ep = "CUDAExecutionProvider" if provider == "cuda" else "CPUExecutionProvider"
+    print(f"[parity] loading ONNX model from {onnx_path} on {ep}")
+    session = ort.InferenceSession(str(onnx_path), providers=[ep])
 
     failures = 0
     for clip_path in clips:
@@ -104,8 +108,8 @@ def verify(model_dir: Path, clips: list[Path], savedir: Path) -> int:
         reasons = []
         if ref_top1 != onnx_top1:
             reasons.append(f"top-1 mismatch (pt={ref_lang}, onnx={onnx_lang})")
-        if prob_diff > PROB_TOLERANCE:
-            reasons.append(f"softmax max-abs-diff={prob_diff:.2e} > {PROB_TOLERANCE:.0e}")
+        if prob_diff > prob_tolerance:
+            reasons.append(f"softmax max-abs-diff={prob_diff:.2e} > {prob_tolerance:.0e}")
         if emb_cos < EMBEDDING_THRESHOLD:
             reasons.append(f"embedding cosine={emb_cos:.6f} < {EMBEDDING_THRESHOLD}")
 
@@ -123,15 +127,22 @@ def verify(model_dir: Path, clips: list[Path], savedir: Path) -> int:
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--model-dir", type=Path, required=True,
-                   help="Directory containing voxlingua107.onnx and lang_map.json.")
+                   help="Directory containing the ONNX file and lang_map.json.")
+    p.add_argument("--onnx-name", default="voxlingua107.onnx",
+                   help="ONNX filename within --model-dir (default: voxlingua107.onnx).")
     p.add_argument("--clips", type=Path, nargs="+", required=True,
                    help="Audio clips to verify (16 kHz mono WAV preferred).")
     p.add_argument("--savedir", type=Path,
                    default=Path("./.voxlingua107-cache"),
                    help="SpeechBrain weight cache directory.")
+    p.add_argument("--provider", choices=["cpu", "cuda"], default="cpu",
+                   help="ORT EP to validate against (default: cpu).")
+    p.add_argument("--prob-tolerance", type=float, default=PROB_TOLERANCE,
+                   help=f"Softmax max-abs-diff tolerance (default: {PROB_TOLERANCE}).")
     args = p.parse_args()
 
-    failures = verify(args.model_dir, args.clips, args.savedir)
+    failures = verify(args.model_dir, args.clips, args.savedir,
+                      args.onnx_name, args.provider, args.prob_tolerance)
     if failures:
         raise SystemExit(f"{failures} parity failure(s)")
     print(f"[parity] all {len(args.clips)} clip(s) passed")
