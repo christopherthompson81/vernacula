@@ -176,6 +176,14 @@ internal sealed class TranscriptionDb : IDisposable
         cmd.ExecuteNonQuery();
     }
 
+    public void DeleteMetadata(string key)
+    {
+        using var cmd = CreateCmd();
+        cmd.CommandText = "DELETE FROM metadata WHERE key = $key";
+        cmd.Parameters.AddWithValue("$key", key);
+        cmd.ExecuteNonQuery();
+    }
+
     public string? GetMetadata(string key)
     {
         using var cmd = CreateCmd();

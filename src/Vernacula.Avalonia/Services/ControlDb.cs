@@ -196,6 +196,26 @@ internal sealed class ControlDb : IDisposable
         cmd.ExecuteNonQuery();
     }
 
+    /// <summary>
+    /// Updates a job's ASR backend and forced-language so a subsequent
+    /// requeue runs with the new configuration. Intended for the Results
+    /// view "Reprocess with <backend>" remedy after LID detected a language
+    /// the original backend couldn't handle.
+    /// </summary>
+    public void UpdateJobAsr(int jobId, string asrModelName, string asrLanguageCode)
+    {
+        using var cmd = _conn.CreateCommand();
+        cmd.CommandText = """
+            UPDATE jobs
+            SET asr_model_name = $m, asr_language_code = $lc
+            WHERE job_id = $id
+            """;
+        cmd.Parameters.AddWithValue("$m",  asrModelName);
+        cmd.Parameters.AddWithValue("$lc", asrLanguageCode);
+        cmd.Parameters.AddWithValue("$id", jobId);
+        cmd.ExecuteNonQuery();
+    }
+
     public void UpdateJobStatus(int jobId, JobStatus status, string? errorMessage = null,
                                 int? runTimeSeconds = null)
     {

@@ -16,6 +16,28 @@ internal partial class ResultsViewModel : ObservableObject
     [ObservableProperty]
     private string _audioBaseName = "";
 
+    // ── LID mismatch banner state ─────────────────────────────────────────
+
+    /// <summary>
+    /// True when the job's metadata indicates LID detected a language the
+    /// ASR backend couldn't handle. Drives the banner visibility.
+    /// </summary>
+    [ObservableProperty] private bool _showMismatchBanner;
+    [ObservableProperty] private string _mismatchBannerText = "";
+    [ObservableProperty] private string _reprocessButtonText = "Reprocess";
+    [ObservableProperty] private bool _canReprocess;
+
+    private int?       _jobId;
+    private string?    _mismatchDetectedIso;
+    private AsrBackend? _mismatchSuggestedBackend;
+
+    /// <summary>
+    /// Injected by MainViewModel — the actions Reprocess needs to actually
+    /// do its work (update ControlDb + requeue). Null in contexts that
+    /// don't have a job-queue (rare / test).
+    /// </summary>
+    public Action<int, AsrBackend, string>? ReprocessJob { get; set; }
+
     private string? _dbPath;
     private Window? _ownerWindow;
     private Views.TranscriptEditorWindow? _editorWindow;
@@ -26,14 +48,101 @@ internal partial class ResultsViewModel : ObservableObject
 
     public ResultsViewModel(ExportService export) => _export = export;
 
-    public void Load(string dbPath, string audioBaseName, Window? owner = null)
+    public void Load(string dbPath, string audioBaseName, Window? owner = null, int? jobId = null)
     {
         _dbPath       = dbPath;
         AudioBaseName = audioBaseName;
         _ownerWindow = owner;
+        _jobId        = jobId;
         Segments.Clear();
         using var db  = new TranscriptionDb(dbPath);
         PopulateSegments(db);
+        LoadMismatchBanner(db);
+    }
+
+    private void LoadMismatchBanner(TranscriptionDb db)
+    {
+        ShowMismatchBanner       = false;
+        CanReprocess             = false;
+        _mismatchDetectedIso     = null;
+        _mismatchSuggestedBackend = null;
+
+        if (db.GetMetadata("detected_language_backend_mismatch") != "1") return;
+
+        string? detectedIso  = db.GetMetadata("detected_language");
+        string? detectedName = db.GetMetadata("detected_language_name") ?? detectedIso;
+        string? probStr      = db.GetMetadata("detected_language_probability");
+        string? suggestedStr = db.GetMetadata("detected_language_suggested_backend");
+        string? asrModel     = db.GetMetadata("asr_model");
+
+        if (string.IsNullOrWhiteSpace(detectedIso)) return;
+
+        string currentBackendLabel = asrModel switch
+        {
+            "CohereLabs/cohere-transcribe-03-2026" => "Cohere Transcribe",
+            "Qwen/Qwen3-ASR-1.7B"                  => "Qwen3-ASR",
+            "vibevoice/vibevoice-asr"              => "VibeVoice-ASR",
+            "nvidia/parakeet-tdt-0.6b-v3"          => "Parakeet",
+            _                                       => asrModel ?? "the current ASR backend",
+        };
+
+        string confidenceSuffix = "";
+        if (float.TryParse(probStr, System.Globalization.NumberStyles.Float,
+                           System.Globalization.CultureInfo.InvariantCulture, out float p))
+        {
+            confidenceSuffix = $" (confidence {p:P0})";
+        }
+
+        AsrBackend? suggested = null;
+        if (!string.IsNullOrWhiteSpace(suggestedStr) &&
+            Enum.TryParse<AsrBackend>(suggestedStr, out var parsed))
+        {
+            suggested = parsed;
+        }
+
+        _mismatchDetectedIso     = detectedIso;
+        _mismatchSuggestedBackend = suggested;
+
+        if (suggested is not null && ReprocessJob is not null && _jobId is not null)
+        {
+            ReprocessButtonText = $"Reprocess with {HumanBackend(suggested.Value)}";
+            CanReprocess        = true;
+        }
+        else
+        {
+            ReprocessButtonText = "Reprocess";
+            CanReprocess        = false;
+        }
+
+        MismatchBannerText =
+            $"Language identification detected {detectedName} ({detectedIso}){confidenceSuffix}, " +
+            $"but this job was transcribed with {currentBackendLabel}, which doesn't support {detectedName}. " +
+            (suggested is not null
+                ? $"{HumanBackend(suggested.Value)} supports {detectedName}; use the button to re-queue this job with {HumanBackend(suggested.Value)} and force-language {detectedIso}."
+                : "No installed ASR backend supports this language; you'll need to install a different backend before reprocessing.");
+
+        ShowMismatchBanner = true;
+    }
+
+    private static string HumanBackend(AsrBackend b) => b switch
+    {
+        AsrBackend.Parakeet  => "Parakeet",
+        AsrBackend.Cohere    => "Cohere Transcribe",
+        AsrBackend.Qwen3Asr  => "Qwen3-ASR",
+        AsrBackend.VibeVoice => "VibeVoice-ASR",
+        _                    => b.ToString(),
+    };
+
+    [RelayCommand(CanExecute = nameof(CanReprocess))]
+    private void ReprocessWithSuggestedBackend()
+    {
+        if (_jobId is null || _mismatchSuggestedBackend is null
+            || _mismatchDetectedIso is null || ReprocessJob is null)
+            return;
+        ReprocessJob(_jobId.Value, _mismatchSuggestedBackend.Value, _mismatchDetectedIso);
+        // Banner goes away once the job restarts; the caller (MainViewModel) will
+        // navigate back to Home / Progress as appropriate.
+        ShowMismatchBanner = false;
     }
 
     private void PopulateSegments(TranscriptionDb db)
