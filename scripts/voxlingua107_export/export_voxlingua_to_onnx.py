@@ -17,6 +17,7 @@ import onnx
 import torch
 from speechbrain.inference.classifiers import EncoderClassifier
 
+from src.conv_stft import replace_speechbrain_stft
 from src.ecapa_wrapper import VoxLinguaONNX
 from src.lang_map import write_lang_map
 
@@ -40,6 +41,14 @@ def export(out_dir: Path, savedir: Path) -> None:
     print(f"[voxlingua] loading {MODEL_SOURCE} into {savedir}")
     classifier = load_classifier(savedir)
     classifier.eval()
+
+    # Swap SpeechBrain's torch.stft-based STFT for a Conv1D implementation.
+    # torch.stft exports to the ONNX `STFT` op which has no CUDA kernel,
+    # forcing the whole preprocessing path back to host memory. Conv1D has
+    # kernels on every EP, so the preprocessing stays on-device.
+    sb_stft = classifier.mods.compute_features.compute_STFT
+    classifier.mods.compute_features.compute_STFT = replace_speechbrain_stft(sb_stft).eval()
+    print("[voxlingua] replaced STFT op with Conv1D implementation")
 
     model = VoxLinguaONNX(classifier).eval()
 
