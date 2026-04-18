@@ -402,150 +402,204 @@ public sealed class Qwen3Asr : IDisposable
         if (encodedItems.Count == 0)
             yield break;
 
-        double maxSegmentSeconds = encodedItems.Max(it => it.DurationSamples / (double)SampleRate);
-        int slotCapacity = Math.Min(encodedItems.Count, EstimateExperimentalBatchCap(maxSegmentSeconds, freeGpuMemoryMb));
-        int maxPromptSeqLen = encodedItems.Max(it => BuildPromptIds(it.AudioTokenCount).Count);
-        int maxKvSeqCapacity = maxPromptSeqLen + maxNewTokens - 1;
-        int kvCapacity = _nLayers * slotCapacity * _nKvHeads * maxKvSeqCapacity * _headDim;
+        // Capacity is bounded by the LARGER of two peak allocations:
+        //   prefill:  [groupSize, maxPromptLen, vocabSize] logits  (lm_head output, temporary but large)
+        //   decode KV: [nLayers, groupSize, nKvHeads, maxKvSeqLen, headDim] × 2 (persistent throughout decode)
+        // Budget 25% of free VRAM; remainder for model weights, activations, ORT arena overhead.
+        int  maxPromptSeqLen       = encodedItems.Max(it => BuildPromptIds(it.AudioTokenCount).Count);
+        int  maxKvSeqLen           = maxPromptSeqLen + maxNewTokens;
+        long prefillLogitsPerSlot  = (long)maxPromptSeqLen * _vocabSize * 4;
+        long decodeKvPerSlot       = (long)_nLayers * _nKvHeads * maxKvSeqLen * _headDim * 4 * 2;
+        long peakBytesPerSlot      = Math.Max(prefillLogitsPerSlot, decodeKvPerSlot);
+        int  decodeCap             = (int)Math.Max(1, freeGpuMemoryMb * 1024L * 1024 / 4 / peakBytesPerSlot);
+        int  slotCapacity          = Math.Min(encodedItems.Count, decodeCap);
+        Console.Error.WriteLine($"[Qwen3Asr] static-batch decode: {encodedItems.Count} segments, slotCapacity={slotCapacity}");
 
-        // Stable per-slot KV: [nLayers, slotCapacity, nKvHeads, maxKvSeqCapacity, headDim]
-        float[] slotKeys    = new float[kvCapacity];
-        float[] slotValues  = new float[kvCapacity];
-        // Temporary packed batch buffers for decoder: [nLayers, activeCount, nKvHeads, maxPastLen, headDim]
-        float[] batchKeys   = new float[kvCapacity];
-        float[] batchValues = new float[kvCapacity];
+        using var cudaMemInfo = new OrtMemoryInfo("Cuda", OrtAllocatorType.ArenaAllocator, 0, OrtMemType.Default);
+        using var runOpts     = new RunOptions();
 
-        int[]          slotPastLengths  = new int[slotCapacity];
-        int[]          slotSegIds       = new int[slotCapacity];
-        int[]          slotNextTokens   = new int[slotCapacity];
-        bool[]         slotDone         = new bool[slotCapacity];
-        List<int>?[]   slotRawTokens    = new List<int>?[slotCapacity];
-        List<float>?[] slotRawLogprobs  = new List<float>?[slotCapacity];
+        float[] emptyKv    = [];
+        float[] tokenEmbed = new float[_hiddenSize];
 
-        int[]   activeToSlot   = new int[slotCapacity];
-        int[]   batchPastLens  = new int[slotCapacity];
-        int[]   freeSlots      = new int[slotCapacity];
-        float[] stepEmbeds     = new float[slotCapacity * _hiddenSize];
-        var     tokenEmbed     = new float[_hiddenSize];
-        long[]  stepPos        = new long[slotCapacity];
-        float[] stepMaskBuffer = new float[slotCapacity * (maxKvSeqCapacity + 1)];
-
-        using var cpuMemInfo = new OrtMemoryInfo("Cpu",  OrtAllocatorType.ArenaAllocator, 0, OrtMemType.Default);
-        using var runOpts    = new RunOptions();
-
-        int occupiedCount = 0;
-        int pendingIndex  = 0;
-
-        while (occupiedCount > 0 || pendingIndex < encodedItems.Count)
+        int pendingIndex = 0;
+        while (pendingIndex < encodedItems.Count)
         {
-            // Yield finished slots and release them
-            for (int slot = 0; slot < slotCapacity; slot++)
-            {
-                if (slotRawTokens[slot] is null || !slotDone[slot]) continue;
+            int groupSize = Math.Min(slotCapacity, encodedItems.Count - pendingIndex);
 
-                var (textTokens, textLogprobs) = ExtractTextTokens(slotRawTokens[slot]!, slotRawLogprobs[slot]!);
+            // --- Build batched prefill inputs for this group ---
+            int maxAudioTokens = 0;
+            for (int i = 0; i < groupSize; i++)
+                maxAudioTokens = Math.Max(maxAudioTokens, encodedItems[pendingIndex + i].AudioTokenCount);
+
+            float[] audioFeatures = new float[groupSize * maxAudioTokens * _hiddenSize];
+            long[]  audioLengths  = new long[groupSize];
+            for (int i = 0; i < groupSize; i++)
+            {
+                var item = encodedItems[pendingIndex + i];
+                audioLengths[i] = item.AudioTokenCount;
+                for (int t = 0; t < item.AudioTokenCount; t++)
+                    Array.Copy(item.AudioFeatures, t * _hiddenSize,
+                               audioFeatures, (i * maxAudioTokens + t) * _hiddenSize, _hiddenSize);
+            }
+
+            var (inputEmbeds, positionIds, prefillMask, seqLengths) =
+                BuildUnifiedBatchPrefillInputs(audioFeatures, audioLengths, groupSize, maxAudioTokens);
+            int maxPromptLen = seqLengths.Max();
+
+            // --- Prefill: use Run() — avoids GetTensorDataAsSpan failing on _decoder with mixed CPU/CUDA IO binding ---
+            using var prefillResults = _decoder!.Run([
+                NamedOnnxValue.CreateFromTensor("input_embeds",
+                    new DenseTensor<float>(inputEmbeds,  new[] { groupSize, maxPromptLen, _hiddenSize })),
+                NamedOnnxValue.CreateFromTensor("position_ids",
+                    new DenseTensor<long>(positionIds,   new[] { groupSize, maxPromptLen })),
+                NamedOnnxValue.CreateFromTensor("attention_mask",
+                    new DenseTensor<float>(prefillMask,  new[] { groupSize, 1, maxPromptLen, maxPromptLen })),
+                NamedOnnxValue.CreateFromTensor("past_keys",
+                    new DenseTensor<float>(Memory<float>.Empty, new[] { _nLayers, groupSize, _nKvHeads, 0, _headDim })),
+                NamedOnnxValue.CreateFromTensor("past_values",
+                    new DenseTensor<float>(Memory<float>.Empty, new[] { _nLayers, groupSize, _nKvHeads, 0, _headDim })),
+            ]);
+
+            // Extract last-position logits per slot (groupSize×vocabSize, ~8MB vs ~3.5GB full tensor)
+            float[] lastPosLogits = new float[groupSize * _vocabSize];
+            var prefillLogitTensor = prefillResults.First(r => r.Name == "logits").AsTensor<float>();
+            if (prefillLogitTensor is DenseTensor<float> densePrefillLogits)
+            {
+                var span = densePrefillLogits.Buffer.Span;
+                for (int b = 0; b < groupSize; b++)
+                {
+                    int srcOffset = (b * maxPromptLen + seqLengths[b] - 1) * _vocabSize;
+                    span.Slice(srcOffset, _vocabSize).CopyTo(lastPosLogits.AsSpan(b * _vocabSize));
+                }
+            }
+
+            // Extract KV for step-1 H2D bootstrap (one-time per group)
+            float[] prefillKeysBuf   = ExtractTensor(prefillResults.First(r => r.Name == "present_keys").AsTensor<float>());
+            float[] prefillValuesBuf = ExtractTensor(prefillResults.First(r => r.Name == "present_values").AsTensor<float>());
+
+            // --- Init per-slot state from prefill logits ---
+            int[]  nextTokens  = new int[groupSize];
+            bool[] done        = new bool[groupSize];
+            var    rawTokens   = new List<int>[groupSize];
+            var    rawLogprobs = new List<float>[groupSize];
+
+            for (int b = 0; b < groupSize; b++)
+            {
+                rawTokens[b]   = new List<int>(maxNewTokens);
+                rawLogprobs[b] = new List<float>(maxNewTokens);
+                int firstToken = ArgMaxSpan(lastPosLogits.AsSpan(b * _vocabSize, _vocabSize), out float firstLogprob);
+                nextTokens[b] = firstToken;
+                rawTokens[b].Add(firstToken);
+                rawLogprobs[b].Add(firstLogprob);
+                done[b] = IsEos(firstToken) || maxNewTokens <= 1;
+            }
+
+            // --- Decode: GPU KV chains step-to-step; only logits (~vocabSize×groupSize×4B) cross PCIe ---
+            // Pre-allocate decode logits buffer; bind as output so ORT writes directly — no GetTensorDataAsSpan.
+            float[] decodeLogBuf = new float[groupSize * _vocabSize];
+            float[] stepEmbeds   = new float[groupSize * _hiddenSize];
+            long[]  stepPos      = new long[groupSize];
+            float[] stepMask     = new float[groupSize * (maxPromptLen + maxNewTokens)];
+
+            bool firstStep = true;
+            IDisposableReadOnlyCollection<OrtValue>? prevKv = null;
+            int stepCount = 1;
+            while (!Array.TrueForAll(done, d => d))
+            {
+                // totalPastLen = tokens already in KV: maxPromptLen positions from prefill + stepCount decode tokens
+                int totalPastLen = maxPromptLen + stepCount;
+
+                for (int b = 0; b < groupSize; b++)
+                {
+                    ReadTokenEmbedding(nextTokens[b], tokenEmbed);
+                    Array.Copy(tokenEmbed, 0, stepEmbeds, b * _hiddenSize, _hiddenSize);
+                    // actual sequence position for each slot (differs when prompt lengths differ)
+                    stepPos[b] = seqLengths[b] + stepCount - 1;
+                }
+
+                // Attend to valid prefill [0, seqLengths[b]) and all decode tokens [maxPromptLen, totalPastLen).
+                // Mask padding gap [seqLengths[b], maxPromptLen) which holds garbage from padded prefill.
+                BuildStaticBatchStepMask(stepMask, seqLengths, groupSize, maxPromptLen, stepCount, totalPastLen);
+
+                using var embVal       = OrtValue.CreateTensorValueFromMemory(stepEmbeds,  [groupSize, 1, _hiddenSize]);
+                using var posVal       = OrtValue.CreateTensorValueFromMemory(stepPos,     [groupSize, 1]);
+                using var maskVal      = OrtValue.CreateTensorValueFromMemory(stepMask,    [groupSize, 1, 1, totalPastLen]);
+                using var logitsOutVal = OrtValue.CreateTensorValueFromMemory(decodeLogBuf, [groupSize, 1, _vocabSize]);
+
+                using var stepBinding = _decoder!.CreateIoBinding();
+                stepBinding.BindInput("input_embeds",   embVal);
+                stepBinding.BindInput("position_ids",   posVal);
+                stepBinding.BindInput("attention_mask", maskVal);
+                if (firstStep)
+                {
+                    // H2D bootstrap: CPU prefill KV → GPU for step 1 (one-time per group)
+                    using var pkv = OrtValue.CreateTensorValueFromMemory(prefillKeysBuf,   [_nLayers, groupSize, _nKvHeads, maxPromptLen, _headDim]);
+                    using var pvv = OrtValue.CreateTensorValueFromMemory(prefillValuesBuf, [_nLayers, groupSize, _nKvHeads, maxPromptLen, _headDim]);
+                    stepBinding.BindInput("past_keys",   pkv);
+                    stepBinding.BindInput("past_values", pvv);
+                    firstStep = false;
+                }
+                else
+                {
+                    stepBinding.BindInput("past_keys",   prevKv![1]); // GPU → GPU: no PCIe
+                    stepBinding.BindInput("past_values", prevKv![2]); // GPU → GPU: no PCIe
+                }
+                stepBinding.BindOutput("logits",                   logitsOutVal); // writes to decodeLogBuf
+                stepBinding.BindOutputToDevice("present_keys",   cudaMemInfo);
+                stepBinding.BindOutputToDevice("present_values", cudaMemInfo);
+                _decoder!.RunWithBinding(runOpts, stepBinding);
+
+                var curKv = stepBinding.GetOutputValues();
+
+                // Read logits from decodeLogBuf (float[]) — no GetTensorDataAsSpan needed
+                for (int b = 0; b < groupSize; b++)
+                {
+                    if (done[b]) continue;
+                    int token = ArgMaxSpan(decodeLogBuf.AsSpan(b * _vocabSize, _vocabSize), out float logprob);
+                    nextTokens[b] = token;
+                    rawTokens[b].Add(token);
+                    rawLogprobs[b].Add(logprob);
+                    if (IsEos(token) || rawTokens[b].Count >= maxNewTokens)
+                        done[b] = true;
+                }
+
+                prevKv?.Dispose();
+                prevKv = curKv;
+                stepCount++;
+            }
+
+            prevKv?.Dispose();
+
+            // --- Yield results for this group ---
+            for (int i = 0; i < groupSize; i++)
+            {
+                var item = encodedItems[pendingIndex + i];
+                var (textTokens, textLogprobs) = ExtractTextTokens(rawTokens[i], rawLogprobs[i]);
                 string rawText = DecodeTokens(textTokens);
                 var parsed = ParseMetadataPrefix(rawText);
                 yield return new QwenRecognitionResult(
-                    slotSegIds[slot], parsed.Text, slotRawTokens[slot]!, textTokens, textLogprobs, parsed.Language, rawText);
-
-                slotRawTokens[slot]   = null;
-                slotRawLogprobs[slot] = null;
-                slotDone[slot]        = false;
-                slotPastLengths[slot] = 0;
-                occupiedCount--;
+                    item.SegId, parsed.Text, rawTokens[i], textTokens, textLogprobs, parsed.Language, rawText);
             }
 
-            // Fill free slots with pending segments
-            if (pendingIndex < encodedItems.Count)
-            {
-                int freeCount = 0;
-                for (int slot = 0; slot < slotCapacity && pendingIndex + freeCount < encodedItems.Count; slot++)
-                    if (slotRawTokens[slot] is null)
-                        freeSlots[freeCount++] = slot;
+            pendingIndex += groupSize;
+        }
+    }
 
-                if (freeCount > 0)
-                {
-                    AdmitUnifiedDecodeSlots(
-                        encodedItems, pendingIndex, freeCount, freeSlots,
-                        slotCapacity, maxKvSeqCapacity, maxNewTokens,
-                        slotKeys, slotValues, slotPastLengths, slotSegIds,
-                        slotNextTokens, slotDone, slotRawTokens, slotRawLogprobs);
-                    pendingIndex  += freeCount;
-                    occupiedCount += freeCount;
-                }
-            }
-
-            // Build active set: occupied and not-done slots
-            int activeCount = 0;
-            for (int slot = 0; slot < slotCapacity; slot++)
-            {
-                if (slotRawTokens[slot] is not null && !slotDone[slot])
-                {
-                    activeToSlot[activeCount]  = slot;
-                    batchPastLens[activeCount] = slotPastLengths[slot];
-                    activeCount++;
-                }
-            }
-
-            if (activeCount == 0) continue;
-
-            for (int b = 0; b < activeCount; b++)
-            {
-                ReadTokenEmbedding(slotNextTokens[activeToSlot[b]], tokenEmbed);
-                Array.Copy(tokenEmbed, 0, stepEmbeds, b * _hiddenSize, _hiddenSize);
-                stepPos[b] = batchPastLens[b];
-            }
-
-            int maxPastLen     = MaxPrefix(batchPastLens, activeCount);
-            int stepMaskLength = activeCount * (maxPastLen + 1);
-            BuildBatchStepAttentionMaskInto(stepMaskBuffer, stepMaskLength, batchPastLens, activeCount, maxPastLen);
-
-            // Pack stable slot KV into a contiguous batch buffer with correct strides for the decoder
-            PackKvForDecode(slotKeys,   slotCapacity, maxKvSeqCapacity, activeToSlot, batchPastLens, activeCount, maxPastLen, batchKeys);
-            PackKvForDecode(slotValues, slotCapacity, maxKvSeqCapacity, activeToSlot, batchPastLens, activeCount, maxPastLen, batchValues);
-
-            // ORT reads exactly product(shape) elements from offset 0; arrays may be larger (pre-allocated for max capacity)
-            using var embVal      = OrtValue.CreateTensorValueFromMemory(stepEmbeds,     [activeCount, 1, _hiddenSize]);
-            using var posVal      = OrtValue.CreateTensorValueFromMemory(stepPos,         [activeCount, 1]);
-            using var maskVal     = OrtValue.CreateTensorValueFromMemory(stepMaskBuffer,  [activeCount, 1, 1, maxPastLen + 1]);
-            using var pastKeysVal = OrtValue.CreateTensorValueFromMemory(batchKeys,       [_nLayers, activeCount, _nKvHeads, maxPastLen, _headDim]);
-            using var pastValsVal = OrtValue.CreateTensorValueFromMemory(batchValues,     [_nLayers, activeCount, _nKvHeads, maxPastLen, _headDim]);
-
-            using var stepBinding = _decoder!.CreateIoBinding();
-            stepBinding.BindInput("input_embeds",   embVal);
-            stepBinding.BindInput("position_ids",   posVal);
-            stepBinding.BindInput("attention_mask", maskVal);
-            stepBinding.BindInput("past_keys",      pastKeysVal);
-            stepBinding.BindInput("past_values",    pastValsVal);
-            stepBinding.BindOutputToDevice("logits",         cpuMemInfo);
-            stepBinding.BindOutputToDevice("present_keys",   cpuMemInfo);
-            stepBinding.BindOutputToDevice("present_values", cpuMemInfo);
-            _decoder!.RunWithBinding(runOpts, stepBinding);
-
-            using var stepOutVals   = stepBinding.GetOutputValues();
-            var logitsSpan          = stepOutVals[0].GetTensorDataAsSpan<float>();
-            var presentKeysSpan     = stepOutVals[1].GetTensorDataAsSpan<float>();
-            var presentValsSpan     = stepOutVals[2].GetTensorDataAsSpan<float>();
-            int vocabSize           = logitsSpan.Length / activeCount;
-
-            for (int b = 0; b < activeCount; b++)
-            {
-                int slot  = activeToSlot[b];
-                int token = ArgMaxSpan(logitsSpan.Slice(b * vocabSize, vocabSize), out float logprob);
-                slotNextTokens[slot] = token;
-                slotRawTokens[slot]!.Add(token);
-                slotRawLogprobs[slot]!.Add(logprob);
-                if (IsEos(token) || slotRawTokens[slot]!.Count >= maxNewTokens)
-                    slotDone[slot] = true;
-            }
-
-            // Append the new token's KV from decoder output into stable slot storage
-            AppendTokenKvToSlots(presentKeysSpan, activeCount, maxPastLen, activeToSlot, batchPastLens, slotKeys,   slotCapacity, maxKvSeqCapacity);
-            AppendTokenKvToSlots(presentValsSpan, activeCount, maxPastLen, activeToSlot, batchPastLens, slotValues, slotCapacity, maxKvSeqCapacity);
-
-            for (int b = 0; b < activeCount; b++)
-                slotPastLengths[activeToSlot[b]]++;
+    // Attention mask for one decode step in a static-batch group.
+    // Valid positions: prefill tokens [0, seqLengths[b]) and new tokens [maxPromptLen, maxPromptLen+stepCount).
+    // Masked:          padding gap [seqLengths[b], maxPromptLen) — garbage KV from padded prefill.
+    private static void BuildStaticBatchStepMask(
+        float[] buffer, int[] seqLengths, int batchSize,
+        int maxPromptLen, int stepCount, int totalPastLen)
+    {
+        Array.Fill(buffer, float.MinValue, 0, batchSize * totalPastLen);
+        for (int b = 0; b < batchSize; b++)
+        {
+            int offset = b * totalPastLen;
+            for (int k = 0; k < seqLengths[b]; k++)
+                buffer[offset + k] = 0f;
+            for (int k = 0; k < stepCount; k++)
+                buffer[offset + maxPromptLen + k] = 0f;
         }
     }
 
@@ -1129,172 +1183,6 @@ public sealed class Qwen3Asr : IDisposable
                 Array.Copy(presentKeys,   sourceBase + appendIndex * _headDim, nextKeys,   destBase + validPastLen * _headDim, _headDim);
                 Array.Copy(presentValues, sourceBase + appendIndex * _headDim, nextValues, destBase + validPastLen * _headDim, _headDim);
             }
-        }
-    }
-
-    // Copies active-slot KV from stable slot storage into a contiguous batch buffer for the decoder.
-    // slotKv:  [nLayers, slotCapacity, nKvHeads, maxKvSeqCapacity, headDim]
-    // batchKv: [nLayers, activeCount,  nKvHeads, maxPastLen,       headDim]
-    private void PackKvForDecode(
-        float[] slotKv,
-        int slotCapacity,
-        int maxKvSeqCapacity,
-        int[] activeToSlot,
-        int[] batchPastLens,
-        int activeCount,
-        int maxPastLen,
-        float[] batchKv)
-    {
-        for (int layer = 0; layer < _nLayers; layer++)
-        for (int b = 0; b < activeCount; b++)
-        {
-            int slot     = activeToSlot[b];
-            int validLen = batchPastLens[b];
-            for (int head = 0; head < _nKvHeads; head++)
-            {
-                int srcBase = (((layer * slotCapacity + slot) * _nKvHeads + head) * maxKvSeqCapacity) * _headDim;
-                int dstBase = (((layer * activeCount  + b)    * _nKvHeads + head) * maxPastLen)        * _headDim;
-                Array.Copy(slotKv, srcBase, batchKv, dstBase, validLen * _headDim);
-                if (validLen < maxPastLen)
-                    Array.Clear(batchKv, dstBase + validLen * _headDim, (maxPastLen - validLen) * _headDim);
-            }
-        }
-    }
-
-    // Appends the newly decoded token's KV (at position maxPastLen in present_kv) back to slot storage.
-    // presentKv: [nLayers, activeCount, nKvHeads, maxPastLen+1, headDim] (decoder output)
-    // slotKv:    [nLayers, slotCapacity, nKvHeads, maxKvSeqCapacity, headDim]
-    private void AppendTokenKvToSlots(
-        ReadOnlySpan<float> presentKv,
-        int activeCount,
-        int maxPastLen,
-        int[] activeToSlot,
-        int[] batchPastLens,
-        float[] slotKv,
-        int slotCapacity,
-        int maxKvSeqCapacity)
-    {
-        int presentSeqLen = maxPastLen + 1;
-        for (int layer = 0; layer < _nLayers; layer++)
-        for (int b = 0; b < activeCount; b++)
-        {
-            int slot     = activeToSlot[b];
-            int insertAt = batchPastLens[b]; // slot's past length before this token
-            for (int head = 0; head < _nKvHeads; head++)
-            {
-                int srcBase = (((layer * activeCount + b) * _nKvHeads + head) * presentSeqLen + maxPastLen) * _headDim;
-                int dstBase = (((layer * slotCapacity + slot) * _nKvHeads + head) * maxKvSeqCapacity + insertAt) * _headDim;
-                presentKv.Slice(srcBase, _headDim).CopyTo(slotKv.AsSpan(dstBase, _headDim));
-            }
-        }
-    }
-
-    private static void BuildBatchStepAttentionMaskInto(float[] buffer, int usedLength, int[] pastLengths, int count, int maxPastLen)
-    {
-        Array.Fill(buffer, float.MinValue, 0, usedLength);
-
-        for (int b = 0; b < count; b++)
-        {
-            int offset = b * (maxPastLen + 1);
-            for (int k = 0; k < pastLengths[b]; k++)
-                buffer[offset + k] = 0f;
-            buffer[offset + maxPastLen] = 0f;
-        }
-    }
-
-    private void AdmitUnifiedDecodeSlots(
-        IReadOnlyList<QwenEncodedItem> encodedItems,
-        int startIndex,
-        int admitCount,
-        int[] targetSlots,
-        int slotCapacity,
-        int maxKvSeqCapacity,
-        int maxNewTokens,
-        float[] pastKeys,
-        float[] pastValues,
-        int[] pastLengths,
-        int[] slotSegIds,
-        int[] slotNextTokens,
-        bool[] slotDone,
-        List<int>?[] slotRawTokens,
-        List<float>?[] slotRawLogprobs)
-    {
-        int maxAudioTokens = 0;
-        for (int i = 0; i < admitCount; i++)
-            maxAudioTokens = Math.Max(maxAudioTokens, encodedItems[startIndex + i].AudioTokenCount);
-
-        float[] audioFeatures = new float[admitCount * maxAudioTokens * _hiddenSize];
-        long[] audioLengths = new long[admitCount];
-        for (int i = 0; i < admitCount; i++)
-        {
-            var item = encodedItems[startIndex + i];
-            audioLengths[i] = item.AudioTokenCount;
-            for (int t = 0; t < item.AudioTokenCount; t++)
-            {
-                Array.Copy(
-                    item.AudioFeatures,
-                    t * _hiddenSize,
-                    audioFeatures,
-                    (i * maxAudioTokens + t) * _hiddenSize,
-                    _hiddenSize);
-            }
-        }
-
-        var (inputEmbeds, positionIds, prefillMask, seqLengths) =
-            BuildUnifiedBatchPrefillInputs(audioFeatures, audioLengths, admitCount, maxAudioTokens);
-
-        float[] emptyKv = [];
-        using var initResults = _decoder!.Run(
-        [
-            NamedOnnxValue.CreateFromTensor("input_embeds",   new DenseTensor<float>(inputEmbeds, [admitCount, seqLengths.Max(), _hiddenSize])),
-            NamedOnnxValue.CreateFromTensor("position_ids",   new DenseTensor<long>(positionIds,   [admitCount, seqLengths.Max()])),
-            NamedOnnxValue.CreateFromTensor("attention_mask", new DenseTensor<float>(prefillMask,  [admitCount, 1, seqLengths.Max(), seqLengths.Max()])),
-            NamedOnnxValue.CreateFromTensor("past_keys",      new DenseTensor<float>(emptyKv,      [_nLayers, admitCount, _nKvHeads, 0, _headDim])),
-            NamedOnnxValue.CreateFromTensor("past_values",    new DenseTensor<float>(emptyKv,      [_nLayers, admitCount, _nKvHeads, 0, _headDim])),
-        ]);
-
-        float[] batchedLogits = ExtractTensor(initResults.First(r => r.Name == "logits").AsTensor<float>());
-        float[] presentKeys = ExtractTensor(initResults.First(r => r.Name == "present_keys").AsTensor<float>());
-        float[] presentValues = ExtractTensor(initResults.First(r => r.Name == "present_values").AsTensor<float>());
-        int vocabSize = batchedLogits.Length / (admitCount * seqLengths.Max());
-
-        for (int i = 0; i < admitCount; i++)
-        {
-            int slot = targetSlots[i];
-            var item = encodedItems[startIndex + i];
-            slotSegIds[slot] = item.SegId;
-            slotRawTokens[slot] = new List<int>(maxNewTokens);
-            slotRawLogprobs[slot] = new List<float>(maxNewTokens);
-            int logitOffset = i * seqLengths.Max() * vocabSize + (seqLengths[i] - 1) * vocabSize;
-            int firstToken = ArgMaxSpan(batchedLogits.AsSpan(logitOffset, vocabSize), out float firstLogprob);
-            slotNextTokens[slot] = firstToken;
-            slotRawTokens[slot]!.Add(firstToken);
-            slotRawLogprobs[slot]!.Add(firstLogprob);
-            slotDone[slot] = IsEos(firstToken) || slotRawTokens[slot]!.Count >= maxNewTokens;
-            pastLengths[slot] = seqLengths[i];
-            CopyPrefillKvToSlot(presentKeys, admitCount, seqLengths.Max(), i, pastKeys, slotCapacity, maxKvSeqCapacity, slot, seqLengths[i]);
-            CopyPrefillKvToSlot(presentValues, admitCount, seqLengths.Max(), i, pastValues, slotCapacity, maxKvSeqCapacity, slot, seqLengths[i]);
-        }
-    }
-
-    private void CopyPrefillKvToSlot(
-        float[] source,
-        int batchSize,
-        int sourceSeqLen,
-        int batchIndex,
-        float[] target,
-        int slotCapacity,
-        int targetSeqCapacity,
-        int slotIndex,
-        int validLen)
-    {
-        for (int layer = 0; layer < _nLayers; layer++)
-        for (int head = 0; head < _nKvHeads; head++)
-        {
-            int sourceBase = (((layer * batchSize + batchIndex) * _nKvHeads + head) * sourceSeqLen) * _headDim;
-            int targetBase = (((layer * slotCapacity + slotIndex) * _nKvHeads + head) * targetSeqCapacity) * _headDim;
-            Array.Clear(target, targetBase, targetSeqCapacity * _headDim);
-            Array.Copy(source, sourceBase, target, targetBase, validLen * _headDim);
         }
     }
 
