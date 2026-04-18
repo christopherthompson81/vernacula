@@ -116,6 +116,54 @@ public sealed class VoxLinguaLid : IDisposable
             ClipDurationSeconds: audio.Length / (float)SampleRate);
     }
 
+    /// <summary>
+    /// Pick the longest VAD segment in <paramref name="audio"/>, clamp the
+    /// classification window to
+    /// <paramref name="defaultClipSeconds"/>, and run <see cref="Classify"/>.
+    ///
+    /// <para>
+    /// If the first pass is flagged ambiguous and the longest VAD segment is
+    /// at least <paramref name="escalationClipSeconds"/> long, re-runs on
+    /// the longer window — per Phase 6 of the perf investigation the
+    /// extra context helps resolve close-family confusions (ru/uk/be,
+    /// de/lb/da) that short clips flap on.
+    /// </para>
+    ///
+    /// <para>
+    /// Returns <c>null</c> when no VAD segment is at least 1 second long
+    /// (effectively silent audio). The classification window is centred
+    /// inside the chosen VAD segment so we sample the middle rather than
+    /// onset/offset artefacts.
+    /// </para>
+    /// </summary>
+    public LidResult? ClassifyLongestSegment(
+        float[] audio,
+        IReadOnlyList<(double startSec, double endSec)> vadSegments,
+        int defaultClipSeconds = Config.VoxLinguaDefaultClipSeconds,
+        int escalationClipSeconds = Config.VoxLinguaEscalationClipSeconds,
+        int topK = 5)
+    {
+        var (segStart, segEnd) = PickLongestSegment(vadSegments);
+        double segDuration = segEnd - segStart;
+        if (segDuration < 1.0) return null;
+
+        int defaultSamples = defaultClipSeconds * SampleRate;
+        float[] initialClip = SliceCentered(audio, segStart, segEnd, defaultSamples);
+        if (initialClip.Length < SampleRate) return null;
+
+        var first = Classify(initialClip, topK);
+
+        if (first.IsAmbiguous && segDuration >= escalationClipSeconds)
+        {
+            int longSamples = escalationClipSeconds * SampleRate;
+            float[] longClip = SliceCentered(audio, segStart, segEnd, longSamples);
+            if (longClip.Length >= defaultSamples)
+                return Classify(longClip, topK);
+        }
+
+        return first;
+    }
+
     public void Dispose()
     {
         if (_disposed) return;
@@ -124,6 +172,41 @@ public sealed class VoxLinguaLid : IDisposable
     }
 
     // ── Helpers ────────────────────────────────────────────────────────────
+
+    /// <summary>Pick the longest VAD segment; empty input → (0, 0).</summary>
+    private static (double start, double end) PickLongestSegment(
+        IReadOnlyList<(double startSec, double endSec)> segs)
+    {
+        if (segs is null || segs.Count == 0) return (0, 0);
+        double bestDur = -1;
+        (double start, double end) best = (0, 0);
+        foreach (var (s, e) in segs)
+        {
+            double dur = e - s;
+            if (dur > bestDur) { bestDur = dur; best = (s, e); }
+        }
+        return best;
+    }
+
+    /// <summary>
+    /// Extract up to <paramref name="targetSamples"/> samples from
+    /// <paramref name="audio"/>, centred inside the given VAD segment.
+    /// Falls back to whatever the segment contains if shorter.
+    /// </summary>
+    private static float[] SliceCentered(
+        float[] audio, double segStart, double segEnd, int targetSamples)
+    {
+        int segStartSample = Math.Clamp((int)Math.Round(segStart * SampleRate), 0, audio.Length);
+        int segEndSample   = Math.Clamp((int)Math.Round(segEnd   * SampleRate), 0, audio.Length);
+        int segLen = segEndSample - segStartSample;
+        if (segLen <= 0) return [];
+
+        int take = Math.Min(targetSamples, segLen);
+        int offset = segStartSample + Math.Max(0, (segLen - take) / 2);
+        var slice = new float[take];
+        Array.Copy(audio, offset, slice, 0, take);
+        return slice;
+    }
 
     private IReadOnlyList<LidCandidate> SortTopK(float[] probs, int k)
     {

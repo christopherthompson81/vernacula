@@ -32,6 +32,7 @@ double  minAsrSeconds     = 5.0;        // minimum group span (seconds) when usi
 double  asrBufferSeconds  = 0.0;        // audio padding on each side of a group (seconds)
 bool    profileSortformer = false;      // --profile-sortformer: print fine-grained timing for Sortformer
 bool    downloadVoxLingua = false;      // --download-voxlingua: fetch the LID model, then exit
+bool    runLid             = false;      // --lid: run LID on --audio and print result, then exit
 ModelPrecision precision = ModelPrecision.Fp32;
 
 for (int i = 0; i < args.Length; i++)
@@ -97,6 +98,7 @@ for (int i = 0; i < args.Length; i++)
         case "--profile-steps":    profileMaxTokens  = int.Parse(args[++i]); break;
         case "--profile-sortformer": profileSortformer = true; break;
         case "--download-voxlingua": downloadVoxLingua = true; break;
+        case "--lid":                runLid = true; break;
         case "--language":        cohereLanguage = args[++i]; break;
         case "--precision":
             precision = args[++i].ToLowerInvariant() switch {
@@ -125,6 +127,17 @@ if (downloadVoxLingua)
     string modelsRoot = modelDir ?? DefaultModelsDir();
     string destDir = Path.Combine(modelsRoot, Config.VoxLinguaSubDir);
     return await DownloadVoxLinguaAsync(destDir);
+}
+
+if (runLid)
+{
+    if (audioPath is null)
+    {
+        Console.Error.WriteLine("Error: --lid requires --audio <file>.");
+        return 1;
+    }
+    string modelsRoot = modelDir ?? DefaultModelsDir();
+    return RunLidAction(audioPath, modelsRoot);
 }
 
 if (audioPath is null || modelDir is null)
@@ -815,6 +828,88 @@ static string DefaultModelsDir() => Path.Combine(
     "Vernacula", "models");
 
 /// <summary>
+/// Headless LID validation: load audio, run VAD, pick the longest segment,
+/// classify with VoxLinguaLid (escalating to a longer window on ambiguity),
+/// and print a structured result. No diarization, no ASR.
+///
+/// Mirrors what <c>LangIdService.DetectLanguage</c> does inside the Avalonia
+/// pipeline — both call <c>VoxLinguaLid.ClassifyLongestSegment</c>, so this
+/// exercise is a real integration test of the LID code path.
+/// </summary>
+static int RunLidAction(string audioPath, string modelsRoot)
+{
+    string voxDir = Path.Combine(modelsRoot, Config.VoxLinguaSubDir);
+    string vadDir = Path.Combine(modelsRoot, Config.VadSubDir);
+
+    if (!File.Exists(audioPath))
+    {
+        Console.Error.WriteLine($"Audio file not found: {audioPath}");
+        return 1;
+    }
+    if (!File.Exists(Path.Combine(voxDir, Config.VoxLinguaModelFile)))
+    {
+        Console.Error.WriteLine(
+            $"VoxLingua107 model not found at {voxDir}. " +
+            $"Run --download-voxlingua first.");
+        return 1;
+    }
+    if (!File.Exists(Path.Combine(vadDir, Config.VadFile)))
+    {
+        Console.Error.WriteLine(
+            $"Silero VAD model not found at {vadDir}/{Config.VadFile}. " +
+            $"The --lid action uses VAD to pick the best speech segment; " +
+            $"install the core diarization model pack and retry.");
+        return 1;
+    }
+
+    Console.WriteLine($"[lid] loading audio: {audioPath}");
+    var (raw, sr, channels) = AudioUtils.ReadAudio(audioPath);
+    float[] audio = AudioUtils.AudioTo16000Mono(raw, sr, channels);
+    Console.WriteLine($"[lid] decoded: {audio.Length} samples @ 16 kHz ({audio.Length / 16000.0:F1} s)");
+
+    Console.WriteLine("[lid] running Silero VAD");
+    List<(double start, double end)> vadSegs;
+    using (var vad = new VadSegmenter(vadDir))
+        vadSegs = vad.GetSegments(audio);
+
+    if (vadSegs.Count == 0)
+    {
+        Console.Error.WriteLine("[lid] VAD found no speech segments — nothing to classify.");
+        return 1;
+    }
+    var longest = vadSegs.OrderByDescending(s => s.end - s.start).First();
+    Console.WriteLine(
+        $"[lid] VAD: {vadSegs.Count} segments; longest is " +
+        $"{longest.start:F2}s–{longest.end:F2}s ({longest.end - longest.start:F2}s)");
+
+    Console.WriteLine($"[lid] loading VoxLinguaLid from {voxDir}");
+    var sw = System.Diagnostics.Stopwatch.StartNew();
+    using var lid = new VoxLinguaLid(voxDir);
+    Console.WriteLine($"[lid] loaded in {sw.ElapsedMilliseconds} ms");
+
+    sw.Restart();
+    var result = lid.ClassifyLongestSegment(audio, vadSegs);
+    sw.Stop();
+    if (result is null)
+    {
+        Console.Error.WriteLine("[lid] classification returned null (longest VAD segment too short).");
+        return 1;
+    }
+
+    Console.WriteLine();
+    Console.WriteLine($"Detected language : {result.Top.Name} ({result.Iso})  p={result.TopProbability:P1}");
+    Console.WriteLine($"Ambiguous         : {result.IsAmbiguous}");
+    Console.WriteLine($"Clip duration     : {result.ClipDurationSeconds:F1} s");
+    Console.WriteLine($"Classify latency  : {sw.ElapsedMilliseconds} ms");
+    Console.WriteLine("Top-5 candidates  :");
+    foreach (var c in result.TopK)
+        Console.WriteLine($"  {c.Iso,-4} {c.Name,-20} {c.Probability:P2}");
+    Console.WriteLine();
+    Console.WriteLine("Summary           : " + result.FormatSummary());
+    return 0;
+}
+
+/// <summary>
 /// Fetch the VoxLingua107 LID assets (<c>voxlingua107.onnx</c> +
 /// <c>lang_map.json</c>) from the HuggingFace repo. Skips any file that
 /// already exists on disk with a non-zero size. Streams with progress
@@ -922,6 +1017,9 @@ static void PrintUsage()
     Console.WriteLine("  --profile-sortformer               Print fine-grained timing breakdown for Sortformer");
     Console.WriteLine("  --download-voxlingua               Download the VoxLingua107 LID model and exit");
     Console.WriteLine("                                     (defaults to ~/.local/share/Vernacula/models)");
+    Console.WriteLine("  --lid                              Run VAD + LID on --audio and print the detected");
+    Console.WriteLine("                                     language, then exit. Uses --model as the models");
+    Console.WriteLine("                                     root, or the default dir if omitted.");
     Console.WriteLine("  -h, --help                         Show this help");
     Console.WriteLine();
     Console.WriteLine("Build: dotnet build -c Release -p:EP=Cuda|DirectML|Cpu -p:Platform=x64");

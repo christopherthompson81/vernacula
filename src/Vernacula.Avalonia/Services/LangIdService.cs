@@ -70,36 +70,7 @@ internal sealed class LangIdService : IDisposable
         IReadOnlyList<(double startSec, double endSec)> vadSegments)
     {
         if (!IsAvailable) return null;
-
-        var (segStart, segEnd) = PickLongestSegment(vadSegments);
-        double segDuration = segEnd - segStart;
-        if (segDuration < 1.0) return null;
-
-        var lid = GetOrCreateLid();
-
-        // First pass at the default clip duration (15 s).
-        int defaultSamples = Config.VoxLinguaDefaultClipSeconds * VoxLinguaLid.SampleRate;
-        float[] initialClip = SliceCentered(audioMono16k, segStart, segEnd, defaultSamples);
-        if (initialClip.Length < VoxLinguaLid.SampleRate) return null; // < 1 s of audio
-        var first = lid.Classify(initialClip);
-
-        // Escalation: if ambiguous and we have at least VoxLinguaEscalationClipSeconds
-        // of audio in the same VAD segment, re-run on the longer window. The longer
-        // clip often resolves confusable-family calls (ru/uk/be, de/lb/da) per Phase 6.
-        if (first.IsAmbiguous
-            && segDuration >= Config.VoxLinguaEscalationClipSeconds)
-        {
-            int longSamples = Config.VoxLinguaEscalationClipSeconds * VoxLinguaLid.SampleRate;
-            float[] longClip = SliceCentered(audioMono16k, segStart, segEnd, longSamples);
-            if (longClip.Length >= defaultSamples)
-            {
-                var escalated = lid.Classify(longClip);
-                // Prefer the escalated result — longer context is what we escalated for.
-                return escalated;
-            }
-        }
-
-        return first;
+        return GetOrCreateLid().ClassifyLongestSegment(audioMono16k, vadSegments);
     }
 
     public void Dispose()
@@ -113,8 +84,6 @@ internal sealed class LangIdService : IDisposable
         }
     }
 
-    // ── Helpers ────────────────────────────────────────────────────────────
-
     private VoxLinguaLid GetOrCreateLid()
     {
         lock (_lock)
@@ -124,44 +93,5 @@ internal sealed class LangIdService : IDisposable
                 _settings.GetVoxLinguaModelsDir(),
                 ExecutionProvider.Auto);
         }
-    }
-
-    /// <summary>Pick the longest VAD segment; empty input → (0, 0).</summary>
-    private static (double start, double end) PickLongestSegment(
-        IReadOnlyList<(double startSec, double endSec)> segs)
-    {
-        if (segs is null || segs.Count == 0) return (0, 0);
-        double bestDur = -1;
-        (double start, double end) best = (0, 0);
-        foreach (var (s, e) in segs)
-        {
-            double dur = e - s;
-            if (dur > bestDur) { bestDur = dur; best = (s, e); }
-        }
-        return best;
-    }
-
-    /// <summary>
-    /// Extract up to <paramref name="targetSamples"/> samples from
-    /// <paramref name="audio"/> centred on the VAD segment. Falls back to
-    /// whatever the segment contains if shorter than the target.
-    /// </summary>
-    private static float[] SliceCentered(
-        float[] audio, double segStart, double segEnd, int targetSamples)
-    {
-        int sr = VoxLinguaLid.SampleRate;
-        int segStartSample = Math.Clamp((int)Math.Round(segStart * sr), 0, audio.Length);
-        int segEndSample   = Math.Clamp((int)Math.Round(segEnd   * sr), 0, audio.Length);
-        int segLen = segEndSample - segStartSample;
-        if (segLen <= 0) return [];
-
-        int take = Math.Min(targetSamples, segLen);
-        // Centre the window within the VAD segment so we sample the
-        // middle (the endpoints are more likely to contain onset/offset
-        // artefacts that the model wasn't trained on).
-        int offset = segStartSample + Math.Max(0, (segLen - take) / 2);
-        var slice = new float[take];
-        Array.Copy(audio, offset, slice, 0, take);
-        return slice;
     }
 }
