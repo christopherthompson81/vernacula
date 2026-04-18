@@ -1604,8 +1604,8 @@ public sealed class Qwen3Asr : IDisposable
             [
                 NamedOnnxValue.CreateFromTensor("input_embeds", new DenseTensor<float>(tokenEmbed, [1, 1, _hiddenSize])),
                 NamedOnnxValue.CreateFromTensor("position_ids", new DenseTensor<long>(stepPos, [1, 1])),
-                NamedOnnxValue.CreateFromTensor("past_keys", new DenseTensor<float>(pastKeys, [28, 1, 8, pastSeqLen, 128])),
-                NamedOnnxValue.CreateFromTensor("past_values", new DenseTensor<float>(pastValues, [28, 1, 8, pastSeqLen, 128])),
+                NamedOnnxValue.CreateFromTensor("past_keys", new DenseTensor<float>(pastKeys, [_nLayers, 1, _nKvHeads, pastSeqLen, _headDim])),
+                NamedOnnxValue.CreateFromTensor("past_values", new DenseTensor<float>(pastValues, [_nLayers, 1, _nKvHeads, pastSeqLen, _headDim])),
             ]);
 
             logits     = ExtractTensor(stepOutputs.First(r => r.Name == "logits").AsTensor<float>());
@@ -1836,7 +1836,6 @@ public sealed class Qwen3Asr : IDisposable
         rawLogprobs.Add(nextLogprob);
 
         IDisposableReadOnlyCollection<OrtValue>? prevOutputs = initOutputs;
-        int pastSeqLen = seqLen;
 
         while (rawTokens.Count < maxNewTokens && !IsEos(nextToken))
         {
@@ -1859,7 +1858,6 @@ public sealed class Qwen3Asr : IDisposable
             nextToken = ArgMaxLastLogits(curOutputs[0], 1, out nextLogprob);
             rawTokens.Add(nextToken);
             rawLogprobs.Add(nextLogprob);
-            pastSeqLen++;
 
             prevOutputs.Dispose();
             prevOutputs = curOutputs;

@@ -34,10 +34,10 @@ internal partial class SettingsViewModel : ObservableObject
     private AsrBackend _selectedAsrBackend;
 
     [ObservableProperty]
-    private CohereLanguageOption? _selectedCohereLanguage;
+    private AsrLanguageOption? _selectedCohereLanguage;
 
     [ObservableProperty]
-    private CohereLanguageOption? _selectedQwen3AsrLanguage;
+    private AsrLanguageOption? _selectedQwen3AsrLanguage;
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(IsDenoiserNone), nameof(IsDenoiserDfn3))]
@@ -90,8 +90,7 @@ internal partial class SettingsViewModel : ObservableObject
         ? "Unlocked gated models: DiariZen"
         : "Some optional models require accepting their own license terms before they appear in settings.";
 
-    public record CohereLanguageOption(string Code, string DisplayName);
-    public static readonly IReadOnlyList<CohereLanguageOption> CohereLanguages =
+    public static readonly IReadOnlyList<AsrLanguageOption> CohereLanguages =
     [
         new("",   "Auto-detect"),
         new("ar", "Arabic"),
@@ -110,7 +109,7 @@ internal partial class SettingsViewModel : ObservableObject
         new("zh", "Chinese"),
     ];
 
-    public static readonly IReadOnlyList<CohereLanguageOption> Qwen3AsrLanguages =
+    public static readonly IReadOnlyList<AsrLanguageOption> Qwen3AsrLanguages =
     [
         new("",   "Auto-detect"),
         new("af", "Afrikaans"),
@@ -315,13 +314,13 @@ internal partial class SettingsViewModel : ObservableObject
         _ = CheckModelsAsync();
     }
 
-    partial void OnSelectedCohereLanguageChanged(CohereLanguageOption? value)
+    partial void OnSelectedCohereLanguageChanged(AsrLanguageOption? value)
     {
         _svc.Current.CohereLanguage = value?.Code ?? "";
         _svc.Save();
     }
 
-    partial void OnSelectedQwen3AsrLanguageChanged(CohereLanguageOption? value)
+    partial void OnSelectedQwen3AsrLanguageChanged(AsrLanguageOption? value)
     {
         _svc.Current.Qwen3AsrLanguage = value?.Code ?? "";
         _svc.Save();

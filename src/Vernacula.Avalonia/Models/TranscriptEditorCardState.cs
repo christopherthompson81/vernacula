@@ -3,6 +3,7 @@ using System.Linq;
 using Avalonia.Media;
 using Avalonia.Media.Imaging;
 using CommunityToolkit.Mvvm.ComponentModel;
+using Vernacula.App.ViewModels;
 
 namespace Vernacula.App.Models;
 
@@ -13,21 +14,7 @@ internal sealed partial class TranscriptEditorCardState : ObservableObject
         public override string ToString() => Name;
     }
 
-    public static readonly IReadOnlyList<string> Qwen3AsrLanguageNames =
-        (new[] {
-            "Auto",
-            "Afrikaans", "Arabic", "Armenian", "Azerbaijani", "Belarusian",
-            "Bosnian", "Bulgarian", "Catalan", "Chinese", "Croatian",
-            "Czech", "Danish", "Dutch", "English", "Estonian",
-            "Finnish", "French", "Galician", "German", "Greek",
-            "Hebrew", "Hindi", "Hungarian", "Icelandic", "Indonesian",
-            "Italian", "Japanese", "Kannada", "Kazakh", "Korean",
-            "Latvian", "Lithuanian", "Macedonian", "Malay", "Marathi",
-            "Nepali", "Norwegian", "Persian", "Polish", "Portuguese",
-            "Romanian", "Russian", "Serbian", "Slovak", "Slovenian",
-            "Spanish", "Swahili", "Swedish", "Tagalog", "Tamil",
-            "Thai", "Turkish", "Ukrainian", "Urdu", "Vietnamese", "Welsh",
-        }).ToList().AsReadOnly();
+    public static IReadOnlyList<AsrLanguageOption> Qwen3AsrLanguages => SettingsViewModel.Qwen3AsrLanguages;
 
     public TranscriptEditorCardState(EditorSegment segment, int index)
     {
@@ -37,7 +24,16 @@ internal sealed partial class TranscriptEditorCardState : ObservableObject
         _draftContent = segment.Content;
         _timeRangeText = FormatTimeRange(segment.PlayStart, segment.PlayEnd);
         _suppressButtonText = "Suppress";
-        _selectedRedoLanguage = segment.Language ?? "Auto";
+        _selectedRedoLanguage = MatchLanguageOption(segment.Language);
+    }
+
+    internal static AsrLanguageOption MatchLanguageOption(string? language)
+    {
+        if (string.IsNullOrEmpty(language)) return Qwen3AsrLanguages[0];
+        return Qwen3AsrLanguages.FirstOrDefault(l =>
+                   string.Equals(l.DisplayName, language, StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(l.Code,        language, StringComparison.OrdinalIgnoreCase))
+               ?? Qwen3AsrLanguages[0];
     }
 
     internal EditorSegment Segment { get; }
@@ -52,7 +48,7 @@ internal sealed partial class TranscriptEditorCardState : ObservableObject
     public ObservableCollection<TranscriptEditorTextRunState> AdjacentRuns { get; } = [];
 
     [ObservableProperty] private bool _isFocused;
-    [ObservableProperty] private string? _selectedRedoLanguage;
+    [ObservableProperty] private AsrLanguageOption? _selectedRedoLanguage;
     public bool ShowLanguageChip { get; set; }
     [ObservableProperty] private string _draftSpeakerName;
     [ObservableProperty] private string _draftContent;

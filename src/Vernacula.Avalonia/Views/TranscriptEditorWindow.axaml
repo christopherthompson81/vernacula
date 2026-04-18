@@ -505,9 +505,15 @@
                                                   MinWidth="100"
                                                   VerticalAlignment="Center"
                                                   IsVisible="{Binding ShowLanguageChip}"
-                                                  ItemsSource="{x:Static models:TranscriptEditorCardState.Qwen3AsrLanguageNames}"
+                                                  ItemsSource="{x:Static models:TranscriptEditorCardState.Qwen3AsrLanguages}"
                                                   SelectedItem="{Binding SelectedRedoLanguage, Mode=TwoWay}"
-                                                  ToolTip.Tip="Language for redo ASR" />
+                                                  ToolTip.Tip="{local:Loc editor_redo_asr_language}">
+                                            <ComboBox.ItemTemplate>
+                                                <DataTemplate>
+                                                    <TextBlock Text="{Binding DisplayName}" />
+                                                </DataTemplate>
+                                            </ComboBox.ItemTemplate>
+                                        </ComboBox>
                                     </WrapPanel>
 
                                     <Grid ColumnDefinitions="*,*"

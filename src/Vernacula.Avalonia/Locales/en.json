@@ -93,6 +93,7 @@
   "editor_merge_next_tooltip": "Merge this segment with the next one",
   "editor_split_tooltip": "Split this segment at a token boundary",
   "editor_redo_asr": "Redo ASR",
+  "editor_redo_asr_language": "Language for redo ASR",
   "editor_redo_asr_running": "Running…",
   "editor_redo_asr_tooltip": "Re-run speech recognition on this segment's audio to get a clean, single-source transcription (enables splitting)",
   "editor_add_speaker": "+ Add Speaker…",

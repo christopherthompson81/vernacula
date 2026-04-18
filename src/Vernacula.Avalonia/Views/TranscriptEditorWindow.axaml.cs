@@ -1294,7 +1294,7 @@ public partial class TranscriptEditorWindow : Window
                 _jobAsrLanguageCode,
                 qwen3AsrModelsDir: App.Current.Settings.GetQwen3AsrModelsDir(),
                 vibeVoiceModelsDir: App.Current.Settings.GetVibeVoiceModelsDir(),
-                qwen3AsrLanguageCode: _isQwen3Asr ? card.SelectedRedoLanguage : null));
+                qwen3AsrLanguageCode: _isQwen3Asr ? card.SelectedRedoLanguage?.Code : null));
             if (result is null)
             {
                 SetCardStatus(card, "Redo ASR did not produce a result.");
@@ -1305,7 +1305,7 @@ public partial class TranscriptEditorWindow : Window
                 result.Value.tokens, result.Value.timestamps, result.Value.logprobs, result.Value.language);
 
             if (_isQwen3Asr)
-                card.SelectedRedoLanguage = result.Value.language ?? "Auto";
+                card.SelectedRedoLanguage = TranscriptEditorCardState.MatchLanguageOption(result.Value.language);
 
             card.DraftContent = card.Segment.Content;
             DataChanged?.Invoke();
