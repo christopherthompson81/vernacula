@@ -558,12 +558,54 @@ internal class TranscriptionService
                     lidResult.TopK.Select(c => new { iso = c.Iso, name = c.Name, p = c.Probability }));
                 db.InsertMetadata("detected_language_topk", topKJson);
                 Console.WriteLine($"[Transcription] LID → {lidResult.FormatSummary()}");
+
+                // Override: if LID returned an unambiguous result and the
+                // current ASR backend supports it, substitute it for the
+                // user's configured force-language for this run. Leaves the
+                // settings value untouched — this is a per-job override that
+                // the Results / Editor view will see via the
+                // asr_language_code metadata we record below.
+                //
+                // The ambiguity gate (VoxLinguaAmbiguityThreshold, 0.60) is
+                // the only confidence threshold. Opting into LID is the
+                // user's consent to overrides; if they want the settings
+                // force-language respected verbatim, they disable LID.
+                if (!lidResult.IsAmbiguous)
+                {
+                    var backend = BackendOf(asrModelName);
+                    if (backend is not null && AsrLanguageSupport.Supports(backend.Value, lidResult.Iso))
+                    {
+                        Console.WriteLine(
+                            $"[Transcription] LID override: " +
+                            $"asr_language_code '{asrLanguageCode}' → '{lidResult.Iso}'");
+                        asrLanguageCode = lidResult.Iso;
+                    }
+                    else if (backend is not null)
+                    {
+                        var alt = AsrLanguageSupport.PickBestBackend(lidResult.Iso);
+                        Console.WriteLine(
+                            $"[Transcription] LID detected '{lidResult.Iso}' ({lidResult.Top.Name}) " +
+                            $"but {backend.Value} does not support it. " +
+                            (alt is not null
+                                ? $"Consider switching ASR backend to {alt.Value} (supports {lidResult.Iso})."
+                                : $"No installed backend supports {lidResult.Iso}.") +
+                            " Continuing with the configured backend; change ASR in Settings if this result is wrong.");
+                        db.InsertMetadata("detected_language_backend_mismatch", "1");
+                        if (alt is not null)
+                            db.InsertMetadata("detected_language_suggested_backend", alt.Value.ToString());
+                    }
+                }
             }
             else
             {
                 Console.WriteLine("[Transcription] LID skipped (no VAD segment long enough).");
             }
         }
+
+        // Persist the effective asr_language_code that the ASR step will use,
+        // so the Results / Editor views can read it (possibly differing from
+        // the job's ControlDb row when LID overrode it).
+        db.InsertMetadata("asr_language_code", asrLanguageCode);
 
         ct.ThrowIfCancellationRequested();
 
@@ -749,6 +791,22 @@ internal class TranscriptionService
             Loc.Instance["transcription_complete"],
             OverridePercent: 100));
     }
+
+    /// <summary>
+    /// Maps the ASR model-name string used by the pipeline back to an
+    /// <see cref="AsrBackend"/> enum, so language-support lookups via
+    /// <see cref="AsrLanguageSupport"/> work against the same name table the
+    /// rest of the pipeline uses. Returns null for unknown model names
+    /// (future backends; safe fallback: don't override).
+    /// </summary>
+    private static AsrBackend? BackendOf(string asrModelName) => asrModelName switch
+    {
+        "nvidia/parakeet-tdt-0.6b-v3"       => AsrBackend.Parakeet,
+        "CohereLabs/cohere-transcribe-03-2026" => AsrBackend.Cohere,
+        "Qwen/Qwen3-ASR-1.7B"               => AsrBackend.Qwen3Asr,
+        "vibevoice/vibevoice-asr"           => AsrBackend.VibeVoice,
+        _                                    => null,
+    };
 
     private static double EstimateDiariZenDiarizationFraction(string message)
     {
