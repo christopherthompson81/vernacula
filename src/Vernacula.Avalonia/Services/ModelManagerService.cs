@@ -33,6 +33,11 @@ internal class ModelManagerService
     private const string VibeVoiceManifestUrl =
         "https://huggingface.co/christopherthompson81/vibevoice-asr-onnx/resolve/main/manifest.json";
 
+    private const string VoxLinguaRepoBase =
+        "https://huggingface.co/christopherthompson81/voxlingua107-lid-onnx/resolve/main";
+    private const string VoxLinguaManifestUrl =
+        "https://huggingface.co/christopherthompson81/voxlingua107-lid-onnx/resolve/main/manifest.json";
+
     private static readonly ModelAsset[] CoreDiarizationFiles =
         [
             new(Path.Combine(Config.SortformerSubDir, Config.SortformerFile), Config.SortformerFile),
@@ -87,6 +92,12 @@ internal class ModelManagerService
             new(Path.Combine(Config.Qwen3AsrSubDir, "tokenizer_config.json"), "tokenizer_config.json"),
             new(Path.Combine(Config.Qwen3AsrSubDir, Qwen3Asr.ConfigFile), Qwen3Asr.ConfigFile),
             new(Path.Combine(Config.Qwen3AsrSubDir, "preprocessor_config.json"), "preprocessor_config.json"),
+        ];
+
+    private static readonly ModelAsset[] VoxLinguaFiles =
+        [
+            new(Path.Combine(Config.VoxLinguaSubDir, Config.VoxLinguaModelFile),   Config.VoxLinguaModelFile),
+            new(Path.Combine(Config.VoxLinguaSubDir, Config.VoxLinguaLangMapFile), Config.VoxLinguaLangMapFile),
         ];
 
     private static readonly ModelAsset[] VibeVoiceFiles =
@@ -191,6 +202,27 @@ internal class ModelManagerService
 
     public bool AreDiariZenModelsPresent(string? diarizenDir = null) =>
         GetMissingDiariZenFiles(diarizenDir).Count == 0;
+
+    public IReadOnlyList<string> GetMissingVoxLinguaFiles(string? voxLinguaDir = null)
+    {
+        string dir = voxLinguaDir ?? _settings.GetVoxLinguaModelsDir();
+        return VoxLinguaFiles
+            .Where(asset => !File.Exists(Path.Combine(dir, Path.GetRelativePath(Config.VoxLinguaSubDir, asset.LocalRelativePath))))
+            .Select(asset => Path.GetRelativePath(Config.VoxLinguaSubDir, asset.LocalRelativePath))
+            .ToList();
+    }
+
+    public IReadOnlyList<string> GetPresentVoxLinguaFiles(string? voxLinguaDir = null)
+    {
+        string dir = voxLinguaDir ?? _settings.GetVoxLinguaModelsDir();
+        return VoxLinguaFiles
+            .Where(asset => File.Exists(Path.Combine(dir, Path.GetRelativePath(Config.VoxLinguaSubDir, asset.LocalRelativePath))))
+            .Select(asset => Path.GetRelativePath(Config.VoxLinguaSubDir, asset.LocalRelativePath))
+            .ToList();
+    }
+
+    public bool AreVoxLinguaModelsPresent(string? voxLinguaDir = null) =>
+        GetMissingVoxLinguaFiles(voxLinguaDir).Count == 0;
 
     public bool AllModelsPresent() => GetMissingFiles().Count == 0;
 
@@ -463,6 +495,25 @@ internal class ModelManagerService
             .Select(asset => new RepoAsset(
                 DiariZenRepoBase,
                 Path.GetRelativePath("diarizen", asset.LocalRelativePath),
+                asset.RemoteRelativePath))
+            .ToList();
+
+        await DownloadMissingAssetsAsync(dir, missing, progress, ct);
+    }
+
+    public async Task DownloadMissingVoxLinguaModelsAsync(
+        IProgress<DownloadProgress> progress,
+        string? voxLinguaDir = null,
+        CancellationToken ct = default)
+    {
+        string dir = voxLinguaDir ?? _settings.GetVoxLinguaModelsDir();
+        Directory.CreateDirectory(dir);
+
+        var missing = VoxLinguaFiles
+            .Where(asset => !File.Exists(Path.Combine(dir, Path.GetRelativePath(Config.VoxLinguaSubDir, asset.LocalRelativePath))))
+            .Select(asset => new RepoAsset(
+                VoxLinguaRepoBase,
+                Path.GetRelativePath(Config.VoxLinguaSubDir, asset.LocalRelativePath),
                 asset.RemoteRelativePath))
             .ToList();
 
