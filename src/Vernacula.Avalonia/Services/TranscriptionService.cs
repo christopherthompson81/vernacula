@@ -13,8 +13,13 @@ internal class TranscriptionService
     private const string CohereSyntheticTimestampMode = "uniform_segment_frames_v1";
 
     private readonly SettingsService _settings;
+    private readonly LangIdService _langId;
 
-    public TranscriptionService(SettingsService settings) => _settings = settings;
+    public TranscriptionService(SettingsService settings, LangIdService langId)
+    {
+        _settings = settings;
+        _langId   = langId;
+    }
 
     /// <summary>
     /// Runs the full diarization + ASR pipeline on a dedicated worker thread.
@@ -520,6 +525,43 @@ internal class TranscriptionService
                     StartTime          = seg.start,
                     EndTime            = seg.end,
                 });
+            }
+        }
+
+        ct.ThrowIfCancellationRequested();
+
+        // ── Phase 3b: Language identification (optional) ─────────────────────
+        // Runs after segmentation so we have VAD/diarizer segments to choose
+        // from, and before ASR so the detected language can inform / pre-fill
+        // force-language choices downstream. LangIdService gates on
+        // settings + model-present, so this no-ops when LID is off or the
+        // VoxLingua assets haven't been downloaded.
+        if (_langId.IsAvailable && db.GetMetadata("detected_language") is null)
+        {
+            progress.Report(new TranscriptionProgress(
+                TranscriptionPhase.Diarizing, 100, 100, "Detecting language…"));
+
+            ct.ThrowIfCancellationRequested();
+            var vadForLid = segs.Select(s => (s.start, s.end)).ToList();
+            var lidResult = await Task.Run(
+                () => _langId.DetectLanguage(audio, vadForLid), ct).ConfigureAwait(false);
+
+            if (lidResult is not null)
+            {
+                db.InsertMetadata("detected_language",             lidResult.Iso);
+                db.InsertMetadata("detected_language_name",        lidResult.Top.Name);
+                db.InsertMetadata("detected_language_probability", lidResult.TopProbability.ToString("F4", System.Globalization.CultureInfo.InvariantCulture));
+                db.InsertMetadata("detected_language_ambiguous",   lidResult.IsAmbiguous ? "1" : "0");
+                // Top-K as compact JSON so downstream UI can render the chip /
+                // the ambiguity dropdown without recomputing softmax.
+                string topKJson = JsonSerializer.Serialize(
+                    lidResult.TopK.Select(c => new { iso = c.Iso, name = c.Name, p = c.Probability }));
+                db.InsertMetadata("detected_language_topk", topKJson);
+                Console.WriteLine($"[Transcription] LID → {lidResult.FormatSummary()}");
+            }
+            else
+            {
+                Console.WriteLine("[Transcription] LID skipped (no VAD segment long enough).");
             }
         }
 
