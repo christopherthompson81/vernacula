@@ -31,6 +31,7 @@ int     profileMaxTokens  = 200;        // cap maxNewTokens during profiling to 
 double  minAsrSeconds     = 5.0;        // minimum group span (seconds) when using segmented VibeVoice ASR
 double  asrBufferSeconds  = 0.0;        // audio padding on each side of a group (seconds)
 bool    profileSortformer = false;      // --profile-sortformer: print fine-grained timing for Sortformer
+bool    downloadVoxLingua = false;      // --download-voxlingua: fetch the LID model, then exit
 ModelPrecision precision = ModelPrecision.Fp32;
 
 for (int i = 0; i < args.Length; i++)
@@ -95,6 +96,7 @@ for (int i = 0; i < args.Length; i++)
         case "--profile":          profileOutputDir  = args[++i]; break;
         case "--profile-steps":    profileMaxTokens  = int.Parse(args[++i]); break;
         case "--profile-sortformer": profileSortformer = true; break;
+        case "--download-voxlingua": downloadVoxLingua = true; break;
         case "--language":        cohereLanguage = args[++i]; break;
         case "--precision":
             precision = args[++i].ToLowerInvariant() switch {
@@ -110,6 +112,19 @@ for (int i = 0; i < args.Length; i++)
             Console.Error.WriteLine($"Unknown argument: {args[i]}");
             return 1;
     }
+}
+
+// ── Model-management actions (don't require --audio) ─────────────────────────
+
+if (downloadVoxLingua)
+{
+    // The Avalonia app's SettingsService.DefaultModelsDir resolves to
+    // <LocalApplicationData>/Vernacula/models; match that when the caller
+    // didn't override via --model so the downloaded assets land where the
+    // GUI would expect them.
+    string modelsRoot = modelDir ?? DefaultModelsDir();
+    string destDir = Path.Combine(modelsRoot, Config.VoxLinguaSubDir);
+    return await DownloadVoxLinguaAsync(destDir);
 }
 
 if (audioPath is null || modelDir is null)
@@ -790,9 +805,95 @@ static bool IsLikelyOutOfMemory(OnnxRuntimeException ex)
         || message.Contains("bfcarena", StringComparison.OrdinalIgnoreCase);
 }
 
+/// <summary>
+/// Resolves the same default models directory the Avalonia SettingsService
+/// uses (<c>LocalApplicationData/Vernacula/models</c>), so CLI downloads
+/// land where the GUI would expect them.
+/// </summary>
+static string DefaultModelsDir() => Path.Combine(
+    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+    "Vernacula", "models");
+
+/// <summary>
+/// Fetch the VoxLingua107 LID assets (<c>voxlingua107.onnx</c> +
+/// <c>lang_map.json</c>) from the HuggingFace repo. Skips any file that
+/// already exists on disk with a non-zero size. Streams with progress
+/// so large downloads are visible over SSH.
+/// </summary>
+static async Task<int> DownloadVoxLinguaAsync(string destDir)
+{
+    const string repoBase =
+        "https://huggingface.co/christopherthompson81/voxlingua107-lid-onnx/resolve/main";
+    string[] files = [Config.VoxLinguaModelFile, Config.VoxLinguaLangMapFile];
+
+    Directory.CreateDirectory(destDir);
+    Console.WriteLine($"[download] destination: {destDir}");
+
+    using var http = new HttpClient(new HttpClientHandler { AllowAutoRedirect = true });
+    http.Timeout = TimeSpan.FromMinutes(15);
+
+    foreach (string name in files)
+    {
+        string destPath = Path.Combine(destDir, name);
+        if (File.Exists(destPath) && new FileInfo(destPath).Length > 0)
+        {
+            Console.WriteLine($"[download] {name}: already present ({new FileInfo(destPath).Length / 1024 / 1024} MiB), skipping");
+            continue;
+        }
+
+        string url = $"{repoBase}/{name}";
+        Console.Write($"[download] {name} ← {url} ");
+        try
+        {
+            using var resp = await http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead);
+            resp.EnsureSuccessStatusCode();
+            long? total = resp.Content.Headers.ContentLength;
+            string tmpPath = destPath + ".download";
+
+            long bytes = 0;
+            var buffer = new byte[1 << 20];
+            int lastPct = -1;
+
+            await using (var src = await resp.Content.ReadAsStreamAsync())
+            await using (var dst = File.Create(tmpPath))
+            {
+                while (true)
+                {
+                    int read = await src.ReadAsync(buffer);
+                    if (read == 0) break;
+                    await dst.WriteAsync(buffer.AsMemory(0, read));
+                    bytes += read;
+
+                    if (total is > 0)
+                    {
+                        int pct = (int)(100 * bytes / total.Value);
+                        if (pct != lastPct && pct % 10 == 0)
+                        {
+                            Console.Write($"{pct}% ");
+                            lastPct = pct;
+                        }
+                    }
+                }
+            }
+
+            File.Move(tmpPath, destPath, overwrite: true);
+            Console.WriteLine($"done ({bytes / 1024 / 1024} MiB)");
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"\n[download] FAILED ({name}): {ex.Message}");
+            return 1;
+        }
+    }
+
+    Console.WriteLine("[download] VoxLingua107 ready.");
+    return 0;
+}
+
 static void PrintUsage()
 {
     Console.WriteLine("Usage: vernacula-cli --audio <file> --model <dir> [options]");
+    Console.WriteLine("       vernacula-cli --download-voxlingua [--model <dir>]");
     Console.WriteLine();
     Console.WriteLine("Options:");
     Console.WriteLine("  --segments <path>                  Load pre-computed segments JSON, skip diarization");
@@ -819,6 +920,8 @@ static void PrintUsage()
     Console.WriteLine("  --skip-asr                         Export diarization/VAD segments without transcription");
     Console.WriteLine("  --benchmark                        Print timing / RTF after transcription");
     Console.WriteLine("  --profile-sortformer               Print fine-grained timing breakdown for Sortformer");
+    Console.WriteLine("  --download-voxlingua               Download the VoxLingua107 LID model and exit");
+    Console.WriteLine("                                     (defaults to ~/.local/share/Vernacula/models)");
     Console.WriteLine("  -h, --help                         Show this help");
     Console.WriteLine();
     Console.WriteLine("Build: dotnet build -c Release -p:EP=Cuda|DirectML|Cpu -p:Platform=x64");
