@@ -111,14 +111,9 @@ internal partial class ResultsViewModel : ObservableObject
 
         if (!mismatch) return;
 
-        string currentBackendLabel = asrModel switch
-        {
-            "CohereLabs/cohere-transcribe-03-2026" => "Cohere Transcribe",
-            "Qwen/Qwen3-ASR-1.7B"                  => "Qwen3-ASR",
-            "vibevoice/vibevoice-asr"              => "VibeVoice-ASR",
-            "nvidia/parakeet-tdt-0.6b-v3"          => "Parakeet",
-            _                                       => asrModel ?? "the current ASR backend",
-        };
+        string currentBackendLabel = AsrLanguageSupport.BackendOf(asrModel ?? "") is { } b
+            ? AsrLanguageSupport.DisplayName(b)
+            : asrModel ?? "the current ASR backend";
 
         string confidenceSuffix = "";
         if (float.TryParse(probStr, System.Globalization.NumberStyles.Float,
@@ -139,7 +134,7 @@ internal partial class ResultsViewModel : ObservableObject
 
         if (suggested is not null && ReprocessJob is not null && _jobId is not null)
         {
-            ReprocessButtonText = $"Reprocess with {HumanBackend(suggested.Value)}";
+            ReprocessButtonText = $"Reprocess with {AsrLanguageSupport.DisplayName(suggested.Value)}";
             CanReprocess        = true;
         }
         else
@@ -152,20 +147,11 @@ internal partial class ResultsViewModel : ObservableObject
             $"Language identification detected {detectedName} ({detectedIso}){confidenceSuffix}, " +
             $"but this job was transcribed with {currentBackendLabel}, which doesn't support {detectedName}. " +
             (suggested is not null
-                ? $"{HumanBackend(suggested.Value)} supports {detectedName}; use the button to re-queue this job with {HumanBackend(suggested.Value)} and force-language {detectedIso}."
+                ? $"{AsrLanguageSupport.DisplayName(suggested.Value)} supports {detectedName}; use the button to re-queue this job with {AsrLanguageSupport.DisplayName(suggested.Value)} and force-language {detectedIso}."
                 : "No installed ASR backend supports this language; you'll need to install a different backend before reprocessing.");
 
         ShowMismatchBanner = true;
     }
-
-    private static string HumanBackend(AsrBackend b) => b switch
-    {
-        AsrBackend.Parakeet  => "Parakeet",
-        AsrBackend.Cohere    => "Cohere Transcribe",
-        AsrBackend.Qwen3Asr  => "Qwen3-ASR",
-        AsrBackend.VibeVoice => "VibeVoice-ASR",
-        _                    => b.ToString(),
-    };
 
     [RelayCommand(CanExecute = nameof(CanReprocess))]
     private void ReprocessWithSuggestedBackend()

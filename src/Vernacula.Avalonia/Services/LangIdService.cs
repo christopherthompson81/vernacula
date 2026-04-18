@@ -17,21 +17,12 @@ namespace Vernacula.App.Services;
 /// </para>
 ///
 /// <para>
-/// Thread-safety: the underlying <see cref="VoxLinguaLid"/> session is
-/// safe to call from multiple threads, but instances of this service
-/// hold a lazily-constructed one. Construct this service once per app
-/// lifetime and share; don't wrap each job in a new instance.
+/// The ONNX session is created fresh for each job and disposed immediately
+/// after, so it never holds GPU memory concurrently with the ASR model.
 /// </para>
 /// </summary>
-internal sealed class LangIdService : IDisposable
+internal sealed class LangIdService(SettingsService settings)
 {
-    private readonly SettingsService _settings;
-    private VoxLinguaLid? _lid;
-    private readonly object _lock = new();
-    private bool _disposed;
-
-    public LangIdService(SettingsService settings) => _settings = settings;
-
     /// <summary>
     /// True when LID is enabled in settings and the model assets are
     /// present on disk. Callers should gate their pre-ASR LID step on
@@ -41,8 +32,8 @@ internal sealed class LangIdService : IDisposable
     {
         get
         {
-            if (!_settings.Current.LidEnabled) return false;
-            string dir = _settings.GetVoxLinguaModelsDir();
+            if (!settings.Current.LidEnabled) return false;
+            string dir = settings.GetVoxLinguaModelsDir();
             return File.Exists(Path.Combine(dir, Config.VoxLinguaModelFile))
                 && File.Exists(Path.Combine(dir, Config.VoxLinguaLangMapFile));
         }
@@ -70,28 +61,7 @@ internal sealed class LangIdService : IDisposable
         IReadOnlyList<(double startSec, double endSec)> vadSegments)
     {
         if (!IsAvailable) return null;
-        return GetOrCreateLid().ClassifyLongestSegment(audioMono16k, vadSegments);
-    }
-
-    public void Dispose()
-    {
-        if (_disposed) return;
-        lock (_lock)
-        {
-            _lid?.Dispose();
-            _lid = null;
-            _disposed = true;
-        }
-    }
-
-    private VoxLinguaLid GetOrCreateLid()
-    {
-        lock (_lock)
-        {
-            if (_disposed) throw new ObjectDisposedException(nameof(LangIdService));
-            return _lid ??= new VoxLinguaLid(
-                _settings.GetVoxLinguaModelsDir(),
-                ExecutionProvider.Auto);
-        }
+        using var lid = new VoxLinguaLid(settings.GetVoxLinguaModelsDir());
+        return lid.ClassifyLongestSegment(audioMono16k, vadSegments);
     }
 }

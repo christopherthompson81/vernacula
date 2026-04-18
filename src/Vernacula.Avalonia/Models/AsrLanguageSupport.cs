@@ -12,7 +12,7 @@ namespace Vernacula.App.Models;
 /// <item><see cref="AsrBackend.Parakeet"/>: NVIDIA Parakeet TDT 0.6B v3 — English only.</item>
 /// <item><see cref="AsrBackend.Cohere"/>: Cohere Transcribe — 14 languages
 /// (mirrors <c>SettingsViewModel.CohereLanguages</c>).</item>
-/// <item><see cref="AsrBackend.Qwen3Asr"/>: Qwen3-ASR 1.7B — 57 languages
+/// <item><see cref="AsrBackend.Qwen3Asr"/>: Qwen3-ASR 1.7B — 29 languages
 /// (mirrors <c>SettingsViewModel.Qwen3AsrLanguages</c>).</item>
 /// <item><see cref="AsrBackend.VibeVoice"/>: VibeVoice-ASR — English only
 /// in the current export.</item>
@@ -36,14 +36,14 @@ public static class AsrLanguageSupport
         "ko", "nl", "pl", "pt", "vi", "zh",
     }.ToFrozenSet();
 
+    // Official Qwen3-ASR 1.7B supported languages (https://github.com/QwenLM/Qwen3-ASR).
+    // "tl" (Tagalog) covers the officially listed "Filipino". Cantonese (yue) omitted
+    // pending token-ID support in Qwen3Asr.IsoToLanguageName.
     private static readonly FrozenSet<string> Qwen3AsrLangs = new HashSet<string>
     {
-        "af", "ar", "hy", "az", "be", "bs", "bg", "ca", "zh", "hr",
-        "cs", "da", "nl", "en", "et", "fi", "fr", "gl", "de", "el",
-        "he", "hi", "hu", "is", "id", "it", "ja", "kn", "kk", "ko",
-        "lv", "lt", "mk", "ms", "mr", "ne", "no", "fa", "pl", "pt",
-        "ro", "ru", "sr", "sk", "sl", "es", "sw", "sv", "tl", "ta",
-        "th", "tr", "uk", "ur", "vi", "cy",
+        "zh", "en", "ar", "de", "fr", "es", "pt", "id", "it", "ko",
+        "ru", "th", "vi", "ja", "tr", "hi", "ms", "nl", "sv", "da",
+        "fi", "pl", "cs", "tl", "fa", "el", "hu", "mk", "ro",
     }.ToFrozenSet();
 
     private static readonly FrozenSet<string> VibeVoiceLangs =
@@ -94,4 +94,37 @@ public static class AsrLanguageSupport
         var options = BackendsSupporting(iso);
         return options.Count > 0 ? options[0] : null;
     }
+
+    /// <summary>Human-readable display name for a backend.</summary>
+    public static string DisplayName(AsrBackend backend) => backend switch
+    {
+        AsrBackend.Parakeet  => "Parakeet",
+        AsrBackend.Cohere    => "Cohere Transcribe",
+        AsrBackend.Qwen3Asr  => "Qwen3-ASR",
+        AsrBackend.VibeVoice => "VibeVoice-ASR",
+        _                    => backend.ToString(),
+    };
+
+    /// <summary>
+    /// Maps the pipeline's ASR model-name string to an <see cref="AsrBackend"/>
+    /// enum value. Returns null for unknown model names (safe fallback).
+    /// </summary>
+    public static AsrBackend? BackendOf(string modelName) => modelName switch
+    {
+        "nvidia/parakeet-tdt-0.6b-v3"          => AsrBackend.Parakeet,
+        "CohereLabs/cohere-transcribe-03-2026" => AsrBackend.Cohere,
+        "Qwen/Qwen3-ASR-1.7B"                  => AsrBackend.Qwen3Asr,
+        "vibevoice/vibevoice-asr"              => AsrBackend.VibeVoice,
+        _                                      => (AsrBackend?)null,
+    };
+
+    /// <summary>Inverse of <see cref="BackendOf"/>: enum → pipeline model-name string.</summary>
+    public static string ModelName(AsrBackend backend) => backend switch
+    {
+        AsrBackend.Parakeet  => "nvidia/parakeet-tdt-0.6b-v3",
+        AsrBackend.Cohere    => "CohereLabs/cohere-transcribe-03-2026",
+        AsrBackend.Qwen3Asr  => "Qwen/Qwen3-ASR-1.7B",
+        AsrBackend.VibeVoice => "vibevoice/vibevoice-asr",
+        _ => throw new ArgumentOutOfRangeException(nameof(backend)),
+    };
 }

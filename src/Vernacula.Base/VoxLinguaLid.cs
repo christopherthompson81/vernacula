@@ -76,6 +76,8 @@ public sealed class VoxLinguaLid : IDisposable
     /// </summary>
     public LidResult Classify(ReadOnlySpan<float> audio, int topK = 5)
     {
+        if (topK <= 0)
+            throw new ArgumentException($"topK must be > 0, got {topK}.", nameof(topK));
         if (audio.Length < SampleRate)
             throw new ArgumentException(
                 $"audio is {audio.Length} samples (~{audio.Length / (float)SampleRate:F2} s); " +
@@ -253,17 +255,25 @@ public sealed class VoxLinguaLid : IDisposable
         using var doc = JsonDocument.Parse(stream);
 
         var root = doc.RootElement;
-        var entries = new LanguageEntry[root.EnumerateObject().Count()];
+        var entries = new LanguageEntry?[NumClasses];
         foreach (var prop in root.EnumerateObject())
         {
-            int idx = int.Parse(prop.Name);
+            if (!int.TryParse(prop.Name, out int idx) || idx < 0 || idx >= NumClasses)
+                throw new InvalidDataException(
+                    $"lang_map.json has invalid index '{prop.Name}'; expected 0–{NumClasses - 1}.");
             string iso = prop.Value.GetProperty("iso").GetString()
                          ?? throw new InvalidDataException($"lang_map.json entry {idx} missing 'iso'.");
             string name = prop.Value.GetProperty("name").GetString()
                           ?? throw new InvalidDataException($"lang_map.json entry {idx} missing 'name'.");
             entries[idx] = new LanguageEntry(iso, name);
         }
-        return entries;
+
+        for (int i = 0; i < NumClasses; i++)
+            if (entries[i] is null)
+                throw new InvalidDataException(
+                    $"lang_map.json is missing entry for index {i}.");
+
+        return entries!;
     }
 
     private static InferenceSession CreateSession(string modelPath, ExecutionProvider ep)

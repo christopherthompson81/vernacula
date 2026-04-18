@@ -38,14 +38,14 @@ public partial class AsrMismatchDialog : Window
         BodyText.Text =
             $"The audio appears to be {detectedName} ({detectedIso}) with " +
             $"{detectedProbability:P0} confidence, but your current ASR backend " +
-            $"({HumanName(currentBackend)}) doesn't support {detectedName}.";
+            $"({AsrLanguageSupport.DisplayName(currentBackend)}) doesn't support {detectedName}.";
 
         if (suggestedBackend is { } alt)
         {
             SubtleText.Text =
-                $"{HumanName(alt)} supports {detectedName}. Click " +
+                $"{AsrLanguageSupport.DisplayName(alt)} supports {detectedName}. Click " +
                 $"“Switch ASR” to use it for this job.";
-            SwitchBackendButton.Content = $"Switch to {HumanName(alt)}";
+            SwitchBackendButton.Content = $"Switch to {AsrLanguageSupport.DisplayName(alt)}";
             SwitchBackendButton.IsEnabled = true;
         }
         else
@@ -59,15 +59,6 @@ public partial class AsrMismatchDialog : Window
             SwitchBackendButton.IsEnabled = false;
         }
     }
-
-    private static string HumanName(AsrBackend b) => b switch
-    {
-        AsrBackend.Parakeet  => "Parakeet",
-        AsrBackend.Cohere    => "Cohere Transcribe",
-        AsrBackend.Qwen3Asr  => "Qwen3-ASR",
-        AsrBackend.VibeVoice => "VibeVoice-ASR",
-        _                    => b.ToString(),
-    };
 
     private void SwitchBackend_Click(object? sender, RoutedEventArgs e)
         => Close(AsrMismatchChoice.SwitchBackend);

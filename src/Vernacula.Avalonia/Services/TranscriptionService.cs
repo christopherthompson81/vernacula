@@ -582,7 +582,7 @@ internal class TranscriptionService
                 // force-language respected verbatim, they disable LID.
                 if (!lidResult.IsAmbiguous)
                 {
-                    var backend = BackendOf(asrModelName);
+                    var backend = AsrLanguageSupport.BackendOf(asrModelName);
                     if (backend is not null && AsrLanguageSupport.Supports(backend.Value, lidResult.Iso))
                     {
                         Console.WriteLine(
@@ -602,12 +602,22 @@ internal class TranscriptionService
                         // Otherwise fall through to the log-and-continue fallback.
                         Views.Dialogs.AsrMismatchChoice? choice = null;
                         if (OnAsrLanguageMismatch is not null)
-                            choice = await OnAsrLanguageMismatch(lidResult, backend.Value, alt).ConfigureAwait(false);
+                        {
+                            try
+                            {
+                                choice = await OnAsrLanguageMismatch(lidResult, backend.Value, alt).ConfigureAwait(false);
+                            }
+                            catch (Exception ex)
+                            {
+                                Console.WriteLine($"[Transcription] OnAsrLanguageMismatch callback failed: {ex.Message}");
+                                // fall through to log-and-continue with current backend
+                            }
+                        }
 
                         switch (choice)
                         {
                             case Views.Dialogs.AsrMismatchChoice.SwitchBackend when alt is not null:
-                                string newModelName = ModelNameOf(alt.Value);
+                                string newModelName = AsrLanguageSupport.ModelName(alt.Value);
                                 Console.WriteLine(
                                     $"[Transcription] LID mismatch: user switched ASR " +
                                     $"{backend.Value} → {alt.Value}. " +
@@ -622,7 +632,7 @@ internal class TranscriptionService
                                 useVibeVoiceAsr = string.Equals(asrModelName, "vibevoice/vibevoice-asr", StringComparison.Ordinal);
                                 useCohereAsr    = string.Equals(asrModelName, "CohereLabs/cohere-transcribe-03-2026", StringComparison.Ordinal);
                                 useQwen3Asr     = string.Equals(asrModelName, "Qwen/Qwen3-ASR-1.7B", StringComparison.Ordinal);
-                                db.InsertMetadata("asr_model_overridden_from", BackendOf(ModelNameOf(backend.Value))?.ToString() ?? backend.Value.ToString());
+                                db.InsertMetadata("asr_model_overridden_from", AsrLanguageSupport.BackendOf(AsrLanguageSupport.ModelName(backend.Value))?.ToString() ?? backend.Value.ToString());
                                 break;
 
                             case Views.Dialogs.AsrMismatchChoice.CancelJob:
@@ -841,31 +851,6 @@ internal class TranscriptionService
             OverridePercent: 100));
     }
 
-    /// <summary>
-    /// Maps the ASR model-name string used by the pipeline back to an
-    /// <see cref="AsrBackend"/> enum, so language-support lookups via
-    /// <see cref="AsrLanguageSupport"/> work against the same name table the
-    /// rest of the pipeline uses. Returns null for unknown model names
-    /// (future backends; safe fallback: don't override).
-    /// </summary>
-    private static AsrBackend? BackendOf(string asrModelName) => asrModelName switch
-    {
-        "nvidia/parakeet-tdt-0.6b-v3"          => AsrBackend.Parakeet,
-        "CohereLabs/cohere-transcribe-03-2026" => AsrBackend.Cohere,
-        "Qwen/Qwen3-ASR-1.7B"                  => AsrBackend.Qwen3Asr,
-        "vibevoice/vibevoice-asr"              => AsrBackend.VibeVoice,
-        _                                      => null,
-    };
-
-    /// <summary>Inverse of <see cref="BackendOf"/>: enum → model-name string.</summary>
-    private static string ModelNameOf(AsrBackend backend) => backend switch
-    {
-        AsrBackend.Parakeet  => "nvidia/parakeet-tdt-0.6b-v3",
-        AsrBackend.Cohere    => "CohereLabs/cohere-transcribe-03-2026",
-        AsrBackend.Qwen3Asr  => "Qwen/Qwen3-ASR-1.7B",
-        AsrBackend.VibeVoice => "vibevoice/vibevoice-asr",
-        _ => throw new ArgumentOutOfRangeException(nameof(backend)),
-    };
 
     private static double EstimateDiariZenDiarizationFraction(string message)
     {
