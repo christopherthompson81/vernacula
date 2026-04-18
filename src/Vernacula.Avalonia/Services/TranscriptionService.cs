@@ -600,13 +600,18 @@ internal class TranscriptionService
             }
             else if (useQwen3Asr)
             {
+                string? qwenForceLanguage =
+                    string.Equals(asrLanguageCode, "auto", StringComparison.OrdinalIgnoreCase) ||
+                    string.IsNullOrWhiteSpace(asrLanguageCode)
+                        ? null
+                        : asrLanguageCode;
                 bool hasBatchedFiles = File.Exists(Path.Combine(qwen3AsrModelsDir, Qwen3Asr.EncoderBatchedFile)) &&
                                        (File.Exists(Path.Combine(qwen3AsrModelsDir, Qwen3Asr.DecoderFile)) ||
                                         File.Exists(Path.Combine(qwen3AsrModelsDir, Qwen3Asr.DecoderInitBatchedFile)));
                 using var qwen3Asr = new Qwen3Asr(qwen3AsrModelsDir, preferBatched: hasBatchedFiles);
                 var recognitionResults = hasBatchedFiles
-                    ? qwen3Asr.RecognizeBatchedDetailed(segsSubset, audio)
-                    : qwen3Asr.RecognizeDetailed(segsSubset, audio);
+                    ? qwen3Asr.RecognizeBatchedDetailed(segsSubset, audio, forceLanguage: qwenForceLanguage)
+                    : qwen3Asr.RecognizeDetailed(segsSubset, audio, forceLanguage: qwenForceLanguage);
                 foreach (var result in recognitionResults)
                 {
                     ct.ThrowIfCancellationRequested();

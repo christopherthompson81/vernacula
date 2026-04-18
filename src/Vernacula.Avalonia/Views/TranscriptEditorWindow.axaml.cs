@@ -48,6 +48,7 @@ public partial class TranscriptEditorWindow : Window
     private readonly string _jobAsrModel = "nvidia/parakeet-tdt-0.6b-v3";
     private readonly string _jobAsrLanguageCode = "auto";
     private readonly bool _asrModelsAvailable;
+    private readonly bool _isQwen3Asr;
     private readonly bool _showApproximateTimingNotice;
     private readonly string _approximateTimingNoticeText = "";
     private bool _isUpdatingUi;
@@ -100,6 +101,7 @@ public partial class TranscriptEditorWindow : Window
         bool isCohere    = string.Equals(_jobAsrModel, "CohereLabs/cohere-transcribe-03-2026", StringComparison.Ordinal);
         bool isQwen3Asr  = string.Equals(_jobAsrModel, "Qwen/Qwen3-ASR-1.7B", StringComparison.Ordinal);
         bool isVibeVoice = string.Equals(_jobAsrModel, "vibevoice/vibevoice-asr", StringComparison.Ordinal);
+        _isQwen3Asr = isQwen3Asr;
         _showApproximateTimingNotice = isCohere || isQwen3Asr || isVibeVoice;
         _approximateTimingNoticeText = isCohere
             ? "Cohere Transcribe: no word-level timing; token sync is approximate."
@@ -321,6 +323,7 @@ public partial class TranscriptEditorWindow : Window
         for (int i = 0; i < _vm.Segments.Count; i++)
         {
             var state = new TranscriptEditorCardState(_vm.Segments[i], i);
+            state.ShowLanguageChip = _isQwen3Asr;
             AssignActionButtonImages(state);
             state.RedoAsrSpinnerImage = GetRedoAsrSpinnerImage();
             RefreshCardState(state, preserveDrafts: false);
@@ -1290,7 +1293,8 @@ public partial class TranscriptEditorWindow : Window
                 cohereModelsDir,
                 _jobAsrLanguageCode,
                 qwen3AsrModelsDir: App.Current.Settings.GetQwen3AsrModelsDir(),
-                vibeVoiceModelsDir: App.Current.Settings.GetVibeVoiceModelsDir()));
+                vibeVoiceModelsDir: App.Current.Settings.GetVibeVoiceModelsDir(),
+                qwen3AsrLanguageCode: _isQwen3Asr ? card.SelectedRedoLanguage : null));
             if (result is null)
             {
                 SetCardStatus(card, "Redo ASR did not produce a result.");
@@ -1298,7 +1302,10 @@ public partial class TranscriptEditorWindow : Window
             }
 
             _vm.ApplyRedoAsr(card.Index, result.Value.newResultId, result.Value.asrContent,
-                result.Value.tokens, result.Value.timestamps, result.Value.logprobs);
+                result.Value.tokens, result.Value.timestamps, result.Value.logprobs, result.Value.language);
+
+            if (_isQwen3Asr)
+                card.SelectedRedoLanguage = result.Value.language ?? "Auto";
 
             card.DraftContent = card.Segment.Content;
             DataChanged?.Invoke();

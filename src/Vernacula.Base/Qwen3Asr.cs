@@ -66,6 +66,112 @@ public sealed class Qwen3Asr : IDisposable
         (32.0,  8),
         (double.PositiveInfinity, 6),
     ];
+    // Maps ISO 639-1 codes → Qwen3-ASR language names (as they appear in model output).
+    private static readonly Dictionary<string, string> IsoToLanguageName = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["af"] = "Afrikaans",  ["ar"] = "Arabic",     ["hy"] = "Armenian",   ["az"] = "Azerbaijani",
+        ["be"] = "Belarusian", ["bs"] = "Bosnian",    ["bg"] = "Bulgarian",  ["ca"] = "Catalan",
+        ["zh"] = "Chinese",    ["hr"] = "Croatian",   ["cs"] = "Czech",      ["da"] = "Danish",
+        ["nl"] = "Dutch",      ["en"] = "English",    ["et"] = "Estonian",   ["fi"] = "Finnish",
+        ["fr"] = "French",     ["gl"] = "Galician",   ["de"] = "German",     ["el"] = "Greek",
+        ["he"] = "Hebrew",     ["hi"] = "Hindi",      ["hu"] = "Hungarian",  ["is"] = "Icelandic",
+        ["id"] = "Indonesian", ["it"] = "Italian",    ["ja"] = "Japanese",   ["kn"] = "Kannada",
+        ["kk"] = "Kazakh",     ["ko"] = "Korean",     ["lv"] = "Latvian",    ["lt"] = "Lithuanian",
+        ["mk"] = "Macedonian", ["ms"] = "Malay",      ["mr"] = "Marathi",    ["ne"] = "Nepali",
+        ["no"] = "Norwegian",  ["fa"] = "Persian",    ["pl"] = "Polish",     ["pt"] = "Portuguese",
+        ["ro"] = "Romanian",   ["ru"] = "Russian",    ["sr"] = "Serbian",    ["sk"] = "Slovak",
+        ["sl"] = "Slovenian",  ["es"] = "Spanish",    ["sw"] = "Swahili",    ["sv"] = "Swedish",
+        ["tl"] = "Tagalog",    ["ta"] = "Tamil",      ["th"] = "Thai",       ["tr"] = "Turkish",
+        ["uk"] = "Ukrainian",  ["ur"] = "Urdu",       ["vi"] = "Vietnamese", ["cy"] = "Welsh",
+    };
+
+    // Token ID sequences for "language <Name> " prefix, pre-computed from the Qwen3 BPE tokenizer.
+    // First token is always 11528 ("language"); last is always 220 (" ").
+    private static readonly Dictionary<string, int[]> LanguagePrefixTokens =
+        new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["Afrikaans"]  = [11528, 12907, 40454, 596,   220],
+        ["Arabic"]     = [11528, 34117,               220],
+        ["Armenian"]   = [11528, 66742,               220],
+        ["Azerbaijani"]= [11528, 64323, 73,   5559,   220],
+        ["Belarusian"] = [11528, 69506, 1103,         220],
+        ["Bosnian"]    = [11528, 27971, 77,   1103,   220],
+        ["Bulgarian"]  = [11528, 88624,               220],
+        ["Catalan"]    = [11528, 80844,               220],
+        ["Chinese"]    = [11528,  8453,               220],
+        ["Croatian"]   = [11528, 99070,               220],
+        ["Czech"]      = [11528, 33150,               220],
+        ["Danish"]     = [11528, 43680,               220],
+        ["Dutch"]      = [11528, 23234,               220],
+        ["English"]    = [11528,  6364,               220],
+        ["Estonian"]   = [11528, 53323, 1103,         220],
+        ["Finnish"]    = [11528, 57853,               220],
+        ["French"]     = [11528,  8585,               220],
+        ["Galician"]   = [11528, 10620, 12452,        220],
+        ["German"]     = [11528,  5938,               220],
+        ["Greek"]      = [11528, 17860,               220],
+        ["Hebrew"]     = [11528, 36266,               220],
+        ["Hindi"]      = [11528, 43980,               220],
+        ["Hungarian"]  = [11528, 56769,               220],
+        ["Icelandic"]  = [11528, 99148,               220],
+        ["Indonesian"] = [11528, 58829,               220],
+        ["Italian"]    = [11528, 14811,               220],
+        ["Japanese"]   = [11528, 10769,               220],
+        ["Kannada"]    = [11528, 77211,  2584,        220],
+        ["Kazakh"]     = [11528, 34974, 21758,        220],
+        ["Korean"]     = [11528, 16134,               220],
+        ["Latvian"]    = [11528,  9926,    85,  1103, 220],
+        ["Lithuanian"] = [11528, 40578, 10386,  1103, 220],
+        ["Macedonian"] = [11528, 56452, 75491,        220],
+        ["Malay"]      = [11528, 79140,               220],
+        ["Marathi"]    = [11528,  2876, 66531,        220],
+        ["Nepali"]     = [11528, 36569,  7956,        220],
+        ["Norwegian"]  = [11528, 44621,               220],
+        ["Persian"]    = [11528, 49861,               220],
+        ["Polish"]     = [11528, 31984,               220],
+        ["Portuguese"] = [11528, 42188,               220],
+        ["Romanian"]   = [11528, 73597,               220],
+        ["Russian"]    = [11528,  8522,               220],
+        ["Serbian"]    = [11528, 87164,               220],
+        ["Slovak"]     = [11528, 61264,               220],
+        ["Slovenian"]  = [11528, 59395,  1103,        220],
+        ["Spanish"]    = [11528, 15154,               220],
+        ["Swahili"]    = [11528,  4492,  1466,  3921, 220],
+        ["Swedish"]    = [11528, 30109,               220],
+        ["Tagalog"]    = [11528, 12353, 30951,        220],
+        ["Tamil"]      = [11528, 43783,               220],
+        ["Thai"]       = [11528, 26392,               220],
+        ["Turkish"]    = [11528, 23734,               220],
+        ["Ukrainian"]  = [11528, 33625,               220],
+        ["Urdu"]       = [11528, 93335,               220],
+        ["Vietnamese"] = [11528, 48477,               220],
+        ["Welsh"]      = [11528, 45781,               220],
+    };
+
+    // Resolves an ISO 639-1 code or language name to a forced-prefix token sequence.
+    // Returns [] when forceLanguage is null; throws ArgumentException for unrecognised codes.
+    private static int[] ResolveForcedPrefix(string? forceLanguage)
+    {
+        if (forceLanguage is null) return [];
+        string name = IsoToLanguageName.TryGetValue(forceLanguage, out string? mapped)
+            ? mapped : forceLanguage;
+        if (LanguagePrefixTokens.TryGetValue(name, out int[]? tokens))
+        {
+            // Omit the trailing 220 ("Ġ" space). The model naturally chooses whether to emit
+            // a standalone space separator or jump straight to a Ġ-prefixed content token —
+            // forcing a fixed separator gives KV states the model wasn't trained on.
+            return tokens.Length > 0 && tokens[^1] == 220 ? tokens[..^1] : tokens;
+        }
+        throw new ArgumentException(
+            $"Language '{forceLanguage}' not found. Use an ISO 639-1 code (e.g. 'en') or a language name (e.g. 'English').");
+    }
+
+    private static string? ResolveForcedLanguageName(string? forceLanguage)
+    {
+        if (forceLanguage is null) return null;
+        return IsoToLanguageName.TryGetValue(forceLanguage, out string? name) ? name : forceLanguage;
+    }
+
     private static readonly string[] SpokenLanguageNames =
     [
         "Afrikaans",
@@ -396,8 +502,11 @@ public sealed class Qwen3Asr : IDisposable
     private IEnumerable<QwenRecognitionResult> RecognizeUnifiedContinuousBatched(
         IReadOnlyList<QwenBatchedItem> validItems,
         long freeGpuMemoryMb,
-        int maxNewTokens)
+        int maxNewTokens,
+        int[] forcedPrefix,
+        string? forcedLanguageName = null)
     {
+        forcedPrefix ??= [];
         var encodedItems = EncodeBatchedItems(validItems, freeGpuMemoryMb);
         if (encodedItems.Count == 0)
             yield break;
@@ -406,7 +515,9 @@ public sealed class Qwen3Asr : IDisposable
         //   prefill:  [groupSize, maxPromptLen, vocabSize] logits  (lm_head output, temporary but large)
         //   decode KV: [nLayers, groupSize, nKvHeads, maxKvSeqLen, headDim] × 2 (persistent throughout decode)
         // Budget 25% of free VRAM; remainder for model weights, activations, ORT arena overhead.
-        int  maxPromptSeqLen       = encodedItems.Max(it => BuildPromptIds(it.AudioTokenCount).Count);
+        // The forced prefix is appended to each item's prompt, so add its length to the base prompt length.
+        int  maxPromptSeqLen       = encodedItems.Max(it => BuildPromptIds(it.AudioTokenCount).Count)
+                                     + forcedPrefix.Length;
         int  maxKvSeqLen           = maxPromptSeqLen + maxNewTokens;
         long prefillLogitsPerSlot  = (long)maxPromptSeqLen * _vocabSize * 4;
         long decodeKvPerSlot       = (long)_nLayers * _nKvHeads * maxKvSeqLen * _headDim * 4 * 2;
@@ -443,7 +554,7 @@ public sealed class Qwen3Asr : IDisposable
             }
 
             var (inputEmbeds, positionIds, prefillMask, seqLengths) =
-                BuildUnifiedBatchPrefillInputs(audioFeatures, audioLengths, groupSize, maxAudioTokens);
+                BuildUnifiedBatchPrefillInputs(audioFeatures, audioLengths, groupSize, maxAudioTokens, forcedPrefix);
             int maxPromptLen = seqLengths.Max();
 
             // --- Prefill: use Run() — avoids GetTensorDataAsSpan failing on _decoder with mixed CPU/CUDA IO binding ---
@@ -487,7 +598,7 @@ public sealed class Qwen3Asr : IDisposable
             {
                 rawTokens[b]   = new List<int>(maxNewTokens);
                 rawLogprobs[b] = new List<float>(maxNewTokens);
-                int firstToken = ArgMaxSpan(lastPosLogits.AsSpan(b * _vocabSize, _vocabSize), out float firstLogprob);
+                int   firstToken  = ArgMaxSpan(lastPosLogits.AsSpan(b * _vocabSize, _vocabSize), out float firstLogprob);
                 nextTokens[b] = firstToken;
                 rawTokens[b].Add(firstToken);
                 rawLogprobs[b].Add(firstLogprob);
@@ -576,9 +687,11 @@ public sealed class Qwen3Asr : IDisposable
                 var item = encodedItems[pendingIndex + i];
                 var (textTokens, textLogprobs) = ExtractTextTokens(rawTokens[i], rawLogprobs[i]);
                 string rawText = DecodeTokens(textTokens);
-                var parsed = ParseMetadataPrefix(rawText);
+                var parsed = forcedLanguageName is null ? ParseMetadataPrefix(rawText) : null;
+                string text      = parsed?.Text ?? rawText;
+                string? language = forcedLanguageName ?? parsed?.Language;
                 yield return new QwenRecognitionResult(
-                    item.SegId, parsed.Text, rawTokens[i], textTokens, textLogprobs, parsed.Language, rawText);
+                    item.SegId, text, rawTokens[i], textTokens, textLogprobs, language, rawText);
             }
 
             pendingIndex += groupSize;
@@ -606,20 +719,25 @@ public sealed class Qwen3Asr : IDisposable
     public IEnumerable<(int segId, string text)> Recognize(
         IReadOnlyList<(double start, double end, string spk)> segs,
         float[] audio,
-        int maxNewTokens = 256)
+        int maxNewTokens = 256,
+        string? forceLanguage = null)
     {
-        foreach (var result in RecognizeDetailed(segs, audio, maxNewTokens))
+        foreach (var result in RecognizeDetailed(segs, audio, maxNewTokens, forceLanguage))
             yield return (result.SegmentId, result.Text);
     }
 
     public IEnumerable<QwenRecognitionResult> RecognizeDetailed(
         IReadOnlyList<(double start, double end, string spk)> segs,
         float[] audio,
-        int maxNewTokens = 256)
+        int maxNewTokens = 256,
+        string? forceLanguage = null)
     {
         if (_encoder is null)
             throw new InvalidOperationException(
                 "Serial encoder sessions are not loaded. Construct with preferBatched:false or call RecognizeBatchedDetailed.");
+
+        int[]   forcedPrefix        = ResolveForcedPrefix(forceLanguage);
+        string? forcedLanguageName  = ResolveForcedLanguageName(forceLanguage);
 
         for (int segId = 0; segId < segs.Count; segId++)
         {
@@ -640,21 +758,25 @@ public sealed class Qwen3Asr : IDisposable
             int audioOffset = GetAudioPadStart(promptIds);
 
             var (rawTokens, rawLogprobs) = _decoder is not null
-                ? DecodeOnCpuUnified(promptIds, audioOffset, audioFeatures, audioTokenCount, maxNewTokens)
+                ? DecodeOnCpuUnified(promptIds, audioOffset, audioFeatures, audioTokenCount, maxNewTokens, forcedPrefix)
                 : _useCudaIoBinding
-                    ? DecodeWithIoBinding(promptIds, audioOffset, audioFeatures, audioTokenCount, maxNewTokens)
-                    : DecodeOnCpu(promptIds, audioOffset, audioFeatures, audioTokenCount, maxNewTokens);
+                    ? DecodeWithIoBinding(promptIds, audioOffset, audioFeatures, audioTokenCount, maxNewTokens, forcedPrefix)
+                    : DecodeOnCpu(promptIds, audioOffset, audioFeatures, audioTokenCount, maxNewTokens, forcedPrefix);
 
             var (textTokens, textLogprobs) = ExtractTextTokens(rawTokens, rawLogprobs);
             string rawText = DecodeTokens(textTokens);
-            var parsed = ParseMetadataPrefix(rawText);
+            // When language is forced the prefix is in the prompt (not generated), so rawText IS
+            // the content directly. For auto-detect the prefix was generated and stripped above.
+            var parsed = forcedLanguageName is null ? ParseMetadataPrefix(rawText) : null;
+            string text     = parsed?.Text ?? rawText;
+            string? language = forcedLanguageName ?? parsed?.Language;
             yield return new QwenRecognitionResult(
                 segId,
-                parsed.Text,
+                text,
                 rawTokens,
                 textTokens,
                 textLogprobs,
-                parsed.Language,
+                language,
                 rawText);
         }
     }
@@ -770,11 +892,12 @@ public sealed class Qwen3Asr : IDisposable
     public IEnumerable<QwenRecognitionResult> RecognizeBatchedDetailed(
         IReadOnlyList<(double start, double end, string spk)> segs,
         float[] audio,
-        int maxNewTokens = 256)
+        int maxNewTokens = 256,
+        string? forceLanguage = null)
     {
         if (_encoderBatched is null || (_decoderInitBatched is null && _decoder is null))
         {
-            foreach (var r in RecognizeDetailed(segs, audio, maxNewTokens))
+            foreach (var r in RecognizeDetailed(segs, audio, maxNewTokens, forceLanguage))
                 yield return r;
             yield break;
         }
@@ -815,7 +938,9 @@ public sealed class Qwen3Asr : IDisposable
         // which handles batched encoding + one decode scheduler over all segments.
         if (_decoder is not null)
         {
-            foreach (var r in RecognizeUnifiedContinuousBatched(validItems, freeGpuMemoryMb, maxNewTokens))
+            int[]   forcedPrefix       = ResolveForcedPrefix(forceLanguage);
+            string? forcedLanguageName = ResolveForcedLanguageName(forceLanguage);
+            foreach (var r in RecognizeUnifiedContinuousBatched(validItems, freeGpuMemoryMb, maxNewTokens, forcedPrefix, forcedLanguageName))
                 yield return r;
             yield break;
         }
@@ -1010,8 +1135,10 @@ public sealed class Qwen3Asr : IDisposable
         float[] audioFeatures,
         long[] audioLengths,
         int batchSize,
-        int maxAudioTokens)
+        int maxAudioTokens,
+        int[]? forcedPrefix = null)
     {
+        forcedPrefix ??= [];
         var prompts = new List<int>[batchSize];
         var seqLengths = new int[batchSize];
         int maxSeqLen = 0;
@@ -1019,7 +1146,7 @@ public sealed class Qwen3Asr : IDisposable
         for (int b = 0; b < batchSize; b++)
         {
             prompts[b] = BuildPromptIds((int)audioLengths[b]);
-            seqLengths[b] = prompts[b].Count;
+            seqLengths[b] = prompts[b].Count + forcedPrefix.Length;
             maxSeqLen = Math.Max(maxSeqLen, seqLengths[b]);
         }
 
@@ -1046,6 +1173,15 @@ public sealed class Qwen3Asr : IDisposable
                     inputEmbeds,
                     (b * maxSeqLen + audioOffset + t) * _hiddenSize,
                     _hiddenSize);
+            }
+
+            // Append forced language prefix tokens after the prompt
+            for (int t = 0; t < forcedPrefix.Length; t++)
+            {
+                ReadTokenEmbedding(forcedPrefix[t], tokenEmbed);
+                int pos = prompt.Count + t;
+                Array.Copy(tokenEmbed, 0, inputEmbeds, (b * maxSeqLen + pos) * _hiddenSize, _hiddenSize);
+                positionIds[b * maxSeqLen + pos] = pos;
             }
         }
 
@@ -1422,10 +1558,19 @@ public sealed class Qwen3Asr : IDisposable
         int audioOffset,
         float[] audioFeatures,
         int audioTokenCount,
-        int maxNewTokens)
+        int maxNewTokens,
+        int[] forcedPrefix)
     {
-        long[] inputIds = promptIds.Select(i => (long)i).ToArray();
-        long[] positionIds = Enumerable.Range(0, promptIds.Count).Select(i => (long)i).ToArray();
+        // Include forced language prefix in the prompt so the model sees it as established context
+        // before generating content. This avoids the KV state distortion that occurs when token
+        // selection is overridden mid-generation.
+        IReadOnlyList<int> effectivePrompt = forcedPrefix.Length > 0
+            ? [..promptIds, ..forcedPrefix]
+            : promptIds;
+        int seqLen = effectivePrompt.Count;
+
+        long[] inputIds = effectivePrompt.Select(i => (long)i).ToArray();
+        long[] positionIds = Enumerable.Range(0, seqLen).Select(i => (long)i).ToArray();
         long[] audioOffsetTensor = [audioOffset];
 
         using var initOutputs = _decoderInit.Run(
@@ -1439,22 +1584,21 @@ public sealed class Qwen3Asr : IDisposable
         float[] logits = ExtractTensor(initOutputs.First(r => r.Name == "logits").AsTensor<float>());
         float[] pastKeys = ExtractTensor(initOutputs.First(r => r.Name == "present_keys").AsTensor<float>());
         float[] pastValues = ExtractTensor(initOutputs.First(r => r.Name == "present_values").AsTensor<float>());
-        int pastSeqLen = promptIds.Count;
+        int pastSeqLen = seqLen;
         var tokenEmbed = new float[_hiddenSize];
         long[] stepPos = [0L];
 
-        var rawTokens = new List<int>(maxNewTokens);
+        var rawTokens   = new List<int>(maxNewTokens);
         var rawLogprobs = new List<float>(maxNewTokens);
 
-        int nextToken = ArgMaxLastLogits(logits, promptIds.Count, out float nextLogprob);
+        int   nextToken   = ArgMaxLastLogits(logits, seqLen, out float nextLogprob);
         rawTokens.Add(nextToken);
         rawLogprobs.Add(nextLogprob);
-        pastSeqLen = promptIds.Count;
 
         while (rawTokens.Count < maxNewTokens && !IsEos(nextToken))
         {
             ReadTokenEmbedding(nextToken, tokenEmbed);
-            stepPos[0] = promptIds.Count + rawTokens.Count - 1L;
+            stepPos[0] = seqLen + rawTokens.Count - 1L;
 
             using var stepOutputs = _decoderStep!.Run(
             [
@@ -1464,8 +1608,8 @@ public sealed class Qwen3Asr : IDisposable
                 NamedOnnxValue.CreateFromTensor("past_values", new DenseTensor<float>(pastValues, [28, 1, 8, pastSeqLen, 128])),
             ]);
 
-            logits = ExtractTensor(stepOutputs.First(r => r.Name == "logits").AsTensor<float>());
-            pastKeys = ExtractTensor(stepOutputs.First(r => r.Name == "present_keys").AsTensor<float>());
+            logits     = ExtractTensor(stepOutputs.First(r => r.Name == "logits").AsTensor<float>());
+            pastKeys   = ExtractTensor(stepOutputs.First(r => r.Name == "present_keys").AsTensor<float>());
             pastValues = ExtractTensor(stepOutputs.First(r => r.Name == "present_values").AsTensor<float>());
             pastSeqLen++;
 
@@ -1482,19 +1626,28 @@ public sealed class Qwen3Asr : IDisposable
         int audioOffset,
         float[] audioFeatures,
         int audioTokenCount,
-        int maxNewTokens)
+        int maxNewTokens,
+        int[] forcedPrefix)
     {
-        int seqLen = promptIds.Count;
+        int baseSeqLen = promptIds.Count;
+        // Extend the embedded prompt with forced language prefix tokens so the model treats
+        // them as established context rather than having its token selection overridden mid-gen.
+        int seqLen = baseSeqLen + forcedPrefix.Length;
 
-        // Build input_embeds: embedding lookup for all prompt tokens, then scatter audio features.
+        // Build input_embeds: embedding lookup for all prompt + forced-prefix tokens, then scatter audio.
         float[] inputEmbeds = new float[seqLen * _hiddenSize];
         var tmpEmbed = new float[_hiddenSize];
-        for (int t = 0; t < seqLen; t++)
+        for (int t = 0; t < baseSeqLen; t++)
         {
             ReadTokenEmbedding(promptIds[t], tmpEmbed);
             Array.Copy(tmpEmbed, 0, inputEmbeds, t * _hiddenSize, _hiddenSize);
         }
         Array.Copy(audioFeatures, 0, inputEmbeds, audioOffset * _hiddenSize, audioTokenCount * _hiddenSize);
+        for (int t = 0; t < forcedPrefix.Length; t++)
+        {
+            ReadTokenEmbedding(forcedPrefix[t], tmpEmbed);
+            Array.Copy(tmpEmbed, 0, inputEmbeds, (baseSeqLen + t) * _hiddenSize, _hiddenSize);
+        }
 
         long[] positionIds = Enumerable.Range(0, seqLen).Select(i => (long)i).ToArray();
         float[] emptyKv = [];
@@ -1520,7 +1673,7 @@ public sealed class Qwen3Asr : IDisposable
         var rawLogprobs = new List<float>(maxNewTokens);
         long[] stepPos  = [0L];
 
-        int nextToken = ArgMaxLastLogits(logits, seqLen, out float nextLogprob);
+        int   nextToken   = ArgMaxLastLogits(logits, seqLen, out float nextLogprob);
         rawTokens.Add(nextToken);
         rawLogprobs.Add(nextLogprob);
 
@@ -1640,14 +1793,21 @@ public sealed class Qwen3Asr : IDisposable
         int audioOffset,
         float[] audioFeatures,
         int audioTokenCount,
-        int maxNewTokens)
+        int maxNewTokens,
+        int[] forcedPrefix)
     {
         using var cpuMemInfo = new OrtMemoryInfo("Cpu", OrtAllocatorType.ArenaAllocator, 0, OrtMemType.Default);
         using var cudaMemInfo = new OrtMemoryInfo("Cuda", OrtAllocatorType.ArenaAllocator, 0, OrtMemType.Default);
         using var runOpts = new RunOptions();
 
-        long[] inputIds = promptIds.Select(i => (long)i).ToArray();
-        long[] positionIds = Enumerable.Range(0, promptIds.Count).Select(i => (long)i).ToArray();
+        // Extend prompt with forced language prefix so the model generates content conditioned on it.
+        IReadOnlyList<int> effectivePrompt = forcedPrefix.Length > 0
+            ? [..promptIds, ..forcedPrefix]
+            : promptIds;
+        int seqLen = effectivePrompt.Count;
+
+        long[] inputIds = effectivePrompt.Select(i => (long)i).ToArray();
+        long[] positionIds = Enumerable.Range(0, seqLen).Select(i => (long)i).ToArray();
         long[] audioOffsetTensor = [audioOffset];
 
         using var inputIdsValue = OrtValue.CreateTensorValueFromMemory(inputIds, [1, inputIds.Length]);
@@ -1666,32 +1826,32 @@ public sealed class Qwen3Asr : IDisposable
         _decoderInit.RunWithBinding(runOpts, initBinding);
 
         var initOutputs = initBinding.GetOutputValues();
-        var rawTokens = new List<int>(maxNewTokens);
+        var rawTokens   = new List<int>(maxNewTokens);
         var rawLogprobs = new List<float>(maxNewTokens);
-        var tokenEmbed = new float[_hiddenSize];
-        long[] stepPos = [0L];
+        var tokenEmbed  = new float[_hiddenSize];
+        long[] stepPos  = [0L];
 
-        int nextToken = ArgMaxLastLogits(initOutputs[0], promptIds.Count, out float nextLogprob);
+        int   nextToken   = ArgMaxLastLogits(initOutputs[0], seqLen, out float nextLogprob);
         rawTokens.Add(nextToken);
         rawLogprobs.Add(nextLogprob);
 
         IDisposableReadOnlyCollection<OrtValue>? prevOutputs = initOutputs;
-        int pastSeqLen = promptIds.Count;
+        int pastSeqLen = seqLen;
 
         while (rawTokens.Count < maxNewTokens && !IsEos(nextToken))
         {
             ReadTokenEmbedding(nextToken, tokenEmbed);
-            stepPos[0] = promptIds.Count + rawTokens.Count - 1L;
+            stepPos[0] = seqLen + rawTokens.Count - 1L;
 
             using var tokenEmbedValue = OrtValue.CreateTensorValueFromMemory(tokenEmbed, [1, 1, _hiddenSize]);
-            using var stepPosValue = OrtValue.CreateTensorValueFromMemory(stepPos, [1, 1]);
-            using var stepBinding = _decoderStep!.CreateIoBinding();
+            using var stepPosValue    = OrtValue.CreateTensorValueFromMemory(stepPos, [1, 1]);
+            using var stepBinding     = _decoderStep!.CreateIoBinding();
             stepBinding.BindInput("input_embeds", tokenEmbedValue);
             stepBinding.BindInput("position_ids", stepPosValue);
-            stepBinding.BindInput("past_keys", prevOutputs![1]);
-            stepBinding.BindInput("past_values", prevOutputs[2]);
-            stepBinding.BindOutputToDevice("logits", cpuMemInfo);
-            stepBinding.BindOutputToDevice("present_keys", cudaMemInfo);
+            stepBinding.BindInput("past_keys",    prevOutputs![1]);
+            stepBinding.BindInput("past_values",  prevOutputs[2]);
+            stepBinding.BindOutputToDevice("logits",         cpuMemInfo);
+            stepBinding.BindOutputToDevice("present_keys",   cudaMemInfo);
             stepBinding.BindOutputToDevice("present_values", cudaMemInfo);
             _decoderStep.RunWithBinding(runOpts, stepBinding);
 
@@ -1777,6 +1937,30 @@ public sealed class Qwen3Asr : IDisposable
             {
                 textTokens.Add(token);
                 textLogprobs.Add(i < rawLogprobs.Count ? rawLogprobs[i] : 0f);
+            }
+        }
+
+        // Strip the "language <Name>" prefix tokens so stored tokens match result.Text.
+        // Known prefix entries end with 220 ("Ġ" space), but the model doesn't always emit that
+        // separator — sometimes it jumps straight to a Ġ-prefixed content token.
+        // Match the [11528, ...name tokens...] portion; optionally swallow a trailing 220.
+        if (textTokens.Count > 0 && textTokens[0] == 11528)
+        {
+            foreach (var prefix in LanguagePrefixTokens.Values)
+            {
+                int nameLen = prefix[^1] == 220 ? prefix.Length - 1 : prefix.Length;
+                if (textTokens.Count < nameLen) continue;
+                bool match = true;
+                for (int j = 0; j < nameLen && match; j++)
+                    if (textTokens[j] != prefix[j]) match = false;
+                if (!match) continue;
+
+                int skip = nameLen;
+                if (skip < textTokens.Count && textTokens[skip] == 220)
+                    skip++;
+
+                return (textTokens.GetRange(skip, textTokens.Count - skip),
+                        textLogprobs.GetRange(skip, textLogprobs.Count - skip));
             }
         }
 

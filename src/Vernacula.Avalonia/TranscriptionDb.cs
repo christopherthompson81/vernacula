@@ -471,7 +471,8 @@ internal sealed class TranscriptionDb : IDisposable
             int cardId, double sortOrder, int speakerId, string speakerName,
             double playStart, double playEnd, string? content, bool verified, bool suppressed,
             int resultId, int tokenStart, int? tokenEnd, int tsFrameOffset, int sourceOrder,
-            string? tokensJson, string? timestampsJson, string? logprobsJson, string asrContent)>();
+            string? tokensJson, string? timestampsJson, string? logprobsJson, string asrContent,
+            string? language)>();
 
         using var cmd = CreateCmd();
         cmd.CommandText = """
@@ -479,7 +480,8 @@ internal sealed class TranscriptionDb : IDisposable
                    c.play_start, c.play_end, c.content, c.verified, c.suppressed,
                    cs.result_id, cs.token_start, cs.token_end, cs.ts_frame_offset, cs.source_order,
                    r.tokens, r.timestamps, r.logprobs,
-                   coalesce(r.asr_content, coalesce(r.content, ''))
+                   coalesce(r.asr_content, coalesce(r.content, '')),
+                   r.language
             FROM segment_cards c
             JOIN speakers s  ON c.speaker_id  = s.speaker_id
             JOIN card_sources cs ON cs.card_id = c.card_id
@@ -509,7 +511,8 @@ internal sealed class TranscriptionDb : IDisposable
                     reader.IsDBNull(14) ? null : reader.GetString(14),
                     reader.IsDBNull(15) ? null : reader.GetString(15),
                     reader.IsDBNull(16) ? null : reader.GetString(16),
-                    reader.GetString(17)));
+                    reader.GetString(17),
+                    reader.IsDBNull(18) ? null : reader.GetString(18)));
             }
         }
 
@@ -527,10 +530,12 @@ internal sealed class TranscriptionDb : IDisposable
             var timestamps = new List<int>();
             var logprobs   = new List<float>();
             var asrParts   = new List<string>();
+            string? cardLanguage = null;
 
             while (i < raw.Count && raw[i].cardId == cardId)
             {
                 var row = raw[i++];
+                cardLanguage ??= row.language;
                 resultIds.Add(row.resultId);
                 sources.Add(new CardSource(row.resultId, row.tokenStart, row.tokenEnd,
                                            row.tsFrameOffset, row.sourceOrder));
@@ -573,7 +578,8 @@ internal sealed class TranscriptionDb : IDisposable
                 Tokens:      tokens,
                 Timestamps:  timestamps,
                 Logprobs:    logprobs,
-                AsrContent:  asrContent));
+                AsrContent:  asrContent,
+                Language:    cardLanguage));
         }
 
         return cards;
@@ -826,4 +832,5 @@ internal record CardQueryRow(
     IReadOnlyList<int>        Tokens,
     IReadOnlyList<int>        Timestamps,
     IReadOnlyList<float>      Logprobs,
-    string  AsrContent);
+    string  AsrContent,
+    string? Language);

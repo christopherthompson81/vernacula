@@ -30,14 +30,16 @@ internal partial class SettingsViewModel : ObservableObject
     private SegmentationMode _selectedSegmentation;
 
     [ObservableProperty]
-    [NotifyPropertyChangedFor(nameof(IsAsrParakeet), nameof(IsAsrCohere), nameof(IsAsrQwen3Asr), nameof(IsAsrVibeVoice), nameof(ShowStandardSegmentationOptions), nameof(ShowVibeVoiceBuiltinSegmentation), nameof(ShowDiariZenInSegmentation), nameof(ShowGatedSegmentationHint), nameof(CanUseVibeVoiceAsr), nameof(VibeVoiceAsrLabel), nameof(VibeVoiceAsrDescription))]
+    [NotifyPropertyChangedFor(nameof(IsAsrParakeet), nameof(IsAsrCohere), nameof(IsAsrQwen3Asr), nameof(IsAsrVibeVoice), nameof(ShowStandardSegmentationOptions), nameof(ShowVibeVoiceBuiltinSegmentation), nameof(ShowDiariZenInSegmentation), nameof(ShowGatedSegmentationHint), nameof(CanUseVibeVoiceAsr), nameof(VibeVoiceAsrLabel), nameof(VibeVoiceAsrDescription), nameof(ShowCohereLanguagePicker), nameof(ShowQwen3AsrLanguagePicker))]
     private AsrBackend _selectedAsrBackend;
 
     [ObservableProperty]
     private CohereLanguageOption? _selectedCohereLanguage;
 
     [ObservableProperty]
-    [NotifyPropertyChangedFor(nameof(ShowCohereLanguagePicker))]
+    private CohereLanguageOption? _selectedQwen3AsrLanguage;
+
+    [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(IsDenoiserNone), nameof(IsDenoiserDfn3))]
     private DenoiserMode _selectedDenoiser;
 
@@ -72,7 +74,8 @@ internal partial class SettingsViewModel : ObservableObject
     public string VibeVoiceAsrDescription => CanUseVibeVoiceAsr
         ? "Whole-recording ASR with built-in diarization. Downloads into the vibevoice_asr models folder."
         : "Unavailable because the CUDA execution provider check did not pass.";
-    public bool ShowCohereLanguagePicker => SelectedAsrBackend == AsrBackend.Cohere;
+    public bool ShowCohereLanguagePicker   => SelectedAsrBackend == AsrBackend.Cohere;
+    public bool ShowQwen3AsrLanguagePicker => SelectedAsrBackend == AsrBackend.Qwen3Asr;
     public bool IsDenoiserNone      => SelectedDenoiser == DenoiserMode.None;
     public bool IsDenoiserDfn3      => SelectedDenoiser == DenoiserMode.DeepFilterNet3;
     public bool ShowStandardSegmentationOptions => SelectedAsrBackend != AsrBackend.VibeVoice;
@@ -105,6 +108,67 @@ internal partial class SettingsViewModel : ObservableObject
         new("pt", "Portuguese"),
         new("vi", "Vietnamese"),
         new("zh", "Chinese"),
+    ];
+
+    public static readonly IReadOnlyList<CohereLanguageOption> Qwen3AsrLanguages =
+    [
+        new("",   "Auto-detect"),
+        new("af", "Afrikaans"),
+        new("ar", "Arabic"),
+        new("hy", "Armenian"),
+        new("az", "Azerbaijani"),
+        new("be", "Belarusian"),
+        new("bs", "Bosnian"),
+        new("bg", "Bulgarian"),
+        new("ca", "Catalan"),
+        new("zh", "Chinese"),
+        new("hr", "Croatian"),
+        new("cs", "Czech"),
+        new("da", "Danish"),
+        new("nl", "Dutch"),
+        new("en", "English"),
+        new("et", "Estonian"),
+        new("fi", "Finnish"),
+        new("fr", "French"),
+        new("gl", "Galician"),
+        new("de", "German"),
+        new("el", "Greek"),
+        new("he", "Hebrew"),
+        new("hi", "Hindi"),
+        new("hu", "Hungarian"),
+        new("is", "Icelandic"),
+        new("id", "Indonesian"),
+        new("it", "Italian"),
+        new("ja", "Japanese"),
+        new("kn", "Kannada"),
+        new("kk", "Kazakh"),
+        new("ko", "Korean"),
+        new("lv", "Latvian"),
+        new("lt", "Lithuanian"),
+        new("mk", "Macedonian"),
+        new("ms", "Malay"),
+        new("mr", "Marathi"),
+        new("ne", "Nepali"),
+        new("no", "Norwegian"),
+        new("fa", "Persian"),
+        new("pl", "Polish"),
+        new("pt", "Portuguese"),
+        new("ro", "Romanian"),
+        new("ru", "Russian"),
+        new("sr", "Serbian"),
+        new("sk", "Slovak"),
+        new("sl", "Slovenian"),
+        new("es", "Spanish"),
+        new("sw", "Swahili"),
+        new("sv", "Swedish"),
+        new("tl", "Tagalog"),
+        new("ta", "Tamil"),
+        new("th", "Thai"),
+        new("tr", "Turkish"),
+        new("uk", "Ukrainian"),
+        new("ur", "Urdu"),
+        new("vi", "Vietnamese"),
+        new("cy", "Welsh"),
     ];
 
     // ── Hardware check state ─────────────────────────────────────────────────
@@ -166,6 +230,8 @@ internal partial class SettingsViewModel : ObservableObject
             _lastNonVibeSegmentation = _selectedSegmentation;
         _selectedCohereLanguage       = CohereLanguages.FirstOrDefault(l => l.Code == svc.Current.CohereLanguage)
                                         ?? CohereLanguages[0];
+        _selectedQwen3AsrLanguage     = Qwen3AsrLanguages.FirstOrDefault(l => l.Code == svc.Current.Qwen3AsrLanguage)
+                                        ?? Qwen3AsrLanguages[0];
         _selectedDenoiser             = svc.Current.Denoiser;
         _selectedEditorPlaybackMode   = svc.Current.EditorPlaybackMode;
         _selectedLanguage             = svc.Current.Language;
@@ -252,6 +318,12 @@ internal partial class SettingsViewModel : ObservableObject
     partial void OnSelectedCohereLanguageChanged(CohereLanguageOption? value)
     {
         _svc.Current.CohereLanguage = value?.Code ?? "";
+        _svc.Save();
+    }
+
+    partial void OnSelectedQwen3AsrLanguageChanged(CohereLanguageOption? value)
+    {
+        _svc.Current.Qwen3AsrLanguage = value?.Code ?? "";
         _svc.Save();
     }
 

@@ -514,6 +514,32 @@
                             </ComboBox>
                         </StackPanel>
 
+                        <StackPanel Margin="24,10,0,0"
+                                    IsVisible="{Binding ShowQwen3AsrLanguagePicker}">
+                            <TextBlock Text="Forced Language"
+                                       Foreground="{DynamicResource TextBrush}"
+                                       FontWeight="SemiBold"
+                                       Margin="0,0,0,6" />
+                            <TextBlock Text="Optional. Use this when auto language detection is unstable."
+                                       Foreground="{DynamicResource SubtextBrush}"
+                                       FontSize="11"
+                                       TextWrapping="Wrap"
+                                       Margin="0,0,0,8" />
+                            <ComboBox ItemsSource="{x:Static vm:SettingsViewModel.Qwen3AsrLanguages}"
+                                      SelectedItem="{Binding SelectedQwen3AsrLanguage}"
+                                      Background="{DynamicResource OverlayBrush}"
+                                      Foreground="{DynamicResource TextBrush}"
+                                      BorderBrush="{DynamicResource OverlayBrush}"
+                                      HorizontalAlignment="Left"
+                                      MinWidth="220">
+                                <ComboBox.ItemTemplate>
+                                    <DataTemplate>
+                                        <TextBlock Text="{Binding DisplayName}" />
+                                    </DataTemplate>
+                                </ComboBox.ItemTemplate>
+                            </ComboBox>
+                        </StackPanel>
+
                     </StackPanel>
                 </Border>
 

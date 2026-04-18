@@ -13,6 +13,22 @@ internal sealed partial class TranscriptEditorCardState : ObservableObject
         public override string ToString() => Name;
     }
 
+    public static readonly IReadOnlyList<string> Qwen3AsrLanguageNames =
+        (new[] {
+            "Auto",
+            "Afrikaans", "Arabic", "Armenian", "Azerbaijani", "Belarusian",
+            "Bosnian", "Bulgarian", "Catalan", "Chinese", "Croatian",
+            "Czech", "Danish", "Dutch", "English", "Estonian",
+            "Finnish", "French", "Galician", "German", "Greek",
+            "Hebrew", "Hindi", "Hungarian", "Icelandic", "Indonesian",
+            "Italian", "Japanese", "Kannada", "Kazakh", "Korean",
+            "Latvian", "Lithuanian", "Macedonian", "Malay", "Marathi",
+            "Nepali", "Norwegian", "Persian", "Polish", "Portuguese",
+            "Romanian", "Russian", "Serbian", "Slovak", "Slovenian",
+            "Spanish", "Swahili", "Swedish", "Tagalog", "Tamil",
+            "Thai", "Turkish", "Ukrainian", "Urdu", "Vietnamese", "Welsh",
+        }).ToList().AsReadOnly();
+
     public TranscriptEditorCardState(EditorSegment segment, int index)
     {
         Segment = segment;
@@ -21,6 +37,7 @@ internal sealed partial class TranscriptEditorCardState : ObservableObject
         _draftContent = segment.Content;
         _timeRangeText = FormatTimeRange(segment.PlayStart, segment.PlayEnd);
         _suppressButtonText = "Suppress";
+        _selectedRedoLanguage = segment.Language ?? "Auto";
     }
 
     internal EditorSegment Segment { get; }
@@ -35,6 +52,8 @@ internal sealed partial class TranscriptEditorCardState : ObservableObject
     public ObservableCollection<TranscriptEditorTextRunState> AdjacentRuns { get; } = [];
 
     [ObservableProperty] private bool _isFocused;
+    [ObservableProperty] private string? _selectedRedoLanguage;
+    public bool ShowLanguageChip { get; set; }
     [ObservableProperty] private string _draftSpeakerName;
     [ObservableProperty] private string _draftContent;
     [ObservableProperty] private SpeakerChoice? _selectedSpeaker;
