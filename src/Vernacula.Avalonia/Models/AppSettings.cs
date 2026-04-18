@@ -18,6 +18,11 @@ public class AppSettings
     public string             ModelsDir           { get; set; } = "";
     public string             DiariZenModelsDir   { get; set; } = "";
     public bool               DiariZenNoticeAccepted { get; set; } = false;
+
+    // Language identification (VoxLingua107)
+    public bool               LidEnabled          { get; set; } = false;
+    public string             VoxLinguaModelsDir  { get; set; } = "";
+
     public List<string>       AcceptedGatedModels { get; set; } = [];
     public string             Language            { get; set; } = "";
 
