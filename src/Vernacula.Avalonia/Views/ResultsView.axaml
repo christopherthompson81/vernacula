@@ -17,6 +17,7 @@
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />   <!-- Audio file name -->
             <RowDefinition Height="Auto" />   <!-- Segment count -->
+            <RowDefinition Height="Auto" />   <!-- LID info chip (happy path) -->
             <RowDefinition Height="Auto" />   <!-- LID mismatch banner -->
             <RowDefinition Height="*"    />   <!-- Segments table -->
             <RowDefinition Height="Auto" />   <!-- Action buttons -->
@@ -32,13 +33,28 @@
         <!-- Segment count subtitle -->
         <TextBlock Grid.Row="1"
                    Foreground="{DynamicResource SubtextBrush}"
-                   Margin="0,0,0,16">
+                   Margin="0,0,0,8">
             <Run Text="{Binding Segments.Count, Mode=OneWay}" />
             <Run x:Name="SegmentsLabelRun" Text="{local:Loc results_segments_label}" />
         </TextBlock>
 
-        <!-- LID mismatch banner -->
+        <!-- LID info chip (neutral info shown on every LID-enabled job) -->
         <Border Grid.Row="2"
+                IsVisible="{Binding ShowDetectedLanguageInfo}"
+                Background="{DynamicResource SurfaceBrush}"
+                BorderBrush="{DynamicResource OverlayBrush}"
+                BorderThickness="1"
+                CornerRadius="4"
+                Padding="8,4"
+                HorizontalAlignment="Left"
+                Margin="0,0,0,8">
+            <TextBlock Text="{Binding DetectedLanguageInfoText}"
+                       Foreground="{DynamicResource SubtextBrush}"
+                       FontSize="11" />
+        </Border>
+
+        <!-- LID mismatch banner -->
+        <Border Grid.Row="3"
                 IsVisible="{Binding ShowMismatchBanner}"
                 Background="#3A2A1A"
                 BorderBrush="#C8A040"
@@ -65,7 +81,7 @@
 
         <!-- Segments table -->
         <DataGrid x:Name="SegmentsGrid"
-                  Grid.Row="3"
+                  Grid.Row="4"
                   Margin="0,0,0,12"
                   ItemsSource="{Binding Segments}"
                   AutoGenerateColumns="False"
@@ -117,7 +133,7 @@
         </DataGrid>
 
         <!-- Action buttons -->
-        <StackPanel Grid.Row="4" Orientation="Horizontal" HorizontalAlignment="Right">
+        <StackPanel Grid.Row="5" Orientation="Horizontal" HorizontalAlignment="Right">
             <Button x:Name="EditTranscriptButton" Content="{local:Loc btn_edit_transcript}"
                     Classes="secondary-button"
                     Command="{Binding EditTranscriptCommand}"

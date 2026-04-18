@@ -16,11 +16,18 @@ internal partial class ResultsViewModel : ObservableObject
     [ObservableProperty]
     private string _audioBaseName = "";
 
-    // ── LID mismatch banner state ─────────────────────────────────────────
+    // ── LID banner state ──────────────────────────────────────────────────
+
+    /// <summary>
+    /// True when LID ran on this job and produced a result (ambiguous or
+    /// not). Drives the always-visible info chip under the header.
+    /// </summary>
+    [ObservableProperty] private bool _showDetectedLanguageInfo;
+    [ObservableProperty] private string _detectedLanguageInfoText = "";
 
     /// <summary>
     /// True when the job's metadata indicates LID detected a language the
-    /// ASR backend couldn't handle. Drives the banner visibility.
+    /// ASR backend couldn't handle. Drives the amber warning banner.
     /// </summary>
     [ObservableProperty] private bool _showMismatchBanner;
     [ObservableProperty] private string _mismatchBannerText = "";
@@ -57,25 +64,52 @@ internal partial class ResultsViewModel : ObservableObject
         Segments.Clear();
         using var db  = new TranscriptionDb(dbPath);
         PopulateSegments(db);
-        LoadMismatchBanner(db);
+        LoadLidBanners(db);
     }
 
-    private void LoadMismatchBanner(TranscriptionDb db)
+    private void LoadLidBanners(TranscriptionDb db)
     {
+        ShowDetectedLanguageInfo = false;
+        DetectedLanguageInfoText = "";
         ShowMismatchBanner       = false;
         CanReprocess             = false;
         _mismatchDetectedIso     = null;
         _mismatchSuggestedBackend = null;
 
-        if (db.GetMetadata("detected_language_backend_mismatch") != "1") return;
-
         string? detectedIso  = db.GetMetadata("detected_language");
         string? detectedName = db.GetMetadata("detected_language_name") ?? detectedIso;
         string? probStr      = db.GetMetadata("detected_language_probability");
+        string? ambStr       = db.GetMetadata("detected_language_ambiguous");
+        string? effectiveIso = db.GetMetadata("asr_language_code");
+        bool    mismatch     = db.GetMetadata("detected_language_backend_mismatch") == "1";
         string? suggestedStr = db.GetMetadata("detected_language_suggested_backend");
         string? asrModel     = db.GetMetadata("asr_model");
 
         if (string.IsNullOrWhiteSpace(detectedIso)) return;
+
+        // Info chip: shown whenever LID ran, regardless of outcome.
+        bool ambiguous = ambStr == "1";
+        string probSuffix = "";
+        if (float.TryParse(probStr, System.Globalization.NumberStyles.Float,
+                           System.Globalization.CultureInfo.InvariantCulture, out float p0))
+            probSuffix = $", {p0:P0} confidence";
+
+        string effectiveSuffix = "";
+        if (!string.IsNullOrWhiteSpace(effectiveIso)
+            && !string.Equals(effectiveIso, "auto", StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(effectiveIso, detectedIso, StringComparison.OrdinalIgnoreCase))
+        {
+            // Rare: ASR ran with a different language than LID detected
+            // (e.g. user kept the current backend on the mismatch popup).
+            effectiveSuffix = $"; ASR ran as {effectiveIso}";
+        }
+
+        DetectedLanguageInfoText =
+            (ambiguous ? "Language detection (ambiguous): " : "Language detected: ")
+            + $"{detectedName} ({detectedIso}{probSuffix}){effectiveSuffix}";
+        ShowDetectedLanguageInfo = true;
+
+        if (!mismatch) return;
 
         string currentBackendLabel = asrModel switch
         {
