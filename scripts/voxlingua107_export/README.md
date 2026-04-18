@@ -53,14 +53,14 @@ This produces:
 
 ```
 voxlingua107/
-├── voxlingua107.onnx         # ~700 KB ONNX structure
-├── voxlingua107.onnx.data    # ~82 MB external weights (FP32)
-└── lang_map.json             # 107 entries
+├── voxlingua107.onnx     # ~83 MB FP32, weights inlined
+└── lang_map.json         # 107 entries
 ```
 
 PyTorch's dynamo-based exporter (`torch>=2.8`) splits weights into a
-companion `.onnx.data` file by default. Both files must ship together; ORT
-resolves the reference automatically as long as they sit side-by-side.
+companion `.onnx.data` file by default. The script re-saves the graph
+inline once export finishes — this model is small enough (well under the
+2 GB protobuf ceiling) that the sidecar just adds distribution friction.
 
 The script downloads the SpeechBrain checkpoint into `./.voxlingua107-cache/`
 on first run; subsequent runs reuse the cached weights.

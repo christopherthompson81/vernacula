@@ -73,6 +73,16 @@ def export(out_dir: Path, savedir: Path) -> None:
         do_constant_folding=True,
     )
 
+    # The dynamo exporter writes weights to a sidecar <name>.onnx.data by default.
+    # This model is small (~82 MB, well under the 2 GB protobuf ceiling), so
+    # re-save inline for a single-file distribution.
+    sidecar_path = onnx_path.with_suffix(onnx_path.suffix + ".data")
+    if sidecar_path.exists():
+        proto = onnx.load(str(onnx_path), load_external_data=True)
+        onnx.save(proto, str(onnx_path), save_as_external_data=False)
+        sidecar_path.unlink()
+        print(f"[voxlingua] merged {sidecar_path.name} → single-file onnx")
+
     # Structural check — catches malformed graphs early.
     onnx.checker.check_model(str(onnx_path))
     print("[voxlingua] onnx.checker passed")
