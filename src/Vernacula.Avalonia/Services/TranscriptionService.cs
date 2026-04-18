@@ -526,21 +526,35 @@ internal class TranscriptionService
         ct.ThrowIfCancellationRequested();
 
         // ── Phase 4: ASR (resume or non-incremental path only) ───────────────
-        var (asrDone, startSeg) = db.CheckAsr();
+        var (asrDone, unfilledResultIds) = db.CheckAsr();
 
-        // Populate text for segments already transcribed in a prior run
-        if (startSeg > 0)
+        // Populate text for any rows already filled (resume from prior run).
+        // With scattered-hole resume, "already filled" is no longer a prefix, so
+        // notify for every position — empty strings for unfilled rows are
+        // overwritten when those rows are processed below.
+        if (unfilledResultIds.Count < segs.Count)
         {
             var existingTexts = db.GetResultContents();
-            for (int i = 0; i < startSeg && i < existingTexts.Count; i++)
+            for (int i = 0; i < segs.Count && i < existingTexts.Count; i++)
                 onSegmentText(i, existingTexts[i]);
         }
 
         if (!asrDone)
         {
-            var segsSubset = segs.GetRange(startSeg, segs.Count - startSeg);
+            // Build the subset to process from the unfilled result_ids: rows
+            // skipped by a prior interrupted run (mid-list holes) AND rows
+            // never reached. result_id is 1-indexed; segs is 0-indexed.
+            var segsSubset = new List<(double start, double end, string spkId)>(unfilledResultIds.Count);
+            foreach (int rid in unfilledResultIds)
+            {
+                int idx = rid - 1;
+                if (idx < 0 || idx >= segs.Count)
+                    throw new InvalidOperationException(
+                        $"Unfilled result_id {rid} has no matching segment (segs.Count={segs.Count}).");
+                segsSubset.Add(segs[idx]);
+            }
             int totalSegs  = segs.Count;
-            int completed  = startSeg;
+            int completed  = totalSegs - segsSubset.Count;
 
             if (useCohereAsr)
             {
@@ -556,7 +570,7 @@ internal class TranscriptionService
                     segsSubset, audio, forceLanguage: forceLanguage))
                 {
                     ct.ThrowIfCancellationRequested();
-                    int absId = startSeg + result.SegmentId;
+                    int absId = unfilledResultIds[result.SegmentId] - 1;
                     completed++;
                     var syntheticTimestamps = BuildSyntheticTokenTimestamps(
                         segsSubset[result.SegmentId].end - segsSubset[result.SegmentId].start,
@@ -615,7 +629,7 @@ internal class TranscriptionService
                 foreach (var result in recognitionResults)
                 {
                     ct.ThrowIfCancellationRequested();
-                    int absId = startSeg + result.SegmentId;
+                    int absId = unfilledResultIds[result.SegmentId] - 1;
                     completed++;
                     var syntheticTimestamps = BuildSyntheticTokenTimestamps(
                         segsSubset[result.SegmentId].end - segsSubset[result.SegmentId].start,
@@ -666,7 +680,7 @@ internal class TranscriptionService
                     parakeet.Recognize(segsSubset, audio))
                 {
                     ct.ThrowIfCancellationRequested();
-                    int absId = startSeg + segId;
+                    int absId = unfilledResultIds[segId] - 1;
                     completed++;
 
                     db.UpdateResult(

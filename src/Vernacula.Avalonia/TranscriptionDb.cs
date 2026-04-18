@@ -740,24 +740,28 @@ internal sealed class TranscriptionDb : IDisposable
     }
 
     /// <summary>
-    /// Returns (allDone, startAtIndex).
-    /// Mirrors sql.py check_asr().
+    /// Returns (allDone, unfilledResultIds). result_ids are 1-indexed and ascending.
+    /// Used to drive resume: the ASR loop must process exactly these rows, in any
+    /// order, and never assume filled rows form a contiguous prefix — batched
+    /// backends (e.g. Qwen3Asr.RecognizeBatchedDetailed) yield in descending-
+    /// duration order, so an interrupted run leaves scattered holes mid-list.
     /// </summary>
-    public (bool done, int startAt) CheckAsr()
+    public (bool done, IReadOnlyList<int> unfilledResultIds) CheckAsr()
     {
+        var unfilled = new List<int>();
+        long total;
+        using (var totalCmd = CreateCmd())
+        {
+            totalCmd.CommandText = "SELECT count(*) FROM results";
+            total = (long)(totalCmd.ExecuteScalar() ?? 0L);
+        }
+        if (total == 0) return (false, unfilled);
+
         using var cmd = CreateCmd();
-        cmd.CommandText = """
-            SELECT
-                (SELECT count(*) FROM results)                          AS results_count,
-                (SELECT count(*) FROM results WHERE tokens IS NOT NULL) AS filled_results_count
-            """;
+        cmd.CommandText = "SELECT result_id FROM results WHERE tokens IS NULL ORDER BY result_id";
         using var r = cmd.ExecuteReader();
-        if (!r.Read()) return (false, 0);
-        long total  = r.GetInt64(0);
-        long filled = r.GetInt64(1);
-        if (total == 0)      return (false, 0);
-        if (filled < total)  return (false, (int)filled);
-        return (true, (int)filled);
+        while (r.Read()) unfilled.Add(r.GetInt32(0));
+        return (unfilled.Count == 0, unfilled);
     }
 
     // ── Bulk insert transaction ───────────────────────────────────────────────
