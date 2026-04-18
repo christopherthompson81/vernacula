@@ -1,0 +1,9 @@
+torch>=2.2
+torchaudio>=2.2
+speechbrain>=1.0
+onnx>=1.16
+onnxruntime>=1.17
+onnxscript>=0.1
+numpy
+soundfile
+huggingface_hub
