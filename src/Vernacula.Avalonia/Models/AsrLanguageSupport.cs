@@ -9,13 +9,16 @@ namespace Vernacula.App.Models;
 /// <para>
 /// The per-backend sets are derived from:
 /// <list type="bullet">
-/// <item><see cref="AsrBackend.Parakeet"/>: NVIDIA Parakeet TDT 0.6B v3 — English only.</item>
+/// <item><see cref="AsrBackend.Parakeet"/>: NVIDIA Parakeet TDT 0.6B v3 —
+/// 25 European languages (per the HF model card).</item>
 /// <item><see cref="AsrBackend.Cohere"/>: Cohere Transcribe — 14 languages
 /// (mirrors <c>SettingsViewModel.CohereLanguages</c>).</item>
 /// <item><see cref="AsrBackend.Qwen3Asr"/>: Qwen3-ASR 1.7B — 29 languages
 /// (mirrors <c>SettingsViewModel.Qwen3AsrLanguages</c>).</item>
-/// <item><see cref="AsrBackend.VibeVoice"/>: VibeVoice-ASR — English only
-/// in the current export.</item>
+/// <item><see cref="AsrBackend.VibeVoice"/>: VibeVoice-ASR — 12 languages
+/// explicitly evaluated in the model card. The card claims 50+ supported
+/// via code-switching, but only the evaluated set is enumerated, so we
+/// list those (any broader use is opt-in via "auto").</item>
 /// </list>
 /// </para>
 ///
@@ -27,8 +30,14 @@ namespace Vernacula.App.Models;
 /// </summary>
 public static class AsrLanguageSupport
 {
-    private static readonly FrozenSet<string> ParakeetLangs =
-        new HashSet<string> { "en" }.ToFrozenSet();
+    // NVIDIA Parakeet TDT 0.6B v3 — 25 European languages
+    // (https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3).
+    private static readonly FrozenSet<string> ParakeetLangs = new HashSet<string>
+    {
+        "bg", "hr", "cs", "da", "nl", "en", "et", "fi", "fr", "de",
+        "el", "hu", "it", "lv", "lt", "mt", "pl", "pt", "ro", "sk",
+        "sl", "es", "sv", "ru", "uk",
+    }.ToFrozenSet();
 
     private static readonly FrozenSet<string> CohereLangs = new HashSet<string>
     {
@@ -46,8 +55,13 @@ public static class AsrLanguageSupport
         "fi", "pl", "cs", "tl", "fa", "el", "hu", "mk", "ro",
     }.ToFrozenSet();
 
-    private static readonly FrozenSet<string> VibeVoiceLangs =
-        new HashSet<string> { "en" }.ToFrozenSet();
+    // VibeVoice-ASR — 12 languages explicitly evaluated in the model card
+    // (https://github.com/microsoft/VibeVoice/blob/main/docs/vibevoice-asr.md).
+    // The card claims 50+ via code-switching but doesn't enumerate them.
+    private static readonly FrozenSet<string> VibeVoiceLangs = new HashSet<string>
+    {
+        "en", "fr", "de", "it", "ja", "ko", "pt", "ru", "es", "th", "vi", "zh",
+    }.ToFrozenSet();
 
     /// <summary>
     /// Returns the ISO 639-1 language codes the given ASR backend can
