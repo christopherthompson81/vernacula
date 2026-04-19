@@ -24,15 +24,23 @@ public sealed class Parakeet : IDisposable
     private readonly int[] _stateShape1;
     private readonly int[] _stateShape2;
 
+    /// <summary>
+    /// Decoding beam width. <c>1</c> (default) runs the fast greedy-batch
+    /// decoder. Values &gt; 1 enable TDT beam search (slower; 3–5× at beam=4).
+    /// </summary>
+    public int BeamWidth { get; set; } = 1;
+
     // ── Construction ─────────────────────────────────────────────────────────
 
     public Parakeet(string modelPath)
         : this(modelPath, Config.EncoderFile, Config.DecoderJointFile) { }
 
     public Parakeet(string modelPath, string encoderFile, string decoderJointFile,
-                       ExecutionProvider ep = ExecutionProvider.Auto)
+                       ExecutionProvider ep = ExecutionProvider.Auto,
+                       int beamWidth = 1)
     {
         _modelPath = modelPath;
+        BeamWidth  = beamWidth;
 
         var cpuOpts = new SessionOptions();
         _preprocessor = new InferenceSession(
@@ -218,7 +226,14 @@ public sealed class Parakeet : IDisposable
         return (new float[l1, 1, h1], new float[l2, 1, h2]);
     }
 
-    private (float[] logits, int step, (float[,,] s1, float[,,] s2) state) Decode(
+    /// <summary>
+    /// Runs one step of the decoder-joint network. Returns vocab logits,
+    /// the full duration-head logits (one score per TDT duration bucket —
+    /// typically [0, 1, 2, 3, 4]), and the new RNN-T state. Greedy callers
+    /// argmax the durations to get the step value; beam callers need the
+    /// full distribution.
+    /// </summary>
+    private (float[] logits, float[] durLogits, (float[,,] s1, float[,,] s2) state) Decode(
         IReadOnlyList<int> prevTokens,
         (float[,,] s1, float[,,] s2) state,
         float[] encoderFrame)
@@ -255,11 +270,8 @@ public sealed class Parakeet : IDisposable
         var output = new float[outLen];
         for (int i = 0; i < outLen; i++) output[i] = outT.GetValue(i);
 
-        var logits  = output[.._vocabSize];
-        int stepIdx = 0;
-        float stepMax = float.NegativeInfinity;
-        for (int i = _vocabSize; i < outLen; i++)
-            if (output[i] > stepMax) { stepMax = output[i]; stepIdx = i - _vocabSize; }
+        var logits    = output[.._vocabSize];
+        var durLogits = output[_vocabSize..];
 
         var ns1 = new float[ns1T.Dimensions[0], 1, ns1T.Dimensions[2]];
         var ns2 = new float[ns2T.Dimensions[0], 1, ns2T.Dimensions[2]];
@@ -270,13 +282,19 @@ public sealed class Parakeet : IDisposable
             for (int j = 0; j < ns2T.Dimensions[2]; j++)
                 ns2[i, 0, j] = ns2T[i, 0, j];
 
-        return (logits, stepIdx, (ns1, ns2));
+        return (logits, durLogits, (ns1, ns2));
     }
 
     // ── Streaming decoder ─────────────────────────────────────────────────────
 
     private IEnumerable<(List<int> tokens, List<int> timestamps, List<int> durations, List<float> logprobs)>
         Decoder(float[,,] encoderOut, long[] encoderLens)
+        => BeamWidth > 1
+            ? DecoderBeam(encoderOut, encoderLens, BeamWidth)
+            : DecoderGreedy(encoderOut, encoderLens);
+
+    private IEnumerable<(List<int> tokens, List<int> timestamps, List<int> durations, List<float> logprobs)>
+        DecoderGreedy(float[,,] encoderOut, long[] encoderLens)
     {
         int B = encoderOut.GetLength(0);
         int D = encoderOut.GetLength(2);
@@ -298,8 +316,9 @@ public sealed class Parakeet : IDisposable
             {
                 for (int d = 0; d < D; d++) frame[d] = encoderOut[b, t, d];
 
-                var (logits, step, newState) = Decode(tokens, prevState, frame);
+                var (logits, durLogits, newState) = Decode(tokens, prevState, frame);
                 int token = ArgMax(logits);
+                int step  = ArgMax(durLogits);
 
                 if (token != _blankIdx)
                 {
@@ -325,6 +344,153 @@ public sealed class Parakeet : IDisposable
 
             yield return (tokens, timestamps, durations, logprobs);
         }
+    }
+
+    // ── Beam-search decoder (TDT, alignment-length synchronous) ───────────────
+    //
+    // Each expansion step runs Decode() on one live hypothesis and branches
+    // over the top-K vocab candidates × all duration buckets. Hypotheses
+    // advance their frame pointer by the chosen duration independently, so
+    // they reach the end of the segment at different alignment lengths. We
+    // keep them in one beam pruned by cumulative log-prob (vocab + duration).
+    //
+    // Simplifications vs. NeMo's reference implementation:
+    // - No prefix-merge step: hypotheses that converge on the same (tokens,
+    //   state) keep separate score mass instead of being summed.
+    // - No language-model fusion yet (planned — LM fusion rides on top of
+    //   this loop).
+
+    private sealed class BeamHyp
+    {
+        public List<int>   Tokens     = new();
+        public List<int>   Timestamps = new();
+        public List<int>   Durations  = new();
+        public List<float> Logprobs   = new();
+        public (float[,,] s1, float[,,] s2) State;
+        public int    T;
+        public double Score;
+        public int    EmittedAtT;
+
+        public BeamHyp Clone() => new()
+        {
+            Tokens     = new List<int>(Tokens),
+            Timestamps = new List<int>(Timestamps),
+            Durations  = new List<int>(Durations),
+            Logprobs   = new List<float>(Logprobs),
+            State      = State,   // shared, treated as immutable
+            T          = T,
+            Score      = Score,
+            EmittedAtT = EmittedAtT,
+        };
+    }
+
+    private IEnumerable<(List<int> tokens, List<int> timestamps, List<int> durations, List<float> logprobs)>
+        DecoderBeam(float[,,] encoderOut, long[] encoderLens, int beamWidth)
+    {
+        int B = encoderOut.GetLength(0);
+        int D = encoderOut.GetLength(2);
+
+        for (int b = 0; b < B; b++)
+        {
+            long encLen = encoderLens[b];
+            var frame = new float[D];
+
+            var beam = new List<BeamHyp> {
+                new BeamHyp { State = CreateState() }
+            };
+            var completed = new List<BeamHyp>();
+
+            while (beam.Count > 0)
+            {
+                var candidates = new List<BeamHyp>(beam.Count * beamWidth * 4);
+
+                foreach (var h in beam)
+                {
+                    if (h.T >= encLen)
+                    {
+                        completed.Add(h);
+                        continue;
+                    }
+
+                    for (int d = 0; d < D; d++) frame[d] = encoderOut[b, h.T, d];
+                    var (logits, durLogits, newState) = Decode(h.Tokens, h.State, frame);
+                    var vocabLp = AudioUtils.LogSoftmax(logits);
+                    var durLp   = AudioUtils.LogSoftmax(durLogits);
+
+                    var topTokens = TopKIndices(vocabLp, beamWidth);
+
+                    foreach (int token in topTokens)
+                    {
+                        bool isBlank = token == _blankIdx;
+
+                        for (int dIdx = 0; dIdx < durLp.Length; dIdx++)
+                        {
+                            // Respect MaxTokensPerStep: don't emit a non-blank token
+                            // at the same frame past the cap (would stall the decoder).
+                            if (!isBlank && dIdx == 0 && h.EmittedAtT >= Config.MaxTokensPerStep)
+                                continue;
+
+                            var nh = h.Clone();
+                            nh.Score += vocabLp[token] + durLp[dIdx];
+
+                            if (!isBlank)
+                            {
+                                nh.Tokens.Add(token);
+                                nh.Timestamps.Add(h.T);
+                                nh.Durations.Add(dIdx);
+                                nh.Logprobs.Add(vocabLp[token]);
+                                nh.State      = newState;
+                                nh.EmittedAtT = dIdx == 0 ? h.EmittedAtT + 1 : 0;
+                            }
+                            else
+                            {
+                                nh.EmittedAtT = 0;
+                            }
+
+                            // Frame advance. Blank at dur==0 would stall; force +1
+                            // to match the safety-advance in the greedy path.
+                            nh.T = (isBlank && dIdx == 0) ? h.T + 1 : h.T + dIdx;
+
+                            candidates.Add(nh);
+                        }
+                    }
+                }
+
+                if (candidates.Count == 0) break;
+
+                candidates.Sort((a, c) => c.Score.CompareTo(a.Score));
+                beam = candidates.Count > beamWidth
+                    ? candidates.GetRange(0, beamWidth)
+                    : candidates;
+            }
+
+            BeamHyp best = completed.Count > 0
+                ? completed.OrderByDescending(h => h.Score).First()
+                : beam.OrderByDescending(h => h.Score).First();
+
+            yield return (best.Tokens, best.Timestamps, best.Durations, best.Logprobs);
+        }
+    }
+
+    private static int[] TopKIndices(float[] values, int k)
+    {
+        int n = values.Length;
+        if (k >= n)
+        {
+            var all = new int[n];
+            for (int i = 0; i < n; i++) all[i] = i;
+            Array.Sort(all, (a, b) => values[b].CompareTo(values[a]));
+            return all;
+        }
+
+        var idx = new int[n];
+        for (int i = 0; i < n; i++) idx[i] = i;
+        // Partial sort: the sort is O(n log n) but k is small (≤ beam width)
+        // so a full sort is fine compared to a Decode call.
+        Array.Sort(idx, (a, b) => values[b].CompareTo(values[a]));
+        var result = new int[k];
+        Array.Copy(idx, result, k);
+        return result;
     }
 
     // ── VRAM batch sizing ─────────────────────────────────────────────────────

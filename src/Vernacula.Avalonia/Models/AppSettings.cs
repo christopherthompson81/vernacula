@@ -11,6 +11,10 @@ public class AppSettings
     public AppTheme           Theme               { get; set; } = AppTheme.Dark;
     public SegmentationMode   Segmentation        { get; set; } = SegmentationMode.SileroVad;
     public AsrBackend         AsrBackend          { get; set; } = AsrBackend.Parakeet;
+    // Parakeet TDT beam search. 1 = greedy (default, fastest). 4–8 enables
+    // beam search — ~3–5× slower per segment but improves accuracy on hard
+    // or ambiguous audio and is a prerequisite for shallow LM fusion.
+    public int                ParakeetBeamWidth   { get; set; } = 1;
     public string             CohereLanguage      { get; set; } = "";
     public string             Qwen3AsrLanguage    { get; set; } = "";
     public DenoiserMode       Denoiser            { get; set; } = DenoiserMode.None;
