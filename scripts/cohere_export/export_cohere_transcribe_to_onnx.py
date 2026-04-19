@@ -809,6 +809,22 @@ def _make_dim(torch: Any, name: str, *, min: int | None = None, max: int | None 
     return torch.export.Dim(name, **kwargs)
 
 
+def _auto_dim(torch: Any) -> Any:
+    """Return Dim.AUTO (torch infers bounds from the trace).
+
+    Use for axes that only need to be dynamic and do not share a name across
+    inputs.  Named Dims must be reserved for dimensions that are asserted to
+    match between multiple inputs (e.g. `batch` shared across mel+encoder+KV,
+    or `enc_seq_len` shared between encoder output and cross-KV).  Downstream
+    derived symbols like the post-subsampling encoder time dim require either
+    `Dim.AUTO` or an explicit min high enough that the derivation (e.g.
+    `8*T - 3`) stays non-negative; the named-Dim `min=` kwarg does not always
+    propagate through the internal symbol rename and has been observed to
+    trigger `AssertionError: Expected derived min value ... to be >= 0`.
+    """
+    return torch.export.Dim.AUTO
+
+
 def export_encoder(
     torch: Any,
     wrapper: Any,
@@ -838,8 +854,8 @@ def export_encoder(
     # encoder uses this to compute a padding mask so that self-attention does not
     # attend to zero-padded positions, preventing cross-contamination when items
     # of different lengths are batched together.
-    batch = _make_dim(torch, "batch", min=1)
-    time_frames = _make_dim(torch, "time_frames", min=1)
+    batch = _make_dim(torch, "batch", min=1, max=65535)
+    time_frames = _auto_dim(torch)  # 8x subsampling → derived dim 8*T-3 needs AUTO
     _run_torch_export(
         torch,
         wrapper,
@@ -878,9 +894,9 @@ def export_decoder(
         test_out = wrapper(decoder_input_ids, encoder_hidden_states)
     print(f"  PyTorch decoder output shape: {tuple(test_out.shape)}")
 
-    batch = _make_dim(torch, "batch", min=1)
-    dec = _make_dim(torch, "dec_seq_len", min=1)
-    enc = _make_dim(torch, "enc_seq_len", min=1)
+    batch = _make_dim(torch, "batch", min=1, max=65535)
+    dec = _auto_dim(torch)
+    enc = _auto_dim(torch)
     _run_torch_export(
         torch,
         wrapper,
@@ -932,11 +948,12 @@ def export_kv_init(
     out_path = output_dir / "decoder_init.onnx"
     print(f"\nExporting decoder_init to {out_path} …")
 
-    # init_seq_len must be > 1 in the dummy because torch.export specialises any
-    # symbolic dim that is concretely 1 at trace time (broadcast guard).  The
-    # exported graph still accepts seq_len=1 at runtime once the dim is symbolic.
-    bos = torch.tensor([[13764, 13764]], dtype=torch.long, device=device)
-    enc_h = torch.randn(1, enc_t, ENC_DIM, device=device, dtype=torch.float32)
+    # Dummy uses B=2, init_seq_len=2: torch.export specialises any symbolic dim
+    # that is concretely 1 at trace time (broadcast guard, plus extra SDPA
+    # decomposition guards on CUDA), but the exported graph still accepts B=1 /
+    # seq_len=1 at runtime once the dim is symbolic.
+    bos = torch.tensor([[13764, 13764], [13764, 13764]], dtype=torch.long, device=device)
+    enc_h = torch.randn(2, enc_t, ENC_DIM, device=device, dtype=torch.float32)
 
     with torch.no_grad():
         out = wrapper(bos, enc_h)
@@ -964,9 +981,9 @@ def export_kv_init(
     for name in _kv_names("cross_key") + _kv_names("cross_val"):
         dynamic_axes[name] = {0: "batch", 2: "enc_seq_len"}
 
-    batch = _make_dim(torch, "batch", min=1)
-    init_seq = _make_dim(torch, "init_seq_len", min=1)
-    enc = _make_dim(torch, "enc_seq_len", min=1)
+    batch = _make_dim(torch, "batch", min=1, max=65535)
+    init_seq = _auto_dim(torch)
+    enc = _auto_dim(torch)
     dynamic_shapes = (
         {0: batch, 1: init_seq},
         {0: batch, 1: enc},
@@ -1000,16 +1017,18 @@ def export_kv_step(
     out_path = output_dir / "decoder_step.onnx"
     print(f"\nExporting decoder_step to {out_path} …")
 
-    # past_len defaults to 2 (not 1) so torch.export does not specialise the kv_seq
-    # dim to a static shape. The wrapper concatenates past||new along axis 2 and
-    # the +1 step still works at runtime once the dim is symbolic.
+    # past_len defaults to 2 (not 1) and B=2 (not 1) so torch.export does not
+    # specialise these dims to static shapes.  The wrapper concatenates
+    # past||new along axis 2 and the +1 step still works at runtime once the
+    # dim is symbolic; same for runtime B=1.
     kv_dtype = next(wrapper.parameters()).dtype
-    tok = torch.tensor([[42]], dtype=torch.long, device=device)
-    positions = torch.tensor([[past_len]], dtype=torch.long, device=device)
-    dummy_sk = [torch.randn(1, NUM_HEADS, past_len, HEAD_DIM, device=device, dtype=kv_dtype) for _ in range(NUM_LAYERS)]
-    dummy_sv = [torch.randn(1, NUM_HEADS, past_len, HEAD_DIM, device=device, dtype=kv_dtype) for _ in range(NUM_LAYERS)]
-    dummy_ck = [torch.randn(1, NUM_HEADS, enc_t, HEAD_DIM, device=device, dtype=kv_dtype) for _ in range(NUM_LAYERS)]
-    dummy_cv = [torch.randn(1, NUM_HEADS, enc_t, HEAD_DIM, device=device, dtype=kv_dtype) for _ in range(NUM_LAYERS)]
+    B = 2
+    tok = torch.tensor([[42]] * B, dtype=torch.long, device=device)
+    positions = torch.tensor([[past_len]] * B, dtype=torch.long, device=device)
+    dummy_sk = [torch.randn(B, NUM_HEADS, past_len, HEAD_DIM, device=device, dtype=kv_dtype) for _ in range(NUM_LAYERS)]
+    dummy_sv = [torch.randn(B, NUM_HEADS, past_len, HEAD_DIM, device=device, dtype=kv_dtype) for _ in range(NUM_LAYERS)]
+    dummy_ck = [torch.randn(B, NUM_HEADS, enc_t, HEAD_DIM, device=device, dtype=kv_dtype) for _ in range(NUM_LAYERS)]
+    dummy_cv = [torch.randn(B, NUM_HEADS, enc_t, HEAD_DIM, device=device, dtype=kv_dtype) for _ in range(NUM_LAYERS)]
     dummy_inputs = (tok, positions, *dummy_sk, *dummy_sv, *dummy_ck, *dummy_cv)
 
     with torch.no_grad():
@@ -1037,7 +1056,7 @@ def export_kv_step(
     for name in _kv_names("cross_key") + _kv_names("cross_val"):
         dynamic_axes[name] = {0: "batch", 2: "enc_seq_len"}
 
-    batch = _make_dim(torch, "batch", min=1)
+    batch = _make_dim(torch, "batch", min=1, max=65535)
     kv_seq = _make_dim(torch, "kv_seq_len", min=2)
     enc = _make_dim(torch, "enc_seq_len", min=1)
     self_kv_shape = {0: batch, 2: kv_seq}
@@ -1425,8 +1444,9 @@ def export_mel(
         test_feat, test_lens = wrapper(dummy_wave, dummy_lens)
     print(f"  PyTorch mel output shape: {tuple(test_feat.shape)}, lens: {test_lens.tolist()}")
 
-    batch = _make_dim(torch, "batch", min=1)
-    samples = _make_dim(torch, "samples", min=1)
+    batch = _make_dim(torch, "batch", min=1, max=65535)
+    # samples → frames is a hop_length-stride conv → also a derived dim.
+    samples = _auto_dim(torch)
     _run_torch_export(
         torch,
         wrapper,
