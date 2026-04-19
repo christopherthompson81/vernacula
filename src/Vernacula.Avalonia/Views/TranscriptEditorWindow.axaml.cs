@@ -1296,7 +1296,9 @@ public partial class TranscriptEditorWindow : Window
                 vibeVoiceModelsDir: App.Current.Settings.GetVibeVoiceModelsDir(),
                 qwen3AsrLanguageCode: _isQwen3Asr ? card.SelectedRedoLanguage?.Code : null,
                 parakeetBeamWidth:       App.Current.Settings.Current.ParakeetBeamWidth,
-                parakeetLmPath:          App.Current.Settings.Current.ParakeetLmPath,
+                parakeetLmPath:          KenLmCatalog.ResolvePath(
+                                             App.Current.Settings.Current,
+                                             App.Current.Settings.GetKenLmParakeetDir()),
                 parakeetLmWeight:        App.Current.Settings.Current.ParakeetLmWeight,
                 parakeetLmLengthPenalty: App.Current.Settings.Current.ParakeetLmLengthPenalty));
             if (result is null)

@@ -106,6 +106,9 @@ internal class SettingsService
             ? Path.Combine(GetModelsDir(), Config.VoxLinguaSubDir)
             : Current.VoxLinguaModelsDir;
 
+    public string GetKenLmParakeetDir() =>
+        Path.Combine(GetModelsDir(), Config.KenLmParakeetSubDir);
+
     public string GetJobsDir()
     {
         string dir = Path.Combine(
