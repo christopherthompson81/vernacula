@@ -114,6 +114,8 @@ internal sealed class TranscriptionDb : IDisposable
         catch (SqliteException) { /* column already exists */ }
         try { Execute("ALTER TABLE results ADD COLUMN asr_meta TEXT"); }
         catch (SqliteException) { /* column already exists */ }
+        try { Execute("ALTER TABLE results ADD COLUMN lid_language TEXT"); }
+        catch (SqliteException) { /* column already exists */ }
 
         MigrateToCardLayer();
     }
@@ -248,6 +250,20 @@ internal sealed class TranscriptionDb : IDisposable
         cmd.Parameters.AddWithValue("$lang", (object?)language   ?? DBNull.Value);
         cmd.Parameters.AddWithValue("$emo",  (object?)emotion    ?? DBNull.Value);
         cmd.Parameters.AddWithValue("$meta", (object?)asrMeta    ?? DBNull.Value);
+        cmd.ExecuteNonQuery();
+    }
+
+    /// <summary>
+    /// Persist per-segment language-ID result for a single row. Independent
+    /// of <see cref="UpdateResult"/> so it can run before ASR (Phase 3c)
+    /// without racing the ASR write that targets the same row.
+    /// </summary>
+    public void UpdateResultLidLanguage(int resultId, string? lidLanguage)
+    {
+        using var cmd = CreateCmd();
+        cmd.CommandText = "UPDATE results SET lid_language = $lid WHERE result_id = $id";
+        cmd.Parameters.AddWithValue("$lid", (object?)lidLanguage ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("$id",  resultId);
         cmd.ExecuteNonQuery();
     }
 

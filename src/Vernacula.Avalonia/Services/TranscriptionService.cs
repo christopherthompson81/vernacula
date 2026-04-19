@@ -678,6 +678,42 @@ internal class TranscriptionService
 
         ct.ThrowIfCancellationRequested();
 
+        // ── Phase 3c: Per-segment LID (optional) ─────────────────────────────
+        // Independent of the file-level LID step above. Writes lid_language
+        // per row so the editor can surface code-switched / mixed-language
+        // segments. Short segments (< 1 s) inherit the file-level language
+        // when one was detected. Skipped entirely when the user hasn't opted
+        // in or no segments exist yet.
+        if (_settings.Current.LidPerSegment && _langId.IsAvailable && segs.Count > 0
+            && db.GetMetadata("lid_per_segment_complete") is null)
+        {
+            string? fileLevelIso = db.GetMetadata("detected_language");
+            progress.Report(new TranscriptionProgress(
+                TranscriptionPhase.Diarizing, 0, segs.Count, "Per-segment LID…"));
+
+            var segPairs = segs.Select(s => (s.start, s.end)).ToList();
+            var perSegLid = await Task.Run(
+                () => _langId.ClassifyEachSegment(
+                    audio, segPairs,
+                    minSegmentSeconds: 1.0,
+                    onProgress: (done, total) =>
+                        progress.Report(new TranscriptionProgress(
+                            TranscriptionPhase.Diarizing, done, total,
+                            $"Per-segment LID ({done}/{total})…")),
+                    ct: ct),
+                ct).ConfigureAwait(false);
+
+            for (int i = 0; i < perSegLid.Count; i++)
+            {
+                string? iso = perSegLid[i]?.Top.Iso ?? fileLevelIso;
+                if (iso is not null)
+                    db.UpdateResultLidLanguage(resultId: i + 1, lidLanguage: iso);
+            }
+            db.InsertMetadata("lid_per_segment_complete", "1");
+        }
+
+        ct.ThrowIfCancellationRequested();
+
         // ── Phase 4: ASR (resume or non-incremental path only) ───────────────
         var (asrDone, unfilledResultIds) = db.CheckAsr();
 

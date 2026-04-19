@@ -176,6 +176,7 @@ internal partial class SettingsViewModel : ObservableObject
 
     // ── Language identification (VoxLingua107) ───────────────────────────
     [ObservableProperty] private bool   _lidEnabled;
+    [ObservableProperty] private bool   _lidPerSegment;
     [ObservableProperty] private string _voxLinguaStatusText = "";
     [ObservableProperty] private IBrush _voxLinguaStatusBrush = Brushes.Gray;
     [ObservableProperty] private string _voxLinguaModelsLocationText = "";
@@ -231,6 +232,7 @@ internal partial class SettingsViewModel : ObservableObject
         DiariZenModelsLocationText = _svc.GetDiariZenModelsDir();
 
         _lidEnabled        = svc.Current.LidEnabled;
+        _lidPerSegment     = svc.Current.LidPerSegment;
         VoxLinguaStatusText = "Checking VoxLingua107 weights…";
         VoxLinguaModelsLocationText = _svc.GetVoxLinguaModelsDir();
 
@@ -647,6 +649,12 @@ internal partial class SettingsViewModel : ObservableObject
     partial void OnLidEnabledChanged(bool value)
     {
         _svc.Current.LidEnabled = value;
+        _svc.Save();
+    }
+
+    partial void OnLidPerSegmentChanged(bool value)
+    {
+        _svc.Current.LidPerSegment = value;
         _svc.Save();
     }
 

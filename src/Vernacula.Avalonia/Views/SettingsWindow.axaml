@@ -683,6 +683,22 @@
                             </StackPanel>
                         </CheckBox>
 
+                        <CheckBox IsChecked="{Binding LidPerSegment, Mode=TwoWay}"
+                                  IsEnabled="{Binding LidEnabled}"
+                                  Foreground="{DynamicResource TextBrush}"
+                                  Margin="24,0,0,0">
+                            <StackPanel>
+                                <TextBlock Text="Also classify each segment (≥ 1 s)"
+                                           FontWeight="SemiBold"
+                                           Foreground="{DynamicResource TextBrush}" />
+                                <TextBlock Text="Runs LID on every speech segment of at least 1 s and stores the result alongside the ASR output. Useful for code-switched / mixed-language audio. Shorter segments inherit the file-level language."
+                                           Foreground="{DynamicResource SubtextBrush}"
+                                           TextWrapping="Wrap"
+                                           FontSize="11"
+                                           Margin="0,2,0,0" />
+                            </StackPanel>
+                        </CheckBox>
+
                         <!-- Status + location -->
                         <TextBlock Text="{Binding VoxLinguaStatusText}"
                                    Foreground="{Binding VoxLinguaStatusBrush}"

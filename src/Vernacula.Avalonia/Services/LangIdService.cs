@@ -64,4 +64,72 @@ internal sealed class LangIdService(SettingsService settings)
         using var lid = new VoxLinguaLid(settings.GetVoxLinguaModelsDir());
         return lid.ClassifyLongestSegment(audioMono16k, vadSegments);
     }
+
+    /// <summary>
+    /// Run LID on every segment whose duration is at least
+    /// <paramref name="minSegmentSeconds"/>. Opens one VoxLingua107 session
+    /// for the whole batch (the model is the expensive part — per-call
+    /// inference is fast). Returns a list parallel to <paramref name="segs"/>;
+    /// indices below the minimum, or shorter than 1 s of audio after slicing,
+    /// receive a null entry which the caller is expected to fill from the
+    /// file-level language.
+    ///
+    /// <para>
+    /// Each clip is centred inside its segment and clamped to
+    /// <see cref="Config.VoxLinguaDefaultClipSeconds"/> (matches the
+    /// file-level path so single-segment results stay comparable). Caller
+    /// reports progress between segments.
+    /// </para>
+    /// </summary>
+    public IReadOnlyList<LidResult?> ClassifyEachSegment(
+        float[] audioMono16k,
+        IReadOnlyList<(double startSec, double endSec)> segs,
+        double minSegmentSeconds = 1.0,
+        Action<int, int>? onProgress = null,
+        CancellationToken ct = default)
+    {
+        var results = new LidResult?[segs.Count];
+        if (!IsAvailable || segs.Count == 0) return results;
+
+        using var lid = new VoxLinguaLid(settings.GetVoxLinguaModelsDir());
+        int clipSeconds = Config.VoxLinguaDefaultClipSeconds;
+        int sampleRate  = VoxLinguaLid.SampleRate;
+        int targetSamples = clipSeconds * sampleRate;
+
+        for (int i = 0; i < segs.Count; i++)
+        {
+            ct.ThrowIfCancellationRequested();
+            var (start, end) = segs[i];
+            double dur = end - start;
+            if (dur < minSegmentSeconds)
+            {
+                onProgress?.Invoke(i + 1, segs.Count);
+                continue;
+            }
+
+            int segStart = Math.Clamp((int)Math.Round(start * sampleRate), 0, audioMono16k.Length);
+            int segEnd   = Math.Clamp((int)Math.Round(end   * sampleRate), 0, audioMono16k.Length);
+            int segLen   = segEnd - segStart;
+            if (segLen < sampleRate)
+            {
+                onProgress?.Invoke(i + 1, segs.Count);
+                continue;
+            }
+
+            int take = Math.Min(targetSamples, segLen);
+            int offset = segStart + Math.Max(0, (segLen - take) / 2);
+            try
+            {
+                results[i] = lid.Classify(audioMono16k.AsSpan(offset, take));
+            }
+            catch (ArgumentException)
+            {
+                // Clip slipped below the 1 s floor due to rounding; skip and
+                // let the caller fall back to the file-level language.
+            }
+            onProgress?.Invoke(i + 1, segs.Count);
+        }
+
+        return results;
+    }
 }
