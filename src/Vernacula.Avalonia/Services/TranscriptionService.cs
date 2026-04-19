@@ -13,8 +13,23 @@ internal class TranscriptionService
     private const string CohereSyntheticTimestampMode = "uniform_segment_frames_v1";
 
     private readonly SettingsService _settings;
+    private readonly LangIdService _langId;
 
-    public TranscriptionService(SettingsService settings) => _settings = settings;
+    /// <summary>
+    /// Optional callback invoked when LID detects a language the current
+    /// ASR backend can't handle. Receives the LID result, the current
+    /// backend, and the best alternative backend (or null if none). The
+    /// callback returns the user's choice. When unset (CLI / tests), the
+    /// pipeline just logs the mismatch and continues with the current
+    /// backend — matching what happened before the popup was added.
+    /// </summary>
+    public Func<Vernacula.Base.Models.LidResult, AsrBackend, AsrBackend?, Task<Views.Dialogs.AsrMismatchChoice?>>? OnAsrLanguageMismatch { get; set; }
+
+    public TranscriptionService(SettingsService settings, LangIdService langId)
+    {
+        _settings = settings;
+        _langId   = langId;
+    }
 
     /// <summary>
     /// Runs the full diarization + ASR pipeline on a dedicated worker thread.
@@ -38,7 +53,8 @@ internal class TranscriptionService
         Action<int, string>  onSegmentText,
         string               asrModelName,
         string               asrLanguageCode,
-        CancellationToken    ct)
+        CancellationToken    ct,
+        Action<string, string>? onAsrConfigEffective = null)
     {
         // LongRunning spins up a dedicated OS thread. The async lambda allows
         // internal await points (for pipelined preprocessing) without blocking that
@@ -50,7 +66,8 @@ internal class TranscriptionService
                 try
                 {
                     await RunPipelineAsync(audioPath, streamIndex, resultsDbPath,
-                        progress, onSegmentAdded, onSegmentText, asrModelName, asrLanguageCode, ct);
+                        progress, onSegmentAdded, onSegmentText, asrModelName, asrLanguageCode,
+                        ct, onAsrConfigEffective);
                 }
                 catch (Exception ex)
                 {
@@ -70,7 +87,8 @@ internal class TranscriptionService
         Action<int, string> onSegmentText,
         string              asrModelName,
         string              asrLanguageCode,
-        CancellationToken   ct)
+        CancellationToken   ct,
+        Action<string, string>? onAsrConfigEffective)
     {
         Console.WriteLine($"[Transcription] RunPipelineAsync starting for '{audioPath}'");
         string parakeetModelsDir = _settings.GetParakeetModelsDir();
@@ -153,8 +171,16 @@ internal class TranscriptionService
 
         string effectiveAsrModelName = runVibeVoice ? "vibevoice/vibevoice-asr" : asrModelName;
         db.UpdateMetadata("asr_model", effectiveAsrModelName);
-        db.UpdateMetadata("asr_language_code",
-            string.IsNullOrWhiteSpace(asrLanguageCode) ? "auto" : asrLanguageCode);
+        string effectiveAsrLanguageCode =
+            string.IsNullOrWhiteSpace(asrLanguageCode) ? "auto" : asrLanguageCode;
+        db.UpdateMetadata("asr_language_code", effectiveAsrLanguageCode);
+
+        // For the VibeVoice / built-in-diarization path the config can't
+        // change downstream — fire the callback now so the caller (e.g.
+        // JobQueueService) can mirror it into the jobs table without
+        // reopening the results DB.
+        if (runVibeVoice)
+            onAsrConfigEffective?.Invoke(effectiveAsrModelName, effectiveAsrLanguageCode);
 
         // ── VibeVoice: combined diarization + ASR in a single model pass ────────
         if (runVibeVoice)
@@ -525,6 +551,194 @@ internal class TranscriptionService
 
         ct.ThrowIfCancellationRequested();
 
+        // ── Phase 3b: Language identification (optional) ─────────────────────
+        // Runs after segmentation so we have VAD/diarizer segments to choose
+        // from, and before ASR so the detected language can inform / pre-fill
+        // force-language choices downstream. LangIdService gates on
+        // settings + model-present, so this no-ops when LID is off or the
+        // VoxLingua assets haven't been downloaded.
+        if (_langId.IsAvailable && db.GetMetadata("detected_language") is null)
+        {
+            progress.Report(new TranscriptionProgress(
+                TranscriptionPhase.Diarizing, 100, 100, "Detecting language…"));
+
+            ct.ThrowIfCancellationRequested();
+            var vadForLid = segs.Select(s => (s.start, s.end)).ToList();
+            var lidResult = await Task.Run(
+                () => _langId.DetectLanguage(audio, vadForLid), ct).ConfigureAwait(false);
+
+            if (lidResult is not null)
+            {
+                db.InsertMetadata("detected_language",             lidResult.Iso);
+                db.InsertMetadata("detected_language_name",        lidResult.Top.Name);
+                db.InsertMetadata("detected_language_probability", lidResult.TopProbability.ToString("F4", System.Globalization.CultureInfo.InvariantCulture));
+                db.InsertMetadata("detected_language_ambiguous",   lidResult.IsAmbiguous ? "1" : "0");
+                // Top-K as compact JSON so downstream UI can render the chip /
+                // the ambiguity dropdown without recomputing softmax.
+                string topKJson = JsonSerializer.Serialize(
+                    lidResult.TopK.Select(c => new { iso = c.Iso, name = c.Name, p = c.Probability }));
+                db.InsertMetadata("detected_language_topk", topKJson);
+                Console.WriteLine($"[Transcription] LID → {lidResult.FormatSummary()}");
+
+                // Override: if LID returned an unambiguous result and the
+                // current ASR backend supports it, substitute it for the
+                // user's configured force-language for this run. Leaves the
+                // settings value untouched — this is a per-job override that
+                // the Results / Editor view will see via the
+                // asr_language_code metadata we record below.
+                //
+                // The ambiguity gate (VoxLinguaAmbiguityThreshold, 0.60) is
+                // the only confidence threshold. Opting into LID is the
+                // user's consent to overrides; if they want the settings
+                // force-language respected verbatim, they disable LID.
+                if (!lidResult.IsAmbiguous)
+                {
+                    var backend = AsrLanguageSupport.BackendOf(asrModelName);
+                    if (backend is not null && AsrLanguageSupport.Supports(backend.Value, lidResult.Iso))
+                    {
+                        Console.WriteLine(
+                            $"[Transcription] LID override: " +
+                            $"asr_language_code '{asrLanguageCode}' → '{lidResult.Iso}'");
+                        asrLanguageCode = lidResult.Iso;
+                    }
+                    else if (backend is not null)
+                    {
+                        var alt = AsrLanguageSupport.PickBestBackend(lidResult.Iso);
+
+                        // If the host wired up the interactive callback (Avalonia
+                        // does; CLI / tests don't), ask the user what to do.
+                        // Otherwise fall through to the log-and-continue fallback.
+                        Views.Dialogs.AsrMismatchChoice? choice = null;
+                        if (OnAsrLanguageMismatch is not null)
+                        {
+                            try
+                            {
+                                choice = await OnAsrLanguageMismatch(lidResult, backend.Value, alt).ConfigureAwait(false);
+                            }
+                            catch (Exception ex)
+                            {
+                                Console.WriteLine($"[Transcription] OnAsrLanguageMismatch callback failed: {ex.Message}");
+                                // fall through to log-and-continue with current backend
+                            }
+                        }
+
+                        switch (choice)
+                        {
+                            case Views.Dialogs.AsrMismatchChoice.SwitchBackend when alt is not null:
+                                string newModelName = AsrLanguageSupport.ModelName(alt.Value);
+                                Console.WriteLine(
+                                    $"[Transcription] LID mismatch: user switched ASR " +
+                                    $"{backend.Value} → {alt.Value}. " +
+                                    $"asrModelName '{asrModelName}' → '{newModelName}'");
+                                asrModelName = newModelName;
+                                asrLanguageCode = lidResult.Iso;
+                                // Recompute the per-backend flags so the Phase-4 ASR
+                                // branch picks the right code path. (VibeVoice can't
+                                // be switched TO here because its diarization path
+                                // runs earlier; AsrLanguageSupport.PickBestBackend
+                                // prefers Qwen3-ASR/Cohere/Parakeet in that order.)
+                                useVibeVoiceAsr = string.Equals(asrModelName, "vibevoice/vibevoice-asr", StringComparison.Ordinal);
+                                useCohereAsr    = string.Equals(asrModelName, "CohereLabs/cohere-transcribe-03-2026", StringComparison.Ordinal);
+                                useQwen3Asr     = string.Equals(asrModelName, "Qwen/Qwen3-ASR-1.7B", StringComparison.Ordinal);
+                                // Reflect the switch in the results DB so the
+                                // Results view reads the *effective* backend
+                                // (and so the mismatch banner doesn't appear
+                                // for a mismatch the user already resolved).
+                                db.UpdateMetadata("asr_model", newModelName);
+                                db.InsertMetadata("asr_model_overridden_from", AsrLanguageSupport.BackendOf(AsrLanguageSupport.ModelName(backend.Value))?.ToString() ?? backend.Value.ToString());
+                                break;
+
+                            case Views.Dialogs.AsrMismatchChoice.CancelJob:
+                                Console.WriteLine("[Transcription] LID mismatch: user cancelled the job.");
+                                throw new OperationCanceledException(
+                                    "Job cancelled by user after LID detected an unsupported language.");
+
+                            case Views.Dialogs.AsrMismatchChoice.KeepCurrent:
+                            case null:
+                            default:
+                                // Mismatch is *unresolved* — record so the
+                                // Results banner can offer the reprocess remedy.
+                                // Set inside this branch (not before the
+                                // popup) so a SwitchBackend choice doesn't
+                                // leave a stale mismatch flag behind.
+                                db.InsertMetadata("detected_language_backend_mismatch", "1");
+                                if (alt is not null)
+                                    db.InsertMetadata("detected_language_suggested_backend", alt.Value.ToString());
+                                Console.WriteLine(
+                                    $"[Transcription] LID detected '{lidResult.Iso}' ({lidResult.Top.Name}) " +
+                                    $"but {backend.Value} does not support it. " +
+                                    (alt is not null
+                                        ? $"User kept {backend.Value} anyway (alt would be {alt.Value})."
+                                        : $"No installed backend supports {lidResult.Iso}.") +
+                                    " Continuing with the configured backend.");
+                                break;
+                        }
+                    }
+                }
+            }
+            else
+            {
+                Console.WriteLine("[Transcription] LID skipped (no VAD segment long enough).");
+            }
+        }
+
+        // Persist the effective asr_language_code that the ASR step will use,
+        // so the Results / Editor views can read it (possibly differing from
+        // the job's ControlDb row when LID overrode it).
+        db.InsertMetadata("asr_language_code", asrLanguageCode);
+
+        // Notify the caller of the effective ASR config (may differ from
+        // what was passed in if SwitchBackend ran). Fired once here, after
+        // the LID phase has settled but before Phase 4 ASR; JobQueueService
+        // uses this to mirror the values into the jobs table without
+        // reopening the results DB at end-of-run.
+        onAsrConfigEffective?.Invoke(asrModelName, asrLanguageCode);
+
+        ct.ThrowIfCancellationRequested();
+
+        // ── Phase 3c: Per-segment LID (optional) ─────────────────────────────
+        // Independent of the file-level LID step above. Writes lid_language
+        // per row so the editor can surface code-switched / mixed-language
+        // segments. Short segments (< 2 s) inherit the file-level language
+        // when one was detected — VoxLingua needs a few seconds of audio to
+        // reliably distinguish close cousins (ru/uk/be, mk/bg/sr). Skipped
+        // entirely when the user hasn't opted in or no segments exist yet.
+        // Reads result_ids from the DB so writes target the right row even
+        // if positional alignment with `segs` ever drifts.
+        if (_settings.Current.LidPerSegment && _langId.IsAvailable
+            && db.GetMetadata("lid_per_segment_complete") != "1")
+        {
+            var resultRows = db.GetAllResultSegments();
+            if (resultRows.Count > 0)
+            {
+                string? fileLevelIso = db.GetMetadata("detected_language");
+                progress.Report(new TranscriptionProgress(
+                    TranscriptionPhase.Diarizing, 0, resultRows.Count, "Per-segment LID…"));
+
+                var segPairs = resultRows.Select(r => (r.start, r.end)).ToList();
+                var perSegLid = await Task.Run(
+                    () => _langId.ClassifyEachSegment(
+                        audio, segPairs,
+                        minSegmentSeconds: 2.0,
+                        onProgress: (done, total) =>
+                            progress.Report(new TranscriptionProgress(
+                                TranscriptionPhase.Diarizing, done, total,
+                                $"Per-segment LID ({done}/{total})…")),
+                        ct: ct),
+                    ct).ConfigureAwait(false);
+
+                for (int i = 0; i < perSegLid.Count; i++)
+                {
+                    string? iso = perSegLid[i]?.Top.Iso ?? fileLevelIso;
+                    if (iso is not null)
+                        db.UpdateResultLidLanguage(resultId: resultRows[i].resultId, lidLanguage: iso);
+                }
+                db.InsertMetadata("lid_per_segment_complete", "1");
+            }
+        }
+
+        ct.ThrowIfCancellationRequested();
+
         // ── Phase 4: ASR (resume or non-incremental path only) ───────────────
         var (asrDone, unfilledResultIds) = db.CheckAsr();
 
@@ -541,17 +755,20 @@ internal class TranscriptionService
 
         if (!asrDone)
         {
-            // Build the subset to process from the unfilled result_ids: rows
-            // skipped by a prior interrupted run (mid-list holes) AND rows
-            // never reached. result_id is 1-indexed; segs is 0-indexed.
+            // Build the subset to process from the unfilled result_ids by
+            // querying `results` directly. Earlier this used segs[rid - 1]
+            // — implicitly assuming `segs[i].result_id == i + 1`, which
+            // holds for fresh diarization but breaks once segment_cards has
+            // been split / merged by the user. Pulling the rows by id keeps
+            // the data path correct regardless.
+            var segsByRid = db.GetResultSegmentsByIds(unfilledResultIds);
             var segsSubset = new List<(double start, double end, string spkId)>(unfilledResultIds.Count);
             foreach (int rid in unfilledResultIds)
             {
-                int idx = rid - 1;
-                if (idx < 0 || idx >= segs.Count)
+                if (!segsByRid.TryGetValue(rid, out var entry))
                     throw new InvalidOperationException(
-                        $"Unfilled result_id {rid} has no matching segment (segs.Count={segs.Count}).");
-                segsSubset.Add(segs[idx]);
+                        $"Unfilled result_id {rid} not present in results table.");
+                segsSubset.Add(entry);
             }
             int totalSegs  = segs.Count;
             int completed  = totalSegs - segsSubset.Count;
@@ -570,14 +787,19 @@ internal class TranscriptionService
                     segsSubset, audio, forceLanguage: forceLanguage))
                 {
                     ct.ThrowIfCancellationRequested();
-                    int absId = unfilledResultIds[result.SegmentId] - 1;
+                    // rid is the authoritative DB key. absId is the 0-indexed
+                    // UI segment slot (rid - 1 on unedited DBs); kept distinct
+                    // so DB writes never depend on the segs/results positional
+                    // alignment, only the UI callback does.
+                    int rid   = unfilledResultIds[result.SegmentId];
+                    int absId = rid - 1;
                     completed++;
                     var syntheticTimestamps = BuildSyntheticTokenTimestamps(
                         segsSubset[result.SegmentId].end - segsSubset[result.SegmentId].start,
                         result.TextTokens.Count);
 
                     db.UpdateResult(
-                        resultId:   absId + 1,
+                        resultId:   rid,
                         asrContent: result.Text,
                         content:    result.Text,
                         tokens:     JsonSerializer.Serialize(result.TextTokens),
@@ -629,14 +851,19 @@ internal class TranscriptionService
                 foreach (var result in recognitionResults)
                 {
                     ct.ThrowIfCancellationRequested();
-                    int absId = unfilledResultIds[result.SegmentId] - 1;
+                    // rid is the authoritative DB key. absId is the 0-indexed
+                    // UI segment slot (rid - 1 on unedited DBs); kept distinct
+                    // so DB writes never depend on the segs/results positional
+                    // alignment, only the UI callback does.
+                    int rid   = unfilledResultIds[result.SegmentId];
+                    int absId = rid - 1;
                     completed++;
                     var syntheticTimestamps = BuildSyntheticTokenTimestamps(
                         segsSubset[result.SegmentId].end - segsSubset[result.SegmentId].start,
                         result.TextTokens.Count);
 
                     db.UpdateResult(
-                        resultId:   absId + 1,
+                        resultId:   rid,
                         asrContent: result.Text,
                         content:    result.Text,
                         tokens:     JsonSerializer.Serialize(result.TextTokens),
@@ -680,11 +907,12 @@ internal class TranscriptionService
                     parakeet.Recognize(segsSubset, audio))
                 {
                     ct.ThrowIfCancellationRequested();
-                    int absId = unfilledResultIds[segId] - 1;
+                    int rid   = unfilledResultIds[segId];
+                    int absId = rid - 1;
                     completed++;
 
                     db.UpdateResult(
-                        resultId:   absId + 1,
+                        resultId:   rid,
                         asrContent: text,
                         content:    text,
                         tokens:     JsonSerializer.Serialize(tokens),
@@ -721,6 +949,7 @@ internal class TranscriptionService
             Loc.Instance["transcription_complete"],
             OverridePercent: 100));
     }
+
 
     private static double EstimateDiariZenDiarizationFraction(string message)
     {

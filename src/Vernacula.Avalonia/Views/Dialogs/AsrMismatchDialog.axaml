@@ -1,0 +1,42 @@
+<Window x:Class="Vernacula.App.Views.Dialogs.AsrMismatchDialog"
+        xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Width="520"
+        SizeToContent="Height"
+        CanResize="False"
+        WindowStartupLocation="CenterOwner"
+        ShowInTaskbar="False"
+        Title="Detected language needs a different ASR backend">
+    <Border Background="{DynamicResource BgBrush}" Padding="24">
+        <StackPanel Spacing="14">
+            <TextBlock Text="Detected language isn't supported by this ASR"
+                       FontWeight="SemiBold"
+                       FontSize="15" />
+
+            <TextBlock x:Name="BodyText"
+                       TextWrapping="Wrap"
+                       Foreground="{DynamicResource TextBrush}" />
+
+            <TextBlock x:Name="SubtleText"
+                       TextWrapping="Wrap"
+                       Foreground="{DynamicResource SubtextBrush}"
+                       FontSize="11" />
+
+            <StackPanel Orientation="Horizontal"
+                        HorizontalAlignment="Right"
+                        Spacing="10">
+                <Button x:Name="CancelJobButton"
+                        Content="Cancel Job"
+                        Classes="danger-button"
+                        Click="CancelJob_Click" />
+                <Button x:Name="KeepCurrentButton"
+                        Content="Keep Current ASR"
+                        Classes="secondary-button"
+                        Click="KeepCurrent_Click" />
+                <Button x:Name="SwitchBackendButton"
+                        Content="Switch ASR"
+                        Click="SwitchBackend_Click" />
+            </StackPanel>
+        </StackPanel>
+    </Border>
+</Window>

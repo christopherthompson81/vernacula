@@ -18,6 +18,15 @@ public class AppSettings
     public string             ModelsDir           { get; set; } = "";
     public string             DiariZenModelsDir   { get; set; } = "";
     public bool               DiariZenNoticeAccepted { get; set; } = false;
+
+    // Language identification (VoxLingua107)
+    public bool               LidEnabled          { get; set; } = false;
+    // Per-segment LID: when both this and LidEnabled are on, classify
+    // every segment ≥ 2 s and persist the result alongside ASR output.
+    // Shorter segments inherit the file-level language detected in Phase 3b.
+    public bool               LidPerSegment       { get; set; } = false;
+    public string             VoxLinguaModelsDir  { get; set; } = "";
+
     public List<string>       AcceptedGatedModels { get; set; } = [];
     public string             Language            { get; set; } = "";
 

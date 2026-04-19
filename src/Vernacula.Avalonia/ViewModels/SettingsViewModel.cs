@@ -112,62 +112,35 @@ internal partial class SettingsViewModel : ObservableObject
     public static readonly IReadOnlyList<AsrLanguageOption> Qwen3AsrLanguages =
     [
         new("",   "Auto-detect"),
-        new("af", "Afrikaans"),
         new("ar", "Arabic"),
-        new("hy", "Armenian"),
-        new("az", "Azerbaijani"),
-        new("be", "Belarusian"),
-        new("bs", "Bosnian"),
-        new("bg", "Bulgarian"),
-        new("ca", "Catalan"),
         new("zh", "Chinese"),
-        new("hr", "Croatian"),
         new("cs", "Czech"),
         new("da", "Danish"),
         new("nl", "Dutch"),
         new("en", "English"),
-        new("et", "Estonian"),
+        new("tl", "Filipino"),
         new("fi", "Finnish"),
         new("fr", "French"),
-        new("gl", "Galician"),
         new("de", "German"),
         new("el", "Greek"),
-        new("he", "Hebrew"),
         new("hi", "Hindi"),
         new("hu", "Hungarian"),
-        new("is", "Icelandic"),
         new("id", "Indonesian"),
         new("it", "Italian"),
         new("ja", "Japanese"),
-        new("kn", "Kannada"),
-        new("kk", "Kazakh"),
         new("ko", "Korean"),
-        new("lv", "Latvian"),
-        new("lt", "Lithuanian"),
         new("mk", "Macedonian"),
         new("ms", "Malay"),
-        new("mr", "Marathi"),
-        new("ne", "Nepali"),
-        new("no", "Norwegian"),
         new("fa", "Persian"),
         new("pl", "Polish"),
         new("pt", "Portuguese"),
         new("ro", "Romanian"),
         new("ru", "Russian"),
-        new("sr", "Serbian"),
-        new("sk", "Slovak"),
-        new("sl", "Slovenian"),
         new("es", "Spanish"),
-        new("sw", "Swahili"),
         new("sv", "Swedish"),
-        new("tl", "Tagalog"),
-        new("ta", "Tamil"),
         new("th", "Thai"),
         new("tr", "Turkish"),
-        new("uk", "Ukrainian"),
-        new("ur", "Urdu"),
         new("vi", "Vietnamese"),
-        new("cy", "Welsh"),
     ];
 
     // ── Hardware check state ─────────────────────────────────────────────────
@@ -200,6 +173,19 @@ internal partial class SettingsViewModel : ObservableObject
     [ObservableProperty] private bool   _isDownloadingDiariZen = false;
     [ObservableProperty] private double _diariZenDownloadPercent = 0;
     [ObservableProperty] private string _diariZenDownloadStatusText = "";
+
+    // ── Language identification (VoxLingua107) ───────────────────────────
+    [ObservableProperty] private bool   _lidEnabled;
+    [ObservableProperty] private bool   _lidPerSegment;
+    [ObservableProperty] private string _voxLinguaStatusText = "";
+    [ObservableProperty] private IBrush _voxLinguaStatusBrush = Brushes.Gray;
+    [ObservableProperty] private string _voxLinguaModelsLocationText = "";
+    [ObservableProperty] private bool   _voxLinguaReady = false;
+    [ObservableProperty] private bool   _isDownloadingVoxLingua = false;
+    [ObservableProperty] private double _voxLinguaDownloadPercent = 0;
+    [ObservableProperty] private string _voxLinguaDownloadStatusText = "";
+    private CancellationTokenSource?    _voxLinguaDownloadCts;
+    private IReadOnlyList<string>       _lastVoxLinguaMissing = [];
 
     private CancellationTokenSource?  _downloadCts;
     private CancellationTokenSource?  _diariZenDownloadCts;
@@ -244,6 +230,11 @@ internal partial class SettingsViewModel : ObservableObject
         ModelStatusText    = Loc.Instance["model_status_checking"];
         DiariZenStatusText = "Checking external DiariZen weights…";
         DiariZenModelsLocationText = _svc.GetDiariZenModelsDir();
+
+        _lidEnabled        = svc.Current.LidEnabled;
+        _lidPerSegment     = svc.Current.LidPerSegment;
+        VoxLinguaStatusText = "Checking VoxLingua107 weights…";
+        VoxLinguaModelsLocationText = _svc.GetVoxLinguaModelsDir();
 
         Loc.Instance.PropertyChanged += (_, e) =>
         {
@@ -653,6 +644,86 @@ internal partial class SettingsViewModel : ObservableObject
 
     [RelayCommand] private void CancelDiariZenDownload() => _diariZenDownloadCts?.Cancel();
 
+    // ── VoxLingua107 (language ID) ───────────────────────────────────────
+
+    partial void OnLidEnabledChanged(bool value)
+    {
+        _svc.Current.LidEnabled = value;
+        _svc.Save();
+    }
+
+    partial void OnLidPerSegmentChanged(bool value)
+    {
+        _svc.Current.LidPerSegment = value;
+        _svc.Save();
+    }
+
+    private void ApplyVoxLinguaStatusText()
+    {
+        VoxLinguaModelsLocationText = _svc.GetVoxLinguaModelsDir();
+        VoxLinguaStatusText = _lastVoxLinguaMissing.Count == 0
+            ? "VoxLingua107 language-ID weights found and ready."
+            : $"VoxLingua107 weights incomplete ({_lastVoxLinguaMissing.Count} file(s) missing): "
+              + string.Join(", ", _lastVoxLinguaMissing);
+
+        VoxLinguaStatusBrush = Application.Current!.Resources[
+            _lastVoxLinguaMissing.Count == 0 ? "GreenBrush" : "YellowBrush"] as IBrush
+            ?? (_lastVoxLinguaMissing.Count == 0 ? Brushes.LimeGreen : Brushes.Goldenrod);
+        VoxLinguaReady = _lastVoxLinguaMissing.Count == 0;
+    }
+
+    internal async Task CheckVoxLinguaModelsAsync()
+    {
+        VoxLinguaStatusText = "Checking VoxLingua107 weights…";
+        VoxLinguaModelsLocationText = _svc.GetVoxLinguaModelsDir();
+
+        IReadOnlyList<string> missing = [];
+        await Task.Run(() => missing = _modelMgr.GetMissingVoxLinguaFiles(_svc.GetVoxLinguaModelsDir()));
+
+        _lastVoxLinguaMissing = missing;
+        ApplyVoxLinguaStatusText();
+    }
+
+    [RelayCommand]
+    private async Task DownloadVoxLinguaModels()
+    {
+        IsDownloadingVoxLingua = true;
+        VoxLinguaDownloadStatusText = "Starting VoxLingua107 weights download…";
+        VoxLinguaDownloadPercent = 0;
+        _voxLinguaDownloadCts = new CancellationTokenSource();
+
+        var progress = new Progress<DownloadProgress>(p =>
+        {
+            VoxLinguaDownloadPercent = p.OverallPercent;
+            VoxLinguaDownloadStatusText = $"[{p.FileIndex + 1}/{p.TotalFiles}] {p.FileName} — " +
+                (string.IsNullOrEmpty(p.OverallSizeText)
+                    ? p.SizeText
+                    : $"{p.SizeText}  |  {p.OverallSizeText} total  ({p.OverallPercent:F1}%)");
+        });
+
+        try
+        {
+            await _modelMgr.DownloadMissingVoxLinguaModelsAsync(
+                progress, _svc.GetVoxLinguaModelsDir(), _voxLinguaDownloadCts.Token);
+            VoxLinguaDownloadStatusText = "VoxLingua107 weights download complete.";
+            await CheckVoxLinguaModelsAsync();
+        }
+        catch (OperationCanceledException)
+        {
+            VoxLinguaDownloadStatusText = "VoxLingua107 download cancelled.";
+        }
+        catch (Exception ex)
+        {
+            VoxLinguaDownloadStatusText = $"VoxLingua107 download failed: {ex.Message}";
+        }
+        finally
+        {
+            IsDownloadingVoxLingua = false;
+        }
+    }
+
+    [RelayCommand] private void CancelVoxLinguaDownload() => _voxLinguaDownloadCts?.Cancel();
+
     [RelayCommand]
     private async Task DownloadModels()
     {
@@ -766,8 +837,9 @@ internal partial class SettingsViewModel : ObservableObject
     {
         var modelTask    = CheckModelsAsync();
         var diarizenTask = CheckDiariZenModelsAsync();
+        var voxLinguaTask = CheckVoxLinguaModelsAsync();
         var hardwareTask = RecheckHardwareAsync();
-        await Task.WhenAll(modelTask, diarizenTask, hardwareTask);
+        await Task.WhenAll(modelTask, diarizenTask, voxLinguaTask, hardwareTask);
 
         if (ModelsReady)
             _ = CheckForUpdatesAsync();   // non-blocking; skipped if offline

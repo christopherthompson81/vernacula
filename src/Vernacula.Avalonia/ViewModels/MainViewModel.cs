@@ -99,8 +99,48 @@ internal partial class MainViewModel : ObservableObject
         // Home → Results (load a completed job)
         Home.LoadJobToResults = job =>
         {
-            Results.Load(job.ResultsFile, job.AudioBaseName, _mainWindow);
+            Results.Load(job.ResultsFile, job.AudioBaseName, _mainWindow, job.JobId);
             CurrentPanel = AppPanel.Results;
+        };
+
+        // Results → reprocess with a different ASR backend + forced language.
+        // Called by the LID-mismatch banner when the user accepts the remedy.
+        Results.ReprocessJob = (jobId, backend, detectedIso) =>
+        {
+            string asrModelName = backend switch
+            {
+                AsrBackend.Parakeet  => "nvidia/parakeet-tdt-0.6b-v3",
+                AsrBackend.Cohere    => "CohereLabs/cohere-transcribe-03-2026",
+                AsrBackend.Qwen3Asr  => "Qwen/Qwen3-ASR-1.7B",
+                AsrBackend.VibeVoice => "vibevoice/vibevoice-asr",
+                _ => throw new ArgumentOutOfRangeException(nameof(backend)),
+            };
+            controlDb.UpdateJobAsr(jobId, asrModelName, detectedIso);
+            var refreshed = controlDb.GetJobs().FirstOrDefault(j => j.JobId == jobId);
+            if (refreshed is null) return;
+
+            // Clear the mismatch flag from the per-job TranscriptionDb so the
+            // banner goes away on the next Results open. Also clear the
+            // asr_model / asr_language_code metadata so the pipeline's
+            // Phase 3b records the new values rather than the old ones.
+            // (detected_language is left in place — it's still the correct
+            // detection; on reprocess Phase 3b short-circuits and doesn't
+            // re-run LID, which is fine because we already trust the result.)
+            try
+            {
+                using var tdb = new TranscriptionDb(refreshed.ResultsFile);
+                tdb.DeleteMetadata("detected_language_backend_mismatch");
+                tdb.DeleteMetadata("detected_language_suggested_backend");
+                tdb.DeleteMetadata("asr_language_code");
+            }
+            catch { /* DB missing or inaccessible — banner will reappear harmlessly */ }
+
+            queue.RequeueJob(refreshed.JobId, refreshed.ResultsFile, refreshed.AudioFilePath,
+                             refreshed.AudioStreamIndex, refreshed.AsrLanguageCode,
+                             refreshed.AsrModelName);
+            RefreshJobsAndSync();
+            // Hop to the Progress / Home panel so the user can see the new run.
+            CurrentPanel = AppPanel.Home;
         };
 
         // Home → Progress (monitor a running / queued job)
@@ -179,7 +219,7 @@ internal partial class MainViewModel : ObservableObject
         Progress.NavigateToResults = () =>
         {
             if (Progress.CompletedResultsDbPath is { } dbPath)
-                Results.Load(dbPath, Progress.CompletedAudioBaseName, _mainWindow);
+                Results.Load(dbPath, Progress.CompletedAudioBaseName, _mainWindow, Progress.CompletedJobId);
             CurrentPanel = AppPanel.Results;
         };
 

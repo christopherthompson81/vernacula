@@ -268,6 +268,18 @@ internal sealed class JobQueueService
 
         try
         {
+            // Captures the effective ASR config (post-LID / SwitchBackend)
+            // via the TranscriptionService callback so we can mirror it into
+            // the jobs table after RunAsync completes — without reopening
+            // the results DB.
+            string? effectiveModel = null;
+            string? effectiveLang  = null;
+            void OnAsrConfigEffective(string model, string lang)
+            {
+                effectiveModel = model;
+                effectiveLang  = lang;
+            }
+
             await _transcription.RunAsync(
                 entry.AudioPath, entry.StreamIndex, entry.DbPath,
                 progress,
@@ -275,7 +287,15 @@ internal sealed class JobQueueService
                 OnSegmentText,
                 entry.AsrModelName,
                 entry.AsrLanguageCode,
-                cts.Token);
+                cts.Token,
+                OnAsrConfigEffective);
+
+            if (effectiveModel is not null &&
+                (!string.Equals(effectiveModel, entry.AsrModelName, StringComparison.Ordinal) ||
+                 !string.Equals(effectiveLang ?? "auto", entry.AsrLanguageCode, StringComparison.Ordinal)))
+            {
+                _controlDb.UpdateJobAsr(entry.JobId, effectiveModel, effectiveLang ?? "auto");
+            }
 
             sw.Stop();
             int elapsed = (int)sw.Elapsed.TotalSeconds;

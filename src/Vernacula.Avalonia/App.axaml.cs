@@ -18,6 +18,7 @@ public partial class App : Application
     internal SettingsService      Settings      { get; } = new();
     internal ControlDb            ControlDb     { get; private set; } = null!;
     internal ModelManagerService  ModelManager  { get; private set; } = null!;
+    internal LangIdService        LangId        { get; private set; } = null!;
     internal TranscriptionService Transcription { get; private set; } = null!;
     internal JobQueueService      JobQueue      { get; private set; } = null!;
     internal ExportService        Export        { get; } = new();
@@ -106,7 +107,8 @@ public partial class App : Application
 
         ControlDb     = new ControlDb(Settings.GetControlDbPath());
         ModelManager  = new ModelManagerService(Settings);
-        Transcription = new TranscriptionService(Settings);
+        LangId        = new LangIdService(Settings);
+        Transcription = new TranscriptionService(Settings, LangId);
         JobQueue      = new JobQueueService(Transcription, ControlDb, Settings);
 
         // Warm up Sortformer model on a background thread so the first
@@ -140,6 +142,27 @@ public partial class App : Application
             var mainVm = new MainViewModel(Settings, ControlDb, ModelManager, Transcription, JobQueue, Export);
             desktop.MainWindow = new MainWindow { DataContext = mainVm };
             Console.WriteLine("[App] MainWindow set");
+
+            // Wire the LID mismatch popup. TranscriptionService runs its
+            // pipeline on a worker thread; the callback marshals to the UI
+            // thread, shows a modal dialog owned by the main window, and
+            // awaits the user's choice before the worker continues.
+            Transcription.OnAsrLanguageMismatch = async (lidResult, currentBackend, suggestedBackend) =>
+            {
+                Views.Dialogs.AsrMismatchChoice? choice = null;
+                await Avalonia.Threading.Dispatcher.UIThread.InvokeAsync(async () =>
+                {
+                    var dialog = new Views.Dialogs.AsrMismatchDialog();
+                    dialog.Configure(
+                        detectedIso:        lidResult.Iso,
+                        detectedName:       lidResult.Top.Name,
+                        detectedProbability: lidResult.TopProbability,
+                        currentBackend:     currentBackend,
+                        suggestedBackend:   suggestedBackend);
+                    choice = await dialog.ShowDialog<Views.Dialogs.AsrMismatchChoice?>(desktop.MainWindow!);
+                });
+                return choice;
+            };
         }
         else if (ApplicationLifetime is ISingleViewApplicationLifetime singleView)
         {
