@@ -34,6 +34,9 @@ internal partial class SettingsViewModel : ObservableObject
     private AsrBackend _selectedAsrBackend;
 
     [ObservableProperty]
+    private int _parakeetBeamWidth;
+
+    [ObservableProperty]
     private AsrLanguageOption? _selectedCohereLanguage;
 
     [ObservableProperty]
@@ -217,6 +220,7 @@ internal partial class SettingsViewModel : ObservableObject
                                         ?? CohereLanguages[0];
         _selectedQwen3AsrLanguage     = Qwen3AsrLanguages.FirstOrDefault(l => l.Code == svc.Current.Qwen3AsrLanguage)
                                         ?? Qwen3AsrLanguages[0];
+        _parakeetBeamWidth            = Math.Max(1, svc.Current.ParakeetBeamWidth);
         _selectedDenoiser             = svc.Current.Denoiser;
         _selectedEditorPlaybackMode   = svc.Current.EditorPlaybackMode;
         _selectedLanguage             = svc.Current.Language;
@@ -320,6 +324,18 @@ internal partial class SettingsViewModel : ObservableObject
     partial void OnSelectedDenoiserChanged(DenoiserMode value)
     {
         _svc.Current.Denoiser = value;
+        _svc.Save();
+    }
+
+    partial void OnParakeetBeamWidthChanged(int value)
+    {
+        int clamped = Math.Clamp(value, 1, 16);
+        if (clamped != value)
+        {
+            ParakeetBeamWidth = clamped;
+            return;
+        }
+        _svc.Current.ParakeetBeamWidth = clamped;
         _svc.Save();
     }
 

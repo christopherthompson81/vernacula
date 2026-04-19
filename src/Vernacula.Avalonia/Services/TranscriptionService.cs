@@ -953,7 +953,8 @@ internal class TranscriptionService
                 var (encoderFile, decoderJointFile) =
                     Config.GetAsrFiles(ModelPrecision.Fp32);
 
-                using var parakeet = new ParakeetAsr(parakeetModelsDir, encoderFile, decoderJointFile);
+                using var parakeet = new ParakeetAsr(parakeetModelsDir, encoderFile, decoderJointFile,
+                    beamWidth: _settings.Current.ParakeetBeamWidth);
                 foreach (var (segId, text, tokens, timestamps, durations, logprobs) in
                     parakeet.Recognize(segsSubset, audio))
                 {

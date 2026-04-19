@@ -34,6 +34,7 @@ bool    profileSortformer = false;      // --profile-sortformer: print fine-grai
 bool    downloadVoxLingua = false;      // --download-voxlingua: fetch the LID model, then exit
 bool    runLid             = false;      // --lid: run LID on --audio and print result, then exit
 ModelPrecision precision = ModelPrecision.Fp32;
+int     parakeetBeam      = 1;          // --parakeet-beam N: 1 = greedy (default), >1 = TDT beam search
 
 for (int i = 0; i < args.Length; i++)
 {
@@ -105,6 +106,13 @@ for (int i = 0; i < args.Length; i++)
                 "int8" => ModelPrecision.Int8,
                 _      => ModelPrecision.Fp32,
             };
+            break;
+        case "--parakeet-beam":
+            if (!int.TryParse(args[++i], out parakeetBeam) || parakeetBeam < 1)
+            {
+                Console.Error.WriteLine("--parakeet-beam expects a positive integer (1 = greedy).");
+                return 1;
+            }
             break;
         case "-h":
         case "--help":
@@ -654,7 +662,8 @@ try
     else
     {
         var (encoderFile, decoderJointFile) = Config.GetAsrFiles(precision);
-        using var parakeet = new ParakeetAsr(modelDir, encoderFile, decoderJointFile);
+        using var parakeet = new ParakeetAsr(modelDir, encoderFile, decoderJointFile,
+            beamWidth: parakeetBeam);
 
         int totalSegs = segs.Count;
         int completed = 0;
@@ -1012,6 +1021,7 @@ static void PrintUsage()
     Console.WriteLine("  --denoiser <none|dfn3>             Pre-processing denoiser (default: none)");
     Console.WriteLine("  --denoiser-models <dir>            Path to denoiser ONNX models (default: <model>/deepfilternet3)");
     Console.WriteLine("  --precision <fp32|int8>            Model precision (default: fp32, parakeet only)");
+    Console.WriteLine("  --parakeet-beam <N>                Parakeet TDT beam width (default: 1 = greedy; 4–8 = beam search, 3–5x slower)");
     Console.WriteLine("  --skip-asr                         Export diarization/VAD segments without transcription");
     Console.WriteLine("  --benchmark                        Print timing / RTF after transcription");
     Console.WriteLine("  --profile-sortformer               Print fine-grained timing breakdown for Sortformer");

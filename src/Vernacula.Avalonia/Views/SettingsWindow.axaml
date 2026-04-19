@@ -489,6 +489,28 @@
                         </RadioButton>
 
                         <StackPanel Margin="24,10,0,0"
+                                    IsVisible="{Binding IsAsrParakeet}">
+                            <TextBlock Text="TDT beam width"
+                                       Foreground="{DynamicResource TextBrush}"
+                                       FontWeight="SemiBold"
+                                       Margin="0,0,0,6" />
+                            <TextBlock Text="1 = greedy (default, fastest). 4–8 enables TDT beam search — more accurate on ambiguous audio but 3–5× slower. Prerequisite for shallow LM fusion."
+                                       Foreground="{DynamicResource SubtextBrush}"
+                                       FontSize="11"
+                                       TextWrapping="Wrap"
+                                       Margin="0,0,0,8" />
+                            <NumericUpDown Value="{Binding ParakeetBeamWidth}"
+                                           Minimum="1" Maximum="16"
+                                           Increment="1"
+                                           FormatString="0"
+                                           Background="{DynamicResource OverlayBrush}"
+                                           Foreground="{DynamicResource TextBrush}"
+                                           BorderBrush="{DynamicResource OverlayBrush}"
+                                           HorizontalAlignment="Left"
+                                           MinWidth="120" />
+                        </StackPanel>
+
+                        <StackPanel Margin="24,10,0,0"
                                     IsVisible="{Binding ShowCohereLanguagePicker}">
                             <TextBlock Text="Forced Language"
                                        Foreground="{DynamicResource TextBrush}"
