@@ -53,7 +53,8 @@ internal class TranscriptionService
         Action<int, string>  onSegmentText,
         string               asrModelName,
         string               asrLanguageCode,
-        CancellationToken    ct)
+        CancellationToken    ct,
+        Action<string, string>? onAsrConfigEffective = null)
     {
         // LongRunning spins up a dedicated OS thread. The async lambda allows
         // internal await points (for pipelined preprocessing) without blocking that
@@ -65,7 +66,8 @@ internal class TranscriptionService
                 try
                 {
                     await RunPipelineAsync(audioPath, streamIndex, resultsDbPath,
-                        progress, onSegmentAdded, onSegmentText, asrModelName, asrLanguageCode, ct);
+                        progress, onSegmentAdded, onSegmentText, asrModelName, asrLanguageCode,
+                        ct, onAsrConfigEffective);
                 }
                 catch (Exception ex)
                 {
@@ -85,7 +87,8 @@ internal class TranscriptionService
         Action<int, string> onSegmentText,
         string              asrModelName,
         string              asrLanguageCode,
-        CancellationToken   ct)
+        CancellationToken   ct,
+        Action<string, string>? onAsrConfigEffective)
     {
         Console.WriteLine($"[Transcription] RunPipelineAsync starting for '{audioPath}'");
         string parakeetModelsDir = _settings.GetParakeetModelsDir();
@@ -168,8 +171,16 @@ internal class TranscriptionService
 
         string effectiveAsrModelName = runVibeVoice ? "vibevoice/vibevoice-asr" : asrModelName;
         db.UpdateMetadata("asr_model", effectiveAsrModelName);
-        db.UpdateMetadata("asr_language_code",
-            string.IsNullOrWhiteSpace(asrLanguageCode) ? "auto" : asrLanguageCode);
+        string effectiveAsrLanguageCode =
+            string.IsNullOrWhiteSpace(asrLanguageCode) ? "auto" : asrLanguageCode;
+        db.UpdateMetadata("asr_language_code", effectiveAsrLanguageCode);
+
+        // For the VibeVoice / built-in-diarization path the config can't
+        // change downstream — fire the callback now so the caller (e.g.
+        // JobQueueService) can mirror it into the jobs table without
+        // reopening the results DB.
+        if (runVibeVoice)
+            onAsrConfigEffective?.Invoke(effectiveAsrModelName, effectiveAsrLanguageCode);
 
         // ── VibeVoice: combined diarization + ASR in a single model pass ────────
         if (runVibeVoice)
@@ -676,6 +687,13 @@ internal class TranscriptionService
         // the job's ControlDb row when LID overrode it).
         db.InsertMetadata("asr_language_code", asrLanguageCode);
 
+        // Notify the caller of the effective ASR config (may differ from
+        // what was passed in if SwitchBackend ran). Fired once here, after
+        // the LID phase has settled but before Phase 4 ASR; JobQueueService
+        // uses this to mirror the values into the jobs table without
+        // reopening the results DB at end-of-run.
+        onAsrConfigEffective?.Invoke(asrModelName, asrLanguageCode);
+
         ct.ThrowIfCancellationRequested();
 
         // ── Phase 3c: Per-segment LID (optional) ─────────────────────────────
@@ -685,32 +703,38 @@ internal class TranscriptionService
         // when one was detected — VoxLingua needs a few seconds of audio to
         // reliably distinguish close cousins (ru/uk/be, mk/bg/sr). Skipped
         // entirely when the user hasn't opted in or no segments exist yet.
-        if (_settings.Current.LidPerSegment && _langId.IsAvailable && segs.Count > 0
-            && db.GetMetadata("lid_per_segment_complete") is null)
+        // Reads result_ids from the DB so writes target the right row even
+        // if positional alignment with `segs` ever drifts.
+        if (_settings.Current.LidPerSegment && _langId.IsAvailable
+            && db.GetMetadata("lid_per_segment_complete") != "1")
         {
-            string? fileLevelIso = db.GetMetadata("detected_language");
-            progress.Report(new TranscriptionProgress(
-                TranscriptionPhase.Diarizing, 0, segs.Count, "Per-segment LID…"));
-
-            var segPairs = segs.Select(s => (s.start, s.end)).ToList();
-            var perSegLid = await Task.Run(
-                () => _langId.ClassifyEachSegment(
-                    audio, segPairs,
-                    minSegmentSeconds: 2.0,
-                    onProgress: (done, total) =>
-                        progress.Report(new TranscriptionProgress(
-                            TranscriptionPhase.Diarizing, done, total,
-                            $"Per-segment LID ({done}/{total})…")),
-                    ct: ct),
-                ct).ConfigureAwait(false);
-
-            for (int i = 0; i < perSegLid.Count; i++)
+            var resultRows = db.GetAllResultSegments();
+            if (resultRows.Count > 0)
             {
-                string? iso = perSegLid[i]?.Top.Iso ?? fileLevelIso;
-                if (iso is not null)
-                    db.UpdateResultLidLanguage(resultId: i + 1, lidLanguage: iso);
+                string? fileLevelIso = db.GetMetadata("detected_language");
+                progress.Report(new TranscriptionProgress(
+                    TranscriptionPhase.Diarizing, 0, resultRows.Count, "Per-segment LID…"));
+
+                var segPairs = resultRows.Select(r => (r.start, r.end)).ToList();
+                var perSegLid = await Task.Run(
+                    () => _langId.ClassifyEachSegment(
+                        audio, segPairs,
+                        minSegmentSeconds: 2.0,
+                        onProgress: (done, total) =>
+                            progress.Report(new TranscriptionProgress(
+                                TranscriptionPhase.Diarizing, done, total,
+                                $"Per-segment LID ({done}/{total})…")),
+                        ct: ct),
+                    ct).ConfigureAwait(false);
+
+                for (int i = 0; i < perSegLid.Count; i++)
+                {
+                    string? iso = perSegLid[i]?.Top.Iso ?? fileLevelIso;
+                    if (iso is not null)
+                        db.UpdateResultLidLanguage(resultId: resultRows[i].resultId, lidLanguage: iso);
+                }
+                db.InsertMetadata("lid_per_segment_complete", "1");
             }
-            db.InsertMetadata("lid_per_segment_complete", "1");
         }
 
         ct.ThrowIfCancellationRequested();
@@ -731,17 +755,20 @@ internal class TranscriptionService
 
         if (!asrDone)
         {
-            // Build the subset to process from the unfilled result_ids: rows
-            // skipped by a prior interrupted run (mid-list holes) AND rows
-            // never reached. result_id is 1-indexed; segs is 0-indexed.
+            // Build the subset to process from the unfilled result_ids by
+            // querying `results` directly. Earlier this used segs[rid - 1]
+            // — implicitly assuming `segs[i].result_id == i + 1`, which
+            // holds for fresh diarization but breaks once segment_cards has
+            // been split / merged by the user. Pulling the rows by id keeps
+            // the data path correct regardless.
+            var segsByRid = db.GetResultSegmentsByIds(unfilledResultIds);
             var segsSubset = new List<(double start, double end, string spkId)>(unfilledResultIds.Count);
             foreach (int rid in unfilledResultIds)
             {
-                int idx = rid - 1;
-                if (idx < 0 || idx >= segs.Count)
+                if (!segsByRid.TryGetValue(rid, out var entry))
                     throw new InvalidOperationException(
-                        $"Unfilled result_id {rid} has no matching segment (segs.Count={segs.Count}).");
-                segsSubset.Add(segs[idx]);
+                        $"Unfilled result_id {rid} not present in results table.");
+                segsSubset.Add(entry);
             }
             int totalSegs  = segs.Count;
             int completed  = totalSegs - segsSubset.Count;
@@ -760,14 +787,19 @@ internal class TranscriptionService
                     segsSubset, audio, forceLanguage: forceLanguage))
                 {
                     ct.ThrowIfCancellationRequested();
-                    int absId = unfilledResultIds[result.SegmentId] - 1;
+                    // rid is the authoritative DB key. absId is the 0-indexed
+                    // UI segment slot (rid - 1 on unedited DBs); kept distinct
+                    // so DB writes never depend on the segs/results positional
+                    // alignment, only the UI callback does.
+                    int rid   = unfilledResultIds[result.SegmentId];
+                    int absId = rid - 1;
                     completed++;
                     var syntheticTimestamps = BuildSyntheticTokenTimestamps(
                         segsSubset[result.SegmentId].end - segsSubset[result.SegmentId].start,
                         result.TextTokens.Count);
 
                     db.UpdateResult(
-                        resultId:   absId + 1,
+                        resultId:   rid,
                         asrContent: result.Text,
                         content:    result.Text,
                         tokens:     JsonSerializer.Serialize(result.TextTokens),
@@ -819,14 +851,19 @@ internal class TranscriptionService
                 foreach (var result in recognitionResults)
                 {
                     ct.ThrowIfCancellationRequested();
-                    int absId = unfilledResultIds[result.SegmentId] - 1;
+                    // rid is the authoritative DB key. absId is the 0-indexed
+                    // UI segment slot (rid - 1 on unedited DBs); kept distinct
+                    // so DB writes never depend on the segs/results positional
+                    // alignment, only the UI callback does.
+                    int rid   = unfilledResultIds[result.SegmentId];
+                    int absId = rid - 1;
                     completed++;
                     var syntheticTimestamps = BuildSyntheticTokenTimestamps(
                         segsSubset[result.SegmentId].end - segsSubset[result.SegmentId].start,
                         result.TextTokens.Count);
 
                     db.UpdateResult(
-                        resultId:   absId + 1,
+                        resultId:   rid,
                         asrContent: result.Text,
                         content:    result.Text,
                         tokens:     JsonSerializer.Serialize(result.TextTokens),
@@ -870,11 +907,12 @@ internal class TranscriptionService
                     parakeet.Recognize(segsSubset, audio))
                 {
                     ct.ThrowIfCancellationRequested();
-                    int absId = unfilledResultIds[segId] - 1;
+                    int rid   = unfilledResultIds[segId];
+                    int absId = rid - 1;
                     completed++;
 
                     db.UpdateResult(
-                        resultId:   absId + 1,
+                        resultId:   rid,
                         asrContent: text,
                         content:    text,
                         tokens:     JsonSerializer.Serialize(tokens),

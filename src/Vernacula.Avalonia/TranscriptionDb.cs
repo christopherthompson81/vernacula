@@ -720,6 +720,57 @@ internal sealed class TranscriptionDb : IDisposable
         return rows;
     }
 
+    /// <summary>
+    /// Returns every result row as (resultId, start, end, spkId), ordered by
+    /// start_time then result_id. Reads <c>results</c> directly so the
+    /// returned tuple's <c>resultId</c> is authoritative — no positional /
+    /// "i+1" indexing assumption against any other list. Use this instead of
+    /// <see cref="GetSegments"/> when the caller needs to write back to a
+    /// specific row by id (e.g. Phase 3c per-segment LID).
+    /// </summary>
+    public List<(int resultId, double start, double end, string spkId)> GetAllResultSegments()
+    {
+        var rows = new List<(int, double, double, string)>();
+        using var cmd = CreateCmd();
+        cmd.CommandText = """
+            SELECT result_id, start_time, end_time,
+                   'speaker_' || (speaker_id - 1) AS spk
+            FROM results
+            ORDER BY start_time, result_id
+            """;
+        using var r = cmd.ExecuteReader();
+        while (r.Read())
+            rows.Add((r.GetInt32(0), r.GetDouble(1), r.GetDouble(2), r.GetString(3)));
+        return rows;
+    }
+
+    /// <summary>
+    /// Look up a specific subset of result rows by id. Returns a dictionary
+    /// keyed by result_id so the caller can build a per-id subset without
+    /// assuming positional alignment with any external list. Used by Phase 4
+    /// resume so the ASR loop operates on rows fetched from the source of
+    /// truth, not from a parallel <c>segs</c> list whose indices may have
+    /// drifted from result_ids after segment_cards edits.
+    /// </summary>
+    public Dictionary<int, (double start, double end, string spkId)>
+        GetResultSegmentsByIds(IReadOnlyList<int> resultIds)
+    {
+        var byId = new Dictionary<int, (double, double, string)>(resultIds.Count);
+        if (resultIds.Count == 0) return byId;
+
+        // SQLite doesn't bind list parameters; build an inline IN clause from
+        // sanitized ints (ints can't carry SQL injection).
+        string inList = string.Join(",", resultIds);
+        using var cmd = CreateCmd();
+        cmd.CommandText =
+            $"SELECT result_id, start_time, end_time, 'speaker_' || (speaker_id - 1) " +
+            $"FROM results WHERE result_id IN ({inList})";
+        using var r = cmd.ExecuteReader();
+        while (r.Read())
+            byId[r.GetInt32(0)] = (r.GetDouble(1), r.GetDouble(2), r.GetString(3));
+        return byId;
+    }
+
     /// <summary>Returns ordered content strings for all result rows (used for display during transcription).</summary>
     public List<string> GetResultContents()
     {

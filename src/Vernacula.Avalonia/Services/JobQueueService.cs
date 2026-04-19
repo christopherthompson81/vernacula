@@ -268,6 +268,18 @@ internal sealed class JobQueueService
 
         try
         {
+            // Captures the effective ASR config (post-LID / SwitchBackend)
+            // via the TranscriptionService callback so we can mirror it into
+            // the jobs table after RunAsync completes — without reopening
+            // the results DB.
+            string? effectiveModel = null;
+            string? effectiveLang  = null;
+            void OnAsrConfigEffective(string model, string lang)
+            {
+                effectiveModel = model;
+                effectiveLang  = lang;
+            }
+
             await _transcription.RunAsync(
                 entry.AudioPath, entry.StreamIndex, entry.DbPath,
                 progress,
@@ -275,22 +287,14 @@ internal sealed class JobQueueService
                 OnSegmentText,
                 entry.AsrModelName,
                 entry.AsrLanguageCode,
-                cts.Token);
+                cts.Token,
+                OnAsrConfigEffective);
 
-            // If LID + the AsrMismatch popup switched the backend mid-run,
-            // the results DB now records the *effective* asr_model. Mirror
-            // that into the jobs table so the jobs-list view, and any
-            // future requeue, see the model the job actually ran on.
-            using (var resultsDb = new TranscriptionDb(entry.DbPath))
+            if (effectiveModel is not null &&
+                (!string.Equals(effectiveModel, entry.AsrModelName, StringComparison.Ordinal) ||
+                 !string.Equals(effectiveLang ?? "auto", entry.AsrLanguageCode, StringComparison.Ordinal)))
             {
-                string? effectiveModel = resultsDb.GetMetadata("asr_model");
-                string? effectiveLang  = resultsDb.GetMetadata("asr_language_code");
-                if (!string.IsNullOrWhiteSpace(effectiveModel) &&
-                    (!string.Equals(effectiveModel, entry.AsrModelName, StringComparison.Ordinal) ||
-                     !string.Equals(effectiveLang ?? "auto", entry.AsrLanguageCode, StringComparison.Ordinal)))
-                {
-                    _controlDb.UpdateJobAsr(entry.JobId, effectiveModel, effectiveLang ?? "auto");
-                }
+                _controlDb.UpdateJobAsr(entry.JobId, effectiveModel, effectiveLang ?? "auto");
             }
 
             sw.Stop();
