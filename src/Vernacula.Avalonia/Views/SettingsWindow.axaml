@@ -547,11 +547,14 @@
                                          Height="6"
                                          IsVisible="{Binding IsLmDownloading}"
                                          Margin="0,0,0,4" />
-                            <Button Content="Cancel download"
-                                    Command="{Binding CancelLmDownloadCommand}"
-                                    IsVisible="{Binding IsLmDownloading}"
-                                    HorizontalAlignment="Left"
-                                    Margin="0,0,0,8" />
+                            <StackPanel Orientation="Horizontal" Spacing="6" Margin="0,0,0,8">
+                                <Button Content="Download now"
+                                        Command="{Binding DownloadSelectedLmAsyncCommand}"
+                                        IsVisible="{Binding !IsLmDownloading}" />
+                                <Button Content="Cancel download"
+                                        Command="{Binding CancelLmDownloadCommand}"
+                                        IsVisible="{Binding IsLmDownloading}" />
+                            </StackPanel>
 
                             <!-- Custom-ARPA path picker, visible only when Custom is chosen. -->
                             <StackPanel IsVisible="{Binding ShowCustomLmPath}" Margin="0,6,0,8">
