@@ -107,12 +107,15 @@ internal partial class ResultsViewModel : ObservableObject
             probSuffix = $", {p0:P0} confidence";
 
         string effectiveSuffix = "";
-        if (!string.IsNullOrWhiteSpace(effectiveIso)
+        if (!userForced
+            && !string.IsNullOrWhiteSpace(effectiveIso)
             && !string.Equals(effectiveIso, "auto", StringComparison.OrdinalIgnoreCase)
             && !string.Equals(effectiveIso, detectedIso, StringComparison.OrdinalIgnoreCase))
         {
             // Rare: ASR ran with a different language than LID detected
             // (e.g. user kept the current backend on the mismatch popup).
+            // Suppressed for user-forced runs — the dedicated badge below
+            // already explains the gap and would just be repeating itself.
             effectiveSuffix = $"; ASR ran as {effectiveIso}";
         }
 

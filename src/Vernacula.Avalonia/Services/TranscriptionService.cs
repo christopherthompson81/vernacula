@@ -19,9 +19,13 @@ internal class TranscriptionService
     /// Optional callback invoked when LID detects a language the current
     /// ASR backend can't handle. Receives the LID result, the current
     /// backend, and the best alternative backend (or null if none). The
-    /// callback returns the user's choice. When unset (CLI / tests), the
-    /// pipeline just logs the mismatch and continues with the current
-    /// backend — matching what happened before the popup was added.
+    /// callback returns an <see cref="Views.Dialogs.AsrMismatchResult"/>
+    /// carrying the user's choice plus, for
+    /// <see cref="Views.Dialogs.AsrMismatchChoice.ForceLanguage"/>, the
+    /// ISO code they asked the current backend to transcribe as. When
+    /// unset (CLI / tests), the pipeline just logs the mismatch and
+    /// continues with the current backend — matching what happened before
+    /// the popup was added.
     /// </summary>
     public Func<Vernacula.Base.Models.LidResult, AsrBackend, AsrBackend?, Task<Views.Dialogs.AsrMismatchResult?>>? OnAsrLanguageMismatch { get; set; }
 
@@ -649,9 +653,9 @@ internal class TranscriptionService
                                 break;
 
                             case Views.Dialogs.AsrMismatchChoice.ForceLanguage
-                                when !string.IsNullOrWhiteSpace(result?.ForcedIso)
-                                  && AsrLanguageSupport.Supports(backend.Value, result!.ForcedIso!):
-                                string forcedIso = AsrLanguageSupport.NormalizeIso(result.ForcedIso!);
+                                when result is { ForcedIso: { Length: > 0 } pickedIso }
+                                  && AsrLanguageSupport.Supports(backend.Value, pickedIso):
+                                string forcedIso = AsrLanguageSupport.NormalizeIso(pickedIso);
                                 Console.WriteLine(
                                     $"[Transcription] LID mismatch: user forced language " +
                                     $"'{forcedIso}' on {backend.Value} despite detected '{lidResult.Iso}'.");
@@ -663,6 +667,17 @@ internal class TranscriptionService
                                 db.InsertMetadata("asr_language_user_forced", "1");
                                 db.InsertMetadata("asr_language_user_forced_from", lidResult.Iso);
                                 break;
+
+                            case Views.Dialogs.AsrMismatchChoice.ForceLanguage:
+                                // Picker emitted a code the current backend
+                                // doesn't actually support, or no code at all.
+                                // The dialog's own filter should prevent this,
+                                // so log loudly and treat as KeepCurrent.
+                                Console.WriteLine(
+                                    $"[Transcription] LID mismatch: ForceLanguage rejected — " +
+                                    $"forcedIso='{result?.ForcedIso ?? "<null>"}' is not supported " +
+                                    $"by {backend.Value}. Falling through to KeepCurrent.");
+                                goto default;
 
                             case Views.Dialogs.AsrMismatchChoice.CancelJob:
                                 Console.WriteLine("[Transcription] LID mismatch: user cancelled the job.");
