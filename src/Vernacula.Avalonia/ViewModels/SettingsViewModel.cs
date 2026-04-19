@@ -2,6 +2,7 @@ using System.Diagnostics;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Media;
+using Avalonia.Platform.Storage;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using Vernacula.Base;
@@ -35,6 +36,15 @@ internal partial class SettingsViewModel : ObservableObject
 
     [ObservableProperty]
     private int _parakeetBeamWidth;
+
+    [ObservableProperty]
+    private string _parakeetLmPath = "";
+
+    [ObservableProperty]
+    private float _parakeetLmWeight;
+
+    [ObservableProperty]
+    private float _parakeetLmLengthPenalty;
 
     [ObservableProperty]
     private AsrLanguageOption? _selectedCohereLanguage;
@@ -221,6 +231,9 @@ internal partial class SettingsViewModel : ObservableObject
         _selectedQwen3AsrLanguage     = Qwen3AsrLanguages.FirstOrDefault(l => l.Code == svc.Current.Qwen3AsrLanguage)
                                         ?? Qwen3AsrLanguages[0];
         _parakeetBeamWidth            = Math.Max(1, svc.Current.ParakeetBeamWidth);
+        _parakeetLmPath               = svc.Current.ParakeetLmPath ?? "";
+        _parakeetLmWeight             = svc.Current.ParakeetLmWeight;
+        _parakeetLmLengthPenalty      = svc.Current.ParakeetLmLengthPenalty;
         _selectedDenoiser             = svc.Current.Denoiser;
         _selectedEditorPlaybackMode   = svc.Current.EditorPlaybackMode;
         _selectedLanguage             = svc.Current.Language;
@@ -338,6 +351,67 @@ internal partial class SettingsViewModel : ObservableObject
         _svc.Current.ParakeetBeamWidth = clamped;
         _svc.Save();
     }
+
+    partial void OnParakeetLmPathChanged(string value)
+    {
+        _svc.Current.ParakeetLmPath = value ?? "";
+        _svc.Save();
+    }
+
+    partial void OnParakeetLmWeightChanged(float value)
+    {
+        float clamped = Math.Clamp(value, 0f, 2f);
+        if (Math.Abs(clamped - value) > 1e-6f)
+        {
+            ParakeetLmWeight = clamped;
+            return;
+        }
+        _svc.Current.ParakeetLmWeight = clamped;
+        _svc.Save();
+    }
+
+    partial void OnParakeetLmLengthPenaltyChanged(float value)
+    {
+        float clamped = Math.Clamp(value, 0f, 2f);
+        if (Math.Abs(clamped - value) > 1e-6f)
+        {
+            ParakeetLmLengthPenalty = clamped;
+            return;
+        }
+        _svc.Current.ParakeetLmLengthPenalty = clamped;
+        _svc.Save();
+    }
+
+    [RelayCommand]
+    private async Task BrowseParakeetLm()
+    {
+        if (Application.Current?.ApplicationLifetime is not
+            Avalonia.Controls.ApplicationLifetimes.IClassicDesktopStyleApplicationLifetime desktop)
+            return;
+        var window = desktop.MainWindow;
+        if (window is null) return;
+
+        var picker = await window.StorageProvider.OpenFilePickerAsync(new()
+        {
+            Title = "Select KenLM ARPA file",
+            AllowMultiple = false,
+            FileTypeFilter = new[]
+            {
+                new FilePickerFileType("KenLM ARPA (.arpa, .arpa.gz)")
+                {
+                    Patterns = new[] { "*.arpa", "*.arpa.gz" },
+                },
+                new FilePickerFileType("All files") { Patterns = new[] { "*.*" } },
+            },
+        });
+        if (picker.Count == 0) return;
+        var p = picker[0].TryGetLocalPath();
+        if (!string.IsNullOrEmpty(p))
+            ParakeetLmPath = p;
+    }
+
+    [RelayCommand]
+    private void ClearParakeetLm() => ParakeetLmPath = "";
 
     partial void OnSelectedEditorPlaybackModeChanged(PlaybackMode value)
     {

@@ -1295,7 +1295,10 @@ public partial class TranscriptEditorWindow : Window
                 qwen3AsrModelsDir: App.Current.Settings.GetQwen3AsrModelsDir(),
                 vibeVoiceModelsDir: App.Current.Settings.GetVibeVoiceModelsDir(),
                 qwen3AsrLanguageCode: _isQwen3Asr ? card.SelectedRedoLanguage?.Code : null,
-                parakeetBeamWidth: App.Current.Settings.Current.ParakeetBeamWidth));
+                parakeetBeamWidth:       App.Current.Settings.Current.ParakeetBeamWidth,
+                parakeetLmPath:          App.Current.Settings.Current.ParakeetLmPath,
+                parakeetLmWeight:        App.Current.Settings.Current.ParakeetLmWeight,
+                parakeetLmLengthPenalty: App.Current.Settings.Current.ParakeetLmLengthPenalty));
             if (result is null)
             {
                 SetCardStatus(card, "Redo ASR did not produce a result.");

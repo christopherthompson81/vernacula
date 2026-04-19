@@ -953,8 +953,22 @@ internal class TranscriptionService
                 var (encoderFile, decoderJointFile) =
                     Config.GetAsrFiles(ModelPrecision.Fp32);
 
+                // LM fusion requires beam search. If the user has an LM set but beam is still 1,
+                // silently bump to 4 so the feature works without requiring them to also
+                // remember to raise the beam.
+                string lmPath       = _settings.Current.ParakeetLmPath ?? "";
+                bool   lmActive     = !string.IsNullOrWhiteSpace(lmPath) && File.Exists(lmPath);
+                int    effectiveBeam = lmActive && _settings.Current.ParakeetBeamWidth < 2
+                    ? 4 : _settings.Current.ParakeetBeamWidth;
+
                 using var parakeet = new ParakeetAsr(parakeetModelsDir, encoderFile, decoderJointFile,
-                    beamWidth: _settings.Current.ParakeetBeamWidth);
+                    beamWidth: effectiveBeam);
+                if (lmActive)
+                {
+                    parakeet.LmScorer        = KenLmScorer.LoadArpa(lmPath);
+                    parakeet.LmWeight        = _settings.Current.ParakeetLmWeight;
+                    parakeet.LmLengthPenalty = _settings.Current.ParakeetLmLengthPenalty;
+                }
                 foreach (var (segId, text, tokens, timestamps, durations, logprobs) in
                     parakeet.Recognize(segsSubset, audio))
                 {

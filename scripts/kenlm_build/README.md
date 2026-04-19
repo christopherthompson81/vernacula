@@ -1,5 +1,17 @@
 # Build a subword-level KenLM for Parakeet shallow fusion
 
+## Workflow
+
+1. `extract_hf_corpus.py` — stream transcripts from permissive HF ASR datasets
+   into a plain-text corpus file (column-pruned Parquet reads, so audio bytes
+   never cross the wire).
+2. `build_kenlm_parakeet.py` — tokenise the corpus with Parakeet's tokenizer
+   and drive `lmplz` to produce an ARPA keyed by subword IDs.
+3. The resulting `.arpa` or `.arpa.gz` can be pointed at via CLI
+   `--lm <path>` or in Settings → Speech Recognition → Language model.
+
+
+
 Tool output: an ARPA file whose tokens are **Parakeet subword IDs** (integers).
 Matches the format that [`KenLmScorer`](../../src/Vernacula.Base/KenLmScorer.cs) expects.
 
@@ -19,23 +31,40 @@ huggingface-cli download nvidia/parakeet-tdt-0.6b-v3 tokenizer.json \
   --local-dir /tmp/parakeet-tok
 ```
 
-## Build
+## Fetch a corpus
+
+For conversational English (best fit for casual/telephony audio), the
+included extractor streams **MLCommons/peoples_speech** (CC-BY-4.0,
+ungated) by column-pruning Parquet shards — audio bytes are never
+downloaded.
+
+```bash
+pip install pyarrow fsspec requests
+python3 extract_hf_corpus.py \
+  --output    ~/corpora/peoples-speech-en.txt.gz \
+  --sources   peoples \
+  --max-words 15000000 \
+  --workers   6
+```
+
+`speechcolab/gigaspeech` (Apache 2.0 data, but gated on HF) can be added
+with `--sources peoples,gigaspeech` once you've accepted its terms and
+authenticated via `huggingface-cli login`.
+
+For a more general-English LM, an extra Wikipedia or Common Crawl slice
+can be concatenated in yourself — the downstream build script accepts any
+one-sentence-per-line text file.
+
+## Build the LM
 
 ```bash
 python3 build_kenlm_parakeet.py \
-  --corpus    /path/to/english_corpus.txt \
+  --corpus    ~/corpora/peoples-speech-en.txt.gz \
   --tokenizer /tmp/parakeet-tok/tokenizer.json \
   --order     4 \
   --prune     "0 0 1 1" \
   --output    kenlm-parakeet-en.arpa.gz
 ```
-
-**Corpus sources that work well:**
-
-- English: Wikipedia dump (e.g. `enwiki-latest-pages-articles`), OpenSubtitles, Common Crawl news slice.
-- Spanish / French / etc.: same sources per language.
-- Target ~50M words per language for a good general-purpose LM.
-- One sentence per line; lowercase is fine but not required.
 
 **Size expectations (4-gram, prune "0 0 1 1"):**
 
