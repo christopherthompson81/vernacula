@@ -96,6 +96,7 @@
   "editor_redo_asr_language": "Language for redo ASR",
   "editor_redo_asr_running": "Running…",
   "editor_redo_asr_tooltip": "Re-run speech recognition on this segment's audio to get a clean, single-source transcription (enables splitting)",
+  "editor_lid_mismatch_tooltip": "Per-segment language identification ({1}) disagrees with the ASR backend's reported language ({0}). The segment may have been transcribed in the wrong language — consider redoing ASR with the LID language.",
   "editor_add_speaker": "+ Add Speaker…",
 
   "modal_speakers_heading": "Edit Speaker Names",

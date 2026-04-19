@@ -19,6 +19,7 @@ internal partial class EditorSegment : ObservableObject
 
     public string AsrContent { get; set; } = "";
     public string? Language  { get; set; }
+    public string? LidLanguage { get; set; }
 
     [ObservableProperty]
     private string _content = "";

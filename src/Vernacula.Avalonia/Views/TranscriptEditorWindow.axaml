@@ -514,6 +514,20 @@
                                                 </DataTemplate>
                                             </ComboBox.ItemTemplate>
                                         </ComboBox>
+                                        <Border Margin="0,0,8,8"
+                                                Padding="6,2"
+                                                VerticalAlignment="Center"
+                                                Background="#3A2A1A"
+                                                BorderBrush="#C89640"
+                                                BorderThickness="1"
+                                                CornerRadius="3"
+                                                IsVisible="{Binding IsLanguageDivergent}"
+                                                ToolTip.Tip="{Binding LidLanguageTooltip}">
+                                            <TextBlock Text="{Binding LidLanguageDisplay}"
+                                                       FontSize="11"
+                                                       FontWeight="SemiBold"
+                                                       Foreground="#FFD89A" />
+                                        </Border>
                                     </WrapPanel>
 
                                     <Grid ColumnDefinitions="*,*"

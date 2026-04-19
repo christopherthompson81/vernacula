@@ -36,6 +36,18 @@ internal sealed partial class TranscriptEditorCardState : ObservableObject
                ?? Qwen3AsrLanguages[0];
     }
 
+    private static bool LanguagesMatch(string? a, string? b)
+    {
+        if (string.Equals(a?.Trim(), b?.Trim(), StringComparison.OrdinalIgnoreCase))
+            return true;
+        // Map both through the AsrLanguageOption table so "English" and "en" compare equal.
+        var optA = MatchLanguageOption(a);
+        var optB = MatchLanguageOption(b);
+        if (optA == Qwen3AsrLanguages[0] || optB == Qwen3AsrLanguages[0])
+            return false; // unknown on either side — trust raw inequality above
+        return string.Equals(optA.Code, optB.Code, StringComparison.OrdinalIgnoreCase);
+    }
+
     internal EditorSegment Segment { get; }
     private readonly List<Color> _asrBaseColors = [];
     private readonly List<Color> _adjacentBaseColors = [];
@@ -89,6 +101,19 @@ internal sealed partial class TranscriptEditorCardState : ObservableObject
     public bool IsSuppressed => Segment.IsSuppressed;
     public bool HasUserEdits => DraftContent != Segment.AsrContent;
     public string AsrContent => Segment.AsrContent;
+    public bool IsLanguageDivergent =>
+        !string.IsNullOrWhiteSpace(Segment.Language) &&
+        !string.IsNullOrWhiteSpace(Segment.LidLanguage) &&
+        !LanguagesMatch(Segment.Language, Segment.LidLanguage);
+    public string LidLanguageDisplay =>
+        string.IsNullOrWhiteSpace(Segment.LidLanguage)
+            ? ""
+            : $"LID: {Segment.LidLanguage!.Trim().ToLowerInvariant()}";
+    public string LidLanguageTooltip =>
+        IsLanguageDivergent
+            ? string.Format(Loc.Instance["editor_lid_mismatch_tooltip"],
+                Segment.Language, Segment.LidLanguage)
+            : "";
     public string VerifiedLabel => Loc.Instance["editor_verified"];
     public string AddSpeakerTooltip => Loc.Instance["editor_add_speaker"];
     public string AdjustTimesTooltip => Loc.Instance["editor_adjust_times"];
@@ -106,6 +131,7 @@ internal sealed partial class TranscriptEditorCardState : ObservableObject
         OnPropertyChanged(nameof(MergeNextTooltip));
         OnPropertyChanged(nameof(SplitTooltip));
         OnPropertyChanged(nameof(RedoAsrTooltip));
+        OnPropertyChanged(nameof(LidLanguageTooltip));
     }
 
     public void SyncDraftsFromSegment()
@@ -164,6 +190,9 @@ internal sealed partial class TranscriptEditorCardState : ObservableObject
         OnPropertyChanged(nameof(IsSuppressed));
         OnPropertyChanged(nameof(HasUserEdits));
         OnPropertyChanged(nameof(AsrContent));
+        OnPropertyChanged(nameof(IsLanguageDivergent));
+        OnPropertyChanged(nameof(LidLanguageDisplay));
+        OnPropertyChanged(nameof(LidLanguageTooltip));
     }
 
     public void RebuildAsrRuns(IReadOnlyList<(string text, Color background)> runs, IBrush foreground)

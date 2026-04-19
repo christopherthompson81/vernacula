@@ -83,6 +83,7 @@ internal partial class TranscriptEditorViewModel : ObservableObject, IDisposable
                 Verified           = row.Verified,
                 IsSuppressed       = row.IsSuppressed,
                 Language           = row.Language,
+                LidLanguage        = row.LidLanguage,
             });
         }
 
