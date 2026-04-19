@@ -804,70 +804,86 @@ internal class TranscriptionService
             int totalSegs  = segs.Count;
             int completed  = totalSegs - segsSubset.Count;
 
+            // Per-segment LID (issue #10): when phase 3c populated lid_language,
+            // group the unfilled rows by LID-detected language and call the ASR
+            // backend once per language group with the matching forceLanguage.
+            // This preserves batched throughput within a group while still
+            // routing each segment of a code-switched recording to its actual
+            // language. Backends without forceLanguage (Parakeet) still see a
+            // single all-segments group below — they ignore the per-group label.
+            bool perSegmentLidAvailable =
+                db.GetMetadata("lid_per_segment_complete") == "1";
+            Dictionary<int, string?>? lidByRid = perSegmentLidAvailable
+                ? db.GetResultLidLanguagesByIds(unfilledResultIds)
+                : null;
+
             if (useCohereAsr)
             {
                 string cohereModelsDir = _settings.GetCohereModelsDir();
-                string? forceLanguage =
+                string? fileLevelForceLanguage =
                     string.Equals(asrLanguageCode, "auto", StringComparison.OrdinalIgnoreCase) ||
                     string.IsNullOrWhiteSpace(asrLanguageCode)
                         ? null
                         : asrLanguageCode;
                 using var cohere = new CohereTranscribe(cohereModelsDir);
 
-                foreach (var result in cohere.RecognizeDetailed(
-                    segsSubset, audio, forceLanguage: forceLanguage))
+                foreach (var group in GroupSegmentsByLidLanguage(
+                    unfilledResultIds, lidByRid, fileLevelForceLanguage))
                 {
-                    ct.ThrowIfCancellationRequested();
-                    // rid is the authoritative DB key. absId is the 0-indexed
-                    // UI segment slot (rid - 1 on unedited DBs); kept distinct
-                    // so DB writes never depend on the segs/results positional
-                    // alignment, only the UI callback does.
-                    int rid   = unfilledResultIds[result.SegmentId];
-                    int absId = rid - 1;
-                    completed++;
-                    var syntheticTimestamps = BuildSyntheticTokenTimestamps(
-                        segsSubset[result.SegmentId].end - segsSubset[result.SegmentId].start,
-                        result.TextTokens.Count);
+                    var groupSegs = group.LocalIndices
+                        .Select(i => segsSubset[i]).ToList();
+                    foreach (var result in cohere.RecognizeDetailed(
+                        groupSegs, audio, forceLanguage: group.ForceLanguage))
+                    {
+                        ct.ThrowIfCancellationRequested();
+                        int localIdx = group.LocalIndices[result.SegmentId];
+                        int rid   = unfilledResultIds[localIdx];
+                        int absId = rid - 1;
+                        completed++;
+                        var syntheticTimestamps = BuildSyntheticTokenTimestamps(
+                            groupSegs[result.SegmentId].end - groupSegs[result.SegmentId].start,
+                            result.TextTokens.Count);
 
-                    db.UpdateResult(
-                        resultId:   rid,
-                        asrContent: result.Text,
-                        content:    result.Text,
-                        tokens:     JsonSerializer.Serialize(result.TextTokens),
-                        timestamps: JsonSerializer.Serialize(syntheticTimestamps),
-                        logprobs:   JsonSerializer.Serialize(result.TextLogprobs),
-                        language:   result.Meta.Language,
-                        emotion:    result.Meta.Emotion,
-                        asrMeta:    result.Meta.ToJson(
-                            rawDecoderTokens: result.RawTokens,
-                            storedTextTokens: result.TextTokens,
-                            syntheticTimestamps: true,
-                            timestampMode: CohereSyntheticTimestampMode));
+                        db.UpdateResult(
+                            resultId:   rid,
+                            asrContent: result.Text,
+                            content:    result.Text,
+                            tokens:     JsonSerializer.Serialize(result.TextTokens),
+                            timestamps: JsonSerializer.Serialize(syntheticTimestamps),
+                            logprobs:   JsonSerializer.Serialize(result.TextLogprobs),
+                            language:   result.Meta.Language,
+                            emotion:    result.Meta.Emotion,
+                            asrMeta:    result.Meta.ToJson(
+                                rawDecoderTokens: result.RawTokens,
+                                storedTextTokens: result.TextTokens,
+                                syntheticTimestamps: true,
+                                timestampMode: CohereSyntheticTimestampMode));
 
-                    onSegmentText(absId, result.Text);
+                        onSegmentText(absId, result.Text);
 
-                    string asrText = Loc.Instance.T("progress_recognizing_segment", new() {
-                        ["i"]     = completed.ToString(),
-                        ["count"] = totalSegs.ToString() });
-                    double? overridePercent = segmentationMode == SegmentationMode.DiariZen
-                        ? ScaleOverallProgress(
-                            DiariZenDiarizationPercentWeight,
-                            100,
-                            totalSegs > 0 ? completed / (double)totalSegs : 1)
-                        : null;
-                    progress.Report(new TranscriptionProgress(
-                        TranscriptionPhase.Recognizing,
-                        completed,
-                        totalSegs,
-                        asrText,
-                        absId,
-                        result.Text,
-                        overridePercent));
+                        string asrText = Loc.Instance.T("progress_recognizing_segment", new() {
+                            ["i"]     = completed.ToString(),
+                            ["count"] = totalSegs.ToString() });
+                        double? overridePercent = segmentationMode == SegmentationMode.DiariZen
+                            ? ScaleOverallProgress(
+                                DiariZenDiarizationPercentWeight,
+                                100,
+                                totalSegs > 0 ? completed / (double)totalSegs : 1)
+                            : null;
+                        progress.Report(new TranscriptionProgress(
+                            TranscriptionPhase.Recognizing,
+                            completed,
+                            totalSegs,
+                            asrText,
+                            absId,
+                            result.Text,
+                            overridePercent));
+                    }
                 }
             }
             else if (useQwen3Asr)
             {
-                string? qwenForceLanguage =
+                string? fileLevelQwenForceLanguage =
                     string.Equals(asrLanguageCode, "auto", StringComparison.OrdinalIgnoreCase) ||
                     string.IsNullOrWhiteSpace(asrLanguageCode)
                         ? null
@@ -876,56 +892,60 @@ internal class TranscriptionService
                                        (File.Exists(Path.Combine(qwen3AsrModelsDir, Qwen3Asr.DecoderFile)) ||
                                         File.Exists(Path.Combine(qwen3AsrModelsDir, Qwen3Asr.DecoderInitBatchedFile)));
                 using var qwen3Asr = new Qwen3Asr(qwen3AsrModelsDir, preferBatched: hasBatchedFiles);
-                var recognitionResults = hasBatchedFiles
-                    ? qwen3Asr.RecognizeBatchedDetailed(segsSubset, audio, forceLanguage: qwenForceLanguage)
-                    : qwen3Asr.RecognizeDetailed(segsSubset, audio, forceLanguage: qwenForceLanguage);
-                foreach (var result in recognitionResults)
+
+                foreach (var group in GroupSegmentsByLidLanguage(
+                    unfilledResultIds, lidByRid, fileLevelQwenForceLanguage))
                 {
-                    ct.ThrowIfCancellationRequested();
-                    // rid is the authoritative DB key. absId is the 0-indexed
-                    // UI segment slot (rid - 1 on unedited DBs); kept distinct
-                    // so DB writes never depend on the segs/results positional
-                    // alignment, only the UI callback does.
-                    int rid   = unfilledResultIds[result.SegmentId];
-                    int absId = rid - 1;
-                    completed++;
-                    var syntheticTimestamps = BuildSyntheticTokenTimestamps(
-                        segsSubset[result.SegmentId].end - segsSubset[result.SegmentId].start,
-                        result.TextTokens.Count);
+                    var groupSegs = group.LocalIndices
+                        .Select(i => segsSubset[i]).ToList();
+                    var recognitionResults = hasBatchedFiles
+                        ? qwen3Asr.RecognizeBatchedDetailed(groupSegs, audio, forceLanguage: group.ForceLanguage)
+                        : qwen3Asr.RecognizeDetailed(groupSegs, audio, forceLanguage: group.ForceLanguage);
+                    foreach (var result in recognitionResults)
+                    {
+                        ct.ThrowIfCancellationRequested();
+                        int localIdx = group.LocalIndices[result.SegmentId];
+                        int rid   = unfilledResultIds[localIdx];
+                        int absId = rid - 1;
+                        completed++;
+                        var syntheticTimestamps = BuildSyntheticTokenTimestamps(
+                            groupSegs[result.SegmentId].end - groupSegs[result.SegmentId].start,
+                            result.TextTokens.Count);
 
-                    db.UpdateResult(
-                        resultId:   rid,
-                        asrContent: result.Text,
-                        content:    result.Text,
-                        tokens:     JsonSerializer.Serialize(result.TextTokens),
-                        timestamps: JsonSerializer.Serialize(syntheticTimestamps),
-                        logprobs:   JsonSerializer.Serialize(result.TextLogprobs),
-                        language:   result.Language,
-                        asrMeta:    JsonSerializer.Serialize(new
-                        {
-                            raw_decoder_text = result.RawText,
-                            parsed_language = result.Language,
-                        }));
+                        db.UpdateResult(
+                            resultId:   rid,
+                            asrContent: result.Text,
+                            content:    result.Text,
+                            tokens:     JsonSerializer.Serialize(result.TextTokens),
+                            timestamps: JsonSerializer.Serialize(syntheticTimestamps),
+                            logprobs:   JsonSerializer.Serialize(result.TextLogprobs),
+                            language:   result.Language,
+                            asrMeta:    JsonSerializer.Serialize(new
+                            {
+                                raw_decoder_text = result.RawText,
+                                parsed_language = result.Language,
+                            }));
 
-                    onSegmentText(absId, result.Text);
+                        onSegmentText(absId, result.Text);
 
-                    string asrText = Loc.Instance.T("progress_recognizing_segment", new() {
-                        ["i"]     = completed.ToString(),
-                        ["count"] = totalSegs.ToString() });
-                    double? overridePercent = segmentationMode == SegmentationMode.DiariZen
-                        ? ScaleOverallProgress(
-                            DiariZenDiarizationPercentWeight,
-                            100,
-                            totalSegs > 0 ? completed / (double)totalSegs : 1)
-                        : null;
-                    progress.Report(new TranscriptionProgress(
-                        TranscriptionPhase.Recognizing,
-                        completed,
-                        totalSegs,
-                        asrText,
-                        absId,
-                        result.Text,
-                        overridePercent));
+                        string asrText = Loc.Instance.T("progress_recognizing_segment", new() {
+                            ["i"]     = completed.ToString(),
+                            ["count"] = totalSegs.ToString() });
+                        double? overridePercent = segmentationMode == SegmentationMode.DiariZen
+                            ? ScaleOverallProgress(
+                                DiariZenDiarizationPercentWeight,
+                                100,
+                                totalSegs > 0 ? completed / (double)totalSegs : 1)
+                            : null;
+                        progress.Report(new TranscriptionProgress(
+                            TranscriptionPhase.Recognizing,
+                            completed,
+                            totalSegs,
+                            asrText,
+                            absId,
+                            result.Text,
+                            overridePercent));
+                    }
                 }
             }
             else
@@ -1044,6 +1064,60 @@ internal class TranscriptionService
 
     private static double ScaleOverallProgress(double startPercent, double endPercent, double fraction) =>
         startPercent + (endPercent - startPercent) * Math.Clamp(fraction, 0, 1);
+
+    /// <summary>
+    /// One ASR call's worth of segments after grouping by per-segment LID.
+    /// <see cref="LocalIndices"/> are positions into the unfilled-rids list
+    /// (and parallel <c>segsSubset</c>) — caller maps them back to result_ids
+    /// and absolute UI slots.
+    /// </summary>
+    private readonly record struct LidLanguageGroup(string? ForceLanguage, List<int> LocalIndices);
+
+    /// <summary>
+    /// Partition <paramref name="unfilledResultIds"/> into runs that share a
+    /// forceLanguage value. When <paramref name="lidByRid"/> is null (per-segment
+    /// LID didn't run), returns a single group with <paramref name="fallback"/>
+    /// — preserving today's "one ASR call" behaviour. When LID is available,
+    /// each rid's lid_language wins; rows without a LID value fall back to the
+    /// file-level language.
+    /// </summary>
+    private static List<LidLanguageGroup> GroupSegmentsByLidLanguage(
+        IReadOnlyList<int>          unfilledResultIds,
+        Dictionary<int, string?>?   lidByRid,
+        string?                     fallback)
+    {
+        var groups = new Dictionary<string, List<int>>(StringComparer.OrdinalIgnoreCase);
+        var nullGroup = new List<int>();
+        var orderedKeys = new List<string?>();
+
+        for (int i = 0; i < unfilledResultIds.Count; i++)
+        {
+            int rid = unfilledResultIds[i];
+            string? raw = (lidByRid is not null && lidByRid.TryGetValue(rid, out var v)) ? v : null;
+            string? effective = string.IsNullOrWhiteSpace(raw) ? fallback : raw.Trim();
+
+            if (effective is null)
+            {
+                if (nullGroup.Count == 0) orderedKeys.Add(null);
+                nullGroup.Add(i);
+            }
+            else
+            {
+                if (!groups.TryGetValue(effective, out var bucket))
+                {
+                    bucket = new List<int>();
+                    groups[effective] = bucket;
+                    orderedKeys.Add(effective);
+                }
+                bucket.Add(i);
+            }
+        }
+
+        var result = new List<LidLanguageGroup>(orderedKeys.Count);
+        foreach (var key in orderedKeys)
+            result.Add(new LidLanguageGroup(key, key is null ? nullGroup : groups[key]));
+        return result;
+    }
 
     private static List<int> BuildSyntheticTokenTimestamps(double segmentDurationSeconds, int tokenCount)
     {

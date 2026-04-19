@@ -749,6 +749,26 @@ internal sealed class TranscriptionDb : IDisposable
     }
 
     /// <summary>
+    /// Returns lid_language for each of the given result_ids. Missing rows or
+    /// rows with NULL lid_language map to null. Used by Phase 4 to group ASR
+    /// calls by per-segment LID (issue #10) so backends that accept
+    /// forceLanguage transcribe each language run with the right one.
+    /// </summary>
+    public Dictionary<int, string?> GetResultLidLanguagesByIds(IReadOnlyList<int> resultIds)
+    {
+        var byId = new Dictionary<int, string?>(resultIds.Count);
+        if (resultIds.Count == 0) return byId;
+
+        string inList = string.Join(",", resultIds);
+        using var cmd = CreateCmd();
+        cmd.CommandText = $"SELECT result_id, lid_language FROM results WHERE result_id IN ({inList})";
+        using var r = cmd.ExecuteReader();
+        while (r.Read())
+            byId[r.GetInt32(0)] = r.IsDBNull(1) ? null : r.GetString(1);
+        return byId;
+    }
+
+    /// <summary>
     /// Look up a specific subset of result rows by id. Returns a dictionary
     /// keyed by result_id so the caller can build a per-id subset without
     /// assuming positional alignment with any external list. Used by Phase 4
