@@ -14,7 +14,19 @@ public enum AsrMismatchChoice
     SwitchBackend,
     KeepCurrent,
     CancelJob,
+    /// <summary>
+    /// User asserted "I know better" and picked a related language the
+    /// current backend can transcribe (e.g. Croatian for Serbian).
+    /// <see cref="AsrMismatchResult.ForcedIso"/> carries the picked code.
+    /// </summary>
+    ForceLanguage,
 }
+
+/// <summary>
+/// Bundles the user's choice plus, for <see cref="AsrMismatchChoice.ForceLanguage"/>,
+/// the ISO 639-1 code they picked from the current backend's supported set.
+/// </summary>
+public sealed record AsrMismatchResult(AsrMismatchChoice Choice, string? ForcedIso = null);
 
 public partial class AsrMismatchDialog : Window
 {
@@ -47,25 +59,44 @@ public partial class AsrMismatchDialog : Window
                 $"“Switch ASR” to use it for this job.";
             SwitchBackendButton.Content = $"Switch to {AsrLanguageSupport.DisplayName(alt)}";
             SwitchBackendButton.IsEnabled = true;
+            ForceLanguagePanel.IsVisible = false;
         }
         else
         {
             SubtleText.Text =
-                $"No available ASR backend supports {detectedName}. " +
+                $"No installed ASR backend supports {detectedName}. " +
                 $"You can keep the current backend (the transcription will " +
-                $"likely be wrong), or cancel the job and pick a different " +
-                $"audio file.";
+                $"likely be wrong), pick a related language below, or cancel " +
+                $"the job.";
             SwitchBackendButton.Content = "No alternative available";
             SwitchBackendButton.IsEnabled = false;
+
+            // Conservative scope: list only languages the *current* backend
+            // can actually transcribe. The other branch (suggested backend)
+            // already covers cases where some installed backend supports the
+            // detected ISO directly, so a union picker would add nothing here.
+            ForceLanguageBox.ItemsSource = AsrLanguageSupport.LanguageOptions(currentBackend);
+            ForceLanguageBox.SelectedIndex = -1;
+            ForceLanguageButton.IsEnabled = false;
+            ForceLanguagePanel.IsVisible = true;
         }
     }
 
+    private void ForceLanguageBox_SelectionChanged(object? sender, SelectionChangedEventArgs e)
+        => ForceLanguageButton.IsEnabled = ForceLanguageBox.SelectedItem is AsrLanguageOption;
+
+    private void ForceLanguage_Click(object? sender, RoutedEventArgs e)
+    {
+        if (ForceLanguageBox.SelectedItem is AsrLanguageOption opt)
+            Close(new AsrMismatchResult(AsrMismatchChoice.ForceLanguage, opt.Code));
+    }
+
     private void SwitchBackend_Click(object? sender, RoutedEventArgs e)
-        => Close(AsrMismatchChoice.SwitchBackend);
+        => Close(new AsrMismatchResult(AsrMismatchChoice.SwitchBackend));
 
     private void KeepCurrent_Click(object? sender, RoutedEventArgs e)
-        => Close(AsrMismatchChoice.KeepCurrent);
+        => Close(new AsrMismatchResult(AsrMismatchChoice.KeepCurrent));
 
     private void CancelJob_Click(object? sender, RoutedEventArgs e)
-        => Close(AsrMismatchChoice.CancelJob);
+        => Close(new AsrMismatchResult(AsrMismatchChoice.CancelJob));
 }

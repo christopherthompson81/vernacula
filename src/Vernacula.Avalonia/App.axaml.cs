@@ -149,7 +149,7 @@ public partial class App : Application
             // awaits the user's choice before the worker continues.
             Transcription.OnAsrLanguageMismatch = async (lidResult, currentBackend, suggestedBackend) =>
             {
-                Views.Dialogs.AsrMismatchChoice? choice = null;
+                Views.Dialogs.AsrMismatchResult? result = null;
                 await Avalonia.Threading.Dispatcher.UIThread.InvokeAsync(async () =>
                 {
                     var dialog = new Views.Dialogs.AsrMismatchDialog();
@@ -159,9 +159,9 @@ public partial class App : Application
                         detectedProbability: lidResult.TopProbability,
                         currentBackend:     currentBackend,
                         suggestedBackend:   suggestedBackend);
-                    choice = await dialog.ShowDialog<Views.Dialogs.AsrMismatchChoice?>(desktop.MainWindow!);
+                    result = await dialog.ShowDialog<Views.Dialogs.AsrMismatchResult?>(desktop.MainWindow!);
                 });
-                return choice;
+                return result;
             };
         }
         else if (ApplicationLifetime is ISingleViewApplicationLifetime singleView)
