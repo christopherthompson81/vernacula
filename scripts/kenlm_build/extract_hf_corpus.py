@@ -37,6 +37,19 @@ except ImportError as e:
     sys.exit(1)
 
 
+def _hf_token() -> str | None:
+    """Resolve the user's stored Hugging Face token. None if not logged in."""
+    try:
+        from huggingface_hub import get_token
+        return get_token()
+    except Exception:
+        return None
+
+
+_HF_TOKEN = _hf_token()
+_HF_HEADERS = {"Authorization": f"Bearer {_HF_TOKEN}"} if _HF_TOKEN else {}
+
+
 GIGASPEECH_PUNCT = {
     "<COMMA>":            ",",
     "<PERIOD>":           ".",
@@ -83,7 +96,7 @@ def list_parquet_shards(repo: str, subdir: str, name_prefix: str = "train-") -> 
     cursor = None
     while True:
         full = url + (f"?cursor={cursor}" if cursor else "")
-        r = requests.get(full, timeout=60)
+        r = requests.get(full, timeout=60, headers=_HF_HEADERS)
         r.raise_for_status()
         items = r.json()
         if not items:
@@ -109,7 +122,10 @@ def resolve_url(repo: str, path: str) -> str:
 
 def read_text_column(url: str, text_col: str = "text") -> list[str]:
     """Download one parquet, read ONLY the text column, return the strings."""
-    fs = fsspec.filesystem("http")
+    # fsspec's http backend takes kwargs for client session; pass auth header
+    # when available so gated repos (e.g. speechcolab/gigaspeech) work.
+    client_kwargs = {"headers": _HF_HEADERS} if _HF_HEADERS else {}
+    fs = fsspec.filesystem("http", client_kwargs=client_kwargs)
     with fs.open(url, "rb") as f:
         pf = pq.ParquetFile(f)
         table = pf.read(columns=[text_col])
@@ -199,8 +215,11 @@ def main() -> int:
     total_lines = 0
 
     config = {
-        "peoples":    ("MLCommons/peoples_speech",    "clean",      normalize_peoples_speech),
-        "gigaspeech": ("speechcolab/gigaspeech",      "data/xl",    normalize_gigaspeech),
+        "peoples":    ("MLCommons/peoples_speech", "clean",            normalize_peoples_speech),
+        # Use the "s" subset by default (~250h, 8 parquets) — big enough for case/
+        # punctuation priors, small enough to pull over the wire quickly when column-
+        # pruned. Bump to parquet-data/m or /xl if you need more volume.
+        "gigaspeech": ("speechcolab/gigaspeech",   "parquet-data/s",   normalize_gigaspeech),
     }
 
     with open_output(args.output) as fout:
