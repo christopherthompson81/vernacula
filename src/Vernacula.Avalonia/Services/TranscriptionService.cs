@@ -593,9 +593,6 @@ internal class TranscriptionService
                     else if (backend is not null)
                     {
                         var alt = AsrLanguageSupport.PickBestBackend(lidResult.Iso);
-                        db.InsertMetadata("detected_language_backend_mismatch", "1");
-                        if (alt is not null)
-                            db.InsertMetadata("detected_language_suggested_backend", alt.Value.ToString());
 
                         // If the host wired up the interactive callback (Avalonia
                         // does; CLI / tests don't), ask the user what to do.
@@ -632,6 +629,11 @@ internal class TranscriptionService
                                 useVibeVoiceAsr = string.Equals(asrModelName, "vibevoice/vibevoice-asr", StringComparison.Ordinal);
                                 useCohereAsr    = string.Equals(asrModelName, "CohereLabs/cohere-transcribe-03-2026", StringComparison.Ordinal);
                                 useQwen3Asr     = string.Equals(asrModelName, "Qwen/Qwen3-ASR-1.7B", StringComparison.Ordinal);
+                                // Reflect the switch in the results DB so the
+                                // Results view reads the *effective* backend
+                                // (and so the mismatch banner doesn't appear
+                                // for a mismatch the user already resolved).
+                                db.UpdateMetadata("asr_model", newModelName);
                                 db.InsertMetadata("asr_model_overridden_from", AsrLanguageSupport.BackendOf(AsrLanguageSupport.ModelName(backend.Value))?.ToString() ?? backend.Value.ToString());
                                 break;
 
@@ -643,6 +645,14 @@ internal class TranscriptionService
                             case Views.Dialogs.AsrMismatchChoice.KeepCurrent:
                             case null:
                             default:
+                                // Mismatch is *unresolved* — record so the
+                                // Results banner can offer the reprocess remedy.
+                                // Set inside this branch (not before the
+                                // popup) so a SwitchBackend choice doesn't
+                                // leave a stale mismatch flag behind.
+                                db.InsertMetadata("detected_language_backend_mismatch", "1");
+                                if (alt is not null)
+                                    db.InsertMetadata("detected_language_suggested_backend", alt.Value.ToString());
                                 Console.WriteLine(
                                     $"[Transcription] LID detected '{lidResult.Iso}' ({lidResult.Top.Name}) " +
                                     $"but {backend.Value} does not support it. " +

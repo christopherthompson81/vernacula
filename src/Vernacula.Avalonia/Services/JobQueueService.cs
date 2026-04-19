@@ -277,6 +277,22 @@ internal sealed class JobQueueService
                 entry.AsrLanguageCode,
                 cts.Token);
 
+            // If LID + the AsrMismatch popup switched the backend mid-run,
+            // the results DB now records the *effective* asr_model. Mirror
+            // that into the jobs table so the jobs-list view, and any
+            // future requeue, see the model the job actually ran on.
+            using (var resultsDb = new TranscriptionDb(entry.DbPath))
+            {
+                string? effectiveModel = resultsDb.GetMetadata("asr_model");
+                string? effectiveLang  = resultsDb.GetMetadata("asr_language_code");
+                if (!string.IsNullOrWhiteSpace(effectiveModel) &&
+                    (!string.Equals(effectiveModel, entry.AsrModelName, StringComparison.Ordinal) ||
+                     !string.Equals(effectiveLang ?? "auto", entry.AsrLanguageCode, StringComparison.Ordinal)))
+                {
+                    _controlDb.UpdateJobAsr(entry.JobId, effectiveModel, effectiveLang ?? "auto");
+                }
+            }
+
             sw.Stop();
             int elapsed = (int)sw.Elapsed.TotalSeconds;
             _controlDb.UpdateJobStatus(entry.JobId, JobStatus.Complete, runTimeSeconds: elapsed);
