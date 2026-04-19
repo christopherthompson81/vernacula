@@ -644,8 +644,10 @@ def make_decoder_dummy_inputs(
             "or model.config. Pass --bos-token-id explicitly."
         )
 
-    # Shape: (batch=1, seq_len=1)
-    decoder_input_ids = torch.tensor([[bos_id]], dtype=torch.long, device=device)
+    # Shape: (batch=2, seq_len=2) — keep B and seq > 1 so torch.export does not
+    # specialise either dim to a static 1.  Runtime accepts B=1, seq=1 once the
+    # graph dims are symbolic.
+    decoder_input_ids = torch.tensor([[bos_id, bos_id], [bos_id, bos_id]], dtype=torch.long, device=device)
     print(f"  Decoder dummy decoder_input_ids shape: {tuple(decoder_input_ids.shape)}")
     print(f"  Decoder dummy encoder_hidden_states shape: {tuple(encoder_hidden_states.shape)}")
     return decoder_input_ids, encoder_hidden_states
@@ -1859,8 +1861,10 @@ def main() -> None:
     decoder_input_ids = None
     enc_hidden_for_dec = None
     if args.conventional_decoder and not args.skip_decoder:
+        # Keep the full B=2 encoder hidden so the decoder dummy stays B=2 and
+        # torch.export does not specialise the decoder batch dim to 1.
         decoder_input_ids, enc_hidden_for_dec = make_decoder_dummy_inputs(
-            torch, model, enc_hidden[:1], device
+            torch, model, enc_hidden, device
         )
 
     legacy = args.legacy_exporter
