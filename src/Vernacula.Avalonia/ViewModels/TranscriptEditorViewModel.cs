@@ -1048,7 +1048,10 @@ internal partial class TranscriptEditorViewModel : ObservableObject, IDisposable
             string? qwen3AsrModelsDir = null,
             string? vibeVoiceModelsDir = null,
             string? qwen3AsrLanguageCode = null,
-            int parakeetBeamWidth = 1)
+            int parakeetBeamWidth = 1,
+            string? parakeetLmPath = null,
+            float parakeetLmWeight = 0.3f,
+            float parakeetLmLengthPenalty = 0.6f)
     {
         if (index < 0 || index >= Segments.Count || _dbPath is null || _fullAudio is null)
             return null;
@@ -1146,8 +1149,16 @@ internal partial class TranscriptEditorViewModel : ObservableObject, IDisposable
         else
         {
             // Run ASR — the slice starts at t=0, so pass a 0-based time range
+            bool lmActive = !string.IsNullOrWhiteSpace(parakeetLmPath) && File.Exists(parakeetLmPath);
+            int  effectiveBeam = lmActive && parakeetBeamWidth < 2 ? 4 : parakeetBeamWidth;
             using var parakeet = new ParakeetAsr(parakeetModelsDir, encoderFile, decoderJointFile,
-                beamWidth: parakeetBeamWidth);
+                beamWidth: effectiveBeam);
+            if (lmActive)
+            {
+                parakeet.LmScorer        = KenLmScorer.LoadArpa(parakeetLmPath!);
+                parakeet.LmWeight        = parakeetLmWeight;
+                parakeet.LmLengthPenalty = parakeetLmLengthPenalty;
+            }
             foreach (var (_, t, tk, ts, dur, lp) in parakeet.Recognize(asrSeg, mono16k))
             {
                 text = t; tokens = tk; timestamps = ts; durations = dur; logprobs = lp;

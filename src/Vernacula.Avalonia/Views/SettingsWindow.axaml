@@ -511,6 +511,65 @@
                         </StackPanel>
 
                         <StackPanel Margin="24,10,0,0"
+                                    IsVisible="{Binding IsAsrParakeet}">
+                            <TextBlock Text="Language model (shallow fusion)"
+                                       Foreground="{DynamicResource TextBrush}"
+                                       FontWeight="SemiBold"
+                                       Margin="0,0,0,6" />
+                            <TextBlock Text="Optional. Biases decoding toward text that matches the supplied subword n-gram model. Fixes occasional multilingual drift (e.g. English &quot;uh uh&quot; transcribed as Spanish &quot;ajá&quot;). Auto-enables beam search. Point at an .arpa or .arpa.gz built with scripts/kenlm_build/."
+                                       Foreground="{DynamicResource SubtextBrush}"
+                                       FontSize="11"
+                                       TextWrapping="Wrap"
+                                       Margin="0,0,0,8" />
+                            <Grid ColumnDefinitions="*,Auto,Auto" Margin="0,0,0,8">
+                                <TextBox Grid.Column="0"
+                                         Text="{Binding ParakeetLmPath}"
+                                         Watermark="(no LM — greedy/beam decoding only)"
+                                         Background="{DynamicResource OverlayBrush}"
+                                         Foreground="{DynamicResource TextBrush}"
+                                         BorderBrush="{DynamicResource OverlayBrush}"
+                                         IsReadOnly="True"
+                                         Margin="0,0,6,0" />
+                                <Button Grid.Column="1"
+                                        Content="Browse…"
+                                        Command="{Binding BrowseParakeetLmCommand}"
+                                        Margin="0,0,6,0" />
+                                <Button Grid.Column="2"
+                                        Content="Clear"
+                                        Command="{Binding ClearParakeetLmCommand}" />
+                            </Grid>
+
+                            <TextBlock Text="Fusion weight (typical 0.1–0.5)"
+                                       Foreground="{DynamicResource SubtextBrush}"
+                                       FontSize="11"
+                                       Margin="0,8,0,4" />
+                            <NumericUpDown Value="{Binding ParakeetLmWeight}"
+                                           Minimum="0" Maximum="2"
+                                           Increment="0.05"
+                                           FormatString="0.00"
+                                           Background="{DynamicResource OverlayBrush}"
+                                           Foreground="{DynamicResource TextBrush}"
+                                           BorderBrush="{DynamicResource OverlayBrush}"
+                                           HorizontalAlignment="Left"
+                                           MinWidth="120"
+                                           Margin="0,0,0,8" />
+
+                            <TextBlock Text="Length penalty (offsets LM shortening bias; 0.0–1.0)"
+                                       Foreground="{DynamicResource SubtextBrush}"
+                                       FontSize="11"
+                                       Margin="0,0,0,4" />
+                            <NumericUpDown Value="{Binding ParakeetLmLengthPenalty}"
+                                           Minimum="0" Maximum="2"
+                                           Increment="0.1"
+                                           FormatString="0.00"
+                                           Background="{DynamicResource OverlayBrush}"
+                                           Foreground="{DynamicResource TextBrush}"
+                                           BorderBrush="{DynamicResource OverlayBrush}"
+                                           HorizontalAlignment="Left"
+                                           MinWidth="120" />
+                        </StackPanel>
+
+                        <StackPanel Margin="24,10,0,0"
                                     IsVisible="{Binding ShowCohereLanguagePicker}">
                             <TextBlock Text="Forced Language"
                                        Foreground="{DynamicResource TextBrush}"

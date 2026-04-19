@@ -15,6 +15,17 @@ public class AppSettings
     // beam search — ~3–5× slower per segment but improves accuracy on hard
     // or ambiguous audio and is a prerequisite for shallow LM fusion.
     public int                ParakeetBeamWidth   { get; set; } = 1;
+
+    // Optional ARPA (.arpa or .arpa.gz) subword language model used for
+    // shallow fusion during Parakeet beam search. Empty string = fusion off.
+    // When set, auto-bumps beam width to at least 4 since greedy can't
+    // benefit from fusion.
+    public string             ParakeetLmPath          { get; set; } = "";
+    // Shallow-fusion weight. Typical 0.1–0.5.
+    public float              ParakeetLmWeight        { get; set; } = 0.3f;
+    // Per-emitted-token reward that offsets the LM's shortening bias.
+    // Typical 0.0–1.0.
+    public float              ParakeetLmLengthPenalty { get; set; } = 0.6f;
     public string             CohereLanguage      { get; set; } = "";
     public string             Qwen3AsrLanguage    { get; set; } = "";
     public DenoiserMode       Denoiser            { get; set; } = DenoiserMode.None;
