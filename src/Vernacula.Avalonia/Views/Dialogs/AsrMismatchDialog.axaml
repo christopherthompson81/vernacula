@@ -1,7 +1,7 @@
 <Window x:Class="Vernacula.App.Views.Dialogs.AsrMismatchDialog"
         xmlns="https://github.com/avaloniaui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Width="520"
+        Width="540"
         SizeToContent="Height"
         CanResize="False"
         WindowStartupLocation="CenterOwner"
@@ -21,6 +21,39 @@
                        TextWrapping="Wrap"
                        Foreground="{DynamicResource SubtextBrush}"
                        FontSize="11" />
+
+            <!-- Force-language picker, shown only when no alternative backend
+                 supports the detected language. Lets the user pick a related
+                 language from the current backend's supported set ("I know
+                 better — transcribe as <X>"). -->
+            <Border x:Name="ForceLanguagePanel"
+                    IsVisible="False"
+                    Background="{DynamicResource SurfaceBrush}"
+                    BorderBrush="{DynamicResource OverlayBrush}"
+                    BorderThickness="1"
+                    CornerRadius="4"
+                    Padding="10">
+                <StackPanel Spacing="8">
+                    <TextBlock Text="I know better — transcribe as:"
+                               FontWeight="SemiBold"
+                               Foreground="{DynamicResource TextBrush}" />
+                    <TextBlock Text="Pick a related language the current backend supports (e.g. Croatian for Serbian). The Results view will flag this as a user-forced language."
+                               TextWrapping="Wrap"
+                               Foreground="{DynamicResource SubtextBrush}"
+                               FontSize="11" />
+                    <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
+                        <ComboBox x:Name="ForceLanguageBox"
+                                  Grid.Column="0"
+                                  HorizontalAlignment="Stretch"
+                                  SelectionChanged="ForceLanguageBox_SelectionChanged" />
+                        <Button x:Name="ForceLanguageButton"
+                                Grid.Column="1"
+                                Content="Transcribe as selected"
+                                IsEnabled="False"
+                                Click="ForceLanguage_Click" />
+                    </Grid>
+                </StackPanel>
+            </Border>
 
             <StackPanel Orientation="Horizontal"
                         HorizontalAlignment="Right"

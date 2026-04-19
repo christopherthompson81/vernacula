@@ -23,7 +23,7 @@ internal class TranscriptionService
     /// pipeline just logs the mismatch and continues with the current
     /// backend — matching what happened before the popup was added.
     /// </summary>
-    public Func<Vernacula.Base.Models.LidResult, AsrBackend, AsrBackend?, Task<Views.Dialogs.AsrMismatchChoice?>>? OnAsrLanguageMismatch { get; set; }
+    public Func<Vernacula.Base.Models.LidResult, AsrBackend, AsrBackend?, Task<Views.Dialogs.AsrMismatchResult?>>? OnAsrLanguageMismatch { get; set; }
 
     public TranscriptionService(SettingsService settings, LangIdService langId)
     {
@@ -608,12 +608,12 @@ internal class TranscriptionService
                         // If the host wired up the interactive callback (Avalonia
                         // does; CLI / tests don't), ask the user what to do.
                         // Otherwise fall through to the log-and-continue fallback.
-                        Views.Dialogs.AsrMismatchChoice? choice = null;
+                        Views.Dialogs.AsrMismatchResult? result = null;
                         if (OnAsrLanguageMismatch is not null)
                         {
                             try
                             {
-                                choice = await OnAsrLanguageMismatch(lidResult, backend.Value, alt).ConfigureAwait(false);
+                                result = await OnAsrLanguageMismatch(lidResult, backend.Value, alt).ConfigureAwait(false);
                             }
                             catch (Exception ex)
                             {
@@ -622,7 +622,7 @@ internal class TranscriptionService
                             }
                         }
 
-                        switch (choice)
+                        switch (result?.Choice)
                         {
                             case Views.Dialogs.AsrMismatchChoice.SwitchBackend when alt is not null:
                                 string newModelName = AsrLanguageSupport.ModelName(alt.Value);
@@ -646,6 +646,22 @@ internal class TranscriptionService
                                 // for a mismatch the user already resolved).
                                 db.UpdateMetadata("asr_model", newModelName);
                                 db.InsertMetadata("asr_model_overridden_from", AsrLanguageSupport.BackendOf(AsrLanguageSupport.ModelName(backend.Value))?.ToString() ?? backend.Value.ToString());
+                                break;
+
+                            case Views.Dialogs.AsrMismatchChoice.ForceLanguage
+                                when !string.IsNullOrWhiteSpace(result?.ForcedIso)
+                                  && AsrLanguageSupport.Supports(backend.Value, result!.ForcedIso!):
+                                string forcedIso = AsrLanguageSupport.NormalizeIso(result.ForcedIso!);
+                                Console.WriteLine(
+                                    $"[Transcription] LID mismatch: user forced language " +
+                                    $"'{forcedIso}' on {backend.Value} despite detected '{lidResult.Iso}'.");
+                                asrLanguageCode = forcedIso;
+                                // Mark the override so the Results view shows a
+                                // "user-forced language" badge instead of the
+                                // amber mismatch banner. Also remember what was
+                                // detected so the badge can explain the gap.
+                                db.InsertMetadata("asr_language_user_forced", "1");
+                                db.InsertMetadata("asr_language_user_forced_from", lidResult.Iso);
                                 break;
 
                             case Views.Dialogs.AsrMismatchChoice.CancelJob:

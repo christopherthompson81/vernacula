@@ -79,6 +79,22 @@
             </Grid>
         </Border>
 
+        <!-- User-forced language badge (supersedes the mismatch banner when
+             the user explicitly chose to transcribe as a related language). -->
+        <Border Grid.Row="3"
+                IsVisible="{Binding ShowUserForcedLanguageBadge}"
+                Background="{DynamicResource SurfaceBrush}"
+                BorderBrush="{DynamicResource OverlayBrush}"
+                BorderThickness="1"
+                CornerRadius="4"
+                Padding="8,4"
+                HorizontalAlignment="Left"
+                Margin="0,0,0,12">
+            <TextBlock Text="{Binding UserForcedLanguageBadgeText}"
+                       Foreground="{DynamicResource SubtextBrush}"
+                       FontSize="11" />
+        </Border>
+
         <!-- Segments table -->
         <DataGrid x:Name="SegmentsGrid"
                   Grid.Row="4"

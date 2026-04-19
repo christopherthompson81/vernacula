@@ -204,4 +204,49 @@ public static class AsrLanguageSupport
         AsrBackend.VibeVoice => "vibevoice/vibevoice-asr",
         _ => throw new ArgumentOutOfRangeException(nameof(backend)),
     };
+
+    // English display names for every ISO 639-1 code that appears in any
+    // backend's supported set. Centralised here so the force-language picker
+    // (AsrMismatchDialog) can label languages for backends like Parakeet
+    // and VibeVoice that don't otherwise carry per-code display names.
+    private static readonly FrozenDictionary<string, string> IsoDisplayNamesMap =
+        new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["ar"] = "Arabic",      ["bg"] = "Bulgarian",  ["cs"] = "Czech",
+            ["da"] = "Danish",      ["de"] = "German",     ["el"] = "Greek",
+            ["en"] = "English",     ["es"] = "Spanish",    ["et"] = "Estonian",
+            ["fa"] = "Persian",     ["fi"] = "Finnish",    ["fr"] = "French",
+            ["hi"] = "Hindi",       ["hr"] = "Croatian",   ["hu"] = "Hungarian",
+            ["id"] = "Indonesian",  ["it"] = "Italian",    ["ja"] = "Japanese",
+            ["ko"] = "Korean",      ["lt"] = "Lithuanian", ["lv"] = "Latvian",
+            ["mk"] = "Macedonian",  ["ms"] = "Malay",      ["mt"] = "Maltese",
+            ["nl"] = "Dutch",       ["pl"] = "Polish",     ["pt"] = "Portuguese",
+            ["ro"] = "Romanian",    ["ru"] = "Russian",    ["sk"] = "Slovak",
+            ["sl"] = "Slovenian",   ["sv"] = "Swedish",    ["th"] = "Thai",
+            ["tl"] = "Filipino",    ["tr"] = "Turkish",    ["uk"] = "Ukrainian",
+            ["vi"] = "Vietnamese",  ["zh"] = "Chinese",
+        }.ToFrozenDictionary(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// English display name for an ISO 639-1 code, or the code itself if
+    /// no name is registered. Case-insensitive; deprecated codes are
+    /// normalized via <see cref="NormalizeIso"/>.
+    /// </summary>
+    public static string LanguageDisplayName(string iso)
+    {
+        if (string.IsNullOrWhiteSpace(iso)) return iso ?? string.Empty;
+        string code = NormalizeIso(iso);
+        return IsoDisplayNamesMap.TryGetValue(code, out string? name) ? name : code;
+    }
+
+    /// <summary>
+    /// Returns the user-pickable language list for a backend, sorted by
+    /// display name. Used by the force-language affordance in the LID
+    /// mismatch popup; does not include an "auto-detect" entry.
+    /// </summary>
+    public static IReadOnlyList<AsrLanguageOption> LanguageOptions(AsrBackend backend) =>
+        Get(backend)
+            .Select(c => new AsrLanguageOption(c, LanguageDisplayName(c)))
+            .OrderBy(o => o.DisplayName, StringComparer.Ordinal)
+            .ToArray();
 }

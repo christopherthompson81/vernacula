@@ -34,6 +34,14 @@ internal partial class ResultsViewModel : ObservableObject
     [ObservableProperty] private string _reprocessButtonText = "Reprocess";
     [ObservableProperty] private bool _canReprocess;
 
+    /// <summary>
+    /// True when the user picked an explicit force-language in the LID
+    /// mismatch popup ("I know better — transcribe as X"). Drives a neutral
+    /// info badge that supersedes the amber mismatch banner.
+    /// </summary>
+    [ObservableProperty] private bool _showUserForcedLanguageBadge;
+    [ObservableProperty] private string _userForcedLanguageBadgeText = "";
+
     private int?       _jobId;
     private string?    _mismatchDetectedIso;
     private AsrBackend? _mismatchSuggestedBackend;
@@ -72,6 +80,8 @@ internal partial class ResultsViewModel : ObservableObject
         ShowDetectedLanguageInfo = false;
         DetectedLanguageInfoText = "";
         ShowMismatchBanner       = false;
+        ShowUserForcedLanguageBadge = false;
+        UserForcedLanguageBadgeText = "";
         CanReprocess             = false;
         _mismatchDetectedIso     = null;
         _mismatchSuggestedBackend = null;
@@ -84,6 +94,8 @@ internal partial class ResultsViewModel : ObservableObject
         bool    mismatch     = db.GetMetadata("detected_language_backend_mismatch") == "1";
         string? suggestedStr = db.GetMetadata("detected_language_suggested_backend");
         string? asrModel     = db.GetMetadata("asr_model");
+        bool    userForced   = db.GetMetadata("asr_language_user_forced") == "1";
+        string? userForcedFromIso = db.GetMetadata("asr_language_user_forced_from");
 
         if (string.IsNullOrWhiteSpace(detectedIso)) return;
 
@@ -108,6 +120,22 @@ internal partial class ResultsViewModel : ObservableObject
             (ambiguous ? "Language detection (ambiguous): " : "Language detected: ")
             + $"{detectedName} ({detectedIso}{probSuffix}){effectiveSuffix}";
         ShowDetectedLanguageInfo = true;
+
+        // User-forced override supersedes the amber mismatch banner — the
+        // job ran on a related language they explicitly picked, so it isn't
+        // an unresolved problem and we shouldn't nudge them to reprocess.
+        if (userForced && !string.IsNullOrWhiteSpace(effectiveIso))
+        {
+            string forcedName = AsrLanguageSupport.LanguageDisplayName(effectiveIso);
+            string fromName   = string.IsNullOrWhiteSpace(userForcedFromIso)
+                ? (detectedName ?? detectedIso)
+                : AsrLanguageSupport.LanguageDisplayName(userForcedFromIso!);
+            UserForcedLanguageBadgeText =
+                $"User-forced language: transcribed as {forcedName} ({effectiveIso}) " +
+                $"despite {fromName} being detected.";
+            ShowUserForcedLanguageBadge = true;
+            return;
+        }
 
         if (!mismatch) return;
 
