@@ -127,15 +127,15 @@ public partial class TranscriptEditorWindow : Window
 
         if (isCohere)
         {
+            // Only the encoder weight file exceeds the protobuf 2 GiB single-file
+            // limit; mel/decoder weights are embedded in-graph with no .data sidecar.
             string cohereDir = App.Current.Settings.GetCohereModelsDir();
             _asrModelsAvailable =
                 File.Exists(Path.Combine(cohereDir, CohereTranscribe.MelFile)) &&
                 File.Exists(Path.Combine(cohereDir, CohereTranscribe.EncoderFile)) &&
                 File.Exists(Path.Combine(cohereDir, $"{CohereTranscribe.EncoderFile}.data")) &&
                 File.Exists(Path.Combine(cohereDir, CohereTranscribe.DecoderInitFile)) &&
-                File.Exists(Path.Combine(cohereDir, $"{CohereTranscribe.DecoderInitFile}.data")) &&
                 File.Exists(Path.Combine(cohereDir, CohereTranscribe.DecoderStepFile)) &&
-                File.Exists(Path.Combine(cohereDir, $"{CohereTranscribe.DecoderStepFile}.data")) &&
                 File.Exists(Path.Combine(cohereDir, CohereTranscribe.VocabFile)) &&
                 File.Exists(Path.Combine(cohereDir, CohereTranscribe.ConfigFile));
         }

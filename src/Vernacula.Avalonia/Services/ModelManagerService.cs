@@ -69,13 +69,14 @@ internal class ModelManagerService
 
     private static readonly ModelAsset[] CohereFiles =
         [
+            // mel/decoder weight footprints fit comfortably below the 2 GiB
+            // protobuf single-file limit and are shipped in-graph with no
+            // .data sidecar. Only the ~7 GiB encoder needs an external sidecar.
             new(Path.Combine("cohere_transcribe", CohereTranscribe.MelFile), CohereTranscribe.MelFile),
             new(Path.Combine("cohere_transcribe", CohereTranscribe.EncoderFile), CohereTranscribe.EncoderFile),
             new(Path.Combine("cohere_transcribe", $"{CohereTranscribe.EncoderFile}.data"), $"{CohereTranscribe.EncoderFile}.data"),
             new(Path.Combine("cohere_transcribe", CohereTranscribe.DecoderInitFile), CohereTranscribe.DecoderInitFile),
-            new(Path.Combine("cohere_transcribe", $"{CohereTranscribe.DecoderInitFile}.data"), $"{CohereTranscribe.DecoderInitFile}.data"),
             new(Path.Combine("cohere_transcribe", CohereTranscribe.DecoderStepFile), CohereTranscribe.DecoderStepFile),
-            new(Path.Combine("cohere_transcribe", $"{CohereTranscribe.DecoderStepFile}.data"), $"{CohereTranscribe.DecoderStepFile}.data"),
             new(Path.Combine("cohere_transcribe", CohereTranscribe.VocabFile), CohereTranscribe.VocabFile),
             new(Path.Combine("cohere_transcribe", CohereTranscribe.ConfigFile), CohereTranscribe.ConfigFile),
         ];
