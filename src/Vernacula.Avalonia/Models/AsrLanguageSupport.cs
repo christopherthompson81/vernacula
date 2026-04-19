@@ -64,6 +64,40 @@ public static class AsrLanguageSupport
     }.ToFrozenSet();
 
     /// <summary>
+    /// Map deprecated ISO 639-1 codes to their modern equivalents and
+    /// lowercase the result. Used at every lookup boundary so the rest of
+    /// the codebase only ever sees current codes.
+    ///
+    /// <para>VoxLingua107's <c>lang_map.json</c> emits the pre-1989 ISO
+    /// 639-1 codes for two languages:
+    /// <list type="bullet">
+    /// <item><c>iw</c> → <c>he</c> (Hebrew, retired 1989)</item>
+    /// <item><c>jw</c> → <c>jv</c> (Javanese, retired 1989)</item>
+    /// </list>
+    /// No current ASR backend supports either language, so this is forward
+    /// compatibility — when one is added (under the modern code, which
+    /// every model card uses today) the LID-driven fallback will Just Work
+    /// without revisiting this mapping.
+    /// </para>
+    ///
+    /// <para>
+    /// Genuinely-ambiguous cases (different ISO codes for mutually
+    /// intelligible languages) are deliberately NOT aliased here — see
+    /// the "Cross-language fallback policy" note above this method.
+    /// </para>
+    /// </summary>
+    public static string NormalizeIso(string iso)
+    {
+        if (string.IsNullOrWhiteSpace(iso)) return iso ?? string.Empty;
+        return iso.ToLowerInvariant() switch
+        {
+            "iw" => "he",
+            "jw" => "jv",
+            var c => c,
+        };
+    }
+
+    /// <summary>
     /// Returns the ISO 639-1 language codes the given ASR backend can
     /// transcribe. Result is lowercase.
     /// </summary>
@@ -76,24 +110,53 @@ public static class AsrLanguageSupport
         _                    => FrozenSet<string>.Empty,
     };
 
+    // ── Cross-language fallback policy ───────────────────────────────────────
+    //
+    // VoxLingua107 distinguishes some closely related languages that no
+    // installed ASR backend supports under the same code. Examples:
+    //
+    //   sr (Serbian)   — no backend; Croatian (hr) is mutually intelligible.
+    //   bs (Bosnian)   — no backend; Croatian (hr) is mutually intelligible.
+    //   no/nn (Norwegian) — no backend; Swedish/Danish are nearby cousins.
+    //
+    // We deliberately do NOT auto-alias these in NormalizeIso. Reasoning:
+    //
+    //   1. Script mismatch matters. Serbian commonly uses Cyrillic; Parakeet's
+    //      Croatian support is Latin-script only. Silent fallback would
+    //      produce nonsense or transliterated mush on Cyrillic input.
+    //   2. Auto-routing erases user agency. A Serbian speaker may prefer to
+    //      hear "no direct support" over a confidently-wrong Croatian-flavoured
+    //      transcript with no warning.
+    //   3. Preferred UX is an *explicit affordance* in the AsrMismatch popup
+    //      — "Serbian isn't directly supported; try Croatian (Latin script)?"
+    //      — surfaced as a separate user choice, not as `Supports("sr")=true`.
+    //
+    // When that affordance is built, it should consult a separate
+    // "near-language fallback" map and clearly label the substitution in the
+    // UI and in the DB metadata. Until then, leaving these languages as
+    // "unsupported" is honest and recoverable.
+    // ────────────────────────────────────────────────────────────────────────
+
     /// <summary>
     /// True when <paramref name="backend"/> can transcribe the given ISO
-    /// 639-1 code. Case-insensitive.
+    /// 639-1 code. Case-insensitive; deprecated codes are normalized via
+    /// <see cref="NormalizeIso"/>.
     /// </summary>
     public static bool Supports(AsrBackend backend, string iso) =>
-        !string.IsNullOrWhiteSpace(iso) && Get(backend).Contains(iso.ToLowerInvariant());
+        !string.IsNullOrWhiteSpace(iso) && Get(backend).Contains(NormalizeIso(iso));
 
     /// <summary>
     /// Returns the list of ASR backends that support <paramref name="iso"/>,
     /// ordered by preference for generic use:
     /// Qwen3-ASR (widest coverage) → Cohere → Parakeet → VibeVoice.
     /// Used when LID detects a language the user's current backend can't
-    /// handle and we need to suggest an alternative.
+    /// handle and we need to suggest an alternative. Deprecated codes are
+    /// normalized via <see cref="NormalizeIso"/>.
     /// </summary>
     public static IReadOnlyList<AsrBackend> BackendsSupporting(string iso)
     {
         if (string.IsNullOrWhiteSpace(iso)) return Array.Empty<AsrBackend>();
-        string code = iso.ToLowerInvariant();
+        string code = NormalizeIso(iso);
         var order = new[] { AsrBackend.Qwen3Asr, AsrBackend.Cohere, AsrBackend.Parakeet, AsrBackend.VibeVoice };
         return order.Where(b => Get(b).Contains(code)).ToArray();
     }
