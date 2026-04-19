@@ -1302,7 +1302,8 @@ public partial class TranscriptEditorWindow : Window
             }
 
             _vm.ApplyRedoAsr(card.Index, result.Value.newResultId, result.Value.asrContent,
-                result.Value.tokens, result.Value.timestamps, result.Value.logprobs, result.Value.language);
+                result.Value.tokens, result.Value.timestamps, result.Value.durations,
+                result.Value.logprobs, result.Value.language);
 
             if (_isQwen3Asr)
                 card.SelectedRedoLanguage = TranscriptEditorCardState.MatchLanguageOption(result.Value.language);

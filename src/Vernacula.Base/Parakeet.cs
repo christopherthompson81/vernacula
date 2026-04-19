@@ -275,7 +275,7 @@ public sealed class Parakeet : IDisposable
 
     // ── Streaming decoder ─────────────────────────────────────────────────────
 
-    private IEnumerable<(List<int> tokens, List<int> timestamps, List<float> logprobs)>
+    private IEnumerable<(List<int> tokens, List<int> timestamps, List<int> durations, List<float> logprobs)>
         Decoder(float[,,] encoderOut, long[] encoderLens)
     {
         int B = encoderOut.GetLength(0);
@@ -288,6 +288,7 @@ public sealed class Parakeet : IDisposable
             var prevState     = CreateState();
             var tokens        = new List<int>();
             var timestamps    = new List<int>();
+            var durations     = new List<int>();
             var logprobs      = new List<float>();
             var frame         = new float[D];
             int t             = 0;
@@ -305,6 +306,7 @@ public sealed class Parakeet : IDisposable
                     prevState = newState;
                     tokens.Add(token);
                     timestamps.Add(t);
+                    durations.Add(step);
                     emittedTokens++;
                     logprobs.Add(AudioUtils.LogSoftmax(logits)[token]);
                 }
@@ -321,7 +323,7 @@ public sealed class Parakeet : IDisposable
                 }
             }
 
-            yield return (tokens, timestamps, logprobs);
+            yield return (tokens, timestamps, durations, logprobs);
         }
     }
 
@@ -409,7 +411,7 @@ public sealed class Parakeet : IDisposable
     /// GPU phase: encode and decode a batch already preprocessed by
     /// <see cref="PrepareBatch"/>. Results are yielded in original segment order.
     /// </summary>
-    public IEnumerable<(int segId, string text, List<int> tokens, List<int> timestamps, List<float> logprobs)>
+    public IEnumerable<(int segId, string text, List<int> tokens, List<int> timestamps, List<int> durations, List<float> logprobs)>
         RecognizePrepared(PreparedBatch prepared)
     {
         int sortedPos = 0;
@@ -418,11 +420,11 @@ public sealed class Parakeet : IDisposable
             var (encoderOut, encoderLens) = Encode(features, featLens);
 
             int j = 0;
-            foreach (var (tokens, timestamps, logprobs) in Decoder(encoderOut, encoderLens))
+            foreach (var (tokens, timestamps, durations, logprobs) in Decoder(encoderOut, encoderLens))
             {
                 int origIdx = prepared.OriginalIndices[sortedPos + j];
                 string text = string.Concat(tokens.Select(t => _vocab.TryGetValue(t, out var s) ? s : "")).Trim();
-                yield return (origIdx, text, tokens, timestamps, logprobs);
+                yield return (origIdx, text, tokens, timestamps, durations, logprobs);
                 j++;
             }
             sortedPos += segCount;
@@ -432,7 +434,7 @@ public sealed class Parakeet : IDisposable
     /// <summary>
     /// Convenience wrapper: CPU preprocess then GPU encode+decode in one call.
     /// </summary>
-    public IEnumerable<(int segId, string text, List<int> tokens, List<int> timestamps, List<float> logprobs)>
+    public IEnumerable<(int segId, string text, List<int> tokens, List<int> timestamps, List<int> durations, List<float> logprobs)>
         Recognize(IReadOnlyList<(double start, double end, string spk)> segs, float[] audio)
     {
         var prepared = PrepareBatch(segs, audio);

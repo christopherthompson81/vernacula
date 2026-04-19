@@ -660,7 +660,7 @@ try
         int completed = 0;
 
         Console.WriteLine($"Transcribing {totalSegs} segment(s)...");
-        foreach (var (segId, text, _, _, _) in parakeet.Recognize(segs, audio))
+        foreach (var (segId, text, _, _, _, _) in parakeet.Recognize(segs, audio))
         {
             cts.Token.ThrowIfCancellationRequested();
             completed++;

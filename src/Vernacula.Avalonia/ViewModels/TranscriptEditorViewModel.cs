@@ -78,6 +78,7 @@ internal partial class TranscriptEditorViewModel : ObservableObject, IDisposable
                 Content            = row.Content,
                 Tokens             = row.Tokens,
                 Timestamps         = row.Timestamps,
+                Durations          = row.Durations,
                 Logprobs           = row.Logprobs,
                 Sources            = row.Sources,
                 Verified           = row.Verified,
@@ -572,6 +573,15 @@ internal partial class TranscriptEditorViewModel : ObservableObject, IDisposable
             else
                 break;
         }
+        // If durations are aligned with tokens (Parakeet TDT), clamp the last token's
+        // highlight to its real end frame so the highlight doesn't linger past the
+        // spoken word when playback sits in post-speech silence.
+        if (best == seg.Timestamps.Count - 1 && seg.Durations.Count == seg.Timestamps.Count && best >= 0)
+        {
+            double endSec = (seg.Timestamps[best] + seg.Durations[best]) * frameSeconds;
+            if (secondsIntoSegment > endSec)
+                best = -1;
+        }
         HighlightedToken = best;
     }
 
@@ -798,6 +808,11 @@ internal partial class TranscriptEditorViewModel : ObservableObject, IDisposable
             .Concat(b.Timestamps.Select(t => t + bTsOffset))
             .ToList();
         var mergedLogprobs = a.Logprobs.Concat(b.Logprobs).ToList();
+        // Preserve durations only if both sides have them (else drop to empty — a partial
+        // list misaligns with tokens and is worse than none).
+        var mergedDurations = a.Durations.Count == a.Tokens.Count && b.Durations.Count == b.Tokens.Count
+            ? a.Durations.Concat(b.Durations).ToList()
+            : new List<int>();
 
         // Merged content — always stored explicitly for multi-source cards because
         // the export query only joins source_order=0 and can't reconstruct the full text.
@@ -854,6 +869,7 @@ internal partial class TranscriptEditorViewModel : ObservableObject, IDisposable
         a.Content     = mergedCon;
         a.Tokens      = mergedTokens;
         a.Timestamps  = mergedTimestamps;
+        a.Durations   = mergedDurations;
         a.Logprobs    = mergedLogprobs;
         a.Sources     = newSources;
 
@@ -1017,9 +1033,10 @@ internal partial class TranscriptEditorViewModel : ObservableObject, IDisposable
     /// <summary>
     /// Re-runs ASR on the segment's audio and replaces all its sources with a single fresh result.
     /// <para>MUST be called from a background thread — loads and runs the ONNX model.</para>
-    /// Returns (newResultId, asrContent, tokens, timestamps, logprobs) on success, or null.
+    /// Returns (newResultId, asrContent, tokens, timestamps, durations, logprobs, language) on success,
+    /// or null. <c>durations</c> is empty for backends that don't emit per-token frame durations.
     /// </summary>
-    public (int newResultId, string asrContent, List<int> tokens, List<int> timestamps, List<float> logprobs, string? language)?
+    public (int newResultId, string asrContent, List<int> tokens, List<int> timestamps, List<int> durations, List<float> logprobs, string? language)?
         PerformRedoAsr(
             int index,
             string asrModel,
@@ -1056,6 +1073,7 @@ internal partial class TranscriptEditorViewModel : ObservableObject, IDisposable
         string text = "";
         List<int> tokens = [];
         List<int> timestamps = [];
+        List<int> durations = [];
         List<float> logprobs = [];
         string? language = null;
         string? emotion = null;
@@ -1128,9 +1146,9 @@ internal partial class TranscriptEditorViewModel : ObservableObject, IDisposable
         {
             // Run ASR — the slice starts at t=0, so pass a 0-based time range
             using var parakeet = new ParakeetAsr(parakeetModelsDir, encoderFile, decoderJointFile);
-            foreach (var (_, t, tk, ts, lp) in parakeet.Recognize(asrSeg, mono16k))
+            foreach (var (_, t, tk, ts, dur, lp) in parakeet.Recognize(asrSeg, mono16k))
             {
-                text = t; tokens = tk; timestamps = ts; logprobs = lp;
+                text = t; tokens = tk; timestamps = ts; durations = dur; logprobs = lp;
             }
         }
 
@@ -1147,7 +1165,8 @@ internal partial class TranscriptEditorViewModel : ObservableObject, IDisposable
                 logprobs:   JsonSerializer.Serialize(logprobs),
                 language:   language,
                 emotion:    emotion,
-                asrMeta:    asrMeta);
+                asrMeta:    asrMeta,
+                durations:  durations.Count > 0 ? JsonSerializer.Serialize(durations) : null);
 
             db.DeleteCardSources(seg.CardId);
             db.AddCardSource(seg.CardId, newResultId, 0, null, 0, 0);
@@ -1155,7 +1174,7 @@ internal partial class TranscriptEditorViewModel : ObservableObject, IDisposable
             db.DeleteOrphanedResults(oldResultIds);
         }
 
-        return (newResultId, text, tokens, timestamps, logprobs, language);
+        return (newResultId, text, tokens, timestamps, durations, logprobs, language);
     }
 
     private const string CohereSyntheticTimestampMode = "uniform_segment_frames_v1";
@@ -1188,7 +1207,7 @@ internal partial class TranscriptEditorViewModel : ObservableObject, IDisposable
     /// <see cref="PerformRedoAsr"/> completes.
     /// </summary>
     public void ApplyRedoAsr(int index, int newResultId, string asrContent,
-        List<int> tokens, List<int> timestamps, List<float> logprobs, string? language = null)
+        List<int> tokens, List<int> timestamps, List<int> durations, List<float> logprobs, string? language = null)
     {
         if (index < 0 || index >= Segments.Count) return;
         var seg = Segments[index];
@@ -1196,6 +1215,7 @@ internal partial class TranscriptEditorViewModel : ObservableObject, IDisposable
         seg.Content    = asrContent;
         seg.Tokens     = tokens;
         seg.Timestamps = timestamps;
+        seg.Durations  = durations;
         seg.Logprobs   = logprobs;
         seg.Language   = language;
         seg.Sources    = new List<CardSource>
@@ -1235,6 +1255,8 @@ internal partial class TranscriptEditorViewModel : ObservableObject, IDisposable
         var secondTs     = seg.Timestamps.Skip(splitIndex).Select(t => t - tAtSplit).ToList();
         var firstLp      = seg.Logprobs.Take(splitIndex).ToList();
         var secondLp     = seg.Logprobs.Skip(splitIndex).ToList();
+        var firstDur     = seg.Durations.Count == seg.Tokens.Count ? seg.Durations.Take(splitIndex).ToList()  : new List<int>();
+        var secondDur    = seg.Durations.Count == seg.Tokens.Count ? seg.Durations.Skip(splitIndex).ToList() : new List<int>();
 
         // Decoded content for each half
         string firstAsr, secondAsr, firstCon, secondCon;
@@ -1296,6 +1318,7 @@ internal partial class TranscriptEditorViewModel : ObservableObject, IDisposable
         seg.Content    = firstCon;
         seg.Tokens     = firstTokens;
         seg.Timestamps = firstTs;
+        seg.Durations  = firstDur;
         seg.Logprobs   = firstLp;
         seg.Sources    = new List<CardSource>
         {
@@ -1314,6 +1337,7 @@ internal partial class TranscriptEditorViewModel : ObservableObject, IDisposable
             Content            = secondCon,
             Tokens             = secondTokens,
             Timestamps         = secondTs,
+            Durations          = secondDur,
             Logprobs           = secondLp,
             Sources            = new List<CardSource>
             {

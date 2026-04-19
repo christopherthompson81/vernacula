@@ -116,6 +116,8 @@ internal sealed class TranscriptionDb : IDisposable
         catch (SqliteException) { /* column already exists */ }
         try { Execute("ALTER TABLE results ADD COLUMN lid_language TEXT"); }
         catch (SqliteException) { /* column already exists */ }
+        try { Execute("ALTER TABLE results ADD COLUMN durations TEXT"); }
+        catch (SqliteException) { /* column already exists */ }
 
         MigrateToCardLayer();
     }
@@ -221,9 +223,10 @@ internal sealed class TranscriptionDb : IDisposable
         string? tokens,
         string? timestamps,
         string? logprobs,
-        string? language = null,
-        string? emotion  = null,
-        string? asrMeta  = null)
+        string? language  = null,
+        string? emotion   = null,
+        string? asrMeta   = null,
+        string? durations = null)
     {
         using var cmd = CreateCmd();
         cmd.CommandText = """
@@ -231,10 +234,10 @@ internal sealed class TranscriptionDb : IDisposable
                 (diarization_speaker_id, speaker_id,
                  start_time, end_time, start_time_f, end_time_f,
                  asr_content, content, tokens, timestamps, logprobs,
-                 language, emotion, asr_meta)
+                 language, emotion, asr_meta, durations)
             VALUES
                 ($dspk, $spk, $st, $et, $stf, $etf, $asr, $con, $tok, $ts, $lp,
-                 $lang, $emo, $meta)
+                 $lang, $emo, $meta, $dur)
             """;
         cmd.Parameters.AddWithValue("$dspk", diarizationSpeakerId);
         cmd.Parameters.AddWithValue("$spk",  speakerId);
@@ -250,6 +253,7 @@ internal sealed class TranscriptionDb : IDisposable
         cmd.Parameters.AddWithValue("$lang", (object?)language   ?? DBNull.Value);
         cmd.Parameters.AddWithValue("$emo",  (object?)emotion    ?? DBNull.Value);
         cmd.Parameters.AddWithValue("$meta", (object?)asrMeta    ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("$dur",  (object?)durations  ?? DBNull.Value);
         cmd.ExecuteNonQuery();
     }
 
@@ -274,9 +278,10 @@ internal sealed class TranscriptionDb : IDisposable
         string? tokens,
         string? timestamps,
         string? logprobs,
-        string? language = null,
-        string? emotion  = null,
-        string? asrMeta  = null)
+        string? language  = null,
+        string? emotion   = null,
+        string? asrMeta   = null,
+        string? durations = null)
     {
         using var cmd = CreateCmd();
         cmd.CommandText = """
@@ -288,7 +293,8 @@ internal sealed class TranscriptionDb : IDisposable
                 logprobs    = $lp,
                 language    = $lang,
                 emotion     = $emo,
-                asr_meta    = $meta
+                asr_meta    = $meta,
+                durations   = $dur
             WHERE result_id = $id
             """;
         cmd.Parameters.AddWithValue("$asr",  (object?)asrContent ?? DBNull.Value);
@@ -299,6 +305,7 @@ internal sealed class TranscriptionDb : IDisposable
         cmd.Parameters.AddWithValue("$lang", (object?)language   ?? DBNull.Value);
         cmd.Parameters.AddWithValue("$emo",  (object?)emotion    ?? DBNull.Value);
         cmd.Parameters.AddWithValue("$meta", (object?)asrMeta    ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("$dur",  (object?)durations  ?? DBNull.Value);
         cmd.Parameters.AddWithValue("$id",   resultId);
         cmd.ExecuteNonQuery();
     }
@@ -349,19 +356,20 @@ internal sealed class TranscriptionDb : IDisposable
         string? tokens,
         string? timestamps,
         string? logprobs,
-        string? language = null,
-        string? emotion  = null,
-        string? asrMeta  = null)
+        string? language  = null,
+        string? emotion   = null,
+        string? asrMeta   = null,
+        string? durations = null)
     {
         using var cmd = CreateCmd();
         cmd.CommandText = """
             INSERT INTO results
                 (diarization_speaker_id, speaker_id, start_time, end_time,
                  start_time_f, end_time_f, asr_content, content, tokens, timestamps, logprobs,
-                 language, emotion, asr_meta)
+                 language, emotion, asr_meta, durations)
             VALUES
                 ($dspk, $spk, $st, $et, $stf, $etf, $asr, $asr, $tok, $ts, $lp,
-                 $lang, $emo, $meta);
+                 $lang, $emo, $meta, $dur);
             SELECT last_insert_rowid();
             """;
         cmd.Parameters.AddWithValue("$dspk", speakerId);
@@ -377,6 +385,7 @@ internal sealed class TranscriptionDb : IDisposable
         cmd.Parameters.AddWithValue("$lang", (object?)language   ?? DBNull.Value);
         cmd.Parameters.AddWithValue("$emo",  (object?)emotion    ?? DBNull.Value);
         cmd.Parameters.AddWithValue("$meta", (object?)asrMeta    ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("$dur",  (object?)durations  ?? DBNull.Value);
         return Convert.ToInt32(cmd.ExecuteScalar());
     }
 
@@ -496,7 +505,7 @@ internal sealed class TranscriptionDb : IDisposable
             double playStart, double playEnd, string? content, bool verified, bool suppressed,
             int resultId, int tokenStart, int? tokenEnd, int tsFrameOffset, int sourceOrder,
             string? tokensJson, string? timestampsJson, string? logprobsJson, string asrContent,
-            string? language, string? lidLanguage)>();
+            string? language, string? lidLanguage, string? durationsJson)>();
 
         using var cmd = CreateCmd();
         cmd.CommandText = """
@@ -505,7 +514,7 @@ internal sealed class TranscriptionDb : IDisposable
                    cs.result_id, cs.token_start, cs.token_end, cs.ts_frame_offset, cs.source_order,
                    r.tokens, r.timestamps, r.logprobs,
                    coalesce(r.asr_content, coalesce(r.content, '')),
-                   r.language, r.lid_language
+                   r.language, r.lid_language, r.durations
             FROM segment_cards c
             JOIN speakers s  ON c.speaker_id  = s.speaker_id
             JOIN card_sources cs ON cs.card_id = c.card_id
@@ -537,7 +546,8 @@ internal sealed class TranscriptionDb : IDisposable
                     reader.IsDBNull(16) ? null : reader.GetString(16),
                     reader.GetString(17),
                     reader.IsDBNull(18) ? null : reader.GetString(18),
-                    reader.IsDBNull(19) ? null : reader.GetString(19)));
+                    reader.IsDBNull(19) ? null : reader.GetString(19),
+                    reader.IsDBNull(20) ? null : reader.GetString(20)));
             }
         }
 
@@ -553,8 +563,10 @@ internal sealed class TranscriptionDb : IDisposable
             var sources    = new List<CardSource>();
             var tokens     = new List<int>();
             var timestamps = new List<int>();
+            var durations  = new List<int>();
             var logprobs   = new List<float>();
             var asrParts   = new List<string>();
+            bool durationsAligned = true;
             string? cardLanguage = null;
             string? cardLidLanguage = null;
 
@@ -570,6 +582,7 @@ internal sealed class TranscriptionDb : IDisposable
                 var srcTokens     = ParseJsonList<int>(row.tokensJson);
                 var srcTimestamps = ParseJsonList<int>(row.timestampsJson);
                 var srcLogprobs   = ParseJsonList<float>(row.logprobsJson);
+                var srcDurations  = ParseJsonList<int>(row.durationsJson);
 
                 int tStart = row.tokenStart;
                 int tEnd   = row.tokenEnd ?? srcTokens.Count;
@@ -583,9 +596,26 @@ internal sealed class TranscriptionDb : IDisposable
                 for (int t = tStart; t < tEnd && t < srcLogprobs.Count; t++)
                     logprobs.Add(srcLogprobs[t]);
 
+                // Durations must cover every token emitted by this source, otherwise the
+                // aggregate list would be misaligned with `tokens`. Drop the entire card's
+                // durations if any source is missing them.
+                if (srcDurations.Count >= tEnd)
+                {
+                    for (int t = tStart; t < tEnd; t++)
+                        durations.Add(srcDurations[t]);
+                }
+                else
+                {
+                    durationsAligned = false;
+                }
+
                 string part = row.asrContent.Trim();
                 if (part.Length > 0) asrParts.Add(part);
             }
+
+            IReadOnlyList<int> cardDurations = durationsAligned && durations.Count == tokens.Count
+                ? durations
+                : [];
 
             string asrContent = string.Join(" ", asrParts);
             string displayContent = first.content ?? asrContent;
@@ -604,6 +634,7 @@ internal sealed class TranscriptionDb : IDisposable
                 Sources:     sources,
                 Tokens:      tokens,
                 Timestamps:  timestamps,
+                Durations:   cardDurations,
                 Logprobs:    logprobs,
                 AsrContent:  asrContent,
                 Language:    cardLanguage,
@@ -934,6 +965,7 @@ internal record CardQueryRow(
     IReadOnlyList<CardSource> Sources,
     IReadOnlyList<int>        Tokens,
     IReadOnlyList<int>        Timestamps,
+    IReadOnlyList<int>        Durations,
     IReadOnlyList<float>      Logprobs,
     string  AsrContent,
     string? Language,

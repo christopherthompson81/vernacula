@@ -26,6 +26,7 @@ internal partial class EditorSegment : ObservableObject
 
     public IReadOnlyList<int>        Tokens     { get; set; } = [];
     public IReadOnlyList<int>        Timestamps { get; set; } = [];
+    public IReadOnlyList<int>        Durations  { get; set; } = [];
     public IReadOnlyList<float>      Logprobs   { get; set; } = [];
     public IReadOnlyList<CardSource> Sources    { get; set; } = [];
 
