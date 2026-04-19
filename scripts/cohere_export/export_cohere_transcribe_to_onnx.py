@@ -90,8 +90,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--opset",
         type=int,
-        default=17,
-        help="ONNX opset version (default: 17).",
+        default=18,
+        help=(
+            "ONNX opset version (default: 18).  The modern dynamo exporter "
+            "auto-clamps to >= 18 because some ops (e.g. Pad) lack v17 "
+            "adapters; the legacy --legacy-exporter path accepts 17."
+        ),
     )
     parser.add_argument(
         "--device",
@@ -139,6 +143,15 @@ def parse_args() -> argparse.Namespace:
         "--overwrite",
         action="store_true",
         help="Overwrite existing files in the output directory.",
+    )
+    parser.add_argument(
+        "--legacy-exporter",
+        action="store_true",
+        help=(
+            "Use the legacy TorchScript-based ONNX exporter (dynamo=False). "
+            "Default is the modern torch.export-based exporter (dynamo=True). "
+            "Provided as an escape hatch for parity comparison or troubleshooting."
+        ),
     )
     return parser.parse_args()
 
@@ -644,53 +657,58 @@ def make_decoder_dummy_inputs(
 
 def _consolidate_external_data(onnx_path: Path) -> None:
     """
+    Normalise external-data layout so every export ends up as a single pair:
+        <name>.onnx           — graph
+        <name>.onnx.data      — consolidated weights
+
     The legacy TorchScript exporter scatters weights into many individual files
-    alongside the .onnx.  This function:
-      1. Collects the scattered file paths from the model's external-data references.
-      2. Loads the model with all weights into memory.
-      3. Re-saves as a single <name>.onnx.data file.
-      4. Deletes every scattered file that is no longer needed.
+    alongside the .onnx, so a load+resave round-trip is required.  The modern
+    dynamo exporter already writes a single consolidated <name>.onnx.data file,
+    so we detect that case and only do stale-file cleanup — re-saving would
+    require pointlessly loading 8GB of weights into memory.
     """
     import onnx
 
     data_file = onnx_path.name + ".data"
     data_path = onnx_path.parent / data_file
 
-    # --- Collect the scattered file paths before overwriting ---
-    # Load without data so we can read the location strings cheaply.
     proto = onnx.load(str(onnx_path), load_external_data=False)
     scattered: set[Path] = set()
+    needs_consolidation = False
     for init in proto.graph.initializer:
         if init.data_location == onnx.TensorProto.EXTERNAL:
             for entry in init.external_data:
                 if entry.key == "location":
                     candidate = (onnx_path.parent / entry.value).resolve()
-                    # Skip the target data file itself in case it already exists.
                     if candidate != data_path.resolve():
                         scattered.add(candidate)
+                        needs_consolidation = True
 
-    # --- Delete any pre-existing data file before writing the new one ---
-    # onnx.save_model opens the data file in append mode, so without this
-    # every re-export would grow the file by one model's worth of weights.
-    if data_path.exists():
-        data_path.unlink()
+    if needs_consolidation:
+        # Legacy path — weights are in many files; load and re-save consolidated.
+        # Delete any pre-existing data file before writing: onnx.save_model opens
+        # the data file in append mode, so without this every re-export would
+        # grow the file by one model's worth of weights.
+        if data_path.exists():
+            data_path.unlink()
 
-    # --- Load with weights, save consolidated ---
-    print(f"  Consolidating external data → {data_file} …")
-    model = onnx.load(str(onnx_path), load_external_data=True)
-    onnx.save_model(
-        model,
-        str(onnx_path),
-        save_as_external_data=True,
-        all_tensors_to_one_file=True,
-        location=data_file,
-        size_threshold=1024,
-    )
+        print(f"  Consolidating external data → {data_file} …")
+        model = onnx.load(str(onnx_path), load_external_data=True)
+        onnx.save_model(
+            model,
+            str(onnx_path),
+            save_as_external_data=True,
+            all_tensors_to_one_file=True,
+            location=data_file,
+            size_threshold=1024,
+        )
+    else:
+        print(f"  External data already consolidated in {data_file}; skipping resave.")
 
-    # --- Delete the now-superseded scattered files ---
-    # Also sweep for stale exporter-emitted Constant_* files left by previous
-    # partial or failed exports. Torch may prefix these with node paths such as
-    # `_encoder_pos_enc_Constant_*`, so match any filename containing Constant.
+    # --- Sweep stale Constant_* files left by previous partial/failed exports.
+    # Torch may prefix these with node paths such as `_encoder_pos_enc_Constant_*`,
+    # so match any filename containing Constant.  Also sweep the now-superseded
+    # scattered legacy weight files.
     keep = {onnx_path.resolve(), data_path.resolve()}
     deleted = 0
     candidates = set(scattered)
@@ -714,6 +732,83 @@ def _consolidate_external_data(onnx_path: Path) -> None:
 # ONNX export helpers
 # ---------------------------------------------------------------------------
 
+def _run_torch_export(
+    torch: Any,
+    wrapper: Any,
+    args_tuple: tuple,
+    output_path: Path,
+    *,
+    input_names: list[str],
+    output_names: list[str],
+    dynamic_axes: dict[str, dict[int, str]],
+    dynamic_shapes: Any,
+    opset: int,
+    legacy: bool,
+    constant_folding: bool = True,
+) -> None:
+    """
+    Unified entry point for both legacy and modern ONNX export paths.
+
+    legacy=True  → TorchScript-based exporter (dynamo=False, dynamic_axes).
+                   Emits a deprecation warning under torch >= 2.9.
+    legacy=False → torch.export-based exporter (dynamo=True, dynamic_shapes).
+                   Default for new exports; also writes external data side-by-side
+                   so _consolidate_external_data still applies as a cleanup pass.
+
+    constant_folding only takes effect on the legacy path.  The modern path uses
+    its own optimisation passes (controlled by the `optimize` kwarg, default on)
+    and the encoder's pos-encoding duplication issue does not arise there because
+    the FX-based exporter shares buffers via initialisers rather than folding
+    expand-of-broadcast into per-layer constants.
+    """
+    if legacy:
+        torch.onnx.export(
+            wrapper,
+            args_tuple,
+            str(output_path),
+            input_names=input_names,
+            output_names=output_names,
+            dynamic_axes=dynamic_axes,
+            opset_version=opset,
+            do_constant_folding=constant_folding,
+            dynamo=False,
+        )
+        return
+
+    # Modern (torch.export) path.  external_data=True is the default in torch>=2.10
+    # and writes <name>.onnx + <name>.onnx.data automatically; pass explicitly so
+    # behavior is stable across versions.
+    #
+    # opset_version is clamped to >= 18 because the dynamo exporter only ships
+    # implementations for opset 18+; requesting 17 triggers an automatic downgrade
+    # pass that fails on Pad (no v17 adapter).  Older runtime requirements are
+    # already satisfied by ORT 1.20+ which speaks any opset >= 18.
+    modern_opset = max(opset, 18)
+    if modern_opset != opset:
+        print(f"  Bumping opset {opset} → {modern_opset} for the dynamo exporter (no v17 adapter for some ops).")
+    torch.onnx.export(
+        wrapper,
+        args_tuple,
+        str(output_path),
+        input_names=input_names,
+        output_names=output_names,
+        dynamic_shapes=dynamic_shapes,
+        opset_version=modern_opset,
+        dynamo=True,
+        external_data=True,
+        optimize=True,
+    )
+
+
+def _make_dim(torch: Any, name: str, *, min: int | None = None, max: int | None = None) -> Any:
+    kwargs: dict[str, Any] = {}
+    if min is not None:
+        kwargs["min"] = min
+    if max is not None:
+        kwargs["max"] = max
+    return torch.export.Dim(name, **kwargs)
+
+
 def export_encoder(
     torch: Any,
     wrapper: Any,
@@ -721,6 +816,7 @@ def export_encoder(
     dummy_lengths: Any,
     output_path: Path,
     opset: int,
+    legacy: bool,
 ) -> None:
     print(f"\nExporting encoder to {output_path} …")
 
@@ -728,24 +824,27 @@ def export_encoder(
         test_out = wrapper(dummy_features, dummy_lengths)
     print(f"  PyTorch encoder output shape: {tuple(test_out.shape)}")
 
-    # Legacy TorchScript tracing (dynamo=False) with patched EncoderWrapper.
-    # The data-dependent branches have been removed in make_encoder_wrapper(), so
-    # dynamic_axes correctly covers both batch and time.
-    # IMPORTANT: do_constant_folding=False — with constant folding enabled, the
+    # Patched EncoderWrapper removes data-dependent branches in make_encoder_wrapper()
+    # so both batch and time can be marked dynamic on either export path.
+    #
+    # Legacy-only note: do_constant_folding=False is required because the TorchScript
     # tracer materialises pos_emb.expand() into each of the 48 attention layers
-    # separately (since the B=1 dummy makes expand a no-op that looks foldable),
+    # separately (the B=1 dummy makes expand a no-op that looks foldable),
     # duplicating the PE tensor 48× and inflating the weight file by ~7 GB.
-    # Without folding the PE buffer stays as a shared graph reference, keeping
-    # the export size close to the raw model weight size.
+    # The modern (FX/dynamo) exporter shares the PE buffer as a single initialiser
+    # and is unaffected.
     #
     # input_lengths [B] int64: actual mel-frame count per item.  The Conformer
     # encoder uses this to compute a padding mask so that self-attention does not
     # attend to zero-padded positions, preventing cross-contamination when items
     # of different lengths are batched together.
-    torch.onnx.export(
+    batch = _make_dim(torch, "batch", min=1)
+    time_frames = _make_dim(torch, "time_frames", min=1)
+    _run_torch_export(
+        torch,
         wrapper,
         (dummy_features, dummy_lengths),
-        str(output_path),
+        output_path,
         input_names=["input_features", "input_lengths"],
         output_names=["encoder_hidden_states"],
         dynamic_axes={
@@ -753,9 +852,13 @@ def export_encoder(
             "input_lengths":         {0: "batch"},
             "encoder_hidden_states": {0: "batch", 1: "enc_seq_len"},
         },
-        opset_version=opset,
-        do_constant_folding=False,
-        dynamo=False,
+        dynamic_shapes=(
+            {0: batch, 2: time_frames},
+            {0: batch},
+        ),
+        opset=opset,
+        legacy=legacy,
+        constant_folding=False,
     )
     _consolidate_external_data(output_path)
 
@@ -767,6 +870,7 @@ def export_decoder(
     encoder_hidden_states: Any,
     output_path: Path,
     opset: int,
+    legacy: bool,
 ) -> None:
     print(f"\nExporting decoder to {output_path} …")
 
@@ -774,10 +878,14 @@ def export_decoder(
         test_out = wrapper(decoder_input_ids, encoder_hidden_states)
     print(f"  PyTorch decoder output shape: {tuple(test_out.shape)}")
 
-    torch.onnx.export(
+    batch = _make_dim(torch, "batch", min=1)
+    dec = _make_dim(torch, "dec_seq_len", min=1)
+    enc = _make_dim(torch, "enc_seq_len", min=1)
+    _run_torch_export(
+        torch,
         wrapper,
         (decoder_input_ids, encoder_hidden_states),
-        str(output_path),
+        output_path,
         input_names=["decoder_input_ids", "encoder_hidden_states"],
         output_names=["logits"],
         dynamic_axes={
@@ -785,9 +893,12 @@ def export_decoder(
             "encoder_hidden_states": {0: "batch", 1: "enc_seq_len"},
             "logits": {0: "batch", 1: "dec_seq_len"},
         },
-        opset_version=opset,
-        do_constant_folding=True,
-        dynamo=False,
+        dynamic_shapes=(
+            {0: batch, 1: dec},
+            {0: batch, 1: enc},
+        ),
+        opset=opset,
+        legacy=legacy,
     )
     _consolidate_external_data(output_path)
 
@@ -815,12 +926,16 @@ def export_kv_init(
     output_dir: Path,
     opset: int,
     device: str,
+    legacy: bool,
     enc_t: int = 80,
 ) -> None:
     out_path = output_dir / "decoder_init.onnx"
     print(f"\nExporting decoder_init to {out_path} …")
 
-    bos = torch.tensor([[13764]], dtype=torch.long, device=device)
+    # init_seq_len must be > 1 in the dummy because torch.export specialises any
+    # symbolic dim that is concretely 1 at trace time (broadcast guard).  The
+    # exported graph still accepts seq_len=1 at runtime once the dim is symbolic.
+    bos = torch.tensor([[13764, 13764]], dtype=torch.long, device=device)
     enc_h = torch.randn(1, enc_t, ENC_DIM, device=device, dtype=torch.float32)
 
     with torch.no_grad():
@@ -849,16 +964,25 @@ def export_kv_init(
     for name in _kv_names("cross_key") + _kv_names("cross_val"):
         dynamic_axes[name] = {0: "batch", 2: "enc_seq_len"}
 
-    torch.onnx.export(
+    batch = _make_dim(torch, "batch", min=1)
+    init_seq = _make_dim(torch, "init_seq_len", min=1)
+    enc = _make_dim(torch, "enc_seq_len", min=1)
+    dynamic_shapes = (
+        {0: batch, 1: init_seq},
+        {0: batch, 1: enc},
+    )
+
+    _run_torch_export(
+        torch,
         wrapper,
         (bos, enc_h),
-        str(out_path),
+        out_path,
         input_names=input_names,
         output_names=output_names,
         dynamic_axes=dynamic_axes,
-        opset_version=opset,
-        do_constant_folding=True,
-        dynamo=False,
+        dynamic_shapes=dynamic_shapes,
+        opset=opset,
+        legacy=legacy,
     )
     _consolidate_external_data(out_path)
 
@@ -869,12 +993,16 @@ def export_kv_step(
     output_dir: Path,
     opset: int,
     device: str,
-    past_len: int = 1,
+    legacy: bool,
+    past_len: int = 2,
     enc_t: int = 80,
 ) -> None:
     out_path = output_dir / "decoder_step.onnx"
     print(f"\nExporting decoder_step to {out_path} …")
 
+    # past_len defaults to 2 (not 1) so torch.export does not specialise the kv_seq
+    # dim to a static shape. The wrapper concatenates past||new along axis 2 and
+    # the +1 step still works at runtime once the dim is symbolic.
     kv_dtype = next(wrapper.parameters()).dtype
     tok = torch.tensor([[42]], dtype=torch.long, device=device)
     positions = torch.tensor([[past_len]], dtype=torch.long, device=device)
@@ -909,16 +1037,31 @@ def export_kv_step(
     for name in _kv_names("cross_key") + _kv_names("cross_val"):
         dynamic_axes[name] = {0: "batch", 2: "enc_seq_len"}
 
-    torch.onnx.export(
+    batch = _make_dim(torch, "batch", min=1)
+    kv_seq = _make_dim(torch, "kv_seq_len", min=2)
+    enc = _make_dim(torch, "enc_seq_len", min=1)
+    self_kv_shape = {0: batch, 2: kv_seq}
+    cross_kv_shape = {0: batch, 2: enc}
+    dynamic_shapes = (
+        {0: batch},  # decoder_input_ids — seq is fixed to 1 next-token
+        {0: batch},  # positions
+        *([self_kv_shape] * NUM_LAYERS),    # past self_key
+        *([self_kv_shape] * NUM_LAYERS),    # past self_val
+        *([cross_kv_shape] * NUM_LAYERS),   # cross_key
+        *([cross_kv_shape] * NUM_LAYERS),   # cross_val
+    )
+
+    _run_torch_export(
+        torch,
         wrapper,
         dummy_inputs,
-        str(out_path),
+        out_path,
         input_names=input_names,
         output_names=output_names,
         dynamic_axes=dynamic_axes,
-        opset_version=opset,
-        do_constant_folding=True,
-        dynamo=False,
+        dynamic_shapes=dynamic_shapes,
+        opset=opset,
+        legacy=legacy,
     )
     _consolidate_external_data(out_path)
 
@@ -1266,23 +1409,29 @@ def export_mel(
     output_path: Path,
     opset: int,
     dummy_seconds: float,
+    legacy: bool,
 ) -> tuple[Any, Any]:
     """Export mel.onnx and return (dummy_waveforms, dummy_lens) for parity check."""
     sample_rate = int(processor.feature_extractor._fb_config.get("sample_rate", 16000))
     num_samples = max(int(sample_rate * dummy_seconds), sample_rate)
 
-    dummy_wave = torch.zeros((1, num_samples), dtype=torch.float32)
-    dummy_lens = torch.tensor([num_samples], dtype=torch.int64)
+    # Use B=2 dummy with mixed lengths so torch.export traces a symbolic batch
+    # dim instead of specialising to B=1.
+    dummy_wave = torch.zeros((2, num_samples), dtype=torch.float32)
+    dummy_lens = torch.tensor([num_samples, num_samples // 2], dtype=torch.int64)
 
     print(f"\nExporting mel preprocessor to {output_path} …")
     with torch.no_grad():
         test_feat, test_lens = wrapper(dummy_wave, dummy_lens)
     print(f"  PyTorch mel output shape: {tuple(test_feat.shape)}, lens: {test_lens.tolist()}")
 
-    torch.onnx.export(
+    batch = _make_dim(torch, "batch", min=1)
+    samples = _make_dim(torch, "samples", min=1)
+    _run_torch_export(
+        torch,
         wrapper,
         (dummy_wave, dummy_lens),
-        str(output_path),
+        output_path,
         input_names=["waveforms", "waveforms_lens"],
         output_names=["features", "features_lens"],
         dynamic_axes={
@@ -1291,9 +1440,12 @@ def export_mel(
             "features":       {0: "batch", 2: "frames"},
             "features_lens":  {0: "batch"},
         },
-        opset_version=opset,
-        do_constant_folding=True,
-        dynamo=False,
+        dynamic_shapes=(
+            {0: batch, 1: samples},
+            {0: batch},
+        ),
+        opset=opset,
+        legacy=legacy,
     )
     print(f"  Saved {output_path.stat().st_size / 1024 / 1024:.1f} MB")
     return dummy_wave, dummy_lens
@@ -1691,10 +1843,14 @@ def main() -> None:
             torch, model, enc_hidden[:1], device
         )
 
+    legacy = args.legacy_exporter
+    exporter_label = "legacy TorchScript" if legacy else "torch.export (dynamo)"
+    print(f"ONNX exporter: {exporter_label}")
+
     # ---- Export encoder -----------------------------------------------------
     encoder_path = args.output_dir / "encoder.onnx"
     if not args.skip_encoder:
-        export_encoder(torch, encoder_wrapper, dummy_features, dummy_lengths, encoder_path, args.opset)
+        export_encoder(torch, encoder_wrapper, dummy_features, dummy_lengths, encoder_path, args.opset, legacy)
         validate_onnx(onnx, encoder_path, "encoder")
         parity_check_encoder(ort, torch, encoder_wrapper, dummy_features, dummy_lengths, encoder_path)
     else:
@@ -1706,7 +1862,7 @@ def main() -> None:
         mel_wrapper = make_mel_wrapper(torch, processor)
         mel_wrapper.eval()
         dummy_wave, dummy_wave_lens = export_mel(
-            torch, mel_wrapper, processor, mel_path, args.opset, args.dummy_seconds
+            torch, mel_wrapper, processor, mel_path, args.opset, args.dummy_seconds, legacy
         )
         validate_onnx(onnx, mel_path, "mel")
         parity_check_mel(ort, torch, mel_wrapper, processor, dummy_wave, dummy_wave_lens, mel_path)
@@ -1724,6 +1880,7 @@ def main() -> None:
                 enc_hidden_for_dec,
                 decoder_path,
                 args.opset,
+                legacy,
             )
             validate_onnx(onnx, decoder_path, "decoder")
             parity_check_decoder(
@@ -1738,8 +1895,8 @@ def main() -> None:
             kv_init_wrapper.eval()
             kv_step_wrapper.eval()
 
-            export_kv_init(torch, kv_init_wrapper, args.output_dir, args.opset, device)
-            export_kv_step(torch, kv_step_wrapper, args.output_dir, args.opset, device)
+            export_kv_init(torch, kv_init_wrapper, args.output_dir, args.opset, device, legacy)
+            export_kv_step(torch, kv_step_wrapper, args.output_dir, args.opset, device, legacy)
             validate_onnx(onnx, args.output_dir / "decoder_init.onnx", "decoder_init")
             validate_onnx(onnx, args.output_dir / "decoder_step.onnx", "decoder_step")
             parity_check_kv(torch, ort, model, args.output_dir, device)
