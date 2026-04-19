@@ -954,7 +954,7 @@ internal class TranscriptionService
                     Config.GetAsrFiles(ModelPrecision.Fp32);
 
                 using var parakeet = new ParakeetAsr(parakeetModelsDir, encoderFile, decoderJointFile);
-                foreach (var (segId, text, tokens, timestamps, logprobs) in
+                foreach (var (segId, text, tokens, timestamps, durations, logprobs) in
                     parakeet.Recognize(segsSubset, audio))
                 {
                     ct.ThrowIfCancellationRequested();
@@ -968,7 +968,8 @@ internal class TranscriptionService
                         content:    text,
                         tokens:     JsonSerializer.Serialize(tokens),
                         timestamps: JsonSerializer.Serialize(timestamps),
-                        logprobs:   JsonSerializer.Serialize(logprobs));
+                        logprobs:   JsonSerializer.Serialize(logprobs),
+                        durations:  durations.Count > 0 ? JsonSerializer.Serialize(durations) : null);
 
                     onSegmentText(absId, text);
 
