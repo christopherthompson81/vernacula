@@ -512,32 +512,67 @@
 
                         <StackPanel Margin="24,10,0,0"
                                     IsVisible="{Binding IsAsrParakeet}">
-                            <TextBlock Text="Language model (shallow fusion)"
+                            <TextBlock Text="Language model"
                                        Foreground="{DynamicResource TextBrush}"
                                        FontWeight="SemiBold"
                                        Margin="0,0,0,6" />
-                            <TextBlock Text="Optional. Biases decoding toward text that matches the supplied subword n-gram model. Fixes occasional multilingual drift (e.g. English &quot;uh uh&quot; transcribed as Spanish &quot;ajá&quot;). Auto-enables beam search. Point at an .arpa or .arpa.gz built with scripts/kenlm_build/."
+                            <TextBlock Text="Biases decoding toward text that matches the chosen language/domain, fixing occasional multilingual drift (e.g. English &quot;uh uh&quot; transcribed as Spanish &quot;ajá&quot;). Built-ins download on demand. Selecting anything other than None auto-enables beam search."
                                        Foreground="{DynamicResource SubtextBrush}"
                                        FontSize="11"
                                        TextWrapping="Wrap"
                                        Margin="0,0,0,8" />
-                            <Grid ColumnDefinitions="*,Auto,Auto" Margin="0,0,0,8">
-                                <TextBox Grid.Column="0"
-                                         Text="{Binding ParakeetLmPath}"
-                                         Watermark="(no LM — greedy/beam decoding only)"
-                                         Background="{DynamicResource OverlayBrush}"
-                                         Foreground="{DynamicResource TextBrush}"
-                                         BorderBrush="{DynamicResource OverlayBrush}"
-                                         IsReadOnly="True"
-                                         Margin="0,0,6,0" />
-                                <Button Grid.Column="1"
-                                        Content="Browse…"
-                                        Command="{Binding BrowseParakeetLmCommand}"
-                                        Margin="0,0,6,0" />
-                                <Button Grid.Column="2"
-                                        Content="Clear"
-                                        Command="{Binding ClearParakeetLmCommand}" />
-                            </Grid>
+
+                            <ComboBox ItemsSource="{Binding AvailableLmOptions}"
+                                      SelectedItem="{Binding SelectedLmOption}"
+                                      Background="{DynamicResource OverlayBrush}"
+                                      Foreground="{DynamicResource TextBrush}"
+                                      BorderBrush="{DynamicResource OverlayBrush}"
+                                      HorizontalAlignment="Stretch"
+                                      Margin="0,0,0,6">
+                                <ComboBox.ItemTemplate>
+                                    <DataTemplate>
+                                        <TextBlock Text="{Binding DisplayName}" />
+                                    </DataTemplate>
+                                </ComboBox.ItemTemplate>
+                            </ComboBox>
+
+                            <TextBlock Text="{Binding LmStatusText}"
+                                       Foreground="{DynamicResource SubtextBrush}"
+                                       FontSize="11"
+                                       TextWrapping="Wrap"
+                                       Margin="0,0,0,4" />
+
+                            <ProgressBar Value="{Binding LmDownloadPercent}"
+                                         Maximum="100"
+                                         Height="6"
+                                         IsVisible="{Binding IsLmDownloading}"
+                                         Margin="0,0,0,4" />
+                            <Button Content="Cancel download"
+                                    Command="{Binding CancelLmDownloadCommand}"
+                                    IsVisible="{Binding IsLmDownloading}"
+                                    HorizontalAlignment="Left"
+                                    Margin="0,0,0,8" />
+
+                            <!-- Custom-ARPA path picker, visible only when Custom is chosen. -->
+                            <StackPanel IsVisible="{Binding ShowCustomLmPath}" Margin="0,6,0,8">
+                                <Grid ColumnDefinitions="*,Auto,Auto">
+                                    <TextBox Grid.Column="0"
+                                             Text="{Binding ParakeetLmPath}"
+                                             Watermark="(pick a locally built ARPA file)"
+                                             Background="{DynamicResource OverlayBrush}"
+                                             Foreground="{DynamicResource TextBrush}"
+                                             BorderBrush="{DynamicResource OverlayBrush}"
+                                             IsReadOnly="True"
+                                             Margin="0,0,6,0" />
+                                    <Button Grid.Column="1"
+                                            Content="Browse…"
+                                            Command="{Binding BrowseParakeetLmCommand}"
+                                            Margin="0,0,6,0" />
+                                    <Button Grid.Column="2"
+                                            Content="Clear"
+                                            Command="{Binding ClearParakeetLmCommand}" />
+                                </Grid>
+                            </StackPanel>
 
                             <TextBlock Text="Fusion weight (typical 0.1–0.5)"
                                        Foreground="{DynamicResource SubtextBrush}"

@@ -502,6 +502,50 @@ internal class ModelManagerService
         await DownloadMissingAssetsAsync(dir, missing, progress, ct);
     }
 
+    // ── KenLM for Parakeet (per-language/domain files under a single repo) ──
+
+    /// <summary>
+    /// Full local path the given built-in LM option would live at. Returns
+    /// <c>null</c> for the <c>none</c> and <c>custom</c> slots, which have
+    /// no remote file.
+    /// </summary>
+    public string? GetKenLmLocalPath(KenLmOption option)
+    {
+        if (option.RemoteFileName is null) return null;
+        return Path.Combine(_settings.GetKenLmParakeetDir(), option.RemoteFileName);
+    }
+
+    /// <summary>True when the option's file is already on disk.</summary>
+    public bool IsKenLmReady(KenLmOption option)
+    {
+        string? path = GetKenLmLocalPath(option);
+        return path is not null && File.Exists(path);
+    }
+
+    /// <summary>
+    /// Downloads a single KenLM file if missing. Reports byte-precise
+    /// progress through the shared pipeline. No-op if the file already
+    /// exists, or the option has no remote file (none/custom).
+    /// </summary>
+    public async Task DownloadKenLmAsync(
+        KenLmOption option,
+        IProgress<DownloadProgress> progress,
+        CancellationToken ct = default)
+    {
+        if (option.RemoteFileName is null) return;
+        string dir = _settings.GetKenLmParakeetDir();
+        Directory.CreateDirectory(dir);
+
+        string localPath = Path.Combine(dir, option.RemoteFileName);
+        if (File.Exists(localPath)) return;
+
+        var asset = new RepoAsset(
+            Config.KenLmParakeetRepoBase,
+            option.RemoteFileName,
+            option.RemoteFileName);
+        await DownloadMissingAssetsAsync(dir, [asset], progress, ct);
+    }
+
     public async Task DownloadMissingVoxLinguaModelsAsync(
         IProgress<DownloadProgress> progress,
         string? voxLinguaDir = null,

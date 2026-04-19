@@ -16,10 +16,13 @@ public class AppSettings
     // or ambiguous audio and is a prerequisite for shallow LM fusion.
     public int                ParakeetBeamWidth   { get; set; } = 1;
 
-    // Optional ARPA (.arpa or .arpa.gz) subword language model used for
-    // shallow fusion during Parakeet beam search. Empty string = fusion off.
-    // When set, auto-bumps beam width to at least 4 since greedy can't
-    // benefit from fusion.
+    // Which KenLM the Parakeet decoder should shallow-fuse.
+    // Stable key from KenLmCatalog — "none" (default), a built-in key like
+    // "en-general", or "custom" (paired with ParakeetLmPath below).
+    public string             ParakeetLmSelection     { get; set; } = "none";
+    // Free-form path used only when ParakeetLmSelection == "custom".
+    // When a built-in option is selected, the app resolves the path via
+    // ModelManagerService (downloading on demand) instead.
     public string             ParakeetLmPath          { get; set; } = "";
     // Shallow-fusion weight. Typical 0.1–0.5.
     public float              ParakeetLmWeight        { get; set; } = 0.3f;

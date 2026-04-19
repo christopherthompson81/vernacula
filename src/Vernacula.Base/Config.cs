@@ -188,6 +188,20 @@ public static class Config
 
     // ── Language identification (VoxLingua107 ECAPA-TDNN) ────────────────────
     /// <summary>
+    /// Directory (relative to models dir) for the Parakeet shallow-fusion
+    /// KenLM n-gram models. Files are named per language/domain, e.g.
+    /// <c>en-general.arpa.gz</c>, <c>en-medical.arpa.gz</c>.
+    /// </summary>
+    public const string KenLmParakeetSubDir = "kenlm_parakeet";
+
+    /// <summary>
+    /// HF repo hosting the per-language/domain KenLM files. Each asset
+    /// lives at <c>{KenLmParakeetRepoBase}/{file-name}</c>.
+    /// </summary>
+    public const string KenLmParakeetRepoBase =
+        "https://huggingface.co/christopherthompson81/kenlm-parakeet/resolve/main";
+
+    /// <summary>
     /// Directory (relative to models dir) for the language-ID model.
     /// </summary>
     public const string VoxLinguaSubDir   = "voxlingua107";

@@ -37,6 +37,13 @@ internal partial class SettingsViewModel : ObservableObject
     [ObservableProperty]
     private int _parakeetBeamWidth;
 
+    // Selected KenLM option (from KenLmCatalog.All). Changing this triggers
+    // a lazy download when a built-in option isn't yet on disk.
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(ShowCustomLmPath), nameof(IsLmDownloading), nameof(LmStatusText))]
+    private KenLmOption? _selectedLmOption;
+
+    // Free-form path used only when SelectedLmOption is the "custom" entry.
     [ObservableProperty]
     private string _parakeetLmPath = "";
 
@@ -45,6 +52,45 @@ internal partial class SettingsViewModel : ObservableObject
 
     [ObservableProperty]
     private float _parakeetLmLengthPenalty;
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(IsLmDownloading), nameof(LmStatusText))]
+    private bool _isLmDownloadingInternal;
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(LmStatusText))]
+    private double _lmDownloadPercent;
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(LmStatusText))]
+    private string _lmDownloadStatusText = "";
+
+    private CancellationTokenSource? _lmDownloadCts;
+
+    public IReadOnlyList<KenLmOption> AvailableLmOptions => KenLmCatalog.All;
+
+    public bool ShowCustomLmPath  => SelectedLmOption?.Key == KenLmCatalog.KeyCustom;
+    public bool IsLmDownloading   => IsLmDownloadingInternal;
+
+    public string LmStatusText
+    {
+        get
+        {
+            if (IsLmDownloading) return LmDownloadStatusText;
+            var opt = SelectedLmOption;
+            if (opt is null) return "";
+            if (opt.Key == KenLmCatalog.KeyNone) return "Fusion disabled — decoder uses greedy or beam only.";
+            if (opt.Key == KenLmCatalog.KeyCustom)
+                return string.IsNullOrWhiteSpace(ParakeetLmPath)
+                    ? "Custom — pick an ARPA file to enable fusion."
+                    : File.Exists(ParakeetLmPath)
+                        ? "Custom ARPA ready."
+                        : "Custom ARPA path doesn't exist.";
+            return _modelMgr.IsKenLmReady(opt)
+                ? "Downloaded and ready."
+                : $"Not yet downloaded (~{(opt.ExpectedSizeBytes ?? 0) / 1_000_000} MB). Will fetch on save.";
+        }
+    }
 
     [ObservableProperty]
     private AsrLanguageOption? _selectedCohereLanguage;
@@ -231,6 +277,7 @@ internal partial class SettingsViewModel : ObservableObject
         _selectedQwen3AsrLanguage     = Qwen3AsrLanguages.FirstOrDefault(l => l.Code == svc.Current.Qwen3AsrLanguage)
                                         ?? Qwen3AsrLanguages[0];
         _parakeetBeamWidth            = Math.Max(1, svc.Current.ParakeetBeamWidth);
+        _selectedLmOption             = KenLmCatalog.Find(svc.Current.ParakeetLmSelection) ?? KenLmCatalog.All[0];
         _parakeetLmPath               = svc.Current.ParakeetLmPath ?? "";
         _parakeetLmWeight             = svc.Current.ParakeetLmWeight;
         _parakeetLmLengthPenalty      = svc.Current.ParakeetLmLengthPenalty;
@@ -356,7 +403,66 @@ internal partial class SettingsViewModel : ObservableObject
     {
         _svc.Current.ParakeetLmPath = value ?? "";
         _svc.Save();
+        OnPropertyChanged(nameof(LmStatusText));
     }
+
+    partial void OnSelectedLmOptionChanged(KenLmOption? value)
+    {
+        if (value is null) return;
+        _svc.Current.ParakeetLmSelection = value.Key;
+        _svc.Save();
+        OnPropertyChanged(nameof(LmStatusText));
+
+        // Auto-download built-in options on selection, unless already present.
+        if (value.RemoteFileName is not null && !_modelMgr.IsKenLmReady(value))
+            _ = DownloadSelectedLmAsync();
+    }
+
+    [RelayCommand]
+    private async Task DownloadSelectedLmAsync()
+    {
+        var opt = SelectedLmOption;
+        if (opt is null || opt.RemoteFileName is null) return;
+        if (_modelMgr.IsKenLmReady(opt))
+        {
+            LmDownloadStatusText = "Already downloaded.";
+            return;
+        }
+
+        IsLmDownloadingInternal = true;
+        LmDownloadPercent       = 0;
+        LmDownloadStatusText    = $"Downloading {opt.DisplayName}…";
+        _lmDownloadCts          = new CancellationTokenSource();
+
+        var progress = new Progress<DownloadProgress>(p =>
+        {
+            LmDownloadPercent    = p.OverallPercent;
+            LmDownloadStatusText =
+                $"{opt.DisplayName} — {p.SizeText} ({p.OverallPercent:F1}%)";
+        });
+
+        try
+        {
+            await _modelMgr.DownloadKenLmAsync(opt, progress, _lmDownloadCts.Token);
+            LmDownloadStatusText = $"{opt.DisplayName} ready.";
+        }
+        catch (OperationCanceledException)
+        {
+            LmDownloadStatusText = $"{opt.DisplayName} download cancelled.";
+        }
+        catch (Exception ex)
+        {
+            LmDownloadStatusText = $"{opt.DisplayName} download failed: {ex.Message}";
+        }
+        finally
+        {
+            IsLmDownloadingInternal = false;
+            OnPropertyChanged(nameof(LmStatusText));
+        }
+    }
+
+    [RelayCommand]
+    private void CancelLmDownload() => _lmDownloadCts?.Cancel();
 
     partial void OnParakeetLmWeightChanged(float value)
     {
