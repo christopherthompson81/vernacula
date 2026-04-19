@@ -659,15 +659,17 @@ def make_decoder_dummy_inputs(
 
 def _consolidate_external_data(onnx_path: Path) -> None:
     """
-    Normalise external-data layout so every export ends up as a single pair:
-        <name>.onnx           — graph
-        <name>.onnx.data      — consolidated weights
+    Normalise external-data layout so every export ends up as either
+        <name>.onnx                      — single-file (weights in-graph), or
+        <name>.onnx + <name>.onnx.data   — graph + consolidated sidecar.
 
     The legacy TorchScript exporter scatters weights into many individual files
     alongside the .onnx, so a load+resave round-trip is required.  The modern
-    dynamo exporter already writes a single consolidated <name>.onnx.data file,
-    so we detect that case and only do stale-file cleanup — re-saving would
-    require pointlessly loading 8GB of weights into memory.
+    dynamo exporter already writes either a single in-graph file (when called
+    with external_data=False) or a single consolidated <name>.onnx.data file
+    (when called with external_data=True), so we only do stale-file cleanup in
+    those cases — re-saving would require pointlessly loading >>1 GB of weights
+    into memory.
     """
     import onnx
 
@@ -676,15 +678,23 @@ def _consolidate_external_data(onnx_path: Path) -> None:
 
     proto = onnx.load(str(onnx_path), load_external_data=False)
     scattered: set[Path] = set()
+    has_external = False
     needs_consolidation = False
     for init in proto.graph.initializer:
         if init.data_location == onnx.TensorProto.EXTERNAL:
+            has_external = True
             for entry in init.external_data:
                 if entry.key == "location":
                     candidate = (onnx_path.parent / entry.value).resolve()
                     if candidate != data_path.resolve():
                         scattered.add(candidate)
                         needs_consolidation = True
+
+    # In-graph case: there should be no sidecar.  Delete a stale one if a
+    # previous run left it behind (e.g. switching above/below the threshold).
+    if not has_external and data_path.exists():
+        print(f"  Removing stale {data_file} (weights are now embedded in-graph).")
+        data_path.unlink()
 
     if needs_consolidation:
         # Legacy path — weights are in many files; load and re-save consolidated.
@@ -704,7 +714,7 @@ def _consolidate_external_data(onnx_path: Path) -> None:
             location=data_file,
             size_threshold=1024,
         )
-    else:
+    elif has_external:
         print(f"  External data already consolidated in {data_file}; skipping resave.")
 
     # --- Sweep stale Constant_* files left by previous partial/failed exports.
@@ -724,15 +734,36 @@ def _consolidate_external_data(onnx_path: Path) -> None:
     if deleted:
         print(f"  Removed {deleted} scattered weight file(s).")
 
-    total_mb = (onnx_path.stat().st_size + (data_path.stat().st_size if data_path.exists() else 0)) / 1024 / 1024
-    print(f"  Saved {onnx_path.name} ({onnx_path.stat().st_size / 1024:.0f} KB graph) + "
-          f"{data_file} ({data_path.stat().st_size / 1024 / 1024:.1f} MB weights)  "
-          f"[total {total_mb:.1f} MB]")
+    if data_path.exists():
+        total_mb = (onnx_path.stat().st_size + data_path.stat().st_size) / 1024 / 1024
+        print(f"  Saved {onnx_path.name} ({onnx_path.stat().st_size / 1024:.0f} KB graph) + "
+              f"{data_file} ({data_path.stat().st_size / 1024 / 1024:.1f} MB weights)  "
+              f"[total {total_mb:.1f} MB]")
+    else:
+        print(f"  Saved {onnx_path.name} ({onnx_path.stat().st_size / 1024 / 1024:.1f} MB, weights in-graph)")
 
 
 # ---------------------------------------------------------------------------
 # ONNX export helpers
 # ---------------------------------------------------------------------------
+
+# Maximum total weight bytes for embedding initialisers in-graph.  The ONNX
+# protobuf wire format uses signed 32-bit byte offsets, so a single-file model
+# is hard-capped at 2 GiB.  Stay 100 MiB below that to leave headroom for graph
+# overhead.  Anything above this threshold spills to a sidecar `.onnx.data`.
+_INGRAPH_MAX_BYTES = (2 << 30) - (100 << 20)
+
+
+def _wrapper_weight_bytes(wrapper: Any) -> int:
+    """Total bytes of parameters + buffers in a wrapper (used to decide
+    whether to embed weights in-graph or spill to a sidecar)."""
+    total = 0
+    for p in wrapper.parameters():
+        total += p.numel() * p.element_size()
+    for b in wrapper.buffers():
+        total += b.numel() * b.element_size()
+    return total
+
 
 def _run_torch_export(
     torch: Any,
@@ -754,8 +785,10 @@ def _run_torch_export(
     legacy=True  → TorchScript-based exporter (dynamo=False, dynamic_axes).
                    Emits a deprecation warning under torch >= 2.9.
     legacy=False → torch.export-based exporter (dynamo=True, dynamic_shapes).
-                   Default for new exports; also writes external data side-by-side
-                   so _consolidate_external_data still applies as a cleanup pass.
+                   Default for new exports.  Weights are embedded in-graph when
+                   the wrapper's parameter+buffer footprint fits comfortably
+                   below the protobuf 2 GiB single-file limit; otherwise they
+                   spill to a `<name>.onnx.data` sidecar.
 
     constant_folding only takes effect on the legacy path.  The modern path uses
     its own optimisation passes (controlled by the `optimize` kwarg, default on)
@@ -777,9 +810,7 @@ def _run_torch_export(
         )
         return
 
-    # Modern (torch.export) path.  external_data=True is the default in torch>=2.10
-    # and writes <name>.onnx + <name>.onnx.data automatically; pass explicitly so
-    # behavior is stable across versions.
+    # Modern (torch.export) path.
     #
     # opset_version is clamped to >= 18 because the dynamo exporter only ships
     # implementations for opset 18+; requesting 17 triggers an automatic downgrade
@@ -788,6 +819,14 @@ def _run_torch_export(
     modern_opset = max(opset, 18)
     if modern_opset != opset:
         print(f"  Bumping opset {opset} → {modern_opset} for the dynamo exporter (no v17 adapter for some ops).")
+
+    weight_bytes = _wrapper_weight_bytes(wrapper)
+    use_external = weight_bytes > _INGRAPH_MAX_BYTES
+    print(
+        f"  Weights ≈ {weight_bytes / 1024 / 1024:.1f} MB → "
+        f"{'external sidecar' if use_external else 'in-graph (no .data file)'}"
+    )
+
     torch.onnx.export(
         wrapper,
         args_tuple,
@@ -797,7 +836,7 @@ def _run_torch_export(
         dynamic_shapes=dynamic_shapes,
         opset_version=modern_opset,
         dynamo=True,
-        external_data=True,
+        external_data=use_external,
         optimize=True,
     )
 
@@ -1469,7 +1508,7 @@ def export_mel(
         opset=opset,
         legacy=legacy,
     )
-    print(f"  Saved {output_path.stat().st_size / 1024 / 1024:.1f} MB")
+    _consolidate_external_data(output_path)
     return dummy_wave, dummy_lens
 
 
