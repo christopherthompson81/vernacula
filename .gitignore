@@ -6,3 +6,4 @@ obj/
 .venv*/
 **/__pycache__/
 tmp/
+.claude/
