@@ -30,6 +30,27 @@ public sealed class Parakeet : IDisposable
     /// </summary>
     public int BeamWidth { get; set; } = 1;
 
+    /// <summary>
+    /// Optional subword-level language model used for shallow fusion during
+    /// beam search. Ignored when <see cref="BeamWidth"/> is 1.
+    /// </summary>
+    public KenLmScorer? LmScorer { get; set; }
+
+    /// <summary>
+    /// Shallow-fusion weight applied to the LM log-prob. Typical values are
+    /// 0.1–0.5. Ignored when <see cref="LmScorer"/> is null.
+    /// </summary>
+    public float LmWeight { get; set; } = 0.3f;
+
+    /// <summary>
+    /// Per-emitted-token reward added to each beam's cumulative score. Offsets
+    /// the shortening bias that shallow LM fusion otherwise introduces
+    /// (every emission pays an LM cost, so beams that emit fewer tokens
+    /// would win without this). Typical range 0.0–1.0; 0.6 is a reasonable
+    /// default when <see cref="LmWeight"/> is around 0.3.
+    /// </summary>
+    public float LmLengthPenalty { get; set; } = 0.6f;
+
     // ── Construction ─────────────────────────────────────────────────────────
 
     public Parakeet(string modelPath)
@@ -435,6 +456,15 @@ public sealed class Parakeet : IDisposable
 
                             if (!isBlank)
                             {
+                                // Shallow LM fusion: only score non-blank tokens so the
+                                // blank head's probability mass isn't double-weighted.
+                                // Length penalty counteracts the shortening bias LM
+                                // fusion introduces (beams that emit fewer tokens would
+                                // otherwise accumulate lower LM cost regardless of fit).
+                                if (LmScorer != null)
+                                    nh.Score += LmWeight * LmScorer.LogProb(h.Tokens, token)
+                                              + LmLengthPenalty;
+
                                 nh.Tokens.Add(token);
                                 nh.Timestamps.Add(h.T);
                                 nh.Durations.Add(dIdx);

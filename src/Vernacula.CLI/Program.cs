@@ -35,6 +35,9 @@ bool    downloadVoxLingua = false;      // --download-voxlingua: fetch the LID m
 bool    runLid             = false;      // --lid: run LID on --audio and print result, then exit
 ModelPrecision precision = ModelPrecision.Fp32;
 int     parakeetBeam      = 1;          // --parakeet-beam N: 1 = greedy (default), >1 = TDT beam search
+string? parakeetLmPath    = null;       // --lm <path> to ARPA(.gz) subword n-gram model; implies beam ≥ 4
+float   parakeetLmWeight  = 0.3f;       // --lm-weight <w> shallow fusion scalar
+float   parakeetLmLen     = 0.6f;       // --lm-length-penalty <p> per-emitted-token reward to offset LM shortening bias
 
 for (int i = 0; i < args.Length; i++)
 {
@@ -111,6 +114,25 @@ for (int i = 0; i < args.Length; i++)
             if (!int.TryParse(args[++i], out parakeetBeam) || parakeetBeam < 1)
             {
                 Console.Error.WriteLine("--parakeet-beam expects a positive integer (1 = greedy).");
+                return 1;
+            }
+            break;
+        case "--lm":
+            parakeetLmPath = args[++i];
+            break;
+        case "--lm-weight":
+            if (!float.TryParse(args[++i], System.Globalization.NumberStyles.Float,
+                                System.Globalization.CultureInfo.InvariantCulture, out parakeetLmWeight))
+            {
+                Console.Error.WriteLine("--lm-weight expects a float (typical range 0.1–0.5).");
+                return 1;
+            }
+            break;
+        case "--lm-length-penalty":
+            if (!float.TryParse(args[++i], System.Globalization.NumberStyles.Float,
+                                System.Globalization.CultureInfo.InvariantCulture, out parakeetLmLen))
+            {
+                Console.Error.WriteLine("--lm-length-penalty expects a float (typical 0.0–1.0).");
                 return 1;
             }
             break;
@@ -662,8 +684,24 @@ try
     else
     {
         var (encoderFile, decoderJointFile) = Config.GetAsrFiles(precision);
+
+        // LM fusion only takes effect during beam search. Auto-bump to a
+        // minimal beam when --lm is passed without an explicit --parakeet-beam
+        // so `--lm foo.arpa` Just Works.
+        int effectiveBeam = parakeetLmPath != null && parakeetBeam < 2 ? 4 : parakeetBeam;
+
         using var parakeet = new ParakeetAsr(modelDir, encoderFile, decoderJointFile,
-            beamWidth: parakeetBeam);
+            beamWidth: effectiveBeam);
+
+        if (parakeetLmPath != null)
+        {
+            Console.Write($"Loading language model {Path.GetFileName(parakeetLmPath)}... ");
+            var lmSw = Stopwatch.StartNew();
+            parakeet.LmScorer       = KenLmScorer.LoadArpa(parakeetLmPath);
+            parakeet.LmWeight       = parakeetLmWeight;
+            parakeet.LmLengthPenalty = parakeetLmLen;
+            Console.WriteLine($"order={parakeet.LmScorer.Order} weight={parakeetLmWeight:F2} length-penalty={parakeetLmLen:F2} ({lmSw.ElapsedMilliseconds}ms)");
+        }
 
         int totalSegs = segs.Count;
         int completed = 0;
@@ -1022,6 +1060,9 @@ static void PrintUsage()
     Console.WriteLine("  --denoiser-models <dir>            Path to denoiser ONNX models (default: <model>/deepfilternet3)");
     Console.WriteLine("  --precision <fp32|int8>            Model precision (default: fp32, parakeet only)");
     Console.WriteLine("  --parakeet-beam <N>                Parakeet TDT beam width (default: 1 = greedy; 4–8 = beam search, 3–5x slower)");
+    Console.WriteLine("  --lm <path>                        Parakeet shallow LM fusion — ARPA(.gz) subword n-gram. Auto-bumps beam to 4.");
+    Console.WriteLine("  --lm-weight <w>                    Shallow-fusion weight (default: 0.3; typical 0.1–0.5)");
+    Console.WriteLine("  --lm-length-penalty <p>            Per-token reward offsetting LM shortening bias (default: 0.6; typical 0.0–1.0)");
     Console.WriteLine("  --skip-asr                         Export diarization/VAD segments without transcription");
     Console.WriteLine("  --benchmark                        Print timing / RTF after transcription");
     Console.WriteLine("  --profile-sortformer               Print fine-grained timing breakdown for Sortformer");
