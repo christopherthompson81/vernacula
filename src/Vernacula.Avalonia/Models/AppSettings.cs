@@ -22,8 +22,8 @@ public class AppSettings
     // Language identification (VoxLingua107)
     public bool               LidEnabled          { get; set; } = false;
     // Per-segment LID: when both this and LidEnabled are on, classify
-    // every segment ≥ 1 s and persist the result alongside ASR output.
-    // Short segments inherit the file-level language detected in Phase 3b.
+    // every segment ≥ 2 s and persist the result alongside ASR output.
+    // Shorter segments inherit the file-level language detected in Phase 3b.
     public bool               LidPerSegment       { get; set; } = false;
     public string             VoxLinguaModelsDir  { get; set; } = "";
 

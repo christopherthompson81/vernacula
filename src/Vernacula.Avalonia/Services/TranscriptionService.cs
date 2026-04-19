@@ -681,9 +681,10 @@ internal class TranscriptionService
         // ── Phase 3c: Per-segment LID (optional) ─────────────────────────────
         // Independent of the file-level LID step above. Writes lid_language
         // per row so the editor can surface code-switched / mixed-language
-        // segments. Short segments (< 1 s) inherit the file-level language
-        // when one was detected. Skipped entirely when the user hasn't opted
-        // in or no segments exist yet.
+        // segments. Short segments (< 2 s) inherit the file-level language
+        // when one was detected — VoxLingua needs a few seconds of audio to
+        // reliably distinguish close cousins (ru/uk/be, mk/bg/sr). Skipped
+        // entirely when the user hasn't opted in or no segments exist yet.
         if (_settings.Current.LidPerSegment && _langId.IsAvailable && segs.Count > 0
             && db.GetMetadata("lid_per_segment_complete") is null)
         {
@@ -695,7 +696,7 @@ internal class TranscriptionService
             var perSegLid = await Task.Run(
                 () => _langId.ClassifyEachSegment(
                     audio, segPairs,
-                    minSegmentSeconds: 1.0,
+                    minSegmentSeconds: 2.0,
                     onProgress: (done, total) =>
                         progress.Report(new TranscriptionProgress(
                             TranscriptionPhase.Diarizing, done, total,

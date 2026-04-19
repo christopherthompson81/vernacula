@@ -84,7 +84,7 @@ internal sealed class LangIdService(SettingsService settings)
     public IReadOnlyList<LidResult?> ClassifyEachSegment(
         float[] audioMono16k,
         IReadOnlyList<(double startSec, double endSec)> segs,
-        double minSegmentSeconds = 1.0,
+        double minSegmentSeconds = 2.0,
         Action<int, int>? onProgress = null,
         CancellationToken ct = default)
     {
