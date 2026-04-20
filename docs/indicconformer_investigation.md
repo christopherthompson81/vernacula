@@ -405,6 +405,104 @@ mitigable with a CPU re-run on ambiguous frames if we ever see it).
 
 ---
 
+## Run 12 — 2026-04-20 13:50 (Phase 2: DFT preprocessor, attempt 1)
+
+Ported the Parakeet `DFTConvPreprocessorWrapper` from
+`scripts/nemo_export/export_parakeet_nemo_to_onnx.py`, added an
+`export_preprocessor` function emitting `nemo128.onnx`, and wired a real-audio
+parity path that chains nemo128 → encoder → ctc_decoder in both PyTorch and
+ORT for an actual wav file.
+
+**Result — Attempt 1:** Crash at wrapper init.
+```
+AttributeError: 'FilterbankFeatures' object has no attribute 'exact_pad'
+```
+
+**Diagnosis:** `exact_pad` and `stft_pad_amount` are NeMo 2.x additions; the
+AI4Bharat fork runs NeMo 1.23.0rc0 where they don't exist. NeMo 1.x always
+uses center + reflect padding — equivalent to 2.x `exact_pad=False,
+stft_pad_amount=None`. Fixed by defaulting both to the 1.x behavior via
+`getattr(..., default)`.
+
+---
+
+## Run 13 — 2026-04-20 13:58 (Phase 2, attempt 2 — big feature delta)
+
+**Result:** All exports succeed. Synthetic parity still passes (6.87e-05).
+But real-audio parity **fails hard**:
+
+```
+[parity-audio] features max-abs delta: 1.467379e+00
+[parity-audio] logits   max-abs delta: 2.092063e+01
+[parity-audio] FAIL
+```
+
+e-0 delta on features is not numerical noise — something structural is wrong.
+
+**Diagnostic (preproc_parity_debug2.py):** compare live NeMo preprocessor
+vs DFT wrapper, both in PyTorch (cut the ONNX export out of the loop).
+
+Output:
+
+```
+live shape torch.Size([1, 80, 937]), live_lens [937]
+wrap shape torch.Size([1, 80, 937]), wrap_lens [936]
+cells with delta > 0.5: 41
+first 10: [[0, 0, 936], [0, 1, 936], ...]  # all at frame 936
+at (0, 0, 936): live=-0.6387542486190796, wrap=0.0
+max-per-frame last 10: [..., 0.0026, 1.4673793]
+```
+
+**Root cause:** off-by-one on `seq_len`. Live NeMo emits 937 valid frames;
+wrapper emits 936, so frame 936 gets masked to pad_value while live NeMo
+fills it with real content. All 0..935 frames match within ~4e-3; the
+single frame 936 carries the entire 1.47 delta.
+
+Grep on NeMo fork's `FilterbankFeatures.get_seq_len` at
+`features.py:390`:
+
+```
+seq_len = torch.floor_divide((seq_len + pad_amount - self.n_fft), self.hop_length) + 1
+```
+
+There's a trailing **+1** that the wrapper I copied over was missing.
+`scripts/nemo_export/`'s own README calls this out for the `custom` mode
+fallback, but the DFT wrapper there — our source — dropped it anyway.
+Added to the IndicConformer wrapper.
+
+---
+
+## Run 14 — 2026-04-20 14:05 (Phase 2, attempt 3 — end-to-end parity)
+
+**Result: PASS on both parity paths.**
+
+- Synthetic (encoder + ctc_decoder only): logits delta 6.87e-05
+- Real audio (hi-IN Fleurs clip, full nemo128 + encoder + ctc_decoder):
+  - features delta: **7.87e-06**
+  - logits delta:   **8.96e-05**
+  - Tolerance:      1e-02 (loose) and 1e-03 (strict) both pass.
+
+**Final export package** at `~/models/indicconformer_onnx/`:
+
+```
+encoder-model.onnx        459 MB
+ctc_decoder-model.onnx     11 MB
+nemo128.onnx              1.1 MB   <-- new in Phase 2
+vocab.txt                  40 KB
+language_spans.json       1.4 KB
+config.json                444 B
+export-report.json         (both parity numbers + PASS flags)
+```
+
+## Phase 2 gate: **CLOSED**
+
+Full pipeline is numerically faithful on real audio for Hindi. By the
+language-agnostic ONNX design (no language_id input on any graph), this
+same package covers all 22 languages — Phase 6's smoke test just needs to
+exercise the C# masking path per language, not re-export anything.
+
+---
+
 ## Phase 1 gate: **CLOSED**
 
 All four Phase 1 subgoals satisfied:
