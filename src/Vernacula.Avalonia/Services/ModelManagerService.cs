@@ -38,6 +38,11 @@ internal class ModelManagerService
     private const string VoxLinguaManifestUrl =
         "https://huggingface.co/christopherthompson81/voxlingua107-lid-onnx/resolve/main/manifest.json";
 
+    private const string IndicConformerRepoBase =
+        "https://huggingface.co/christopherthompson81/indicconformer-600m-onnx/resolve/main";
+    private const string IndicConformerManifestUrl =
+        "https://huggingface.co/christopherthompson81/indicconformer-600m-onnx/resolve/main/manifest.json";
+
     private static readonly ModelAsset[] CoreDiarizationFiles =
         [
             new(Path.Combine(Config.SortformerSubDir, Config.SortformerFile), Config.SortformerFile),
@@ -101,6 +106,17 @@ internal class ModelManagerService
             new(Path.Combine(Config.VoxLinguaSubDir, Config.VoxLinguaLangMapFile), Config.VoxLinguaLangMapFile),
         ];
 
+    private static readonly ModelAsset[] IndicConformerFiles =
+        [
+            new(Path.Combine(Config.IndicConformerSubDir, Config.PreprocessorFile),        Config.PreprocessorFile),
+            new(Path.Combine(Config.IndicConformerSubDir, Config.EncoderFile),             Config.EncoderFile),
+            new(Path.Combine(Config.IndicConformerSubDir, $"{Config.EncoderFile}.data"),   $"{Config.EncoderFile}.data"),
+            new(Path.Combine(Config.IndicConformerSubDir, Config.CtcDecoderFile),          Config.CtcDecoderFile),
+            new(Path.Combine(Config.IndicConformerSubDir, Config.VocabFile),               Config.VocabFile),
+            new(Path.Combine(Config.IndicConformerSubDir, Config.IndicConformerLanguageSpansFile), Config.IndicConformerLanguageSpansFile),
+            new(Path.Combine(Config.IndicConformerSubDir, Config.AsrConfigFile),           Config.AsrConfigFile),
+        ];
+
     private static readonly ModelAsset[] VibeVoiceFiles =
         [
             new(Path.Combine(Config.VibeVoiceSubDir, VibeVoiceAsr.AudioEncoderFile),                       VibeVoiceAsr.AudioEncoderFile),
@@ -139,6 +155,11 @@ internal class ModelManagerService
             [
                 new AssetRepo(CoreRepoBase, CoreManifestUrl, CoreDiarizationFiles),
                 new AssetRepo("", "", Qwen3AsrFiles),
+            ],
+            AsrBackend.IndicConformer =>
+            [
+                new AssetRepo(CoreRepoBase, CoreManifestUrl, CoreDiarizationFiles),
+                new AssetRepo(IndicConformerRepoBase, IndicConformerManifestUrl, IndicConformerFiles),
             ],
             _ =>
             [
