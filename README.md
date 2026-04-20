@@ -243,7 +243,7 @@ dotnet run --project src/Vernacula.CLI -- \
 | **Parakeet TDT v3 (default)** | Fast | 25 European | Streaming-friendly TDT. Supports beam search + KenLM fusion. |
 | **Cohere Transcribe (03-2026)** | Medium | 14 + auto-detect | Transformer encoder-decoder. |
 | **Qwen3-ASR 1.7B** | Medium | 29 | Multilingual. Can force language via prompt. |
-| **VibeVoice-ASR** | Slow (CUDA only) | English | All-in-one transcription with built-in diarization. |
+| **VibeVoice-ASR** | Slow (CUDA only) | ~51, long-tail | All-in-one transcription with built-in diarization. English dominates training (~67%); the remaining ~50 languages have sparse coverage (most ≤ 1% of training data) so practical accuracy scales with representation. |
 
 ### Language support matrix
 
@@ -255,50 +255,66 @@ Legend: ● = supported · ○ = not supported · 🅛 = KenLM available
 
 | Code | Language | Parakeet v3 | Cohere | Qwen3-ASR | VibeVoice | Parakeet KenLM |
 |------|----------|:--:|:--:|:--:|:--:|:--:|
-| ar | Arabic | ○ | ● | ● | ○ | ○ |
-| bg | Bulgarian | ● | ○ | ○ | ○ | ○ |
-| cs | Czech | ● | ○ | ● | ○ | ○ |
-| da | Danish | ● | ○ | ● | ○ | ○ |
-| de | German | ● | ● | ● | ○ | ○ |
-| el | Greek | ● | ● | ● | ○ | ○ |
+| aa | Afar | ○ | ○ | ○ | ● | ○ |
+| af | Afrikaans | ○ | ○ | ○ | ● | ○ |
+| ar | Arabic | ○ | ● | ● | ● | ○ |
+| bg | Bulgarian | ● | ○ | ○ | ● | ○ |
+| ca | Catalan | ○ | ○ | ○ | ● | ○ |
+| cs | Czech | ● | ○ | ● | ● | ○ |
+| da | Danish | ● | ○ | ● | ● | ○ |
+| de | German | ● | ● | ● | ● | ○ |
+| el | Greek | ● | ● | ● | ● | ○ |
 | en | English | ● | ● | ● | ● | 🅛 general + medical |
-| es | Spanish | ● | ● | ● | ○ | ○ |
-| et | Estonian | ● | ○ | ○ | ○ | ○ |
-| fa | Persian | ○ | ○ | ● | ○ | ○ |
-| fi | Finnish | ● | ○ | ● | ○ | ○ |
-| fr | French | ● | ● | ● | ○ | ○ |
-| hi | Hindi | ○ | ○ | ● | ○ | ○ |
-| hr | Croatian | ● | ○ | ○ | ○ | ○ |
-| hu | Hungarian | ● | ○ | ● | ○ | ○ |
-| id | Indonesian | ○ | ○ | ● | ○ | ○ |
-| it | Italian | ● | ● | ● | ○ | ○ |
-| ja | Japanese | ○ | ● | ● | ○ | ○ |
-| ko | Korean | ○ | ● | ● | ○ | ○ |
-| lt | Lithuanian | ● | ○ | ○ | ○ | ○ |
-| lv | Latvian | ● | ○ | ○ | ○ | ○ |
+| es | Spanish | ● | ● | ● | ● | ○ |
+| et | Estonian | ● | ○ | ○ | ● | ○ |
+| fa | Persian | ○ | ○ | ● | ● | ○ |
+| fi | Finnish | ● | ○ | ● | ● | ○ |
+| fr | French | ● | ● | ● | ● | ○ |
+| he | Hebrew | ○ | ○ | ○ | ● | ○ |
+| hi | Hindi | ○ | ○ | ● | ● | ○ |
+| hr | Croatian | ● | ○ | ○ | ● | ○ |
+| hu | Hungarian | ● | ○ | ● | ● | ○ |
+| hy | Armenian | ○ | ○ | ○ | ● | ○ |
+| id | Indonesian | ○ | ○ | ● | ● | ○ |
+| is | Icelandic | ○ | ○ | ○ | ● | ○ |
+| it | Italian | ● | ● | ● | ● | ○ |
+| ja | Japanese | ○ | ● | ● | ● | ○ |
+| jv | Javanese | ○ | ○ | ○ | ● | ○ |
+| kl | Kalaallisut (Greenlandic) | ○ | ○ | ○ | ● | ○ |
+| ko | Korean | ○ | ● | ● | ● | ○ |
+| lt | Lithuanian | ● | ○ | ○ | ● | ○ |
+| lv | Latvian | ● | ○ | ○ | ● | ○ |
 | mk | Macedonian | ○ | ○ | ● | ○ | ○ |
-| ms | Malay | ○ | ○ | ● | ○ | ○ |
+| mn | Mongolian | ○ | ○ | ○ | ● | ○ |
+| ms | Malay | ○ | ○ | ● | ● | ○ |
 | mt | Maltese | ● | ○ | ○ | ○ | ○ |
-| nl | Dutch | ● | ● | ● | ○ | ○ |
-| pl | Polish | ● | ● | ● | ○ | ○ |
-| pt | Portuguese | ● | ● | ● | ○ | ○ |
-| ro | Romanian | ● | ○ | ● | ○ | ○ |
-| ru | Russian | ● | ○ | ● | ○ | ○ |
-| sk | Slovak | ● | ○ | ○ | ○ | ○ |
-| sl | Slovenian | ● | ○ | ○ | ○ | ○ |
-| sv | Swedish | ● | ○ | ● | ○ | ○ |
-| th | Thai | ○ | ○ | ● | ○ | ○ |
-| tl | Filipino (Tagalog) | ○ | ○ | ● | ○ | ○ |
-| tr | Turkish | ○ | ○ | ● | ○ | ○ |
-| uk | Ukrainian | ● | ○ | ○ | ○ | ○ |
-| vi | Vietnamese | ○ | ● | ● | ○ | ○ |
-| zh | Chinese | ○ | ● | ● | ○ | ○ |
-| **Total** | **37 unique** | **25** | **14** | **29** | **1** | **1 (en)** |
+| ne | Nepali | ○ | ○ | ○ | ● | ○ |
+| nl | Dutch | ● | ● | ● | ● | ○ |
+| no | Norwegian | ○ | ○ | ○ | ● | ○ |
+| pl | Polish | ● | ● | ● | ● | ○ |
+| pt | Portuguese | ● | ● | ● | ● | ○ |
+| ro | Romanian | ● | ○ | ● | ● | ○ |
+| ru | Russian | ● | ○ | ● | ● | ○ |
+| sk | Slovak | ● | ○ | ○ | ● | ○ |
+| sl | Slovenian | ● | ○ | ○ | ● | ○ |
+| sr | Serbian | ○ | ○ | ○ | ● | ○ |
+| sv | Swedish | ● | ○ | ● | ● | ○ |
+| sw | Swahili | ○ | ○ | ○ | ● | ○ |
+| th | Thai | ○ | ○ | ● | ● | ○ |
+| tl | Filipino (Tagalog) | ○ | ○ | ● | ● | ○ |
+| tr | Turkish | ○ | ○ | ● | ● | ○ |
+| uk | Ukrainian | ● | ○ | ○ | ● | ○ |
+| ur | Urdu | ○ | ○ | ○ | ● | ○ |
+| vi | Vietnamese | ○ | ● | ● | ● | ○ |
+| yi | Yiddish | ○ | ○ | ○ | ● | ○ |
+| zh | Chinese | ○ | ● | ● | ● | ○ |
+| **Total** | **52 unique** | **25** | **14** | **29** | **51** | **1 (en)** |
 
 **Reading the matrix**
 
 - If you know your audio's language, pick an ASR backend whose row for that language is `●` (prefer Parakeet when possible — it's faster and supports KenLM fusion).
 - If your audio might be in any language, leave Cohere or Qwen3 in auto-detect mode, or use `--lid` (VoxLingua107) for explicit identification across 107 languages before routing to a backend.
+- **VibeVoice has the broadest nominal coverage** but the distribution is heavily English-skewed (~67% of training data). Non-English languages have sparse exposure (most < 1%) so practical accuracy tracks representation — it's reasonable for well-represented languages and a coin-flip for the long tail.
 - English is the only language with KenLM fusion coverage today. More domains / more languages are tractable follow-ups — the `scripts/kenlm_build/` pipeline is language-agnostic; the current corpora are just English.
 
 ### Diarization
