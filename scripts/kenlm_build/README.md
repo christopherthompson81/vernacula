@@ -18,27 +18,39 @@
 6. The resulting `.arpa` or `.arpa.gz` can be pointed at via CLI
    `--lm <path>` or in Settings → Speech Recognition → Language model.
 
-## Design: layered LMs per language, not per domain
+## Design: speech-register per-domain corpus, no general base
 
-Shallow fusion applies the LM at every beam expansion regardless of whether
-the audio is on-domain — there's no context switch inside the math. A
-purely-domain LM penalises general English during the off-domain stretches
-that always appear in real speech, so overall transcript quality suffers
-*despite* better domain recall. The fix is to build each domain LM as a
-superset of general English with domain upweighting, never as a replacement.
+Shallow fusion is a **style predictor**, not a knowledge predictor: the
+LM biases the decoder toward sequences it has seen, uniformly at every
+beam expansion, regardless of topic. Training-corpus register therefore
+matters more than topic coverage. Written-prose medical text (PubMed
+abstracts, patient forum Q&A, DailyMed prescribing prose) biases the
+decoder *away* from natural speech patterns even when it has the right
+vocabulary — so it hurts overall quality.
 
-Empirically on PriMock57 medical audio with our `evaluate.py` metrics:
+Early iterations layered domain corpora on top of an `en-general` base
+to compensate for this. On the PriMock57 validation set we discovered
+the base was helping purely because GigaSpeech + People's Speech are
+spoken transcripts — the speech-register, not the general-English
+coverage, was doing all the work. A domain LM built *only* from
+spoken-register domain content ties or beats the layered version on
+every metric at 3–4× smaller file size:
 
-- Purely-medical LM: 56% chemical F1, worse WER + ROUGE-L than `en-general`.
-- `en-general`:       60% chemical F1 (better than the purely-medical LM
-                      because GigaSpeech has enough medical content in
-                      spoken context).
-- Layered `en-general base + 3× medical`: 60.6% chemical F1 *and* best
-                      ROUGE-L of any mode tested.
+| LM | WER | Chem F1 | Disease F1 | Size |
+|---|---|---|---|---|
+| greedy                                | 14.0% | 50.0 | 83.3 | — |
+| `en-general`                          | 16.1% | 60.0 | 83.3 | 67 MB |
+| v2: gen + 3× written medical (layered) | 15.2% | 60.6 | 82.0 | 60 MB |
+| v6: MTSamples 5× + synthetic 2× (NO base) | **15.0%** | 56.2 | **85.2** | **17 MB** |
 
-So each domain file in the HF repo is structured: `en-general corpus ⊕ N ×
-domain corpus`. Users pick one LM that matches their primary content type
-and always get general fluency plus domain boost.
+So each domain file in the HF repo is now speech-register-only:
+
+- Transcripts of actual speech (MTSamples clinical dictation), or
+- Speech-register *synthetic* dialogue (`CodCodingCode/cleaned-clinical-conversations`).
+
+Written prose is used only as a gazetteer source (future work — inject
+specialty terms into template-generated dialogue), never as dominant
+training text.
 
 
 
@@ -135,19 +147,27 @@ python3 build_kenlm_parakeet.py \
   --output    kenlm-parakeet-en.arpa.gz
 ```
 
-Medical (layered over general):
+Medical (speech-register-only, no general base):
 
 ```bash
-# 1. Extract medical corpus (~22 M words across 3 sources)
-python3 extract_medical_corpus.py --output ~/corpora/en-medical.txt.gz
+# 1. Pull MTSamples text (natural clinical dictation) directly
+#    (one-shot; see scripts/kenlm_build/evaluate.py for the 'galileo-ai/
+#    medical_transcription_40' schema).
 
-# 2. Layer: general base + 3x medical
-(zcat ~/corpora/en-mixed.txt.gz;
- for _ in 1 2 3; do zcat ~/corpora/en-medical.txt.gz; done) \
+# 2. Extract synthetic doctor↔patient dialogue (deduped turns across
+#    the LLM-generated corpus; handles overlapping-context rows).
+python3 extract_synthetic_dialogue.py \
+  --output ~/corpora/en-medical-synthetic.txt.gz
+
+# 3. Build speech-register corpus: 5x MTSamples + 2x synthetic.
+#    No en-general base — MTSamples + synthetic already supply the
+#    speech-register priors the base used to contribute.
+(for _ in 1 2 3 4 5; do zcat ~/corpora/en-mtsamples.txt.gz; done;
+ for _ in 1 2; do zcat ~/corpora/en-medical-synthetic.txt.gz; done) \
   | gzip > ~/corpora/en-medical-layered.txt.gz
 
-# 3. Train. Order 3 is the sweet spot at 88M words — much smaller
-#    file with negligible metric delta vs order 4.
+# 4. Train. Order 3 is plenty at ~60M effective words; 4-gram adds
+#    little at much larger file size.
 python3 build_kenlm_parakeet.py \
   --corpus    ~/corpora/en-medical-layered.txt.gz \
   --tokenizer /tmp/parakeet-tok/tokenizer.json \

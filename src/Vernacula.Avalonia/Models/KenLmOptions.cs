@@ -28,7 +28,7 @@ public static class KenLmCatalog
     [
         new(KeyNone,       "None (greedy / beam only)",                    null,                 null),
         new("en-general",  "English — General (conversational)",           "en-general.arpa.gz", 69_980_766L),
-        new("en-medical",  "English — Medical (clinical dictation + dialogue)", "en-medical.arpa.gz", 61_133_479L),
+        new("en-medical",  "English — Medical (clinical dictation + dialogue)", "en-medical.arpa.gz", 17_434_297L),
         new(KeyCustom,     "Custom ARPA file…",                            null,                 null),
     ];
 
