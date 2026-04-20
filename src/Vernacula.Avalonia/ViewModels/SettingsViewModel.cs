@@ -31,7 +31,7 @@ internal partial class SettingsViewModel : ObservableObject
     private SegmentationMode _selectedSegmentation;
 
     [ObservableProperty]
-    [NotifyPropertyChangedFor(nameof(IsAsrParakeet), nameof(IsAsrCohere), nameof(IsAsrQwen3Asr), nameof(IsAsrVibeVoice), nameof(ShowStandardSegmentationOptions), nameof(ShowVibeVoiceBuiltinSegmentation), nameof(ShowDiariZenInSegmentation), nameof(ShowGatedSegmentationHint), nameof(CanUseVibeVoiceAsr), nameof(VibeVoiceAsrLabel), nameof(VibeVoiceAsrDescription), nameof(ShowCohereLanguagePicker), nameof(ShowQwen3AsrLanguagePicker))]
+    [NotifyPropertyChangedFor(nameof(IsAsrParakeet), nameof(IsAsrCohere), nameof(IsAsrQwen3Asr), nameof(IsAsrVibeVoice), nameof(IsAsrIndicConformer), nameof(ShowStandardSegmentationOptions), nameof(ShowVibeVoiceBuiltinSegmentation), nameof(ShowDiariZenInSegmentation), nameof(ShowGatedSegmentationHint), nameof(CanUseVibeVoiceAsr), nameof(VibeVoiceAsrLabel), nameof(VibeVoiceAsrDescription), nameof(ShowCohereLanguagePicker), nameof(ShowQwen3AsrLanguagePicker), nameof(ShowIndicConformerLanguagePicker))]
     private AsrBackend _selectedAsrBackend;
 
     [ObservableProperty]
@@ -99,6 +99,9 @@ internal partial class SettingsViewModel : ObservableObject
     private AsrLanguageOption? _selectedQwen3AsrLanguage;
 
     [ObservableProperty]
+    private AsrLanguageOption? _selectedIndicConformerLanguage;
+
+    [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(IsDenoiserNone), nameof(IsDenoiserDfn3))]
     private DenoiserMode _selectedDenoiser;
 
@@ -128,13 +131,15 @@ internal partial class SettingsViewModel : ObservableObject
     public bool IsAsrCohere         => SelectedAsrBackend == AsrBackend.Cohere;
     public bool IsAsrQwen3Asr       => SelectedAsrBackend == AsrBackend.Qwen3Asr;
     public bool IsAsrVibeVoice      => SelectedAsrBackend == AsrBackend.VibeVoice;
+    public bool IsAsrIndicConformer => SelectedAsrBackend == AsrBackend.IndicConformer;
     public bool CanUseVibeVoiceAsr  => CudaEpWorking;
     public string VibeVoiceAsrLabel => CanUseVibeVoiceAsr ? "VibeVoice-ASR" : "VibeVoice-ASR (Unavailable - CUDA Missing)";
     public string VibeVoiceAsrDescription => CanUseVibeVoiceAsr
         ? "Whole-recording ASR with built-in diarization. Downloads into the vibevoice_asr models folder."
         : "Unavailable because the CUDA execution provider check did not pass.";
-    public bool ShowCohereLanguagePicker   => SelectedAsrBackend == AsrBackend.Cohere;
-    public bool ShowQwen3AsrLanguagePicker => SelectedAsrBackend == AsrBackend.Qwen3Asr;
+    public bool ShowCohereLanguagePicker         => SelectedAsrBackend == AsrBackend.Cohere;
+    public bool ShowQwen3AsrLanguagePicker       => SelectedAsrBackend == AsrBackend.Qwen3Asr;
+    public bool ShowIndicConformerLanguagePicker => SelectedAsrBackend == AsrBackend.IndicConformer;
     public bool IsDenoiserNone      => SelectedDenoiser == DenoiserMode.None;
     public bool IsDenoiserDfn3      => SelectedDenoiser == DenoiserMode.DeepFilterNet3;
     public bool ShowStandardSegmentationOptions => SelectedAsrBackend != AsrBackend.VibeVoice;
@@ -200,6 +205,37 @@ internal partial class SettingsViewModel : ObservableObject
         new("th", "Thai"),
         new("tr", "Turkish"),
         new("vi", "Vietnamese"),
+    ];
+
+    // AI4Bharat IndicConformer 600M — the 22 official Indian languages.
+    // Unlike Cohere/Qwen3 there is no "auto-detect" option: the model has
+    // 22 distinct per-language CTC heads and picking one is required at
+    // inference. Five codes use ISO 639-3 because they have no 639-1
+    // assignment (brx, doi, kok, mai, mni, sat); seventeen use 639-1.
+    public static readonly IReadOnlyList<AsrLanguageOption> IndicConformerLanguages =
+    [
+        new("as",  "Assamese"),
+        new("bn",  "Bengali"),
+        new("brx", "Bodo"),
+        new("doi", "Dogri"),
+        new("gu",  "Gujarati"),
+        new("hi",  "Hindi"),
+        new("kn",  "Kannada"),
+        new("kok", "Konkani"),
+        new("ks",  "Kashmiri"),
+        new("mai", "Maithili"),
+        new("ml",  "Malayalam"),
+        new("mni", "Manipuri"),
+        new("mr",  "Marathi"),
+        new("ne",  "Nepali"),
+        new("or",  "Odia"),
+        new("pa",  "Punjabi"),
+        new("sa",  "Sanskrit"),
+        new("sat", "Santali"),
+        new("sd",  "Sindhi"),
+        new("ta",  "Tamil"),
+        new("te",  "Telugu"),
+        new("ur",  "Urdu"),
     ];
 
     // ── Hardware check state ─────────────────────────────────────────────────
@@ -276,6 +312,9 @@ internal partial class SettingsViewModel : ObservableObject
                                         ?? CohereLanguages[0];
         _selectedQwen3AsrLanguage     = Qwen3AsrLanguages.FirstOrDefault(l => l.Code == svc.Current.Qwen3AsrLanguage)
                                         ?? Qwen3AsrLanguages[0];
+        _selectedIndicConformerLanguage = IndicConformerLanguages.FirstOrDefault(l => l.Code == svc.Current.IndicConformerLanguage)
+                                        ?? IndicConformerLanguages.FirstOrDefault(l => l.Code == "hi")
+                                        ?? IndicConformerLanguages[0];
         _parakeetBeamWidth            = Math.Max(1, svc.Current.ParakeetBeamWidth);
         _selectedLmOption             = KenLmCatalog.Find(svc.Current.ParakeetLmSelection) ?? KenLmCatalog.All[0];
         // If the user's saved selection is a built-in option whose file isn't
@@ -384,6 +423,14 @@ internal partial class SettingsViewModel : ObservableObject
     partial void OnSelectedQwen3AsrLanguageChanged(AsrLanguageOption? value)
     {
         _svc.Current.Qwen3AsrLanguage = value?.Code ?? "";
+        _svc.Save();
+    }
+
+    partial void OnSelectedIndicConformerLanguageChanged(AsrLanguageOption? value)
+    {
+        // No "auto" entry for IndicConformer — if someone binds null through a
+        // cleared combo, fall back to the last good code rather than persist "".
+        _svc.Current.IndicConformerLanguage = value?.Code ?? _svc.Current.IndicConformerLanguage;
         _svc.Save();
     }
 

@@ -108,9 +108,10 @@ internal class TranscriptionService
         var (rawSamples, sampleRate, channels) = AudioUtils.ReadAudio(audioPath, streamIndex);
 
         // ── ASR backend / segmentation flags ─────────────────────────────────
-        bool useVibeVoiceAsr  = string.Equals(asrModelName, "vibevoice/vibevoice-asr", StringComparison.Ordinal);
-        bool useCohereAsr     = string.Equals(asrModelName, "CohereLabs/cohere-transcribe-03-2026", StringComparison.Ordinal);
-        bool useQwen3Asr      = string.Equals(asrModelName, "Qwen/Qwen3-ASR-1.7B", StringComparison.Ordinal);
+        bool useVibeVoiceAsr     = string.Equals(asrModelName, "vibevoice/vibevoice-asr", StringComparison.Ordinal);
+        bool useCohereAsr        = string.Equals(asrModelName, "CohereLabs/cohere-transcribe-03-2026", StringComparison.Ordinal);
+        bool useQwen3Asr         = string.Equals(asrModelName, "Qwen/Qwen3-ASR-1.7B", StringComparison.Ordinal);
+        bool useIndicConformerAsr = string.Equals(asrModelName, "ai4bharat/indic-conformer-600m-multilingual", StringComparison.Ordinal);
         var  segmentationMode = _settings.Current.Segmentation;
         bool runVibeVoice     = useVibeVoiceAsr || segmentationMode == SegmentationMode.VibeVoiceBuiltin;
 
@@ -641,9 +642,10 @@ internal class TranscriptionService
                                 // be switched TO here because its diarization path
                                 // runs earlier; AsrLanguageSupport.PickBestBackend
                                 // prefers Qwen3-ASR/Cohere/Parakeet in that order.)
-                                useVibeVoiceAsr = string.Equals(asrModelName, "vibevoice/vibevoice-asr", StringComparison.Ordinal);
-                                useCohereAsr    = string.Equals(asrModelName, "CohereLabs/cohere-transcribe-03-2026", StringComparison.Ordinal);
-                                useQwen3Asr     = string.Equals(asrModelName, "Qwen/Qwen3-ASR-1.7B", StringComparison.Ordinal);
+                                useVibeVoiceAsr      = string.Equals(asrModelName, "vibevoice/vibevoice-asr", StringComparison.Ordinal);
+                                useCohereAsr         = string.Equals(asrModelName, "CohereLabs/cohere-transcribe-03-2026", StringComparison.Ordinal);
+                                useQwen3Asr          = string.Equals(asrModelName, "Qwen/Qwen3-ASR-1.7B", StringComparison.Ordinal);
+                                useIndicConformerAsr = string.Equals(asrModelName, "ai4bharat/indic-conformer-600m-multilingual", StringComparison.Ordinal);
                                 // Reflect the switch in the results DB so the
                                 // Results view reads the *effective* backend
                                 // (and so the mismatch banner doesn't appear
@@ -944,6 +946,93 @@ internal class TranscriptionService
                             asrText,
                             absId,
                             result.Text,
+                            overridePercent));
+                    }
+                }
+            }
+            else if (useIndicConformerAsr)
+            {
+                // IndicConformer has 22 per-language CTC heads; one must be
+                // chosen per segment. LID drives per-segment language when
+                // the global LidEnabled / LidPerSegment switches are on
+                // (lidByRid populated above). Segments LID didn't classify
+                // — or ones LID detected as a language outside the 22 Indic
+                // heads, or as one of the 8 VoxLingua doesn't cover (brx,
+                // doi, kok, ks, mai, mni, or, sat) — fall back to the
+                // manual pick from settings.
+                //
+                // `asrLanguageCode` from the per-file override still wins
+                // over the manual setting when present. "auto" / "" from
+                // that field mean "use settings".
+                string perFileLang = !string.IsNullOrWhiteSpace(asrLanguageCode)
+                    && !string.Equals(asrLanguageCode, "auto", StringComparison.OrdinalIgnoreCase)
+                        ? asrLanguageCode
+                        : _settings.Current.IndicConformerLanguage;
+                if (string.IsNullOrWhiteSpace(perFileLang)) perFileLang = "hi";
+
+                string indicModelsDir = _settings.GetIndicConformerModelsDir();
+                using var indic = new IndicConformer(indicModelsDir);
+
+                var indicSupported = AsrLanguageSupport.Get(AsrBackend.IndicConformer);
+
+                // GroupSegmentsByLidLanguage handles all three states
+                // uniformly: when lidByRid is null and there's no fallback
+                // LID, every segment lands in one group using perFileLang;
+                // when per-segment LID populated it, segments split by
+                // detected language.
+                var groups = GroupSegmentsByLidLanguage(
+                    unfilledResultIds, lidByRid, fallback: perFileLang);
+
+                foreach (var group in groups)
+                {
+                    // Normalise the group's language through IndicConformer's
+                    // supported set. If LID produced something outside the 22
+                    // (or a code IndicConformer doesn't expose, like "en"),
+                    // fall back to the manual choice.
+                    string groupLang = group.ForceLanguage ?? perFileLang;
+                    if (!indicSupported.Contains(AsrLanguageSupport.NormalizeIso(groupLang)))
+                        groupLang = perFileLang;
+
+                    var groupSegs = group.LocalIndices.Select(i => segsSubset[i]).ToList();
+                    if (groupSegs.Count == 0) continue;
+
+                    foreach (var (segId, text, tokens, timestamps, durations, logprobs) in
+                        indic.Recognize(groupSegs, audio, groupLang))
+                    {
+                        ct.ThrowIfCancellationRequested();
+                        int localIdx = group.LocalIndices[segId];
+                        int rid      = unfilledResultIds[localIdx];
+                        int absId    = rid - 1;
+                        completed++;
+
+                        db.UpdateResult(
+                            resultId:   rid,
+                            asrContent: text,
+                            content:    text,
+                            tokens:     JsonSerializer.Serialize(tokens),
+                            timestamps: JsonSerializer.Serialize(timestamps),
+                            logprobs:   JsonSerializer.Serialize(logprobs),
+                            durations:  durations.Count > 0 ? JsonSerializer.Serialize(durations) : null,
+                            language:   groupLang);
+
+                        onSegmentText(absId, text);
+
+                        string asrText = Loc.Instance.T("progress_recognizing_segment", new() {
+                            ["i"]     = completed.ToString(),
+                            ["count"] = totalSegs.ToString() });
+                        double? overridePercent = segmentationMode == SegmentationMode.DiariZen
+                            ? ScaleOverallProgress(
+                                DiariZenDiarizationPercentWeight,
+                                100,
+                                totalSegs > 0 ? completed / (double)totalSegs : 1)
+                            : null;
+                        progress.Report(new TranscriptionProgress(
+                            TranscriptionPhase.Recognizing,
+                            completed,
+                            totalSegs,
+                            asrText,
+                            absId,
+                            text,
                             overridePercent));
                     }
                 }

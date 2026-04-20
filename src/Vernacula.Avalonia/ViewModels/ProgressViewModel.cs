@@ -346,19 +346,32 @@ internal partial class ProgressViewModel : ObservableObject
 
     private string GetJobAsrModelName() => _settings.Current.AsrBackend switch
     {
-        AsrBackend.Cohere => "CohereLabs/cohere-transcribe-03-2026",
-        AsrBackend.Qwen3Asr => "Qwen/Qwen3-ASR-1.7B",
-        _                 => "nvidia/parakeet-tdt-0.6b-v3",
+        AsrBackend.Cohere         => "CohereLabs/cohere-transcribe-03-2026",
+        AsrBackend.Qwen3Asr       => "Qwen/Qwen3-ASR-1.7B",
+        AsrBackend.VibeVoice      => "vibevoice/vibevoice-asr",
+        AsrBackend.IndicConformer => "ai4bharat/indic-conformer-600m-multilingual",
+        _                         => "nvidia/parakeet-tdt-0.6b-v3",
     };
 
     private string GetJobAsrLanguageCode()
     {
-        if (_settings.Current.AsrBackend != AsrBackend.Cohere)
-            return "auto";
-
-        return string.IsNullOrWhiteSpace(_settings.Current.CohereLanguage)
-            ? "auto"
-            : _settings.Current.CohereLanguage;
+        // IndicConformer requires a language at inference and stores the
+        // chosen code (not "auto"); Cohere stores a code or empty for
+        // auto-detect. Every other backend uses "auto" for the pipeline.
+        var backend = _settings.Current.AsrBackend;
+        if (backend == AsrBackend.IndicConformer)
+        {
+            return string.IsNullOrWhiteSpace(_settings.Current.IndicConformerLanguage)
+                ? "hi"
+                : _settings.Current.IndicConformerLanguage;
+        }
+        if (backend == AsrBackend.Cohere)
+        {
+            return string.IsNullOrWhiteSpace(_settings.Current.CohereLanguage)
+                ? "auto"
+                : _settings.Current.CohereLanguage;
+        }
+        return "auto";
     }
 
     // ── Shared helpers ────────────────────────────────────────────────────────

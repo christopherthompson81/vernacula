@@ -1011,6 +1011,13 @@ internal partial class TranscriptEditorViewModel : ObservableObject, IDisposable
     public void RefreshFocusedCardAsrHighlighting(TranscriptEditorCardState card, VocabService? vocab,
         Color confidenceLowColor, Color accentColor, IBrush textBrush, int highlightedToken)
     {
+        // Set direction once per focus refresh. Prefer the segment's stored
+        // `language` (what the ASR pass decoded against), fall back to the
+        // LID-detected language if the ASR pass didn't persist one.
+        string? dirLang = card.Segment.Language ?? card.Segment.LidLanguage;
+        card.AsrFlowDirection = AsrLanguageSupport.IsRtl(dirLang)
+            ? FlowDirection.RightToLeft : FlowDirection.LeftToRight;
+
         if (vocab == null || card.Segment.Tokens.Count == 0)
         {
             card.RebuildAsrRuns([(card.Segment.AsrContent, Colors.Transparent)], textBrush);

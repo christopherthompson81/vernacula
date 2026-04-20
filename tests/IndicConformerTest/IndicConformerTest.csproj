@@ -1,0 +1,35 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+    <!-- Tests run on CPU only. Deterministic across machines and avoids
+         a hard dep on a CUDA/DirectML driver matching the dev box.
+         The Vernacula.Base ProjectReference pulls in the OnnxRuntime.Gpu
+         runtime chosen at its build time; add an explicit CPU package
+         here so InferenceSession(..., new SessionOptions()) in the test
+         host resolves cleanly without a GPU. -->
+    <Platforms>x64</Platforms>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />
+    <PackageReference Include="xunit.v3" Version="1.0.0" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.0.0" />
+    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.24.4" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Vernacula.Base\Vernacula.Base.csproj">
+      <!-- Base normally bakes in OnnxRuntime.Gpu via its consumer's EP prop.
+           For the test host we want the CPU package above to be the only
+           runtime in the output directory, so suppress Base's transitive
+           EP selection by passing EP=Cpu down the build graph. -->
+      <Private>true</Private>
+      <SetConfiguration>EP=Cpu</SetConfiguration>
+    </ProjectReference>
+  </ItemGroup>
+
+</Project>

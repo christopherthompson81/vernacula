@@ -34,6 +34,24 @@ This section manages the AI model files required for transcription.
 - **Download Missing Models** — downloads any model files not yet present on disk. A progress bar and status line track each file as it downloads.
 - **Check for Updates** — checks whether newer model weights are available. An update banner also appears on the home screen automatically when updated weights are detected.
 
+## ASR Backend
+
+Controls which speech-recognition model transcribes the audio. Each backend covers a different set of languages and has different tradeoffs.
+
+| Backend | Languages | Notes |
+|---|---|---|
+| **Parakeet** | 25 European | Default. Multilingual shared-vocab model; auto-detects language during decode. Optional KenLM shallow fusion for domain biasing. |
+| **Cohere Transcribe** | 14 | Whisper-family decoder path. Supports optional per-file forced language. |
+| **Qwen3-ASR 1.7B** | 29 | Batched decoder with the widest language coverage. Optional forced language; otherwise auto-detects. |
+| **VibeVoice-ASR** | 12 | Combined diarization + ASR in a single model pass. Requires a CUDA-capable GPU. |
+| **IndicConformer 600M** | 22 Indic | AI4Bharat's multilingual Indic model. Covers the 22 official Indian languages across multiple scripts (Devanagari, Bengali, Tamil, Arabic, Ol Chiki, etc.). Requires a language to be picked at inference — see below. |
+
+### IndicConformer language selection
+
+Unlike Parakeet's shared-vocab auto-routing, IndicConformer's 22 languages have disjoint per-language CTC heads. The decoder needs to be told which head to use, so the Settings page exposes a **Language** picker just below the backend radio group. Five languages use ISO 639-3 codes because they have no 639-1 assignment: `brx` (Bodo), `doi` (Dogri), `kok` (Konkani), `mai` (Maithili), `mni` (Manipuri), `sat` (Santali). The remaining 17 use their 639-1 codes.
+
+When **Language Identification** is enabled (see below), IndicConformer uses the detected language per segment and falls back to the manual picker for segments whose detected language isn't one of the 14 VoxLingua107 covers. The 8 languages LID cannot detect — `brx`, `doi`, `kok`, `ks`, `mai`, `mni`, `or`, `sat` — always require the manual picker for files whose primary language is one of them.
+
 ## Segmentation Mode
 
 Controls how the audio is divided into segments before speech recognition.

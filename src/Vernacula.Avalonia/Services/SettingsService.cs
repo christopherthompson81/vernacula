@@ -101,6 +101,9 @@ internal class SettingsService
     public string GetVibeVoiceModelsDir() =>
         Path.Combine(GetModelsDir(), "vibevoice_asr");
 
+    public string GetIndicConformerModelsDir() =>
+        Path.Combine(GetModelsDir(), Config.IndicConformerSubDir);
+
     public string GetVoxLinguaModelsDir() =>
         string.IsNullOrWhiteSpace(Current.VoxLinguaModelsDir)
             ? Path.Combine(GetModelsDir(), Config.VoxLinguaSubDir)
