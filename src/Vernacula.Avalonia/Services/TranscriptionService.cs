@@ -952,56 +952,94 @@ internal class TranscriptionService
             }
             else if (useIndicConformerAsr)
             {
-                // IndicConformer has 22 per-language CTC heads; callers must
-                // pick one. If the user hasn't set IndicConformerLanguage (or
-                // asrLanguageCode from the per-file override) points at
-                // something the package doesn't cover, fall back to the
-                // setting's default (Hindi).
-                string indicLang = !string.IsNullOrWhiteSpace(asrLanguageCode)
+                // IndicConformer has 22 per-language CTC heads; one must be
+                // chosen per segment. Two modes:
+                //
+                //   - AutoLid ON: use per-segment LID (if enabled, else the
+                //     file-level detected_language) to pick the head. Groups
+                //     detected as one of IndicConformer's 22 supported codes
+                //     decode in that language; everything else falls back to
+                //     the user's manual pick. VoxLingua covers 14 of 22 —
+                //     the other 8 (brx, doi, kok, ks, mai, mni, or, sat)
+                //     always go through the fallback.
+                //
+                //   - AutoLid OFF: current behavior — all segments decode in
+                //     the manual language.
+                //
+                // `asrLanguageCode` from the per-file override still wins
+                // either way. "auto"/"" from that field is normal — it just
+                // means "use settings".
+                string perFileLang = !string.IsNullOrWhiteSpace(asrLanguageCode)
                     && !string.Equals(asrLanguageCode, "auto", StringComparison.OrdinalIgnoreCase)
                         ? asrLanguageCode
                         : _settings.Current.IndicConformerLanguage;
-                if (string.IsNullOrWhiteSpace(indicLang)) indicLang = "hi";
+                if (string.IsNullOrWhiteSpace(perFileLang)) perFileLang = "hi";
 
                 string indicModelsDir = _settings.GetIndicConformerModelsDir();
                 using var indic = new IndicConformer(indicModelsDir);
-                foreach (var (segId, text, tokens, timestamps, durations, logprobs) in
-                    indic.Recognize(segsSubset, audio, indicLang))
+
+                var indicSupported = AsrLanguageSupport.Get(AsrBackend.IndicConformer);
+
+                // When AutoLid is on we grouper per-segment via the existing
+                // LID plumbing. lidByRid was set up above for the Cohere/
+                // Qwen3 branches; reuse it here.
+                bool useAutoLid = _settings.Current.IndicConformerAutoLid;
+                var groups = useAutoLid
+                    ? GroupSegmentsByLidLanguage(unfilledResultIds, lidByRid, fallback: perFileLang)
+                    : [new LidLanguageGroup(perFileLang, Enumerable.Range(0, segsSubset.Count).ToList())];
+
+                foreach (var group in groups)
                 {
-                    ct.ThrowIfCancellationRequested();
-                    int rid   = unfilledResultIds[segId];
-                    int absId = rid - 1;
-                    completed++;
+                    // Normalise the group's language through IndicConformer's
+                    // supported set. If LID produced something outside the 22
+                    // (or a code IndicConformer doesn't expose, like "en"),
+                    // fall back to the manual choice.
+                    string groupLang = group.ForceLanguage ?? perFileLang;
+                    if (!indicSupported.Contains(AsrLanguageSupport.NormalizeIso(groupLang)))
+                        groupLang = perFileLang;
 
-                    db.UpdateResult(
-                        resultId:   rid,
-                        asrContent: text,
-                        content:    text,
-                        tokens:     JsonSerializer.Serialize(tokens),
-                        timestamps: JsonSerializer.Serialize(timestamps),
-                        logprobs:   JsonSerializer.Serialize(logprobs),
-                        durations:  durations.Count > 0 ? JsonSerializer.Serialize(durations) : null,
-                        language:   indicLang);
+                    var groupSegs = group.LocalIndices.Select(i => segsSubset[i]).ToList();
+                    if (groupSegs.Count == 0) continue;
 
-                    onSegmentText(absId, text);
+                    foreach (var (segId, text, tokens, timestamps, durations, logprobs) in
+                        indic.Recognize(groupSegs, audio, groupLang))
+                    {
+                        ct.ThrowIfCancellationRequested();
+                        int localIdx = group.LocalIndices[segId];
+                        int rid      = unfilledResultIds[localIdx];
+                        int absId    = rid - 1;
+                        completed++;
 
-                    string asrText = Loc.Instance.T("progress_recognizing_segment", new() {
-                        ["i"]     = completed.ToString(),
-                        ["count"] = totalSegs.ToString() });
-                    double? overridePercent = segmentationMode == SegmentationMode.DiariZen
-                        ? ScaleOverallProgress(
-                            DiariZenDiarizationPercentWeight,
-                            100,
-                            totalSegs > 0 ? completed / (double)totalSegs : 1)
-                        : null;
-                    progress.Report(new TranscriptionProgress(
-                        TranscriptionPhase.Recognizing,
-                        completed,
-                        totalSegs,
-                        asrText,
-                        absId,
-                        text,
-                        overridePercent));
+                        db.UpdateResult(
+                            resultId:   rid,
+                            asrContent: text,
+                            content:    text,
+                            tokens:     JsonSerializer.Serialize(tokens),
+                            timestamps: JsonSerializer.Serialize(timestamps),
+                            logprobs:   JsonSerializer.Serialize(logprobs),
+                            durations:  durations.Count > 0 ? JsonSerializer.Serialize(durations) : null,
+                            language:   groupLang);
+
+                        onSegmentText(absId, text);
+
+                        string asrText = Loc.Instance.T("progress_recognizing_segment", new() {
+                            ["i"]     = completed.ToString(),
+                            ["count"] = totalSegs.ToString() });
+                        double? overridePercent = segmentationMode == SegmentationMode.DiariZen
+                            ? ScaleOverallProgress(
+                                DiariZenDiarizationPercentWeight,
+                                100,
+                                totalSegs > 0 ? completed / (double)totalSegs : 1)
+                            : null;
+                        progress.Report(new TranscriptionProgress(
+                            TranscriptionPhase.Recognizing,
+                            completed,
+                            totalSegs,
+                            asrText,
+                            absId,
+                            text,
+                            overridePercent));
+                    }
                 }
             }
             else

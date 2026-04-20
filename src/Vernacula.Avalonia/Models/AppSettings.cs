@@ -37,6 +37,13 @@ public class AppSettings
     // 22 CTC heads and picking one is mandatory, so this is not optional
     // like Cohere/Qwen3 "auto". Default to Hindi (largest / most common).
     public string             IndicConformerLanguage { get; set; } = "hi";
+    // When on, the IndicConformer branch uses per-segment LID results to
+    // pick the decoder span, falling back to IndicConformerLanguage above
+    // for segments LID doesn't classify as one of its 14 supported Indic
+    // langs (VoxLingua coverage: as, bn, gu, hi, kn, ml, mr, ne, pa, sa,
+    // sd, ta, te, ur). The 8 remaining IndicConformer langs — brx, doi,
+    // kok, ks, mai, mni, or, sat — require manual selection.
+    public bool               IndicConformerAutoLid { get; set; } = false;
     public DenoiserMode       Denoiser            { get; set; } = DenoiserMode.None;
     public PlaybackMode       EditorPlaybackMode  { get; set; } = PlaybackMode.Continuous;
     public string             ModelsDir           { get; set; } = "";
