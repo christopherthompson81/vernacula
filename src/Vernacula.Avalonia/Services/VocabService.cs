@@ -13,7 +13,7 @@ namespace Vernacula.App.Services;
 /// </summary>
 internal class VocabService
 {
-    private enum VocabKind { Parakeet, Cohere, Qwen3Asr, VibeVoice }
+    private enum VocabKind { Parakeet, Cohere, Qwen3Asr, VibeVoice, IndicConformer }
 
     private readonly Dictionary<int, string> _vocab;
     private readonly VocabKind _kind;
@@ -39,11 +39,40 @@ internal class VocabService
             (_vocab, _addedContent) = LoadVibeVoiceVocab(Path.Combine(modelsDir, Config.Qwen3AsrSubDir, Qwen3Asr.TokenizerFile));
             _byteLevelDecode = BuildByteLevelDecode();
         }
+        else if (string.Equals(asrModel, "ai4bharat/indic-conformer-600m-multilingual", StringComparison.Ordinal))
+        {
+            _kind = VocabKind.IndicConformer;
+            _vocab = LoadIndicConformerVocab(Path.Combine(modelsDir, Config.IndicConformerSubDir, Config.VocabFile));
+        }
         else
         {
             _kind = VocabKind.Parakeet;
             _vocab = LoadParakeetVocab(Path.Combine(modelsDir, Config.VocabFile));
         }
+    }
+
+    /// <summary>
+    /// IndicConformer's vocab.txt is one token per line (id = line index),
+    /// no trailing blank row. SentencePiece-style: pieces starting with
+    /// U+2581 (▁) mark word boundaries. Replace at load time so concat in
+    /// GetTokenRuns yields space-separated words, matching the Parakeet
+    /// decoder's convention. Blank line tolerant only at EOF — mid-file
+    /// blanks would mis-align ids and are silently skipped (load will
+    /// still produce a working vocab with holes rather than a shifted one).
+    /// </summary>
+    private static Dictionary<int, string> LoadIndicConformerVocab(string vocabPath)
+    {
+        var vocab = new Dictionary<int, string>();
+        if (!File.Exists(vocabPath)) return vocab;
+
+        int id = 0;
+        foreach (var rawLine in File.ReadLines(vocabPath))
+        {
+            if (!string.IsNullOrEmpty(rawLine))
+                vocab[id] = rawLine.Replace("\u2581", " ");
+            id++;
+        }
+        return vocab;
     }
 
     // ── Vocab loading (mirrors Parakeet.GetVocab) ────────────────────────────
@@ -204,7 +233,7 @@ internal class VocabService
         if (!_vocab.TryGetValue(token, out var value))
             return "";
 
-        if (_kind == VocabKind.Parakeet)
+        if (_kind == VocabKind.Parakeet || _kind == VocabKind.IndicConformer)
             return value;
 
         if (_kind == VocabKind.VibeVoice)

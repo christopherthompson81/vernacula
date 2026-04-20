@@ -98,9 +98,10 @@ public partial class TranscriptEditorWindow : Window
         _jobAsrLanguageCode = string.IsNullOrWhiteSpace(asrLanguageCode)
             ? "auto"
             : asrLanguageCode;
-        bool isCohere    = string.Equals(_jobAsrModel, "CohereLabs/cohere-transcribe-03-2026", StringComparison.Ordinal);
-        bool isQwen3Asr  = string.Equals(_jobAsrModel, "Qwen/Qwen3-ASR-1.7B", StringComparison.Ordinal);
-        bool isVibeVoice = string.Equals(_jobAsrModel, "vibevoice/vibevoice-asr", StringComparison.Ordinal);
+        bool isCohere         = string.Equals(_jobAsrModel, "CohereLabs/cohere-transcribe-03-2026", StringComparison.Ordinal);
+        bool isQwen3Asr       = string.Equals(_jobAsrModel, "Qwen/Qwen3-ASR-1.7B", StringComparison.Ordinal);
+        bool isVibeVoice      = string.Equals(_jobAsrModel, "vibevoice/vibevoice-asr", StringComparison.Ordinal);
+        bool isIndicConformer = string.Equals(_jobAsrModel, "ai4bharat/indic-conformer-600m-multilingual", StringComparison.Ordinal);
         _isQwen3Asr = isQwen3Asr;
         _showApproximateTimingNotice = isCohere || isQwen3Asr || isVibeVoice;
         _approximateTimingNoticeText = isCohere
@@ -117,11 +118,14 @@ public partial class TranscriptEditorWindow : Window
                 ? Path.Combine(modelsDir, Config.Qwen3AsrSubDir, Qwen3Asr.TokenizerFile)
             : isVibeVoice
                 ? Path.Combine(modelsDir, Config.VibeVoiceSubDir, VibeVoiceAsr.TokenizerFile)
+            : isIndicConformer
+                ? Path.Combine(modelsDir, Config.IndicConformerSubDir, Config.VocabFile)
                 : Path.Combine(parakeetModelsDir, Config.VocabFile);
         if (vocabPath is not null && File.Exists(vocabPath))
         {
             _vocab = new VocabService(
-                isCohere || isQwen3Asr || isVibeVoice ? App.Current.Settings.GetModelsDir() : parakeetModelsDir,
+                isCohere || isQwen3Asr || isVibeVoice || isIndicConformer
+                    ? App.Current.Settings.GetModelsDir() : parakeetModelsDir,
                 _jobAsrModel);
         }
 
