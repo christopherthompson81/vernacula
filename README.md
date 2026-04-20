@@ -9,9 +9,11 @@
   Construct audio pipelines including:
   <ul>
     <li>Denoising</li>
-    <li>Segmetation (VAD, Diarization)</li>
+    <li>Segmentation (VAD, Diarization)</li>
     <li>Speaker Identification (Diarization)</li>
-    <li>Speech Recognition (ASR)</li>
+    <li>Speech Recognition (ASR) with multiple backends</li>
+    <li>Language identification (VoxLingua107)</li>
+    <li>Shallow KenLM fusion for domain-specific transcription</li>
   </ul>
 </p>
 
@@ -25,7 +27,7 @@
 
 Vernacula-Desktop converts audio files into accurate, multi-speaker transcripts — entirely on your own computer. No cloud uploads, no subscriptions, no privacy concerns. Works on Linux, Mac, and Windows (Android, iOS, and WebAssembly are untested).
 
-Powered by NVIDIA's [Parakeet TDT](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2) and [Sortformer](https://huggingface.co/nvidia/diar_sortformer_4spk-v2.1) models, it delivers a **Word Error Rate of 4.85** on Google's FLEURS benchmark — among the best available anywhere. Most modern computers will transcribe one hour of audio in about five minutes. GPU-accelerated systems will be even faster.
+Powered by NVIDIA's [Parakeet TDT v3](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3) and [Sortformer](https://huggingface.co/nvidia/diar_sortformer_4spk-v2.1) by default, with optional pluggable backends (Cohere Transcribe, Qwen3-ASR, VibeVoice-ASR). Parakeet v3 posts a **Word Error Rate of 4.85** on Google's FLEURS benchmark — among the best available anywhere. Most modern computers will transcribe one hour of audio in about five minutes. GPU-accelerated systems are significantly faster.
 
 ### Demo
 
@@ -45,19 +47,25 @@ https://github.com/user-attachments/assets/42015635-03b9-4c6b-868c-248e8c29c352
 
 ![Transcript editor view](screenshots/transcript_editor_view.png)
 
-- Local, private transcription — audio never leaves your computer
-- Multi-speaker detection — identifies and labels up to four speakers
-- No audio length limits — streaming and segmentation handle indefinite file lengths
-- Queue multiple files; pause and resume long transcription jobs
-- Automatic punctuation and capitalization
-- Transcript editor with confidence colouring, audio playback, and segment editing
-- Wide format support — common audio formats plus MP4, MOV, MKV, AVI, WMV, FLV, MTS, and more
-- Export to XLSX, CSV, JSON, SRT, Markdown, DOCX, and SQLite3
-- Full analysis data in SQLite3 with word-level timestamps and confidence scoring
-- GPU acceleration via CUDA, with automatic CPU fallback
-- Supports 25 European languages: English, French, German, Spanish, Portuguese, Italian, Dutch, Polish, Russian, Ukrainian, Czech, Slovak, Romanian, Hungarian, Bulgarian, Croatian, Slovenian, Greek, Swedish, Danish, Finnish, Estonian, Latvian, Lithuanian, and Maltese
+### Highlights
 
-Built with [Avalonia UI](https://avaloniaui.net/) — runs on any Linux desktop environment.
+- **Local, private transcription** — audio never leaves your computer
+- **Multi-speaker detection** — identifies and labels up to four concurrent speakers
+- **No audio length limits** — streaming and segmentation handle indefinite file lengths
+- **Job queue** — pause and resume long transcription jobs
+- **Automatic punctuation and capitalization** from the acoustic model
+- **Transcript editor** with confidence colouring, audio playback, word-level highlighting, and segment editing
+- **Word-level timestamps** (real TDT duration-head values for Parakeet, synthesized for others)
+- **Beam search + shallow KenLM fusion** for Parakeet — opt-in domain biasing via the Settings → Language model dropdown
+- **Language identification** (VoxLingua107, optional) with file-level or per-segment modes
+- **Wide format support** — common audio formats plus MP4, MOV, MKV, AVI, WMV, FLV, MTS, and more
+- **Export** to XLSX, CSV, JSON, SRT, Markdown, DOCX, and SQLite
+- **Full analysis data** in SQLite with per-token durations, logprobs, and speaker labels
+- **GPU acceleration** via CUDA (DirectML on Windows), with automatic CPU fallback
+- **Parakeet v3 covers 25 languages**: English, French, German, Spanish, Portuguese, Italian, Dutch, Polish, Russian, Ukrainian, Czech, Slovak, Romanian, Hungarian, Bulgarian, Croatian, Slovenian, Greek, Swedish, Danish, Finnish, Estonian, Latvian, Lithuanian, and Maltese
+- **Qwen3-ASR and Cohere Transcribe backends** add ~30 and ~15 additional language options respectively
+
+Built with [Avalonia UI](https://avaloniaui.net/) — runs on any desktop environment.
 
 ---
 
@@ -65,17 +73,15 @@ Built with [Avalonia UI](https://avaloniaui.net/) — runs on any Linux desktop 
 
 | Project | Description | License |
 |---|---|---|
-| `Vernacula.Base` | Core inference library — ASR, diarization, VAD, audio utilities | MIT |
+| `Vernacula.Base` | Core inference library — ASR, diarization, VAD, audio utilities, KenLM scorer | MIT |
 | `Vernacula.CLI` | Command-line transcription tool | MIT |
-| `Vernacula.Avalonia` | Desktop GUI app for Linux (Vernacula-Desktop) | PolyForm Shield 1.0.0 |
-
-Built around the [NVIDIA Parakeet TDT](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2) ASR model with pluggable backends for each pipeline stage.
+| `Vernacula.Avalonia` | Desktop GUI app (Vernacula-Desktop) | PolyForm Shield 1.0.0 |
 
 ## Requirements
 
 - [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0)
 - FFmpeg libraries (`libavformat`, `libavcodec`, `libavutil`, `libswresample`, `libswscale`)
-- **For GPU acceleration:** NVIDIA GPU with CUDA Toolkit installed
+- **For GPU acceleration:** NVIDIA GPU with CUDA Toolkit installed (Linux/Windows), or DirectML support (Windows)
 
 Install FFmpeg on common distros:
 
@@ -92,30 +98,33 @@ sudo dnf install ffmpeg
 
 ## Models
 
-Models are hosted on HuggingFace and downloaded automatically by the Avalonia app. For CLI use, download them manually:
+Models are hosted on HuggingFace under [christopherthompson81](https://huggingface.co/christopherthompson81) and downloaded automatically by the Avalonia app. For CLI use, download them manually with `huggingface-cli` or `git lfs`.
 
-- **Core models** (ASR + Sortformer diarization + VAD): [christopherthompson81/sortformer_parakeet_onnx](https://huggingface.co/christopherthompson81/sortformer_parakeet_onnx)
-- **DiariZen models** (optional, advanced diarization): [christopherthompson81/diarizen_onnx](https://huggingface.co/christopherthompson81/diarizen_onnx)
-
-Download with `huggingface-cli` or `git lfs`:
+| Repository | Contents | Required? |
+|---|---|---|
+| [sortformer_parakeet_onnx](https://huggingface.co/christopherthompson81/sortformer_parakeet_onnx) | Parakeet TDT v3 ASR + Sortformer diarization + Silero VAD | Core |
+| [diarizen_onnx](https://huggingface.co/christopherthompson81/diarizen_onnx) | DiariZen higher-accuracy diarization | Optional |
+| [cohere-transcribe-03-2026-onnx](https://huggingface.co/christopherthompson81/cohere-transcribe-03-2026-onnx) | Cohere Transcribe ASR backend | Optional |
+| [vibevoice-asr-onnx](https://huggingface.co/christopherthompson81/vibevoice-asr-onnx) | VibeVoice-ASR (all-in-one transcription + diarization) | Optional, CUDA-only |
+| [voxlingua107-lid-onnx](https://huggingface.co/christopherthompson81/voxlingua107-lid-onnx) | VoxLingua107 language ID model | Optional |
+| [kenlm-parakeet](https://huggingface.co/christopherthompson81/kenlm-parakeet) | Shallow-fusion KenLM n-gram models for Parakeet — `en-general`, `en-medical` | Optional |
 
 ```bash
-# Install huggingface_hub if needed
 pip install huggingface_hub
-
-huggingface-cli download christopherthompson81/sortformer_parakeet_onnx --local-dir ~/models/vernacula
+huggingface-cli download christopherthompson81/sortformer_parakeet_onnx \
+  --local-dir ~/models/vernacula
 ```
+
+The Avalonia app surfaces each repo through Settings → Models and handles downloads, resuming, and hash verification.
 
 ---
 
 ## Running Vernacula-Desktop
+
 ```bash
 cd src/Vernacula.Avalonia
-
-dotnet run 
+dotnet run
 ```
-
-
 
 ## Building
 
@@ -125,7 +134,7 @@ All projects are built with `dotnet build`. The `EP` property selects the ONNX R
 |---|---|---|
 | `Cuda` | NVIDIA GPU | Default. Requires CUDA Toolkit. |
 | `Cpu` | Any CPU | No GPU required. Slower. |
-| `DirectML` | Windows only | Not supported on Linux. |
+| `DirectML` | Windows only | Uses DirectX 12; works on AMD/Intel/NVIDIA. |
 
 ### Vernacula.CLI
 
@@ -139,7 +148,7 @@ dotnet build -c Release -p:EP=Cuda -p:Platform=x64
 dotnet build -c Release -p:EP=Cpu -p:Platform=x64
 ```
 
-### Vernacula.Avalonia (Linux Desktop)
+### Vernacula.Avalonia
 
 ```bash
 cd src/Vernacula.Avalonia
@@ -161,50 +170,116 @@ dotnet publish -c Release -p:EP=Cuda -p:Platform=x64 \
 Usage: vernacula-cli --audio <file> --model <dir> [options]
 
 Required:
-  --audio <path>           Audio file to transcribe
-  --model <dir>            Directory containing ONNX model files
+  --audio <path>                      Audio file to transcribe
+  --model <dir>                       Directory containing ONNX model files
 
 Output:
-  --output <path>          Output file path (auto-named if omitted)
-  --export-format <fmt>    Output format: md (default), txt, json, srt
+  --output <path>                     Output file path (auto-named if omitted)
+  --export-format <md|txt|json|srt>   Output format (default: md)
 
-Diarization:
-  --diarization <backend>  Speaker diarization backend:
-                             sortformer  NVIDIA Sortformer (default, fast)
-                             diarizen    DiariZen clustering (more accurate, slower)
-                             vad         Silero VAD only (no speaker identity)
-  --segments <path>        Load pre-computed segments JSON, skip diarization
-                           Format: [{start, end, speaker}, ...]
-  --ahc-threshold <float>  DiariZen AHC clustering threshold (default: 0.6)
+ASR backend:
+  --asr <parakeet|cohere|qwen3asr|vibevoice>   ASR backend (default: parakeet)
+  --language <code>                   Force language for Cohere ASR (ISO 639-1: en, fr, de, ...)
+  --cohere-model <dir>                Override Cohere model dir (default: <model>/cohere_transcribe)
+  --qwen3asr-model <dir>              Override Qwen3-ASR model dir
+  --vibevoice-model <dir>             Override VibeVoice-ASR model dir
 
-Model:
-  --precision <fp32|int8>  Model precision (default: fp32)
-  --skip-asr               Export diarization segments only, skip transcription
+Parakeet decoding:
+  --precision <fp32|int8>             Model precision (default: fp32)
+  --parakeet-beam <N>                 Beam width (default: 1 = greedy; 4–8 = beam search)
+  --lm <path>                         Shallow LM fusion — ARPA(.gz) subword n-gram; auto-bumps beam to 4
+  --lm-weight <w>                     Fusion weight (default: 0.3; typical 0.1–0.5)
+  --lm-length-penalty <p>             Per-token length reward (default: 0.6; offsets LM shortening bias)
 
-Diagnostics:
-  --benchmark              Print timing and real-time factor (RTF) after run
+Segmentation:
+  --diarization <backend>             sortformer (default), diarizen, vad, vibevoice-asr-builtin
+  --segments <path>                   Load pre-computed segments JSON, skip diarization
+  --ahc-threshold <float>             DiariZen AHC clustering threshold (default: 0.6)
+
+Pre-processing:
+  --denoiser <none|dfn3>              Optional DeepFilterNet3 denoiser (default: none)
+  --denoiser-models <dir>             Override denoiser model dir
+
+Other:
+  --skip-asr                          Export diarization segments only
+  --lid                               Run VAD + VoxLingua107 LID on --audio and print language
+  --download-voxlingua                Download VoxLingua107 LID model and exit
+  --benchmark                         Print timing and real-time factor (RTF)
+  -h, --help                          Show full help
 ```
 
 ### Examples
 
 ```bash
-# Basic transcription with Sortformer diarization
+# Basic Parakeet transcription with Sortformer diarization
 dotnet run --project src/Vernacula.CLI -p:EP=Cuda -- \
   --audio meeting.wav --model ~/models/vernacula
 
-# SRT output using DiariZen
-dotnet run --project src/Vernacula.CLI -p:EP=Cuda -- \
-  --audio interview.flac --model ~/models/vernacula \
-  --diarization diarizen --export-format srt --output interview.srt
+# Parakeet + shallow KenLM fusion for medical dictation
+dotnet run --project src/Vernacula.CLI -- \
+  --audio clinic-note.wav --model ~/models/vernacula \
+  --lm ~/models/kenlm-parakeet/en-medical.arpa.gz \
+  --lm-weight 0.15
 
-# CPU-only, int8 quantized models
-dotnet run --project src/Vernacula.CLI -p:EP=Cpu -- \
-  --audio recording.wav --model ~/models/vernacula --precision int8
+# Cohere Transcribe backend with forced French
+dotnet run --project src/Vernacula.CLI -- \
+  --audio interview.flac --model ~/models/vernacula \
+  --asr cohere --language fr \
+  --export-format srt --output interview.srt
+
+# Language identification only
+dotnet run --project src/Vernacula.CLI -- \
+  --audio unknown.mp3 --model ~/models/vernacula --lid
 ```
 
 ---
 
-## Linux Desktop Installation (Avalonia)
+## Pipeline Backends
+
+### ASR backends
+
+| Backend | Latency | Languages | Notes |
+|---|---|---|---|
+| **Parakeet TDT v3 (default)** | Fast | 25 European | Streaming-friendly TDT. Supports beam search + KenLM fusion. |
+| **Cohere Transcribe (03-2026)** | Medium | 15 (auto-detect or forced) | Transformer encoder-decoder. |
+| **Qwen3-ASR 1.7B** | Medium | ~30 | Multilingual. Can force language via prompt. |
+| **VibeVoice-ASR** | Slow (CUDA only) | English, broad domain | All-in-one transcription with built-in diarization. |
+
+### Diarization
+
+| Backend | Speed | Accuracy | Overlap detection |
+|---|---|---|---|
+| Silero VAD | Fastest | No speaker identity | No |
+| Sortformer v2-stream | Fast | Good | Yes (4-speaker max per chunk) |
+| DiariZen | Slower | Better | Yes (powerset, 4-speaker max) |
+| VibeVoice built-in | — | Bundled with VibeVoice-ASR | Yes |
+
+### Execution providers
+
+| EP | Platform | Notes |
+|---|---|---|
+| CUDA | Linux, Windows | Best performance on NVIDIA GPUs |
+| CPU | All | Works everywhere; slower |
+| DirectML | Windows only | AMD/Intel/NVIDIA via DirectX 12 |
+
+---
+
+## Language Model Fusion (Parakeet)
+
+Vernacula ships a pure-C# shallow KenLM fusion path for the Parakeet TDT decoder. Selecting a language model in Settings auto-enables beam search and biases decoding toward the chosen domain — fixing the occasional multilingual-drift artifact Parakeet shows on conversational English and preserving specialty vocabulary.
+
+Catalog currently published at [christopherthompson81/kenlm-parakeet](https://huggingface.co/christopherthompson81/kenlm-parakeet):
+
+| LM | Size | Target |
+|---|---|---|
+| `en-general` | ~67 MB | Conversational English (GigaSpeech + People's Speech) |
+| `en-medical` | ~17 MB | Medical English — clinical dictation + patient↔doctor dialogue + specialty drug names |
+
+Each domain LM is built from speech-register sources only (spoken transcripts + synthetic dialogue + class-aware template-generated specialty vocabulary). Building your own is fully scripted under [`scripts/kenlm_build/`](scripts/kenlm_build/) — extract corpora from HuggingFace, tokenise with Parakeet's tokenizer, drive KenLM's `lmplz`, validate with the included scispaCy-based harness. See the [README there](scripts/kenlm_build/README.md) for the design notes on why each LM is layered the way it is.
+
+---
+
+## Linux Desktop Installation
 
 Run the installer from the repo root:
 
@@ -221,12 +296,16 @@ To install to a custom location:
 ./install.sh --prefix /opt/vernacula-desktop
 ```
 
-> **Note:** The first launch opens a model download dialog. Model sizes:
-> - Core fp32: ~3 GB (encoder data file is 2.44 GB)
-> - Core int8: ~820 MB
+> **Note:** The first launch opens a model download dialog. Approximate sizes:
+> - Core (Parakeet TDT + Sortformer + VAD, fp32): ~3 GB
+> - Core int8 quantized: ~820 MB
 > - DiariZen add-on: ~310 MB
+> - VoxLingua107 LID: ~100 MB
+> - Cohere Transcribe: ~7 GB
+> - VibeVoice-ASR: ~3 GB (CUDA-only)
+> - KenLM models: 17–67 MB each (optional)
 >
-> Models are stored in `~/.local/share/Vernacula/models/`.
+> All models are stored under `~/.local/share/Vernacula/models/`.
 
 ---
 
@@ -247,27 +326,6 @@ DiariZen's segmentation and embedding pipeline can be tuned via environment vari
 
 ---
 
-## Pipeline Backends
-
-### ASR
-- **NVIDIA Parakeet TDT 0.6B** — CTC/Transducer hybrid, English, streaming-friendly
-
-### Diarization
-| Backend | Speed | Accuracy | Overlap detection |
-|---|---|---|---|
-| Sortformer | Fast | Good | Yes (4-speaker max per chunk) |
-| DiariZen | Slower | Better | Yes (powerset, 4-speaker max) |
-| Silero VAD | Fastest | None (no identity) | No |
-
-### Execution Providers
-| EP | Platform | Notes |
-|---|---|---|
-| CUDA | Linux, Windows | Best performance on NVIDIA GPUs |
-| CPU | All | Works everywhere, no GPU needed |
-| DirectML | Windows only | AMD/Intel/NVIDIA via DirectX 12 |
-
----
-
 ## Benchmarks
 
 ### Throughput
@@ -284,6 +342,8 @@ DiariZen's segmentation and embedding pipeline can be tuned via environment vari
 | DiariZen | NVIDIA RTX 3090 | 16.8s | 5.4s | 22.2s | **0.037** |
 
 > DiariZen's segmentation and embedding pipeline is heavily GPU-accelerated — CUDA reduces diarization time from 502s to 16.8s (~30×) and brings total runtime in line with Sortformer.
+
+Parakeet TDT beam search (`--parakeet-beam 4`) adds roughly 3–5× to ASR latency. With KenLM fusion at typical weights the additional lookup cost is a few hundred milliseconds per clip (one-time LM load plus microsecond-per-beam-expansion scoring).
 
 ### Accuracy (DER)
 
