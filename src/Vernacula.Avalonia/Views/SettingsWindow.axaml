@@ -488,6 +488,24 @@
                             </StackPanel>
                         </RadioButton>
 
+                        <Separator Background="{DynamicResource OverlayBrush}" Margin="0,8,0,8" />
+
+                        <RadioButton GroupName="AsrBackend"
+                                     IsChecked="{Binding IsAsrIndicConformer, Mode=OneWay}"
+                                     Command="{Binding SetAsrBackendCommand}"
+                                     CommandParameter="IndicConformer"
+                                     Foreground="{DynamicResource TextBrush}">
+                            <StackPanel>
+                                <TextBlock Text="IndicConformer 600M"
+                                           FontWeight="SemiBold"
+                                           Foreground="{DynamicResource TextBrush}" />
+                                <TextBlock Text="AI4Bharat's 22-language Indic ASR (Hindi, Bengali, Tamil, Telugu, Marathi, …). Place the exported package in the indicconformer models folder. A per-file language must be selected below — there's no auto-detect."
+                                           Foreground="{DynamicResource SubtextBrush}"
+                                           FontSize="11"
+                                           TextWrapping="Wrap" />
+                            </StackPanel>
+                        </RadioButton>
+
                         <StackPanel Margin="24,10,0,0"
                                     IsVisible="{Binding IsAsrParakeet}">
                             <TextBlock Text="TDT beam width"
@@ -646,6 +664,32 @@
                                        Margin="0,0,0,8" />
                             <ComboBox ItemsSource="{x:Static vm:SettingsViewModel.Qwen3AsrLanguages}"
                                       SelectedItem="{Binding SelectedQwen3AsrLanguage}"
+                                      Background="{DynamicResource OverlayBrush}"
+                                      Foreground="{DynamicResource TextBrush}"
+                                      BorderBrush="{DynamicResource OverlayBrush}"
+                                      HorizontalAlignment="Left"
+                                      MinWidth="220">
+                                <ComboBox.ItemTemplate>
+                                    <DataTemplate>
+                                        <TextBlock Text="{Binding DisplayName}" />
+                                    </DataTemplate>
+                                </ComboBox.ItemTemplate>
+                            </ComboBox>
+                        </StackPanel>
+
+                        <StackPanel Margin="24,10,0,0"
+                                    IsVisible="{Binding ShowIndicConformerLanguagePicker}">
+                            <TextBlock Text="Language"
+                                       Foreground="{DynamicResource TextBrush}"
+                                       FontWeight="SemiBold"
+                                       Margin="0,0,0,6" />
+                            <TextBlock Text="Required. IndicConformer has 22 per-language CTC heads and needs one selected at inference."
+                                       Foreground="{DynamicResource SubtextBrush}"
+                                       FontSize="11"
+                                       TextWrapping="Wrap"
+                                       Margin="0,0,0,8" />
+                            <ComboBox ItemsSource="{x:Static vm:SettingsViewModel.IndicConformerLanguages}"
+                                      SelectedItem="{Binding SelectedIndicConformerLanguage}"
                                       Background="{DynamicResource OverlayBrush}"
                                       Foreground="{DynamicResource TextBrush}"
                                       BorderBrush="{DynamicResource OverlayBrush}"

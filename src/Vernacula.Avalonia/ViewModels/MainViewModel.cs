@@ -109,10 +109,11 @@ internal partial class MainViewModel : ObservableObject
         {
             string asrModelName = backend switch
             {
-                AsrBackend.Parakeet  => "nvidia/parakeet-tdt-0.6b-v3",
-                AsrBackend.Cohere    => "CohereLabs/cohere-transcribe-03-2026",
-                AsrBackend.Qwen3Asr  => "Qwen/Qwen3-ASR-1.7B",
-                AsrBackend.VibeVoice => "vibevoice/vibevoice-asr",
+                AsrBackend.Parakeet       => "nvidia/parakeet-tdt-0.6b-v3",
+                AsrBackend.Cohere         => "CohereLabs/cohere-transcribe-03-2026",
+                AsrBackend.Qwen3Asr       => "Qwen/Qwen3-ASR-1.7B",
+                AsrBackend.VibeVoice      => "vibevoice/vibevoice-asr",
+                AsrBackend.IndicConformer => "ai4bharat/indic-conformer-600m-multilingual",
                 _ => throw new ArgumentOutOfRangeException(nameof(backend)),
             };
             controlDb.UpdateJobAsr(jobId, asrModelName, detectedIso);
