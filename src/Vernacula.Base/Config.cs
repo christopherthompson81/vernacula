@@ -247,6 +247,11 @@ public static class Config
     public const string DecoderJointFileInt8 = "decoder_joint-model.int8.onnx";
     public const string VocabFile            = "vocab.txt";
     public const string AsrConfigFile        = "config.json";
+
+    // ── ASR (IndicConformer) ────────────────────────────────────────────────
+    public const string IndicConformerSubDir             = "indicconformer";
+    public const string CtcDecoderFile                   = "ctc_decoder-model.onnx";
+    public const string IndicConformerLanguageSpansFile  = "language_spans.json";
     public const int    MaxTokensPerStep     = 10;
     public const int    MaxBatchSize         = 32;
 
