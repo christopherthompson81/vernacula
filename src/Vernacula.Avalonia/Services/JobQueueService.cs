@@ -328,22 +328,35 @@ internal sealed class JobQueueService
 
     private string GetJobAsrModelName() => _settings.Current.AsrBackend switch
     {
-        AsrBackend.Cohere     => "CohereLabs/cohere-transcribe-03-2026",
-        AsrBackend.Qwen3Asr   => "Qwen/Qwen3-ASR-1.7B",
-        AsrBackend.VibeVoice  => "vibevoice/vibevoice-asr",
-        _                     => "nvidia/parakeet-tdt-0.6b-v3",
+        AsrBackend.Cohere         => "CohereLabs/cohere-transcribe-03-2026",
+        AsrBackend.Qwen3Asr       => "Qwen/Qwen3-ASR-1.7B",
+        AsrBackend.VibeVoice      => "vibevoice/vibevoice-asr",
+        AsrBackend.IndicConformer => "ai4bharat/indic-conformer-600m-multilingual",
+        _                         => "nvidia/parakeet-tdt-0.6b-v3",
     };
 
     private string GetJobAsrLanguageCode()
     {
-        return _settings.Current.AsrBackend switch
+        var backend = _settings.Current.AsrBackend;
+        // IndicConformer must pass a real code — "auto" would later resolve
+        // against the 22-head set and fail. When AutoLid is on, the service
+        // still receives the manual fallback here and consumes LID inside.
+        if (backend == AsrBackend.IndicConformer)
         {
-            AsrBackend.Cohere   => string.IsNullOrWhiteSpace(_settings.Current.CohereLanguage)
-                                       ? "auto" : _settings.Current.CohereLanguage,
-            AsrBackend.Qwen3Asr => string.IsNullOrWhiteSpace(_settings.Current.Qwen3AsrLanguage)
-                                       ? "auto" : _settings.Current.Qwen3AsrLanguage,
-            _                   => "auto",
-        };
+            return string.IsNullOrWhiteSpace(_settings.Current.IndicConformerLanguage)
+                ? "hi" : _settings.Current.IndicConformerLanguage;
+        }
+        if (backend == AsrBackend.Cohere)
+        {
+            return string.IsNullOrWhiteSpace(_settings.Current.CohereLanguage)
+                ? "auto" : _settings.Current.CohereLanguage;
+        }
+        if (backend == AsrBackend.Qwen3Asr)
+        {
+            return string.IsNullOrWhiteSpace(_settings.Current.Qwen3AsrLanguage)
+                ? "auto" : _settings.Current.Qwen3AsrLanguage;
+        }
+        return "auto";
     }
 
     private record QueueEntry(
