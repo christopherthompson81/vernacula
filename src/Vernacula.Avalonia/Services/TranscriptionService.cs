@@ -953,22 +953,17 @@ internal class TranscriptionService
             else if (useIndicConformerAsr)
             {
                 // IndicConformer has 22 per-language CTC heads; one must be
-                // chosen per segment. Two modes:
-                //
-                //   - AutoLid ON: use per-segment LID (if enabled, else the
-                //     file-level detected_language) to pick the head. Groups
-                //     detected as one of IndicConformer's 22 supported codes
-                //     decode in that language; everything else falls back to
-                //     the user's manual pick. VoxLingua covers 14 of 22 —
-                //     the other 8 (brx, doi, kok, ks, mai, mni, or, sat)
-                //     always go through the fallback.
-                //
-                //   - AutoLid OFF: current behavior — all segments decode in
-                //     the manual language.
+                // chosen per segment. LID drives per-segment language when
+                // the global LidEnabled / LidPerSegment switches are on
+                // (lidByRid populated above). Segments LID didn't classify
+                // — or ones LID detected as a language outside the 22 Indic
+                // heads, or as one of the 8 VoxLingua doesn't cover (brx,
+                // doi, kok, ks, mai, mni, or, sat) — fall back to the
+                // manual pick from settings.
                 //
                 // `asrLanguageCode` from the per-file override still wins
-                // either way. "auto"/"" from that field is normal — it just
-                // means "use settings".
+                // over the manual setting when present. "auto" / "" from
+                // that field mean "use settings".
                 string perFileLang = !string.IsNullOrWhiteSpace(asrLanguageCode)
                     && !string.Equals(asrLanguageCode, "auto", StringComparison.OrdinalIgnoreCase)
                         ? asrLanguageCode
@@ -980,13 +975,13 @@ internal class TranscriptionService
 
                 var indicSupported = AsrLanguageSupport.Get(AsrBackend.IndicConformer);
 
-                // When AutoLid is on we grouper per-segment via the existing
-                // LID plumbing. lidByRid was set up above for the Cohere/
-                // Qwen3 branches; reuse it here.
-                bool useAutoLid = _settings.Current.IndicConformerAutoLid;
-                var groups = useAutoLid
-                    ? GroupSegmentsByLidLanguage(unfilledResultIds, lidByRid, fallback: perFileLang)
-                    : [new LidLanguageGroup(perFileLang, Enumerable.Range(0, segsSubset.Count).ToList())];
+                // GroupSegmentsByLidLanguage handles all three states
+                // uniformly: when lidByRid is null and there's no fallback
+                // LID, every segment lands in one group using perFileLang;
+                // when per-segment LID populated it, segments split by
+                // detected language.
+                var groups = GroupSegmentsByLidLanguage(
+                    unfilledResultIds, lidByRid, fallback: perFileLang);
 
                 foreach (var group in groups)
                 {

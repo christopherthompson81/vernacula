@@ -679,45 +679,18 @@
 
                         <StackPanel Margin="24,10,0,0"
                                     IsVisible="{Binding ShowIndicConformerLanguagePicker}">
-                            <CheckBox IsChecked="{Binding UseIndicConformerAutoLid}"
-                                      Content="LID-driven auto (pick language per segment)"
-                                      Foreground="{DynamicResource TextBrush}"
-                                      Margin="0,0,0,4" />
-                            <TextBlock Text="When on, VoxLingua107 picks the decoder language per segment. Requires language identification to be enabled below."
-                                       Foreground="{DynamicResource SubtextBrush}"
-                                       FontSize="11"
-                                       TextWrapping="Wrap"
-                                       Margin="24,0,0,8" />
-
-                            <Border IsVisible="{Binding ShowIndicConformerAutoLidWarning}"
-                                    Background="{DynamicResource OverlayBrush}"
-                                    BorderBrush="{DynamicResource SubtextBrush}"
-                                    BorderThickness="1"
-                                    CornerRadius="4"
-                                    Padding="10"
-                                    Margin="0,0,0,10">
-                                <StackPanel>
-                                    <TextBlock Text="LID covers 14 of 22 IndicConformer languages"
-                                               Foreground="{DynamicResource TextBrush}"
-                                               FontWeight="SemiBold"
-                                               FontSize="12" />
-                                    <TextBlock Text="VoxLingua107 cannot identify these eight. Segments whose language LID can't detect — or ones that come back as one of these — use the manual fallback below: Bodo, Dogri, Konkani, Kashmiri, Maithili, Manipuri, Odia, Santali."
-                                               Foreground="{DynamicResource SubtextBrush}"
-                                               FontSize="11"
-                                               TextWrapping="Wrap"
-                                               Margin="0,4,0,0" />
-                                </StackPanel>
-                            </Border>
-
-                            <TextBlock Text="{Binding IndicConformerLanguagePickerLabel}"
+                            <TextBlock Text="Language"
                                        Foreground="{DynamicResource TextBrush}"
                                        FontWeight="SemiBold"
                                        Margin="0,0,0,6" />
-                            <TextBlock Text="{Binding IndicConformerLanguagePickerDescription}"
+                            <TextBlock TextWrapping="Wrap"
                                        Foreground="{DynamicResource SubtextBrush}"
                                        FontSize="11"
-                                       TextWrapping="Wrap"
-                                       Margin="0,0,0,8" />
+                                       Margin="0,0,0,8">
+                                <Run Text="Required. IndicConformer has 22 per-language CTC heads and needs one selected at inference." />
+                                <LineBreak />
+                                <Run Text="When Language Identification is enabled below, LID picks the decoder language per segment; this setting is the fallback for the 8 languages VoxLingua doesn't cover (Bodo, Dogri, Konkani, Kashmiri, Maithili, Manipuri, Odia, Santali)." />
+                            </TextBlock>
                             <ComboBox ItemsSource="{x:Static vm:SettingsViewModel.IndicConformerLanguages}"
                                       SelectedItem="{Binding SelectedIndicConformerLanguage}"
                                       Background="{DynamicResource OverlayBrush}"

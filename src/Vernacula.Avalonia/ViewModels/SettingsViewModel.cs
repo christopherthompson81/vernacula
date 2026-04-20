@@ -31,7 +31,7 @@ internal partial class SettingsViewModel : ObservableObject
     private SegmentationMode _selectedSegmentation;
 
     [ObservableProperty]
-    [NotifyPropertyChangedFor(nameof(IsAsrParakeet), nameof(IsAsrCohere), nameof(IsAsrQwen3Asr), nameof(IsAsrVibeVoice), nameof(IsAsrIndicConformer), nameof(ShowStandardSegmentationOptions), nameof(ShowVibeVoiceBuiltinSegmentation), nameof(ShowDiariZenInSegmentation), nameof(ShowGatedSegmentationHint), nameof(CanUseVibeVoiceAsr), nameof(VibeVoiceAsrLabel), nameof(VibeVoiceAsrDescription), nameof(ShowCohereLanguagePicker), nameof(ShowQwen3AsrLanguagePicker), nameof(ShowIndicConformerLanguagePicker), nameof(ShowIndicConformerAutoLidWarning))]
+    [NotifyPropertyChangedFor(nameof(IsAsrParakeet), nameof(IsAsrCohere), nameof(IsAsrQwen3Asr), nameof(IsAsrVibeVoice), nameof(IsAsrIndicConformer), nameof(ShowStandardSegmentationOptions), nameof(ShowVibeVoiceBuiltinSegmentation), nameof(ShowDiariZenInSegmentation), nameof(ShowGatedSegmentationHint), nameof(CanUseVibeVoiceAsr), nameof(VibeVoiceAsrLabel), nameof(VibeVoiceAsrDescription), nameof(ShowCohereLanguagePicker), nameof(ShowQwen3AsrLanguagePicker), nameof(ShowIndicConformerLanguagePicker))]
     private AsrBackend _selectedAsrBackend;
 
     [ObservableProperty]
@@ -102,10 +102,6 @@ internal partial class SettingsViewModel : ObservableObject
     private AsrLanguageOption? _selectedIndicConformerLanguage;
 
     [ObservableProperty]
-    [NotifyPropertyChangedFor(nameof(ShowIndicConformerAutoLidWarning), nameof(IndicConformerLanguagePickerLabel), nameof(IndicConformerLanguagePickerDescription))]
-    private bool _useIndicConformerAutoLid;
-
-    [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(IsDenoiserNone), nameof(IsDenoiserDfn3))]
     private DenoiserMode _selectedDenoiser;
 
@@ -144,18 +140,6 @@ internal partial class SettingsViewModel : ObservableObject
     public bool ShowCohereLanguagePicker         => SelectedAsrBackend == AsrBackend.Cohere;
     public bool ShowQwen3AsrLanguagePicker       => SelectedAsrBackend == AsrBackend.Qwen3Asr;
     public bool ShowIndicConformerLanguagePicker => SelectedAsrBackend == AsrBackend.IndicConformer;
-    public bool ShowIndicConformerAutoLidWarning =>
-        SelectedAsrBackend == AsrBackend.IndicConformer && UseIndicConformerAutoLid;
-
-    /// <summary>Label flips between "Language" (manual) and "Manual fallback
-    /// language" (auto mode) so the picker's role is obvious when LID is
-    /// driving most of the choice.</summary>
-    public string IndicConformerLanguagePickerLabel =>
-        UseIndicConformerAutoLid ? "Manual fallback language" : "Language";
-
-    public string IndicConformerLanguagePickerDescription => UseIndicConformerAutoLid
-        ? "Used for segments whose language wasn't detected, or when the detected language isn't one of the 14 LID-supported Indic languages."
-        : "Required. IndicConformer has 22 per-language CTC heads and needs one selected at inference.";
     public bool IsDenoiserNone      => SelectedDenoiser == DenoiserMode.None;
     public bool IsDenoiserDfn3      => SelectedDenoiser == DenoiserMode.DeepFilterNet3;
     public bool ShowStandardSegmentationOptions => SelectedAsrBackend != AsrBackend.VibeVoice;
@@ -331,7 +315,6 @@ internal partial class SettingsViewModel : ObservableObject
         _selectedIndicConformerLanguage = IndicConformerLanguages.FirstOrDefault(l => l.Code == svc.Current.IndicConformerLanguage)
                                         ?? IndicConformerLanguages.FirstOrDefault(l => l.Code == "hi")
                                         ?? IndicConformerLanguages[0];
-        _useIndicConformerAutoLid     = svc.Current.IndicConformerAutoLid;
         _parakeetBeamWidth            = Math.Max(1, svc.Current.ParakeetBeamWidth);
         _selectedLmOption             = KenLmCatalog.Find(svc.Current.ParakeetLmSelection) ?? KenLmCatalog.All[0];
         // If the user's saved selection is a built-in option whose file isn't
@@ -448,12 +431,6 @@ internal partial class SettingsViewModel : ObservableObject
         // No "auto" entry for IndicConformer — if someone binds null through a
         // cleared combo, fall back to the last good code rather than persist "".
         _svc.Current.IndicConformerLanguage = value?.Code ?? _svc.Current.IndicConformerLanguage;
-        _svc.Save();
-    }
-
-    partial void OnUseIndicConformerAutoLidChanged(bool value)
-    {
-        _svc.Current.IndicConformerAutoLid = value;
         _svc.Save();
     }
 
