@@ -241,9 +241,65 @@ dotnet run --project src/Vernacula.CLI -- \
 | Backend | Latency | Languages | Notes |
 |---|---|---|---|
 | **Parakeet TDT v3 (default)** | Fast | 25 European | Streaming-friendly TDT. Supports beam search + KenLM fusion. |
-| **Cohere Transcribe (03-2026)** | Medium | 15 (auto-detect or forced) | Transformer encoder-decoder. |
-| **Qwen3-ASR 1.7B** | Medium | ~30 | Multilingual. Can force language via prompt. |
-| **VibeVoice-ASR** | Slow (CUDA only) | English, broad domain | All-in-one transcription with built-in diarization. |
+| **Cohere Transcribe (03-2026)** | Medium | 14 + auto-detect | Transformer encoder-decoder. |
+| **Qwen3-ASR 1.7B** | Medium | 29 | Multilingual. Can force language via prompt. |
+| **VibeVoice-ASR** | Slow (CUDA only) | English | All-in-one transcription with built-in diarization. |
+
+### Language support matrix
+
+Transcription language support across the ASR backends, plus LM-fusion
+coverage for Parakeet (Parakeet-only) and LID coverage (VoxLingua107
+*identifies* 107 languages — it doesn't transcribe).
+
+Legend: ● = supported · ○ = not supported · 🅛 = KenLM available
+
+| Code | Language | Parakeet v3 | Cohere | Qwen3-ASR | VibeVoice | Parakeet KenLM |
+|------|----------|:--:|:--:|:--:|:--:|:--:|
+| ar | Arabic | ○ | ● | ● | ○ | ○ |
+| bg | Bulgarian | ● | ○ | ○ | ○ | ○ |
+| cs | Czech | ● | ○ | ● | ○ | ○ |
+| da | Danish | ● | ○ | ● | ○ | ○ |
+| de | German | ● | ● | ● | ○ | ○ |
+| el | Greek | ● | ● | ● | ○ | ○ |
+| en | English | ● | ● | ● | ● | 🅛 general + medical |
+| es | Spanish | ● | ● | ● | ○ | ○ |
+| et | Estonian | ● | ○ | ○ | ○ | ○ |
+| fa | Persian | ○ | ○ | ● | ○ | ○ |
+| fi | Finnish | ● | ○ | ● | ○ | ○ |
+| fr | French | ● | ● | ● | ○ | ○ |
+| hi | Hindi | ○ | ○ | ● | ○ | ○ |
+| hr | Croatian | ● | ○ | ○ | ○ | ○ |
+| hu | Hungarian | ● | ○ | ● | ○ | ○ |
+| id | Indonesian | ○ | ○ | ● | ○ | ○ |
+| it | Italian | ● | ● | ● | ○ | ○ |
+| ja | Japanese | ○ | ● | ● | ○ | ○ |
+| ko | Korean | ○ | ● | ● | ○ | ○ |
+| lt | Lithuanian | ● | ○ | ○ | ○ | ○ |
+| lv | Latvian | ● | ○ | ○ | ○ | ○ |
+| mk | Macedonian | ○ | ○ | ● | ○ | ○ |
+| ms | Malay | ○ | ○ | ● | ○ | ○ |
+| mt | Maltese | ● | ○ | ○ | ○ | ○ |
+| nl | Dutch | ● | ● | ● | ○ | ○ |
+| pl | Polish | ● | ● | ● | ○ | ○ |
+| pt | Portuguese | ● | ● | ● | ○ | ○ |
+| ro | Romanian | ● | ○ | ● | ○ | ○ |
+| ru | Russian | ● | ○ | ● | ○ | ○ |
+| sk | Slovak | ● | ○ | ○ | ○ | ○ |
+| sl | Slovenian | ● | ○ | ○ | ○ | ○ |
+| sv | Swedish | ● | ○ | ● | ○ | ○ |
+| th | Thai | ○ | ○ | ● | ○ | ○ |
+| tl | Filipino (Tagalog) | ○ | ○ | ● | ○ | ○ |
+| tr | Turkish | ○ | ○ | ● | ○ | ○ |
+| uk | Ukrainian | ● | ○ | ○ | ○ | ○ |
+| vi | Vietnamese | ○ | ● | ● | ○ | ○ |
+| zh | Chinese | ○ | ● | ● | ○ | ○ |
+| **Total** | **37 unique** | **25** | **14** | **29** | **1** | **1 (en)** |
+
+**Reading the matrix**
+
+- If you know your audio's language, pick an ASR backend whose row for that language is `●` (prefer Parakeet when possible — it's faster and supports KenLM fusion).
+- If your audio might be in any language, leave Cohere or Qwen3 in auto-detect mode, or use `--lid` (VoxLingua107) for explicit identification across 107 languages before routing to a backend.
+- English is the only language with KenLM fusion coverage today. More domains / more languages are tractable follow-ups — the `scripts/kenlm_build/` pipeline is language-agnostic; the current corpora are just English.
 
 ### Diarization
 
