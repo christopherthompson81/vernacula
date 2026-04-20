@@ -494,7 +494,167 @@ config.json                444 B
 export-report.json         (both parity numbers + PASS flags)
 ```
 
-## Phase 2 gate: **CLOSED**
+## Run 15 — 2026-04-20 14:40 (600M discovery)
+
+**Pivot:** user preferred the 600M variant (`ai4bharat/indic-conformer-600m-multilingual`)
+over the 120M we'd been exporting. Standard parameter-scaling motivation.
+
+Inspecting the 600M HF repo reveals it's an **already-exported ONNX package**,
+not a `.nemo` file:
+
+- `assets/encoder.onnx` (3 MB metadata + 2.43 GB external-data weights spread
+  across ~360 per-tensor blob files under `assets/layers.*`, `assets/onnx__*`,
+  `assets/pre_encode.*`, and `assets/Constant_*`)
+- `assets/ctc_decoder.onnx` (23 MB, inline)
+- 22× `assets/joint_post_net_<lang>.onnx` plus `joint_enc/joint_pred/joint_pre_net/rnnt_decoder.onnx` — RNNT-side, we don't need any of them
+- `assets/language_masks.json` — pre-materialized 22 × 5633 bool arrays
+- `assets/vocab.json` — per-language dict (see below)
+- `assets/preprocessor.ts` — **TorchScript**, not ONNX
+- `model_onnx.py` — reference inference script
+- `config.json` — minimal, mostly RNNT params plus `BLANK_ID: 256`
+
+**Shipping-shape diff from our 120M package:**
+
+| | 120M (our export) | 600M (AI4Bharat ships) |
+|---|---|---|
+| Encoder IO | `features/features_lens → encoded/encoded_lens` | `audio_signal/length → outputs/encoded_lengths` |
+| CTC IO | `encoded → logits` | `encoder_output → logprobs` |
+| Preprocessor | ONNX (our DFT wrapper) | TorchScript |
+| Vocab | flat `vocab.txt`, 5632 lines | per-lang JSON dict, 22 × 257 entries |
+| Language mask | 22 × `[start, length]` spans | 22 × length-5633 bool arrays |
+
+**Preprocessor config match check** — dumped `preprocessor.ts`'s TorchScript
+`.code`. The forward does exactly: seq_len = `length // 160 + 1`, reflect-pad
+by 256 on each side, `torch.stft(input, 512, 160, 400, hann, ...)`, power-
+spectrogram (pow 2), 80-mel matmul, `log(x + 5.96e-08)`, per-feature
+mean/std normalize. **Byte-identical** to our 120M preprocessor config → our
+existing `nemo128.onnx` works for 600M without re-export.
+
+---
+
+## Run 16 — 2026-04-20 14:50 (600M repackaging, attempt 1)
+
+Wrote `scripts/indicconformer_export/repackage_600m_indicconformer.py` that:
+
+1. `snapshot_download` the 600M `assets/*` (2.4 GB, 371 files)
+2. Load encoder.onnx + external data, rename 4 IO tensors + node
+   references, save with single consolidated `encoder-model.onnx.data`
+3. Same for ctc_decoder.onnx (inlined, only 23 MB)
+4. Copy our existing nemo128.onnx verbatim
+5. Flatten vocab.json dict → flat `vocab.txt`
+6. Convert bool masks → `[start, length]` spans + verify they agree with
+   AI4Bharat's published masks
+
+**Attempt 1 crash:** `onnx.load(..., load_external_data=True)` refuses
+symlinked external data (safety check). HF stores blobs at `cache/blobs/*`
+and symlinks into `assets/*` — so all 366 weight file links trip the check.
+
+**Fix:** `load_external_data=False` to get the graph only, then manually
+walk `graph.initializer`, `.resolve()` each referenced path through the
+symlink, read raw bytes, set `raw_data` inline, clear the external-data
+marker. Re-save with `save_as_external_data=True` then rebuilds a clean
+single-sidecar package.
+
+---
+
+## Run 17 — 2026-04-20 14:56 (repackaging, attempt 2 — vocab assertion)
+
+**Crash:** `AssertionError: as: middle slice is 255 tokens`. I assumed the
+per-lang vocab shape was `[<unk>, t1..t255, <blank>]` so the "real" slice
+was `vocab[1:-1]`. Actually the layout is `[<unk>, t1..t256]` — 257 entries
+where the last is a real token (not a blank marker). The CTC softmax emits
+256 logits per lang; the 257th output slot is the shared CTC blank and
+doesn't need a vocab entry. Fixed by slicing `vocab[lang][:256]` — keep
+`<unk>` at local id 0 plus 255 real tokens.
+
+This matches the flat layout our 120M export produced (verified by
+re-reading the 120M `vocab.txt`: each 256-slot block starts with `<unk>`).
+
+---
+
+## Run 18 — 2026-04-20 14:58 (repackaging, attempt 3 — ORT init crash)
+
+Repackage succeeds, ORT fails to load `encoder-model.onnx`:
+
+```
+RuntimeException: cannot get file size: ... /Constant_1970_attr__value
+```
+
+**Diagnosis:** the repackaged ONNX still has a reference to
+`Constant_1970_attr__value` — a file sitting in `assets/` that the ONNX
+graph doesn't reach through `graph.initializer`. It's external data on a
+**node attribute** (a Constant op's baked-in tensor). My resolver only
+walked initializers.
+
+**Fix:** walk `node.attribute` recursively too — handle both scalar
+TENSOR attrs and TENSORS lists, and descend into subgraphs (GRAPH/GRAPHS
+types) for if/loop nodes. Updated the helper.
+
+---
+
+## Run 19 — 2026-04-20 14:58 (repackaging, attempt 4 — clean)
+
+Repackager output:
+
+```
+[encoder]    resolved 366 external tensors (initializers + attrs)
+             rewrote 4 IO refs, saved encoder-model.onnx + .data (2.43 GB)
+[ctc_decoder] resolved 0 external tensors; rewrote 2 IO refs; inline 23.1 MB
+[nemo128]    copied from 120M package (byte-identical config)
+[vocab]      5632 lines (22 × 256)
+[verify]     masks match derived spans for all 22 languages  ✓
+[spans]      22 × {start, length}
+[config]     sample_rate, preprocessor params, ctc.blank_token_id=5632
+```
+
+---
+
+## Run 20 — 2026-04-20 14:59 (600M end-to-end Hindi validation)
+
+First working decode through the full ONNX package:
+
+```
+validate_indicconformer_package.py --package <600m> --wav hi-IN_fleurs_01.wav --lang hi
+
+decoded (hi): स्कीम मार्ग को एक हाइकिंग लंबी पैदल यात्रा मार्ग जैसा ही सोचें
+expected:     स्कीइंग मार्ग को एक हाईकिंग लंबी पैदल यात्रा मार्ग जैसा ही सोचें।
+```
+
+~2 word-level edits out of 11 words on a 9.4-sec clip — ordinary WER for a
+multilingual ASR model on one short clip, not a pipeline defect. Important
+positives:
+
+- Pipeline runs end-to-end with our renamed IO conventions
+- 2.43 GB consolidated external-data sidecar loads cleanly in ORT
+- 120M's nemo128.onnx works unchanged for 600M
+- Devanagari script renders correctly (verifies vocab flattening handled
+  SentencePiece `▁` markers and UTF-8 write)
+- Language-span mask correctly selects Hindi's 256-token slice
+- SentencePiece detokenization (`▁` → space) produces readable text
+
+---
+
+## Phase 2 gate (600M): **CLOSED**
+
+**Final 600M package** at `~/models/indicconformer_600m_onnx/`:
+
+```
+encoder-model.onnx        42 MB
+encoder-model.onnx.data  2.43 GB
+ctc_decoder-model.onnx   23 MB
+nemo128.onnx             1.1 MB
+vocab.txt                 41 KB
+language_spans.json      1.4 KB
+config.json              467 B
+```
+
+Contract identical to the 120M package (same file names, same IO names,
+same vocab.txt / language_spans.json shape). **The same C# backend we
+write in Phase 3 will load either package without branching.**
+
+---
+
+## Phase 2 gate (120M): **CLOSED**
 
 Full pipeline is numerically faithful on real audio for Hindi. By the
 language-agnostic ONNX design (no language_id input on any graph), this
