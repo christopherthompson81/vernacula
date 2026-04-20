@@ -264,6 +264,23 @@ public static class AsrLanguageSupport
             ["ta"] = "Tamil",       ["te"] = "Telugu",     ["ur"] = "Urdu",
         }.ToFrozenDictionary(StringComparer.OrdinalIgnoreCase);
 
+    // Right-to-left scripts. Keep tight — only codes whose *normal* writing
+    // direction is RTL. Urdu, Kashmiri and Sindhi all write in Perso-Arabic
+    // RTL in this model's training data. Arabic / Hebrew / Persian aren't
+    // in IndicConformer's set but are included so other backends (Cohere,
+    // Qwen3) benefit from the same helper.
+    private static readonly FrozenSet<string> RtlLangs = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+    {
+        "ar", "fa", "he", "iw", "ur", "ks", "sd",
+    }.ToFrozenSet(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>True when the language's normal writing direction is
+    /// right-to-left. Used by the editor to flip FlowDirection on the
+    /// per-token ASR runs and the Edit box when rendering one of these
+    /// languages. Deprecated codes normalized via <see cref="NormalizeIso"/>.</summary>
+    public static bool IsRtl(string? iso) =>
+        !string.IsNullOrWhiteSpace(iso) && RtlLangs.Contains(NormalizeIso(iso));
+
     /// <summary>
     /// English display name for an ISO 639-1 code, or the code itself if
     /// no name is registered. Case-insensitive; deprecated codes are

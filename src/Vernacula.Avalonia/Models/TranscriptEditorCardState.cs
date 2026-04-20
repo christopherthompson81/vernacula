@@ -59,6 +59,13 @@ internal sealed partial class TranscriptEditorCardState : ObservableObject
     public ObservableCollection<TranscriptEditorTextRunState> AsrRuns { get; } = [];
     public ObservableCollection<TranscriptEditorTextRunState> AdjacentRuns { get; } = [];
 
+    /// <summary>Flow direction for the ASR/Edit columns in the focused card.
+    /// Set to RightToLeft for Urdu/Kashmiri/Sindhi (and other RTL codes from
+    /// non-Indic backends). Driven by the segment's language at build time,
+    /// so mixed-direction files where LID per-segment split languages across
+    /// scripts get each card rendered in the correct direction.</summary>
+    [ObservableProperty] private FlowDirection _asrFlowDirection = FlowDirection.LeftToRight;
+
     [ObservableProperty] private bool _isFocused;
     [ObservableProperty] private AsrLanguageOption? _selectedRedoLanguage;
     public bool ShowLanguageChip { get; set; }

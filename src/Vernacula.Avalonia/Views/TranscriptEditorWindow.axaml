@@ -544,7 +544,8 @@
                                                               MaxHeight="214"
                                                               VerticalScrollBarVisibility="Auto"
                                                               HorizontalScrollBarVisibility="Disabled">
-                                                    <ItemsControl ItemsSource="{Binding AsrRuns}">
+                                                    <ItemsControl ItemsSource="{Binding AsrRuns}"
+                                                                  FlowDirection="{Binding AsrFlowDirection}">
                                                         <ItemsControl.ItemsPanel>
                                                             <ItemsPanelTemplate>
                                                                 <WrapPanel />
@@ -576,6 +577,7 @@
                                                          Text="{Binding DraftContent, Mode=TwoWay}"
                                                          AcceptsReturn="True"
                                                          TextWrapping="Wrap"
+                                                         FlowDirection="{Binding AsrFlowDirection}"
                                                          VerticalContentAlignment="Top"
                                                          MinHeight="84"
                                                          MaxHeight="214"
