@@ -4,7 +4,9 @@ namespace Vernacula.App.Models;
 
 public enum AppTheme    { Dark, Light }
 public enum PlaybackMode { Single, AutoAdvance, Continuous }
-public enum AsrBackend { Parakeet, Cohere, Qwen3Asr, VibeVoice }
+// New enum values MUST be appended. Persisted settings store the integer
+// value, so inserting mid-enum silently re-interprets existing user state.
+public enum AsrBackend { Parakeet, Cohere, Qwen3Asr, VibeVoice, IndicConformer }
 
 public class AppSettings
 {
@@ -31,6 +33,10 @@ public class AppSettings
     public float              ParakeetLmLengthPenalty { get; set; } = 0.6f;
     public string             CohereLanguage      { get; set; } = "";
     public string             Qwen3AsrLanguage    { get; set; } = "";
+    // IndicConformer is strictly per-language at inference — the model has
+    // 22 CTC heads and picking one is mandatory, so this is not optional
+    // like Cohere/Qwen3 "auto". Default to Hindi (largest / most common).
+    public string             IndicConformerLanguage { get; set; } = "hi";
     public DenoiserMode       Denoiser            { get; set; } = DenoiserMode.None;
     public PlaybackMode       EditorPlaybackMode  { get; set; } = PlaybackMode.Continuous;
     public string             ModelsDir           { get; set; } = "";

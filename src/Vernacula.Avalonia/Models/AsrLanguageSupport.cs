@@ -63,6 +63,19 @@ public static class AsrLanguageSupport
         "en", "fr", "de", "it", "ja", "ko", "pt", "ru", "es", "th", "vi", "zh",
     }.ToFrozenSet();
 
+    // AI4Bharat IndicConformer 600M — the 22 official Indian languages, mixed
+    // ISO 639-1 / 639-3 convention because five have no 639-1 assignment:
+    // brx (Bodo), doi (Dogri), kok (Konkani), mai (Maithili), mni (Manipuri),
+    // sat (Santali). The remaining seventeen use their 639-1 forms. The
+    // model's language_spans.json keys use the same convention, so matching
+    // is straightforward — we do not normalize between 639-1 / 639-3 here.
+    private static readonly FrozenSet<string> IndicConformerLangs = new HashSet<string>
+    {
+        "as", "bn", "brx", "doi", "gu", "hi", "kn", "kok",
+        "ks", "mai", "ml", "mni", "mr", "ne", "or", "pa",
+        "sa", "sat", "sd", "ta", "te", "ur",
+    }.ToFrozenSet();
+
     /// <summary>
     /// Map deprecated ISO 639-1 codes to their modern equivalents and
     /// lowercase the result. Used at every lookup boundary so the rest of
@@ -103,11 +116,12 @@ public static class AsrLanguageSupport
     /// </summary>
     public static FrozenSet<string> Get(AsrBackend backend) => backend switch
     {
-        AsrBackend.Parakeet  => ParakeetLangs,
-        AsrBackend.Cohere    => CohereLangs,
-        AsrBackend.Qwen3Asr  => Qwen3AsrLangs,
-        AsrBackend.VibeVoice => VibeVoiceLangs,
-        _                    => FrozenSet<string>.Empty,
+        AsrBackend.Parakeet       => ParakeetLangs,
+        AsrBackend.Cohere         => CohereLangs,
+        AsrBackend.Qwen3Asr       => Qwen3AsrLangs,
+        AsrBackend.VibeVoice      => VibeVoiceLangs,
+        AsrBackend.IndicConformer => IndicConformerLangs,
+        _                         => FrozenSet<string>.Empty,
     };
 
     // ── Cross-language fallback policy ───────────────────────────────────────
@@ -157,7 +171,18 @@ public static class AsrLanguageSupport
     {
         if (string.IsNullOrWhiteSpace(iso)) return Array.Empty<AsrBackend>();
         string code = NormalizeIso(iso);
-        var order = new[] { AsrBackend.Qwen3Asr, AsrBackend.Cohere, AsrBackend.Parakeet, AsrBackend.VibeVoice };
+        // IndicConformer leads the preference order but its 22-language set
+        // is disjoint from Parakeet/Cohere/VibeVoice and barely overlaps
+        // Qwen3-ASR ("hi" is the only overlap), so promoting it to first
+        // only effects Indic languages — other codes still pick the
+        // generalist backends in the usual order.
+        var order = new[] {
+            AsrBackend.IndicConformer,
+            AsrBackend.Qwen3Asr,
+            AsrBackend.Cohere,
+            AsrBackend.Parakeet,
+            AsrBackend.VibeVoice,
+        };
         return order.Where(b => Get(b).Contains(code)).ToArray();
     }
 
@@ -175,11 +200,12 @@ public static class AsrLanguageSupport
     /// <summary>Human-readable display name for a backend.</summary>
     public static string DisplayName(AsrBackend backend) => backend switch
     {
-        AsrBackend.Parakeet  => "Parakeet",
-        AsrBackend.Cohere    => "Cohere Transcribe",
-        AsrBackend.Qwen3Asr  => "Qwen3-ASR",
-        AsrBackend.VibeVoice => "VibeVoice-ASR",
-        _                    => backend.ToString(),
+        AsrBackend.Parakeet       => "Parakeet",
+        AsrBackend.Cohere         => "Cohere Transcribe",
+        AsrBackend.Qwen3Asr       => "Qwen3-ASR",
+        AsrBackend.VibeVoice      => "VibeVoice-ASR",
+        AsrBackend.IndicConformer => "IndicConformer",
+        _                         => backend.ToString(),
     };
 
     /// <summary>
@@ -188,20 +214,22 @@ public static class AsrLanguageSupport
     /// </summary>
     public static AsrBackend? BackendOf(string modelName) => modelName switch
     {
-        "nvidia/parakeet-tdt-0.6b-v3"          => AsrBackend.Parakeet,
-        "CohereLabs/cohere-transcribe-03-2026" => AsrBackend.Cohere,
-        "Qwen/Qwen3-ASR-1.7B"                  => AsrBackend.Qwen3Asr,
-        "vibevoice/vibevoice-asr"              => AsrBackend.VibeVoice,
-        _                                      => (AsrBackend?)null,
+        "nvidia/parakeet-tdt-0.6b-v3"                  => AsrBackend.Parakeet,
+        "CohereLabs/cohere-transcribe-03-2026"         => AsrBackend.Cohere,
+        "Qwen/Qwen3-ASR-1.7B"                          => AsrBackend.Qwen3Asr,
+        "vibevoice/vibevoice-asr"                      => AsrBackend.VibeVoice,
+        "ai4bharat/indic-conformer-600m-multilingual"  => AsrBackend.IndicConformer,
+        _                                              => (AsrBackend?)null,
     };
 
     /// <summary>Inverse of <see cref="BackendOf"/>: enum → pipeline model-name string.</summary>
     public static string ModelName(AsrBackend backend) => backend switch
     {
-        AsrBackend.Parakeet  => "nvidia/parakeet-tdt-0.6b-v3",
-        AsrBackend.Cohere    => "CohereLabs/cohere-transcribe-03-2026",
-        AsrBackend.Qwen3Asr  => "Qwen/Qwen3-ASR-1.7B",
-        AsrBackend.VibeVoice => "vibevoice/vibevoice-asr",
+        AsrBackend.Parakeet       => "nvidia/parakeet-tdt-0.6b-v3",
+        AsrBackend.Cohere         => "CohereLabs/cohere-transcribe-03-2026",
+        AsrBackend.Qwen3Asr       => "Qwen/Qwen3-ASR-1.7B",
+        AsrBackend.VibeVoice      => "vibevoice/vibevoice-asr",
+        AsrBackend.IndicConformer => "ai4bharat/indic-conformer-600m-multilingual",
         _ => throw new ArgumentOutOfRangeException(nameof(backend)),
     };
 
@@ -225,6 +253,15 @@ public static class AsrLanguageSupport
             ["sl"] = "Slovenian",   ["sv"] = "Swedish",    ["th"] = "Thai",
             ["tl"] = "Filipino",    ["tr"] = "Turkish",    ["uk"] = "Ukrainian",
             ["vi"] = "Vietnamese",  ["zh"] = "Chinese",
+            // IndicConformer — 22 official Indian languages. Five use 639-3
+            // because they have no 639-1 code; see IndicConformerLangs above.
+            ["as"] = "Assamese",    ["bn"] = "Bengali",    ["brx"] = "Bodo",
+            ["doi"] = "Dogri",      ["gu"] = "Gujarati",   ["kn"] = "Kannada",
+            ["kok"] = "Konkani",    ["ks"] = "Kashmiri",   ["mai"] = "Maithili",
+            ["ml"] = "Malayalam",   ["mni"] = "Manipuri",  ["mr"] = "Marathi",
+            ["ne"] = "Nepali",      ["or"] = "Odia",       ["pa"] = "Punjabi",
+            ["sa"] = "Sanskrit",    ["sat"] = "Santali",   ["sd"] = "Sindhi",
+            ["ta"] = "Tamil",       ["te"] = "Telugu",     ["ur"] = "Urdu",
         }.ToFrozenDictionary(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
