@@ -48,9 +48,31 @@ So each domain file in the HF repo is now speech-register-only:
 - Transcripts of actual speech (MTSamples clinical dictation), or
 - Speech-register *synthetic* dialogue (`CodCodingCode/cleaned-clinical-conversations`).
 
-Written prose is used only as a gazetteer source (future work — inject
-specialty terms into template-generated dialogue), never as dominant
-training text.
+Written prose is used only as a gazetteer source (see
+`generate_drug_dialogue.py`), never as dominant training text.
+
+## Template-based synthetic dialogue for specialty vocabulary
+
+`generate_drug_dialogue.py` addresses a specific gap: our spoken-register
+medical corpora don't mention specialty drug names often enough to give
+the LM strong priors on them. Rather than adding back written DailyMed
+prose (which biased the decoder toward formal register at a fluency
+cost), the script fills clinical-speech templates like
+
+    "I've been taking {drug} for my {cond}."
+    "Patient is on {drug} {dose}, {drug2} {dose}."
+    "Have you been taking the {drug} as prescribed?"
+
+with fills from a gazetteer extracted from DailyMed via scispaCy. The
+resulting corpus reads like real clinical speech but injects specialty
+drug names into every utterance.
+
+On PriMock57 the technique hasn't shown a measurable WER/F1 win yet,
+because that corpus's drug mentions are dominated by common OTC drugs
+the acoustic model already handles well. The approach is expected to
+pay off on audio with specialty-drug density (oncology rounds,
+psychiatry med reviews, pharmacy consults) which we don't yet have a
+held-out benchmark for.
 
 
 
