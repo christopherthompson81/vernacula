@@ -278,6 +278,12 @@ internal partial class SettingsViewModel : ObservableObject
                                         ?? Qwen3AsrLanguages[0];
         _parakeetBeamWidth            = Math.Max(1, svc.Current.ParakeetBeamWidth);
         _selectedLmOption             = KenLmCatalog.Find(svc.Current.ParakeetLmSelection) ?? KenLmCatalog.All[0];
+        // If the user's saved selection is a built-in option whose file isn't
+        // on disk (fresh install, interrupted download, etc.) kick off the
+        // download now. Without this the dropdown shows the right label but
+        // the decoder silently runs without fusion.
+        if (_selectedLmOption.RemoteFileName is not null && !modelMgr.IsKenLmReady(_selectedLmOption))
+            _ = DownloadSelectedLmAsync();
         _parakeetLmPath               = svc.Current.ParakeetLmPath ?? "";
         _parakeetLmWeight             = svc.Current.ParakeetLmWeight;
         _parakeetLmLengthPenalty      = svc.Current.ParakeetLmLengthPenalty;
