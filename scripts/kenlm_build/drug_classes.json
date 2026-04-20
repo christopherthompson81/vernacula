@@ -1,0 +1,48 @@
+{
+  "_notes": "Curated specialty drug classes (generic names, lowercase). Draws from WHO ATC classification. Used by generate_drug_dialogue.py as a higher-quality replacement for the noisy scispaCy-extracted gazetteer. Covers the specialty classes under-represented in common drug dialogue: SSRIs, antipsychotics, chemotherapy, antihypertensives, anticoagulants, etc. Approximately 500 generic names across 20 classes.",
+
+  "ssri":                     ["fluoxetine","sertraline","paroxetine","citalopram","escitalopram","fluvoxamine","vilazodone","vortioxetine"],
+  "snri":                     ["venlafaxine","desvenlafaxine","duloxetine","levomilnacipran","milnacipran"],
+  "tricyclic_antidepressant": ["amitriptyline","nortriptyline","imipramine","desipramine","clomipramine","doxepin","protriptyline","trimipramine"],
+  "atypical_antipsychotic":   ["olanzapine","risperidone","quetiapine","aripiprazole","ziprasidone","paliperidone","lurasidone","asenapine","iloperidone","clozapine","brexpiprazole","cariprazine"],
+  "typical_antipsychotic":    ["haloperidol","chlorpromazine","fluphenazine","perphenazine","thioridazine","trifluoperazine","loxapine","pimozide"],
+  "mood_stabilizer":          ["lithium","valproic acid","valproate","divalproex","lamotrigine","carbamazepine","oxcarbazepine","topiramate"],
+  "benzodiazepine":           ["diazepam","lorazepam","alprazolam","clonazepam","temazepam","oxazepam","chlordiazepoxide","triazolam","midazolam","flurazepam"],
+  "z_drug":                   ["zolpidem","zaleplon","eszopiclone","zopiclone"],
+
+  "chemotherapy":             ["cisplatin","carboplatin","oxaliplatin","paclitaxel","docetaxel","doxorubicin","epirubicin","cyclophosphamide","ifosfamide","methotrexate","5-fluorouracil","capecitabine","gemcitabine","irinotecan","topotecan","etoposide","vincristine","vinblastine","bleomycin","dacarbazine","temozolomide","pemetrexed","bevacizumab","trastuzumab","rituximab","cetuximab","panitumumab","imatinib","erlotinib","gefitinib","sunitinib","sorafenib","lenalidomide","bortezomib","tamoxifen","letrozole","anastrozole","fulvestrant","abiraterone","enzalutamide","pembrolizumab","nivolumab","ipilimumab","atezolizumab","durvalumab","pazopanib","regorafenib","cabozantinib","ibrutinib","venetoclax","ruxolitinib"],
+
+  "antihypertensive_ace":     ["lisinopril","enalapril","ramipril","benazepril","captopril","fosinopril","perindopril","quinapril","trandolapril","moexipril"],
+  "antihypertensive_arb":     ["losartan","valsartan","irbesartan","candesartan","olmesartan","telmisartan","eprosartan","azilsartan"],
+  "antihypertensive_bb":      ["metoprolol","atenolol","propranolol","bisoprolol","carvedilol","labetalol","nebivolol","nadolol","timolol","betaxolol","pindolol","acebutolol","sotalol"],
+  "antihypertensive_ccb":     ["amlodipine","nifedipine","diltiazem","verapamil","felodipine","nicardipine","isradipine","nisoldipine","clevidipine"],
+  "diuretic":                 ["hydrochlorothiazide","furosemide","spironolactone","triamterene","amiloride","bumetanide","torsemide","chlorthalidone","indapamide","metolazone","ethacrynic acid","eplerenone"],
+
+  "statin":                   ["atorvastatin","rosuvastatin","simvastatin","pravastatin","lovastatin","fluvastatin","pitavastatin"],
+  "antidiabetic":             ["metformin","glipizide","glyburide","glimepiride","pioglitazone","rosiglitazone","sitagliptin","saxagliptin","linagliptin","canagliflozin","dapagliflozin","empagliflozin","ertugliflozin","liraglutide","exenatide","semaglutide","dulaglutide","insulin glargine","insulin lispro","insulin aspart","insulin detemir","insulin degludec","insulin regular","nph insulin"],
+
+  "anticoagulant":            ["warfarin","heparin","enoxaparin","dalteparin","fondaparinux","apixaban","rivaroxaban","dabigatran","edoxaban","argatroban","bivalirudin"],
+  "antiplatelet":             ["aspirin","clopidogrel","prasugrel","ticagrelor","cilostazol","dipyridamole","ticlopidine"],
+
+  "antibiotic_penicillin":    ["amoxicillin","ampicillin","penicillin","piperacillin","nafcillin","dicloxacillin","oxacillin","amoxicillin-clavulanate","piperacillin-tazobactam"],
+  "antibiotic_cephalosporin": ["cephalexin","cefazolin","cefuroxime","cefoxitin","cefotetan","cefotaxime","ceftriaxone","ceftazidime","cefepime","cefdinir","cefpodoxime","ceftaroline"],
+  "antibiotic_macrolide":     ["azithromycin","clarithromycin","erythromycin","fidaxomicin"],
+  "antibiotic_fluoroquinolone":["ciprofloxacin","levofloxacin","moxifloxacin","ofloxacin","norfloxacin","gemifloxacin"],
+  "antibiotic_tetracycline":  ["doxycycline","tetracycline","minocycline","tigecycline"],
+  "antibiotic_other":         ["clindamycin","metronidazole","vancomycin","linezolid","daptomycin","trimethoprim-sulfamethoxazole","nitrofurantoin","rifampin","rifaximin"],
+
+  "ppi":                      ["omeprazole","esomeprazole","pantoprazole","lansoprazole","rabeprazole","dexlansoprazole"],
+  "h2_blocker":               ["famotidine","ranitidine","cimetidine","nizatidine"],
+
+  "bronchodilator_saba":      ["albuterol","levalbuterol","terbutaline"],
+  "bronchodilator_laba":      ["salmeterol","formoterol","vilanterol","olodaterol"],
+  "bronchodilator_lama":      ["tiotropium","umeclidinium","aclidinium","glycopyrronium"],
+  "inhaled_corticosteroid":   ["budesonide","fluticasone","beclomethasone","mometasone","ciclesonide"],
+
+  "opioid":                   ["morphine","oxycodone","hydrocodone","hydromorphone","fentanyl","methadone","tramadol","tapentadol","codeine","buprenorphine","naloxone"],
+  "nsaid":                    ["ibuprofen","naproxen","diclofenac","celecoxib","indomethacin","ketorolac","meloxicam","piroxicam","etodolac","nabumetone","sulindac","ketoprofen"],
+  "anticonvulsant":           ["phenytoin","valproate","lamotrigine","levetiracetam","topiramate","gabapentin","pregabalin","carbamazepine","oxcarbazepine","zonisamide","lacosamide","phenobarbital","ethosuximide","clobazam"],
+
+  "thyroid":                  ["levothyroxine","liothyronine","methimazole","propylthiouracil"],
+  "steroid":                  ["prednisone","prednisolone","methylprednisolone","dexamethasone","hydrocortisone","betamethasone","triamcinolone","fludrocortisone"]
+}

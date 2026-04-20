@@ -157,22 +157,56 @@ SIDE_EFFECTS = [
 ]
 
 
-def load_gazetteer(path: Path) -> tuple[list[str], list[str]]:
+def load_gazetteer(path: Path):
+    """
+    Load a gazetteer in either legacy flat format or curated class-aware
+    format. Flat format is ``drugs``+``diseases`` lists mixed at random
+    every template; class-aware format is ``classes`` plus
+    ``class_conditions`` so drugs and conditions are paired inside the
+    same class for semantically plausible outputs.
+    """
     data = json.loads(path.read_text())
-    return data["drugs"], data["diseases"]
+    if "classes" in data:
+        return "class_aware", data["classes"], data.get("class_conditions", {})
+    return "flat", data["drugs"], data.get("diseases", [])
 
 
-def fill_template(template: str, drugs: list[str], conds: list[str]) -> str:
-    def pick_drug():  return random.choice(drugs)
-    def pick_cond():  return random.choice(conds)
+def _pick_class_aware(classes, class_conds):
+    class_names = list(classes.keys())
+    primary = random.choice(class_names)
+    drug = random.choice(classes[primary])
+
+    def other():
+        same = random.random() < 0.5
+        cls = primary if same else random.choice(class_names)
+        return random.choice(classes[cls])
+
+    drug2, drug3 = other(), other()
+    if primary in class_conds:
+        cond = random.choice(class_conds[primary])
+    else:
+        flat_conds = [c for cs in class_conds.values() for c in cs]
+        cond = random.choice(flat_conds) if flat_conds else "the condition"
+    return drug, drug2, drug3, cond
+
+
+def fill_template(template: str, mode: str, *payload) -> str:
     result = template
-    # Use unique drug picks for {drug}, {drug2}, {drug3}
-    picks = random.sample(drugs, min(3, len(drugs)))
+    if mode == "flat":
+        drugs, conds = payload
+        picks = random.sample(drugs, min(3, len(drugs)))
+        drug = picks[0]
+        drug2 = picks[1] if len(picks) > 1 else random.choice(drugs)
+        drug3 = picks[2] if len(picks) > 2 else random.choice(drugs)
+        cond = random.choice(conds) if conds else "the condition"
+    else:
+        drug, drug2, drug3, cond = _pick_class_aware(*payload)
+
     replacements = {
-        "{drug}":  picks[0],
-        "{drug2}": picks[1] if len(picks) > 1 else pick_drug(),
-        "{drug3}": picks[2] if len(picks) > 2 else pick_drug(),
-        "{cond}":  pick_cond(),
+        "{drug}":  drug,
+        "{drug2}": drug2,
+        "{drug3}": drug3,
+        "{cond}":  cond,
         "{dose}":  random.choice(DOSES),
         "{freq}":  random.choice(FREQUENCIES),
         "{dur}":   random.choice(DURATIONS),
@@ -184,8 +218,16 @@ def fill_template(template: str, drugs: list[str], conds: list[str]) -> str:
 
 
 def generate(args) -> int:
-    drugs, conds = load_gazetteer(args.gazetteer)
-    print(f"gazetteer: {len(drugs)} drugs, {len(conds)} diseases", file=sys.stderr)
+    mode, a_payload, b_payload = load_gazetteer(args.gazetteer)
+    if mode == "flat":
+        print(f"gazetteer: flat — {len(a_payload)} drugs, {len(b_payload)} diseases",
+              file=sys.stderr)
+    else:
+        n_classes = len(a_payload)
+        n_drugs = sum(len(v) for v in a_payload.values())
+        print(f"gazetteer: class-aware — {n_drugs} drugs across {n_classes} classes",
+              file=sys.stderr)
+    payload = (a_payload, b_payload)
 
     rng = random.Random(args.seed)
     random.seed(args.seed)
@@ -193,13 +235,13 @@ def generate(args) -> int:
     open_ctx = gzip.open(args.output, "wt", encoding="utf-8", compresslevel=6) \
                if args.output.suffix == ".gz" else args.output.open("w", encoding="utf-8")
 
+    # Weights: 3 single-utterance pools sum to 0.9; the remaining 0.1 falls
+    # through to an exchange template that emits a Q+A pair.
     pools = [
         (DOCTOR_DICTATION, 0.30),
         (DOCTOR_CONSULT,   0.30),
         (PATIENT,          0.30),
     ]
-    # Exchanges yield two sentences each, weight half as often
-    exch_weight = 0.10
 
     words = 0
     lines = 0
@@ -211,13 +253,13 @@ def generate(args) -> int:
             for pool, w in pools:
                 cumulative += w
                 if roll < cumulative:
-                    emitted.append(fill_template(rng.choice(pool), drugs, conds))
+                    emitted.append(fill_template(rng.choice(pool), mode, *payload))
                     break
             else:
                 # Fell through — emit an exchange (both sides)
                 q, a = rng.choice(EXCHANGES)
-                emitted.append(fill_template(q, drugs, conds))
-                emitted.append(fill_template(a, drugs, conds))
+                emitted.append(fill_template(q, mode, *payload))
+                emitted.append(fill_template(a, mode, *payload))
             for s in emitted:
                 fout.write(s)
                 fout.write("\n")
