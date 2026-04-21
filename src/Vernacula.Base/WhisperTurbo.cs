@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 using MathNet.Numerics;
@@ -22,6 +23,23 @@ public sealed record WhisperRecognitionResult(
     IReadOnlyList<int> Tokens);
 
 /// <summary>
+/// Per-phase timing breakdown, accumulated across one Recognize call.
+/// All times in milliseconds. Useful for spotting bottlenecks — at a glance
+/// tells you whether you're encoder-bound, decoder-step-bound, or
+/// memory-copy-bound.
+/// </summary>
+public sealed record WhisperTimingBreakdown(
+    long MelMs,            // CPU log-mel compute
+    long EncoderMs,        // encoder forward (ORT + extract-to-float[])
+    long DecoderInitMs,    // decoder-init forward (ORT + extract-to-float[])
+    long DecoderStepOrtMs, // sum of _decoderStep.Run() wall time
+    long DecoderStepExtractMs, // sum of per-step logits+KV extract-to-float[]
+    long ArgmaxMs,         // sum of per-step argmax
+    long TokenDecodeMs,    // sum of BPE decode-to-text
+    long StepCalls,        // total number of decoder_step invocations
+    long SegmentsProcessed);
+
+/// <summary>
 /// Whisper large-v3-turbo backend.  Phase 2a scope: Whisper-style log-mel
 /// frontend and encoder-only inference.  Decoder pair, greedy loop, tokenizer,
 /// and language-token handling land in Phase 2b.
@@ -38,6 +56,7 @@ public sealed record WhisperRecognitionResult(
 public sealed class WhisperTurbo : IDisposable
 {
     // ── File layout (download manifest lives in ModelManagerService) ────────
+    public const string MelFile                = "mel.onnx";
     public const string EncoderFile            = "encoder_model_fp16.onnx";
     public const string DecoderInitFile        = "decoder_model_fp16.onnx";
     public const string DecoderStepFile        = "decoder_with_past_model_fp16.onnx";
@@ -94,16 +113,32 @@ public sealed class WhisperTurbo : IDisposable
     private static readonly float[,] MelFilterbank = CreateMelFilterbank();
     private static readonly double[] HannWindow    = Window.HannPeriodic(NFft);
 
+    private readonly InferenceSession _mel;
     private readonly InferenceSession _encoder;
     private readonly InferenceSession _decoderInit;
     private readonly InferenceSession _decoderStep;
     private readonly string?[] _idToToken;
     private readonly Dictionary<char, byte> _byteLevelDecode;
 
+    // ── Timing accumulators (milliseconds) ──────────────────────────────────
+    // Reset at the start of every Recognize / RecognizeBatched call; read via
+    // GetTimingsAndReset() at the end of the pipeline.  Zero allocation on
+    // the hot path — just long increments.
+    private long _msMel;
+    private long _msEncoder;
+    private long _msDecInit;
+    private long _msDecStepOrt;
+    private long _msDecStepExtract;
+    private long _msArgmax;
+    private long _msDecode;
+    private long _stepCalls;
+    private long _segments;
+
     public WhisperTurbo(string modelsDir, ExecutionProvider ep = ExecutionProvider.Auto)
     {
         var opts = MakeSessionOptions(ep);
-        _encoder     = new InferenceSession(Path.Combine(modelsDir, EncoderFile), opts);
+        _mel         = new InferenceSession(Path.Combine(modelsDir, MelFile),         opts);
+        _encoder     = new InferenceSession(Path.Combine(modelsDir, EncoderFile),     opts);
         _decoderInit = new InferenceSession(Path.Combine(modelsDir, DecoderInitFile), opts);
         _decoderStep = new InferenceSession(Path.Combine(modelsDir, DecoderStepFile), opts);
 
@@ -117,21 +152,65 @@ public sealed class WhisperTurbo : IDisposable
         _decoderStep.Dispose();
         _decoderInit.Dispose();
         _encoder.Dispose();
+        _mel.Dispose();
+    }
+
+    /// <summary>
+    /// Snapshot the accumulated per-phase timings and reset the counters.
+    /// Call after a Recognize / RecognizeBatched run to print a breakdown.
+    /// </summary>
+    public WhisperTimingBreakdown GetTimingsAndReset()
+    {
+        var r = new WhisperTimingBreakdown(
+            MelMs: _msMel,
+            EncoderMs: _msEncoder,
+            DecoderInitMs: _msDecInit,
+            DecoderStepOrtMs: _msDecStepOrt,
+            DecoderStepExtractMs: _msDecStepExtract,
+            ArgmaxMs: _msArgmax,
+            TokenDecodeMs: _msDecode,
+            StepCalls: _stepCalls,
+            SegmentsProcessed: _segments);
+        _msMel = _msEncoder = _msDecInit = 0;
+        _msDecStepOrt = _msDecStepExtract = _msArgmax = _msDecode = 0;
+        _stepCalls = _segments = 0;
+        return r;
     }
 
     // ── Public API ──────────────────────────────────────────────────────────
 
     /// <summary>
-    /// Prepare a chunk-sized log-mel spectrogram ready to feed the encoder.
-    /// Zero-pads (or truncates) the waveform to 30 s first — matches the
-    /// HuggingFace WhisperFeatureExtractor convention, which avoids the
-    /// edge-reflection artefact you'd get from padding the mel frames
-    /// afterwards.
+    /// Prepare a chunk-sized log-mel spectrogram ready to feed the encoder,
+    /// using the ONNX <c>mel.onnx</c> graph on whichever EP the sessions were
+    /// loaded with. The waveform is zero-padded (or truncated) to 30 s first
+    /// — matches the HuggingFace WhisperFeatureExtractor convention.
     ///
     /// Returns a flat float[<see cref="NMels"/> * <see cref="ChunkFrames"/>]
     /// in row-major <c>[mel, frame]</c> order.
+    ///
+    /// Moves a ~58 ms/segment CPU hotspot onto the same EP as the encoder.
+    /// See <c>docs/whisper_turbo_investigation.md</c> Run 4 for the profile.
     /// </summary>
-    public static float[] PrepareChunkMel(float[] audio16k)
+    public float[] PrepareChunkMel(float[] audio16k)
+    {
+        var chunk = new float[ChunkSamples];
+        int copy  = Math.Min(audio16k.Length, ChunkSamples);
+        Array.Copy(audio16k, chunk, copy);
+
+        var input = new DenseTensor<float>(chunk, [1, ChunkSamples]);
+        using var outputs = _mel.Run(
+        [
+            NamedOnnxValue.CreateFromTensor("audio", input),
+        ]);
+        return ExtractFloat(outputs.First(o => o.Name == "mel"));
+    }
+
+    /// <summary>
+    /// Legacy CPU log-mel — the pre-mel-in-graph implementation. Kept as a
+    /// reference and for `--whisper-check` smoke tests that want to isolate
+    /// CPU numerics from EP-dependent ORT behaviour.
+    /// </summary>
+    public static float[] PrepareChunkMelCpu(float[] audio16k)
     {
         var chunk = new float[ChunkSamples];
         int copy  = Math.Min(audio16k.Length, ChunkSamples);
@@ -562,37 +641,45 @@ public sealed class WhisperTurbo : IDisposable
     /// </summary>
     public WhisperTranscript Transcribe(float[] audio16k, string languageIso = "en")
     {
-        float[] mel    = PrepareChunkMel(audio16k);
+        var sw = new Stopwatch();
+
+        sw.Restart();
+        float[] mel = PrepareChunkMel(audio16k);
+        sw.Stop(); _msMel += sw.ElapsedMilliseconds;
+
+        sw.Restart();
         float[] hidden = RunEncoder(mel);
+        sw.Stop(); _msEncoder += sw.ElapsedMilliseconds;
 
         int langToken = ResolveLanguageToken(languageIso);
         int[] prefix  = [SotToken, langToken, TranscribeToken, NoTimestampsToken];
 
-        // ── Decoder-init: consumes the full prefix in one pass, produces
-        //     initial KV cache (cross-attn encoder KV is computed here and
-        //     reused unchanged across every subsequent step — matches the
-        //     Cohere cross-KV reuse pattern). ──────────────────────────────
+        sw.Restart();
         var (initLogits, kv) = RunDecoderInit(prefix, hidden);
+        sw.Stop(); _msDecInit += sw.ElapsedMilliseconds;
 
-        // First content token: argmax over logits at the last prefix position,
-        // with BeginSuppressTokens masked to -inf to prevent the two degenerate
-        // greedy outcomes (leading space or immediate EOT).
+        sw.Restart();
         int nextToken = ArgmaxLastPosition(initLogits, prefix.Length, BeginSuppressTokens);
+        sw.Stop(); _msArgmax += sw.ElapsedMilliseconds;
 
-        // ── Step loop: each call takes one token + the grown KV cache,
-        //     returns logits at the single new position and an updated KV. ─
         var outTokens = new List<int>(64);
         while (nextToken != EotToken && outTokens.Count + prefix.Length < MaxDecoderLength)
         {
             outTokens.Add(nextToken);
             (float[] stepLogits, kv) = RunDecoderStep(nextToken, kv);
+            _stepCalls++;
+
+            sw.Restart();
             nextToken = ArgmaxLastPosition(stepLogits, 1, suppress: null);
+            sw.Stop(); _msArgmax += sw.ElapsedMilliseconds;
         }
 
-        // Filter out any stray special tokens that slipped through; BPE-decode
-        // the remainder through the byte-level map.
+        sw.Restart();
         var contentTokens = outTokens.Where(t => t < SpecialTokenFloor).ToList();
         string text = DecodeTokens(contentTokens);
+        sw.Stop(); _msDecode += sw.ElapsedMilliseconds;
+
+        _segments++;
         return new WhisperTranscript(text, outTokens);
     }
 
@@ -648,6 +735,8 @@ public sealed class WhisperTurbo : IDisposable
     private (float[] logits, List<KvTensor> updatedKv)
         RunDecoderStep(int nextToken, List<KvTensor> pastKv)
     {
+        var sw = new Stopwatch();
+
         var inputs = new List<NamedOnnxValue>(1 + pastKv.Count)
         {
             NamedOnnxValue.CreateFromTensor("input_ids",
@@ -656,8 +745,11 @@ public sealed class WhisperTurbo : IDisposable
         foreach (var t in pastKv)
             inputs.Add(NamedOnnxValue.CreateFromTensor(t.Name, new DenseTensor<float>(t.Data, t.Shape)));
 
+        sw.Restart();
         using var outputs = _decoderStep.Run(inputs);
+        sw.Stop(); _msDecStepOrt += sw.ElapsedMilliseconds;
 
+        sw.Restart();
         float[] logits = ExtractFloat(outputs.First(o => o.Name == "logits"));
 
         // Step outputs only decoder KVs (8 tensors) — encoder KVs are constant
@@ -689,6 +781,7 @@ public sealed class WhisperTurbo : IDisposable
                 }
             }
         }
+        sw.Stop(); _msDecStepExtract += sw.ElapsedMilliseconds;
         return (logits, updatedKv);
     }
 

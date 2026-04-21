@@ -652,6 +652,7 @@ try
     {
         string whisperDir = Path.Combine(modelDir, Config.WhisperTurboSubDir);
         string[] required = [
+            WhisperTurbo.MelFile,
             WhisperTurbo.EncoderFile,
             WhisperTurbo.DecoderInitFile,
             WhisperTurbo.DecoderStepFile,
@@ -691,6 +692,29 @@ try
         }
         Console.WriteLine();
         swAsr.Stop();
+
+        if (showBenchmark)
+        {
+            var t = whisper.GetTimingsAndReset();
+            long sum = t.MelMs + t.EncoderMs + t.DecoderInitMs
+                     + t.DecoderStepOrtMs + t.DecoderStepExtractMs
+                     + t.ArgmaxMs + t.TokenDecodeMs;
+            double totalSec = Math.Max(1, swAsr.ElapsedMilliseconds) / 1000.0;
+            double Pct(long ms) => sum == 0 ? 0 : 100.0 * ms / sum;
+            Console.WriteLine();
+            Console.WriteLine("Whisper breakdown (accumulated across all segments):");
+            Console.WriteLine($"  Mel          : {t.MelMs,7} ms ({Pct(t.MelMs):F1} %)");
+            Console.WriteLine($"  Encoder      : {t.EncoderMs,7} ms ({Pct(t.EncoderMs):F1} %)");
+            Console.WriteLine($"  DecoderInit  : {t.DecoderInitMs,7} ms ({Pct(t.DecoderInitMs):F1} %)");
+            Console.WriteLine($"  DecoderStep ORT call     : {t.DecoderStepOrtMs,7} ms ({Pct(t.DecoderStepOrtMs):F1} %)");
+            Console.WriteLine($"  DecoderStep extract/copy : {t.DecoderStepExtractMs,7} ms ({Pct(t.DecoderStepExtractMs):F1} %)");
+            Console.WriteLine($"  Argmax       : {t.ArgmaxMs,7} ms ({Pct(t.ArgmaxMs):F1} %)");
+            Console.WriteLine($"  Token decode : {t.TokenDecodeMs,7} ms ({Pct(t.TokenDecodeMs):F1} %)");
+            Console.WriteLine($"  Total phases : {sum,7} ms (ASR swAsr: {swAsr.ElapsedMilliseconds} ms)");
+            Console.WriteLine($"  Step calls   : {t.StepCalls}   (avg {(t.StepCalls == 0 ? 0 : (double)t.DecoderStepOrtMs / t.StepCalls):F2} ms ORT / step, " +
+                              $"{(t.StepCalls == 0 ? 0 : (double)t.DecoderStepExtractMs / t.StepCalls):F2} ms extract / step)");
+            Console.WriteLine($"  Segments     : {t.SegmentsProcessed}");
+        }
     }
     else
     {
@@ -980,9 +1004,9 @@ static int RunWhisperCheckAction(string audioPath, string modelsRoot)
         Console.Error.WriteLine($"Audio file not found: {audioPath}");
         return 1;
     }
-    foreach (string f in new[] { WhisperTurbo.EncoderFile, WhisperTurbo.DecoderInitFile,
-                                 WhisperTurbo.DecoderStepFile, WhisperTurbo.TokenizerFile,
-                                 WhisperTurbo.GenerationConfigFile })
+    foreach (string f in new[] { WhisperTurbo.MelFile, WhisperTurbo.EncoderFile,
+                                 WhisperTurbo.DecoderInitFile, WhisperTurbo.DecoderStepFile,
+                                 WhisperTurbo.TokenizerFile, WhisperTurbo.GenerationConfigFile })
     {
         if (!File.Exists(Path.Combine(whisperDir, f)))
         {

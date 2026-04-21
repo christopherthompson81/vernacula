@@ -177,3 +177,83 @@ we'd expect batching even without IOBinding to break even.
 
 Deferred follow-up: IOBinding for KV transport. Expected to invert the
 benchmark above.
+
+## Run 4 — 2026-04-20 (per-phase timing instrumentation, sequential)
+
+Question: where is the 35.8 s of ASR time actually going?
+
+Added timing accumulators around each phase of `Recognize` and printed
+the breakdown on `--benchmark`. Same 600 s en-US file, sequential path:
+
+| Phase | Time | % |
+|---|---|---|
+| DecoderStep ORT loop | 14 991 ms | 46.1 |
+| Mel compute (CPU) | 7 645 ms | 23.5 |
+| Encoder forward | 7 511 ms | 23.1 |
+| DecoderInit | 2 362 ms | 7.3 |
+| DecoderStep extract/copy | 24 ms | 0.1 |
+| Argmax | 0 ms | 0.0 |
+| Token decode | 3 ms | 0.0 |
+
+2113 step calls × 7.09 ms/call ORT → kernel-launch-overhead-dominated
+(decoder-step compute is ~10 MFLOPs, sub-µs on a 3090; measured 7 ms is
+~99.99 % overhead).
+
+Retroactively explains Run 3: batching Phase 3b was slower not because
+of memory copies (extract/copy is 0.1 %) but because B=8 increased
+per-kernel compute while the fixed-per-call overhead stayed the same,
+and longer stragglers dragged the batch out. IOBinding alone would not
+have helped; CUDA Graphs would.
+
+## Run 5 — 2026-04-20 (mel-in-graph optimisation + ONNX STFT trap)
+
+Question: move mel from CPU to GPU via a small mel-only ONNX graph.
+Expected 7.6 s → ~1 s.
+
+First attempt: export with `torch.stft`. In PyTorch this is a fast
+FFT-based op; after ONNX export it becomes the `ai.onnx.STFT` op, which
+turns out to have no CUDA kernel in ORT (falls back to CPU with PCIe
+memcpys — ORT warns `2 Memcpy nodes are added to the graph`). Bench on
+this graph:
+
+| Provider | ms/call |
+|---|---|
+| CPU EP | 148.7 |
+| CUDA EP (w/ fallback) | 132.6 |
+| Hand-rolled CPU FFT (baseline) | ~58 |
+
+End-to-end: mel went from 7.6 s to 17.6 s — a 2.3× **regression**.
+
+Second attempt: replace `torch.stft` with two `Conv1D` ops (cos/sin
+kernels pre-windowed, forward-DFT sign). Same trick
+`scripts/voxlingua107_export/src/conv_stft.py` used for the LID
+pipeline a while back — same issue, same fix. Bench:
+
+| Provider | ms/call | Δ vs STFT-op graph |
+|---|---|---|
+| CPU EP | 3.24 | 46× faster |
+| CUDA EP | 0.90 | 147× faster |
+
+End-to-end on the 600 s file:
+
+| Phase | Before (CPU mel) | After (Conv1D-STFT mel.onnx) |
+|---|---|---|
+| Mel | 7 645 ms | 145 ms |
+| Encoder | 7 511 ms | 7 520 ms |
+| DecoderInit | 2 362 ms | 2 354 ms |
+| DecoderStep ORT loop | 14 991 ms | 14 982 ms |
+| ASR total | 35 759 ms | 28 104 ms |
+| RTF | 0.072 | 0.059 |
+
+Saved 7.66 s (21 %). Decoder-step loop is now 60 % of time — the next
+target.
+
+**Lesson for future exports**: `torch.stft` → `ai.onnx.STFT` is a trap;
+always prefer the two-Conv1D construction when exporting signal-processing
+graphs.
+
+Deferred follow-up (now promoted to primary target after mel + unified
+decoder): IOBinding + CUDA Graph capture for the decoder step. Kernel
+launches dominate; graph capture replays a fixed-shape kernel sequence
+with ~1-5 µs launch overhead instead of ~100-200 µs per call. Realistic
+expectation: 15 s → ~4 s for the step loop.
