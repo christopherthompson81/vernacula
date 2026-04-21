@@ -6,7 +6,7 @@ public enum AppTheme    { Dark, Light }
 public enum PlaybackMode { Single, AutoAdvance, Continuous }
 // New enum values MUST be appended. Persisted settings store the integer
 // value, so inserting mid-enum silently re-interprets existing user state.
-public enum AsrBackend { Parakeet, Cohere, Qwen3Asr, VibeVoice, IndicConformer }
+public enum AsrBackend { Parakeet, Cohere, Qwen3Asr, VibeVoice, IndicConformer, WhisperTurbo }
 
 public class AppSettings
 {

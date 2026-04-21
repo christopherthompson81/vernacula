@@ -219,6 +219,7 @@ public static class AsrLanguageSupport
         "Qwen/Qwen3-ASR-1.7B"                          => AsrBackend.Qwen3Asr,
         "vibevoice/vibevoice-asr"                      => AsrBackend.VibeVoice,
         "ai4bharat/indic-conformer-600m-multilingual"  => AsrBackend.IndicConformer,
+        "openai/whisper-large-v3-turbo"                => AsrBackend.WhisperTurbo,
         _                                              => (AsrBackend?)null,
     };
 
@@ -230,6 +231,7 @@ public static class AsrLanguageSupport
         AsrBackend.Qwen3Asr       => "Qwen/Qwen3-ASR-1.7B",
         AsrBackend.VibeVoice      => "vibevoice/vibevoice-asr",
         AsrBackend.IndicConformer => "ai4bharat/indic-conformer-600m-multilingual",
+        AsrBackend.WhisperTurbo   => "openai/whisper-large-v3-turbo",
         _ => throw new ArgumentOutOfRangeException(nameof(backend)),
     };
 
