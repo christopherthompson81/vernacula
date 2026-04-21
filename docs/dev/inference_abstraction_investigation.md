@@ -138,6 +138,33 @@ Largest change. Depends on PRs 1–3. Likely needs its own investigation doc bef
 - GPU mel: does it share the `InferenceSession` with the main encoder (one session, multiple subgraphs) or run as a sidecar session? Latency vs memory tradeoff — decide during PR design, not now.
 - Whisper decoder re-export for PR 4: can we consume the existing onnx-community split export instead of re-exporting in-house? Needs a separate spike.
 
+## Run 2 — 2026-04-21
+
+**Question:** Extract `BatchSizer` + `IBatchCostModel` from Cohere and Qwen3 as PR 2 outlined.
+
+**Finding — the two backends are structurally different, not merely duplicated.**
+
+- **Cohere** uses an analytical cost model ([CohereTranscribe.cs:118](../../src/Vernacula.Base/CohereTranscribe.cs#L118)): compute exact bytes from architecture constants (layers, heads, head dim, conv channels) and duration-derived frame counts, then greedily grow each batch one segment at a time until peak bytes exceed the VRAM budget.
+- **Qwen3** uses an empirical calibration ([Qwen3Asr.cs:421](../../src/Vernacula.Base/Qwen3Asr.cs#L421)): scale a reference batch cap (measured at a known-good VRAM figure) linearly by the current free VRAM. Returns a whole-run `QwenBatchingPlan` record, not per-batch packings.
+
+A unified abstraction covering both shapes would either bloat the return type or force Qwen3 into the analytical mould — which isn't a refactor, it's a reverse-engineering job on Qwen3's cost structure (layers/heads/dim are not currently surfaced the way Cohere's are).
+
+**Implication:** scope PR 2 to the analytical pattern only. Qwen3's migration becomes a separate question ("should Qwen3 move from empirical to analytical cost modelling?") that belongs in its own investigation, driven by calibration-vs-actual data, not by this refactor.
+
+**Also out of scope for PR 2**: adopting the new `BatchSizer` in Whisper and VibeVoice. Both are working-and-tested with their current batching (Whisper fixed batch=8 after phase 6 validation; VibeVoice single-stream with IOBinding). Swapping their batching strategy is a behavioural change that needs its own WER/perf validation, not a drop-in refactor. Ship the shared surface first; defer adoption until each backend is being actively tuned.
+
+**Delivered:**
+- [BatchSizer.cs](../../src/Vernacula.Base/Inference/BatchSizer.cs) — `IBatchCostModel` interface, `Batch` record (original-index array), `BatchSizer.Plan` static helper. Preserves Cohere's forward-progress guarantee: the first segment of each batch is always admitted even if it alone would breach the budget.
+- [CohereTranscribe.cs](../../src/Vernacula.Base/CohereTranscribe.cs) refactored: inline sort-and-pack loop replaced by `BatchSizer.Plan`, cost-model logic moved into a nested `CohereBatchCostModel : IBatchCostModel`. The existing `Estimate*` private statics stay on `CohereTranscribe` (they encode model-specific architecture constants, which do not belong on the shared abstraction).
+- Zero behaviour change: same sort key, same peak-bytes formula, same `MaxBatchSize = 32` cap, same VRAM budget.
+
+**Deferred follow-ups tracked as issues:**
+- [#25](https://github.com/christopherthompson81/vernacula/issues/25) — port Qwen3 from empirical to analytical cost modelling, if justified by calibration data.
+- [#26](https://github.com/christopherthompson81/vernacula/issues/26) — adopt `BatchSizer` in Whisper and VibeVoice, once each backend is in a validation cycle that can absorb the batching-strategy change.
+- [#27](https://github.com/christopherthompson81/vernacula/issues/27) — validate `ORT_ENABLE_EXTENDED` as a universal graph-opt default (carry-over from PR 1 open question).
+
 ## Status
 
-Plan staged; no code changes yet. Next action: open PR 1 branch and extract `OrtSessionBuilder`.
+PR 1 (`OrtSessionBuilder`) committed on `main` as `b97c29c`.
+PR 2 (`BatchSizer` + Cohere adoption) pending commit.
+Next action: PR 3 (`KvCacheBinding` extracted from VibeVoice).

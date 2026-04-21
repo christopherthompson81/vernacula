@@ -697,55 +697,30 @@ public sealed class CohereTranscribe : IDisposable
             chunkParts[work.OriginalSegmentId] ??= [];
         }
 
-        // Sort work-item indices by ascending audio duration so that similar-length
-        // segments land in the same batch, minimising straggler waste (shorter segments
-        // that have emitted EOS still step until the longest segment finishes).
-        int[] order = Enumerable.Range(0, workItems.Count)
-            .OrderBy(i => workItems[i].end - workItems[i].start)
-            .ToArray();
+        // Sort-and-pack is delegated to BatchSizer; segments land in ascending duration
+        // order so similar-length segments batch together, minimising straggler waste
+        // (shorter segments that have emitted EOS still step until the longest finishes).
+        // The cost model compares the prospective batch's peak VRAM (max of KV cache and
+        // encoder conv activations) against _vramBudgetForKvBytes.
+        //
+        // Note: there is no encoder-frame ratio limit because the encoder is run
+        // per-segment (B=1 each), so Conformer self-attention contamination from batch
+        // padding is not an issue. Padded positions in the stacked decoder input are
+        // zero, contributing zero to cross-attention output.
+        var durations = new double[workItems.Count];
+        for (int i = 0; i < workItems.Count; i++)
+            durations[i] = workItems[i].end - workItems[i].start;
 
-        int pos = 0;
-        while (pos < order.Length)
+        var plan = BatchSizer.Plan(
+            durations,
+            new CohereBatchCostModel(maxNewTokens),
+            _vramBudgetForKvBytes,
+            MaxBatchSize);
+
+        foreach (var batch in plan)
         {
-            // ── Build a variable-size batch bounded by VRAM and MaxBatchSize ──────
-            // Grow the batch one segment at a time, stopping when the estimated peak
-            // KV-cache size would exceed VramBudgetForKvBytes or MaxBatchSize is hit.
-            // Segments are sorted ascending by duration so the worst-case (longest)
-            // segment drives the KV estimate.
-            // Note: there is no encoder-frame ratio limit because the encoder is now
-            // run per-segment (B=1 each), so Conformer self-attention contamination
-            // from batch padding is no longer an issue.  Padded positions in the
-            // stacked decoder input are zero, contributing zero to cross-attention output.
-            int batchSize    = 0;
-            int maxEncFrames = 0;
-            int maxDecSteps  = 0;
-            int maxMelFrames = 0;
-
-            while (pos + batchSize < order.Length && batchSize < MaxBatchSize)
-            {
-                int candidateIdx    = order[pos + batchSize];
-                var (_, _, cs, ce, _) = workItems[candidateIdx];
-                double candDur      = ce - cs;
-                int candEncFrames   = EstimateEncFrames(candDur);
-                int candMelFrames   = EstimateMelFrames(candDur);
-                int candDecSteps    = EstimateDecSteps(candDur, maxNewTokens);
-
-                // Worst-case across all segments in the prospective batch.
-                int newMaxEnc = Math.Max(maxEncFrames, candEncFrames);
-                int newMaxDec = Math.Max(maxDecSteps,  candDecSteps);
-                int newMaxMel = Math.Max(maxMelFrames, candMelFrames);
-
-                long kvBytes = EstimateKvBytes(batchSize + 1, newMaxEnc, newMaxDec);
-                long encBytes = EstimateEncoderConvBytes(batchSize + 1, newMaxMel);
-                long peakBytes = Math.Max(kvBytes, encBytes);
-                if (batchSize > 0 && peakBytes > _vramBudgetForKvBytes)
-                    break;  // adding this segment would exceed the VRAM budget
-
-                maxEncFrames = newMaxEnc;
-                maxDecSteps  = newMaxDec;
-                maxMelFrames = newMaxMel;
-                batchSize++;
-            }
+            int batchSize  = batch.Count;
+            int[] indices = batch.SegmentIndices;
 
             // ── Extract waveforms; flag segments too short to encode ──────────────
             var waveforms = new float[batchSize][];
@@ -754,7 +729,7 @@ public sealed class CohereTranscribe : IDisposable
 
             for (int b = 0; b < batchSize; b++)
             {
-                segIds[b] = order[pos + b];
+                segIds[b] = indices[b];
                 var (_, _, start, end, _) = workItems[segIds[b]];
                 waveforms[b] = ExtractSegment(audio, start, end);
                 skipped[b]   = waveforms[b].Length < Config.SampleRate / 10;
@@ -821,8 +796,24 @@ public sealed class CohereTranscribe : IDisposable
                 if (remainingChunks[work.OriginalSegmentId] == 0)
                     yield return CombineChunkParts(work.OriginalSegmentId, chunkParts[work.OriginalSegmentId]!);
             }
+        }
+    }
 
-            pos += batchSize;
+    /// <summary>
+    /// Peak-VRAM cost model driving <see cref="BatchSizer"/>: combines the KV-cache
+    /// estimate with the encoder conv activation spike via <c>Math.Max</c>, matching
+    /// the original Cohere greedy-pack check.
+    /// </summary>
+    private sealed class CohereBatchCostModel(int maxNewTokens) : IBatchCostModel
+    {
+        public long EstimatePeakBytes(int batchSize, double maxDurationSec)
+        {
+            int encFrames = EstimateEncFrames(maxDurationSec);
+            int decSteps  = EstimateDecSteps(maxDurationSec, maxNewTokens);
+            int melFrames = EstimateMelFrames(maxDurationSec);
+            long kvBytes  = EstimateKvBytes(batchSize, encFrames, decSteps);
+            long encBytes = EstimateEncoderConvBytes(batchSize, melFrames);
+            return Math.Max(kvBytes, encBytes);
         }
     }
 
