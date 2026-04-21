@@ -438,3 +438,51 @@ lean on reactive OOM recovery rather than pre-computed budgets).
 
 Final baseline RTF: 0.030 on RTX 3090, 600 s file. Cumulative speedup
 from the Phase 3a sequential baseline: **3.35×**.
+
+## Run 10 — 2026-04-21 (cross-language validation, FLEURS)
+
+Question: the whole reason to ship Whisper in Vernacula is wider
+language coverage. Confirm it actually produces correct transcripts
+for languages that either no other backend covers (Arabic, Japanese,
+Korean, Hebrew, Swahili) or where we want to verify CJK tokenisation
+end-to-end (Mandarin).
+
+Setup: `scripts/whisper_export/fetch_whisper_test_audio.py` pulls one
+FLEURS clip per language (5-15 s, 16 kHz mono, clean read speech with
+ground-truth transcripts). Six locales into
+`~/Programming/test_audio/`. Transcribe each via `--asr whisper
+--language <iso>` and compare to FLEURS ground truth (lowercased,
+NFC-normalised, punctuation stripped).
+
+| Locale | Similarity | Notes |
+|---|---|---|
+| ar-EG Arabic | 0.991 | Near-perfect; one word-form variant (حفلاتهم → حفلتهم). RTL handled. |
+| ja-JP Japanese | 0.976 | Content identical; Whisper added punctuation (、。) absent in FLEURS reference. |
+| ko-KR Korean | 1.000 | Perfect. |
+| zh-CN Mandarin | 0.730 | Chinese content identical; Whisper dropped the Latin-script transliteration "recep tayyip erdoğan" that FLEURS inlined — arguably a cleaner transcript. |
+| sw-KE Swahili | 0.845 | Recognisable content with word-segmentation errors; expected for a lower-resource language. |
+| he-IL Hebrew | 0.958 | Near-perfect; one stem variant. RTL handled. |
+
+**Findings:**
+
+- **Whisper works end-to-end for every target language.** No crashes,
+  no empty outputs, transcripts match expected content.
+- **Near-perfect quality on high-resource languages** (Arabic,
+  Japanese, Korean, Hebrew all ≥ 0.95). RTL scripts and CJK
+  tokenisation are handled without any special-casing in our C# pipeline.
+- **Swahili shows the lower-resource quality dip** you'd expect from
+  Whisper's training corpus profile. Output is still usable — just
+  not suitable for downstream NLP that needs high precision.
+- The **Mandarin delta** is a content-choice difference (Whisper
+  dropped an inline Latin-script transliteration) rather than a
+  quality issue.
+
+**Conclusion:** Whisper genuinely expands Vernacula's language
+surface. Content no other backend can produce (Arabic, Japanese,
+Korean, Hebrew, Swahili) is now available with strong quality on the
+high-resource half. Branch is ready to merge.
+
+The existing test-audio corpus plus these 6 new FLEURS clips now covers
+all five shipped ASR backends well enough for smoke-test validation
+(European 25 via Parakeet set; Indic 22 via IndicConformer set; new
+CJK/Arabic/Hebrew/Swahili via Whisper-unique set).
