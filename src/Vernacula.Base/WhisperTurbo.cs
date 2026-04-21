@@ -655,6 +655,7 @@ public sealed class WhisperTurbo : IDisposable
     {
         var sw = new Stopwatch();
 
+        // ── Mel + encoder (existing fast paths, no IOBinding needed here) ──
         sw.Restart();
         float[] mel = PrepareChunkMel(audio16k);
         sw.Stop(); _msMel += sw.ElapsedMilliseconds;
@@ -665,26 +666,150 @@ public sealed class WhisperTurbo : IDisposable
 
         int langToken = ResolveLanguageToken(languageIso);
         int[] prefix  = [SotToken, langToken, TranscribeToken, NoTimestampsToken];
+        int prefixLen = prefix.Length;
+
+        // ── IOBinding setup for the decoder loop ────────────────────────────
+        // Pattern ported from CohereTranscribe's step loop. Per-step PCIe cost
+        // dominated the decoder loop in the profile (~60 MB of KV copied every
+        // call). Binding all KV tensors as CUDA-resident OrtValues keeps them
+        // on device across steps; only logits round-trip to CPU for argmax.
+        using var cudaMemInfo = new OrtMemoryInfo("Cuda", OrtAllocatorType.ArenaAllocator, 0, OrtMemType.Default);
+        using var cpuMemInfo  = new OrtMemoryInfo("Cpu",  OrtAllocatorType.ArenaAllocator, 0, OrtMemType.Default);
+        using var runOpts     = new RunOptions();
+
+        var prefixLongs = new long[prefixLen];
+        for (int i = 0; i < prefixLen; i++) prefixLongs[i] = prefix[i];
+
+        // decoder_init inputs
+        using var initTokValue   = OrtValue.CreateTensorValueFromMemory(prefixLongs,       [1L, prefixLen]);
+        using var encHidValue    = OrtValue.CreateTensorValueFromMemory(hidden,            [1L, EncoderOutFrames, HiddenSize]);
+        using var useCacheFalse  = OrtValue.CreateTensorValueFromMemory(new bool[] { false }, [1L]);
+        using var useCacheTrue   = OrtValue.CreateTensorValueFromMemory(new bool[] { true },  [1L]);
+        // Merged decoder needs all 16 past_kv inputs even on prefill; zero-seq
+        // dummies satisfy the graph requirement without any allocation cost.
+        var emptyPastData = Array.Empty<float>();
+        long[] emptyPastShape = [1L, NumHeads, 0L, HeadDim];
+        var emptyPastValues = new List<OrtValue>(NumDecoderLayers * 4);
+        for (int i = 0; i < NumDecoderLayers * 4; i++)
+            emptyPastValues.Add(OrtValue.CreateTensorValueFromMemory(emptyPastData, emptyPastShape));
 
         sw.Restart();
-        var (initLogits, kv) = RunDecoderInit(prefix, hidden);
+        IDisposableReadOnlyCollection<OrtValue> initOutputs;
+        {
+            using var initBinding = _decoder.CreateIoBinding();
+            initBinding.BindInput("input_ids",             initTokValue);
+            initBinding.BindInput("encoder_hidden_states", encHidValue);
+            initBinding.BindInput("use_cache_branch",      useCacheFalse);
+            for (int layer = 0; layer < NumDecoderLayers; layer++)
+            {
+                int idx = layer * 4;
+                initBinding.BindInput($"past_key_values.{layer}.decoder.key",   emptyPastValues[idx + 0]);
+                initBinding.BindInput($"past_key_values.{layer}.decoder.value", emptyPastValues[idx + 1]);
+                initBinding.BindInput($"past_key_values.{layer}.encoder.key",   emptyPastValues[idx + 2]);
+                initBinding.BindInput($"past_key_values.{layer}.encoder.value", emptyPastValues[idx + 3]);
+            }
+            // Bind outputs in grouped order so GetOutputValues() indices are stable:
+            //   [0]       logits            (CPU — read for argmax)
+            //   [1..8]    present.N.decoder.{key,value}   (CUDA — grow each step)
+            //   [9..16]   present.N.encoder.{key,value}   (CUDA — identity-passthrough on step)
+            initBinding.BindOutputToDevice("logits", cpuMemInfo);
+            for (int layer = 0; layer < NumDecoderLayers; layer++)
+            {
+                initBinding.BindOutputToDevice($"present.{layer}.decoder.key",   cudaMemInfo);
+                initBinding.BindOutputToDevice($"present.{layer}.decoder.value", cudaMemInfo);
+            }
+            for (int layer = 0; layer < NumDecoderLayers; layer++)
+            {
+                initBinding.BindOutputToDevice($"present.{layer}.encoder.key",   cudaMemInfo);
+                initBinding.BindOutputToDevice($"present.{layer}.encoder.value", cudaMemInfo);
+            }
+            _decoder.RunWithBinding(runOpts, initBinding);
+            initOutputs = initBinding.GetOutputValues();
+        }
         sw.Stop(); _msDecInit += sw.ElapsedMilliseconds;
 
+        // First argmax: init logits shape [1, prefixLen, vocab], read last position on CPU.
         sw.Restart();
-        int nextToken = ArgmaxLastPosition(initLogits, prefix.Length, BeginSuppressTokens);
+        var initLogitsSpan = initOutputs[0].GetTensorDataAsSpan<float>();
+        int nextToken = ArgmaxSpan(
+            initLogitsSpan.Slice((prefixLen - 1) * VocabSize, VocabSize),
+            BeginSuppressTokens);
         sw.Stop(); _msArgmax += sw.ElapsedMilliseconds;
 
+        // ── Step loop with IOBinding ─────────────────────────────────────────
+        // Encoder KV (from initOutputs [9..16]) is constant for the rest of the
+        // decode and is rebound as past_key_values.N.encoder.* every step.
+        // Decoder KV comes from the previous step's outputs (initOutputs on
+        // step 1; prevStep afterward). The fresh-binding-per-step pattern
+        // matches Cohere's — ORT's cached device buffer would mismatch the
+        // grown decoder-KV shape otherwise.
+        var stepTokBuf = new long[1];
+        // empty encoder_hidden_states for step (use_cache_branch=true ignores it)
+        using var stepEncHid = OrtValue.CreateTensorValueFromMemory(Array.Empty<float>(),
+                                                                     [1L, 0L, HiddenSize]);
+
+        IDisposableReadOnlyCollection<OrtValue>? prevStep = null;
         var outTokens = new List<int>(64);
-        while (nextToken != EotToken && outTokens.Count + prefix.Length < MaxDecoderLength)
+
+        while (nextToken != EotToken && outTokens.Count + prefixLen < MaxDecoderLength)
         {
             outTokens.Add(nextToken);
-            (float[] stepLogits, kv) = RunDecoderStep(nextToken, kv);
-            _stepCalls++;
+            stepTokBuf[0] = nextToken;
+
+            using var stepTokValue = OrtValue.CreateTensorValueFromMemory(stepTokBuf, [1L, 1L]);
+
+            using var stepBinding = _decoder.CreateIoBinding();
+            stepBinding.BindInput("input_ids",             stepTokValue);
+            stepBinding.BindInput("encoder_hidden_states", stepEncHid);
+            stepBinding.BindInput("use_cache_branch",      useCacheTrue);
+
+            var decKvSource = prevStep ?? initOutputs;
+            for (int layer = 0; layer < NumDecoderLayers; layer++)
+            {
+                // decoder KV: from prev step (or init)  →  positions 1..8 in our binding order
+                stepBinding.BindInput($"past_key_values.{layer}.decoder.key",   decKvSource[1 + layer * 2 + 0]);
+                stepBinding.BindInput($"past_key_values.{layer}.decoder.value", decKvSource[1 + layer * 2 + 1]);
+                // encoder KV: always from init  →  positions 9..16 in init binding
+                stepBinding.BindInput($"past_key_values.{layer}.encoder.key",   initOutputs[9 + layer * 2 + 0]);
+                stepBinding.BindInput($"past_key_values.{layer}.encoder.value", initOutputs[9 + layer * 2 + 1]);
+            }
+            stepBinding.BindOutputToDevice("logits", cpuMemInfo);
+            for (int layer = 0; layer < NumDecoderLayers; layer++)
+            {
+                stepBinding.BindOutputToDevice($"present.{layer}.decoder.key",   cudaMemInfo);
+                stepBinding.BindOutputToDevice($"present.{layer}.decoder.value", cudaMemInfo);
+            }
+            // Encoder present outputs are identity-passthrough on the step
+            // branch; bind them but we never read them (they'd match the
+            // already-bound init encoder KV).
+            for (int layer = 0; layer < NumDecoderLayers; layer++)
+            {
+                stepBinding.BindOutputToDevice($"present.{layer}.encoder.key",   cudaMemInfo);
+                stepBinding.BindOutputToDevice($"present.{layer}.encoder.value", cudaMemInfo);
+            }
 
             sw.Restart();
-            nextToken = ArgmaxLastPosition(stepLogits, 1, suppress: null);
+            _decoder.RunWithBinding(runOpts, stepBinding);
+            var curStep = stepBinding.GetOutputValues();
+            sw.Stop(); _msDecStepOrt += sw.ElapsedMilliseconds;
+            _stepCalls++;
+
+            // Previous step's OrtValues are no longer needed as inputs. Dispose
+            // them — except on step 1 where we must keep initOutputs alive for
+            // its encoder KV entries.
+            if (prevStep is not null && prevStep != initOutputs) prevStep.Dispose();
+            prevStep = curStep;
+
+            sw.Restart();
+            var stepLogits = curStep[0].GetTensorDataAsSpan<float>();
+            nextToken = ArgmaxSpan(stepLogits, suppress: null);
             sw.Stop(); _msArgmax += sw.ElapsedMilliseconds;
         }
+
+        // Cleanup.
+        if (prevStep is not null && prevStep != initOutputs) prevStep.Dispose();
+        initOutputs.Dispose();
+        foreach (var v in emptyPastValues) v.Dispose();
 
         sw.Restart();
         var contentTokens = outTokens.Where(t => t < SpecialTokenFloor).ToList();
@@ -693,6 +818,54 @@ public sealed class WhisperTurbo : IDisposable
 
         _segments++;
         return new WhisperTranscript(text, outTokens);
+    }
+
+    /// <summary>
+    /// Argmax over a logits span with optional -∞ suppression of specific ids.
+    /// Separate from ArgmaxLastPosition because ORT's IOBinding outputs give us
+    /// a ReadOnlySpan&lt;float&gt; rather than a float[], and we want to avoid
+    /// copying the 50 k-element vocab to mutate in place.
+    /// </summary>
+    private static int ArgmaxSpan(ReadOnlySpan<float> logits, int[]? suppress)
+    {
+        int best = 0;
+        float bestVal = logits[0];
+        for (int i = 1; i < logits.Length; i++)
+        {
+            float v = logits[i];
+            // Suppressed ids are compared against -∞ (can't be max).
+            if (suppress is not null)
+            {
+                bool suppressed = false;
+                for (int s = 0; s < suppress.Length; s++)
+                    if (suppress[s] == i) { suppressed = true; break; }
+                if (suppressed) continue;
+            }
+            if (v > bestVal) { bestVal = v; best = i; }
+        }
+        // Also make sure position 0 wasn't itself suppressed.
+        if (suppress is not null)
+        {
+            for (int s = 0; s < suppress.Length; s++)
+            {
+                if (suppress[s] == best)
+                {
+                    // Re-scan excluding best.
+                    int newBest = -1;
+                    float newVal = float.NegativeInfinity;
+                    for (int i = 0; i < logits.Length; i++)
+                    {
+                        bool skip = false;
+                        for (int t = 0; t < suppress.Length; t++)
+                            if (suppress[t] == i) { skip = true; break; }
+                        if (skip) continue;
+                        if (logits[i] > newVal) { newVal = logits[i]; newBest = i; }
+                    }
+                    return newBest;
+                }
+            }
+        }
+        return best;
     }
 
     // ── Decoder helpers ─────────────────────────────────────────────────────

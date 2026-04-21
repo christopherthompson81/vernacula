@@ -291,3 +291,47 @@ batched encoder / decoder inputs.
 Also in this run: fixed the models directory to the canonical
 `~/.local/share/Vernacula/models/` (was `~/.local/share/Parakeet/models/`
 from earlier ad-hoc testing).
+
+## Run 7 — 2026-04-20 (IOBinding for the decoder loop)
+
+Question: Phase 6a — port Cohere's IOBinding pattern to the Whisper
+decoder loop. Per-step PCIe transfer of KV (~60 MB) was hypothesised
+to dominate the 7.15 ms/call step cost; IOBinding keeps KV OrtValues
+on CUDA across steps, so only logits round-trip for argmax.
+
+Pattern: fresh `OrtIoBinding` per step (needed because KV shape grows
+by one and ORT's cached output buffer would shape-mismatch otherwise).
+Previous step's output OrtValues are bound as the next step's inputs
+— the device memory is referenced, never copied. Logits bound to
+`OrtMemoryInfo("Cpu", ...)` so CPU-side argmax reads without a
+GPU→CPU transfer.
+
+Results on the same 600 s en-US file:
+
+| Phase | Pre-IOBinding (Run 6) | Post-IOBinding (Run 7) | Δ |
+|---|---|---|---|
+| Mel | 138 ms | 152 ms | — |
+| Encoder | 7 509 ms | 7 823 ms | — |
+| DecoderInit | 2 428 ms | **405 ms** | −2 023 ms, 6× |
+| DecoderStep ORT | 15 046 ms | **2 118 ms** | −12 928 ms, 7× |
+| ASR total | 28 431 ms | **13 283 ms** | −15 148 ms, 2.1× |
+| RTF | 0.059 | **0.034** | 1.7× faster |
+
+Per-step cost: 7.15 ms → 1.01 ms (86 % reduction). The remaining 1 ms
+is fresh-IoBinding-creation overhead + ORT session bookkeeping — close
+to the floor without CUDA Graph capture (which would require re-exporting
+the decoder with an explicit attention-mask input, since the current
+graph infers seq_len from KV tensor shapes and dynamic shapes are
+incompatible with graph capture).
+
+Output: 1.0000 sequence similarity, 1589 words, token-for-token identical.
+
+**Bottleneck has shifted** — encoder is now 74 % of ASR time (was 30 %).
+That promotes batched encoder (Path B) to the primary next target. The
+unified decoder from Run 6 gave us ~318 MB VRAM headroom, which is the
+slack we need for larger encoder batch sizes.
+
+Deferred: IOBinding for the batched path (`TranscribeBatch`). The
+non-batched path is already fast enough that the Phase 3b batched path
+would not currently win — but if we port batched encoder next, the
+batched decoder loop should also adopt IOBinding to stay consistent.
