@@ -3,7 +3,6 @@ namespace Vernacula.App.Models;
 public enum TranscriptionPhase
 {
     LoadingAudio,
-    Denoising,
     Diarizing,
     Recognizing,
     Done,

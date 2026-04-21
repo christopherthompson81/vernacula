@@ -80,9 +80,6 @@ internal class SettingsService
             ? Path.Combine(GetModelsDir(), "diarizen")
             : Current.DiariZenModelsDir;
 
-    public string GetDenoiserModelsDir() =>
-        Path.Combine(GetModelsDir(), Config.Dfn3SubDir);
-
     public string GetParakeetModelsDir() =>
         Path.Combine(GetModelsDir(), Config.ParakeetSubDir);
 

@@ -26,11 +26,6 @@
   "settings_segmentation_diarization_desc": "Tuvastage ja märgistage üksikud kõnelejad Sortformeri mudeli abil.",
   "settings_segmentation_vad": "Hääleaktiivsuse tuvastamine",
   "settings_segmentation_vad_desc": "Kiirem, ilma kõnelejate siltideta — kasutab Silero VAD-i kõnepiirkondade tuvastamiseks.",
-  "settings_section_denoiser": "Noise Reduction",
-  "settings_denoiser_none": "None",
-  "settings_denoiser_none_desc": "No denoising — audio is passed directly to the ASR model.",
-  "settings_denoiser_dfn3": "DeepFilterNet3",
-  "settings_denoiser_dfn3_desc": "Neural noise suppression at 48 kHz using DeepFilterNet3. Reduces background noise before transcription. Requires model files in the deepfilternet3 models folder.",
   "settings_section_editor": "Transkriptsiooni redaktor",
   "settings_editor_playback_mode": "Vaikimisi esitusrežiim",
   "settings_section_appearance": "Välimus",
@@ -57,7 +52,6 @@
   "download_complete": "Allalaadimine lõpetatud.",
   "download_cancelled": "Allalaadimine tühistatud.",
   "download_failed": "Allalaadimine ebaõnnestus: {error}",
-
   "history_heading": "Transkribeerimise Ajalugu",
   "history_empty": "Transkribeerimise ajalugu veel puudub. Käivitage allpool uus transkribeerimine.",
   "history_col_title": "Pealkiri",
@@ -73,14 +67,12 @@
   "btn_remove": "Eemalda",
   "btn_new_transcription": "Uus Transkribeerimine",
   "btn_bulk_add": "Massiline Ülesannete Lisamine",
-
   "status_complete": "lõpetatud",
   "status_running": "töötab",
   "status_failed": "ebaõnnestunud",
   "status_cancelled": "tühistatud",
   "status_pending": "ootab",
   "status_queued": "järjekorras",
-
   "config_heading": "Uus Transkribeerimine",
   "label_audio_file": "Helifail",
   "placeholder_no_file": "Faili ei ole valitud",
@@ -89,17 +81,14 @@
   "placeholder_job_name": "Sisestage nimi sellele transkribeerimisülesandele",
   "btn_start": "Käivita Transkribeerimine",
   "btn_back": "← Tagasi",
-
   "progress_heading": "Edenemine",
   "btn_pause": "Peata",
   "btn_back_home": "← Tagasi Avalehele",
   "pausing": "Peatamine...",
-
   "segments_col_speaker": "Kõneleja",
   "segments_col_start": "Algus",
   "segments_col_end": "Lõpp",
   "segments_col_content": "Sisu",
-
   "results_segments_label": "segment(i)",
   "results_heading": "Lõpetatud",
   "results_summary": "Transkribeerimine lõpetatud — {count} segment(i). Kasutage Ekspordimist, et salvestada oma transkriptsioon.",
@@ -109,7 +98,6 @@
   "btn_edit_speakers": "Muuda Kõnelejanimi",
   "btn_export": "Ekspordi Transkriptsioon",
   "btn_back_history": "← Tagasi Ajalukku",
-
   "editor_heading": "Muuda transkriptsiooni",
   "editor_verified": "Kontrollitud",
   "editor_verified_tooltip": "Lülita kontrollitud (F1)",
@@ -134,24 +122,20 @@
   "editor_redo_asr_running": "Töötab…",
   "editor_redo_asr_tooltip": "Käivita kõnetuvastus selle segmendi helifailil uuesti, et saada puhas, ühe allikaga transkriptsioon (võimaldab jagamist)",
   "editor_add_speaker": "+ Lisa kõneleja…",
-
   "modal_speakers_heading": "Muuda Kõnelejanimi",
   "modal_speakers_col_id": "Kõneleja ID",
   "modal_speakers_col_name": "Kuvamisnimi",
   "btn_save": "Salvesta",
   "btn_cancel": "Tühista",
   "error_saving_speakers": "Vea kõnelejanimede salvestamisel: {error}",
-
   "modal_export_heading": "Ekspordi Transkriptsioon",
   "label_format": "Vorming",
   "label_filename": "Failinimi",
   "exported_to": "Eksporditud: {path}",
   "export_error": "Ekspordi viga: {error}",
-
   "loading_from_db": "Transkribeerimise laadimine andmebaasist...",
   "error_loading_job": "Vea ülesande laadimisel: {error}",
   "error_generic": "Viga: {error}",
-
   "menu_file": "_Fail",
   "menu_new_transcription": "_Uus Transkribeerimine",
   "menu_exit": "_Sulge",
@@ -165,7 +149,6 @@
   "menu_language": "Keel",
   "menu_help": "_Abi",
   "menu_about": "_Teave",
-  
   "btn_ok": "OK",
   "format_excel": "Excel (.xlsx)",
   "format_csv": "CSV (.csv)",
@@ -174,27 +157,20 @@
   "format_md": "Markdown (.md)",
   "format_docx": "Word dokument (.docx)",
   "format_db": "SQLite Andmebaas (.db)",
-
   "confirm_exit_message": "Transkribeerimine on käimas. Tühistada ja sulgeda?",
   "confirm_exit_title": "Sulgemine Kinnitada",
-
   "dlg_audio_filter": "Meediumifailid|*.wav;*.mp3;*.flac;*.m4a;*.ogg;*.aac;*.webm;*.opus;*.wma;*.aiff;*.mp4;*.mov;*.mkv;*.avi;*.wmv;*.flv;*.ts;*.mts;*.m2ts;*.3gp|Kõik failid|*.*",
   "dlg_select_audio": "Vali Helifail",
-
   "phase_audio_analysis": "Helianalüüs",
-  "phase_denoising": "Noise Reduction",
   "phase_speech_recognition": "Kõnetuvastus",
-
   "progress_preparing": "Ettevalmistamine...",
   "progress_resuming": "Jätkamine...",
   "progress_queued_waiting": "Oodatakse järjekorras...",
   "progress_loading_audio": "Helifaili laadimine...",
-  "progress_denoising": "Denoising audio...",
   "progress_cancelled": "Tühistatud.",
   "progress_identifying_speakers": "Kõnelejate tuvastamine... chunk {i}/{count}",
   "progress_recognizing_segment": "Segmenti {i} tundmine {count}-st...",
   "transcription_complete": "Transkribeerimine lõpetatud.",
-
   "dlg_filter_xlsx": "Exceli tööraamat|*.xlsx",
   "dlg_filter_csv": "CSV-fail|*.csv",
   "dlg_filter_json": "JSON-fail|*.json",
@@ -202,10 +178,8 @@
   "dlg_filter_md": "Markdown-fail|*.md",
   "dlg_filter_docx": "Word dokument|*.docx",
   "dlg_filter_db": "SQLite Andmebaas|*.db",
-
   "menu_help_contents": "_Abi Sisu",
   "help_window_title": "Vernacula-Desktop — Abi",
-
   "help_group_first_steps": "Esimesed Sammud",
   "help_group_operations": "Toimingud",
   "help_topic_help_index": "Abi",
@@ -222,7 +196,6 @@
   "help_topic_operations_exporting_results": "Tulemuste Ekspordimine",
   "help_topic_operations_pausing_resuming_removing": "Peatamine / Jätkamine / Eemaldamine",
   "help_topic_operations_bulk_add_jobs": "Massiline Ülesannete Lisamine",
-
   "about_title": "Vernacula-Desktop Teave",
   "about_heading": "Vernacula-Desktop",
   "about_version": "Versioon {version}",

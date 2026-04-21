@@ -900,55 +900,6 @@
                     </StackPanel>
                 </Border>
 
-                <!-- ─── Noise Reduction ───────────────────────────────────────── -->
-                <TextBlock x:Name="DenoiserSectionHeader"
-                           Text="{Binding Source={x:Static local:Loc.Instance}, Path=[settings_section_denoiser]}"
-                           Classes="section-heading" />
-
-                <Border Background="{DynamicResource SurfaceBrush}"
-                        CornerRadius="8" Padding="16">
-                    <StackPanel>
-
-                        <!-- None option -->
-                        <RadioButton GroupName="Denoiser"
-                                     IsChecked="{Binding IsDenoiserNone, Mode=OneWay}"
-                                     Command="{Binding SetDenoiserCommand}"
-                                     CommandParameter="None"
-                                     Foreground="{DynamicResource TextBrush}"
-                                     Margin="0,0,0,4">
-                            <StackPanel>
-                                <TextBlock Text="{Binding Source={x:Static local:Loc.Instance}, Path=[settings_denoiser_none]}"
-                                           FontWeight="SemiBold"
-                                           Foreground="{DynamicResource TextBrush}" />
-                                <TextBlock Text="{Binding Source={x:Static local:Loc.Instance}, Path=[settings_denoiser_none_desc]}"
-                                           Foreground="{DynamicResource SubtextBrush}"
-                                           FontSize="11"
-                                           TextWrapping="Wrap" />
-                            </StackPanel>
-                        </RadioButton>
-
-                        <Separator Background="{DynamicResource OverlayBrush}" Margin="0,8,0,8" />
-
-                        <!-- DeepFilterNet3 option -->
-                        <RadioButton GroupName="Denoiser"
-                                     IsChecked="{Binding IsDenoiserDfn3, Mode=OneWay}"
-                                     Command="{Binding SetDenoiserCommand}"
-                                     CommandParameter="DeepFilterNet3"
-                                     Foreground="{DynamicResource TextBrush}">
-                            <StackPanel>
-                                <TextBlock Text="{Binding Source={x:Static local:Loc.Instance}, Path=[settings_denoiser_dfn3]}"
-                                           FontWeight="SemiBold"
-                                           Foreground="{DynamicResource TextBrush}" />
-                                <TextBlock Text="{Binding Source={x:Static local:Loc.Instance}, Path=[settings_denoiser_dfn3_desc]}"
-                                           Foreground="{DynamicResource SubtextBrush}"
-                                           FontSize="11"
-                                           TextWrapping="Wrap" />
-                            </StackPanel>
-                        </RadioButton>
-
-                    </StackPanel>
-                </Border>
-
                 <!-- ─── Transcript Editor ───────────────────────────────────── -->
                 <TextBlock x:Name="EditorSectionHeader"
                            Text="{Binding Source={x:Static local:Loc.Instance}, Path=[settings_section_editor]}"

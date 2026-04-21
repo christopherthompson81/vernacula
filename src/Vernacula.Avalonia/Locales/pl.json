@@ -26,11 +26,6 @@
   "settings_segmentation_diarization_desc": "Identyfikuj i oznaczaj poszczególnych mówców za pomocą modelu Sortformer.",
   "settings_segmentation_vad": "Wykrywanie aktywności głosowej",
   "settings_segmentation_vad_desc": "Szybsze, bez etykiet mówców — używa Silero VAD do wykrywania tylko regionów mowy.",
-  "settings_section_denoiser": "Noise Reduction",
-  "settings_denoiser_none": "None",
-  "settings_denoiser_none_desc": "No denoising — audio is passed directly to the ASR model.",
-  "settings_denoiser_dfn3": "DeepFilterNet3",
-  "settings_denoiser_dfn3_desc": "Neural noise suppression at 48 kHz using DeepFilterNet3. Reduces background noise before transcription. Requires model files in the deepfilternet3 models folder.",
   "settings_section_editor": "Edytor transkrypcji",
   "settings_editor_playback_mode": "Domyślny tryb odtwarzania",
   "settings_section_appearance": "Wygląd",
@@ -57,7 +52,6 @@
   "download_complete": "Pobieranie zakończone.",
   "download_cancelled": "Pobieranie anulowane.",
   "download_failed": "Pobieranie nieudane: {error}",
-
   "history_heading": "Historia transkrypcji",
   "history_empty": "Nie ma jeszcze historii transkrypcji. Rozpocznij nową transkrypcję poniżej.",
   "history_col_title": "Tytuł",
@@ -73,14 +67,12 @@
   "btn_remove": "Usuń",
   "btn_new_transcription": "Nowa transkrypcja",
   "btn_bulk_add": "Masowe dodawanie zadań",
-
   "status_complete": "zakończone",
   "status_running": "w toku",
   "status_failed": "niepowodzenie",
   "status_cancelled": "anulowane",
   "status_pending": "oczekujące",
   "status_queued": "w kolejce",
-
   "config_heading": "Nowa transkrypcja",
   "label_audio_file": "Plik audio",
   "placeholder_no_file": "Nie wybrano pliku",
@@ -89,17 +81,14 @@
   "placeholder_job_name": "Wprowadź nazwę dla tego zadania transkrypcji",
   "btn_start": "Rozpocznij transkrypcję",
   "btn_back": "← Wstecz",
-
   "progress_heading": "Postęp",
   "btn_pause": "Pauza",
   "btn_back_home": "← Powrót do głównej strony",
   "pausing": "Wstrzymywanie…",
-
   "segments_col_speaker": "Mówiący",
   "segments_col_start": "Rozpoczęcie",
   "segments_col_end": "Zakończenie",
   "segments_col_content": "Treść",
-
   "results_segments_label": "segment(y)",
   "results_heading": "Ukończone",
   "results_summary": "Transkrypcja zakończona — {count} segment(y). Użyj Eksport, aby zapisać swoją transkrypcję.",
@@ -109,7 +98,6 @@
   "btn_edit_speakers": "Edytuj nazwy mówców",
   "btn_export": "Eksportuj transkrypcję",
   "btn_back_history": "← Powrót do historii",
-
   "editor_heading": "Edytuj transkrypcję",
   "editor_verified": "Zweryfikowano",
   "editor_verified_tooltip": "Przełącz zweryfikowano (F1)",
@@ -134,24 +122,20 @@
   "editor_redo_asr_running": "Działanie…",
   "editor_redo_asr_tooltip": "Uruchom ponownie rozpoznawanie mowy dla audio tego segmentu, aby uzyskać czystą transkrypcję z jednego źródła (umożliwia podział)",
   "editor_add_speaker": "+ Dodaj mówcę…",
-
   "modal_speakers_heading": "Edytuj nazwy mówców",
   "modal_speakers_col_id": "ID mówiącego",
   "modal_speakers_col_name": "Wyświetlana nazwa",
   "btn_save": "Zapisz",
   "btn_cancel": "Anuluj",
   "error_saving_speakers": "Błąd podczas zapisywania nazw mówców: {error}",
-
   "modal_export_heading": "Eksport transkrypcji",
   "label_format": "Format",
   "label_filename": "Nazwa pliku",
   "exported_to": "Wyeksportowano do: {path}",
   "export_error": "Błąd eksportu: {error}",
-
   "loading_from_db": "Ładowanie transkrypcji z bazy danych…",
   "error_loading_job": "Błąd podczas ładowania zadania: {error}",
   "error_generic": "Błąd: {error}",
-
   "menu_file": "_Plik",
   "menu_new_transcription": "_Nowa transkrypcja",
   "menu_exit": "_Zamknij",
@@ -165,7 +149,6 @@
   "menu_language": "Język",
   "menu_help": "_Pomoc",
   "menu_about": "_O programie",
-
   "btn_ok": "OK",
   "format_excel": "Excel (.xlsx)",
   "format_csv": "CSV (.csv)",
@@ -174,27 +157,20 @@
   "format_md": "Markdown (.md)",
   "format_docx": "Dokument Word (.docx)",
   "format_db": "Baza danych SQLite (.db)",
-
   "confirm_exit_message": "Transkrypcja jest w toku. Anulować i zamknąć?",
   "confirm_exit_title": "Potwierdź zamknięcie",
-
   "dlg_audio_filter": "Pliki multimedialne|*.wav;*.mp3;*.flac;*.m4a;*.ogg;*.aac;*.webm;*.opus;*.wma;*.aiff;*.mp4;*.mov;*.mkv;*.avi;*.wmv;*.flv;*.ts;*.mts;*.m2ts;*.3gp|Wszystkie pliki|*.*",
   "dlg_select_audio": "Wybierz plik audio",
-
   "phase_audio_analysis": "Analiza dźwięku",
-  "phase_denoising": "Noise Reduction",
   "phase_speech_recognition": "Rozpoznawanie mowy",
-
   "progress_preparing": "Przygotowywanie...",
   "progress_resuming": "Wznawianie...",
   "progress_loading_audio": "Ładowanie audio...",
-  "progress_denoising": "Denoising audio...",
   "progress_queued_waiting": "Oczekiwanie w kolejce…",
   "progress_cancelled": "Anulowano.",
   "progress_identifying_speakers": "Identyfikacja mówców... chunk {i}/{count}",
   "progress_recognizing_segment": "Przetwarzanie segmentu {i} z {count}...",
   "transcription_complete": "Transkrypcja zakończona.",
-
   "dlg_filter_xlsx": "Skoroszyt Excel|*.xlsx",
   "dlg_filter_csv": "Plik CSV|*.csv",
   "dlg_filter_json": "Plik JSON|*.json",
@@ -202,10 +178,8 @@
   "dlg_filter_md": "Plik Markdown|*.md",
   "dlg_filter_docx": "Dokument Word|*.docx",
   "dlg_filter_db": "Baza danych SQLite|*.db",
-
   "menu_help_contents": "_Zawartość pomocy",
   "help_window_title": "Vernacula-Desktop — Pomoc",
-  
   "help_group_first_steps": "Pierwsze kroki",
   "help_group_operations": "Operacje",
   "help_topic_help_index": "Pomoc",
@@ -222,7 +196,6 @@
   "help_topic_operations_exporting_results": "Eksportowanie wyników",
   "help_topic_operations_pausing_resuming_removing": "Wstrzymywanie / Wznawianie / Usuwanie",
   "help_topic_operations_bulk_add_jobs": "Masowe dodawanie zadań",
-
   "about_title": "O Vernacula-Desktop",
   "about_heading": "Vernacula-Desktop",
   "about_version": "Wersja {version}",

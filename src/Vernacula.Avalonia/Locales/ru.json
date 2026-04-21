@@ -26,11 +26,6 @@
   "settings_segmentation_diarization_desc": "Определение и маркировка отдельных участников разговора с помощью модели Sortformer.",
   "settings_segmentation_vad": "Определение голосовой активности",
   "settings_segmentation_vad_desc": "Быстрее, без меток говорящих — использует Silero VAD только для обнаружения речевых фрагментов.",
-  "settings_section_denoiser": "Noise Reduction",
-  "settings_denoiser_none": "None",
-  "settings_denoiser_none_desc": "No denoising — audio is passed directly to the ASR model.",
-  "settings_denoiser_dfn3": "DeepFilterNet3",
-  "settings_denoiser_dfn3_desc": "Neural noise suppression at 48 kHz using DeepFilterNet3. Reduces background noise before transcription. Requires model files in the deepfilternet3 models folder.",
   "settings_section_editor": "Редактор транскрипции",
   "settings_editor_playback_mode": "Режим воспроизведения по умолчанию",
   "settings_section_appearance": "Внешний вид",
@@ -57,7 +52,6 @@
   "download_complete": "Загрузка завершена.",
   "download_cancelled": "Загрузка отменена.",
   "download_failed": "Ошибка загрузки: {error}",
-
   "history_heading": "История транскрипций",
   "history_empty": "Пока нет истории транскрипций. Создайте новую транскрипцию ниже.",
   "history_col_title": "Название",
@@ -73,14 +67,12 @@
   "btn_remove": "Удалить",
   "btn_new_transcription": "Новая транскрипция",
   "btn_bulk_add": "Массовое добавление заданий",
-
   "status_complete": "завершено",
   "status_running": "в работе",
   "status_failed": "не удалось",
   "status_cancelled": "отменено",
   "status_pending": "ожидается",
   "status_queued": "в очереди",
-
   "config_heading": "Новая транскрипция",
   "label_audio_file": "Аудиофайл",
   "placeholder_no_file": "Файл не выбран",
@@ -89,17 +81,14 @@
   "placeholder_job_name": "Введите имя для этой задачи транскрипции",
   "btn_start": "Начать транскрипцию",
   "btn_back": "← Назад",
-
   "progress_heading": "Прогресс",
   "btn_pause": "Пауза",
   "btn_back_home": "← Вернуться на главную страницу",
   "pausing": "Приостанавливается…",
-
   "segments_col_speaker": "Говорящий",
   "segments_col_start": "Начало",
   "segments_col_end": "Конец",
   "segments_col_content": "Содержимое",
-
   "results_segments_label": "сегмент(ов)",
   "results_heading": "Завершено",
   "results_summary": "Транскрипция завершена — {count} сегмент(ов). Используйте Экспорт, чтобы сохранить вашу транскрипцию.",
@@ -109,7 +98,6 @@
   "btn_edit_speakers": "Редактировать имена говорящих",
   "btn_export": "Экспортировать транскрипцию",
   "btn_back_history": "← Вернуться к истории",
-
   "editor_heading": "Редактировать транскрипцию",
   "editor_verified": "Проверено",
   "editor_verified_tooltip": "Переключить проверено (F1)",
@@ -134,24 +122,20 @@
   "editor_redo_asr_running": "Выполняется…",
   "editor_redo_asr_tooltip": "Повторно запустить распознавание речи (ASR) для аудио этого сегмента, чтобы получить чистую транскрипцию из одного источника (позволяет выполнить разбивку)",
   "editor_add_speaker": "+ Добавить говорящего…",
-
   "modal_speakers_heading": "Редактирование имен говорящих",
   "modal_speakers_col_id": "ID говорящего",
   "modal_speakers_col_name": "Отображаемое имя",
   "btn_save": "Сохранить",
   "btn_cancel": "Отмена",
   "error_saving_speakers": "Ошибка при сохранении имен говорящих: {error}",
-
   "modal_export_heading": "Экспортировать транскрипцию",
   "label_format": "Формат",
   "label_filename": "Имя файла",
   "exported_to": "Экспортировано в: {path}",
   "export_error": "Ошибка экспорта: {error}",
-
   "loading_from_db": "Загрузка транскрипции из базы данных…",
   "error_loading_job": "Ошибка при загрузке задания: {error}",
   "error_generic": "Ошибка: {error}",
-
   "menu_file": "_Файл",
   "menu_new_transcription": "_Новая транскрипция",
   "menu_exit": "_Выход",
@@ -165,7 +149,6 @@
   "menu_language": "Язык",
   "menu_help": "_Справка",
   "menu_about": "_О программе",
-
   "btn_ok": "OK",
   "format_excel": "Excel (.xlsx)",
   "format_csv": "CSV (.csv)",
@@ -174,27 +157,20 @@
   "format_md": "Markdown (.md)",
   "format_docx": "Документ Word (.docx)",
   "format_db": "База данных SQLite (.db)",
-
   "confirm_exit_message": "Транскрипция выполняется. Отменить и выйти?",
   "confirm_exit_title": "Подтверждение выхода",
-
   "dlg_audio_filter": "Медиафайлы|*.wav;*.mp3;*.flac;*.m4a;*.ogg;*.aac;*.webm;*.opus;*.wma;*.aiff;*.mp4;*.mov;*.mkv;*.avi;*.wmv;*.flv;*.ts;*.mts;*.m2ts;*.3gp|Все файлы|*.*",
   "dlg_select_audio": "Выбрать аудиофайл",
-
   "phase_audio_analysis": "Анализ аудио",
-  "phase_denoising": "Noise Reduction",
   "phase_speech_recognition": "Распознавание речи",
-
   "progress_preparing": "Подготовка...",
   "progress_resuming": "Возобновление...",
   "progress_queued_waiting": "Ожидание в очереди…",
   "progress_loading_audio": "Загрузка аудио...",
-  "progress_denoising": "Denoising audio...",
   "progress_cancelled": "Отменено.",
   "progress_identifying_speakers": "Идентификация говорящих... чанк {i}/{count}",
   "progress_recognizing_segment": "Распознавание сегмента {i} из {count}...",
   "transcription_complete": "Транскрипция завершена.",
-
   "dlg_filter_xlsx": "Книга Excel|*.xlsx",
   "dlg_filter_csv": "CSV-файл|*.csv",
   "dlg_filter_json": "JSON-файл|*.json",
@@ -202,10 +178,8 @@
   "dlg_filter_md": "Файл Markdown|*.md",
   "dlg_filter_docx": "Документ Word|*.docx",
   "dlg_filter_db": "База данных SQLite|*.db",
-
   "menu_help_contents": "_Содержание справки",
   "help_window_title": "Vernacula-Desktop — Справка",
-
   "help_group_first_steps": "Первые шаги",
   "help_group_operations": "Операции",
   "help_topic_help_index": "Справка",
@@ -222,7 +196,6 @@
   "help_topic_operations_exporting_results": "Экспорт результатов",
   "help_topic_operations_pausing_resuming_removing": "Пауза / Возобновление / Удаление",
   "help_topic_operations_bulk_add_jobs": "Массовое добавление заданий",
-
   "about_title": "О Vernacula-Desktop",
   "about_heading": "Vernacula-Desktop",
   "about_version": "Версия {version}",

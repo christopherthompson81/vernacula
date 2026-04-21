@@ -26,11 +26,6 @@
   "settings_segmentation_diarization_desc": "Azonosítsa és jelölje meg az egyes beszélőket a Sortformer modell segítségével.",
   "settings_segmentation_vad": "Hangaktivitás-érzékelés",
   "settings_segmentation_vad_desc": "Gyorsabb, nincs beszélőcímkézés – a Silero VAD csak a beszélt szakaszok érzékelésére szolgál.",
-  "settings_section_denoiser": "Noise Reduction",
-  "settings_denoiser_none": "None",
-  "settings_denoiser_none_desc": "No denoising — audio is passed directly to the ASR model.",
-  "settings_denoiser_dfn3": "DeepFilterNet3",
-  "settings_denoiser_dfn3_desc": "Neural noise suppression at 48 kHz using DeepFilterNet3. Reduces background noise before transcription. Requires model files in the deepfilternet3 models folder.",
   "settings_section_editor": "Átiratkészítő",
   "settings_editor_playback_mode": "Alapértelmezett lejátszási mód",
   "settings_section_appearance": "Megjelenés",
@@ -57,7 +52,6 @@
   "download_complete": "A letöltés befejeződött.",
   "download_cancelled": "A letöltés megszakítva.",
   "download_failed": "A letöltés sikertelen: {error}",
-
   "history_heading": "Átírási Előzmények",
   "history_empty": "Még nincs átírási előzmény. Indítson egy új átírást alább.",
   "history_col_title": "Cím",
@@ -73,14 +67,12 @@
   "btn_remove": "Eltávolítás",
   "btn_new_transcription": "Új Átírás",
   "btn_bulk_add": "Feladatok Tömeges Hozzáadása",
-
   "status_complete": "befejezve",
   "status_running": "folyamatban",
   "status_failed": "sikertelen",
   "status_cancelled": "megszakítva",
   "status_pending": "függőben",
   "status_queued": "sorban",
-
   "config_heading": "Új Átírás",
   "label_audio_file": "Hangfájl",
   "placeholder_no_file": "Nincs kiválasztva fájl",
@@ -89,17 +81,14 @@
   "placeholder_job_name": "Adjon meg egy nevet ennek az átíró feladatnak",
   "btn_start": "Átírás Indítása",
   "btn_back": "← Vissza",
-
   "progress_heading": "Haladás",
   "btn_pause": "Szünet",
   "btn_back_home": "← Vissza a Főképernyőre",
   "pausing": "Szüneteltetés…",
-
   "segments_col_speaker": "Beszélő",
   "segments_col_start": "Kezdés",
   "segments_col_end": "Befejezés",
   "segments_col_content": "Tartalom",
-
   "results_segments_label": "szakasz(ok)",
   "results_heading": "Befejezve",
   "results_summary": "Az átírás befejeződött — {count} szakasz. Használja az Exportálást a mentéshez.",
@@ -109,7 +98,6 @@
   "btn_edit_speakers": "Beszélőnevek Szerkesztése",
   "btn_export": "Átírás Exportálása",
   "btn_back_history": "← Vissza az Előzményekbe",
-
   "editor_heading": "Átírat szerkesztése",
   "editor_verified": "Ellenőrzött",
   "editor_verified_tooltip": "Ellenőrzött váltása (F1)",
@@ -134,24 +122,20 @@
   "editor_redo_asr_running": "Futás folyamatban…",
   "editor_redo_asr_tooltip": "Futtassa újra a beszédfelismerést ezen szegmens hangján, hogy tiszta, egyetlen forrásból származó átírást kapjon (lehetővé teszi a felosztást)",
   "editor_add_speaker": "+ Beszélő hozzáadása…",
-
   "modal_speakers_heading": "Beszélőnevek Szerkesztése",
   "modal_speakers_col_id": "Beszélő Azonosító",
   "modal_speakers_col_name": "Megjelenítési Név",
   "btn_save": "Mentés",
   "btn_cancel": "Megszakítás",
   "error_saving_speakers": "Hiba a beszélőnevek mentésekor: {error}",
-
   "modal_export_heading": "Átírás Exportálása",
   "label_format": "Formátum",
   "label_filename": "Fájlnév",
   "exported_to": "Exportálva ide: {path}",
   "export_error": "Export hiba: {error}",
-
   "loading_from_db": "Átírás betöltése az adatbázisból…",
   "error_loading_job": "Hiba a feladat betöltésekor: {error}",
   "error_generic": "Hiba: {error}",
-
   "menu_file": "_Fájl",
   "menu_new_transcription": "_Új Átírás",
   "menu_exit": "_Kilépés",
@@ -165,7 +149,6 @@
   "menu_language": "Nyelv",
   "menu_help": "_Súgó",
   "menu_about": "_Névjegy",
-
   "btn_ok": "OK",
   "format_excel": "Excel (.xlsx)",
   "format_csv": "CSV (.csv)",
@@ -174,27 +157,20 @@
   "format_md": "Markdown (.md)",
   "format_docx": "Word Dokumentum (.docx)",
   "format_db": "SQLite Adatbázis (.db)",
-
   "confirm_exit_message": "Egy átírás folyamatban van. Megszakítsa és lépjen ki?",
   "confirm_exit_title": "Kilépés Megerősítése",
-
   "dlg_audio_filter": "Médiafájlok|*.wav;*.mp3;*.flac;*.m4a;*.ogg;*.aac;*.webm;*.opus;*.wma;*.aiff;*.mp4;*.mov;*.mkv;*.avi;*.wmv;*.flv;*.ts;*.mts;*.m2ts;*.3gp|Minden fájl|*.*",
   "dlg_select_audio": "Hangfájl Kiválasztása",
-
   "phase_audio_analysis": "Hang Elemzése",
-  "phase_denoising": "Noise Reduction",
   "phase_speech_recognition": "Beszéd Felismerése",
-
   "progress_preparing": "Előkészítés...",
   "progress_resuming": "Folytatás...",
   "progress_queued_waiting": "Várakozás a sorban…",
   "progress_loading_audio": "Hangfájl betöltése...",
-  "progress_denoising": "Denoising audio...",
   "progress_cancelled": "Megszakítva.",
   "progress_identifying_speakers": "Beszélők azonosítása... chunk {i}/{count}",
   "progress_recognizing_segment": "{i}. szakasz felismerése a {count}-ból...",
   "transcription_complete": "Az átírás befejeződött.",
-
   "dlg_filter_xlsx": "Excel Munkafüzet|*.xlsx",
   "dlg_filter_csv": "CSV Fájl|*.csv",
   "dlg_filter_json": "JSON Fájl|*.json",
@@ -202,10 +178,8 @@
   "dlg_filter_md": "Markdown Fájl|*.md",
   "dlg_filter_docx": "Word Dokumentum|*.docx",
   "dlg_filter_db": "SQLite Adatbázis|*.db",
-
   "menu_help_contents": "_Súgó Tartalom",
   "help_window_title": "Vernacula-Desktop — Súgó",
-
   "help_group_first_steps": "Első Lépések",
   "help_group_operations": "Műveletek",
   "help_topic_help_index": "Súgó",
@@ -222,7 +196,6 @@
   "help_topic_operations_exporting_results": "Eredmények Exportálása",
   "help_topic_operations_pausing_resuming_removing": "Szünet / Folytatás / Eltávolítás",
   "help_topic_operations_bulk_add_jobs": "Feladatok Tömeges Hozzáadása",
-
   "about_title": "Névjegy a Vernacula-Desktop-ről",
   "about_heading": "Vernacula-Desktop",
   "about_version": "{version} verzió",

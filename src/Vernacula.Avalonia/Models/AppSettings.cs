@@ -42,7 +42,6 @@ public class AppSettings
     // (brx, doi, kok, ks, mai, mni, or, sat). With LID off, every segment
     // decodes in this language.
     public string             IndicConformerLanguage { get; set; } = "hi";
-    public DenoiserMode       Denoiser            { get; set; } = DenoiserMode.None;
     public PlaybackMode       EditorPlaybackMode  { get; set; } = PlaybackMode.Continuous;
     public string             ModelsDir           { get; set; } = "";
     public string             DiariZenModelsDir   { get; set; } = "";

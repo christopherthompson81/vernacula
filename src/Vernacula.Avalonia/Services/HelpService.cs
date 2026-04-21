@@ -31,11 +31,12 @@ internal static class HelpService
     [
         new HelpGroup("help_group_first_steps",
         [
-            new HelpTopic("first_steps_settings_window",    "Settings",                      "first_steps/settings_window.md"),
-            new HelpTopic("first_steps_language",           "Language",                      "first_steps/language.md"),
-            new HelpTopic("first_steps_theme",              "Theme",                         "first_steps/theme.md"),
-            new HelpTopic("first_steps_downloading_models", "Downloading Models",            "first_steps/downloading_models.md"),
-            new HelpTopic("first_steps_cuda_installation",  "CUDA & cuDNN Installation",     "first_steps/cuda_installation.md"),
+            new HelpTopic("first_steps_settings_window",      "Settings",                      "first_steps/settings_window.md"),
+            new HelpTopic("first_steps_language",             "Language",                      "first_steps/language.md"),
+            new HelpTopic("first_steps_theme",                "Theme",                         "first_steps/theme.md"),
+            new HelpTopic("first_steps_downloading_models",   "Downloading Models",            "first_steps/downloading_models.md"),
+            new HelpTopic("first_steps_cuda_installation",    "CUDA & cuDNN Installation",     "first_steps/cuda_installation.md"),
+            new HelpTopic("first_steps_audio_input_quality",  "Audio Input Quality",           "first_steps/audio_input_quality.md"),
         ]),
         new HelpGroup("help_group_operations",
         [

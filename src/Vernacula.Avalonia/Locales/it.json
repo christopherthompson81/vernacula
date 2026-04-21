@@ -26,11 +26,6 @@
   "settings_segmentation_diarization_desc": "Identifica ed etichetta i singoli parlanti utilizzando il modello Sortformer.",
   "settings_segmentation_vad": "Rilevamento attività vocale",
   "settings_segmentation_vad_desc": "Più veloce, senza etichette parlante — usa Silero VAD per rilevare solo le regioni vocali.",
-  "settings_section_denoiser": "Noise Reduction",
-  "settings_denoiser_none": "None",
-  "settings_denoiser_none_desc": "No denoising — audio is passed directly to the ASR model.",
-  "settings_denoiser_dfn3": "DeepFilterNet3",
-  "settings_denoiser_dfn3_desc": "Neural noise suppression at 48 kHz using DeepFilterNet3. Reduces background noise before transcription. Requires model files in the deepfilternet3 models folder.",
   "settings_section_editor": "Editor trascrizioni",
   "settings_editor_playback_mode": "Modalità di riproduzione predefinita",
   "settings_section_appearance": "Aspetto",
@@ -57,7 +52,6 @@
   "download_complete": "Download completato.",
   "download_cancelled": "Download annullato.",
   "download_failed": "Download fallito: {error}",
-
   "history_heading": "Cronologia delle trascrizioni",
   "history_empty": "Nessuna cronologia di trascrizione ancora. Avvia una nuova trascrizione qui sotto.",
   "history_col_title": "Titolo",
@@ -73,14 +67,12 @@
   "btn_remove": "Rimuovi",
   "btn_new_transcription": "Nuova trascrizione",
   "btn_bulk_add": "Aggiunta di lavori in blocco",
-
   "status_complete": "completo",
   "status_running": "in esecuzione",
   "status_failed": "fallito",
   "status_cancelled": "annullato",
   "status_pending": "in attesa",
   "status_queued": "in coda",
-
   "config_heading": "Nuova trascrizione",
   "label_audio_file": "File audio",
   "placeholder_no_file": "Nessun file selezionato",
@@ -89,17 +81,14 @@
   "placeholder_job_name": "Inserisci un nome per questo lavoro di trascrizione",
   "btn_start": "Avvia trascrizione",
   "btn_back": "← Indietro",
-
   "progress_heading": "Progresso",
   "btn_pause": "Pausa",
   "btn_back_home": "← Torna alla Home",
   "pausing": "In pausa…",
-
   "segments_col_speaker": "Oratore",
   "segments_col_start": "Inizio",
   "segments_col_end": "Fine",
   "segments_col_content": "Contenuto",
-
   "results_segments_label": "segmento(i)",
   "results_heading": "Completato",
   "results_summary": "Trascrizione completata — {count} segmento(i). Usa Esporta per salvare la tua trascrizione.",
@@ -109,7 +98,6 @@
   "btn_edit_speakers": "Modifica nomi oratori",
   "btn_export": "Esporta trascrizione",
   "btn_back_history": "← Torna alla Cronologia",
-
   "editor_heading": "Modifica trascrizione",
   "editor_verified": "Verificato",
   "editor_verified_tooltip": "Attiva/disattiva verificato (F1)",
@@ -134,24 +122,20 @@
   "editor_redo_asr_running": "In esecuzione…",
   "editor_redo_asr_tooltip": "Riesegui il riconoscimento vocale sull'audio di questo segmento per ottenere una trascrizione pulita da sorgente singola (abilita la divisione)",
   "editor_add_speaker": "+ Aggiungi parlante…",
-
   "modal_speakers_heading": "Modifica nomi oratori",
   "modal_speakers_col_id": "ID oratore",
   "modal_speakers_col_name": "Nome visualizzato",
   "btn_save": "Salva",
   "btn_cancel": "Annulla",
   "error_saving_speakers": "Errore durante il salvataggio dei nomi degli oratori: {error}",
-
   "modal_export_heading": "Esporta trascrizione",
   "label_format": "Formato",
   "label_filename": "Nome file",
   "exported_to": "Esportato in: {path}",
   "export_error": "Errore di esportazione: {error}",
-
   "loading_from_db": "Caricamento della trascrizione dal database…",
   "error_loading_job": "Errore durante il caricamento del lavoro: {error}",
   "error_generic": "Errore: {error}",
-
   "menu_file": "_File",
   "menu_new_transcription": "_Nuova trascrizione",
   "menu_exit": "_Esci",
@@ -165,7 +149,6 @@
   "menu_language": "Lingua",
   "menu_help": "_Guida",
   "menu_about": "_Informazioni",
-
   "btn_ok": "OK",
   "format_excel": "Excel (.xlsx)",
   "format_csv": "CSV (.csv)",
@@ -174,27 +157,20 @@
   "format_md": "Markdown (.md)",
   "format_docx": "Documento Word (.docx)",
   "format_db": "Database SQLite (.db)",
-
   "confirm_exit_message": "Una trascrizione è in corso. Annullarla e uscire?",
   "confirm_exit_title": "Conferma uscita",
-
   "dlg_audio_filter": "File multimediali|*.wav;*.mp3;*.flac;*.m4a;*.ogg;*.aac;*.webm;*.opus;*.wma;*.aiff;*.mp4;*.mov;*.mkv;*.avi;*.wmv;*.flv;*.ts;*.mts;*.m2ts;*.3gp|Tutti i file|*.*",
   "dlg_select_audio": "Seleziona file audio",
-
   "phase_audio_analysis": "Analisi audio",
-  "phase_denoising": "Noise Reduction",
   "phase_speech_recognition": "Riconoscimento vocale",
-
   "progress_preparing": "Preparazione...",
   "progress_resuming": "Ripresa...",
   "progress_queued_waiting": "In attesa nella coda…",
   "progress_loading_audio": "Caricamento audio...",
-  "progress_denoising": "Denoising audio...",
   "progress_cancelled": "Annullato.",
   "progress_identifying_speakers": "Identificazione oratori... chunk {i}/{count}",
   "progress_recognizing_segment": "Riconoscimento segmento {i} di {count}...",
   "transcription_complete": "Trascrizione completata.",
-
   "dlg_filter_xlsx": "Cartella di lavoro Excel|*.xlsx",
   "dlg_filter_csv": "File CSV|*.csv",
   "dlg_filter_json": "File JSON|*.json",
@@ -202,10 +178,8 @@
   "dlg_filter_md": "File Markdown|*.md",
   "dlg_filter_docx": "Documento Word|*.docx",
   "dlg_filter_db": "Database SQLite|*.db",
-
   "menu_help_contents": "_Contenuti Guida",
   "help_window_title": "Vernacula-Desktop — Guida",
-
   "help_group_first_steps": "Primi Passi",
   "help_group_operations": "Operazioni",
   "help_topic_help_index": "Guida",
@@ -222,7 +196,6 @@
   "help_topic_operations_exporting_results": "Esportazione dei Risultati",
   "help_topic_operations_pausing_resuming_removing": "Pausa / Ripresa / Rimozione",
   "help_topic_operations_bulk_add_jobs": "Aggiunta di Lavori in Blocco",
-
   "about_title": "Informazioni su Vernacula-Desktop",
   "about_heading": "Vernacula-Desktop",
   "about_version": "Versione {version}",

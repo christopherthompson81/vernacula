@@ -273,27 +273,113 @@ public static class AudioUtils
     }
 
     /// <summary>
-    /// Downmix to mono and resample to 16 kHz.
-    /// Mirrors utils.py audio_to_16000_mono().
+    /// Downmix to mono and resample to 16 kHz, then apply always-on audio cleanup
+    /// (high-pass at 75 Hz + 50/60 Hz mains-hum notches).  The cleanup targets
+    /// specific interferers that trip up ASR — sub-audible rumble, handling noise,
+    /// HVAC low-end, mains hum — without touching speech content above ~80 Hz.
     /// </summary>
     public static float[] AudioTo16000Mono(float[] audio, int sampleRate, int channels)
     {
         float[] mono = DownmixToMono(audio, channels);
 
+        float[] at16k;
         if (sampleRate == Config.SampleRate)
-            return mono;
+        {
+            // DownmixToMono returns the input array itself for mono inputs; clone
+            // before in-place cleanup so we don't mutate the caller's buffer.
+            at16k = ReferenceEquals(mono, audio) ? (float[])mono.Clone() : mono;
+        }
+        else
+        {
+            var monoFormat   = WaveFormat.CreateIeeeFloatWaveFormat(sampleRate, 1);
+            var waveProvider = new FloatArraySampleProvider(mono, monoFormat);
+            var resampler    = new WdlResamplingSampleProvider(waveProvider, Config.SampleRate);
 
-        var monoFormat   = WaveFormat.CreateIeeeFloatWaveFormat(sampleRate, 1);
-        var waveProvider = new FloatArraySampleProvider(mono, monoFormat);
-        var resampler    = new WdlResamplingSampleProvider(waveProvider, Config.SampleRate);
+            var outList   = new List<float>((int)((long)mono.Length * Config.SampleRate / sampleRate + 1024));
+            var outBuffer = new float[8192];
+            int outRead;
+            while ((outRead = resampler.Read(outBuffer, 0, outBuffer.Length)) > 0)
+                for (int i = 0; i < outRead; i++) outList.Add(outBuffer[i]);
+            at16k = outList.ToArray();
+        }
 
-        var outList   = new List<float>((int)((long)mono.Length * Config.SampleRate / sampleRate + 1024));
-        var outBuffer = new float[8192];
-        int outRead;
-        while ((outRead = resampler.Read(outBuffer, 0, outBuffer.Length)) > 0)
-            for (int i = 0; i < outRead; i++) outList.Add(outBuffer[i]);
+        ApplyCleanup(at16k, Config.SampleRate);
+        return at16k;
+    }
 
-        return outList.ToArray();
+    /// <summary>
+    /// In-place always-on preprocessor for ASR input:
+    ///   • 2nd-order high-pass at 75 Hz (Butterworth, Q≈0.707) — removes rumble,
+    ///     handling noise, and HVAC low-end without touching speech fundamentals
+    ///     (typical male voice bottoms out around 80 Hz).
+    ///   • Twin narrow notches at 50 Hz and 60 Hz (Q=30) — removes mains hum
+    ///     and its spectral fingerprint without audibly affecting nearby speech.
+    /// Biquads use RBJ audio-EQ cookbook coefficients, direct form II transposed.
+    /// </summary>
+    public static void ApplyCleanup(float[] samples, int sampleRate)
+    {
+        var hp   = Biquad.HighPass(sampleRate, cutoffHz: 75f,  q: 0.7071f);
+        var n50  = Biquad.Notch   (sampleRate, centerHz: 50f,  q: 30f);
+        var n60  = Biquad.Notch   (sampleRate, centerHz: 60f,  q: 30f);
+        for (int i = 0; i < samples.Length; i++)
+        {
+            float y = hp.Process(samples[i]);
+            y = n50.Process(y);
+            y = n60.Process(y);
+            samples[i] = y;
+        }
+    }
+
+    /// <summary>
+    /// Stateful 2nd-order biquad (direct form II transposed).  Coefficients are
+    /// from the RBJ audio-EQ cookbook, normalised by a0 at construction.
+    /// </summary>
+    private struct Biquad
+    {
+        private float _b0, _b1, _b2, _a1, _a2;
+        private float _z1, _z2;
+
+        public static Biquad HighPass(int fs, float cutoffHz, float q)
+        {
+            float w0 = 2f * MathF.PI * cutoffHz / fs;
+            float cw = MathF.Cos(w0);
+            float sw = MathF.Sin(w0);
+            float a  = sw / (2f * q);
+            float a0 = 1f + a;
+            return new Biquad
+            {
+                _b0 = (1f + cw) / 2f / a0,
+                _b1 = -(1f + cw)     / a0,
+                _b2 = (1f + cw) / 2f / a0,
+                _a1 = -2f * cw       / a0,
+                _a2 = (1f - a)       / a0,
+            };
+        }
+
+        public static Biquad Notch(int fs, float centerHz, float q)
+        {
+            float w0 = 2f * MathF.PI * centerHz / fs;
+            float cw = MathF.Cos(w0);
+            float sw = MathF.Sin(w0);
+            float a  = sw / (2f * q);
+            float a0 = 1f + a;
+            return new Biquad
+            {
+                _b0 = 1f               / a0,
+                _b1 = -2f * cw         / a0,
+                _b2 = 1f               / a0,
+                _a1 = -2f * cw         / a0,
+                _a2 = (1f - a)         / a0,
+            };
+        }
+
+        public float Process(float x)
+        {
+            float y = _b0 * x + _z1;
+            _z1 = _b1 * x - _a1 * y + _z2;
+            _z2 = _b2 * x - _a2 * y;
+            return y;
+        }
     }
 
     /// <summary>Converts seconds to HH:MM:SS string.</summary>

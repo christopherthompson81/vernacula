@@ -26,11 +26,6 @@
   "settings_segmentation_diarization_desc": "Identificirajte i označite pojedinačne govornike pomoću modela Sortformer.",
   "settings_segmentation_vad": "Detekcija glasovne aktivnosti",
   "settings_segmentation_vad_desc": "Brže, bez oznaka govornika — koristi Silero VAD za otkrivanje samo govornih područja.",
-  "settings_section_denoiser": "Noise Reduction",
-  "settings_denoiser_none": "None",
-  "settings_denoiser_none_desc": "No denoising — audio is passed directly to the ASR model.",
-  "settings_denoiser_dfn3": "DeepFilterNet3",
-  "settings_denoiser_dfn3_desc": "Neural noise suppression at 48 kHz using DeepFilterNet3. Reduces background noise before transcription. Requires model files in the deepfilternet3 models folder.",
   "settings_section_editor": "Uređivač transkripta",
   "settings_editor_playback_mode": "Zadani način reprodukcije",
   "settings_section_appearance": "Izgled",
@@ -57,7 +52,6 @@
   "download_complete": "Preuzimanje završeno.",
   "download_cancelled": "Preuzimanje otkazano.",
   "download_failed": "Preuzimanje neuspješno: {error}",
-
   "history_heading": "Povijest transkripcija",
   "history_empty": "Još nema povijesti. Pokrenite novu transkripciju ispod.",
   "history_col_title": "Naslov",
@@ -73,14 +67,12 @@
   "btn_remove": "Ukloni",
   "btn_new_transcription": "Nova transkripcija",
   "btn_bulk_add": "Skupno dodavanje zadataka",
-
   "status_complete": "završeno",
   "status_running": "izvršava se",
   "status_failed": "neuspješno",
   "status_cancelled": "otkazano",
   "status_pending": "na čekanju",
   "status_queued": "u redu čekanja",
-
   "config_heading": "Nova transkripcija",
   "label_audio_file": "Audio datoteka",
   "placeholder_no_file": "Nijedna datoteka nije odabrana",
@@ -89,17 +81,14 @@
   "placeholder_job_name": "Unesite ime za ovaj zadatak transkripcije",
   "btn_start": "Započni transkripciju",
   "btn_back": "← Natrag",
-
   "progress_heading": "Napredak",
   "btn_pause": "Pauza",
   "btn_back_home": "← Vratite se na početnu stranicu",
   "pausing": "Pauziranje…",
-
   "segments_col_speaker": "Govornik",
   "segments_col_start": "Početak",
   "segments_col_end": "Kraj",
   "segments_col_content": "Sadržaj",
-
   "results_segments_label": "segment(a)",
   "results_heading": "Završeno",
   "results_summary": "Transkripcija je završena — {count} segment(a). Upotrijebite Izvoz za spremanje transkripcije.",
@@ -109,7 +98,6 @@
   "btn_edit_speakers": "Izmjeni imena govornika",
   "btn_export": "Izvoz Transkripcije",
   "btn_back_history": "← Natrag u povijest",
-
   "editor_heading": "Uredi transkript",
   "editor_verified": "Potvrđeno",
   "editor_verified_tooltip": "Uključi/isključi potvrđeno (F1)",
@@ -134,24 +122,20 @@
   "editor_redo_asr_running": "Pokretanje…",
   "editor_redo_asr_tooltip": "Ponovo pokrenite prepoznavanje govora na zvuku ovog segmenta kako biste dobili čistu transkripciju iz jednog izvora (omogućuje dijeljenje)",
   "editor_add_speaker": "+ Dodaj govornika…",
-
   "modal_speakers_heading": "Izmjena imena govornika",
   "modal_speakers_col_id": "ID govornika",
   "modal_speakers_col_name": "Prikazano ime",
   "btn_save": "Spremi",
   "btn_cancel": "Odustani",
   "error_saving_speakers": "Greška pri spremanju imena govornika: {error}",
-
   "modal_export_heading": "Izvoz Transkripcije",
   "label_format": "Format",
   "label_filename": "Naziv datoteke",
   "exported_to": "Izvezeno u: {path}",
   "export_error": "Greška pri izvozu: {error}",
-
   "loading_from_db": "Učitavanje transkripcije iz baze…",
   "error_loading_job": "Greška prilikom učitavanja zadatka: {error}",
   "error_generic": "Greška: {error}",
-
   "menu_file": "_Datoteka",
   "menu_new_transcription": "_Nova transkripcija",
   "menu_exit": "_Izlaz",
@@ -165,7 +149,6 @@
   "menu_language": "Jezik",
   "menu_help": "_Pomoć",
   "menu_about": "_O programu",
-
   "btn_ok": "OK",
   "format_excel": "Excel (.xlsx)",
   "format_csv": "CSV (.csv)",
@@ -174,27 +157,20 @@
   "format_md": "Markdown (.md)",
   "format_docx": "Word dokument (.docx)",
   "format_db": "SQLite baza podataka (.db)",
-
   "confirm_exit_message": "Transkripcija je u tijeku. Otkaži i izađi?",
   "confirm_exit_title": "Potvrdi izlaz",
-
   "dlg_audio_filter": "Medijske datoteke|*.wav;*.mp3;*.flac;*.m4a;*.ogg;*.aac;*.webm;*.opus;*.wma;*.aiff;*.mp4;*.mov;*.mkv;*.avi;*.wmv;*.flv;*.ts;*.mts;*.m2ts;*.3gp|Sve datoteke|*.*",
   "dlg_select_audio": "Odaberite audio datoteku",
-
   "phase_audio_analysis": "Analiza zvuka",
-  "phase_denoising": "Noise Reduction",
   "phase_speech_recognition": "Prepoznavanje govora",
-
   "progress_preparing": "Priprema...",
   "progress_resuming": "Nastavak...",
   "progress_loading_audio": "Učitavanje zvuka...",
-  "progress_denoising": "Denoising audio...",
   "progress_queued_waiting": "Čekanje u redu…",
   "progress_cancelled": "Otkazano.",
   "progress_identifying_speakers": "Prepoznavanje govornika... chunk {i}/{count}",
   "progress_recognizing_segment": "Prepoznavanje segmenta {i} od {count}...",
   "transcription_complete": "Transkripcija je završena.",
-
   "dlg_filter_xlsx": "Excel radna knjiga|*.xlsx",
   "dlg_filter_csv": "CSV datoteka|*.csv",
   "dlg_filter_json": "JSON datoteka|*.json",
@@ -202,10 +178,8 @@
   "dlg_filter_md": "Markdown datoteka|*.md",
   "dlg_filter_docx": "Word dokument|*.docx",
   "dlg_filter_db": "SQLite baza podataka|*.db",
-
   "menu_help_contents": "_Sadržaj pomoći",
   "help_window_title": "Vernacula-Desktop — Pomoć",
-
   "help_group_first_steps": "Prvi koraci",
   "help_group_operations": "Operacije",
   "help_topic_help_index": "Pomoć",
@@ -222,7 +196,6 @@
   "help_topic_operations_exporting_results": "Izvoz rezultata",
   "help_topic_operations_pausing_resuming_removing": "Pauza / Nastavi / Ukloni",
   "help_topic_operations_bulk_add_jobs": "Skupno dodavanje zadataka",
-
   "about_title": "O Vernacula-Desktop",
   "about_heading": "Vernacula-Desktop",
   "about_version": "Verzija {version}",

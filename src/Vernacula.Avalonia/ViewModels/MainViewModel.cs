@@ -373,7 +373,6 @@ internal partial class MainViewModel : ObservableObject
         job.PhaseLabel = progress.Phase switch
         {
             TranscriptionPhase.LoadingAudio => Loc.Instance["phase_audio_analysis"],
-            TranscriptionPhase.Denoising    => Loc.Instance["phase_denoising"],
             TranscriptionPhase.Diarizing    => Loc.Instance["phase_audio_analysis"],
             TranscriptionPhase.Recognizing  => Loc.Instance["phase_speech_recognition"],
             _                               => ""

@@ -102,10 +102,6 @@ internal partial class SettingsViewModel : ObservableObject
     private AsrLanguageOption? _selectedIndicConformerLanguage;
 
     [ObservableProperty]
-    [NotifyPropertyChangedFor(nameof(IsDenoiserNone), nameof(IsDenoiserDfn3))]
-    private DenoiserMode _selectedDenoiser;
-
-    [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(IsEditorSingle), nameof(IsEditorAutoAdvance), nameof(IsEditorContinuous))]
     private PlaybackMode _selectedEditorPlaybackMode;
 
@@ -140,8 +136,6 @@ internal partial class SettingsViewModel : ObservableObject
     public bool ShowCohereLanguagePicker         => SelectedAsrBackend == AsrBackend.Cohere;
     public bool ShowQwen3AsrLanguagePicker       => SelectedAsrBackend == AsrBackend.Qwen3Asr;
     public bool ShowIndicConformerLanguagePicker => SelectedAsrBackend == AsrBackend.IndicConformer;
-    public bool IsDenoiserNone      => SelectedDenoiser == DenoiserMode.None;
-    public bool IsDenoiserDfn3      => SelectedDenoiser == DenoiserMode.DeepFilterNet3;
     public bool ShowStandardSegmentationOptions => SelectedAsrBackend != AsrBackend.VibeVoice;
     public bool ShowVibeVoiceBuiltinSegmentation => SelectedAsrBackend == AsrBackend.VibeVoice;
     public bool ShowDiariZenInSegmentation => HasAcceptedDiariZenNotice && ShowStandardSegmentationOptions;
@@ -326,7 +320,6 @@ internal partial class SettingsViewModel : ObservableObject
         _parakeetLmPath               = svc.Current.ParakeetLmPath ?? "";
         _parakeetLmWeight             = svc.Current.ParakeetLmWeight;
         _parakeetLmLengthPenalty      = svc.Current.ParakeetLmLengthPenalty;
-        _selectedDenoiser             = svc.Current.Denoiser;
         _selectedEditorPlaybackMode   = svc.Current.EditorPlaybackMode;
         _selectedLanguage             = svc.Current.Language;
         _selectedLanguageInfo         = Loc.Languages.FirstOrDefault(l => l.Code == svc.Current.Language) 
@@ -431,12 +424,6 @@ internal partial class SettingsViewModel : ObservableObject
         // No "auto" entry for IndicConformer — if someone binds null through a
         // cleared combo, fall back to the last good code rather than persist "".
         _svc.Current.IndicConformerLanguage = value?.Code ?? _svc.Current.IndicConformerLanguage;
-        _svc.Save();
-    }
-
-    partial void OnSelectedDenoiserChanged(DenoiserMode value)
-    {
-        _svc.Current.Denoiser = value;
         _svc.Save();
     }
 
@@ -613,7 +600,6 @@ internal partial class SettingsViewModel : ObservableObject
     [RelayCommand] private void SetTheme(string n)              { if (Enum.TryParse<AppTheme>(n,         out var t)) SelectedTheme              = t; }
     [RelayCommand] private void SetSegmentation(string n)       { if (Enum.TryParse<SegmentationMode>(n, out var s)) SelectedSegmentation       = s; }
     [RelayCommand] private void SetAsrBackend(string n)         { if (Enum.TryParse<AsrBackend>(n,      out var a)) SelectedAsrBackend         = a; }
-    [RelayCommand] private void SetDenoiser(string n)           { if (Enum.TryParse<DenoiserMode>(n,     out var d)) SelectedDenoiser           = d; }
     [RelayCommand] private void SetEditorPlaybackMode(string n) { if (Enum.TryParse<PlaybackMode>(n,     out var m)) SelectedEditorPlaybackMode = m; }
     [RelayCommand] private void SetLanguage(string l)           => SelectedLanguage = l;
 

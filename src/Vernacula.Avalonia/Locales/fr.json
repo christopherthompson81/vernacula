@@ -26,11 +26,6 @@
   "settings_segmentation_diarization_desc": "Identifier et étiqueter les locuteurs individuels à l'aide du modèle Sortformer.",
   "settings_segmentation_vad": "Détection d'activité vocale",
   "settings_segmentation_vad_desc": "Plus rapide, sans étiquettes de locuteur — utilise Silero VAD pour détecter uniquement les zones de parole.",
-  "settings_section_denoiser": "Noise Reduction",
-  "settings_denoiser_none": "None",
-  "settings_denoiser_none_desc": "No denoising — audio is passed directly to the ASR model.",
-  "settings_denoiser_dfn3": "DeepFilterNet3",
-  "settings_denoiser_dfn3_desc": "Neural noise suppression at 48 kHz using DeepFilterNet3. Reduces background noise before transcription. Requires model files in the deepfilternet3 models folder.",
   "settings_section_editor": "Éditeur de transcription",
   "settings_editor_playback_mode": "Mode de lecture par défaut",
   "settings_section_appearance": "Apparence",
@@ -57,7 +52,6 @@
   "download_complete": "Téléchargement terminé.",
   "download_cancelled": "Téléchargement annulé.",
   "download_failed": "Échec du téléchargement : {error}",
-
   "history_heading": "Historique des transcriptions",
   "history_empty": "Aucun historique de transcription. Lancez une nouvelle transcription ci-dessous.",
   "history_col_title": "Titre",
@@ -73,14 +67,12 @@
   "btn_remove": "Supprimer",
   "btn_new_transcription": "Nouvelle transcription",
   "btn_bulk_add": "Ajouter des tâches en masse",
-
   "status_complete": "terminé",
   "status_running": "en cours",
   "status_failed": "échoué",
   "status_cancelled": "annulé",
   "status_pending": "en attente",
   "status_queued": "en file d'attente",
-
   "config_heading": "Nouvelle transcription",
   "label_audio_file": "Fichier audio",
   "placeholder_no_file": "Aucun fichier sélectionné",
@@ -89,17 +81,14 @@
   "placeholder_job_name": "Entrez un nom pour cette transcription",
   "btn_start": "Démarrer la transcription",
   "btn_back": "← Retour",
-
   "progress_heading": "Progression",
   "btn_pause": "Pause",
   "btn_back_home": "← Retour à l'accueil",
   "pausing": "Mise en pause…",
-
   "segments_col_speaker": "Locuteur",
   "segments_col_start": "Début",
   "segments_col_end": "Fin",
   "segments_col_content": "Contenu",
-
   "results_segments_label": "segment(s)",
   "results_heading": "Terminé",
   "results_summary": "Transcription terminée — {count} segment(s). Utilisez Exporter pour enregistrer votre transcription.",
@@ -109,7 +98,6 @@
   "btn_edit_speakers": "Modifier les noms des locuteurs",
   "btn_export": "Exporter la transcription",
   "btn_back_history": "← Retour à l'historique",
-
   "editor_heading": "Modifier la transcription",
   "editor_verified": "Vérifié",
   "editor_verified_tooltip": "Basculer vérifié (F1)",
@@ -134,24 +122,20 @@
   "editor_redo_asr_running": "En cours…",
   "editor_redo_asr_tooltip": "Relancer la reconnaissance vocale sur l'audio de ce segment pour obtenir une transcription propre à source unique (active le fractionnement)",
   "editor_add_speaker": "+ Ajouter un locuteur…",
-
   "modal_speakers_heading": "Modifier les noms des locuteurs",
   "modal_speakers_col_id": "ID du locuteur",
   "modal_speakers_col_name": "Nom affiché",
   "btn_save": "Enregistrer",
   "btn_cancel": "Annuler",
   "error_saving_speakers": "Erreur lors de l'enregistrement des noms : {error}",
-
   "modal_export_heading": "Exporter la transcription",
   "label_format": "Format",
   "label_filename": "Nom du fichier",
   "exported_to": "Exporté vers : {path}",
   "export_error": "Erreur d'exportation : {error}",
-
   "loading_from_db": "Chargement de la transcription depuis la base de données…",
   "error_loading_job": "Erreur de chargement : {error}",
   "error_generic": "Erreur : {error}",
-
   "menu_file": "_Fichier",
   "menu_new_transcription": "_Nouvelle transcription",
   "menu_exit": "_Quitter",
@@ -165,7 +149,6 @@
   "menu_language": "Langue",
   "menu_help": "_Aide",
   "menu_about": "_À propos",
-
   "btn_ok": "OK",
   "format_excel": "Excel (.xlsx)",
   "format_csv": "CSV (.csv)",
@@ -174,27 +157,20 @@
   "format_md": "Markdown (.md)",
   "format_docx": "Document Word (.docx)",
   "format_db": "Base de données SQLite (.db)",
-
   "confirm_exit_message": "Une transcription est en cours. Annuler et quitter ?",
   "confirm_exit_title": "Confirmer la sortie",
-
   "dlg_audio_filter": "Fichiers multimédias|*.wav;*.mp3;*.flac;*.m4a;*.ogg;*.aac;*.webm;*.opus;*.wma;*.aiff;*.mp4;*.mov;*.mkv;*.avi;*.wmv;*.flv;*.ts;*.mts;*.m2ts;*.3gp|Tous les fichiers|*.*",
   "dlg_select_audio": "Sélectionner un fichier audio",
-
   "phase_audio_analysis": "Analyse audio",
-  "phase_denoising": "Noise Reduction",
   "phase_speech_recognition": "Reconnaissance vocale",
-
   "progress_preparing": "Préparation...",
   "progress_resuming": "Reprise...",
   "progress_loading_audio": "Chargement de l'audio...",
-  "progress_denoising": "Denoising audio...",
   "progress_queued_waiting": "En attente dans la file…",
   "progress_cancelled": "Annulé.",
   "progress_identifying_speakers": "Identification des locuteurs... chunk {i}/{count}",
   "progress_recognizing_segment": "Reconnaissance du segment {i} sur {count}...",
   "transcription_complete": "Transcription terminée.",
-
   "dlg_filter_xlsx": "Classeur Excel|*.xlsx",
   "dlg_filter_csv": "Fichier CSV|*.csv",
   "dlg_filter_json": "Fichier JSON|*.json",
@@ -202,10 +178,8 @@
   "dlg_filter_md": "Fichier Markdown|*.md",
   "dlg_filter_docx": "Document Word|*.docx",
   "dlg_filter_db": "Base de données SQLite|*.db",
-
   "menu_help_contents": "_Contenu de l'aide",
   "help_window_title": "Vernacula-Desktop — Aide",
-
   "help_group_first_steps": "Premiers pas",
   "help_group_operations": "Opérations",
   "help_topic_help_index": "Aide",
@@ -222,7 +196,6 @@
   "help_topic_operations_exporting_results": "Exporter les résultats",
   "help_topic_operations_pausing_resuming_removing": "Pause / Reprise / Suppression",
   "help_topic_operations_bulk_add_jobs": "Ajouter des tâches en masse",
-
   "about_title": "À propos de Vernacula-Desktop",
   "about_heading": "Vernacula-Desktop",
   "about_version": "Version {version}",

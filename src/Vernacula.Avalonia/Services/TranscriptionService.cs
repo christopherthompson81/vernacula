@@ -3,8 +3,6 @@ using Vernacula.Base;
 using Vernacula.Base.Models;
 using Vernacula.App.Models;
 using ParakeetAsr = Vernacula.Base.Parakeet;
-using DFN3Denoiser = Vernacula.Base.DeepFilterNet3Denoiser;
-
 namespace Vernacula.App.Services;
 
 internal class TranscriptionService
@@ -115,59 +113,13 @@ internal class TranscriptionService
         var  segmentationMode = _settings.Current.Segmentation;
         bool runVibeVoice     = useVibeVoiceAsr || segmentationMode == SegmentationMode.VibeVoiceBuiltin;
 
-        // ── Phase 1b: Denoising (optional) ────────────────────────────────────
-        // For VibeVoice, also track the audio to pass to Transcribe() — it accepts any sample rate.
-        float[] audio;
-        float[] vibeVoiceAudio;
-        int     vibeVoiceSampleRate;
-        int     vibeVoiceChannels;
-        var denoiserMode = _settings.Current.Denoiser;
-        if (denoiserMode == DenoiserMode.DeepFilterNet3)
-        {
-            progress.Report(new TranscriptionProgress(
-                TranscriptionPhase.Denoising, 0, 4, Loc.Instance["progress_denoising"]));
-
-            ct.ThrowIfCancellationRequested();
-
-            string denoiserModelsDir = _settings.GetDenoiserModelsDir();
-            audio = await Task.Run(() =>
-            {
-                // Downmix to mono at native sample rate, resample to 48 kHz
-                float[] mono48k = DFN3Denoiser.ResampleTo48k(
-                    Vernacula.Base.AudioUtils.DownmixToMono(rawSamples, channels), sampleRate);
-
-                // Pad to multiple of HopSize (480 samples) before denoising
-                const int hopSize = 480;
-                int padded = ((mono48k.Length + hopSize - 1) / hopSize) * hopSize;
-                if (padded != mono48k.Length)
-                    Array.Resize(ref mono48k, padded);
-
-                var denoiseProgress = new Progress<(int current, int total)>(p =>
-                    progress.Report(new TranscriptionProgress(
-                        TranscriptionPhase.Denoising, p.current, p.total,
-                        Loc.Instance["progress_denoising"])));
-
-                using var denoiser = new DFN3Denoiser(denoiserModelsDir, Vernacula.Base.Models.ExecutionProvider.Auto);
-                float[] enhanced48k = denoiser.Denoise(mono48k, denoiseProgress);
-
-                // Resample to 16 kHz for ASR
-                return DFN3Denoiser.ResampleFrom48k(enhanced48k, Vernacula.Base.AudioUtils.AsrSampleRate);
-            }, ct);
-            // VibeVoice uses the denoised 16 kHz mono audio directly.
-            vibeVoiceAudio      = audio;
-            vibeVoiceSampleRate = Vernacula.Base.AudioUtils.AsrSampleRate;
-            vibeVoiceChannels   = 1;
-        }
-        else
-        {
-            // VibeVoice accepts raw audio at any sample rate; skip the 16 kHz conversion.
-            vibeVoiceAudio      = rawSamples;
-            vibeVoiceSampleRate = sampleRate;
-            vibeVoiceChannels   = channels;
-            audio = runVibeVoice
-                ? Array.Empty<float>()   // not used on the VibeVoice path
-                : AudioUtils.AudioTo16000Mono(rawSamples, sampleRate, channels);
-        }
+        // VibeVoice accepts raw audio at any sample rate; skip the 16 kHz conversion.
+        float[] vibeVoiceAudio      = rawSamples;
+        int     vibeVoiceSampleRate = sampleRate;
+        int     vibeVoiceChannels   = channels;
+        float[] audio = runVibeVoice
+            ? Array.Empty<float>()   // not used on the VibeVoice path
+            : AudioUtils.AudioTo16000Mono(rawSamples, sampleRate, channels);
 
         // ── Phase 2: Open results DB ──────────────────────────────────────────
         using var db = new TranscriptionDb(resultsDbPath);
