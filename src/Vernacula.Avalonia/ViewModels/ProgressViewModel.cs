@@ -225,8 +225,8 @@ internal partial class ProgressViewModel : ObservableObject
         string runStamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
         string fileDateStamp = File.GetLastWriteTime(audioPath)
             .ToString("yyyy-MM-dd HH:mm:ss");
-        string asrModelName = GetJobAsrModelName();
-        string asrLanguageCode = GetJobAsrLanguageCode();
+        string asrModelName = AsrLanguageSupport.ModelName(_settings.Current.AsrBackend);
+        string asrLanguageCode = AsrLanguageSupport.LanguageCode(_settings.Current);
 
         int jobId = _controlDb.UpsertJob(
             jobTitle, dbPath, audioPath, sha256, fileDateStamp, runStamp, asrLanguageCode, asrModelName);
@@ -342,36 +342,6 @@ internal partial class ProgressViewModel : ObservableObject
             _activeJobId = null;
             _runningTask = null;
         }
-    }
-
-    private string GetJobAsrModelName() => _settings.Current.AsrBackend switch
-    {
-        AsrBackend.Cohere         => "CohereLabs/cohere-transcribe-03-2026",
-        AsrBackend.Qwen3Asr       => "Qwen/Qwen3-ASR-1.7B",
-        AsrBackend.VibeVoice      => "vibevoice/vibevoice-asr",
-        AsrBackend.IndicConformer => "ai4bharat/indic-conformer-600m-multilingual",
-        _                         => "nvidia/parakeet-tdt-0.6b-v3",
-    };
-
-    private string GetJobAsrLanguageCode()
-    {
-        // IndicConformer requires a language at inference and stores the
-        // chosen code (not "auto"); Cohere stores a code or empty for
-        // auto-detect. Every other backend uses "auto" for the pipeline.
-        var backend = _settings.Current.AsrBackend;
-        if (backend == AsrBackend.IndicConformer)
-        {
-            return string.IsNullOrWhiteSpace(_settings.Current.IndicConformerLanguage)
-                ? "hi"
-                : _settings.Current.IndicConformerLanguage;
-        }
-        if (backend == AsrBackend.Cohere)
-        {
-            return string.IsNullOrWhiteSpace(_settings.Current.CohereLanguage)
-                ? "auto"
-                : _settings.Current.CohereLanguage;
-        }
-        return "auto";
     }
 
     // ── Shared helpers ────────────────────────────────────────────────────────

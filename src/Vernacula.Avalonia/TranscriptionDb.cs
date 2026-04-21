@@ -205,8 +205,14 @@ internal sealed class TranscriptionDb : IDisposable
             DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"));
         InsertMetadata("file_datestamp",
             File.GetLastWriteTime(audioPath).ToString("yyyy-MM-dd HH:mm:ss"));
-        InsertMetadata("diarization_model", "nvidia/diar_streaming_sortformer_4spk-v2.1");
-        InsertMetadata("asr_model",         "nvidia/parakeet-tdt-0.6b-v3");
+        // Seed rows so the pipeline's later UpdateMetadata calls have
+        // something to update. Real model identifiers are written by
+        // TranscriptionService once the chosen backend/segmentation is
+        // known — do not hardcode a specific pair here, since earlier
+        // hardcoded values silently persisted as lies when the run used
+        // a different backend.
+        InsertMetadata("diarization_model", "");
+        InsertMetadata("asr_model",         "");
     }
 
     // ── Results (raw ASR data — never mutated by user edits) ──────────────────

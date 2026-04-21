@@ -1,4 +1,5 @@
 using System.Collections.Frozen;
+using Vernacula.Base.Models;
 
 namespace Vernacula.App.Models;
 
@@ -266,6 +267,42 @@ public static class AsrLanguageSupport
         AsrBackend.IndicConformer => "ai4bharat/indic-conformer-600m-multilingual",
         AsrBackend.WhisperTurbo   => "openai/whisper-large-v3-turbo",
         _ => throw new ArgumentOutOfRangeException(nameof(backend)),
+    };
+
+    /// <summary>
+    /// Resolves the ASR language code to persist for a new job, given the
+    /// current settings. IndicConformer must carry a real code ("hi" fallback)
+    /// because "auto" would later resolve against the 22-head set and fail;
+    /// every other backend uses its per-backend language setting when set,
+    /// and "auto" otherwise.
+    /// </summary>
+    public static string LanguageCode(AppSettings settings) => settings.AsrBackend switch
+    {
+        AsrBackend.IndicConformer => string.IsNullOrWhiteSpace(settings.IndicConformerLanguage)
+            ? "hi" : settings.IndicConformerLanguage,
+        AsrBackend.Cohere         => string.IsNullOrWhiteSpace(settings.CohereLanguage)
+            ? "auto" : settings.CohereLanguage,
+        AsrBackend.Qwen3Asr       => string.IsNullOrWhiteSpace(settings.Qwen3AsrLanguage)
+            ? "auto" : settings.Qwen3AsrLanguage,
+        AsrBackend.WhisperTurbo   => string.IsNullOrWhiteSpace(settings.WhisperTurboLanguage)
+            ? "auto" : settings.WhisperTurboLanguage,
+        _                         => "auto",
+    };
+
+    /// <summary>
+    /// Canonical model identifier for the segmentation/diarization path in a
+    /// given job. SileroVad produces VAD-only segments (no speaker labels) but
+    /// we still record the upstream model so the per-job metadata truthfully
+    /// reflects what ran. VibeVoiceBuiltin folds diarization into the ASR
+    /// model itself.
+    /// </summary>
+    public static string DiarizationModelName(SegmentationMode mode) => mode switch
+    {
+        SegmentationMode.SileroVad        => "snakers4/silero-vad",
+        SegmentationMode.Sortformer       => "nvidia/diar_streaming_sortformer_4spk-v2.1",
+        SegmentationMode.DiariZen         => "BUT-FIT/diarizen-wavlm-large-s80-md",
+        SegmentationMode.VibeVoiceBuiltin => "vibevoice/vibevoice-asr",
+        _ => throw new ArgumentOutOfRangeException(nameof(mode)),
     };
 
     // English display names for every ISO 639-1 code that appears in any

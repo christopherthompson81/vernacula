@@ -66,7 +66,7 @@ internal partial class MainViewModel : ObservableObject
         Home     = new HomeViewModel(modelManager, controlDb, settings);
         Config   = new ConfigViewModel();
         Progress = new ProgressViewModel(transcription, controlDb, settings, queue);
-        Results  = new ResultsViewModel(export);
+        Results  = new ResultsViewModel(export, settings);
 
         // ── Navigation wiring ─────────────────────────────────────────────────
 
@@ -107,15 +107,7 @@ internal partial class MainViewModel : ObservableObject
         // Called by the LID-mismatch banner when the user accepts the remedy.
         Results.ReprocessJob = (jobId, backend, detectedIso) =>
         {
-            string asrModelName = backend switch
-            {
-                AsrBackend.Parakeet       => "nvidia/parakeet-tdt-0.6b-v3",
-                AsrBackend.Cohere         => "CohereLabs/cohere-transcribe-03-2026",
-                AsrBackend.Qwen3Asr       => "Qwen/Qwen3-ASR-1.7B",
-                AsrBackend.VibeVoice      => "vibevoice/vibevoice-asr",
-                AsrBackend.IndicConformer => "ai4bharat/indic-conformer-600m-multilingual",
-                _ => throw new ArgumentOutOfRangeException(nameof(backend)),
-            };
+            string asrModelName = AsrLanguageSupport.ModelName(backend);
             controlDb.UpdateJobAsr(jobId, asrModelName, detectedIso);
             var refreshed = controlDb.GetJobs().FirstOrDefault(j => j.JobId == jobId);
             if (refreshed is null) return;
@@ -141,6 +133,35 @@ internal partial class MainViewModel : ObservableObject
                              refreshed.AsrModelName);
             RefreshJobsAndSync();
             // Hop to the Progress / Home panel so the user can see the new run.
+            CurrentPanel = AppPanel.Home;
+        };
+
+        // Results → reprocess with the user's *current* Settings backend.
+        // Called by the backend-drift banner when a job's stored asr_model
+        // no longer matches what the user has selected in Settings.
+        Results.ReprocessJobCurrentBackend = (jobId, backend) =>
+        {
+            string asrModelName    = AsrLanguageSupport.ModelName(backend);
+            string asrLanguageCode = AsrLanguageSupport.LanguageCode(settings.Current);
+            controlDb.UpdateJobAsr(jobId, asrModelName, asrLanguageCode);
+            var refreshed = controlDb.GetJobs().FirstOrDefault(j => j.JobId == jobId);
+            if (refreshed is null) return;
+
+            // Drop any stale LID-mismatch metadata from a previous run so the
+            // new run is evaluated cleanly against the new backend.
+            try
+            {
+                using var tdb = new TranscriptionDb(refreshed.ResultsFile);
+                tdb.DeleteMetadata("detected_language_backend_mismatch");
+                tdb.DeleteMetadata("detected_language_suggested_backend");
+                tdb.DeleteMetadata("asr_language_code");
+            }
+            catch { /* DB missing or inaccessible — will re-evaluate on next run */ }
+
+            queue.RequeueJob(refreshed.JobId, refreshed.ResultsFile, refreshed.AudioFilePath,
+                             refreshed.AudioStreamIndex, refreshed.AsrLanguageCode,
+                             refreshed.AsrModelName);
+            RefreshJobsAndSync();
             CurrentPanel = AppPanel.Home;
         };
 
@@ -241,6 +262,14 @@ internal partial class MainViewModel : ObservableObject
         // Re-check model presence after a download
         Settings.AfterDownload      = () => _ = Home.CheckModelsAsync();
         Settings.OnSegmentationChanged = () => _ = Home.CheckModelsAsync();
+        // Backend change: Home's missing-models warning must react live, and
+        // if a Results view is open on a completed job its backend-drift
+        // banner needs to re-evaluate against the new backend.
+        Settings.OnAsrBackendChanged = () =>
+        {
+            _ = Home.CheckModelsAsync();
+            Results.RefreshBackendDriftBanner();
+        };
 
         // Propagate update-available signal to the Home banner
         Settings.OnUpdateAvailable  = () =>

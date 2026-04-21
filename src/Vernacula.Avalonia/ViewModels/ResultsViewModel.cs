@@ -11,7 +11,8 @@ namespace Vernacula.App.ViewModels;
 
 internal partial class ResultsViewModel : ObservableObject
 {
-    private readonly ExportService _export;
+    private readonly ExportService   _export;
+    private readonly SettingsService _settings;
 
     [ObservableProperty]
     private string _audioBaseName = "";
@@ -42,9 +43,21 @@ internal partial class ResultsViewModel : ObservableObject
     [ObservableProperty] private bool _showUserForcedLanguageBadge;
     [ObservableProperty] private string _userForcedLanguageBadgeText = "";
 
+    /// <summary>
+    /// True when this job's recorded ASR backend differs from the user's
+    /// current Settings backend and neither the LID mismatch banner nor the
+    /// user-forced badge is already showing. Drives a neutral banner that
+    /// offers a "reprocess with &lt;current backend&gt;" remedy.
+    /// </summary>
+    [ObservableProperty] private bool _showBackendDriftBanner;
+    [ObservableProperty] private string _backendDriftBannerText = "";
+    [ObservableProperty] private string _reprocessCurrentButtonText = "Reprocess";
+    [ObservableProperty] private bool _canReprocessCurrent;
+
     private int?       _jobId;
     private string?    _mismatchDetectedIso;
     private AsrBackend? _mismatchSuggestedBackend;
+    private AsrBackend? _driftCurrentBackend;
 
     /// <summary>
     /// Injected by MainViewModel — the actions Reprocess needs to actually
@@ -52,6 +65,12 @@ internal partial class ResultsViewModel : ObservableObject
     /// don't have a job-queue (rare / test).
     /// </summary>
     public Action<int, AsrBackend, string>? ReprocessJob { get; set; }
+
+    /// <summary>
+    /// Backend-drift remedy — reprocess with the user's current Settings
+    /// backend and its resolved language code, no detected-language forcing.
+    /// </summary>
+    public Action<int, AsrBackend>? ReprocessJobCurrentBackend { get; set; }
 
     private string? _dbPath;
     private Window? _ownerWindow;
@@ -61,7 +80,11 @@ internal partial class ResultsViewModel : ObservableObject
 
     public Action? NavigateBack { get; set; }
 
-    public ResultsViewModel(ExportService export) => _export = export;
+    public ResultsViewModel(ExportService export, SettingsService settings)
+    {
+        _export   = export;
+        _settings = settings;
+    }
 
     public void Load(string dbPath, string audioBaseName, Window? owner = null, int? jobId = null)
     {
@@ -73,6 +96,19 @@ internal partial class ResultsViewModel : ObservableObject
         using var db  = new TranscriptionDb(dbPath);
         PopulateSegments(db);
         LoadLidBanners(db);
+        LoadBackendDriftBanner(db);
+    }
+
+    /// <summary>
+    /// Re-evaluates the backend-drift banner against the current settings.
+    /// Invoked by MainViewModel when the user changes backends while a
+    /// Results view is open.
+    /// </summary>
+    public void RefreshBackendDriftBanner()
+    {
+        if (_dbPath is null) return;
+        using var db = new TranscriptionDb(_dbPath);
+        LoadBackendDriftBanner(db);
     }
 
     private void LoadLidBanners(TranscriptionDb db)
@@ -194,6 +230,58 @@ internal partial class ResultsViewModel : ObservableObject
         // Banner goes away once the job restarts; the caller (MainViewModel) will
         // navigate back to Home / Progress as appropriate.
         ShowMismatchBanner = false;
+    }
+
+    private void LoadBackendDriftBanner(TranscriptionDb db)
+    {
+        ShowBackendDriftBanner = false;
+        BackendDriftBannerText = "";
+        CanReprocessCurrent    = false;
+        _driftCurrentBackend   = null;
+
+        // The LID mismatch / user-forced banners already explain a backend
+        // discrepancy more precisely — don't stack a second banner on top.
+        if (ShowMismatchBanner || ShowUserForcedLanguageBadge) return;
+
+        string? asrModel = db.GetMetadata("asr_model");
+        AsrBackend? jobBackend = AsrLanguageSupport.BackendOf(asrModel ?? "");
+        AsrBackend currentBackend = _settings.Current.AsrBackend;
+
+        // No banner if we can't identify the job's backend or it matches the
+        // current one. Jobs predating the metadata fix write "" — treat those
+        // as unknown rather than flagging every legacy job.
+        if (jobBackend is null || jobBackend.Value == currentBackend) return;
+
+        _driftCurrentBackend = currentBackend;
+
+        string jobLabel     = AsrLanguageSupport.DisplayName(jobBackend.Value);
+        string currentLabel = AsrLanguageSupport.DisplayName(currentBackend);
+        BackendDriftBannerText =
+            $"This job was transcribed with {jobLabel}. Your current ASR backend is " +
+            $"{currentLabel}. Reprocessing will re-run this audio with {currentLabel} " +
+            "using the language settings you have configured now.";
+
+        if (ReprocessJobCurrentBackend is not null && _jobId is not null)
+        {
+            ReprocessCurrentButtonText = $"Reprocess with {currentLabel}";
+            CanReprocessCurrent        = true;
+        }
+        else
+        {
+            ReprocessCurrentButtonText = "Reprocess";
+            CanReprocessCurrent        = false;
+        }
+
+        ShowBackendDriftBanner = true;
+    }
+
+    [RelayCommand(CanExecute = nameof(CanReprocessCurrent))]
+    private void ReprocessWithCurrentBackend()
+    {
+        if (_jobId is null || _driftCurrentBackend is null
+            || ReprocessJobCurrentBackend is null) return;
+        ReprocessJobCurrentBackend(_jobId.Value, _driftCurrentBackend.Value);
+        ShowBackendDriftBanner = false;
     }
 
     private void PopulateSegments(TranscriptionDb db)

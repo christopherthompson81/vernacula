@@ -132,6 +132,11 @@ internal class TranscriptionService
         string effectiveAsrLanguageCode =
             string.IsNullOrWhiteSpace(asrLanguageCode) ? "auto" : asrLanguageCode;
         db.UpdateMetadata("asr_language_code", effectiveAsrLanguageCode);
+        // runVibeVoice forces segmentation onto the VibeVoice built-in path
+        // regardless of what the user selected in Settings, so record that.
+        var effectiveSegmentation = runVibeVoice ? SegmentationMode.VibeVoiceBuiltin : segmentationMode;
+        db.UpdateMetadata("diarization_model",
+            AsrLanguageSupport.DiarizationModelName(effectiveSegmentation));
 
         // For the VibeVoice / built-in-diarization path the config can't
         // change downstream — fire the callback now so the caller (e.g.

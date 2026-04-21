@@ -95,6 +95,35 @@
                        FontSize="11" />
         </Border>
 
+        <!-- Backend-drift banner (shown when the job's recorded ASR backend
+             differs from the user's current Settings backend, and no more
+             specific banner is already showing). Neutral styling — this is
+             an informational prompt, not a warning. -->
+        <Border Grid.Row="3"
+                IsVisible="{Binding ShowBackendDriftBanner}"
+                Background="{DynamicResource SurfaceBrush}"
+                BorderBrush="{DynamicResource OverlayBrush}"
+                BorderThickness="1"
+                CornerRadius="6"
+                Padding="12"
+                Margin="0,0,0,12">
+            <Grid ColumnDefinitions="*,Auto" ColumnSpacing="12">
+                <StackPanel Grid.Column="0" Spacing="4">
+                    <TextBlock Text="Backend changed since this run"
+                               FontWeight="SemiBold"
+                               Foreground="{DynamicResource TextBrush}" />
+                    <TextBlock Text="{Binding BackendDriftBannerText}"
+                               TextWrapping="Wrap"
+                               Foreground="{DynamicResource TextBrush}" />
+                </StackPanel>
+                <Button Grid.Column="1"
+                        VerticalAlignment="Center"
+                        Content="{Binding ReprocessCurrentButtonText}"
+                        Command="{Binding ReprocessWithCurrentBackendCommand}"
+                        IsEnabled="{Binding CanReprocessCurrent}" />
+            </Grid>
+        </Border>
+
         <!-- Segments table -->
         <DataGrid x:Name="SegmentsGrid"
                   Grid.Row="4"

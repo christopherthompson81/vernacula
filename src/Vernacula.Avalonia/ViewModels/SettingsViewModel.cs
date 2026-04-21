@@ -115,6 +115,12 @@ internal partial class SettingsViewModel : ObservableObject
     public Action? AfterDownload       { get; set; }
     /// <summary>Called after segmentation mode or DiariZen status changes.</summary>
     public Action? OnSegmentationChanged { get; set; }
+    /// <summary>
+    /// Called after the user changes the active ASR backend so other panels
+    /// (Home's missing-models banner, Results' backend-drift banner) can
+    /// refresh live rather than waiting for the next app launch.
+    /// </summary>
+    public Action? OnAsrBackendChanged { get; set; }
     /// <summary>Called when the update check finds outdated files.</summary>
     public Action? OnUpdateAvailable   { get; set; }
     /// <summary>Called when the update check completes and no outdated files are found.</summary>
@@ -426,6 +432,7 @@ internal partial class SettingsViewModel : ObservableObject
         _svc.Save();
         OnPropertyChanged(nameof(ShowCohereLanguagePicker));
         OnSegmentationChanged?.Invoke();
+        OnAsrBackendChanged?.Invoke();
         _ = CheckModelsAsync();
     }
 
