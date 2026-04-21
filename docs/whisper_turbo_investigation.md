@@ -400,3 +400,41 @@ Current ASR pipeline at RTF 0.034 is already 2.7× faster than Phase 3a
 other backends. Likely the sensible stopping point for optimisation;
 ship Phase 4 (Avalonia UI wiring) next rather than chasing diminishing
 returns.
+
+## Run 9 — 2026-04-21 (post-6b batch-size sweep, decoder-inclusive)
+
+Question: Run 8's sweep was encoder-only and concluded batching doesn't
+help. Phase 6b then added IOBinding to the batched decoder loop, which
+changed the picture (the Phase 6b commit measured a 2.4× decoder step-
+loop reduction at B=8 vs B=1). Is B=8 the right default, or does a
+larger B keep winning? The user recalled prior sweeps hinting ~B=21
+would fit in VRAM.
+
+Setup: same 600 s en-US file, 132 segments, RTX 3090 24 GB. Sweep via
+`--whisper-batch N`.
+
+| B | Encoder | DecStep | Step calls | ms/call | **ASR** | RTF |
+|---|---|---|---|---|---|---|
+| 1 | 7 657 ms | 2 116 ms | 2 105 | 1.01 | 13 165 ms | 0.0338 |
+| 4 | 7 512 ms | 939 ms | 742 | 1.27 | 11 109 ms | 0.0304 |
+| 8 | 7 511 ms | 869 ms | 429 | 2.03 | **10 779 ms** | **0.0297** |
+| 16 | 7 561 ms | 843 ms | 292 | 2.89 | 10 609 ms | 0.0292 |
+| 20 | 7 662 ms | 842 ms | 236 | 3.57 | 10 769 ms | 0.0297 |
+
+Encoder cost is flat across all B (Run 8's compute-bound finding holds
+under the new IOBinding path too). Decoder step cost plateaus at B=8 —
+B=16 is a 2 % improvement, B=20 regresses slightly vs B=16.
+
+B=21 (the prior-sweep VRAM ceiling) would fit, but the curve shows
+zero throughput above B=8: per-call ms scales nearly linearly with B
+from that point (2.03 → 2.89 → 3.57 ms/call), while step-call count
+reduction levels off.
+
+**Decision**: B=8 as the default in both CLI and Avalonia. No proactive
+VRAM heuristic — the reactive OOM-halving already in `RecognizeBatched`
+handles small-GPU fallback (8 GB cards OOM at B=8, halve to B=4, halve
+to B=2 if needed). Simpler and matches Cohere's practice (they also
+lean on reactive OOM recovery rather than pre-computed budgets).
+
+Final baseline RTF: 0.030 on RTX 3090, 600 s file. Cumulative speedup
+from the Phase 3a sequential baseline: **3.35×**.

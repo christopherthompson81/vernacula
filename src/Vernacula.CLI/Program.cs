@@ -32,7 +32,7 @@ bool    profileSortformer = false;      // --profile-sortformer: print fine-grai
 bool    downloadVoxLingua = false;      // --download-voxlingua: fetch the LID model, then exit
 bool    runLid             = false;      // --lid: run LID on --audio and print result, then exit
 bool    runWhisperCheck    = false;      // --whisper-check: Phase 2a sanity test (mel + encoder only)
-int     whisperBatchSize   = 1;          // --whisper-batch N: N>=2 uses RecognizeBatched (see investigation doc — batching is currently slower than sequential on short-variable-segment workloads; wire up for testing)
+int     whisperBatchSize   = 8;          // --whisper-batch N: default 8. See docs/whisper_turbo_investigation.md Run 9 — B=8 captures ~90 % of the achievable batched speedup (+20 % vs sequential) on CUDA; RecognizeBatched falls back to smaller B on OOM automatically.
 ModelPrecision precision = ModelPrecision.Fp32;
 int     parakeetBeam      = 1;          // --parakeet-beam N: 1 = greedy (default), >1 = TDT beam search
 string? parakeetLmPath    = null;       // --lm <path> to ARPA(.gz) subword n-gram model; implies beam ≥ 4

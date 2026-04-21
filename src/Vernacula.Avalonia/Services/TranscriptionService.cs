@@ -1025,7 +1025,14 @@ internal class TranscriptionService
                     var groupSegs = group.LocalIndices.Select(i => segsSubset[i]).ToList();
                     if (groupSegs.Count == 0) continue;
 
-                    foreach (var result in whisper.Recognize(groupSegs, audio, groupLang))
+                    // RecognizeBatched with B=8 captures a 20 % throughput win
+                    // on CUDA over the sequential Recognize (see
+                    // docs/whisper_turbo_investigation.md Run 9). Falls back
+                    // to smaller B on OOM via the batched path's reactive
+                    // halving, so it's safe on GPUs smaller than the 3090
+                    // the sweep was measured on.
+                    foreach (var result in whisper.RecognizeBatched(
+                        groupSegs, audio, groupLang, initialBatchSize: 8))
                     {
                         ct.ThrowIfCancellationRequested();
                         int localIdx = group.LocalIndices[result.SegmentId];
