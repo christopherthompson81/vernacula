@@ -335,3 +335,68 @@ Deferred: IOBinding for the batched path (`TranscribeBatch`). The
 non-batched path is already fast enough that the Phase 3b batched path
 would not currently win — but if we port batched encoder next, the
 batched decoder loop should also adopt IOBinding to stay consistent.
+
+## Run 8 — 2026-04-20 (batched encoder — no-go, compute-bound)
+
+Question: Phase 6b — batch encoder calls (B=8) to amortise weight-load
+from HBM. Encoder is now 74 % of ASR time (7 509 ms on 132 segments).
+Expected 2-3× reduction if the encoder is memory-bandwidth-bound.
+
+Implementation: extracted `DecodeFromHidden(hidden, lang)` from the
+existing IOBinding `Transcribe`, added `RunEncoderBatch(mels, B)`, and
+refactored `Recognize` to group work items into batches of 8, run one
+encoder call for all, then loop per-segment through the IOBinding
+decoder.
+
+Result — negligible win:
+
+| Path | Encoder time | ASR total | RTF |
+|---|---|---|---|
+| B=1 (Run 7) | 7 823 ms | 13 283 ms | 0.0343 |
+| B=8 (Run 8) | 7 582 ms | 13 156 ms | 0.0339 |
+
+Per-call comparison:
+
+| B | calls | ms/call |
+|---|---|---|
+| 1 | 132 | 59.3 |
+| 8 | 17  | 446  |
+
+B=8 takes 7.5× the time of B=1 for 8× the work — nearly linear.
+Translation: the Whisper-large-v3 encoder is **compute-bound, not
+memory-bandwidth-bound**, at least on RTX 3090. At B=1 we're already
+saturating GPU compute; weight reads from HBM are a small fraction
+of per-call time so amortising them across 8 items barely changes the
+numbers.
+
+Back-of-envelope confirms: weights ≈ 3 GB, HBM bandwidth ≈ 900 GB/s,
+so weight-load = ~3.3 ms of a 59 ms call (~5 %). The rest is pure
+compute (32 transformer layers × 1500 × 1280² matmuls × 2). Batching
+cannot reduce compute.
+
+**Decision**: revert the batched-encoder code. It's ~100 lines that buy
+<2 % speedup and introduce FP drift in the output (0.9959 vs 1.0000
+sequence similarity — same audio produces slightly different tokens on
+edge cases, from the batched matmul's different accumulation order).
+Not worth it.
+
+**What this means for the speedup runway:** we've hit a real wall on
+this model + hardware. The remaining levers for significant speedup
+are architectural, not algorithmic:
+
+- Int8 / q4 quantization (user previously rejected for quality reasons,
+  but worth revisiting *specifically for the encoder* — decoder loop
+  is already fast, and the encoder is the only remaining target).
+- CUDA Graph capture — would require re-exporting the decoder with an
+  explicit attention-mask input to remove dynamic KV shapes. Big
+  engineering cost; the step loop is now only 20 % of time, so even
+  a 10× speedup there only saves ~2 s.
+- Shorter-than-30-s encoder input — requires re-export with dynamic
+  T_audio axis AND would only help on VAD-sparse files (where most
+  segments are ≪ 30 s). Non-trivial.
+
+Current ASR pipeline at RTF 0.034 is already 2.7× faster than Phase 3a
+(sequential Transcribe baseline at RTF 0.072) and competitive with the
+other backends. Likely the sensible stopping point for optimisation;
+ship Phase 4 (Avalonia UI wiring) next rather than chasing diminishing
+returns.
