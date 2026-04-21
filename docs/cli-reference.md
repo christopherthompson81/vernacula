@@ -51,10 +51,6 @@ Segmentation:
   --segments <path>                   Load pre-computed segments JSON, skip diarization
   --ahc-threshold <float>             DiariZen AHC clustering threshold (default: 0.6)
 
-Pre-processing:
-  --denoiser <none|dfn3>              Optional DeepFilterNet3 denoiser (default: none)
-  --denoiser-models <dir>             Override denoiser model dir
-
 Other:
   --skip-asr                          Export diarization segments only
   --lid                               Run VAD + VoxLingua107 LID on --audio and print language

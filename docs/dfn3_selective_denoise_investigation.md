@@ -1,7 +1,20 @@
 # DeepFilterNet3 Selective Denoising — Investigation
 
-Goal: apply DFN3 only when it measurably improves ASR transcript quality. Denoising
-is an ASR preprocessing step; signal-processing cleanliness is not the objective.
+> **Status: DEAD END — DFN3 removed from the codebase (commit `ac71626`, 2026-04-20).**
+>
+> This document is retained as a record of *why* learned denoising was tried
+> and abandoned, not as current behaviour. Every run below either hurt ASR or
+> was correctly bypassed; no run showed DFN3 improving Parakeet transcripts.
+> Final resolution is in [Run 5](#run-5--2026-04-20-1915-resolution-dfn3-removed).
+>
+> Current audio preprocessing is deterministic DSP only — see
+> `AudioUtils.ApplyCleanup` and the user-facing
+> `Help/en/first_steps/audio_input_quality.md`. Do not reintroduce learned
+> denoising without WER A/B evidence on realistic noisy speech.
+
+Goal (as originally posed): apply DFN3 only when it measurably improves ASR
+transcript quality. Denoising is an ASR preprocessing step; signal-processing
+cleanliness is not the objective.
 
 ## Run 1 — 2026-04-20 18:10 (lsnr-based wet/dry blend prototype)
 
