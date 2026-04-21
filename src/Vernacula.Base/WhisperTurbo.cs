@@ -1,3 +1,5 @@
+using System.Text;
+using System.Text.Json;
 using MathNet.Numerics;
 using MathNet.Numerics.IntegralTransforms;
 using Microsoft.ML.OnnxRuntime;
@@ -5,6 +7,8 @@ using Microsoft.ML.OnnxRuntime.Tensors;
 using Vernacula.Base.Models;
 
 namespace Vernacula.Base;
+
+public readonly record struct WhisperTranscript(string Text, IReadOnlyList<int> Tokens);
 
 /// <summary>
 /// Whisper large-v3-turbo backend.  Phase 2a scope: Whisper-style log-mel
@@ -48,6 +52,28 @@ public sealed class WhisperTurbo : IDisposable
     public const int EncoderOutFrames = ChunkFrames / 2;  // 1500, conv 2× downsampling
     public const int HiddenSize       = 1280;
 
+    // ── Decoder geometry (large-v3-turbo) ───────────────────────────────────
+    private const int NumDecoderLayers = 4;      // large-v3-turbo distillation
+    private const int NumHeads         = 20;
+    private const int HeadDim          = 64;     // 20 * 64 = 1280
+    private const int MaxDecoderLength = 448;    // Whisper hard context limit
+
+    // ── Whisper special tokens (from generation_config.json) ────────────────
+    // Regular BPE vocab spans [0, 50256]. All special tokens are >= 50257.
+    private const int SotToken           = 50258;  // <|startoftranscript|>
+    private const int EotToken           = 50257;  // <|endoftext|> (also BOS/EOS/pad)
+    private const int NoTimestampsToken  = 50364;
+    private const int TranscribeToken    = 50360;
+    private const int TranslateToken     = 50359;
+    private const int SpecialTokenFloor  = 50257;  // everything >= this is a special token
+    // Suppress these at the FIRST content step only: 220 = leading space, 50257 = immediate EOT.
+    // Prevents the two degenerate argmax outcomes in the initial decode position.
+    private static readonly int[] BeginSuppressTokens = [220, EotToken];
+
+    // Language ISO → Whisper <|lang|> token id. Populated from
+    // generation_config.json's lang_to_id dict on load.
+    private readonly Dictionary<string, int> _langToId;
+
     // ── Static precomputed ──────────────────────────────────────────────────
     // Note: Qwen3Asr.cs has an identical Whisper-style mel frontend inline.
     // Dedup deferred — touching Qwen3 now would risk regressing a validated
@@ -57,14 +83,29 @@ public sealed class WhisperTurbo : IDisposable
     private static readonly double[] HannWindow    = Window.HannPeriodic(NFft);
 
     private readonly InferenceSession _encoder;
+    private readonly InferenceSession _decoderInit;
+    private readonly InferenceSession _decoderStep;
+    private readonly string?[] _idToToken;
+    private readonly Dictionary<char, byte> _byteLevelDecode;
 
     public WhisperTurbo(string modelsDir, ExecutionProvider ep = ExecutionProvider.Auto)
     {
         var opts = MakeSessionOptions(ep);
-        _encoder = new InferenceSession(Path.Combine(modelsDir, EncoderFile), opts);
+        _encoder     = new InferenceSession(Path.Combine(modelsDir, EncoderFile), opts);
+        _decoderInit = new InferenceSession(Path.Combine(modelsDir, DecoderInitFile), opts);
+        _decoderStep = new InferenceSession(Path.Combine(modelsDir, DecoderStepFile), opts);
+
+        _idToToken       = LoadTokenizerVocab(Path.Combine(modelsDir, TokenizerFile));
+        _byteLevelDecode = BuildByteLevelDecode();
+        _langToId        = LoadLangToId(Path.Combine(modelsDir, GenerationConfigFile));
     }
 
-    public void Dispose() => _encoder.Dispose();
+    public void Dispose()
+    {
+        _decoderStep.Dispose();
+        _decoderInit.Dispose();
+        _encoder.Dispose();
+    }
 
     // ── Public API ──────────────────────────────────────────────────────────
 
@@ -107,7 +148,276 @@ public sealed class WhisperTurbo : IDisposable
         [
             NamedOnnxValue.CreateFromTensor("input_features", input),
         ]);
-        var tensor = outputs.First(o => o.Name == "last_hidden_state").AsTensor<float>();
+        return ExtractFloat(outputs.First(o => o.Name == "last_hidden_state"));
+    }
+
+    /// <summary>
+    /// Transcribe a single 30-second chunk (or less) of 16 kHz mono audio
+    /// with greedy decode. Longer inputs are truncated to the first 30 s —
+    /// multi-chunk handling lands in a later phase.
+    /// <paramref name="languageIso"/> is an ISO 639-1 code; <c>"en"</c> by default.
+    /// </summary>
+    public WhisperTranscript Transcribe(float[] audio16k, string languageIso = "en")
+    {
+        float[] mel    = PrepareChunkMel(audio16k);
+        float[] hidden = RunEncoder(mel);
+
+        int langToken = ResolveLanguageToken(languageIso);
+        int[] prefix  = [SotToken, langToken, TranscribeToken, NoTimestampsToken];
+
+        // ── Decoder-init: consumes the full prefix in one pass, produces
+        //     initial KV cache (cross-attn encoder KV is computed here and
+        //     reused unchanged across every subsequent step — matches the
+        //     Cohere cross-KV reuse pattern). ──────────────────────────────
+        var (initLogits, kv) = RunDecoderInit(prefix, hidden);
+
+        // First content token: argmax over logits at the last prefix position,
+        // with BeginSuppressTokens masked to -inf to prevent the two degenerate
+        // greedy outcomes (leading space or immediate EOT).
+        int nextToken = ArgmaxLastPosition(initLogits, prefix.Length, BeginSuppressTokens);
+
+        // ── Step loop: each call takes one token + the grown KV cache,
+        //     returns logits at the single new position and an updated KV. ─
+        var outTokens = new List<int>(64);
+        while (nextToken != EotToken && outTokens.Count + prefix.Length < MaxDecoderLength)
+        {
+            outTokens.Add(nextToken);
+            (float[] stepLogits, kv) = RunDecoderStep(nextToken, kv);
+            nextToken = ArgmaxLastPosition(stepLogits, 1, suppress: null);
+        }
+
+        // Filter out any stray special tokens that slipped through; BPE-decode
+        // the remainder through the byte-level map.
+        var contentTokens = outTokens.Where(t => t < SpecialTokenFloor).ToList();
+        string text = DecodeTokens(contentTokens);
+        return new WhisperTranscript(text, outTokens);
+    }
+
+    // ── Decoder helpers ─────────────────────────────────────────────────────
+
+    /// <summary>
+    /// One KV-cache tensor. Kept as flat float[] + explicit shape so we can
+    /// round-trip through DenseTensor&lt;float&gt; each step without
+    /// overcomplicating storage. 16 of these per decoder state (4 layers × 4
+    /// tensors per layer).
+    /// </summary>
+    private sealed record KvTensor(string Name, float[] Data, int[] Shape);
+
+    private (float[] logits, List<KvTensor> kv)
+        RunDecoderInit(int[] prefix, float[] encoderHidden)
+    {
+        var inputIds = new long[prefix.Length];
+        for (int i = 0; i < prefix.Length; i++) inputIds[i] = prefix[i];
+
+        var inputs = new List<NamedOnnxValue>
+        {
+            NamedOnnxValue.CreateFromTensor("input_ids",
+                new DenseTensor<long>(inputIds, [1, prefix.Length])),
+            NamedOnnxValue.CreateFromTensor("encoder_hidden_states",
+                new DenseTensor<float>(encoderHidden, [1, EncoderOutFrames, HiddenSize])),
+        };
+
+        using var outputs = _decoderInit.Run(inputs);
+
+        float[] logits = ExtractFloat(outputs.First(o => o.Name == "logits"));
+
+        // Build the KV cache in the exact order the step model expects as
+        // past_key_values.N.{decoder|encoder}.{key|value}. All 16 tensors.
+        var kv = new List<KvTensor>(NumDecoderLayers * 4);
+        for (int layer = 0; layer < NumDecoderLayers; layer++)
+        {
+            foreach (bool encoder in new[] { false, true })
+            {
+                foreach (bool isValue in new[] { false, true })
+                {
+                    string presentName = $"present.{layer}.{(encoder ? "encoder" : "decoder")}.{(isValue ? "value" : "key")}";
+                    string pastName    = $"past_key_values.{layer}.{(encoder ? "encoder" : "decoder")}.{(isValue ? "value" : "key")}";
+                    var tensor = outputs.First(o => o.Name == presentName).AsTensor<float>();
+                    int seqLen = encoder ? EncoderOutFrames : prefix.Length;
+                    kv.Add(new KvTensor(pastName, ExtractFloatFromTensor(tensor),
+                                        [1, NumHeads, seqLen, HeadDim]));
+                }
+            }
+        }
+        return (logits, kv);
+    }
+
+    private (float[] logits, List<KvTensor> updatedKv)
+        RunDecoderStep(int nextToken, List<KvTensor> pastKv)
+    {
+        var inputs = new List<NamedOnnxValue>(1 + pastKv.Count)
+        {
+            NamedOnnxValue.CreateFromTensor("input_ids",
+                new DenseTensor<long>(new long[] { nextToken }, [1, 1])),
+        };
+        foreach (var t in pastKv)
+            inputs.Add(NamedOnnxValue.CreateFromTensor(t.Name, new DenseTensor<float>(t.Data, t.Shape)));
+
+        using var outputs = _decoderStep.Run(inputs);
+
+        float[] logits = ExtractFloat(outputs.First(o => o.Name == "logits"));
+
+        // Step outputs only decoder KVs (8 tensors) — encoder KVs are constant
+        // across steps and stay in pastKv. Rebuild the 16-entry list with the
+        // grown decoder KVs and the unchanged encoder KVs.
+        var updatedKv = new List<KvTensor>(NumDecoderLayers * 4);
+        for (int layer = 0; layer < NumDecoderLayers; layer++)
+        {
+            foreach (bool encoder in new[] { false, true })
+            {
+                foreach (bool isValue in new[] { false, true })
+                {
+                    string pastName = $"past_key_values.{layer}.{(encoder ? "encoder" : "decoder")}.{(isValue ? "value" : "key")}";
+                    if (encoder)
+                    {
+                        // Reuse unchanged encoder KV from the previous state.
+                        updatedKv.Add(pastKv.First(t => t.Name == pastName));
+                    }
+                    else
+                    {
+                        string presentName = $"present.{layer}.decoder.{(isValue ? "value" : "key")}";
+                        var tensor = outputs.First(o => o.Name == presentName).AsTensor<float>();
+                        // Decoder seq grew by 1. Derive from tensor dims rather than
+                        // tracking separately — avoids a second source of truth.
+                        var dims = tensor.Dimensions;
+                        updatedKv.Add(new KvTensor(pastName, ExtractFloatFromTensor(tensor),
+                                                    [dims[0], dims[1], dims[2], dims[3]]));
+                    }
+                }
+            }
+        }
+        return (logits, updatedKv);
+    }
+
+    /// <summary>
+    /// Argmax over the vocab at the last token position of a logits tensor
+    /// shaped [1, seqLen, vocabSize]. Optional <paramref name="suppress"/>
+    /// ids get -inf before argmax.
+    /// </summary>
+    private static int ArgmaxLastPosition(float[] logits, int seqLen, int[]? suppress)
+    {
+        int vocab = logits.Length / seqLen;
+        int baseIdx = (seqLen - 1) * vocab;
+
+        if (suppress is not null)
+            foreach (int id in suppress)
+                if (id >= 0 && id < vocab)
+                    logits[baseIdx + id] = float.NegativeInfinity;
+
+        int best = 0;
+        float bestVal = logits[baseIdx];
+        for (int i = 1; i < vocab; i++)
+        {
+            float v = logits[baseIdx + i];
+            if (v > bestVal) { bestVal = v; best = i; }
+        }
+        return best;
+    }
+
+    private int ResolveLanguageToken(string languageIso)
+    {
+        string key = $"<|{languageIso.ToLowerInvariant()}|>";
+        if (_langToId.TryGetValue(key, out int id)) return id;
+        throw new ArgumentException(
+            $"Unsupported Whisper language code '{languageIso}'. "
+            + $"Expected one of the {_langToId.Count} languages in generation_config.json.");
+    }
+
+    // ── Tokenizer ───────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// BPE-decode a token-id sequence to UTF-8 text. Regular vocab tokens
+    /// (id &lt; 50257) get byte-level-BPE mapped; higher ids are Whisper
+    /// specials and should be filtered by the caller before calling this.
+    /// </summary>
+    public string DecodeTokens(IReadOnlyList<int> tokens)
+    {
+        var bytes = new List<byte>(tokens.Count * 4);
+        foreach (int token in tokens)
+        {
+            if (token < 0 || token >= _idToToken.Length) continue;
+            string? raw = _idToToken[token];
+            if (raw is null) continue;
+            foreach (char ch in raw)
+                if (_byteLevelDecode.TryGetValue(ch, out byte value))
+                    bytes.Add(value);
+        }
+        string text = Encoding.UTF8.GetString(bytes.ToArray());
+        return text.Length > 0 && text[0] == ' ' ? text[1..] : text;
+    }
+
+    /// <summary>
+    /// Load tokenizer.json into a flat id → token string lookup. Handles both
+    /// the regular BPE vocab under model.vocab and the added_tokens list
+    /// (which is where all Whisper specials live).
+    /// </summary>
+    private static string?[] LoadTokenizerVocab(string path)
+    {
+        using var doc = JsonDocument.Parse(File.ReadAllText(path));
+        var root = doc.RootElement;
+        var vocab = root.GetProperty("model").GetProperty("vocab");
+        int maxId = -1;
+        foreach (var kv in vocab.EnumerateObject())
+            maxId = Math.Max(maxId, kv.Value.GetInt32());
+        if (root.TryGetProperty("added_tokens", out var addedTokens))
+            foreach (var tok in addedTokens.EnumerateArray())
+                maxId = Math.Max(maxId, tok.GetProperty("id").GetInt32());
+
+        var idToToken = new string?[maxId + 1];
+        foreach (var kv in vocab.EnumerateObject())
+            idToToken[kv.Value.GetInt32()] = kv.Name;
+        if (root.TryGetProperty("added_tokens", out var added))
+            foreach (var tok in added.EnumerateArray())
+                idToToken[tok.GetProperty("id").GetInt32()] =
+                    tok.GetProperty("content").GetString() ?? "";
+        return idToToken;
+    }
+
+    /// <summary>
+    /// GPT-2 byte-level BPE decode map: unicode surrogate char → underlying byte.
+    /// Mirrors the canonical bytes_to_unicode table from OpenAI's GPT-2 repo,
+    /// which Whisper inherits. Same as Qwen3Asr's copy; they use the same
+    /// pre-tokenizer family.
+    /// </summary>
+    private static Dictionary<char, byte> BuildByteLevelDecode()
+    {
+        var bs = new List<int>();
+        for (int i = (int)'!'; i <= (int)'~'; i++) bs.Add(i);
+        for (int i = 0xA1; i <= 0xAC; i++) bs.Add(i);
+        for (int i = 0xAE; i <= 0xFF; i++) bs.Add(i);
+        var cs = new List<int>(bs);
+        int extra = 0;
+        for (int b = 0; b < 256; b++)
+        {
+            if (bs.Contains(b)) continue;
+            bs.Add(b);
+            cs.Add(256 + extra);
+            extra++;
+        }
+        var map = new Dictionary<char, byte>(256);
+        for (int i = 0; i < bs.Count; i++)
+            map[(char)cs[i]] = (byte)bs[i];
+        return map;
+    }
+
+    private static Dictionary<string, int> LoadLangToId(string path)
+    {
+        using var doc = JsonDocument.Parse(File.ReadAllText(path));
+        var root = doc.RootElement;
+        var dict = new Dictionary<string, int>(StringComparer.Ordinal);
+        if (root.TryGetProperty("lang_to_id", out var langToId))
+            foreach (var kv in langToId.EnumerateObject())
+                dict[kv.Name] = kv.Value.GetInt32();
+        return dict;
+    }
+
+    // ── Tensor extraction helpers ───────────────────────────────────────────
+
+    private static float[] ExtractFloat(DisposableNamedOnnxValue o)
+        => ExtractFloatFromTensor(o.AsTensor<float>());
+
+    private static float[] ExtractFloatFromTensor(Tensor<float> tensor)
+    {
         if (tensor is DenseTensor<float> dense)
             return dense.Buffer.ToArray();
         var result = new float[tensor.Length];
