@@ -68,6 +68,7 @@ public sealed class WhisperTurbo : IDisposable
     private const int NumHeads         = 20;
     private const int HeadDim          = 64;     // 20 * 64 = 1280
     private const int MaxDecoderLength = 448;    // Whisper hard context limit
+    private const int VocabSize        = 51_866; // large-v3-turbo vocab (fp16 export)
 
     // ── Whisper special tokens (from generation_config.json) ────────────────
     // Regular BPE vocab spans [0, 50256]. All special tokens are >= 50257.
@@ -227,6 +228,330 @@ public sealed class WhisperTurbo : IDisposable
                     segId, string.Join(" ", texts), allTokens);
             }
         }
+    }
+
+    /// <summary>
+    /// Batched version of <see cref="Recognize"/>. Stacks multiple segments
+    /// through a single encoder call and a single decoder-init call, then
+    /// runs a padded decoder-step loop with per-item EOT tracking.
+    ///
+    /// Each input segment is split into 30-s work items (one per chunk);
+    /// work items are length-sorted ascending so batches have a narrow
+    /// spread in decode length, minimising straggler waste.
+    ///
+    /// <paramref name="initialBatchSize"/> is the starting batch size. On
+    /// <c>OutOfMemory</c>, we halve and retry the same slice — this lets the
+    /// scheduler auto-tune to whatever VRAM is actually free without needing
+    /// to pre-compute a budget.
+    /// </summary>
+    public IEnumerable<WhisperRecognitionResult> RecognizeBatched(
+        IReadOnlyList<(double start, double end, string spk)> segs,
+        float[] audio16k,
+        string? forceLanguage = null,
+        int initialBatchSize = 8)
+    {
+        string lang = forceLanguage ?? "en";
+        var work = BuildWorkItems(segs, audio16k);
+
+        // Length-sort ascending: segments of similar audio length tend to
+        // have similar decode-token counts, which bounds the per-batch
+        // straggler spread.
+        work.Sort((a, b) => a.Audio.Length.CompareTo(b.Audio.Length));
+
+        // Per-segment part accumulator; we emit the merged result the moment
+        // a segment's last chunk completes (not in segId order — caller
+        // should be order-agnostic, matching Cohere / Qwen3 semantics).
+        var segParts  = new List<(int chunk, string text, List<int> tokens)>?[segs.Count];
+        var remaining = new int[segs.Count];
+        foreach (var w in work) remaining[w.SegId]++;
+
+        int batchSize = Math.Max(1, initialBatchSize);
+        int idx = 0;
+        while (idx < work.Count)
+        {
+            int take = Math.Min(batchSize, work.Count - idx);
+            var batch = new List<WorkItem>(take);
+            for (int i = 0; i < take; i++) batch.Add(work[idx + i]);
+
+            List<BatchOutput> batchResults;
+            try
+            {
+                batchResults = TranscribeBatch(batch, lang);
+            }
+            catch (OnnxRuntimeException ex) when (IsLikelyOutOfMemory(ex) && take > 1)
+            {
+                batchSize = Math.Max(1, take / 2);
+                continue;   // retry same idx with smaller batch
+            }
+
+            foreach (var r in batchResults)
+            {
+                (segParts[r.SegId] ??= new()).Add((r.ChunkIdx, r.Text, r.Tokens));
+                if (--remaining[r.SegId] != 0) continue;
+
+                var parts = segParts[r.SegId]!;
+                parts.Sort((a, b) => a.chunk.CompareTo(b.chunk));
+                var tokens = new List<int>();
+                var texts  = new List<string>();
+                foreach (var (_, text, tks) in parts)
+                {
+                    tokens.AddRange(tks);
+                    if (!string.IsNullOrWhiteSpace(text)) texts.Add(text);
+                }
+                segParts[r.SegId] = null;   // release memory
+                yield return new WhisperRecognitionResult(
+                    r.SegId, string.Join(" ", texts), tokens);
+            }
+
+            idx += take;
+        }
+    }
+
+    /// <summary>Per-chunk work unit used by the batched scheduler.</summary>
+    private sealed record WorkItem(int SegId, int ChunkIdx, float[] Audio);
+
+    /// <summary>Per-chunk output from a batch call.</summary>
+    private sealed record BatchOutput(
+        int SegId, int ChunkIdx, string Text, List<int> Tokens);
+
+    private static List<WorkItem> BuildWorkItems(
+        IReadOnlyList<(double start, double end, string spk)> segs,
+        float[] audio)
+    {
+        var items = new List<WorkItem>(segs.Count);
+        for (int segId = 0; segId < segs.Count; segId++)
+        {
+            var (start, end, _) = segs[segId];
+            int startSample = Math.Max(0, (int)(start * SampleRate));
+            int endSample   = Math.Min(audio.Length, (int)(end * SampleRate));
+            int length      = Math.Max(0, endSample - startSample);
+
+            if (length == 0)
+            {
+                items.Add(new WorkItem(segId, 0, []));  // empty placeholder
+                continue;
+            }
+
+            if (length <= ChunkSamples)
+            {
+                var slice = new float[length];
+                Array.Copy(audio, startSample, slice, 0, length);
+                items.Add(new WorkItem(segId, 0, slice));
+            }
+            else
+            {
+                int numChunks = (length + ChunkSamples - 1) / ChunkSamples;
+                for (int c = 0; c < numChunks; c++)
+                {
+                    int chunkStart = c * ChunkSamples;
+                    int chunkLen   = Math.Min(ChunkSamples, length - chunkStart);
+                    var chunk      = new float[chunkLen];
+                    Array.Copy(audio, startSample + chunkStart, chunk, 0, chunkLen);
+                    items.Add(new WorkItem(segId, c, chunk));
+                }
+            }
+        }
+        return items;
+    }
+
+    /// <summary>
+    /// Run a single batch through encoder + decoder-init + decoder-step loop.
+    /// Items that emit EOT early are kept in the batch and fed EOT as a
+    /// pad token — on GPU the extra flops are basically free (matmuls are
+    /// batch-parallel), and keeping the tensor shape stable avoids
+    /// re-allocating KV buffers.
+    /// </summary>
+    private List<BatchOutput> TranscribeBatch(List<WorkItem> batch, string lang)
+    {
+        int B = batch.Count;
+
+        // ── Mels: compute per item, stack into [B, 128, 3000]. Empty work
+        //     items (zero-length audio) produce an all-zero mel which the
+        //     encoder will see as silence — we drop their outputs below. ──
+        var melBuf = new float[B * NMels * ChunkFrames];
+        for (int i = 0; i < B; i++)
+        {
+            if (batch[i].Audio.Length == 0) continue;
+            var mel = PrepareChunkMel(batch[i].Audio);
+            Array.Copy(mel, 0, melBuf, i * NMels * ChunkFrames, mel.Length);
+        }
+
+        // ── Batched encoder ─────────────────────────────────────────────────
+        float[] hidden;
+        {
+            var encTensor = new DenseTensor<float>(melBuf, [B, NMels, ChunkFrames]);
+            using var outs = _encoder.Run(
+            [
+                NamedOnnxValue.CreateFromTensor("input_features", encTensor),
+            ]);
+            hidden = ExtractFloat(outs.First(o => o.Name == "last_hidden_state"));
+        }
+
+        // ── Batched decoder-init (prefix is identical across batch) ─────────
+        int langToken = ResolveLanguageToken(lang);
+        int[] prefix  = [SotToken, langToken, TranscribeToken, NoTimestampsToken];
+        int prefixLen = prefix.Length;
+
+        var inputIds = new long[B * prefixLen];
+        for (int b = 0; b < B; b++)
+            for (int p = 0; p < prefixLen; p++)
+                inputIds[b * prefixLen + p] = prefix[p];
+
+        float[] initLogits;
+        List<KvTensor> kv;
+        {
+            using var outs = _decoderInit.Run(
+            [
+                NamedOnnxValue.CreateFromTensor("input_ids",
+                    new DenseTensor<long>(inputIds, [B, prefixLen])),
+                NamedOnnxValue.CreateFromTensor("encoder_hidden_states",
+                    new DenseTensor<float>(hidden, [B, EncoderOutFrames, HiddenSize])),
+            ]);
+            initLogits = ExtractFloat(outs.First(o => o.Name == "logits"));
+
+            kv = new List<KvTensor>(NumDecoderLayers * 4);
+            for (int layer = 0; layer < NumDecoderLayers; layer++)
+            {
+                foreach (bool encoder in new[] { false, true })
+                {
+                    foreach (bool isValue in new[] { false, true })
+                    {
+                        string presentName = $"present.{layer}.{(encoder ? "encoder" : "decoder")}.{(isValue ? "value" : "key")}";
+                        string pastName    = $"past_key_values.{layer}.{(encoder ? "encoder" : "decoder")}.{(isValue ? "value" : "key")}";
+                        var tensor = outs.First(o => o.Name == presentName).AsTensor<float>();
+                        int seqLen = encoder ? EncoderOutFrames : prefixLen;
+                        kv.Add(new KvTensor(pastName, ExtractFloatFromTensor(tensor),
+                                            [B, NumHeads, seqLen, HeadDim]));
+                    }
+                }
+            }
+        }
+
+        // ── First argmax per item at the last prefix position, with
+        //     begin_suppress_tokens applied. ────────────────────────────────
+        var outTokens = new List<int>[B];
+        var nextTok   = new int[B];
+        var done      = new bool[B];
+        for (int b = 0; b < B; b++)
+        {
+            outTokens[b] = new List<int>(32);
+            if (batch[b].Audio.Length == 0)
+            {
+                // Skip silent placeholders — treat as already finished.
+                done[b] = true;
+                nextTok[b] = EotToken;
+                continue;
+            }
+            int baseIdx = b * prefixLen * VocabSize + (prefixLen - 1) * VocabSize;
+            foreach (int id in BeginSuppressTokens)
+                initLogits[baseIdx + id] = float.NegativeInfinity;
+            int best = 0; float bestVal = initLogits[baseIdx];
+            for (int v = 1; v < VocabSize; v++)
+            {
+                float x = initLogits[baseIdx + v];
+                if (x > bestVal) { bestVal = x; best = v; }
+            }
+            nextTok[b] = best;
+            if (best == EotToken) done[b] = true;
+        }
+
+        // ── Step loop. Runs until every item has emitted EOT or the context
+        //     limit is reached. Finished items are fed EotToken as a no-op
+        //     pad; their subsequent outputs are ignored. ─────────────────────
+        int step = 0;
+        int maxSteps = MaxDecoderLength - prefixLen;
+        while (step < maxSteps && !AllTrue(done))
+        {
+            for (int b = 0; b < B; b++)
+                if (!done[b]) outTokens[b].Add(nextTok[b]);
+
+            var stepIds = new long[B];
+            for (int b = 0; b < B; b++) stepIds[b] = done[b] ? EotToken : nextTok[b];
+
+            var stepInputs = new List<NamedOnnxValue>(1 + kv.Count)
+            {
+                NamedOnnxValue.CreateFromTensor("input_ids",
+                    new DenseTensor<long>(stepIds, [B, 1])),
+            };
+            foreach (var t in kv)
+                stepInputs.Add(NamedOnnxValue.CreateFromTensor(t.Name,
+                    new DenseTensor<float>(t.Data, t.Shape)));
+
+            using var stepOuts = _decoderStep.Run(stepInputs);
+            float[] stepLogits = ExtractFloat(stepOuts.First(o => o.Name == "logits"));
+
+            // Rebuild KV: decoder KVs come from step output with grown seq_len;
+            // encoder KVs stay unchanged.
+            var updated = new List<KvTensor>(NumDecoderLayers * 4);
+            for (int layer = 0; layer < NumDecoderLayers; layer++)
+            {
+                foreach (bool encoder in new[] { false, true })
+                {
+                    foreach (bool isValue in new[] { false, true })
+                    {
+                        string pastName = $"past_key_values.{layer}.{(encoder ? "encoder" : "decoder")}.{(isValue ? "value" : "key")}";
+                        if (encoder)
+                        {
+                            updated.Add(kv.First(t => t.Name == pastName));
+                        }
+                        else
+                        {
+                            string presentName = $"present.{layer}.decoder.{(isValue ? "value" : "key")}";
+                            var tensor = stepOuts.First(o => o.Name == presentName).AsTensor<float>();
+                            var dims = tensor.Dimensions;
+                            updated.Add(new KvTensor(pastName, ExtractFloatFromTensor(tensor),
+                                                     [dims[0], dims[1], dims[2], dims[3]]));
+                        }
+                    }
+                }
+            }
+            kv = updated;
+
+            for (int b = 0; b < B; b++)
+            {
+                if (done[b]) continue;
+                int baseIdx = b * VocabSize;
+                int best = 0; float bestVal = stepLogits[baseIdx];
+                for (int v = 1; v < VocabSize; v++)
+                {
+                    float x = stepLogits[baseIdx + v];
+                    if (x > bestVal) { bestVal = x; best = v; }
+                }
+                nextTok[b] = best;
+                if (best == EotToken) done[b] = true;
+            }
+
+            step++;
+        }
+
+        var results = new List<BatchOutput>(B);
+        for (int b = 0; b < B; b++)
+        {
+            var content = outTokens[b].Where(t => t < SpecialTokenFloor).ToList();
+            string text = DecodeTokens(content);
+            results.Add(new BatchOutput(batch[b].SegId, batch[b].ChunkIdx, text, outTokens[b]));
+        }
+        return results;
+    }
+
+    private static bool AllTrue(bool[] xs)
+    {
+        for (int i = 0; i < xs.Length; i++) if (!xs[i]) return false;
+        return true;
+    }
+
+    /// <summary>
+    /// Match the substrings ORT surfaces when a CUDA allocation fails.
+    /// Same heuristic as CohereTranscribe — mirrors the BFC arena +
+    /// generic "out of memory" messages we see in practice.
+    /// </summary>
+    private static bool IsLikelyOutOfMemory(OnnxRuntimeException ex)
+    {
+        string message = ex.Message ?? string.Empty;
+        return message.Contains("out of memory",          StringComparison.OrdinalIgnoreCase)
+            || message.Contains("failed to allocate",     StringComparison.OrdinalIgnoreCase)
+            || message.Contains("cuda out of memory",     StringComparison.OrdinalIgnoreCase)
+            || message.Contains("bfc_arena",              StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>

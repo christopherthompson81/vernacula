@@ -32,6 +32,7 @@ bool    profileSortformer = false;      // --profile-sortformer: print fine-grai
 bool    downloadVoxLingua = false;      // --download-voxlingua: fetch the LID model, then exit
 bool    runLid             = false;      // --lid: run LID on --audio and print result, then exit
 bool    runWhisperCheck    = false;      // --whisper-check: Phase 2a sanity test (mel + encoder only)
+int     whisperBatchSize   = 1;          // --whisper-batch N: N>=2 uses RecognizeBatched (see investigation doc — batching is currently slower than sequential on short-variable-segment workloads; wire up for testing)
 ModelPrecision precision = ModelPrecision.Fp32;
 int     parakeetBeam      = 1;          // --parakeet-beam N: 1 = greedy (default), >1 = TDT beam search
 string? parakeetLmPath    = null;       // --lm <path> to ARPA(.gz) subword n-gram model; implies beam ≥ 4
@@ -94,6 +95,13 @@ for (int i = 0; i < args.Length; i++)
         case "--download-voxlingua": downloadVoxLingua = true; break;
         case "--lid":                runLid = true; break;
         case "--whisper-check":      runWhisperCheck = true; break;
+        case "--whisper-batch":
+            if (!int.TryParse(args[++i], out whisperBatchSize) || whisperBatchSize < 1)
+            {
+                Console.Error.WriteLine("--whisper-batch expects a positive integer (1 = sequential, 2+ = batched).");
+                return 1;
+            }
+            break;
         case "--language":        cohereLanguage = args[++i]; break;
         case "--precision":
             precision = args[++i].ToLowerInvariant() switch {
@@ -666,8 +674,14 @@ try
         int totalSegs = segs.Count;
         int completed = 0;
 
-        Console.WriteLine($"Transcribing {totalSegs} segment(s) (Whisper-turbo)...");
-        foreach (var result in whisper.Recognize(segs, audio, forceLanguage: cohereLanguage))
+        var recognitionResults = whisperBatchSize > 1
+            ? whisper.RecognizeBatched(segs, audio, forceLanguage: cohereLanguage,
+                                       initialBatchSize: whisperBatchSize)
+            : whisper.Recognize(segs, audio, forceLanguage: cohereLanguage);
+        string batchNote = whisperBatchSize > 1 ? $", batch={whisperBatchSize}" : "";
+
+        Console.WriteLine($"Transcribing {totalSegs} segment(s) (Whisper-turbo{batchNote})...");
+        foreach (var result in recognitionResults)
         {
             cts.Token.ThrowIfCancellationRequested();
             completed++;

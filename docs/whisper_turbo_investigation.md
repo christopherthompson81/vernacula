@@ -133,3 +133,47 @@ Each phase ends at a runnable checkpoint; we validate before moving on.
 ---
 
 Run log continues below as work progresses.
+
+## Run 3 — 2026-04-20 (Phase 3b batching benchmark, en-US 600 s / 132 segments)
+
+Question: does batching encoder + decoder-init + decoder-step across
+segments reduce total ASR time?
+
+Setup: `RecognizeBatched` with length-sorted scheduler, `initialBatchSize=8`,
+OOM-halving fallback, per-item EOT tracking with EOT-as-pad for finished
+items, no IOBinding. Compared against sequential `Recognize` from Phase 3a.
+
+Results (CUDA, RTX 3090):
+
+| Path | ASR time | Total wall-clock | RTF |
+|---|---|---|---|
+| Sequential (Phase 3a) | 35.8 s | 45.3 s | 0.072 |
+| Batched B=8 (Phase 3b) | 39.8 s | 50.1 s | 0.079 |
+
+Outputs: 0.996 sequence similarity, 0.998 vocab overlap — batched is
+numerically identical modulo floating-point nondeterminism.
+
+Finding: batching is **slower** on this workload. Root cause is per-step
+memory bandwidth for KV-cache transport. Each decoder-step:
+- Copies the 8 decoder-side KV tensors out of ORT into managed float[]
+  via `ExtractFloatFromTensor` (≈ 2 MB × 8 = 16 MB per step at B=8).
+- Re-wraps them in `DenseTensor<float>` on the next step.
+Copies scale with B, so while batch=8 does fewer *step calls* than
+sequential, each call moves 8× more bytes. The cross-over favours
+sequential on short-variable-segment workloads (this 600 s file
+averages 4.5 s/segment with a long tail).
+
+Cohere sidesteps this with IOBinding — cross-attention KVs allocated
+in CUDA device memory and bound once across all steps, never crossing
+PCIe. We didn't port that optimisation in Phase 3b; doing so is the
+natural follow-up if batching becomes load-bearing.
+
+**Decision**: ship Phase 3b as correct-but-opt-in. CLI default remains
+sequential; `--whisper-batch N` (N ≥ 2) switches to the batched path.
+The batched implementation is a correct foundation for the IOBinding
+optimisation when we have a concrete reason to chase it — a workload
+with longer, more uniform segments (lectures, podcasts) would be where
+we'd expect batching even without IOBinding to break even.
+
+Deferred follow-up: IOBinding for KV transport. Expected to invert the
+benchmark above.
