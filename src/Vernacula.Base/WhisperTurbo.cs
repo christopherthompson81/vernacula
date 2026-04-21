@@ -11,6 +11,17 @@ namespace Vernacula.Base;
 public readonly record struct WhisperTranscript(string Text, IReadOnlyList<int> Tokens);
 
 /// <summary>
+/// One segment's recognition result in the same shape TranscriptionService
+/// expects from the other backends: a segment index back into the input
+/// segment list, the transcript text, and the raw token ids (for DB
+/// metadata / debugging).
+/// </summary>
+public sealed record WhisperRecognitionResult(
+    int SegmentId,
+    string Text,
+    IReadOnlyList<int> Tokens);
+
+/// <summary>
 /// Whisper large-v3-turbo backend.  Phase 2a scope: Whisper-style log-mel
 /// frontend and encoder-only inference.  Decoder pair, greedy loop, tokenizer,
 /// and language-token handling land in Phase 2b.
@@ -152,9 +163,76 @@ public sealed class WhisperTurbo : IDisposable
     }
 
     /// <summary>
+    /// Segment-based transcription matching the convention other Vernacula
+    /// backends use. Each VAD/diarization segment is transcribed
+    /// independently; segments shorter than 30 s are zero-padded (cheap),
+    /// segments longer than 30 s are split into contiguous 30-s sub-chunks
+    /// and their transcripts concatenated.
+    ///
+    /// Sequential-only in this phase; batching + VRAM budgeting comes next
+    /// (see <c>docs/whisper_turbo_investigation.md</c>).
+    /// </summary>
+    public IEnumerable<WhisperRecognitionResult> Recognize(
+        IReadOnlyList<(double start, double end, string spk)> segs,
+        float[] audio16k,
+        string? forceLanguage = null)
+    {
+        string lang = forceLanguage ?? "en";
+
+        for (int segId = 0; segId < segs.Count; segId++)
+        {
+            var (start, end, _) = segs[segId];
+            int startSample = Math.Max(0, (int)(start * SampleRate));
+            int endSample   = Math.Min(audio16k.Length, (int)(end * SampleRate));
+            int length      = Math.Max(0, endSample - startSample);
+
+            if (length == 0)
+            {
+                yield return new WhisperRecognitionResult(segId, "", []);
+                continue;
+            }
+
+            if (length <= ChunkSamples)
+            {
+                // Short segment — zero-pad to 30 s and transcribe in one call.
+                var slice = new float[length];
+                Array.Copy(audio16k, startSample, slice, 0, length);
+                var t = Transcribe(slice, lang);
+                yield return new WhisperRecognitionResult(segId, t.Text, t.Tokens);
+            }
+            else
+            {
+                // Long segment — split into contiguous 30-s sub-chunks.
+                // No overlap (see investigation doc): 0.5-s overlap would let
+                // us potentially fix boundary-word cases, but without real
+                // timestamps we can't dedupe cleanly, so contiguous + plain
+                // concatenation is the safer v1 choice. Real timestamps are
+                // a separate deferred item; revisit together.
+                var texts      = new List<string>();
+                var allTokens  = new List<int>();
+                int numChunks  = (length + ChunkSamples - 1) / ChunkSamples;
+                for (int c = 0; c < numChunks; c++)
+                {
+                    int chunkStart = c * ChunkSamples;
+                    int chunkLen   = Math.Min(ChunkSamples, length - chunkStart);
+                    var chunk      = new float[chunkLen];
+                    Array.Copy(audio16k, startSample + chunkStart, chunk, 0, chunkLen);
+
+                    var t = Transcribe(chunk, lang);
+                    if (!string.IsNullOrWhiteSpace(t.Text))
+                        texts.Add(t.Text);
+                    allTokens.AddRange(t.Tokens);
+                }
+                yield return new WhisperRecognitionResult(
+                    segId, string.Join(" ", texts), allTokens);
+            }
+        }
+    }
+
+    /// <summary>
     /// Transcribe a single 30-second chunk (or less) of 16 kHz mono audio
     /// with greedy decode. Longer inputs are truncated to the first 30 s —
-    /// multi-chunk handling lands in a later phase.
+    /// use the segment-based <see cref="Recognize"/> overload for real files.
     /// <paramref name="languageIso"/> is an ISO 639-1 code; <c>"en"</c> by default.
     /// </summary>
     public WhisperTranscript Transcribe(float[] audio16k, string languageIso = "en")

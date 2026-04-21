@@ -61,9 +61,9 @@ for (int i = 0; i < args.Length; i++)
         case "--skip-asr":      skipAsr = true; break;
         case "--asr":
             asrBackend = args[++i].ToLowerInvariant();
-            if (asrBackend is not ("parakeet" or "cohere" or "qwen3asr" or "vibevoice"))
+            if (asrBackend is not ("parakeet" or "cohere" or "qwen3asr" or "vibevoice" or "whisper"))
             {
-                Console.Error.WriteLine($"Unknown ASR backend: {asrBackend}. Choose: parakeet, cohere, qwen3asr, vibevoice.");
+                Console.Error.WriteLine($"Unknown ASR backend: {asrBackend}. Choose: parakeet, cohere, qwen3asr, vibevoice, whisper.");
                 return 1;
             }
             break;
@@ -639,6 +639,44 @@ try
                 Console.WriteLine("Experimental Qwen batching artifacts not found; skipping batching benchmark.");
             }
         }
+    }
+    else if (asrBackend == "whisper")
+    {
+        string whisperDir = Path.Combine(modelDir, Config.WhisperTurboSubDir);
+        string[] required = [
+            WhisperTurbo.EncoderFile,
+            WhisperTurbo.DecoderInitFile,
+            WhisperTurbo.DecoderStepFile,
+            WhisperTurbo.TokenizerFile,
+            WhisperTurbo.GenerationConfigFile,
+        ];
+        foreach (string f in required)
+        {
+            if (!File.Exists(Path.Combine(whisperDir, f)))
+            {
+                Console.Error.WriteLine($"\nError: Whisper-turbo model missing: {whisperDir}/{f}");
+                Console.Error.WriteLine(
+                    "Select the WhisperTurbo ASR backend in the app and download the model files, " +
+                    "or copy them into that directory.");
+                return 1;
+            }
+        }
+
+        using var whisper = new WhisperTurbo(whisperDir);
+        int totalSegs = segs.Count;
+        int completed = 0;
+
+        Console.WriteLine($"Transcribing {totalSegs} segment(s) (Whisper-turbo)...");
+        foreach (var result in whisper.Recognize(segs, audio, forceLanguage: cohereLanguage))
+        {
+            cts.Token.ThrowIfCancellationRequested();
+            completed++;
+            var (start, end, spkId) = segs[result.SegmentId];
+            results.Add((start, end, spkId, result.Text));
+            Console.Write($"\r  {completed}/{totalSegs}");
+        }
+        Console.WriteLine();
+        swAsr.Stop();
     }
     else
     {
