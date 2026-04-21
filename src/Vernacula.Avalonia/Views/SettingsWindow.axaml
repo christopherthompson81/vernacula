@@ -139,6 +139,73 @@
             <Setter Property="Opacity" Value="0.9" />
         </Style>
 
+        <Style Selector="TabItem">
+            <Setter Property="FontSize"   Value="15" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="Padding"    Value="14,6,14,9" />
+            <Setter Property="MinHeight"  Value="0" />
+            <Setter Property="Foreground" Value="{DynamicResource SubtextBrush}" />
+        </Style>
+
+        <Style Selector="TabItem /template/ ContentPresenter">
+            <Setter Property="TextElement.Foreground" Value="{DynamicResource SubtextBrush}" />
+        </Style>
+
+        <Style Selector="TabItem:pointerover /template/ ContentPresenter">
+            <Setter Property="TextElement.Foreground" Value="{DynamicResource TextBrush}" />
+        </Style>
+
+        <Style Selector="TabItem:selected /template/ ContentPresenter">
+            <Setter Property="TextElement.Foreground" Value="{DynamicResource AccentBrush}" />
+        </Style>
+
+        <Style Selector="Expander">
+            <Setter Property="MinHeight" Value="0" />
+            <Setter Property="Template">
+                <ControlTemplate>
+                    <StackPanel>
+                        <ToggleButton Name="PART_toggle"
+                                      Background="Transparent"
+                                      BorderBrush="{DynamicResource OverlayBrush}"
+                                      BorderThickness="0,0,0,1"
+                                      CornerRadius="0"
+                                      Padding="0,6"
+                                      HorizontalContentAlignment="Stretch"
+                                      IsChecked="{TemplateBinding IsExpanded, Mode=TwoWay}">
+                            <Grid ColumnDefinitions="*,Auto">
+                                <ContentPresenter Grid.Column="0"
+                                                  Content="{TemplateBinding Header}"
+                                                  ContentTemplate="{TemplateBinding HeaderTemplate}"
+                                                  VerticalAlignment="Center" />
+                                <TextBlock Grid.Column="1"
+                                           Name="PART_chevron"
+                                           Text="▾"
+                                           FontSize="12"
+                                           Foreground="{DynamicResource SubtextBrush}"
+                                           VerticalAlignment="Center" />
+                            </Grid>
+                        </ToggleButton>
+                        <ContentPresenter Content="{TemplateBinding Content}"
+                                          ContentTemplate="{TemplateBinding ContentTemplate}"
+                                          IsVisible="{TemplateBinding IsExpanded}"
+                                          Margin="0,8,0,0" />
+                    </StackPanel>
+                </ControlTemplate>
+            </Setter>
+        </Style>
+
+        <Style Selector="Expander /template/ ToggleButton#PART_toggle:pointerover">
+            <Setter Property="Background" Value="{DynamicResource OverlayBrush}" />
+        </Style>
+
+        <Style Selector="Expander /template/ ToggleButton#PART_toggle:pressed">
+            <Setter Property="Background" Value="{DynamicResource OverlayBrush}" />
+        </Style>
+
+        <Style Selector="Expander:expanded /template/ TextBlock#PART_chevron">
+            <Setter Property="Text" Value="▴" />
+        </Style>
+
         <Style Selector="Button.link-button">
             <Setter Property="Background"      Value="Transparent" />
             <Setter Property="Foreground"      Value="{DynamicResource AccentBrush}" />
@@ -153,11 +220,12 @@
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
-        <ScrollViewer Grid.Row="0"
-                      VerticalScrollBarVisibility="Auto"
-                      HorizontalScrollBarVisibility="Disabled">
-            <Border Padding="24,12,38,32">
-                <StackPanel MaxWidth="500">
+        <TabControl Grid.Row="0">
+            <TabItem Header="Setup">
+                <ScrollViewer VerticalScrollBarVisibility="Auto"
+                              HorizontalScrollBarVisibility="Disabled">
+                    <Border Padding="24,12,38,32">
+                        <StackPanel MaxWidth="500">
 
                 <!-- ─── Hardware & Performance ──────────────────────────────── -->
                 <TextBlock x:Name="HardwareSectionHeader"
@@ -408,6 +476,17 @@
                     </StackPanel>
                 </Border>
 
+                        </StackPanel>
+                    </Border>
+                </ScrollViewer>
+            </TabItem>
+
+            <TabItem Header="Transcription">
+                <ScrollViewer VerticalScrollBarVisibility="Auto"
+                              HorizontalScrollBarVisibility="Disabled">
+                    <Border Padding="24,12,38,32">
+                        <StackPanel MaxWidth="500">
+
                 <!-- ─── Speech Recognition ─────────────────────────────────── -->
                 <TextBlock Text="Speech Recognition"
                            Classes="section-heading" />
@@ -524,8 +603,15 @@
                             </StackPanel>
                         </RadioButton>
 
-                        <StackPanel Margin="24,10,0,0"
-                                    IsVisible="{Binding IsAsrParakeet}">
+                        <Expander Margin="24,10,0,0"
+                                  IsExpanded="False"
+                                  IsVisible="{Binding IsAsrParakeet}">
+                            <Expander.Header>
+                                <TextBlock Text="Advanced decoding"
+                                           Foreground="{DynamicResource TextBrush}"
+                                           FontWeight="SemiBold" />
+                            </Expander.Header>
+                            <StackPanel>
                             <TextBlock Text="TDT beam width"
                                        Foreground="{DynamicResource TextBrush}"
                                        FontWeight="SemiBold"
@@ -543,11 +629,9 @@
                                            Foreground="{DynamicResource TextBrush}"
                                            BorderBrush="{DynamicResource OverlayBrush}"
                                            HorizontalAlignment="Left"
-                                           MinWidth="120" />
-                        </StackPanel>
+                                           MinWidth="120"
+                                           Margin="0,0,0,16" />
 
-                        <StackPanel Margin="24,10,0,0"
-                                    IsVisible="{Binding IsAsrParakeet}">
                             <TextBlock Text="Language model"
                                        Foreground="{DynamicResource TextBrush}"
                                        FontWeight="SemiBold"
@@ -641,7 +725,8 @@
                                            BorderBrush="{DynamicResource OverlayBrush}"
                                            HorizontalAlignment="Left"
                                            MinWidth="120" />
-                        </StackPanel>
+                            </StackPanel>
+                        </Expander>
 
                         <StackPanel Margin="24,10,0,0"
                                     IsVisible="{Binding ShowCohereLanguagePicker}">
@@ -944,6 +1029,17 @@
                     </StackPanel>
                 </Border>
 
+                        </StackPanel>
+                    </Border>
+                </ScrollViewer>
+            </TabItem>
+
+            <TabItem Header="Editor">
+                <ScrollViewer VerticalScrollBarVisibility="Auto"
+                              HorizontalScrollBarVisibility="Disabled">
+                    <Border Padding="24,12,38,32">
+                        <StackPanel MaxWidth="500">
+
                 <!-- ─── Transcript Editor ───────────────────────────────────── -->
                 <TextBlock x:Name="EditorSectionHeader"
                            Text="{Binding Source={x:Static local:Loc.Instance}, Path=[settings_section_editor]}"
@@ -984,6 +1080,17 @@
                         </StackPanel>
                     </StackPanel>
                 </Border>
+
+                        </StackPanel>
+                    </Border>
+                </ScrollViewer>
+            </TabItem>
+
+            <TabItem Header="General">
+                <ScrollViewer VerticalScrollBarVisibility="Auto"
+                              HorizontalScrollBarVisibility="Disabled">
+                    <Border Padding="24,12,38,32">
+                        <StackPanel MaxWidth="500">
 
                 <!-- ─── Appearance ───────────────────────────────────────────── -->
                 <TextBlock x:Name="AppearanceSectionHeader"
@@ -1039,9 +1146,11 @@
                     </ComboBox>
                 </Border>
 
-                </StackPanel>
-            </Border>
-        </ScrollViewer>
+                        </StackPanel>
+                    </Border>
+                </ScrollViewer>
+            </TabItem>
+        </TabControl>
 
         <!-- ─── Footer ───────────────────────────────────────────────────────── -->
         <Border Grid.Row="1"
