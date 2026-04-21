@@ -1,5 +1,7 @@
 # Inference Abstraction Investigation
 
+> **Status: superseded.** The abstraction programme stopped after PR 2. Runs 1 and 2 are preserved as the record of what was actually delivered and why. Run 3 documents the reasoning that closed the plan. See [QWEN3_ASR_PROGRESS.md](QWEN3_ASR_PROGRESS.md) for the Qwen3 runtime details that surfaced during the wind-down.
+
 ## Goal
 
 Vernacula ships six ASR backends ([WhisperTurbo](../../src/Vernacula.Base/WhisperTurbo.cs), [VibeVoiceAsr](../../src/Vernacula.Base/VibeVoiceAsr.cs), [CohereTranscribe](../../src/Vernacula.Base/CohereTranscribe.cs), [Qwen3Asr](../../src/Vernacula.Base/Qwen3Asr.cs), [Parakeet](../../src/Vernacula.Base/Parakeet.cs), [IndicConformer](../../src/Vernacula.Base/IndicConformer.cs)). Each evolved independently and now implements overlapping inference-level optimizations in slightly divergent ways. This investigation catalogs the overlap, identifies shared abstractions worth extracting, and sequences the refactor so every backend can pick up the most advanced features in use anywhere in the repo.
@@ -163,8 +165,34 @@ A unified abstraction covering both shapes would either bloat the return type or
 - [#26](https://github.com/christopherthompson81/vernacula/issues/26) — adopt `BatchSizer` in Whisper and VibeVoice, once each backend is in a validation cycle that can absorb the batching-strategy change.
 - [#27](https://github.com/christopherthompson81/vernacula/issues/27) — validate `ORT_ENABLE_EXTENDED` as a universal graph-opt default (carry-over from PR 1 open question).
 
+## Run 3 — 2026-04-21 (closing run)
+
+**Question:** Extract `KvCacheBinding` from VibeVoice and port it to Qwen3 as PR 3.
+
+**Findings that closed the plan:**
+
+1. **Qwen3 already has IOBinding** on its single-stream split-decoder path ([Qwen3Asr.cs:1755](../../src/Vernacula.Base/Qwen3Asr.cs#L1755), `DecodeWithIoBinding`, gated on `_useCudaIoBinding`). The earlier survey that claimed Qwen3 lacked IOBinding was wrong. The PR 3 value proposition — "port VibeVoice's IOBinding to Qwen3 for the biggest backend speedup" — therefore evaporated.
+
+2. **The four backends' KV layouts are structurally incompatible.** Per-layer split 56-tensor (VibeVoice), per-layer split self+cross 32-tensor (Cohere), unified packed `[n_layers, batch, heads, seq, dim]` (Qwen3), merged `use_cache_branch` (Whisper). A shared `KvCacheBinding` class that covers all four either degenerates into a thin facade over `OrtIoBinding` or forces one layout and requires model re-exports of the others. Neither is a refactor.
+
+3. **The real remaining Qwen3 speedup is narrow and Qwen3-specific.** The batched continuous path extracts KV to CPU each step ([Qwen3Asr.cs:1549](../../src/Vernacula.Base/Qwen3Asr.cs#L1549) and siblings), not because it lacks IOBinding infrastructure but because its per-step KV compaction writes into a fresh host buffer. Making that GPU-resident needs a GPU-side compaction kernel — not shared-infrastructure work. Track it against real perf data, not against a plan.
+
+4. **PR 2's Qwen3 "deferral" was based on a similar misreading.** The Qwen3 batch sizer is empirical by design, derived from the CUDA OOM sweep in `scripts/qwen3asr_export/sweep_qwen3_asr_batching.py` (export README line 119: *"Use this to derive a conservative runtime heuristic for choosing Qwen batch counts from free VRAM and planned batch duration"*). Replacing it with an analytical model would discard measured safe-region data for a derived approximation — not a refactor, a regression risk.
+
+**Disposition:**
+
+- **Plan closed.** PRs 3 and 4 are not pursued.
+- **Issues #25, #26, #27 closed** as aspirational-but-unjustified work items.
+- **Useful surface area retained.** `OrtSessionBuilder` (PR 1) and `BatchSizer` + `IBatchCostModel` (PR 2) remain in place — they were real deduplication wins with zero behaviour change and have value independent of the larger abstraction programme.
+- **Qwen3-specific notes consolidated** into [QWEN3_ASR_PROGRESS.md](QWEN3_ASR_PROGRESS.md) so the next reader does not have to re-derive runtime behaviour from the C# source.
+
+**Lesson for future "unify the backends" plans:** sanity-check the survey claims against the actual code before committing to an abstraction. The three specific mis-reads in this programme (Qwen3 lacks IOBinding; Qwen3/Cohere share a cost model; the four KV layouts are variants of one pattern) all survived the initial Explore-agent survey and only collapsed on direct reading. When an abstraction claim rests on "these are duplicates," read both originals end-to-end before writing the shared helper.
+
 ## Status
 
-PR 1 (`OrtSessionBuilder`) committed on `main` as `b97c29c`.
-PR 2 (`BatchSizer` + Cohere adoption) pending commit.
-Next action: PR 3 (`KvCacheBinding` extracted from VibeVoice).
+**Programme closed.** Two PRs shipped:
+
+- `b97c29c` — PR 1, `OrtSessionBuilder` extracted from six ASR backends.
+- `0da2c80` — PR 2, `BatchSizer` + `IBatchCostModel` extracted from Cohere.
+
+No further PRs. Remaining backend-specific optimisation work is tracked against perf data in the per-backend progress docs, not against this investigation.
