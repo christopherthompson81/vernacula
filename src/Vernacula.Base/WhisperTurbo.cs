@@ -5,6 +5,7 @@ using MathNet.Numerics;
 using MathNet.Numerics.IntegralTransforms;
 using Microsoft.ML.OnnxRuntime;
 using Microsoft.ML.OnnxRuntime.Tensors;
+using Vernacula.Base.Inference;
 using Vernacula.Base.Models;
 
 namespace Vernacula.Base;
@@ -138,7 +139,7 @@ public sealed class WhisperTurbo : IDisposable
 
     public WhisperTurbo(string modelsDir, ExecutionProvider ep = ExecutionProvider.Auto)
     {
-        var opts = MakeSessionOptions(ep);
+        var opts = OrtSessionBuilder.Create(ep);
         _mel     = new InferenceSession(Path.Combine(modelsDir, MelFile),     opts);
         _encoder = new InferenceSession(Path.Combine(modelsDir, EncoderFile), opts);
         _decoder = new InferenceSession(Path.Combine(modelsDir, DecoderFile), opts);
@@ -1299,27 +1300,4 @@ public sealed class WhisperTurbo : IDisposable
         return fb;
     }
 
-    // ── Session options ─────────────────────────────────────────────────────
-
-    private static SessionOptions MakeSessionOptions(ExecutionProvider ep)
-    {
-        var opts = new SessionOptions();
-        switch (ep)
-        {
-            case ExecutionProvider.Auto:
-                if (HardwareInfo.CanProbeCudaExecutionProvider())
-                    try { opts.AppendExecutionProvider_CUDA(0); } catch { }
-                try { opts.AppendExecutionProvider_DML(0); } catch { }
-                break;
-            case ExecutionProvider.Cuda:
-                opts.AppendExecutionProvider_CUDA(0);
-                break;
-            case ExecutionProvider.DirectML:
-                opts.AppendExecutionProvider_DML(0);
-                break;
-            case ExecutionProvider.Cpu:
-                break;
-        }
-        return opts;
-    }
 }

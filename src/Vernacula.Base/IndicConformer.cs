@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Microsoft.ML.OnnxRuntime;
 using Microsoft.ML.OnnxRuntime.Tensors;
+using Vernacula.Base.Inference;
 using Vernacula.Base.Models;
 
 namespace Vernacula.Base;
@@ -58,41 +59,13 @@ public sealed class IndicConformer : IDisposable
         _preprocessor = new InferenceSession(
             Path.Combine(modelPath, Config.PreprocessorFile), cpuOpts);
 
-        var gpuOpts = MakeSessionOptions(ep);
+        var gpuOpts = OrtSessionBuilder.Create(ep);
         _encoder    = new InferenceSession(Path.Combine(modelPath, encoderFile),    gpuOpts);
         _ctcDecoder = new InferenceSession(Path.Combine(modelPath, ctcDecoderFile), gpuOpts);
 
         _vocab     = LoadFlatVocab(Path.Combine(modelPath, Config.VocabFile));
         _langSpans = LoadLanguageSpans(Path.Combine(modelPath, Config.IndicConformerLanguageSpansFile));
         _blankIdx  = _vocab.Length;
-    }
-
-    private static SessionOptions MakeSessionOptions(ExecutionProvider ep)
-    {
-        var opts = new SessionOptions();
-        switch (ep)
-        {
-            case ExecutionProvider.Auto:
-                if (HardwareInfo.CanProbeCudaExecutionProvider())
-                {
-                    try { opts.AppendExecutionProvider_CUDA(0); } catch { }
-                }
-                try { opts.AppendExecutionProvider_DML(0); } catch { }
-                break;
-            case ExecutionProvider.Cuda:
-                try { opts.AppendExecutionProvider_CUDA(0); }
-                catch (EntryPointNotFoundException)
-                { throw new InvalidOperationException("CUDA EP not available in current OnnxRuntime build."); }
-                break;
-            case ExecutionProvider.DirectML:
-                try { opts.AppendExecutionProvider_DML(0); }
-                catch (EntryPointNotFoundException)
-                { throw new InvalidOperationException("DirectML EP not available. Build with -p:UseDirectML=true."); }
-                break;
-            case ExecutionProvider.Cpu:
-                break;
-        }
-        return opts;
     }
 
     // ── Vocab + language spans ───────────────────────────────────────────────

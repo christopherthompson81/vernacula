@@ -7,6 +7,7 @@ using MathNet.Numerics;
 using MathNet.Numerics.IntegralTransforms;
 using Microsoft.ML.OnnxRuntime;
 using Microsoft.ML.OnnxRuntime.Tensors;
+using Vernacula.Base.Inference;
 using Vernacula.Base.Models;
 
 namespace Vernacula.Base;
@@ -281,8 +282,8 @@ public sealed class Qwen3Asr : IDisposable
         _eosTokenIds = specialTokens.GetProperty("eos_token_ids").EnumerateArray().Select(e => e.GetInt32()).ToArray();
         _eosTokenIdSet = [.. _eosTokenIds];
 
-        var encoderOpts = MakeSessionOptions(ep, optimizationLevel, out bool encoderUsesCuda);
-        var decoderOpts = MakeSessionOptions(ep, optimizationLevel, out bool decoderUsesCuda);
+        var encoderOpts = OrtSessionBuilder.Create(ep, optimizationLevel, enableProfiling: false, out bool encoderUsesCuda);
+        var decoderOpts = OrtSessionBuilder.Create(ep, optimizationLevel, enableProfiling: false, out bool decoderUsesCuda);
 
         bool hasUnified       = File.Exists(Path.Combine(modelPath, DecoderFile));
         bool hasBatchedEncoder = File.Exists(Path.Combine(modelPath, EncoderBatchedFile));
@@ -779,43 +780,6 @@ public sealed class Qwen3Asr : IDisposable
                 language,
                 rawText);
         }
-    }
-
-    private static SessionOptions MakeSessionOptions(
-        ExecutionProvider ep,
-        GraphOptimizationLevel optimizationLevel,
-        out bool usesCuda)
-    {
-        var opts = new SessionOptions { GraphOptimizationLevel = optimizationLevel };
-        usesCuda = false;
-
-        switch (ep)
-        {
-            case ExecutionProvider.Auto:
-                if (HardwareInfo.CanProbeCudaExecutionProvider())
-                {
-                    try
-                    {
-                        opts.AppendExecutionProvider_CUDA(0);
-                        usesCuda = true;
-                        break;
-                    }
-                    catch { }
-                }
-                try { opts.AppendExecutionProvider_DML(0); } catch { }
-                break;
-            case ExecutionProvider.Cuda:
-                opts.AppendExecutionProvider_CUDA(0);
-                usesCuda = true;
-                break;
-            case ExecutionProvider.DirectML:
-                opts.AppendExecutionProvider_DML(0);
-                break;
-            case ExecutionProvider.Cpu:
-                break;
-        }
-
-        return opts;
     }
 
     private float[] RunEncoder(float[] mel, int melFrames, out int audioTokenCount)
@@ -1398,8 +1362,8 @@ public sealed class Qwen3Asr : IDisposable
         double serialEncoderMs = 0;
         double serialPrefillMs = 0;
         {
-            var encoderOpts = MakeSessionOptions(ep, optimizationLevel, out _);
-            var decoderOpts = MakeSessionOptions(ep, optimizationLevel, out _);
+            var encoderOpts = OrtSessionBuilder.Create(ep, optimizationLevel, enableProfiling: false, out _);
+            var decoderOpts = OrtSessionBuilder.Create(ep, optimizationLevel, enableProfiling: false, out _);
             using var encoder = new InferenceSession(Path.Combine(modelPath, EncoderFile), encoderOpts);
             using var decoderInit = new InferenceSession(Path.Combine(modelPath, DecoderInitFile), decoderOpts);
             foreach (var segment in prepared)
@@ -1423,8 +1387,8 @@ public sealed class Qwen3Asr : IDisposable
         double batchedEncoderMs = 0;
         double batchedPrefillMs = 0;
         {
-            var encoderOpts = MakeSessionOptions(ep, optimizationLevel, out _);
-            var decoderOpts = MakeSessionOptions(ep, optimizationLevel, out _);
+            var encoderOpts = OrtSessionBuilder.Create(ep, optimizationLevel, enableProfiling: false, out _);
+            var decoderOpts = OrtSessionBuilder.Create(ep, optimizationLevel, enableProfiling: false, out _);
             using var encoderBatched = new InferenceSession(Path.Combine(modelPath, EncoderBatchedFile), encoderOpts);
             using var decoder = hasUnifiedDecoder
                 ? new InferenceSession(Path.Combine(modelPath, DecoderFile), decoderOpts)

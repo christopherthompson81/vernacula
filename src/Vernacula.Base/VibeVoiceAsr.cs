@@ -4,6 +4,7 @@ using System.Text.Json.Serialization;
 using System.Text.Encodings.Web;
 using Microsoft.ML.OnnxRuntime;
 using Microsoft.ML.OnnxRuntime.Tensors;
+using Vernacula.Base.Inference;
 using Vernacula.Base.Models;
 using NAudio.Wave;
 using NAudio.Wave.SampleProviders;
@@ -168,9 +169,9 @@ public sealed class VibeVoiceAsr : IDisposable
         if (persistEncoder)
             _audioEncoder = new InferenceSession(
                 _audioEncoderModelPath,
-                MakeSessionOptions(ep, enableProfiling: profileOutputDir is not null));
+                OrtSessionBuilder.Create(ep, enableProfiling: profileOutputDir is not null));
 
-        var gpuOpts = MakeSessionOptions(ep, GraphOptimizationLevel.ORT_ENABLE_EXTENDED,
+        var gpuOpts = OrtSessionBuilder.Create(ep, GraphOptimizationLevel.ORT_ENABLE_EXTENDED,
             enableProfiling: profileOutputDir is not null);
         string decoderFile = _staticKvCache ? DecoderSingleStaticFile : DecoderSingleFile;
         _decoder = new InferenceSession(Path.Combine(modelDir, decoderFile), gpuOpts);
@@ -239,7 +240,7 @@ public sealed class VibeVoiceAsr : IDisposable
         {
             using var tempEncoder = new InferenceSession(
                 _audioEncoderModelPath,
-                MakeSessionOptions(_ep, enableProfiling: _profileOutputDir is not null));
+                OrtSessionBuilder.Create(_ep, enableProfiling: _profileOutputDir is not null));
             audioEmbeddings = RunAudioEncoderChunked(audio24k, tempEncoder);
             if (_profileOutputDir is not null)
             {
@@ -1083,8 +1084,6 @@ public sealed class VibeVoiceAsr : IDisposable
         return dict;
     }
 
-    // ── Session options ───────────────────────────────────────────────────────
-
     // The decoder must use ORT_ENABLE_EXTENDED, not ORT_ENABLE_ALL.
     // ORT_ENABLE_ALL pattern-matches the Qwen2 BF16 softmax upcast (Cast→Softmax→Cast) and
     // replaces it with a fused CUDA kernel that computes softmax in BF16 — different numerics
@@ -1092,39 +1091,6 @@ public sealed class VibeVoiceAsr : IDisposable
     // ORT_ENABLE_EXTENDED skips attention fusion while still applying GeLU/LayerNorm fusions.
     // The audio encoder keeps ORT_ENABLE_ALL because it needs memory-layout transforms to fit
     // the float32 Conv towers within 24 GB VRAM.
-    private static SessionOptions MakeSessionOptions(
-        ExecutionProvider ep,
-        GraphOptimizationLevel optLevel = GraphOptimizationLevel.ORT_ENABLE_ALL,
-        bool enableProfiling = false)
-    {
-        var opts = new SessionOptions();
-        opts.GraphOptimizationLevel = optLevel;
-        if (enableProfiling)
-            opts.EnableProfiling = true;
-
-        switch (ep)
-        {
-            case ExecutionProvider.Auto:
-                if (HardwareInfo.CanProbeCudaExecutionProvider())
-                    try { opts.AppendExecutionProvider_CUDA(0); } catch { }
-#if DIRECTML
-                try { opts.AppendExecutionProvider_DML(0); } catch { }
-#endif
-                break;
-            case ExecutionProvider.Cuda:
-                try { opts.AppendExecutionProvider_CUDA(0); }
-                catch (Exception ex) { throw new InvalidOperationException("CUDA EP unavailable.", ex); }
-                break;
-            case ExecutionProvider.DirectML:
-                try { opts.AppendExecutionProvider_DML(0); }
-                catch (Exception ex) { throw new InvalidOperationException("DirectML EP unavailable.", ex); }
-                break;
-            case ExecutionProvider.Cpu:
-                break;
-        }
-
-        return opts;
-    }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 

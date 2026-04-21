@@ -2,6 +2,7 @@ using System.Text;
 using System.Text.Json;
 using Microsoft.ML.OnnxRuntime;
 using Microsoft.ML.OnnxRuntime.Tensors;
+using Vernacula.Base.Inference;
 using Vernacula.Base.Models;
 
 namespace Vernacula.Base;
@@ -140,7 +141,7 @@ public sealed class CohereTranscribe : IDisposable
         var cpuOpts = new SessionOptions();
         _mel = new InferenceSession(Path.Combine(modelPath, MelFile), cpuOpts);
 
-        var gpuOpts = MakeSessionOptions(ep);
+        var gpuOpts = OrtSessionBuilder.Create(ep);
         _encoder     = new InferenceSession(Path.Combine(modelPath, EncoderFile),     gpuOpts);
         _decoderInit = new InferenceSession(Path.Combine(modelPath, DecoderInitFile), gpuOpts);
         _decoderStep = new InferenceSession(Path.Combine(modelPath, DecoderStepFile), gpuOpts);
@@ -162,34 +163,6 @@ public sealed class CohereTranscribe : IDisposable
         // Query free VRAM now that all four sessions are loaded so model weights
         // are already resident on the device.
         _vramBudgetForKvBytes = QueryVramBudget();
-    }
-
-    private static SessionOptions MakeSessionOptions(ExecutionProvider ep)
-    {
-        var opts = new SessionOptions();
-        switch (ep)
-        {
-            case ExecutionProvider.Auto:
-                if (HardwareInfo.CanProbeCudaExecutionProvider())
-                {
-                    try { opts.AppendExecutionProvider_CUDA(0); } catch { }
-                }
-                try { opts.AppendExecutionProvider_DML(0); } catch { }
-                break;
-            case ExecutionProvider.Cuda:
-                try { opts.AppendExecutionProvider_CUDA(0); }
-                catch (EntryPointNotFoundException)
-                { throw new InvalidOperationException("CUDA EP not available in current OnnxRuntime build."); }
-                break;
-            case ExecutionProvider.DirectML:
-                try { opts.AppendExecutionProvider_DML(0); }
-                catch (EntryPointNotFoundException)
-                { throw new InvalidOperationException("DirectML EP not available."); }
-                break;
-            case ExecutionProvider.Cpu:
-                break;
-        }
-        return opts;
     }
 
     // ── Language token lookup ─────────────────────────────────────────────────
