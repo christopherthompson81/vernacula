@@ -31,6 +31,7 @@ double  asrBufferSeconds  = 0.0;        // audio padding on each side of a group
 bool    profileSortformer = false;      // --profile-sortformer: print fine-grained timing for Sortformer
 bool    downloadVoxLingua = false;      // --download-voxlingua: fetch the LID model, then exit
 bool    runLid             = false;      // --lid: run LID on --audio and print result, then exit
+bool    runWhisperCheck    = false;      // --whisper-check: Phase 2a sanity test (mel + encoder only)
 ModelPrecision precision = ModelPrecision.Fp32;
 int     parakeetBeam      = 1;          // --parakeet-beam N: 1 = greedy (default), >1 = TDT beam search
 string? parakeetLmPath    = null;       // --lm <path> to ARPA(.gz) subword n-gram model; implies beam ≥ 4
@@ -92,6 +93,7 @@ for (int i = 0; i < args.Length; i++)
         case "--profile-sortformer": profileSortformer = true; break;
         case "--download-voxlingua": downloadVoxLingua = true; break;
         case "--lid":                runLid = true; break;
+        case "--whisper-check":      runWhisperCheck = true; break;
         case "--language":        cohereLanguage = args[++i]; break;
         case "--precision":
             precision = args[++i].ToLowerInvariant() switch {
@@ -157,6 +159,17 @@ if (runLid)
     }
     string modelsRoot = modelDir ?? DefaultModelsDir();
     return RunLidAction(audioPath, modelsRoot);
+}
+
+if (runWhisperCheck)
+{
+    if (audioPath is null)
+    {
+        Console.Error.WriteLine("Error: --whisper-check requires --audio <file>.");
+        return 1;
+    }
+    string modelsRoot = modelDir ?? DefaultModelsDir();
+    return RunWhisperCheckAction(audioPath, modelsRoot);
 }
 
 if (audioPath is null || modelDir is null)
@@ -896,6 +909,86 @@ static int RunLidAction(string audioPath, string modelsRoot)
         Console.WriteLine($"  {c.Iso,-4} {c.Name,-20} {c.Probability:P2}");
     Console.WriteLine();
     Console.WriteLine("Summary           : " + result.FormatSummary());
+    return 0;
+}
+
+/// <summary>
+/// Phase-2a sanity check: load audio → 16 kHz mono → log-mel (128 × 3000) →
+/// encoder → print shape and stats.  No decoder, no tokenizer.  Exercises
+/// the mel frontend and encoder session in isolation so we can confirm
+/// the ONNX export loads and produces sensible activations before building
+/// out the decode loop.
+/// </summary>
+static int RunWhisperCheckAction(string audioPath, string modelsRoot)
+{
+    string whisperDir = Path.Combine(modelsRoot, Config.WhisperTurboSubDir);
+
+    if (!File.Exists(audioPath))
+    {
+        Console.Error.WriteLine($"Audio file not found: {audioPath}");
+        return 1;
+    }
+    if (!File.Exists(Path.Combine(whisperDir, WhisperTurbo.EncoderFile)))
+    {
+        Console.Error.WriteLine(
+            $"Whisper encoder not found at {whisperDir}/{WhisperTurbo.EncoderFile}.\n" +
+            $"Select the WhisperTurbo ASR backend in the app and download the model files first.");
+        return 1;
+    }
+
+    Console.WriteLine($"[whisper-check] loading audio: {audioPath}");
+    var (raw, sr, channels) = AudioUtils.ReadAudio(audioPath);
+    float[] audio = AudioUtils.AudioTo16000Mono(raw, sr, channels);
+    Console.WriteLine($"[whisper-check] decoded: {audio.Length} samples @ 16 kHz ({audio.Length / 16000.0:F1} s)");
+
+    var swMel = Stopwatch.StartNew();
+    float[] mel = WhisperTurbo.PrepareChunkMel(audio);
+    swMel.Stop();
+    Console.WriteLine(
+        $"[whisper-check] mel: [128, {WhisperTurbo.ChunkFrames}] "
+        + $"({mel.Length} floats, {swMel.ElapsedMilliseconds} ms)");
+    // Whisper normalization maps log10-power through (clamp(x, max-8) + 4) / 4,
+    // so values span roughly [-1, 2] depending on audio level; mean ~0 is normal.
+    Console.WriteLine(
+        $"[whisper-check]   min={mel.Min():F3}  max={mel.Max():F3}  "
+        + $"mean={mel.Average():F3}");
+
+    Console.WriteLine($"[whisper-check] loading encoder from {whisperDir}");
+    var swLoad = Stopwatch.StartNew();
+    using var whisper = new WhisperTurbo(whisperDir);
+    swLoad.Stop();
+    Console.WriteLine($"[whisper-check] encoder loaded in {swLoad.ElapsedMilliseconds} ms");
+
+    var swEnc = Stopwatch.StartNew();
+    float[] hidden = whisper.RunEncoder(mel);
+    swEnc.Stop();
+
+    int expected = 1 * WhisperTurbo.EncoderOutFrames * WhisperTurbo.HiddenSize;
+    if (hidden.Length != expected)
+    {
+        Console.Error.WriteLine(
+            $"[whisper-check] UNEXPECTED: encoder returned {hidden.Length} floats, "
+            + $"expected {expected} (= 1 × {WhisperTurbo.EncoderOutFrames} × {WhisperTurbo.HiddenSize}).");
+        return 1;
+    }
+
+    double mean = 0;
+    for (int i = 0; i < hidden.Length; i++) mean += hidden[i];
+    mean /= hidden.Length;
+    double variance = 0;
+    for (int i = 0; i < hidden.Length; i++) { double d = hidden[i] - mean; variance += d * d; }
+    double std = Math.Sqrt(variance / hidden.Length);
+
+    Console.WriteLine(
+        $"[whisper-check] hidden: [1, {WhisperTurbo.EncoderOutFrames}, {WhisperTurbo.HiddenSize}] "
+        + $"({hidden.Length} floats, {swEnc.ElapsedMilliseconds} ms)");
+    Console.WriteLine(
+        $"[whisper-check]   min={hidden.Min():F3}  max={hidden.Max():F3}  "
+        + $"mean={mean:F3}  std={std:F3}");
+
+    double rtf = swEnc.Elapsed.TotalSeconds / 30.0;
+    Console.WriteLine($"[whisper-check] encoder RTF: {rtf:F4} (lower is better; <1 = faster than real-time)");
+    Console.WriteLine("[whisper-check] OK");
     return 0;
 }
 
