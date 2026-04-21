@@ -101,6 +101,9 @@ internal class SettingsService
     public string GetIndicConformerModelsDir() =>
         Path.Combine(GetModelsDir(), Config.IndicConformerSubDir);
 
+    public string GetWhisperTurboModelsDir() =>
+        Path.Combine(GetModelsDir(), Config.WhisperTurboSubDir);
+
     public string GetVoxLinguaModelsDir() =>
         string.IsNullOrWhiteSpace(Current.VoxLinguaModelsDir)
             ? Path.Combine(GetModelsDir(), Config.VoxLinguaSubDir)

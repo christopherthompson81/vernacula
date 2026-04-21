@@ -63,6 +63,30 @@ public static class AsrLanguageSupport
         "en", "fr", "de", "it", "ja", "ko", "pt", "ru", "es", "th", "vi", "zh",
     }.ToFrozenSet();
 
+    // OpenAI Whisper large-v3-turbo — 99 languages from the model's
+    // generation_config.json lang_to_id dict. Covers the widest surface of
+    // any backend Vernacula ships: all of Parakeet / Cohere / Qwen3 plus many
+    // that no other backend supports (Arabic, Japanese, Korean, Turkish, a
+    // long tail of low-resource languages, and full Chinese incl. Cantonese).
+    // Codes as they appear in the Whisper vocab, with one mapping applied:
+    // Whisper's "<|jw|>" is the pre-1989 ISO code for Javanese; we store "jv"
+    // here to stay consistent with NormalizeIso, and WhisperTurbo maps back
+    // at token-lookup time. "haw" / "yue" are ISO 639-3 codes without 639-1
+    // equivalents — stored as-is, matching Whisper's convention.
+    private static readonly FrozenSet<string> WhisperTurboLangs = new HashSet<string>
+    {
+        "af", "am", "ar", "as", "az", "ba", "be", "bg", "bn", "bo",
+        "br", "bs", "ca", "cs", "cy", "da", "de", "el", "en", "es",
+        "et", "eu", "fa", "fi", "fo", "fr", "gl", "gu", "ha", "haw",
+        "he", "hi", "hr", "ht", "hu", "hy", "id", "is", "it", "ja",
+        "jv", "ka", "kk", "km", "kn", "ko", "la", "lb", "ln", "lo",
+        "lt", "lv", "mg", "mi", "mk", "ml", "mn", "mr", "ms", "mt",
+        "my", "ne", "nl", "nn", "no", "oc", "pa", "pl", "ps", "pt",
+        "ro", "ru", "sa", "sd", "si", "sk", "sl", "sn", "so", "sq",
+        "sr", "su", "sv", "sw", "ta", "te", "tg", "th", "tk", "tl",
+        "tr", "tt", "uk", "ur", "uz", "vi", "yi", "yo", "yue", "zh",
+    }.ToFrozenSet();
+
     // AI4Bharat IndicConformer 600M — the 22 official Indian languages, mixed
     // ISO 639-1 / 639-3 convention because five have no 639-1 assignment:
     // brx (Bodo), doi (Dogri), kok (Konkani), mai (Maithili), mni (Manipuri),
@@ -121,6 +145,7 @@ public static class AsrLanguageSupport
         AsrBackend.Qwen3Asr       => Qwen3AsrLangs,
         AsrBackend.VibeVoice      => VibeVoiceLangs,
         AsrBackend.IndicConformer => IndicConformerLangs,
+        AsrBackend.WhisperTurbo   => WhisperTurboLangs,
         _                         => FrozenSet<string>.Empty,
     };
 
@@ -176,8 +201,15 @@ public static class AsrLanguageSupport
         // Qwen3-ASR ("hi" is the only overlap), so promoting it to first
         // only effects Indic languages — other codes still pick the
         // generalist backends in the usual order.
+        // IndicConformer first (specialist; small disjoint set).
+        // Whisper second — its 99-language set is the widest by far and
+        // covers ~everything, so it's the best generalist when the detected
+        // language isn't in the more tightly-scoped sets.
+        // Qwen3-ASR / Cohere / Parakeet / VibeVoice round out in preference
+        // order for the languages they do cover.
         var order = new[] {
             AsrBackend.IndicConformer,
+            AsrBackend.WhisperTurbo,
             AsrBackend.Qwen3Asr,
             AsrBackend.Cohere,
             AsrBackend.Parakeet,
@@ -205,6 +237,7 @@ public static class AsrLanguageSupport
         AsrBackend.Qwen3Asr       => "Qwen3-ASR",
         AsrBackend.VibeVoice      => "VibeVoice-ASR",
         AsrBackend.IndicConformer => "IndicConformer",
+        AsrBackend.WhisperTurbo   => "Whisper Turbo",
         _                         => backend.ToString(),
     };
 
@@ -264,6 +297,24 @@ public static class AsrLanguageSupport
             ["ne"] = "Nepali",      ["or"] = "Odia",       ["pa"] = "Punjabi",
             ["sa"] = "Sanskrit",    ["sat"] = "Santali",   ["sd"] = "Sindhi",
             ["ta"] = "Tamil",       ["te"] = "Telugu",     ["ur"] = "Urdu",
+            // Whisper-only additions (languages no other backend supports).
+            ["af"] = "Afrikaans",   ["am"] = "Amharic",    ["az"] = "Azerbaijani",
+            ["ba"] = "Bashkir",     ["be"] = "Belarusian", ["bo"] = "Tibetan",
+            ["br"] = "Breton",      ["bs"] = "Bosnian",    ["ca"] = "Catalan",
+            ["cy"] = "Welsh",       ["eu"] = "Basque",     ["fo"] = "Faroese",
+            ["gl"] = "Galician",    ["ha"] = "Hausa",      ["haw"] = "Hawaiian",
+            ["he"] = "Hebrew",      ["ht"] = "Haitian Creole", ["hy"] = "Armenian",
+            ["is"] = "Icelandic",   ["jv"] = "Javanese",   ["ka"] = "Georgian",
+            ["kk"] = "Kazakh",      ["km"] = "Khmer",      ["la"] = "Latin",
+            ["lb"] = "Luxembourgish", ["ln"] = "Lingala",  ["lo"] = "Lao",
+            ["mg"] = "Malagasy",    ["mi"] = "Maori",      ["mn"] = "Mongolian",
+            ["my"] = "Burmese",     ["nn"] = "Norwegian Nynorsk",
+            ["no"] = "Norwegian",   ["oc"] = "Occitan",    ["ps"] = "Pashto",
+            ["si"] = "Sinhala",     ["sn"] = "Shona",      ["so"] = "Somali",
+            ["sq"] = "Albanian",    ["sr"] = "Serbian",    ["su"] = "Sundanese",
+            ["sw"] = "Swahili",     ["tg"] = "Tajik",      ["tk"] = "Turkmen",
+            ["tt"] = "Tatar",       ["uz"] = "Uzbek",      ["yi"] = "Yiddish",
+            ["yo"] = "Yoruba",      ["yue"] = "Cantonese",
         }.ToFrozenDictionary(StringComparer.OrdinalIgnoreCase);
 
     // Right-to-left scripts. Keep tight — only codes whose *normal* writing

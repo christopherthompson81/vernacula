@@ -506,6 +506,24 @@
                             </StackPanel>
                         </RadioButton>
 
+                        <Separator Background="{DynamicResource OverlayBrush}" Margin="0,8,0,8" />
+
+                        <RadioButton GroupName="AsrBackend"
+                                     IsChecked="{Binding IsAsrWhisperTurbo, Mode=OneWay}"
+                                     Command="{Binding SetAsrBackendCommand}"
+                                     CommandParameter="WhisperTurbo"
+                                     Foreground="{DynamicResource TextBrush}">
+                            <StackPanel>
+                                <TextBlock Text="Whisper large-v3-turbo"
+                                           FontWeight="SemiBold"
+                                           Foreground="{DynamicResource TextBrush}" />
+                                <TextBlock Text="OpenAI Whisper, 99 languages. The broadest multilingual coverage of any backend — good default for non-English or mixed content. Leave the language on Auto-detect unless you know the file's language (Whisper's decoder detects it from the first token). Downloads into the whisper_turbo models folder."
+                                           Foreground="{DynamicResource SubtextBrush}"
+                                           FontSize="11"
+                                           TextWrapping="Wrap" />
+                            </StackPanel>
+                        </RadioButton>
+
                         <StackPanel Margin="24,10,0,0"
                                     IsVisible="{Binding IsAsrParakeet}">
                             <TextBlock Text="TDT beam width"
@@ -693,6 +711,32 @@
                             </TextBlock>
                             <ComboBox ItemsSource="{x:Static vm:SettingsViewModel.IndicConformerLanguages}"
                                       SelectedItem="{Binding SelectedIndicConformerLanguage}"
+                                      Background="{DynamicResource OverlayBrush}"
+                                      Foreground="{DynamicResource TextBrush}"
+                                      BorderBrush="{DynamicResource OverlayBrush}"
+                                      HorizontalAlignment="Left"
+                                      MinWidth="220">
+                                <ComboBox.ItemTemplate>
+                                    <DataTemplate>
+                                        <TextBlock Text="{Binding DisplayName}" />
+                                    </DataTemplate>
+                                </ComboBox.ItemTemplate>
+                            </ComboBox>
+                        </StackPanel>
+
+                        <StackPanel Margin="24,10,0,0"
+                                    IsVisible="{Binding ShowWhisperTurboLanguagePicker}">
+                            <TextBlock Text="Language"
+                                       Foreground="{DynamicResource TextBrush}"
+                                       FontWeight="SemiBold"
+                                       Margin="0,0,0,6" />
+                            <TextBlock Text="Auto-detect is the recommended default — Whisper's decoder emits the detected language as its first token. Pick a specific language only if auto-detect confuses similar languages in your audio (e.g., Croatian vs Serbian, Norwegian Bokmål vs Nynorsk)."
+                                       Foreground="{DynamicResource SubtextBrush}"
+                                       FontSize="11"
+                                       TextWrapping="Wrap"
+                                       Margin="0,0,0,8" />
+                            <ComboBox ItemsSource="{x:Static vm:SettingsViewModel.WhisperTurboLanguages}"
+                                      SelectedItem="{Binding SelectedWhisperTurboLanguage}"
                                       Background="{DynamicResource OverlayBrush}"
                                       Foreground="{DynamicResource TextBrush}"
                                       BorderBrush="{DynamicResource OverlayBrush}"

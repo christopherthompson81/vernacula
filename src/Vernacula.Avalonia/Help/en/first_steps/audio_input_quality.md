@@ -54,6 +54,7 @@ Vernacula ships several ASR engines, each with different strengths. Switch backe
 | **VibeVoice-ASR** | Long-form with built-in diarization. Requires CUDA. | Whole-recording ASR with automatic speaker attribution, useful when segmentation matters. |
 | **Cohere Transcribe** | Cloud-quality transcription. Requires model download. | Strong general accuracy; forced-language option available. |
 | **IndicConformer** | 22 Indian languages. | Per-language model; mandatory language selection. |
+| **Whisper large-v3-turbo** | Broad multilingual coverage (99 languages). | OpenAI Whisper. Best general-purpose multilingual option — covers languages no other backend does (Arabic, Japanese, Korean, Vietnamese, Swahili, …). Auto-detects language from the audio by default. Larger than Parakeet; ~2× slower but with dramatically wider language support. |
 
 If Parakeet is struggling on a file, the most effective next step is usually switching to a more robust backend, not preprocessing. We tested learned denoisers extensively and found they consistently hurt Parakeet's accuracy — modern ASR absorbs noise robustness during training and penalises preprocessing artefacts.
 

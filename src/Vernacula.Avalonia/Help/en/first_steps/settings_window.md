@@ -45,6 +45,7 @@ Controls which speech-recognition model transcribes the audio. Each backend cove
 | **Qwen3-ASR 1.7B** | 29 | Batched decoder with the widest language coverage. Optional forced language; otherwise auto-detects. |
 | **VibeVoice-ASR** | 12 | Combined diarization + ASR in a single model pass. Requires a CUDA-capable GPU. |
 | **IndicConformer 600M** | 22 Indic | AI4Bharat's multilingual Indic model. Covers the 22 official Indian languages across multiple scripts (Devanagari, Bengali, Tamil, Arabic, Ol Chiki, etc.). Requires a language to be picked at inference — see below. |
+| **Whisper large-v3-turbo** | 99 | OpenAI Whisper (turbo-distilled decoder, full large-v3 encoder). Widest multilingual coverage of any Vernacula backend by a long margin — includes Arabic, Japanese, Korean, Vietnamese, Swahili, Tagalog, Cantonese, and many low-resource languages no other backend covers. Auto-detects language by default via Whisper's `<\|lang\|>` prefix token; forced language available for files where auto-detect confuses similar languages (e.g. Croatian vs Serbian, Norwegian Bokmål vs Nynorsk). |
 
 ### IndicConformer language selection
 

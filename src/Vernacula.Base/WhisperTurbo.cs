@@ -1030,8 +1030,16 @@ public sealed class WhisperTurbo : IDisposable
 
     private int ResolveLanguageToken(string languageIso)
     {
-        string key = $"<|{languageIso.ToLowerInvariant()}|>";
+        string iso = languageIso.ToLowerInvariant();
+        string key = $"<|{iso}|>";
         if (_langToId.TryGetValue(key, out int id)) return id;
+
+        // Whisper's vocab uses the pre-1989 ISO code for Javanese ("jw");
+        // the rest of Vernacula normalises to the modern "jv" via
+        // AsrLanguageSupport.NormalizeIso. Remap here rather than widening
+        // NormalizeIso — the rest of the codebase already assumes modern codes.
+        if (iso == "jv" && _langToId.TryGetValue("<|jw|>", out id)) return id;
+
         throw new ArgumentException(
             $"Unsupported Whisper language code '{languageIso}'. "
             + $"Expected one of the {_langToId.Count} languages in generation_config.json.");
