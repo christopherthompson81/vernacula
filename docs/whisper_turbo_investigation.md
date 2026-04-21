@@ -257,3 +257,37 @@ decoder): IOBinding + CUDA Graph capture for the decoder step. Kernel
 launches dominate; graph capture replays a fixed-shape kernel sequence
 with ~1-5 µs launch overhead instead of ~100-200 µs per call. Realistic
 expectation: 15 s → ~4 s for the step loop.
+
+## Run 6 — 2026-04-20 (unified decoder swap)
+
+Question: swap the `decoder_model_fp16.onnx` + `decoder_with_past_model_fp16.onnx`
+pair for the merged `decoder_model_merged_fp16.onnx` and measure the VRAM /
+time delta.
+
+The merged graph has a `use_cache_branch` bool input that selects prefill
+(no past) vs step (with past). Prefill must still pass all 16
+`past_key_values.*` inputs — the no-cache branch ignores them, but the
+ONNX graph requires their tensors to be present. Zero-seq-len shapes
+(`[B, 20, 0, 64]`) are valid and avoid any allocation. Similarly the step
+call must pass `encoder_hidden_states`; zero-frame `[B, 0, 1280]` works.
+
+| Variant | disk | VRAM peak (approx) | ASR time | RTF |
+|---|---|---|---|---|
+| Split pair (Run 5) | 662 MB | 662 MB | 28 104 ms | 0.059 |
+| Merged single (Run 6) | 344 MB | 344 MB | 28 431 ms | 0.059 |
+
+Savings: ~318 MB VRAM, single weight set. Time delta is within noise
+(+326 ms, <2 %). Output is **byte-for-byte identical** — 100.0 %
+sequence similarity on the 1589-word transcript.
+
+This VRAM headroom is exactly the slack we'll want when we do the
+IOBinding + CUDA Graph work next, because graph capture needs
+pre-allocated fixed-shape KV buffers sized to the 448-token decoder
+maximum. That pre-allocation is ~B × 4 layers × 20 heads × 448 × 64 ×
+2 (key+value) × 4 bytes = ~9 MB per batch-item — not large, but the
+unified decoder means we have ~300 MB more room for it and for the
+batched encoder / decoder inputs.
+
+Also in this run: fixed the models directory to the canonical
+`~/.local/share/Vernacula/models/` (was `~/.local/share/Parakeet/models/`
+from earlier ad-hoc testing).

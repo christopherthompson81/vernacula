@@ -654,8 +654,7 @@ try
         string[] required = [
             WhisperTurbo.MelFile,
             WhisperTurbo.EncoderFile,
-            WhisperTurbo.DecoderInitFile,
-            WhisperTurbo.DecoderStepFile,
+            WhisperTurbo.DecoderFile,
             WhisperTurbo.TokenizerFile,
             WhisperTurbo.GenerationConfigFile,
         ];
@@ -1005,8 +1004,8 @@ static int RunWhisperCheckAction(string audioPath, string modelsRoot)
         return 1;
     }
     foreach (string f in new[] { WhisperTurbo.MelFile, WhisperTurbo.EncoderFile,
-                                 WhisperTurbo.DecoderInitFile, WhisperTurbo.DecoderStepFile,
-                                 WhisperTurbo.TokenizerFile, WhisperTurbo.GenerationConfigFile })
+                                 WhisperTurbo.DecoderFile, WhisperTurbo.TokenizerFile,
+                                 WhisperTurbo.GenerationConfigFile })
     {
         if (!File.Exists(Path.Combine(whisperDir, f)))
         {

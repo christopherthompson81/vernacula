@@ -58,8 +58,11 @@ public sealed class WhisperTurbo : IDisposable
     // ── File layout (download manifest lives in ModelManagerService) ────────
     public const string MelFile                = "mel.onnx";
     public const string EncoderFile            = "encoder_model_fp16.onnx";
-    public const string DecoderInitFile        = "decoder_model_fp16.onnx";
-    public const string DecoderStepFile        = "decoder_with_past_model_fp16.onnx";
+    // Merged decoder: single graph with `use_cache_branch` selecting prefill
+    // vs step. Replaces the decoder_model + decoder_with_past_model pair —
+    // same per-call compute, but ~318 MB less VRAM (one set of weights instead
+    // of two) so we have more headroom for batching later.
+    public const string DecoderFile            = "decoder_model_merged_fp16.onnx";
     public const string TokenizerFile          = "tokenizer.json";
     public const string ConfigFile             = "config.json";
     public const string GenerationConfigFile   = "generation_config.json";
@@ -115,8 +118,7 @@ public sealed class WhisperTurbo : IDisposable
 
     private readonly InferenceSession _mel;
     private readonly InferenceSession _encoder;
-    private readonly InferenceSession _decoderInit;
-    private readonly InferenceSession _decoderStep;
+    private readonly InferenceSession _decoder;
     private readonly string?[] _idToToken;
     private readonly Dictionary<char, byte> _byteLevelDecode;
 
@@ -137,10 +139,9 @@ public sealed class WhisperTurbo : IDisposable
     public WhisperTurbo(string modelsDir, ExecutionProvider ep = ExecutionProvider.Auto)
     {
         var opts = MakeSessionOptions(ep);
-        _mel         = new InferenceSession(Path.Combine(modelsDir, MelFile),         opts);
-        _encoder     = new InferenceSession(Path.Combine(modelsDir, EncoderFile),     opts);
-        _decoderInit = new InferenceSession(Path.Combine(modelsDir, DecoderInitFile), opts);
-        _decoderStep = new InferenceSession(Path.Combine(modelsDir, DecoderStepFile), opts);
+        _mel     = new InferenceSession(Path.Combine(modelsDir, MelFile),     opts);
+        _encoder = new InferenceSession(Path.Combine(modelsDir, EncoderFile), opts);
+        _decoder = new InferenceSession(Path.Combine(modelsDir, DecoderFile), opts);
 
         _idToToken       = LoadTokenizerVocab(Path.Combine(modelsDir, TokenizerFile));
         _byteLevelDecode = BuildByteLevelDecode();
@@ -149,8 +150,7 @@ public sealed class WhisperTurbo : IDisposable
 
     public void Dispose()
     {
-        _decoderStep.Dispose();
-        _decoderInit.Dispose();
+        _decoder.Dispose();
         _encoder.Dispose();
         _mel.Dispose();
     }
@@ -479,13 +479,21 @@ public sealed class WhisperTurbo : IDisposable
         float[] initLogits;
         List<KvTensor> kv;
         {
-            using var outs = _decoderInit.Run(
-            [
+            // Merged decoder needs all 16 past_key_values + use_cache_branch.
+            var pastEmpty = EmptyPastKv(B);
+            var initInputs = new List<NamedOnnxValue>(3 + pastEmpty.Count)
+            {
                 NamedOnnxValue.CreateFromTensor("input_ids",
                     new DenseTensor<long>(inputIds, [B, prefixLen])),
                 NamedOnnxValue.CreateFromTensor("encoder_hidden_states",
                     new DenseTensor<float>(hidden, [B, EncoderOutFrames, HiddenSize])),
-            ]);
+                NamedOnnxValue.CreateFromTensor("use_cache_branch",
+                    new DenseTensor<bool>(new[] { false }, [1])),
+            };
+            foreach (var t in pastEmpty)
+                initInputs.Add(NamedOnnxValue.CreateFromTensor(t.Name, new DenseTensor<float>(t.Data, t.Shape)));
+
+            using var outs = _decoder.Run(initInputs);
             initLogits = ExtractFloat(outs.First(o => o.Name == "logits"));
 
             kv = new List<KvTensor>(NumDecoderLayers * 4);
@@ -547,16 +555,20 @@ public sealed class WhisperTurbo : IDisposable
             var stepIds = new long[B];
             for (int b = 0; b < B; b++) stepIds[b] = done[b] ? EotToken : nextTok[b];
 
-            var stepInputs = new List<NamedOnnxValue>(1 + kv.Count)
+            var stepInputs = new List<NamedOnnxValue>(3 + kv.Count)
             {
                 NamedOnnxValue.CreateFromTensor("input_ids",
                     new DenseTensor<long>(stepIds, [B, 1])),
+                NamedOnnxValue.CreateFromTensor("encoder_hidden_states",
+                    new DenseTensor<float>(Array.Empty<float>(), [B, 0, HiddenSize])),
+                NamedOnnxValue.CreateFromTensor("use_cache_branch",
+                    new DenseTensor<bool>(new[] { true }, [1])),
             };
             foreach (var t in kv)
                 stepInputs.Add(NamedOnnxValue.CreateFromTensor(t.Name,
                     new DenseTensor<float>(t.Data, t.Shape)));
 
-            using var stepOuts = _decoderStep.Run(stepInputs);
+            using var stepOuts = _decoder.Run(stepInputs);
             float[] stepLogits = ExtractFloat(stepOuts.First(o => o.Name == "logits"));
 
             // Rebuild KV: decoder KVs come from step output with grown seq_len;
@@ -693,26 +705,53 @@ public sealed class WhisperTurbo : IDisposable
     /// </summary>
     private sealed record KvTensor(string Name, float[] Data, int[] Shape);
 
+    /// <summary>
+    /// Build an empty past-KV list to feed into the merged decoder for the
+    /// prefill call. The no-cache branch ignores these but the graph inputs
+    /// are still required. Zero-sized decoder-seq-len; encoder KV shape must
+    /// also be zero-seq because the no-cache branch computes it fresh.
+    /// </summary>
+    private static List<KvTensor> EmptyPastKv(int batch)
+    {
+        var list = new List<KvTensor>(NumDecoderLayers * 4);
+        for (int layer = 0; layer < NumDecoderLayers; layer++)
+            foreach (bool encoder in new[] { false, true })
+                foreach (bool isValue in new[] { false, true })
+                    list.Add(new KvTensor(
+                        $"past_key_values.{layer}.{(encoder ? "encoder" : "decoder")}.{(isValue ? "value" : "key")}",
+                        Array.Empty<float>(),
+                        [batch, NumHeads, 0, HeadDim]));
+        return list;
+    }
+
     private (float[] logits, List<KvTensor> kv)
         RunDecoderInit(int[] prefix, float[] encoderHidden)
     {
         var inputIds = new long[prefix.Length];
         for (int i = 0; i < prefix.Length; i++) inputIds[i] = prefix[i];
 
-        var inputs = new List<NamedOnnxValue>
+        // Merged decoder needs all 16 past_key_values inputs even on prefill;
+        // the use_cache_branch=false branch ignores them.
+        var past = EmptyPastKv(1);
+        var inputs = new List<NamedOnnxValue>(3 + past.Count)
         {
             NamedOnnxValue.CreateFromTensor("input_ids",
                 new DenseTensor<long>(inputIds, [1, prefix.Length])),
             NamedOnnxValue.CreateFromTensor("encoder_hidden_states",
                 new DenseTensor<float>(encoderHidden, [1, EncoderOutFrames, HiddenSize])),
+            NamedOnnxValue.CreateFromTensor("use_cache_branch",
+                new DenseTensor<bool>(new[] { false }, [1])),
         };
+        foreach (var t in past)
+            inputs.Add(NamedOnnxValue.CreateFromTensor(t.Name, new DenseTensor<float>(t.Data, t.Shape)));
 
-        using var outputs = _decoderInit.Run(inputs);
+        using var outputs = _decoder.Run(inputs);
 
         float[] logits = ExtractFloat(outputs.First(o => o.Name == "logits"));
 
-        // Build the KV cache in the exact order the step model expects as
-        // past_key_values.N.{decoder|encoder}.{key|value}. All 16 tensors.
+        // Merged decoder outputs all 16 present tensors (decoder + encoder) on
+        // prefill — encoder KV was computed from encoder_hidden_states in the
+        // no-cache branch, decoder KV populated from the full prefix.
         var kv = new List<KvTensor>(NumDecoderLayers * 4);
         for (int layer = 0; layer < NumDecoderLayers; layer++)
         {
@@ -737,24 +776,31 @@ public sealed class WhisperTurbo : IDisposable
     {
         var sw = new Stopwatch();
 
-        var inputs = new List<NamedOnnxValue>(1 + pastKv.Count)
+        // encoder_hidden_states input is still required on the step call —
+        // the with-cache branch doesn't use it but graph inputs are mandatory.
+        // Pass a zero-sized placeholder to skip the large [B, 1500, 1280] copy.
+        var inputs = new List<NamedOnnxValue>(3 + pastKv.Count)
         {
             NamedOnnxValue.CreateFromTensor("input_ids",
                 new DenseTensor<long>(new long[] { nextToken }, [1, 1])),
+            NamedOnnxValue.CreateFromTensor("encoder_hidden_states",
+                new DenseTensor<float>(Array.Empty<float>(), [1, 0, HiddenSize])),
+            NamedOnnxValue.CreateFromTensor("use_cache_branch",
+                new DenseTensor<bool>(new[] { true }, [1])),
         };
         foreach (var t in pastKv)
             inputs.Add(NamedOnnxValue.CreateFromTensor(t.Name, new DenseTensor<float>(t.Data, t.Shape)));
 
         sw.Restart();
-        using var outputs = _decoderStep.Run(inputs);
+        using var outputs = _decoder.Run(inputs);
         sw.Stop(); _msDecStepOrt += sw.ElapsedMilliseconds;
 
         sw.Restart();
         float[] logits = ExtractFloat(outputs.First(o => o.Name == "logits"));
 
-        // Step outputs only decoder KVs (8 tensors) — encoder KVs are constant
-        // across steps and stay in pastKv. Rebuild the 16-entry list with the
-        // grown decoder KVs and the unchanged encoder KVs.
+        // Merged decoder always emits all 16 present tensors; encoder ones
+        // are identity-passthrough of the input (shape check confirmed on the
+        // graph). Reuse the input encoder KV to avoid a wasted copy.
         var updatedKv = new List<KvTensor>(NumDecoderLayers * 4);
         for (int layer = 0; layer < NumDecoderLayers; layer++)
         {
@@ -765,7 +811,6 @@ public sealed class WhisperTurbo : IDisposable
                     string pastName = $"past_key_values.{layer}.{(encoder ? "encoder" : "decoder")}.{(isValue ? "value" : "key")}";
                     if (encoder)
                     {
-                        // Reuse unchanged encoder KV from the previous state.
                         updatedKv.Add(pastKv.First(t => t.Name == pastName));
                     }
                     else

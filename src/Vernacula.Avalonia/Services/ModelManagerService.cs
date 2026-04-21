@@ -114,8 +114,7 @@ internal class ModelManagerService
     private static readonly ModelAsset[] WhisperTurboFiles =
         [
             new(Path.Combine(Config.WhisperTurboSubDir, WhisperTurbo.EncoderFile),           $"onnx/{WhisperTurbo.EncoderFile}"),
-            new(Path.Combine(Config.WhisperTurboSubDir, WhisperTurbo.DecoderInitFile),       $"onnx/{WhisperTurbo.DecoderInitFile}"),
-            new(Path.Combine(Config.WhisperTurboSubDir, WhisperTurbo.DecoderStepFile),       $"onnx/{WhisperTurbo.DecoderStepFile}"),
+            new(Path.Combine(Config.WhisperTurboSubDir, WhisperTurbo.DecoderFile),           $"onnx/{WhisperTurbo.DecoderFile}"),
             new(Path.Combine(Config.WhisperTurboSubDir, WhisperTurbo.TokenizerFile),         WhisperTurbo.TokenizerFile),
             new(Path.Combine(Config.WhisperTurboSubDir, WhisperTurbo.ConfigFile),            WhisperTurbo.ConfigFile),
             new(Path.Combine(Config.WhisperTurboSubDir, WhisperTurbo.GenerationConfigFile),  WhisperTurbo.GenerationConfigFile),
