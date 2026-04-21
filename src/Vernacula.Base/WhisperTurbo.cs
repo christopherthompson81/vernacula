@@ -443,10 +443,12 @@ public sealed class WhisperTurbo : IDisposable
     private List<BatchOutput> TranscribeBatch(List<WorkItem> batch, string lang)
     {
         int B = batch.Count;
+        var sw = new Stopwatch();
 
         // ── Mels: compute per item, stack into [B, 128, 3000]. Empty work
         //     items (zero-length audio) produce an all-zero mel which the
         //     encoder will see as silence — we drop their outputs below. ──
+        sw.Restart();
         var melBuf = new float[B * NMels * ChunkFrames];
         for (int i = 0; i < B; i++)
         {
@@ -454,8 +456,14 @@ public sealed class WhisperTurbo : IDisposable
             var mel = PrepareChunkMel(batch[i].Audio);
             Array.Copy(mel, 0, melBuf, i * NMels * ChunkFrames, mel.Length);
         }
+        sw.Stop(); _msMel += sw.ElapsedMilliseconds;
 
         // ── Batched encoder ─────────────────────────────────────────────────
+        // Per Run 8 in the investigation doc, the encoder is compute-bound on
+        // Whisper-large-v3 — batching gives at best ~5 % per-item amortisation.
+        // Kept as a straight Run() call (not IOBinding) because there's no
+        // per-step KV overhead to amortise on a single forward pass.
+        sw.Restart();
         float[] hidden;
         {
             var encTensor = new DenseTensor<float>(melBuf, [B, NMels, ChunkFrames]);
@@ -465,8 +473,20 @@ public sealed class WhisperTurbo : IDisposable
             ]);
             hidden = ExtractFloat(outs.First(o => o.Name == "last_hidden_state"));
         }
+        sw.Stop(); _msEncoder += sw.ElapsedMilliseconds;
 
-        // ── Batched decoder-init (prefix is identical across batch) ─────────
+        // ── Decoder-init + step loop with IOBinding ─────────────────────────
+        // Mirrors the single-item DecodeFromHidden IOBinding pattern. The
+        // decoder per-step overhead (Cohere / Phase 6a measurements: ~60 MB
+        // of KV copied CPU↔GPU per call without IOBinding) was the reason
+        // the Phase 3b batched path was slower than sequential; porting
+        // IOBinding here means the batched decoder loop can actually pay its
+        // per-batch fixed costs across B items instead of eating them B
+        // times over.
+        using var cudaMemInfo = new OrtMemoryInfo("Cuda", OrtAllocatorType.ArenaAllocator, 0, OrtMemType.Default);
+        using var cpuMemInfo  = new OrtMemoryInfo("Cpu",  OrtAllocatorType.ArenaAllocator, 0, OrtMemType.Default);
+        using var runOpts     = new RunOptions();
+
         int langToken = ResolveLanguageToken(lang);
         int[] prefix  = [SotToken, langToken, TranscribeToken, NoTimestampsToken];
         int prefixLen = prefix.Length;
@@ -476,145 +496,162 @@ public sealed class WhisperTurbo : IDisposable
             for (int p = 0; p < prefixLen; p++)
                 inputIds[b * prefixLen + p] = prefix[p];
 
-        float[] initLogits;
-        List<KvTensor> kv;
+        using var initTokValue  = OrtValue.CreateTensorValueFromMemory(inputIds, [B, (long)prefixLen]);
+        using var encHidValue   = OrtValue.CreateTensorValueFromMemory(hidden,   [B, EncoderOutFrames, HiddenSize]);
+        using var useCacheFalse = OrtValue.CreateTensorValueFromMemory(new bool[] { false }, [1L]);
+        using var useCacheTrue  = OrtValue.CreateTensorValueFromMemory(new bool[] { true },  [1L]);
+
+        // Empty past KV at batch = B; decoder-seq = 0 on prefill, encoder-seq
+        // = 0 because the no-cache branch computes it fresh from
+        // encoder_hidden_states.
+        var emptyPastValues = new List<OrtValue>(NumDecoderLayers * 4);
+        for (int i = 0; i < NumDecoderLayers * 4; i++)
+            emptyPastValues.Add(OrtValue.CreateTensorValueFromMemory(
+                Array.Empty<float>(), [B, NumHeads, 0L, HeadDim]));
+
+        sw.Restart();
+        IDisposableReadOnlyCollection<OrtValue> initOutputs;
         {
-            // Merged decoder needs all 16 past_key_values + use_cache_branch.
-            var pastEmpty = EmptyPastKv(B);
-            var initInputs = new List<NamedOnnxValue>(3 + pastEmpty.Count)
-            {
-                NamedOnnxValue.CreateFromTensor("input_ids",
-                    new DenseTensor<long>(inputIds, [B, prefixLen])),
-                NamedOnnxValue.CreateFromTensor("encoder_hidden_states",
-                    new DenseTensor<float>(hidden, [B, EncoderOutFrames, HiddenSize])),
-                NamedOnnxValue.CreateFromTensor("use_cache_branch",
-                    new DenseTensor<bool>(new[] { false }, [1])),
-            };
-            foreach (var t in pastEmpty)
-                initInputs.Add(NamedOnnxValue.CreateFromTensor(t.Name, new DenseTensor<float>(t.Data, t.Shape)));
-
-            using var outs = _decoder.Run(initInputs);
-            initLogits = ExtractFloat(outs.First(o => o.Name == "logits"));
-
-            kv = new List<KvTensor>(NumDecoderLayers * 4);
+            using var initBinding = _decoder.CreateIoBinding();
+            initBinding.BindInput("input_ids",             initTokValue);
+            initBinding.BindInput("encoder_hidden_states", encHidValue);
+            initBinding.BindInput("use_cache_branch",      useCacheFalse);
             for (int layer = 0; layer < NumDecoderLayers; layer++)
             {
-                foreach (bool encoder in new[] { false, true })
-                {
-                    foreach (bool isValue in new[] { false, true })
-                    {
-                        string presentName = $"present.{layer}.{(encoder ? "encoder" : "decoder")}.{(isValue ? "value" : "key")}";
-                        string pastName    = $"past_key_values.{layer}.{(encoder ? "encoder" : "decoder")}.{(isValue ? "value" : "key")}";
-                        var tensor = outs.First(o => o.Name == presentName).AsTensor<float>();
-                        int seqLen = encoder ? EncoderOutFrames : prefixLen;
-                        kv.Add(new KvTensor(pastName, ExtractFloatFromTensor(tensor),
-                                            [B, NumHeads, seqLen, HeadDim]));
-                    }
-                }
+                int idx = layer * 4;
+                initBinding.BindInput($"past_key_values.{layer}.decoder.key",   emptyPastValues[idx + 0]);
+                initBinding.BindInput($"past_key_values.{layer}.decoder.value", emptyPastValues[idx + 1]);
+                initBinding.BindInput($"past_key_values.{layer}.encoder.key",   emptyPastValues[idx + 2]);
+                initBinding.BindInput($"past_key_values.{layer}.encoder.value", emptyPastValues[idx + 3]);
             }
+            // Output indices [0]=logits, [1..8]=decoder KV, [9..16]=encoder KV
+            // — same layout the step loop's decKvSource / initOutputs reads
+            // below.  Keep the grouped binding order stable.
+            initBinding.BindOutputToDevice("logits", cpuMemInfo);
+            for (int layer = 0; layer < NumDecoderLayers; layer++)
+            {
+                initBinding.BindOutputToDevice($"present.{layer}.decoder.key",   cudaMemInfo);
+                initBinding.BindOutputToDevice($"present.{layer}.decoder.value", cudaMemInfo);
+            }
+            for (int layer = 0; layer < NumDecoderLayers; layer++)
+            {
+                initBinding.BindOutputToDevice($"present.{layer}.encoder.key",   cudaMemInfo);
+                initBinding.BindOutputToDevice($"present.{layer}.encoder.value", cudaMemInfo);
+            }
+            _decoder.RunWithBinding(runOpts, initBinding);
+            initOutputs = initBinding.GetOutputValues();
         }
+        sw.Stop(); _msDecInit += sw.ElapsedMilliseconds;
 
         // ── First argmax per item at the last prefix position, with
         //     begin_suppress_tokens applied. ────────────────────────────────
+        sw.Restart();
         var outTokens = new List<int>[B];
         var nextTok   = new int[B];
         var done      = new bool[B];
-        for (int b = 0; b < B; b++)
         {
-            outTokens[b] = new List<int>(32);
-            if (batch[b].Audio.Length == 0)
+            var initLogitsSpan = initOutputs[0].GetTensorDataAsSpan<float>();
+            for (int b = 0; b < B; b++)
             {
-                // Skip silent placeholders — treat as already finished.
-                done[b] = true;
-                nextTok[b] = EotToken;
-                continue;
+                outTokens[b] = new List<int>(32);
+                if (batch[b].Audio.Length == 0)
+                {
+                    // Silent placeholder — keep the batch slot alive but
+                    // treat as already finished so subsequent argmax skips it.
+                    done[b] = true;
+                    nextTok[b] = EotToken;
+                    continue;
+                }
+                var perItem = initLogitsSpan.Slice(
+                    b * prefixLen * VocabSize + (prefixLen - 1) * VocabSize,
+                    VocabSize);
+                int best = ArgmaxSpan(perItem, BeginSuppressTokens);
+                nextTok[b] = best;
+                if (best == EotToken) done[b] = true;
             }
-            int baseIdx = b * prefixLen * VocabSize + (prefixLen - 1) * VocabSize;
-            foreach (int id in BeginSuppressTokens)
-                initLogits[baseIdx + id] = float.NegativeInfinity;
-            int best = 0; float bestVal = initLogits[baseIdx];
-            for (int v = 1; v < VocabSize; v++)
-            {
-                float x = initLogits[baseIdx + v];
-                if (x > bestVal) { bestVal = x; best = v; }
-            }
-            nextTok[b] = best;
-            if (best == EotToken) done[b] = true;
         }
+        sw.Stop(); _msArgmax += sw.ElapsedMilliseconds;
 
-        // ── Step loop. Runs until every item has emitted EOT or the context
-        //     limit is reached. Finished items are fed EotToken as a no-op
-        //     pad; their subsequent outputs are ignored. ─────────────────────
-        int step = 0;
+        // ── Step loop with IOBinding ─────────────────────────────────────────
+        // Each step: bind past_kv from previous step's OrtValues (decoder KV)
+        // + initOutputs (encoder KV — never changes). Fresh IoBinding per step,
+        // same reason as the single-item path: ORT's cached output buffer
+        // would mismatch the grown decoder-KV shape.
+        // encoder_hidden_states input is still required by the graph on the
+        // step branch but ignored; pass a zero-frame placeholder.
+        using var stepEncHid = OrtValue.CreateTensorValueFromMemory(
+            Array.Empty<float>(), [B, 0L, HiddenSize]);
+        var stepTokBuf = new long[B];
+
+        IDisposableReadOnlyCollection<OrtValue>? prevStep = null;
+        int stepCount = 0;
         int maxSteps = MaxDecoderLength - prefixLen;
-        while (step < maxSteps && !AllTrue(done))
+
+        while (stepCount < maxSteps && !AllTrue(done))
         {
             for (int b = 0; b < B; b++)
                 if (!done[b]) outTokens[b].Add(nextTok[b]);
 
-            var stepIds = new long[B];
-            for (int b = 0; b < B; b++) stepIds[b] = done[b] ? EotToken : nextTok[b];
+            for (int b = 0; b < B; b++)
+                stepTokBuf[b] = done[b] ? EotToken : nextTok[b];
 
-            var stepInputs = new List<NamedOnnxValue>(3 + kv.Count)
-            {
-                NamedOnnxValue.CreateFromTensor("input_ids",
-                    new DenseTensor<long>(stepIds, [B, 1])),
-                NamedOnnxValue.CreateFromTensor("encoder_hidden_states",
-                    new DenseTensor<float>(Array.Empty<float>(), [B, 0, HiddenSize])),
-                NamedOnnxValue.CreateFromTensor("use_cache_branch",
-                    new DenseTensor<bool>(new[] { true }, [1])),
-            };
-            foreach (var t in kv)
-                stepInputs.Add(NamedOnnxValue.CreateFromTensor(t.Name,
-                    new DenseTensor<float>(t.Data, t.Shape)));
+            using var stepTokValue = OrtValue.CreateTensorValueFromMemory(stepTokBuf, [B, 1L]);
 
-            using var stepOuts = _decoder.Run(stepInputs);
-            float[] stepLogits = ExtractFloat(stepOuts.First(o => o.Name == "logits"));
+            using var stepBinding = _decoder.CreateIoBinding();
+            stepBinding.BindInput("input_ids",             stepTokValue);
+            stepBinding.BindInput("encoder_hidden_states", stepEncHid);
+            stepBinding.BindInput("use_cache_branch",      useCacheTrue);
 
-            // Rebuild KV: decoder KVs come from step output with grown seq_len;
-            // encoder KVs stay unchanged.
-            var updated = new List<KvTensor>(NumDecoderLayers * 4);
+            var decKvSource = prevStep ?? initOutputs;
             for (int layer = 0; layer < NumDecoderLayers; layer++)
             {
-                foreach (bool encoder in new[] { false, true })
-                {
-                    foreach (bool isValue in new[] { false, true })
-                    {
-                        string pastName = $"past_key_values.{layer}.{(encoder ? "encoder" : "decoder")}.{(isValue ? "value" : "key")}";
-                        if (encoder)
-                        {
-                            updated.Add(kv.First(t => t.Name == pastName));
-                        }
-                        else
-                        {
-                            string presentName = $"present.{layer}.decoder.{(isValue ? "value" : "key")}";
-                            var tensor = stepOuts.First(o => o.Name == presentName).AsTensor<float>();
-                            var dims = tensor.Dimensions;
-                            updated.Add(new KvTensor(pastName, ExtractFloatFromTensor(tensor),
-                                                     [dims[0], dims[1], dims[2], dims[3]]));
-                        }
-                    }
-                }
+                stepBinding.BindInput($"past_key_values.{layer}.decoder.key",   decKvSource[1 + layer * 2 + 0]);
+                stepBinding.BindInput($"past_key_values.{layer}.decoder.value", decKvSource[1 + layer * 2 + 1]);
+                stepBinding.BindInput($"past_key_values.{layer}.encoder.key",   initOutputs[9 + layer * 2 + 0]);
+                stepBinding.BindInput($"past_key_values.{layer}.encoder.value", initOutputs[9 + layer * 2 + 1]);
             }
-            kv = updated;
+            stepBinding.BindOutputToDevice("logits", cpuMemInfo);
+            for (int layer = 0; layer < NumDecoderLayers; layer++)
+            {
+                stepBinding.BindOutputToDevice($"present.{layer}.decoder.key",   cudaMemInfo);
+                stepBinding.BindOutputToDevice($"present.{layer}.decoder.value", cudaMemInfo);
+            }
+            for (int layer = 0; layer < NumDecoderLayers; layer++)
+            {
+                stepBinding.BindOutputToDevice($"present.{layer}.encoder.key",   cudaMemInfo);
+                stepBinding.BindOutputToDevice($"present.{layer}.encoder.value", cudaMemInfo);
+            }
 
+            sw.Restart();
+            _decoder.RunWithBinding(runOpts, stepBinding);
+            var curStep = stepBinding.GetOutputValues();
+            sw.Stop(); _msDecStepOrt += sw.ElapsedMilliseconds;
+            _stepCalls++;
+
+            if (prevStep is not null && prevStep != initOutputs) prevStep.Dispose();
+            prevStep = curStep;
+
+            sw.Restart();
+            var stepLogits = curStep[0].GetTensorDataAsSpan<float>();
             for (int b = 0; b < B; b++)
             {
                 if (done[b]) continue;
-                int baseIdx = b * VocabSize;
-                int best = 0; float bestVal = stepLogits[baseIdx];
-                for (int v = 1; v < VocabSize; v++)
-                {
-                    float x = stepLogits[baseIdx + v];
-                    if (x > bestVal) { bestVal = x; best = v; }
-                }
+                var perItem = stepLogits.Slice(b * VocabSize, VocabSize);
+                int best = ArgmaxSpan(perItem, suppress: null);
                 nextTok[b] = best;
                 if (best == EotToken) done[b] = true;
             }
+            sw.Stop(); _msArgmax += sw.ElapsedMilliseconds;
 
-            step++;
+            stepCount++;
         }
 
+        // Cleanup.
+        if (prevStep is not null && prevStep != initOutputs) prevStep.Dispose();
+        initOutputs.Dispose();
+        foreach (var v in emptyPastValues) v.Dispose();
+
+        sw.Restart();
         var results = new List<BatchOutput>(B);
         for (int b = 0; b < B; b++)
         {
@@ -622,6 +659,8 @@ public sealed class WhisperTurbo : IDisposable
             string text = DecodeTokens(content);
             results.Add(new BatchOutput(batch[b].SegId, batch[b].ChunkIdx, text, outTokens[b]));
         }
+        sw.Stop(); _msDecode += sw.ElapsedMilliseconds;
+        _segments += B;
         return results;
     }
 
