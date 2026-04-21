@@ -6,7 +6,7 @@ public enum AppTheme    { Dark, Light }
 public enum PlaybackMode { Single, AutoAdvance, Continuous }
 // New enum values MUST be appended. Persisted settings store the integer
 // value, so inserting mid-enum silently re-interprets existing user state.
-public enum AsrBackend { Parakeet, Cohere, Qwen3Asr, VibeVoice, IndicConformer }
+public enum AsrBackend { Parakeet, Cohere, Qwen3Asr, VibeVoice, IndicConformer, WhisperTurbo }
 
 public class AppSettings
 {
@@ -33,6 +33,12 @@ public class AppSettings
     public float              ParakeetLmLengthPenalty { get; set; } = 0.6f;
     public string             CohereLanguage      { get; set; } = "";
     public string             Qwen3AsrLanguage    { get; set; } = "";
+    // Whisper-turbo forced language. Empty = auto-detect via Whisper's own
+    // language-token mechanism (the model's decoder emits the detected
+    // <|lang|> token as its first output after SOT). ISO 639-1, plus "yue"
+    // (ISO 639-3) for Cantonese and "haw" for Hawaiian — matches
+    // AsrLanguageSupport.WhisperTurboLangs.
+    public string             WhisperTurboLanguage { get; set; } = "";
     // IndicConformer is strictly per-language at inference — the model has
     // 22 CTC heads and picking one is mandatory, so this is not optional
     // like Cohere/Qwen3 "auto". Default to Hindi (largest / most common).

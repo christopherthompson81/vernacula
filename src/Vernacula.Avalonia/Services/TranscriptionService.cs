@@ -110,6 +110,7 @@ internal class TranscriptionService
         bool useCohereAsr        = string.Equals(asrModelName, "CohereLabs/cohere-transcribe-03-2026", StringComparison.Ordinal);
         bool useQwen3Asr         = string.Equals(asrModelName, "Qwen/Qwen3-ASR-1.7B", StringComparison.Ordinal);
         bool useIndicConformerAsr = string.Equals(asrModelName, "ai4bharat/indic-conformer-600m-multilingual", StringComparison.Ordinal);
+        bool useWhisperTurboAsr   = string.Equals(asrModelName, "openai/whisper-large-v3-turbo", StringComparison.Ordinal);
         var  segmentationMode = _settings.Current.Segmentation;
         bool runVibeVoice     = useVibeVoiceAsr || segmentationMode == SegmentationMode.VibeVoiceBuiltin;
 
@@ -985,6 +986,93 @@ internal class TranscriptionService
                             asrText,
                             absId,
                             text,
+                            overridePercent));
+                    }
+                }
+            }
+            else if (useWhisperTurboAsr)
+            {
+                // Whisper has its own built-in auto-detect via the <|lang|>
+                // prefix token — pass null (no forced lang) when the user or
+                // per-file override selects "auto" / empty. LID-driven
+                // per-segment language is supported: if LID fires, we group
+                // segments by detected language and pass each group's lang
+                // as the force. Segments LID didn't classify fall back to
+                // the settings value (or "auto" if that's also blank).
+                string whisperModelsDir = _settings.GetWhisperTurboModelsDir();
+                string fallbackLang = !string.IsNullOrWhiteSpace(asrLanguageCode)
+                    && !string.Equals(asrLanguageCode, "auto", StringComparison.OrdinalIgnoreCase)
+                        ? asrLanguageCode
+                        : _settings.Current.WhisperTurboLanguage;
+
+                using var whisper = new WhisperTurbo(whisperModelsDir);
+                var whisperSupported = AsrLanguageSupport.Get(AsrBackend.WhisperTurbo);
+
+                var groups = GroupSegmentsByLidLanguage(
+                    unfilledResultIds, lidByRid,
+                    fallback: string.IsNullOrWhiteSpace(fallbackLang) ? null : fallbackLang);
+
+                foreach (var group in groups)
+                {
+                    // Normalise group lang through Whisper's supported set;
+                    // fall back to auto-detect if LID produced an unsupported
+                    // code rather than silently mislabelling.
+                    string? groupLang = group.ForceLanguage;
+                    if (groupLang is not null &&
+                        !whisperSupported.Contains(AsrLanguageSupport.NormalizeIso(groupLang)))
+                        groupLang = null;
+
+                    var groupSegs = group.LocalIndices.Select(i => segsSubset[i]).ToList();
+                    if (groupSegs.Count == 0) continue;
+
+                    // RecognizeBatched with B=8 captures a 20 % throughput win
+                    // on CUDA over the sequential Recognize (see
+                    // docs/whisper_turbo_investigation.md Run 9). Falls back
+                    // to smaller B on OOM via the batched path's reactive
+                    // halving, so it's safe on GPUs smaller than the 3090
+                    // the sweep was measured on.
+                    foreach (var result in whisper.RecognizeBatched(
+                        groupSegs, audio, groupLang, initialBatchSize: 8))
+                    {
+                        ct.ThrowIfCancellationRequested();
+                        int localIdx = group.LocalIndices[result.SegmentId];
+                        int rid      = unfilledResultIds[localIdx];
+                        int absId    = rid - 1;
+                        completed++;
+
+                        // Whisper's --notimestamps path does not emit per-token
+                        // timestamps or per-token logprobs; store empty JSON
+                        // arrays so the DB schema's required fields get
+                        // valid values. (Extracting logprobs is feasible —
+                        // see the argmax path — but we don't persist them
+                        // today for Whisper; add if/when the editor uses them.)
+                        db.UpdateResult(
+                            resultId:   rid,
+                            asrContent: result.Text,
+                            content:    result.Text,
+                            tokens:     JsonSerializer.Serialize(result.Tokens),
+                            timestamps: "[]",
+                            logprobs:   "[]",
+                            language:   groupLang ?? "");
+
+                        onSegmentText(absId, result.Text);
+
+                        string asrText = Loc.Instance.T("progress_recognizing_segment", new() {
+                            ["i"]     = completed.ToString(),
+                            ["count"] = totalSegs.ToString() });
+                        double? overridePercent = segmentationMode == SegmentationMode.DiariZen
+                            ? ScaleOverallProgress(
+                                DiariZenDiarizationPercentWeight,
+                                100,
+                                totalSegs > 0 ? completed / (double)totalSegs : 1)
+                            : null;
+                        progress.Report(new TranscriptionProgress(
+                            TranscriptionPhase.Recognizing,
+                            completed,
+                            totalSegs,
+                            asrText,
+                            absId,
+                            result.Text,
                             overridePercent));
                     }
                 }

@@ -177,6 +177,9 @@ public static class Config
     // ── ASR (Qwen3-ASR) ──────────────────────────────────────────────────────
     public const string Qwen3AsrSubDir = "qwen3asr";
 
+    // ── ASR (Whisper large-v3-turbo) ─────────────────────────────────────────
+    public const string WhisperTurboSubDir = "whisper_turbo";
+
     // ── Language identification (VoxLingua107 ECAPA-TDNN) ────────────────────
     /// <summary>
     /// Directory (relative to models dir) for the Parakeet shallow-fusion

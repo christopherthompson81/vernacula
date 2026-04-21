@@ -31,6 +31,8 @@ double  asrBufferSeconds  = 0.0;        // audio padding on each side of a group
 bool    profileSortformer = false;      // --profile-sortformer: print fine-grained timing for Sortformer
 bool    downloadVoxLingua = false;      // --download-voxlingua: fetch the LID model, then exit
 bool    runLid             = false;      // --lid: run LID on --audio and print result, then exit
+bool    runWhisperCheck    = false;      // --whisper-check: Phase 2a sanity test (mel + encoder only)
+int     whisperBatchSize   = 8;          // --whisper-batch N: default 8. See docs/whisper_turbo_investigation.md Run 9 — B=8 captures ~90 % of the achievable batched speedup (+20 % vs sequential) on CUDA; RecognizeBatched falls back to smaller B on OOM automatically.
 ModelPrecision precision = ModelPrecision.Fp32;
 int     parakeetBeam      = 1;          // --parakeet-beam N: 1 = greedy (default), >1 = TDT beam search
 string? parakeetLmPath    = null;       // --lm <path> to ARPA(.gz) subword n-gram model; implies beam ≥ 4
@@ -60,9 +62,9 @@ for (int i = 0; i < args.Length; i++)
         case "--skip-asr":      skipAsr = true; break;
         case "--asr":
             asrBackend = args[++i].ToLowerInvariant();
-            if (asrBackend is not ("parakeet" or "cohere" or "qwen3asr" or "vibevoice"))
+            if (asrBackend is not ("parakeet" or "cohere" or "qwen3asr" or "vibevoice" or "whisper"))
             {
-                Console.Error.WriteLine($"Unknown ASR backend: {asrBackend}. Choose: parakeet, cohere, qwen3asr, vibevoice.");
+                Console.Error.WriteLine($"Unknown ASR backend: {asrBackend}. Choose: parakeet, cohere, qwen3asr, vibevoice, whisper.");
                 return 1;
             }
             break;
@@ -92,6 +94,14 @@ for (int i = 0; i < args.Length; i++)
         case "--profile-sortformer": profileSortformer = true; break;
         case "--download-voxlingua": downloadVoxLingua = true; break;
         case "--lid":                runLid = true; break;
+        case "--whisper-check":      runWhisperCheck = true; break;
+        case "--whisper-batch":
+            if (!int.TryParse(args[++i], out whisperBatchSize) || whisperBatchSize < 1)
+            {
+                Console.Error.WriteLine("--whisper-batch expects a positive integer (1 = sequential, 2+ = batched).");
+                return 1;
+            }
+            break;
         case "--language":        cohereLanguage = args[++i]; break;
         case "--precision":
             precision = args[++i].ToLowerInvariant() switch {
@@ -157,6 +167,17 @@ if (runLid)
     }
     string modelsRoot = modelDir ?? DefaultModelsDir();
     return RunLidAction(audioPath, modelsRoot);
+}
+
+if (runWhisperCheck)
+{
+    if (audioPath is null)
+    {
+        Console.Error.WriteLine("Error: --whisper-check requires --audio <file>.");
+        return 1;
+    }
+    string modelsRoot = modelDir ?? DefaultModelsDir();
+    return RunWhisperCheckAction(audioPath, modelsRoot);
 }
 
 if (audioPath is null || modelDir is null)
@@ -627,6 +648,73 @@ try
             }
         }
     }
+    else if (asrBackend == "whisper")
+    {
+        string whisperDir = Path.Combine(modelDir, Config.WhisperTurboSubDir);
+        string[] required = [
+            WhisperTurbo.MelFile,
+            WhisperTurbo.EncoderFile,
+            WhisperTurbo.DecoderFile,
+            WhisperTurbo.TokenizerFile,
+            WhisperTurbo.GenerationConfigFile,
+        ];
+        foreach (string f in required)
+        {
+            if (!File.Exists(Path.Combine(whisperDir, f)))
+            {
+                Console.Error.WriteLine($"\nError: Whisper-turbo model missing: {whisperDir}/{f}");
+                Console.Error.WriteLine(
+                    "Select the WhisperTurbo ASR backend in the app and download the model files, " +
+                    "or copy them into that directory.");
+                return 1;
+            }
+        }
+
+        using var whisper = new WhisperTurbo(whisperDir);
+        int totalSegs = segs.Count;
+        int completed = 0;
+
+        var recognitionResults = whisperBatchSize > 1
+            ? whisper.RecognizeBatched(segs, audio, forceLanguage: cohereLanguage,
+                                       initialBatchSize: whisperBatchSize)
+            : whisper.Recognize(segs, audio, forceLanguage: cohereLanguage);
+        string batchNote = whisperBatchSize > 1 ? $", batch={whisperBatchSize}" : "";
+
+        Console.WriteLine($"Transcribing {totalSegs} segment(s) (Whisper-turbo{batchNote})...");
+        foreach (var result in recognitionResults)
+        {
+            cts.Token.ThrowIfCancellationRequested();
+            completed++;
+            var (start, end, spkId) = segs[result.SegmentId];
+            results.Add((start, end, spkId, result.Text));
+            Console.Write($"\r  {completed}/{totalSegs}");
+        }
+        Console.WriteLine();
+        swAsr.Stop();
+
+        if (showBenchmark)
+        {
+            var t = whisper.GetTimingsAndReset();
+            long sum = t.MelMs + t.EncoderMs + t.DecoderInitMs
+                     + t.DecoderStepOrtMs + t.DecoderStepExtractMs
+                     + t.ArgmaxMs + t.TokenDecodeMs;
+            double totalSec = Math.Max(1, swAsr.ElapsedMilliseconds) / 1000.0;
+            double Pct(long ms) => sum == 0 ? 0 : 100.0 * ms / sum;
+            Console.WriteLine();
+            Console.WriteLine("Whisper breakdown (accumulated across all segments):");
+            Console.WriteLine($"  Mel          : {t.MelMs,7} ms ({Pct(t.MelMs):F1} %)");
+            Console.WriteLine($"  Encoder      : {t.EncoderMs,7} ms ({Pct(t.EncoderMs):F1} %)");
+            Console.WriteLine($"  DecoderInit  : {t.DecoderInitMs,7} ms ({Pct(t.DecoderInitMs):F1} %)");
+            Console.WriteLine($"  DecoderStep ORT call     : {t.DecoderStepOrtMs,7} ms ({Pct(t.DecoderStepOrtMs):F1} %)");
+            Console.WriteLine($"  DecoderStep extract/copy : {t.DecoderStepExtractMs,7} ms ({Pct(t.DecoderStepExtractMs):F1} %)");
+            Console.WriteLine($"  Argmax       : {t.ArgmaxMs,7} ms ({Pct(t.ArgmaxMs):F1} %)");
+            Console.WriteLine($"  Token decode : {t.TokenDecodeMs,7} ms ({Pct(t.TokenDecodeMs):F1} %)");
+            Console.WriteLine($"  Total phases : {sum,7} ms (ASR swAsr: {swAsr.ElapsedMilliseconds} ms)");
+            Console.WriteLine($"  Step calls   : {t.StepCalls}   (avg {(t.StepCalls == 0 ? 0 : (double)t.DecoderStepOrtMs / t.StepCalls):F2} ms ORT / step, " +
+                              $"{(t.StepCalls == 0 ? 0 : (double)t.DecoderStepExtractMs / t.StepCalls):F2} ms extract / step)");
+            Console.WriteLine($"  Segments     : {t.SegmentsProcessed}");
+        }
+    }
     else
     {
         var (encoderFile, decoderJointFile) = Config.GetAsrFiles(precision);
@@ -896,6 +984,62 @@ static int RunLidAction(string audioPath, string modelsRoot)
         Console.WriteLine($"  {c.Iso,-4} {c.Name,-20} {c.Probability:P2}");
     Console.WriteLine();
     Console.WriteLine("Summary           : " + result.FormatSummary());
+    return 0;
+}
+
+/// <summary>
+/// Phase-2a sanity check: load audio → 16 kHz mono → log-mel (128 × 3000) →
+/// encoder → print shape and stats.  No decoder, no tokenizer.  Exercises
+/// the mel frontend and encoder session in isolation so we can confirm
+/// the ONNX export loads and produces sensible activations before building
+/// out the decode loop.
+/// </summary>
+static int RunWhisperCheckAction(string audioPath, string modelsRoot)
+{
+    string whisperDir = Path.Combine(modelsRoot, Config.WhisperTurboSubDir);
+
+    if (!File.Exists(audioPath))
+    {
+        Console.Error.WriteLine($"Audio file not found: {audioPath}");
+        return 1;
+    }
+    foreach (string f in new[] { WhisperTurbo.MelFile, WhisperTurbo.EncoderFile,
+                                 WhisperTurbo.DecoderFile, WhisperTurbo.TokenizerFile,
+                                 WhisperTurbo.GenerationConfigFile })
+    {
+        if (!File.Exists(Path.Combine(whisperDir, f)))
+        {
+            Console.Error.WriteLine(
+                $"Missing {whisperDir}/{f}.\n" +
+                $"Select the WhisperTurbo ASR backend in the app and download the model files first.");
+            return 1;
+        }
+    }
+
+    Console.WriteLine($"[whisper-check] loading audio: {audioPath}");
+    var (raw, sr, channels) = AudioUtils.ReadAudio(audioPath);
+    float[] audio = AudioUtils.AudioTo16000Mono(raw, sr, channels);
+    Console.WriteLine($"[whisper-check] decoded: {audio.Length} samples @ 16 kHz ({audio.Length / 16000.0:F1} s)");
+
+    Console.WriteLine($"[whisper-check] loading whisper-turbo from {whisperDir}");
+    var swLoad = Stopwatch.StartNew();
+    using var whisper = new WhisperTurbo(whisperDir);
+    swLoad.Stop();
+    Console.WriteLine($"[whisper-check] loaded in {swLoad.ElapsedMilliseconds} ms");
+
+    var swTrans = Stopwatch.StartNew();
+    var result = whisper.Transcribe(audio, languageIso: "en");
+    swTrans.Stop();
+
+    int chunkSec = Math.Min(30, (int)(audio.Length / 16000.0));
+    double rtf = swTrans.Elapsed.TotalSeconds / Math.Max(chunkSec, 1);
+    Console.WriteLine();
+    Console.WriteLine($"[whisper-check] transcribed {result.Tokens.Count} tokens in {swTrans.ElapsedMilliseconds} ms (RTF {rtf:F3} on first 30 s)");
+    Console.WriteLine("[whisper-check] transcript:");
+    Console.WriteLine();
+    Console.WriteLine(result.Text);
+    Console.WriteLine();
+    Console.WriteLine("[whisper-check] OK");
     return 0;
 }
 

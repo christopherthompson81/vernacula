@@ -43,6 +43,13 @@ internal class ModelManagerService
     private const string IndicConformerManifestUrl =
         "https://huggingface.co/christopherthompson81/indicconformer-600m-onnx/resolve/main/manifest.json";
 
+    // Whisper turbo pulls directly from the onnx-community pre-exported repo
+    // (no re-hosting). No manifest: onnx-community doesn't ship our format, so
+    // the MD5 update-check pass silently skips this repo (per
+    // GetOutdatedFilesAsync, which gates on non-empty ManifestUrl).
+    private const string WhisperTurboRepoBase =
+        "https://huggingface.co/onnx-community/whisper-large-v3-turbo/resolve/main";
+
     private static readonly ModelAsset[] CoreDiarizationFiles =
         [
             new(Path.Combine(Config.SortformerSubDir, Config.SortformerFile), Config.SortformerFile),
@@ -98,6 +105,31 @@ internal class ModelManagerService
             new(Path.Combine(Config.Qwen3AsrSubDir, "tokenizer_config.json"), "tokenizer_config.json"),
             new(Path.Combine(Config.Qwen3AsrSubDir, Qwen3Asr.ConfigFile), Qwen3Asr.ConfigFile),
             new(Path.Combine(Config.Qwen3AsrSubDir, "preprocessor_config.json"), "preprocessor_config.json"),
+        ];
+
+    // Files ship under onnx/ in the upstream repo for the ONNX graphs; root
+    // for tokenizer/config assets. Remote paths reflect that split, local
+    // paths collapse them into one flat whisper_turbo/ directory alongside
+    // our other backends.
+    private static readonly ModelAsset[] WhisperTurboFiles =
+        [
+            new(Path.Combine(Config.WhisperTurboSubDir, WhisperTurbo.EncoderFile),           $"onnx/{WhisperTurbo.EncoderFile}"),
+            new(Path.Combine(Config.WhisperTurboSubDir, WhisperTurbo.DecoderFile),           $"onnx/{WhisperTurbo.DecoderFile}"),
+            new(Path.Combine(Config.WhisperTurboSubDir, WhisperTurbo.TokenizerFile),         WhisperTurbo.TokenizerFile),
+            new(Path.Combine(Config.WhisperTurboSubDir, WhisperTurbo.ConfigFile),            WhisperTurbo.ConfigFile),
+            new(Path.Combine(Config.WhisperTurboSubDir, WhisperTurbo.GenerationConfigFile),  WhisperTurbo.GenerationConfigFile),
+            new(Path.Combine(Config.WhisperTurboSubDir, WhisperTurbo.PreprocessorConfigFile),WhisperTurbo.PreprocessorConfigFile),
+        ];
+
+    // Whisper auxiliary files that don't live in the onnx-community repo —
+    // primarily mel.onnx, a small Whisper-style log-mel graph we export
+    // ourselves (see scripts/whisper_export/). Required for the WhisperTurbo
+    // backend but not auto-downloaded for now; users run the export script
+    // locally or copy the file in manually. Distribution path is TBD — the
+    // empty RepoBase below mirrors the Qwen3-ASR pattern for the same case.
+    private static readonly ModelAsset[] WhisperTurboAuxFiles =
+        [
+            new(Path.Combine(Config.WhisperTurboSubDir, WhisperTurbo.MelFile), WhisperTurbo.MelFile),
         ];
 
     private static readonly ModelAsset[] VoxLinguaFiles =
@@ -160,6 +192,12 @@ internal class ModelManagerService
             [
                 new AssetRepo(CoreRepoBase, CoreManifestUrl, CoreDiarizationFiles),
                 new AssetRepo(IndicConformerRepoBase, IndicConformerManifestUrl, IndicConformerFiles),
+            ],
+            AsrBackend.WhisperTurbo =>
+            [
+                new AssetRepo(CoreRepoBase, CoreManifestUrl, CoreDiarizationFiles),
+                new AssetRepo(WhisperTurboRepoBase, "", WhisperTurboFiles),
+                new AssetRepo("", "", WhisperTurboAuxFiles),
             ],
             _ =>
             [

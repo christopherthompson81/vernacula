@@ -31,7 +31,7 @@ internal partial class SettingsViewModel : ObservableObject
     private SegmentationMode _selectedSegmentation;
 
     [ObservableProperty]
-    [NotifyPropertyChangedFor(nameof(IsAsrParakeet), nameof(IsAsrCohere), nameof(IsAsrQwen3Asr), nameof(IsAsrVibeVoice), nameof(IsAsrIndicConformer), nameof(ShowStandardSegmentationOptions), nameof(ShowVibeVoiceBuiltinSegmentation), nameof(ShowDiariZenInSegmentation), nameof(ShowGatedSegmentationHint), nameof(CanUseVibeVoiceAsr), nameof(VibeVoiceAsrLabel), nameof(VibeVoiceAsrDescription), nameof(ShowCohereLanguagePicker), nameof(ShowQwen3AsrLanguagePicker), nameof(ShowIndicConformerLanguagePicker))]
+    [NotifyPropertyChangedFor(nameof(IsAsrParakeet), nameof(IsAsrCohere), nameof(IsAsrQwen3Asr), nameof(IsAsrVibeVoice), nameof(IsAsrIndicConformer), nameof(IsAsrWhisperTurbo), nameof(ShowStandardSegmentationOptions), nameof(ShowVibeVoiceBuiltinSegmentation), nameof(ShowDiariZenInSegmentation), nameof(ShowGatedSegmentationHint), nameof(CanUseVibeVoiceAsr), nameof(VibeVoiceAsrLabel), nameof(VibeVoiceAsrDescription), nameof(ShowCohereLanguagePicker), nameof(ShowQwen3AsrLanguagePicker), nameof(ShowIndicConformerLanguagePicker), nameof(ShowWhisperTurboLanguagePicker))]
     private AsrBackend _selectedAsrBackend;
 
     [ObservableProperty]
@@ -102,6 +102,9 @@ internal partial class SettingsViewModel : ObservableObject
     private AsrLanguageOption? _selectedIndicConformerLanguage;
 
     [ObservableProperty]
+    private AsrLanguageOption? _selectedWhisperTurboLanguage;
+
+    [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(IsEditorSingle), nameof(IsEditorAutoAdvance), nameof(IsEditorContinuous))]
     private PlaybackMode _selectedEditorPlaybackMode;
 
@@ -128,6 +131,7 @@ internal partial class SettingsViewModel : ObservableObject
     public bool IsAsrQwen3Asr       => SelectedAsrBackend == AsrBackend.Qwen3Asr;
     public bool IsAsrVibeVoice      => SelectedAsrBackend == AsrBackend.VibeVoice;
     public bool IsAsrIndicConformer => SelectedAsrBackend == AsrBackend.IndicConformer;
+    public bool IsAsrWhisperTurbo   => SelectedAsrBackend == AsrBackend.WhisperTurbo;
     public bool CanUseVibeVoiceAsr  => CudaEpWorking;
     public string VibeVoiceAsrLabel => CanUseVibeVoiceAsr ? "VibeVoice-ASR" : "VibeVoice-ASR (Unavailable - CUDA Missing)";
     public string VibeVoiceAsrDescription => CanUseVibeVoiceAsr
@@ -136,6 +140,7 @@ internal partial class SettingsViewModel : ObservableObject
     public bool ShowCohereLanguagePicker         => SelectedAsrBackend == AsrBackend.Cohere;
     public bool ShowQwen3AsrLanguagePicker       => SelectedAsrBackend == AsrBackend.Qwen3Asr;
     public bool ShowIndicConformerLanguagePicker => SelectedAsrBackend == AsrBackend.IndicConformer;
+    public bool ShowWhisperTurboLanguagePicker   => SelectedAsrBackend == AsrBackend.WhisperTurbo;
     public bool ShowStandardSegmentationOptions => SelectedAsrBackend != AsrBackend.VibeVoice;
     public bool ShowVibeVoiceBuiltinSegmentation => SelectedAsrBackend == AsrBackend.VibeVoice;
     public bool ShowDiariZenInSegmentation => HasAcceptedDiariZenNotice && ShowStandardSegmentationOptions;
@@ -200,6 +205,21 @@ internal partial class SettingsViewModel : ObservableObject
         new("tr", "Turkish"),
         new("vi", "Vietnamese"),
     ];
+
+    // Whisper large-v3-turbo — 99 languages. Built from
+    // AsrLanguageSupport.WhisperTurboLangs so any future change to the
+    // language set flows through one source of truth. Includes "Auto-detect"
+    // as the first entry — Whisper's decoder emits the detected <|lang|>
+    // token as its first output when no language prefix is forced.
+    public static readonly IReadOnlyList<AsrLanguageOption> WhisperTurboLanguages =
+        BuildWhisperTurboLanguages();
+
+    private static IReadOnlyList<AsrLanguageOption> BuildWhisperTurboLanguages()
+    {
+        var list = new List<AsrLanguageOption> { new("", "Auto-detect") };
+        list.AddRange(AsrLanguageSupport.LanguageOptions(AsrBackend.WhisperTurbo));
+        return list;
+    }
 
     // AI4Bharat IndicConformer 600M — the 22 official Indian languages.
     // Unlike Cohere/Qwen3 there is no "auto-detect" option: the model has
@@ -309,6 +329,8 @@ internal partial class SettingsViewModel : ObservableObject
         _selectedIndicConformerLanguage = IndicConformerLanguages.FirstOrDefault(l => l.Code == svc.Current.IndicConformerLanguage)
                                         ?? IndicConformerLanguages.FirstOrDefault(l => l.Code == "hi")
                                         ?? IndicConformerLanguages[0];
+        _selectedWhisperTurboLanguage = WhisperTurboLanguages.FirstOrDefault(l => l.Code == svc.Current.WhisperTurboLanguage)
+                                        ?? WhisperTurboLanguages[0];
         _parakeetBeamWidth            = Math.Max(1, svc.Current.ParakeetBeamWidth);
         _selectedLmOption             = KenLmCatalog.Find(svc.Current.ParakeetLmSelection) ?? KenLmCatalog.All[0];
         // If the user's saved selection is a built-in option whose file isn't
@@ -416,6 +438,12 @@ internal partial class SettingsViewModel : ObservableObject
     partial void OnSelectedQwen3AsrLanguageChanged(AsrLanguageOption? value)
     {
         _svc.Current.Qwen3AsrLanguage = value?.Code ?? "";
+        _svc.Save();
+    }
+
+    partial void OnSelectedWhisperTurboLanguageChanged(AsrLanguageOption? value)
+    {
+        _svc.Current.WhisperTurboLanguage = value?.Code ?? "";
         _svc.Save();
     }
 
