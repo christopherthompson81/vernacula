@@ -93,13 +93,18 @@ internal class ModelManagerService
             new(Path.Combine("cohere_transcribe", CohereTranscribe.ConfigFile), CohereTranscribe.ConfigFile),
         ];
 
+    // Unified decoder (decoder.onnx + decoder.onnx.data) is the current required shape.
+    // The earlier split decoder (decoder_init + decoder_step) is no longer required at
+    // runtime — when decoder.onnx is present, the constructor prefers it and never loads
+    // the split files (see Qwen3Asr.cs constructor branch on hasUnified). Batched
+    // artifacts (encoder_batched.onnx + .data) remain intentionally optional: the
+    // runtime lights up batched transcription opportunistically when they are present,
+    // so listing them as required would reject valid single-stream installs.
     private static readonly ModelAsset[] Qwen3AsrFiles =
         [
             new(Path.Combine(Config.Qwen3AsrSubDir, Qwen3Asr.EncoderFile), Qwen3Asr.EncoderFile),
-            new(Path.Combine(Config.Qwen3AsrSubDir, Qwen3Asr.DecoderInitFile), Qwen3Asr.DecoderInitFile),
-            new(Path.Combine(Config.Qwen3AsrSubDir, $"{Qwen3Asr.DecoderInitFile}.data"), $"{Qwen3Asr.DecoderInitFile}.data"),
-            new(Path.Combine(Config.Qwen3AsrSubDir, Qwen3Asr.DecoderStepFile), Qwen3Asr.DecoderStepFile),
-            new(Path.Combine(Config.Qwen3AsrSubDir, $"{Qwen3Asr.DecoderStepFile}.data"), $"{Qwen3Asr.DecoderStepFile}.data"),
+            new(Path.Combine(Config.Qwen3AsrSubDir, Qwen3Asr.DecoderFile), Qwen3Asr.DecoderFile),
+            new(Path.Combine(Config.Qwen3AsrSubDir, $"{Qwen3Asr.DecoderFile}.data"), $"{Qwen3Asr.DecoderFile}.data"),
             new(Path.Combine(Config.Qwen3AsrSubDir, Qwen3Asr.EmbedTokensFile), Qwen3Asr.EmbedTokensFile),
             new(Path.Combine(Config.Qwen3AsrSubDir, Qwen3Asr.TokenizerFile), Qwen3Asr.TokenizerFile),
             new(Path.Combine(Config.Qwen3AsrSubDir, "tokenizer_config.json"), "tokenizer_config.json"),

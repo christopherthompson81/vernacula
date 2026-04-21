@@ -125,7 +125,18 @@ internal sealed class JobUiState
                 break;
 
             case ProgressUpdatedAction a:
-                _percent      = a.Progress.Percent;
+                // Progress is monotonic within a job. Some service-level reports
+                // (per-segment VoxLingua LID, file-level LID's raw `(100, 100)` on
+                // non-DiariZen, the Diarizing→Recognizing handoff when the ASR
+                // scales into 40-100%) can transiently report a lower percent than
+                // a prior phase finished at. The bar should never rewind — clamp
+                // all consumers (this state, JobProgressUpdated event, home-screen
+                // job rows) to the running max. LoadingAudio resets the anchor
+                // because that phase only fires on a fresh run-through.
+                if (a.Progress.Phase == TranscriptionPhase.LoadingAudio)
+                    _percent = a.Progress.Percent;
+                else
+                    _percent = Math.Max(_percent, a.Progress.Percent);
                 _lastProgress = a.Progress;
                 break;
         }

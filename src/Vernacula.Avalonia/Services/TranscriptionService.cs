@@ -7,6 +7,13 @@ namespace Vernacula.App.Services;
 
 internal class TranscriptionService
 {
+    // Per-mode share of the overall progress bar spent in the diarization phase.
+    // ASR scales into [weight → 100] starting from whatever weight the active
+    // diarizer owns. Numbers are rough wall-clock shares on reference hardware,
+    // not strict invariants — the bar will still complete cleanly if the actual
+    // split drifts, it just won't match frame-for-frame time spent.
+    private const double SileroVadDiarizationPercentWeight = 5.0;
+    private const double SortformerDiarizationPercentWeight = 15.0;
     private const double DiariZenDiarizationPercentWeight = 40.0;
     private const string CohereSyntheticTimestampMode = "uniform_segment_frames_v1";
 
@@ -113,6 +120,18 @@ internal class TranscriptionService
         bool useWhisperTurboAsr   = string.Equals(asrModelName, "openai/whisper-large-v3-turbo", StringComparison.Ordinal);
         var  segmentationMode = _settings.Current.Segmentation;
         bool runVibeVoice     = useVibeVoiceAsr || segmentationMode == SegmentationMode.VibeVoiceBuiltin;
+
+        // End-of-diarization anchor used by LID + ASR to scale into the overall
+        // bar. Each diarizer completes at its own weight; ASR starts there and
+        // scales to 100%. VibeVoiceBuiltin skips this path (whole-recording ASR
+        // is a separate branch), so the fallback mirrors DiariZen.
+        double diarizationEndPercent = segmentationMode switch
+        {
+            SegmentationMode.SileroVad  => SileroVadDiarizationPercentWeight,
+            SegmentationMode.Sortformer => SortformerDiarizationPercentWeight,
+            SegmentationMode.DiariZen   => DiariZenDiarizationPercentWeight,
+            _                           => DiariZenDiarizationPercentWeight,
+        };
 
         // VibeVoice accepts raw audio at any sample rate; skip the 16 kHz conversion.
         float[] vibeVoiceAudio      = rawSamples;
@@ -301,7 +320,8 @@ internal class TranscriptionService
 
             progress.Report(new TranscriptionProgress(
                 TranscriptionPhase.Diarizing, 1, 1,
-                Loc.Instance.T("progress_vad_complete", new() { ["count"] = segs.Count.ToString() })));
+                Loc.Instance.T("progress_vad_complete", new() { ["count"] = segs.Count.ToString() }),
+                OverridePercent: SileroVadDiarizationPercentWeight));
         }
         else if (!db.CheckDiarization() && segmentationMode == SegmentationMode.Sortformer)
         {
@@ -347,7 +367,10 @@ internal class TranscriptionService
                         ["i"]     = chunkIdx.ToString(),
                         ["count"] = numChunks.ToString() });
                     progress.Report(new TranscriptionProgress(
-                        TranscriptionPhase.Diarizing, chunkIdx, numChunks, diarText));
+                        TranscriptionPhase.Diarizing, chunkIdx, numChunks, diarText,
+                        OverridePercent: ScaleOverallProgress(
+                            0, SortformerDiarizationPercentWeight,
+                            numChunks > 0 ? chunkIdx / (double)numChunks : 1)));
                 }
             }, ct).ConfigureAwait(false);
 
@@ -390,7 +413,8 @@ internal class TranscriptionService
             db.MarkDiarizationComplete();
             progress.Report(new TranscriptionProgress(
                 TranscriptionPhase.Diarizing, 1, 1,
-                Loc.Instance.T("progress_vad_complete", new() { ["count"] = segs.Count.ToString() })));
+                Loc.Instance.T("progress_vad_complete", new() { ["count"] = segs.Count.ToString() }),
+                OverridePercent: SortformerDiarizationPercentWeight));
         }
         else if (!db.CheckDiarization() && segmentationMode == SegmentationMode.DiariZen)
         {
@@ -522,8 +546,14 @@ internal class TranscriptionService
         // VoxLingua assets haven't been downloaded.
         if (_langId.IsAvailable && db.GetMetadata("detected_language") is null)
         {
+            // Hold the bar at the end-of-diarization anchor while LID runs. The raw
+            // (100, 100) report we used to emit here had no OverridePercent, so it
+            // calculated to 100% and jumped the bar forward; the subsequent ASR
+            // reports land at diarizationEndPercent and the monotonic clamp then
+            // locks the bar at 100% for the rest of the run.
             progress.Report(new TranscriptionProgress(
-                TranscriptionPhase.Diarizing, 100, 100, "Detecting language…"));
+                TranscriptionPhase.Diarizing, 100, 100, "Detecting language…",
+                OverridePercent: diarizationEndPercent));
 
             ct.ThrowIfCancellationRequested();
             var vadForLid = segs.Select(s => (s.start, s.end)).ToList();
@@ -704,7 +734,8 @@ internal class TranscriptionService
             {
                 string? fileLevelIso = db.GetMetadata("detected_language");
                 progress.Report(new TranscriptionProgress(
-                    TranscriptionPhase.Diarizing, 0, resultRows.Count, "Per-segment LID…"));
+                    TranscriptionPhase.Diarizing, 0, resultRows.Count, "Per-segment LID…",
+                    OverridePercent: diarizationEndPercent));
 
                 var segPairs = resultRows.Select(r => (r.start, r.end)).ToList();
                 var perSegLid = await Task.Run(
@@ -712,9 +743,14 @@ internal class TranscriptionService
                         audio, segPairs,
                         minSegmentSeconds: 2.0,
                         onProgress: (done, total) =>
+                            // Hold at the diarization-end anchor; the status message
+                            // conveys progress. A narrow scaled slice would be nicer
+                            // but would require a new weight constant and complicate
+                            // the post-LID → ASR handoff.
                             progress.Report(new TranscriptionProgress(
                                 TranscriptionPhase.Diarizing, done, total,
-                                $"Per-segment LID ({done}/{total})…")),
+                                $"Per-segment LID ({done}/{total})…",
+                                OverridePercent: diarizationEndPercent)),
                         ct: ct),
                     ct).ConfigureAwait(false);
 
@@ -824,12 +860,13 @@ internal class TranscriptionService
                         string asrText = Loc.Instance.T("progress_recognizing_segment", new() {
                             ["i"]     = completed.ToString(),
                             ["count"] = totalSegs.ToString() });
-                        double? overridePercent = segmentationMode == SegmentationMode.DiariZen
-                            ? ScaleOverallProgress(
-                                DiariZenDiarizationPercentWeight,
-                                100,
-                                totalSegs > 0 ? completed / (double)totalSegs : 1)
-                            : null;
+                        // Always scale ASR progress into [diarizationEndPercent, 100]
+                        // regardless of diarization mode — the end-anchor moves with
+                        // the active diarizer (5 / 15 / 40) so the bar is continuous.
+                        double? overridePercent = ScaleOverallProgress(
+                            diarizationEndPercent,
+                            100,
+                            totalSegs > 0 ? completed / (double)totalSegs : 1);
                         progress.Report(new TranscriptionProgress(
                             TranscriptionPhase.Recognizing,
                             completed,
@@ -891,12 +928,13 @@ internal class TranscriptionService
                         string asrText = Loc.Instance.T("progress_recognizing_segment", new() {
                             ["i"]     = completed.ToString(),
                             ["count"] = totalSegs.ToString() });
-                        double? overridePercent = segmentationMode == SegmentationMode.DiariZen
-                            ? ScaleOverallProgress(
-                                DiariZenDiarizationPercentWeight,
-                                100,
-                                totalSegs > 0 ? completed / (double)totalSegs : 1)
-                            : null;
+                        // Always scale ASR progress into [diarizationEndPercent, 100]
+                        // regardless of diarization mode — the end-anchor moves with
+                        // the active diarizer (5 / 15 / 40) so the bar is continuous.
+                        double? overridePercent = ScaleOverallProgress(
+                            diarizationEndPercent,
+                            100,
+                            totalSegs > 0 ? completed / (double)totalSegs : 1);
                         progress.Report(new TranscriptionProgress(
                             TranscriptionPhase.Recognizing,
                             completed,
@@ -978,12 +1016,13 @@ internal class TranscriptionService
                         string asrText = Loc.Instance.T("progress_recognizing_segment", new() {
                             ["i"]     = completed.ToString(),
                             ["count"] = totalSegs.ToString() });
-                        double? overridePercent = segmentationMode == SegmentationMode.DiariZen
-                            ? ScaleOverallProgress(
-                                DiariZenDiarizationPercentWeight,
-                                100,
-                                totalSegs > 0 ? completed / (double)totalSegs : 1)
-                            : null;
+                        // Always scale ASR progress into [diarizationEndPercent, 100]
+                        // regardless of diarization mode — the end-anchor moves with
+                        // the active diarizer (5 / 15 / 40) so the bar is continuous.
+                        double? overridePercent = ScaleOverallProgress(
+                            diarizationEndPercent,
+                            100,
+                            totalSegs > 0 ? completed / (double)totalSegs : 1);
                         progress.Report(new TranscriptionProgress(
                             TranscriptionPhase.Recognizing,
                             completed,
@@ -1065,12 +1104,13 @@ internal class TranscriptionService
                         string asrText = Loc.Instance.T("progress_recognizing_segment", new() {
                             ["i"]     = completed.ToString(),
                             ["count"] = totalSegs.ToString() });
-                        double? overridePercent = segmentationMode == SegmentationMode.DiariZen
-                            ? ScaleOverallProgress(
-                                DiariZenDiarizationPercentWeight,
-                                100,
-                                totalSegs > 0 ? completed / (double)totalSegs : 1)
-                            : null;
+                        // Always scale ASR progress into [diarizationEndPercent, 100]
+                        // regardless of diarization mode — the end-anchor moves with
+                        // the active diarizer (5 / 15 / 40) so the bar is continuous.
+                        double? overridePercent = ScaleOverallProgress(
+                            diarizationEndPercent,
+                            100,
+                            totalSegs > 0 ? completed / (double)totalSegs : 1);
                         progress.Report(new TranscriptionProgress(
                             TranscriptionPhase.Recognizing,
                             completed,
@@ -1126,12 +1166,10 @@ internal class TranscriptionService
                     string asrText = Loc.Instance.T("progress_recognizing_segment", new() {
                         ["i"]     = completed.ToString(),
                         ["count"] = totalSegs.ToString() });
-                    double? overridePercent = segmentationMode == SegmentationMode.DiariZen
-                        ? ScaleOverallProgress(
-                            DiariZenDiarizationPercentWeight,
-                            100,
-                            totalSegs > 0 ? completed / (double)totalSegs : 1)
-                        : null;
+                    double? overridePercent = ScaleOverallProgress(
+                        diarizationEndPercent,
+                        100,
+                        totalSegs > 0 ? completed / (double)totalSegs : 1);
                     progress.Report(new TranscriptionProgress(
                         TranscriptionPhase.Recognizing,
                         completed,

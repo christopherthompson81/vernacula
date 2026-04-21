@@ -14,21 +14,25 @@ At construction, `Qwen3Asr` probes the model directory for three optional ONNX f
 
 `_preferBatched = preferBatched && hasBatchedEncoder && (hasBatchedInit || hasUnified)` — callers ask for batched explicitly via the constructor flag; the runtime only honours it when the required artifacts are present.
 
-Four distinct decode paths exist and are selected dynamically:
+Five distinct decode paths exist and are selected dynamically:
 
 | Path | Entry point | Graph | IOBinding |
 |---|---|---|---|
-| Serial / unified | `DecodeOnCpuUnified` | `decoder.onnx` | ❌ (CPU KV extract-and-rebind each step) |
-| Serial / CUDA IOBinding | `DecodeWithIoBinding` ([line 1755](../../src/Vernacula.Base/Qwen3Asr.cs#L1755)) | split init + step | ✅ |
+| Serial / unified GPU | `DecodeOnGpuUnified` | `decoder.onnx` | ✅ (GPU-resident KV across steps) |
+| Serial / unified CPU | `DecodeOnCpuUnified` | `decoder.onnx` | ❌ (CPU KV extract-and-rebind each step) |
+| Serial / CUDA IOBinding split | `DecodeWithIoBinding` ([line ~1870](../../src/Vernacula.Base/Qwen3Asr.cs#L1870)) | split init + step | ✅ |
 | Serial / CPU split | `DecodeOnCpu` | split init + step | ❌ |
 | Batched continuous | `RecognizeUnifiedContinuousBatched` | unified or batched-split | ❌ |
 
-Serial dispatch ([Qwen3Asr.cs:761-765](../../src/Vernacula.Base/Qwen3Asr.cs#L761-L765)):
+Serial dispatch ([Qwen3Asr.cs:~761](../../src/Vernacula.Base/Qwen3Asr.cs#L761)):
 ```
-_decoder is not null       → DecodeOnCpuUnified
-else _useCudaIoBinding     → DecodeWithIoBinding
-else                       → DecodeOnCpu
+_decoder is not null && _useCudaIoBinding → DecodeOnGpuUnified
+_decoder is not null                       → DecodeOnCpuUnified
+_useCudaIoBinding                          → DecodeWithIoBinding
+else                                       → DecodeOnCpu
 ```
+
+`_useCudaIoBinding` is set in the constructor from `encoderUsesCuda && decoderUsesCuda`. For the unified decoder it is only set in the non-batched branch, because the batched continuous path has its own KV handling and does not consume it.
 
 Batched dispatch ([Qwen3Asr.cs:939](../../src/Vernacula.Base/Qwen3Asr.cs#L939)): when the unified decoder is loaded, batched segments go through `RecognizeUnifiedContinuousBatched`; otherwise they fall back to the split-decoder batched path.
 
@@ -64,13 +68,18 @@ Read from `config.json → decoder` at construction ([Qwen3Asr.cs:276-281](../..
 
 KV shape on the wire: `[n_layers, batch, n_kv_heads, seq_len, head_dim]` — packed layer dim, different from VibeVoice/Cohere (per-layer split tensors).
 
-## Known optimisation gap
+## Remaining optimisation gap
 
-**Batched path does not use IOBinding.** `_useCudaIoBinding = false` on every path that loads the unified decoder ([Qwen3Asr.cs:296](../../src/Vernacula.Base/Qwen3Asr.cs#L296)) and IOBinding is implemented only in `DecodeWithIoBinding`, which is the split-decoder single-stream path. The batched continuous path extracts KV to CPU each step via `ExtractTensor` and re-binds as a fresh `DenseTensor` next step ([Qwen3Asr.cs:1549](../../src/Vernacula.Base/Qwen3Asr.cs#L1549), [1576](../../src/Vernacula.Base/Qwen3Asr.cs#L1576), [1627-1662](../../src/Vernacula.Base/Qwen3Asr.cs#L1627-L1662), [1702-1727](../../src/Vernacula.Base/Qwen3Asr.cs#L1702-L1727)).
+**Batched continuous path still extracts KV to CPU every step.** `RecognizeUnifiedContinuousBatched` outputs `present_keys` / `present_values` to host, runs `CompactStepKvInto` to re-pack per-row with `pastLengths` + `activeMask`, then re-binds from the host buffer on the next step. This is NOT a missing IOBinding — it is the compaction running on CPU, which forces the round trip regardless.
 
-This is structurally similar to VibeVoice's pre-IOBinding state. The corresponding speedup on VibeVoice was 5.5×, although the analogy is imperfect: Qwen3's KV compaction step writes into a fresh host buffer each step, so GPU-resident KV would need to compose with a GPU-side compaction kernel — not a straight drop-in of the VibeVoice pattern.
+To close this gap, one of:
+1. Move compaction to GPU (a small CUDA gather/scatter kernel, or added ONNX ops on the decoder graph).
+2. Drop compaction; rely entirely on `attention_mask` to exclude stale positions. Requires re-running `verify_qwen3_asr_unified_batch_parity.py` and accepting the extra attention compute on stale positions indefinitely.
+3. Keep compaction on host; bind output to device and read to CPU only for compaction. Saves one transfer per step, not two — marginal.
 
-The decision to implement this should be driven by a Qwen3 perf profile (not yet run) rather than by a generalised inference-layer refactor. When the profile data exists, tracking the work here is the right place; opening a GitHub issue before then risks another aspirational-but-unpursued task.
+Option 1 is the right fix but is a meaningful piece of work, not a refactor. Decide by profiling the batched path first to measure how much per-step wall-clock the KV round trip actually costs.
+
+**Resolved in the serial path.** The IOBinding gap for `decoder.onnx` on the single-segment path is closed by `DecodeOnGpuUnified` (see the decode-paths table above). Editor re-transcribe and serial CLI runs now keep KV GPU-resident between decode steps when CUDA is active. The change is untested end-to-end against a baseline — needs a WER + RTF check before declaring it a win.
 
 ## Out-of-scope reminders
 

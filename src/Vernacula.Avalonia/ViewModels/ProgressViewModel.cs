@@ -27,6 +27,14 @@ internal partial class ProgressViewModel : ObservableObject
     [ObservableProperty]
     private double _progressPercent = 0;
 
+    // Tracks the max percent seen in the current job so we can clamp out
+    // backward motion. Some sub-phases (per-segment VoxLingua LID in particular)
+    // emit progress reports with their own local counter that starts at 0/N,
+    // which would otherwise rewind the bar after a prior phase had completed.
+    // Reset when Phase == LoadingAudio (job start) or when a new watched job
+    // attaches. Monotonic-forward is always the right UX for a single job.
+    private double _lastPercent;
+
     [ObservableProperty]
     private string _statusMessage = "";
 
@@ -80,6 +88,7 @@ internal partial class ProgressViewModel : ObservableObject
         _watchedJobId          = jobId;
 
         Segments.Clear();
+        _lastPercent = 0; // new watched job; ApplyProgress will rebuild from snapshot
         IsRunning = true; // always show Cancel while watching
 
         // Subscribe to job lifecycle events first so we don't miss status transitions.
@@ -142,6 +151,20 @@ internal partial class ProgressViewModel : ObservableObject
             StatusMessage   = Loc.Instance["progress_resuming"];
             return;
         }
+
+        // LoadingAudio marks a fresh job/retry; drop the monotonic anchor.
+        if (p.Phase == TranscriptionPhase.LoadingAudio)
+            _lastPercent = 0;
+
+        // Clamp regressions. Individual service-level reports (e.g. per-segment
+        // VoxLingua LID firing `(Diarizing, 0, N)` at start) can transiently
+        // report a lower percent than the prior phase finished at; within a
+        // single job the bar should never move backward.
+        if (percent < _lastPercent)
+            percent = _lastPercent;
+        else
+            _lastPercent = percent;
+
         ProgressPercent = percent;
         StatusMessage   = p.StatusMessage;
         IsIndeterminate = p.TotalSteps == 0 || p.Phase == TranscriptionPhase.LoadingAudio;
@@ -215,6 +238,7 @@ internal partial class ProgressViewModel : ObservableObject
         IsIndeterminate = true;
         StatusMessage   = Loc.Instance["progress_preparing"];
         ProgressPercent = 0;
+        _lastPercent    = 0;
         _cts            = new CancellationTokenSource();
 
         CompletedAudioBaseName = Path.GetFileNameWithoutExtension(audioPath);
@@ -287,9 +311,10 @@ internal partial class ProgressViewModel : ObservableObject
 
         var progress = new Progress<TranscriptionProgress>(p =>
         {
-            ProgressPercent = p.Percent;
-            StatusMessage   = p.StatusMessage;
-            IsIndeterminate = p.TotalSteps == 0 || p.Phase == TranscriptionPhase.LoadingAudio;
+            // Route through ApplyProgress so the monotonic clamp applies here too —
+            // the inline assignment this replaces was the source of the LID-rewind
+            // regression (see _lastPercent notes).
+            ApplyProgress(p, p.Percent);
 
             if (p.Phase == TranscriptionPhase.Done)
             {

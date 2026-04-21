@@ -292,19 +292,21 @@ public sealed class Qwen3Asr : IDisposable
 
         if (hasUnified)
         {
-            _decoderInit      = null!;
-            _useCudaIoBinding = false;
+            _decoderInit = null!;
 
             if (_preferBatched)
             {
                 // Unified batched path: encoder_batched + decoder.onnx only.
                 // Do not load decoder_init_batched here; we want the runtime
-                // contract to be unambiguously single-decoder.
+                // contract to be unambiguously single-decoder. The batched
+                // path drives its own KV handling via RecognizeUnifiedContinuousBatched
+                // (CPU-side compaction) and does not use the serial IOBinding path.
                 _decoder = new InferenceSession(Path.Combine(modelPath, DecoderFile), decoderOpts);
                 _encoder        = null!;
                 _encoderBatched = new InferenceSession(Path.Combine(modelPath, EncoderBatchedFile), encoderOpts);
                 _decoderInitBatched = null;
                 _decoderStep = null;
+                _useCudaIoBinding   = false;
             }
             else
             {
@@ -313,6 +315,10 @@ public sealed class Qwen3Asr : IDisposable
                 _encoderBatched = null;
                 _decoderInitBatched = null;
                 _decoderStep = null;
+                // Serial unified path gets GPU-resident KV via DecodeOnGpuUnified when
+                // both sessions actually landed on CUDA; falls back to DecodeOnCpuUnified
+                // otherwise.
+                _useCudaIoBinding = encoderUsesCuda && decoderUsesCuda;
             }
         }
         else if (_preferBatched)
@@ -759,7 +765,9 @@ public sealed class Qwen3Asr : IDisposable
             int audioOffset = GetAudioPadStart(promptIds);
 
             var (rawTokens, rawLogprobs) = _decoder is not null
-                ? DecodeOnCpuUnified(promptIds, audioOffset, audioFeatures, audioTokenCount, maxNewTokens, forcedPrefix)
+                ? (_useCudaIoBinding
+                    ? DecodeOnGpuUnified(promptIds, audioOffset, audioFeatures, audioTokenCount, maxNewTokens, forcedPrefix)
+                    : DecodeOnCpuUnified(promptIds, audioOffset, audioFeatures, audioTokenCount, maxNewTokens, forcedPrefix))
                 : _useCudaIoBinding
                     ? DecodeWithIoBinding(promptIds, audioOffset, audioFeatures, audioTokenCount, maxNewTokens, forcedPrefix)
                     : DecodeOnCpu(promptIds, audioOffset, audioFeatures, audioTokenCount, maxNewTokens, forcedPrefix);
@@ -1582,6 +1590,119 @@ public sealed class Qwen3Asr : IDisposable
             rawLogprobs.Add(nextLogprob);
         }
 
+        return (rawTokens, rawLogprobs);
+    }
+
+    // GPU-resident KV variant of DecodeOnCpuUnified. Keeps present_keys / present_values
+    // on the CUDA device between steps via OrtIoBinding + OrtValue handoff, eliminating
+    // the device→host extract + host→device re-bind round trip that DecodeOnCpuUnified
+    // pays on every token. Parallels DecodeWithIoBinding's pattern but uses the unified
+    // decoder's I/O contract (input_embeds + attention_mask + packed KV tensors) rather
+    // than the split decoder_init + decoder_step graphs.
+    private (List<int> rawTokens, List<float> rawLogprobs) DecodeOnGpuUnified(
+        IReadOnlyList<int> promptIds,
+        int audioOffset,
+        float[] audioFeatures,
+        int audioTokenCount,
+        int maxNewTokens,
+        int[] forcedPrefix)
+    {
+        using var cpuMemInfo  = new OrtMemoryInfo("Cpu",  OrtAllocatorType.ArenaAllocator, 0, OrtMemType.Default);
+        using var cudaMemInfo = new OrtMemoryInfo("Cuda", OrtAllocatorType.ArenaAllocator, 0, OrtMemType.Default);
+        using var runOpts = new RunOptions();
+
+        int baseSeqLen = promptIds.Count;
+        int seqLen     = baseSeqLen + forcedPrefix.Length;
+
+        float[] inputEmbeds = new float[seqLen * _hiddenSize];
+        var tmpEmbed = new float[_hiddenSize];
+        for (int t = 0; t < baseSeqLen; t++)
+        {
+            ReadTokenEmbedding(promptIds[t], tmpEmbed);
+            Array.Copy(tmpEmbed, 0, inputEmbeds, t * _hiddenSize, _hiddenSize);
+        }
+        Array.Copy(audioFeatures, 0, inputEmbeds, audioOffset * _hiddenSize, audioTokenCount * _hiddenSize);
+        for (int t = 0; t < forcedPrefix.Length; t++)
+        {
+            ReadTokenEmbedding(forcedPrefix[t], tmpEmbed);
+            Array.Copy(tmpEmbed, 0, inputEmbeds, (baseSeqLen + t) * _hiddenSize, _hiddenSize);
+        }
+
+        long[] positionIds  = Enumerable.Range(0, seqLen).Select(i => (long)i).ToArray();
+        float[] prefillMask = BuildCausalMask(seqLen, 0);
+        float[] emptyKv     = [];
+
+        // ── Prefill ────────────────────────────────────────────────────────────
+        using var inputEmbedsValue = OrtValue.CreateTensorValueFromMemory(inputEmbeds, [1, seqLen, _hiddenSize]);
+        using var positionIdsValue = OrtValue.CreateTensorValueFromMemory(positionIds, [1, seqLen]);
+        using var prefillMaskValue = OrtValue.CreateTensorValueFromMemory(prefillMask, [1, 1, seqLen, seqLen]);
+        using var emptyKeysValue   = OrtValue.CreateTensorValueFromMemory(emptyKv,     [_nLayers, 1, _nKvHeads, 0, _headDim]);
+        using var emptyValuesValue = OrtValue.CreateTensorValueFromMemory(emptyKv,     [_nLayers, 1, _nKvHeads, 0, _headDim]);
+
+        using var initBinding = _decoder!.CreateIoBinding();
+        initBinding.BindInput("input_embeds",   inputEmbedsValue);
+        initBinding.BindInput("position_ids",   positionIdsValue);
+        initBinding.BindInput("attention_mask", prefillMaskValue);
+        initBinding.BindInput("past_keys",      emptyKeysValue);
+        initBinding.BindInput("past_values",    emptyValuesValue);
+        // Bind in order logits / present_keys / present_values so GetOutputValues()
+        // returns them at indices [0]/[1]/[2]. Logits go to CPU for the argmax;
+        // present KV stay on CUDA so the next step can feed them in place.
+        initBinding.BindOutputToDevice("logits",         cpuMemInfo);
+        initBinding.BindOutputToDevice("present_keys",   cudaMemInfo);
+        initBinding.BindOutputToDevice("present_values", cudaMemInfo);
+        _decoder.RunWithBinding(runOpts, initBinding);
+
+        var initOutputs = initBinding.GetOutputValues();
+
+        var rawTokens   = new List<int>(maxNewTokens);
+        var rawLogprobs = new List<float>(maxNewTokens);
+        long[] stepPos  = [0L];
+        int pastSeqLen  = seqLen;
+
+        int nextToken = ArgMaxLastLogits(initOutputs[0], seqLen, out float nextLogprob);
+        rawTokens.Add(nextToken);
+        rawLogprobs.Add(nextLogprob);
+
+        IDisposableReadOnlyCollection<OrtValue>? prevOutputs = initOutputs;
+
+        // ── Step loop ──────────────────────────────────────────────────────────
+        while (rawTokens.Count < maxNewTokens && !IsEos(nextToken))
+        {
+            ReadTokenEmbedding(nextToken, tmpEmbed);
+            stepPos[0] = seqLen + rawTokens.Count - 1L;
+            // All-zero mask → the single query attends to every past position.
+            float[] stepMask = new float[pastSeqLen + 1];
+
+            using var tokenEmbedValue = OrtValue.CreateTensorValueFromMemory(tmpEmbed, [1, 1, _hiddenSize]);
+            using var stepPosValue    = OrtValue.CreateTensorValueFromMemory(stepPos,  [1, 1]);
+            using var stepMaskValue   = OrtValue.CreateTensorValueFromMemory(stepMask, [1, 1, 1, pastSeqLen + 1]);
+
+            using var stepBinding = _decoder.CreateIoBinding();
+            stepBinding.BindInput("input_embeds",   tokenEmbedValue);
+            stepBinding.BindInput("position_ids",   stepPosValue);
+            stepBinding.BindInput("attention_mask", stepMaskValue);
+            // prevOutputs[1] / [2] are the previous step's present_keys / present_values,
+            // still resident on CUDA — no PCIe traffic.
+            stepBinding.BindInput("past_keys",      prevOutputs![1]);
+            stepBinding.BindInput("past_values",    prevOutputs[2]);
+            stepBinding.BindOutputToDevice("logits",         cpuMemInfo);
+            stepBinding.BindOutputToDevice("present_keys",   cudaMemInfo);
+            stepBinding.BindOutputToDevice("present_values", cudaMemInfo);
+            _decoder.RunWithBinding(runOpts, stepBinding);
+
+            var curOutputs = stepBinding.GetOutputValues();
+            nextToken = ArgMaxLastLogits(curOutputs[0], 1, out nextLogprob);
+            rawTokens.Add(nextToken);
+            rawLogprobs.Add(nextLogprob);
+
+            // Hand off: dispose previous-step KV, take ownership of this step's.
+            prevOutputs.Dispose();
+            prevOutputs = curOutputs;
+            pastSeqLen++;
+        }
+
+        prevOutputs?.Dispose();
         return (rawTokens, rawLogprobs);
     }
 

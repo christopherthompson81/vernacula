@@ -155,10 +155,8 @@ public partial class TranscriptEditorWindow : Window
             string qwenDir = App.Current.Settings.GetQwen3AsrModelsDir();
             _asrModelsAvailable =
                 File.Exists(Path.Combine(qwenDir, Qwen3Asr.EncoderFile)) &&
-                File.Exists(Path.Combine(qwenDir, Qwen3Asr.DecoderInitFile)) &&
-                File.Exists(Path.Combine(qwenDir, $"{Qwen3Asr.DecoderInitFile}.data")) &&
-                File.Exists(Path.Combine(qwenDir, Qwen3Asr.DecoderStepFile)) &&
-                File.Exists(Path.Combine(qwenDir, $"{Qwen3Asr.DecoderStepFile}.data")) &&
+                File.Exists(Path.Combine(qwenDir, Qwen3Asr.DecoderFile)) &&
+                File.Exists(Path.Combine(qwenDir, $"{Qwen3Asr.DecoderFile}.data")) &&
                 File.Exists(Path.Combine(qwenDir, Qwen3Asr.EmbedTokensFile)) &&
                 File.Exists(Path.Combine(qwenDir, Qwen3Asr.TokenizerFile)) &&
                 File.Exists(Path.Combine(qwenDir, Qwen3Asr.ConfigFile));

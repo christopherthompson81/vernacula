@@ -253,8 +253,11 @@ internal sealed class JobQueueService
 
         var progress = new Progress<TranscriptionProgress>(p =>
         {
+            // Dispatch first so the state's monotonic clamp runs, then fire the
+            // event with the clamped value — otherwise home-screen job rows
+            // would still see raw percents and rewind.
             state.Dispatch(new ProgressUpdatedAction(p));
-            JobProgressUpdated?.Invoke(entry.JobId, p.Percent);
+            JobProgressUpdated?.Invoke(entry.JobId, state.Percent);
             JobProgressInfoUpdated?.Invoke(entry.JobId, p);
         });
 
