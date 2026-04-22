@@ -42,14 +42,19 @@ internal static unsafe class FFmpegDecoder
     {
         if (_initialized) return;
 
-        // Modern .NET places native runtime assets in runtimes/{rid}/native/.
-        // Probe the current platform first, then fall back to the output root.
+        // Prefer runtimes/<rid>/native/ only when it actually contains FFmpeg
+        // shared libraries. Other NuGet packages (onnxruntime, Skia, …) populate
+        // that directory with their own natives, and pointing ffmpeg.RootPath
+        // there silently breaks symbol resolution: the library is not found,
+        // stubs stay unbound, and later calls throw NotSupportedException.
+        // Falling back to empty RootPath lets the OS linker resolve via ldconfig
+        // (Linux), DYLD cache (macOS), or PATH (Windows).
+        // FFmpeg.AutoGen initialises RootPath to the AppContext base directory,
+        // which is fine when we ship natives in runtimes/<rid>/native, but hides
+        // the system-installed FFmpeg from dlopen when we don't. Force it to
+        // empty so Linux/macOS/Windows fall back to ldconfig / DYLD / PATH.
         string? runtimesDir = FindNativeRuntimeDirectory(rootPath);
-        ffmpeg.RootPath = runtimesDir ?? rootPath;
-
-        // avformat_network_init() is only needed for network protocols (HTTP/RTMP/…).
-        // We use local-file decoding only, so skip the call to avoid loading DLLs
-        // eagerly at startup — they will be loaded on demand on first use instead.
+        ffmpeg.RootPath = runtimesDir ?? string.Empty;
 
         _initialized = true;
     }
@@ -59,7 +64,10 @@ internal static unsafe class FFmpegDecoder
         foreach (string rid in EnumerateRuntimeIdentifiers())
         {
             string candidate = Path.Combine(rootPath, "runtimes", rid, "native");
-            if (Directory.Exists(candidate))
+            if (!Directory.Exists(candidate))
+                continue;
+
+            if (Directory.EnumerateFiles(candidate, "*avformat*").Any())
                 return candidate;
         }
 
