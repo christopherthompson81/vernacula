@@ -110,7 +110,7 @@ def main() -> None:
         if not path.exists():
             sys.exit(f"missing: {path}")
         size_mb = path.stat().st_size / 1024 / 1024
-        print(f"[upload] {rel} ({size_mb:.2f} MiB) -> {args.repo_id}/{rel}",
+        print(f"[upload] {rel} ({size_mb:.2f} MiB) → {args.repo_id}/{rel}",
               file=sys.stderr)
         if args.dry_run:
             continue
@@ -127,7 +127,7 @@ def main() -> None:
         if not readme.exists():
             sys.exit(f"README source not found: {readme}\n"
                      f"Either create it under scripts/hf_readmes/ or pass --readme PATH.")
-        print(f"[upload] {readme} -> {args.repo_id}/README.md", file=sys.stderr)
+        print(f"[upload] {readme} → {args.repo_id}/README.md", file=sys.stderr)
         if not args.dry_run:
             api.upload_file(
                 path_or_fileobj=str(readme),

@@ -21,14 +21,13 @@ Writes `<model-dir>/manifest.json` (or `--out` if given).
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 from pathlib import Path
 
 # Allow importing scripts/_export_utils when run as a script.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from _export_utils.manifest import build_manifest  # noqa: E402
+from _export_utils.manifest import build_manifest, dump_manifest  # noqa: E402
 
 
 def discover_files(model_dir: Path) -> list[str]:
@@ -53,18 +52,14 @@ def main() -> None:
     )
     p.add_argument("--model-dir", type=Path, required=True,
                    help="Directory containing the bundle artifacts.")
-    p.add_argument("--files", nargs="+", default=None,
-                   help="Files (relative to --model-dir) to include. Mutually exclusive with --all.")
-    p.add_argument("--all", action="store_true",
-                   help="Include every non-hidden file under --model-dir (recursive).")
     p.add_argument("--out", type=Path, default=None,
                    help="Output path (default: <model-dir>/manifest.json).")
+    src = p.add_mutually_exclusive_group(required=True)
+    src.add_argument("--files", nargs="+", default=None,
+                     help="Files (relative to --model-dir) to include.")
+    src.add_argument("--all", action="store_true",
+                     help="Include every non-hidden file under --model-dir (recursive).")
     args = p.parse_args()
-
-    if not args.files and not args.all:
-        p.error("specify --files <names> or --all")
-    if args.files and args.all:
-        p.error("--files and --all are mutually exclusive")
 
     files = args.files if args.files else discover_files(args.model_dir)
     if not files:
@@ -80,9 +75,7 @@ def main() -> None:
         print(f"  {rel:<40s}  md5={entry['md5']}  size={size_mb:7.2f} MiB",
               file=sys.stderr)
 
-    out = args.out or (args.model_dir / "manifest.json")
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    out = dump_manifest(manifest, args.out or (args.model_dir / "manifest.json"))
     print(f"wrote {out}", file=sys.stderr)
 
 

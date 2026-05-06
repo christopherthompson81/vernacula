@@ -52,6 +52,23 @@ def build_manifest(model_dir: Path, files: list[str]) -> dict:
     return {"files": files_entry}
 
 
+def dump_manifest(manifest: dict, out_path: Path) -> Path:
+    """Serialize a manifest dict to disk in the canonical format.
+
+    The serialization conventions (`indent=2`, trailing newline, UTF-8)
+    live here. Callers that already have a `manifest` dict from
+    `build_manifest()` should use this; one-shot callers should use
+    `write_manifest()`. Returns the path that was written.
+    """
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(
+        json.dumps(manifest, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    return out_path
+
+
 def write_manifest(
     model_dir: Path,
     files: list[str],
@@ -59,14 +76,10 @@ def write_manifest(
 ) -> Path:
     """Build and write `manifest.json` under `model_dir` (or `out_path`).
 
+    Convenience wrapper around `build_manifest()` + `dump_manifest()`.
     Returns the path that was written.
     """
     model_dir = Path(model_dir)
     manifest = build_manifest(model_dir, files)
     out = Path(out_path) if out_path else model_dir / "manifest.json"
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(
-        json.dumps(manifest, indent=2) + "\n",
-        encoding="utf-8",
-    )
-    return out
+    return dump_manifest(manifest, out)
