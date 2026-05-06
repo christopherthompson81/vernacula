@@ -18,9 +18,9 @@ ONNX export of [`microsoft/VibeVoice-ASR-HF`](https://huggingface.co/microsoft/V
 packaged for use with [Vernacula](https://github.com/christopherthompson81/vernacula)
 and ONNX Runtime.
 
-**Conversion script:** [`scripts/vibevoice_export/`](https://github.com/christopherthompson81/vernacula/tree/main/scripts/vibevoice_export) ·
-**Vernacula:** [github.com/christopherthompson81/vernacula](https://github.com/christopherthompson81/vernacula) ·
-**Upstream model:** [`microsoft/VibeVoice-ASR-HF`](https://huggingface.co/microsoft/VibeVoice-ASR-HF)
+- **Conversion script:** [`scripts/vibevoice_export/`](https://github.com/christopherthompson81/vernacula/tree/main/scripts/vibevoice_export)
+- **Vernacula:** [github.com/christopherthompson81/vernacula](https://github.com/christopherthompson81/vernacula)
+- **Upstream model:** [`microsoft/VibeVoice-ASR-HF`](https://huggingface.co/microsoft/VibeVoice-ASR-HF)
 
 ## Highlights
 

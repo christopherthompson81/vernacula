@@ -34,9 +34,9 @@ a 2B-parameter Conformer encoder + Transformer decoder ASR model covering
 [Vernacula](https://github.com/christopherthompson81/vernacula) and
 ONNX Runtime.
 
-**Conversion script:** [`scripts/cohere_export/`](https://github.com/christopherthompson81/vernacula/tree/main/scripts/cohere_export) ·
-**Vernacula:** [github.com/christopherthompson81/vernacula](https://github.com/christopherthompson81/vernacula) ·
-**Upstream model:** [`CohereLabs/cohere-transcribe-03-2026`](https://huggingface.co/CohereLabs/cohere-transcribe-03-2026)
+- **Conversion script:** [`scripts/cohere_export/`](https://github.com/christopherthompson81/vernacula/tree/main/scripts/cohere_export)
+- **Vernacula:** [github.com/christopherthompson81/vernacula](https://github.com/christopherthompson81/vernacula)
+- **Upstream model:** [`CohereLabs/cohere-transcribe-03-2026`](https://huggingface.co/CohereLabs/cohere-transcribe-03-2026)
 
 ## Highlights
 

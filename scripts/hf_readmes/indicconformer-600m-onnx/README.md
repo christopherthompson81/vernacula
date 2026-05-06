@@ -44,9 +44,9 @@ in the on-disk shape that [Vernacula](https://github.com/christopherthompson81/v
 desktop ASR app expects. The CTC head only — the RNNT components from the
 source repo are not shipped here.
 
-**Conversion script:** [`scripts/indicconformer_export/`](https://github.com/christopherthompson81/vernacula/tree/main/scripts/indicconformer_export) ·
-**Vernacula:** [github.com/christopherthompson81/vernacula](https://github.com/christopherthompson81/vernacula) ·
-**Upstream model:** [`ai4bharat/indic-conformer-600m-multilingual`](https://huggingface.co/ai4bharat/indic-conformer-600m-multilingual)
+- **Conversion script:** [`scripts/indicconformer_export/`](https://github.com/christopherthompson81/vernacula/tree/main/scripts/indicconformer_export)
+- **Vernacula:** [github.com/christopherthompson81/vernacula](https://github.com/christopherthompson81/vernacula)
+- **Upstream model:** [`ai4bharat/indic-conformer-600m-multilingual`](https://huggingface.co/ai4bharat/indic-conformer-600m-multilingual)
 
 All numerical behavior is identical to the upstream encoder + CTC graph;
 only the on-disk packaging differs.

@@ -25,9 +25,9 @@ Combined ONNX shipping bundle used by [Vernacula](https://github.com/christopher
 as its default ASR + diarization + VAD stack. Three upstream models are
 co-located here so a single download brings up the full pipeline.
 
-**Conversion scripts:** [`scripts/nemo_export/`](https://github.com/christopherthompson81/vernacula/tree/main/scripts/nemo_export) ·
-**Vernacula:** [github.com/christopherthompson81/vernacula](https://github.com/christopherthompson81/vernacula) ·
-**Upstream models:** [Parakeet TDT v3](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3), [Streaming Sortformer](https://huggingface.co/nvidia/diar_streaming_sortformer_4spk-v2.1), [Silero VAD](https://github.com/snakers4/silero-vad)
+- **Conversion scripts:** [`scripts/nemo_export/`](https://github.com/christopherthompson81/vernacula/tree/main/scripts/nemo_export)
+- **Vernacula:** [github.com/christopherthompson81/vernacula](https://github.com/christopherthompson81/vernacula)
+- **Upstream models:** [Parakeet TDT v3](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3), [Streaming Sortformer](https://huggingface.co/nvidia/diar_streaming_sortformer_4spk-v2.1), [Silero VAD](https://github.com/snakers4/silero-vad)
 
 ## Highlights
 

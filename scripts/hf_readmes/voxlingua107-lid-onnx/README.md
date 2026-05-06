@@ -21,9 +21,9 @@ Re-packaged ONNX export of
 for use as the language-identification backend in
 [Vernacula](https://github.com/christopherthompson81/vernacula).
 
-**Conversion script:** [`scripts/voxlingua107_export/`](https://github.com/christopherthompson81/vernacula/tree/main/scripts/voxlingua107_export) ·
-**Vernacula:** [github.com/christopherthompson81/vernacula](https://github.com/christopherthompson81/vernacula) ·
-**Upstream model:** [`speechbrain/lang-id-voxlingua107-ecapa`](https://huggingface.co/speechbrain/lang-id-voxlingua107-ecapa)
+- **Conversion script:** [`scripts/voxlingua107_export/`](https://github.com/christopherthompson81/vernacula/tree/main/scripts/voxlingua107_export)
+- **Vernacula:** [github.com/christopherthompson81/vernacula](https://github.com/christopherthompson81/vernacula)
+- **Upstream model:** [`speechbrain/lang-id-voxlingua107-ecapa`](https://huggingface.co/speechbrain/lang-id-voxlingua107-ecapa)
 
 ## Highlights
 

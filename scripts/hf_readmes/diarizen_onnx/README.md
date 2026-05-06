@@ -22,9 +22,9 @@ diarization pipeline (segmentation + WeSpeaker embedding + LDA/PLDA),
 packaged for use with [Vernacula](https://github.com/christopherthompson81/vernacula)
 as its high-quality diarization backend.
 
-**Conversion script:** [`scripts/diarizen_export/`](https://github.com/christopherthompson81/vernacula/tree/main/scripts/diarizen_export) ·
-**Vernacula:** [github.com/christopherthompson81/vernacula](https://github.com/christopherthompson81/vernacula) ·
-**Upstream model:** [`BUT-FIT/diarizen-wavlm-large-s80-md`](https://huggingface.co/BUT-FIT/diarizen-wavlm-large-s80-md)
+- **Conversion script:** [`scripts/diarizen_export/`](https://github.com/christopherthompson81/vernacula/tree/main/scripts/diarizen_export)
+- **Vernacula:** [github.com/christopherthompson81/vernacula](https://github.com/christopherthompson81/vernacula)
+- **Upstream model:** [`BUT-FIT/diarizen-wavlm-large-s80-md`](https://huggingface.co/BUT-FIT/diarizen-wavlm-large-s80-md)
 
 > **Non-commercial use only.** The upstream DiariZen segmentation model
 > is licensed [CC-BY-NC-4.0](https://creativecommons.org/licenses/by-nc/4.0/).
