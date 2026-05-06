@@ -1,4 +1,4 @@
-# Qwen3-ASR Export
+# Qwen3-ASR → ONNX export
 
 Exports `Qwen/Qwen3-ASR-0.6B` and `Qwen/Qwen3-ASR-1.7B` into the ONNX package we can use as a baseline for Vernacula.
 

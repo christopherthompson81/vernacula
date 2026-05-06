@@ -1,4 +1,4 @@
-# VibeVoice-ASR Export
+# VibeVoice-ASR → ONNX export
 
 Exports `microsoft/VibeVoice-ASR-HF` into the ONNX package consumed by Vernacula.
 

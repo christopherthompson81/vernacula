@@ -1,4 +1,4 @@
-# Cohere Transcribe Export
+# Cohere Transcribe → ONNX export
 
 Exports `CohereLabs/cohere-transcribe-03-2026` into the ONNX package consumed by Vernacula.
 

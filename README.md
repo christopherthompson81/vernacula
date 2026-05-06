@@ -33,6 +33,26 @@ More screenshots and a feature tour live in [docs/desktop-app.md](docs/desktop-a
 - **GPU acceleration** via CUDA (DirectML on Windows), with automatic CPU fallback
 - **52 languages** covered across the four backends — see the [support matrix](docs/reference/backends.md#language-support-matrix)
 
+## Model conversion pipelines
+
+Vernacula's models are converted in-house from upstream PyTorch / NeMo / HuggingFace checkpoints into the ONNX contract its C# inference code expects. The export tooling lives in [`scripts/`](scripts/) and is usable independently of the rest of the project — the export scripts are dev-time only and never ship as a runtime dependency.
+
+| Model | Source | Export tooling |
+|---|---|---|
+| Parakeet TDT v3 / RNNT | [nvidia/parakeet-tdt-0.6b-v3](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3) | [scripts/nemo_export](scripts/nemo_export) |
+| Sortformer streaming diarization | [nvidia/diar_sortformer_4spk-v2.1](https://huggingface.co/nvidia/diar_sortformer_4spk-v2.1) | [scripts/nemo_export](scripts/nemo_export) |
+| Silero VAD | [snakers4/silero-vad](https://github.com/snakers4/silero-vad) | [scripts/nemo_export](scripts/nemo_export) |
+| Qwen3-ASR | [Qwen/Qwen3-ASR-0.6B](https://huggingface.co/Qwen/Qwen3-ASR-0.6B), [Qwen3-ASR-1.7B](https://huggingface.co/Qwen/Qwen3-ASR-1.7B) | [scripts/qwen3asr_export](scripts/qwen3asr_export) |
+| Cohere Transcribe | [CohereLabs/cohere-transcribe-03-2026](https://huggingface.co/CohereLabs/cohere-transcribe-03-2026) | [scripts/cohere_export](scripts/cohere_export) |
+| VibeVoice-ASR | [microsoft/VibeVoice-ASR-HF](https://huggingface.co/microsoft/VibeVoice-ASR-HF) | [scripts/vibevoice_export](scripts/vibevoice_export) |
+| DeepFilterNet3 (streaming) | [Rikorose/DeepFilterNet](https://github.com/Rikorose/DeepFilterNet) | [scripts/deepfilternet3_export](scripts/deepfilternet3_export) |
+| DiariZen + WeSpeaker | [BUTSpeechFIT/DiariZen](https://github.com/BUTSpeechFIT/DiariZen) | [scripts/diarizen_export](scripts/diarizen_export) |
+| VoxLingua107 (language ID) | [speechbrain/lang-id-voxlingua107-ecapa](https://huggingface.co/speechbrain/lang-id-voxlingua107-ecapa) | [scripts/voxlingua107_export](scripts/voxlingua107_export) |
+
+Most of these graphs (split KV-cache decoders, transducer/TDT decoder state, streaming GRU hidden-state I/O, six-input Sortformer chunked diarization) require non-trivial graph surgery beyond `torch.onnx.export` defaults. Each export folder has its own README with the contract, parity checks, and tuning notes.
+
+A KenLM build pipeline for Parakeet shallow fusion lives in [scripts/kenlm_build](scripts/kenlm_build); an in-progress IndicConformer export spike is in [scripts/indicconformer_export](scripts/indicconformer_export).
+
 ## Quick start
 
 **Install prerequisites** — [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0) plus FFmpeg. Full setup (including GPU) is in [docs/installation.md](docs/installation.md).

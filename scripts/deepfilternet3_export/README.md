@@ -1,4 +1,4 @@
-# DeepFilterNet3 Streaming Export
+# DeepFilterNet3 → streaming ONNX export
 
 Exports DeepFilterNet3 as three split ONNX models with explicit GRU hidden-state I/O, enabling chunk-by-chunk inference in C#.
 

@@ -115,3 +115,31 @@ Exports `Qwen/Qwen3-ASR-0.6B` and `Qwen/Qwen3-ASR-1.7B` to the ONNX package we c
 - `profile_qwen3_asr_pipeline.py` — profiles mel, encoder, decoder prefill, and decode-step timings for an exported ONNX package
 - `sweep_qwen3_asr_batching.py` — sweeps the experimental batched encoder / decoder-prefill graphs on CUDA to map safe VRAM-dependent batch sizes
 - `requirements.txt` — export dependencies
+
+---
+
+## voxlingua107_export/
+
+Exports `speechbrain/lang-id-voxlingua107-ecapa` to a single end-to-end ONNX graph used as Vernacula's language-identification backend. See [voxlingua107_export/README.md](voxlingua107_export/README.md) for full documentation.
+
+- `export_voxlingua_to_onnx.py` — exports `voxlingua107.onnx` and `lang_map.json`
+- `verify_voxlingua_parity.py` — PyTorch ↔ ONNX parity check on real audio clips
+- `requirements.txt` — export dependencies
+
+---
+
+## indicconformer_export/
+
+In-progress feasibility spike for exporting AI4Bharat's IndicConformer (Hybrid CTC-RNNT, 22 Indian languages) to ONNX. Uses AI4Bharat's NeMo fork in an isolated venv. Not yet wired into the runtime — see [indicconformer_export/README.md](indicconformer_export/README.md) for status.
+
+---
+
+## kenlm_build/
+
+Builds subword-level KenLM ARPAs for Parakeet shallow fusion. Streams general-English and medical text corpora from HuggingFace, layers them with an upweight, tokenises with Parakeet's tokenizer, and drives `lmplz`. Includes a WER/CER/ROUGE-L + entity-F1 evaluation harness. See [kenlm_build/README.md](kenlm_build/README.md) for the full workflow.
+
+---
+
+## whisper_export/
+
+Standalone export of the Whisper log-mel frontend to ONNX (`mel.onnx`), used for parity testing and as a reference frontend. Not a full Whisper export — `openai-whisper` and `transformers` already publish complete ONNX exports.
