@@ -66,3 +66,27 @@ at inference?" — is answered, and we can commit Phase 2's export shape
 - [ai4bharat/IndicConformer (unified, 22 langs)](https://huggingface.co/ai4bharat/IndicConformer)
 - [ai4bharat/indicconformer_stt_hi_hybrid_ctc_rnnt_large (Hindi-only)](https://huggingface.co/ai4bharat/indicconformer_stt_hi_hybrid_ctc_rnnt_large)
 - [AI4Bharat/indic-asr-api-backend](https://github.com/AI4Bharat/indic-asr-api-backend) — reference inference code
+
+## Publishing
+
+After running [`repackage_600m_indicconformer.py`](repackage_600m_indicconformer.py)
+to consolidate the external data, build the manifest and upload to
+`christopherthompson81/indicconformer-600m-onnx` using the shared tools
+at the [`scripts/`](../) root:
+
+```bash
+python scripts/make_manifest.py \
+    --model-dir ~/models/indicconformer_600m_onnx \
+    --files encoder-model.onnx encoder-model.onnx.data \
+            ctc_decoder-model.onnx nemo128.onnx \
+            vocab.txt language_spans.json config.json
+
+python scripts/upload_to_hf.py \
+    --model-dir ~/models/indicconformer_600m_onnx \
+    --repo-id christopherthompson81/indicconformer-600m-onnx \
+    --sync-readme --create-repo
+```
+
+The model card is sourced from
+[`scripts/hf_readmes/indicconformer-600m-onnx/README.md`](../hf_readmes/indicconformer-600m-onnx/README.md);
+edit it there, commit, and re-run with `--sync-readme` to update HF.

@@ -90,3 +90,24 @@ so the gates have comfortable headroom.
 
 Failures print the reason(s) and return a non-zero exit code so the check
 can gate CI if needed.
+
+## Publishing
+
+After a successful export, build the manifest and upload to
+`christopherthompson81/voxlingua107-lid-onnx` using the shared tools at
+the [`scripts/`](../) root:
+
+```bash
+python scripts/make_manifest.py \
+    --model-dir ~/models/voxlingua107 \
+    --files voxlingua107.onnx lang_map.json
+
+python scripts/upload_to_hf.py \
+    --model-dir ~/models/voxlingua107 \
+    --repo-id christopherthompson81/voxlingua107-lid-onnx \
+    --sync-readme
+```
+
+The model card is sourced from
+[`scripts/hf_readmes/voxlingua107-lid-onnx/README.md`](../hf_readmes/voxlingua107-lid-onnx/README.md);
+edit it there, commit, and re-run with `--sync-readme` to update HF.

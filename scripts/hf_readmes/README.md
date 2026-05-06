@@ -32,15 +32,33 @@ directory.
 
 ## Uploading
 
+The canonical path is [`scripts/upload_to_hf.py`](../upload_to_hf.py),
+which auto-resolves the README from this directory by repo basename:
+
+```bash
+# Sync the README only (no model artifacts)
+python scripts/upload_to_hf.py \
+    --model-dir /tmp/empty \
+    --repo-id christopherthompson81/<repo-name> \
+    --files /dev/null \
+    --sync-readme
+
+# Or full bundle + manifest + README
+python scripts/make_manifest.py --model-dir ~/models/<bundle> --all
+python scripts/upload_to_hf.py \
+    --model-dir ~/models/<bundle> \
+    --repo-id christopherthompson81/<repo-name> \
+    --sync-readme --create-repo
+```
+
+For a quick README-only sync, the underlying `huggingface-cli` call also
+works:
+
 ```bash
 huggingface-cli upload christopherthompson81/<repo-name> \
     scripts/hf_readmes/<repo-name>/README.md README.md \
     --commit-message "sync model card from vernacula repo"
 ```
-
-Or use the existing [`scripts/voxlingua107_export/upload_to_hf.py`](../voxlingua107_export/upload_to_hf.py)
-pattern, pointing `--write-readme` at the file in this directory instead
-of the inline string.
 
 When updating a card, edit the file here, commit, and re-upload — never
 hand-edit the README on the Hub directly, since changes there will be
