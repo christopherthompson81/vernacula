@@ -7,3 +7,5 @@ obj/
 **/__pycache__/
 tmp/
 .claude/
+*.scratch.md
+*.scratch/
