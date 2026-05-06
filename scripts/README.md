@@ -9,6 +9,35 @@ pip install anthropic
 export ANTHROPIC_API_KEY=sk-ant-...   # or pass --api-key on each command
 ```
 
+## Shared tools (used by every export pipeline)
+
+To prevent format drift across the per-export directories, two scripts at
+the `scripts/` root are the canonical entry points after a successful
+export run:
+
+- [`make_manifest.py`](make_manifest.py) — builds the `manifest.json` shape
+  that Vernacula.Avalonia's download verifier reads
+  (`{"files": {<name>: {"md5": <hex>}}}`). Backed by
+  [`_export_utils/manifest.py`](_export_utils/manifest.py).
+- [`upload_to_hf.py`](upload_to_hf.py) — generic HuggingFace uploader,
+  defaults to syncing the model card from
+  [`hf_readmes/<repo-basename>/README.md`](hf_readmes/).
+
+Typical post-export workflow:
+
+```bash
+python scripts/make_manifest.py --model-dir ~/models/<bundle> --all
+python scripts/upload_to_hf.py \
+    --model-dir ~/models/<bundle> \
+    --repo-id christopherthompson81/<repo-name> \
+    --sync-readme --create-repo
+```
+
+The C# contract is locked at
+`Vernacula.Avalonia/Services/ModelManagerService.cs::ParseManifestHashes`
+— don't fork the manifest shape per-export. New shared utilities go in
+[`_export_utils/`](_export_utils/).
+
 ---
 
 ## update_locale_keys.py
