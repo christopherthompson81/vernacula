@@ -2,192 +2,1008 @@
 """
 Export ibm-granite/granite-speech-4.1-2b to ONNX format.
 
-STATUS: skeleton. This script currently loads the model, prints the
-planned ONNX graph layout against the loaded config, and exits without
-emitting any ONNX. The full export will follow in a subsequent issue
-(see docs/dev/granite_speech_investigation.md sequenced plan).
-
-Planned package
----------------
-    mel.onnx
-        audio [batch, samples] -> mel [batch, 80, T]
-
+Outputs (default)
+-----------------
     encoder.onnx
-        mel [batch, 80, T] -> acoustic [batch, T/2, 1024]
-        (adjacent-frame stack baked in: encoder input_dim 160 = 80 * 2)
+        input_features [batch, time_stacked, 160] float32
+        -> encoder_hidden [batch, time_stacked, 1024] float32
 
     projector.onnx
-        acoustic [batch, T/2, 1024] -> audio_embeds [batch, T/10, 2048]
-        (BLIP-2 Q-Former, 5x temporal downsample, 3 trainable queries
-         per 15-frame window)
+        encoder_hidden [batch, time_stacked, 1024] float32
+        -> audio_embeds [batch, audio_len, 2048] float32
 
-    decoder_init.onnx / decoder_step.onnx
-        Split prefill/step graphs with KV-cache carry, mirroring the
-        cohere_export and qwen3asr_export pattern.
-        KV layout: 40 layers x split K/V x GQA (num_kv_heads=4) x seq x
-        head_dim=128.
+    decoder_init.onnx
+        Prefill graph that fuses audio embeddings into the prompt via
+        masked_scatter on the audio_token_id (100352).
+        input_ids        [batch, prompt_len]              int64
+        audio_embeds     [batch, audio_len_padded, 2048]  float32
+        audio_mask       [batch, audio_len_padded]        bool
+        attention_mask   [batch, prompt_len]              int64
+        -> logits        [batch, prompt_len, 100353]      float32
+        -> present_key/value_<L>  40 x 2 x [batch, 4, prompt_len, 128]  float32
 
-    config.json, tokenizer assets, export-report.json.
+    decoder_step.onnx
+        Single-token step on top of an existing KV cache.
+        input_id         [batch, 1]                       int64
+        attention_mask   [batch, total_len]               int64
+        cache_position   [batch, 1]                       int64
+        past_key/value_<L>  40 x 2 x [batch, 4, past_len, 128]  float32
+        -> logits        [batch, 1, 100353]               float32
+        -> present_key/value_<L>  40 x 2 x [batch, 4, past_len+1, 128]  float32
 
-The audio placeholder token id (100352) is spliced in the prompt before
-projector embeddings are concatenated into decoder_init's input_embeds
-stream. Exact prefill input shape (audio_offset/audio_lengths vs implicit
-host splice) is a Run 2 decision.
+    config.json, processor assets (tokenizer + audio extractor),
+    export-report.json
 
-Usage (intended; stub today)
-----------------------------
+The mel frontend (`GraniteSpeechFeatureExtractor`) is intentionally NOT
+exported as ONNX in this first cut. It uses torchaudio's MelSpectrogram
+plus a frame-stacking step; running the algorithm on the host (C# or
+Python smoke harness) avoids the dynamo-export risk for FFT ops. See
+docs/dev/granite_speech_investigation.md for the rationale.
+
+Usage
+-----
     python public/scripts/granite_export/export_granite_speech_to_onnx.py \\
         --output-dir ./models/granite_speech_4_1_2b \\
         --opset 18
+
+    # Run only one piece while iterating:
+    python public/scripts/granite_export/export_granite_speech_to_onnx.py \\
+        --output-dir ./models/granite_speech_4_1_2b \\
+        --skip-projector --skip-decoder
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import sys
+import time
 from pathlib import Path
+from typing import Any
 
 
 DEFAULT_MODEL_REPO = "ibm-granite/granite-speech-4.1-2b"
 DEFAULT_OPSET = 18
 
+# Granite-4.0-1b-base architecture constants (mirrored from text_config).
+# These are used for KV-tensor naming and dummy shape construction; the
+# values come from the loaded config at runtime, but we hardcode the
+# ones that drive output_names lists below.
+NUM_DECODER_LAYERS = 40
+NUM_KV_HEADS = 4
+HEAD_DIM = 128
+DECODER_HIDDEN = 2048
+VOCAB_SIZE = 100353
+AUDIO_TOKEN_ID = 100352
+
+# Encoder / projector constants (mirrored from encoder_config / projector_config).
+ENCODER_INPUT_DIM = 160          # 80 mels x 2 (frame-stacked)
+ENCODER_HIDDEN = 1024
+PROJECTOR_WINDOW = 15
+PROJECTOR_DOWNSAMPLE = 5         # 5x temporal downsample
+PROJECTOR_OUT_DIM = DECODER_HIDDEN
+
+# ---------------------------------------------------------------------------
+# Argument parsing
+# ---------------------------------------------------------------------------
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description=(
-            "Export ibm-granite/granite-speech-4.1-2b to ONNX. "
-            "Currently a skeleton stub; see docs/dev/granite_speech_investigation.md."
-        )
+        description="Export ibm-granite/granite-speech-4.1-2b to ONNX.",
     )
-    parser.add_argument(
-        "--model-repo",
-        default=DEFAULT_MODEL_REPO,
-        help=f"HuggingFace repo ID (default: {DEFAULT_MODEL_REPO}).",
-    )
-    parser.add_argument(
-        "--revision",
-        default=None,
-        help="Pin a specific commit/tag for reproducibility.",
-    )
-    parser.add_argument(
-        "--output-dir",
-        type=Path,
-        required=True,
-        help="Where the ONNX package will be written.",
-    )
-    parser.add_argument(
-        "--opset",
-        type=int,
-        default=DEFAULT_OPSET,
-        help=f"ONNX opset version (default: {DEFAULT_OPSET}).",
-    )
-    parser.add_argument(
-        "--device",
-        choices=["cpu", "cuda"],
-        default="cpu",
-        help="Device to trace the export on.",
-    )
+    parser.add_argument("--model-repo", default=DEFAULT_MODEL_REPO)
+    parser.add_argument("--revision", default=None)
+    parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--opset", type=int, default=DEFAULT_OPSET)
+    parser.add_argument("--device", choices=["cpu", "cuda"], default="cpu")
     parser.add_argument(
         "--dtype",
         choices=["float32", "float16", "bfloat16"],
         default="float32",
-        help="Export dtype.",
+    )
+    parser.add_argument("--overwrite", action="store_true")
+    parser.add_argument("--skip-encoder", action="store_true")
+    parser.add_argument("--skip-projector", action="store_true")
+    parser.add_argument("--skip-decoder", action="store_true")
+    parser.add_argument(
+        "--legacy-exporter",
+        action="store_true",
+        help="Use the legacy TorchScript ONNX exporter instead of dynamo.",
     )
     parser.add_argument(
-        "--overwrite",
-        action="store_true",
-        help="Replace an existing export at --output-dir.",
+        "--dummy-seconds",
+        type=float,
+        default=2.0,
+        help="Dummy audio length used to build trace inputs (default 2.0).",
     )
     return parser.parse_args()
 
 
-def describe_planned_layout(config) -> dict:
-    """Return the planned ONNX package layout derived from the loaded config.
+# ---------------------------------------------------------------------------
+# Output directory guard
+# ---------------------------------------------------------------------------
 
-    Keeping this as a returnable dict (rather than just printing) so the
-    parity script in the next issue can import and assert against the
-    same source of truth.
+_EXPORT_FILES = (
+    "encoder.onnx",
+    "projector.onnx",
+    "decoder_init.onnx",
+    "decoder_step.onnx",
+    "config.json",
+    "preprocessor_config.json",
+    "processor_config.json",
+    "tokenizer.json",
+    "tokenizer_config.json",
+    "special_tokens_map.json",
+    "export-report.json",
+)
+
+
+def ensure_output_dir(path: Path, overwrite: bool) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+    if not overwrite:
+        collisions = [name for name in _EXPORT_FILES if (path / name).exists()]
+        if collisions:
+            raise SystemExit(
+                "Output directory already contains export targets. "
+                "Re-run with --overwrite to replace them.\n"
+                f"Existing files: {', '.join(collisions)}"
+            )
+
+
+# ---------------------------------------------------------------------------
+# Model loading
+# ---------------------------------------------------------------------------
+
+def load_model_and_processor(
+    repo_id: str, revision: str | None, device: str, dtype: Any, torch: Any
+) -> tuple[Any, Any]:
+    from transformers import AutoProcessor, GraniteSpeechForConditionalGeneration
+
+    rev_suffix = f" @ {revision}" if revision else ""
+    print(f"Loading processor from {repo_id}{rev_suffix} ...")
+    processor = AutoProcessor.from_pretrained(repo_id, revision=revision)
+
+    # `attn_implementation="eager"` keeps the language-model attention out of
+    # transformers' sdpa_attention_forward path, which contains a data-dependent
+    # branch (`attention_mask.shape[-1] != q.shape[-1]`) that the dynamo
+    # exporter cannot guard. Eager is mathematically equivalent and traces cleanly.
+    print(f"Loading model from {repo_id}{rev_suffix} on {device} as {dtype} (attn_implementation=eager) ...")
+    model = GraniteSpeechForConditionalGeneration.from_pretrained(
+        repo_id,
+        revision=revision,
+        dtype=dtype,
+        low_cpu_mem_usage=True,
+        attn_implementation="eager",
+    )
+    model.to(device)
+    model.eval()
+
+    n_params = sum(p.numel() for p in model.parameters())
+    print(f"  Loaded {n_params:,} parameters ({n_params / 1e9:.2f}B)")
+    return model, processor
+
+
+# ---------------------------------------------------------------------------
+# Dummy inputs
+# ---------------------------------------------------------------------------
+
+def make_dummy_processor_inputs(
+    torch: Any, processor: Any, dummy_seconds: float, device: str
+) -> dict[str, Any]:
+    """Run the processor twice on dummy audio (full + half length) and stack
+    into a B=2 batch. The dynamo exporter specializes any symbolic dim that
+    is concretely 1 at trace time, so dummy inputs must be B>=2 with different
+    lengths to keep batch and time dims symbolic in the exported graph.
     """
-    enc = config.encoder_config
-    proj = config.projector_config
-    text = config.text_config
+    sr = processor.audio_processor.sampling_rate
+    n_full = int(dummy_seconds * sr)
+    n_half = n_full // 2
+
+    import numpy as np
+    audio_full = np.zeros(n_full, dtype=np.float32)
+    audio_half = np.zeros(n_half, dtype=np.float32)
+
+    prompt = processor.tokenizer.apply_chat_template(
+        [
+            {
+                "role": "user",
+                "content": "<|audio|>transcribe the speech with proper punctuation and capitalization.",
+            }
+        ],
+        tokenize=False,
+        add_generation_prompt=True,
+    )
+    in_full = processor(prompt, audio_full, return_tensors="pt")
+    in_half = processor(prompt, audio_half, return_tensors="pt")
+
+    # input_features: pad shorter [..., T_half, 160] up to [..., T_full, 160].
+    feats_full = in_full["input_features"]
+    feats_half = in_half["input_features"]
+    t_full = feats_full.shape[1]
+    t_half = feats_half.shape[1]
+    if t_half < t_full:
+        feats_half = torch.nn.functional.pad(feats_half, (0, 0, 0, t_full - t_half))
+    input_features = torch.cat([feats_full, feats_half], dim=0)
+
+    # input_features_mask: pad with False up to the longer length.
+    mask_full = in_full["input_features_mask"]
+    mask_half = in_half["input_features_mask"]
+    a_full = mask_full.shape[1]
+    a_half = mask_half.shape[1]
+    a_max = max(a_full, a_half)
+    if a_full < a_max:
+        mask_full = torch.nn.functional.pad(mask_full, (0, a_max - a_full), value=False)
+    if a_half < a_max:
+        mask_half = torch.nn.functional.pad(mask_half, (0, a_max - a_half), value=False)
+    input_features_mask = torch.cat([mask_full, mask_half], dim=0)
+
+    # input_ids / attention_mask: Granite Speech inserts one <|audio|> per valid
+    # projector frame, so the prompt token count differs between full/half items.
+    # Pad shorter ids with a non-audio token (pad_token_id) and shorter mask with 0.
+    ids_full = in_full["input_ids"]
+    ids_half = in_half["input_ids"]
+    am_full = in_full["attention_mask"]
+    am_half = in_half["attention_mask"]
+    s_full = ids_full.shape[1]
+    s_half = ids_half.shape[1]
+    s_max = max(s_full, s_half)
+
+    pad_id = processor.tokenizer.pad_token_id or 0
+    if s_full < s_max:
+        ids_full = torch.nn.functional.pad(ids_full, (0, s_max - s_full), value=pad_id)
+        am_full = torch.nn.functional.pad(am_full, (0, s_max - s_full), value=0)
+    if s_half < s_max:
+        ids_half = torch.nn.functional.pad(ids_half, (0, s_max - s_half), value=pad_id)
+        am_half = torch.nn.functional.pad(am_half, (0, s_max - s_half), value=0)
+    input_ids = torch.cat([ids_full, ids_half], dim=0)
+    attention_mask = torch.cat([am_full, am_half], dim=0)
 
     return {
-        "model_repo": getattr(config, "_name_or_path", None),
-        "audio_token_index": config.audio_token_index,
-        "downsample_rate_total": 2 * config.downsample_rate,  # encoder 2x * projector 5x
-        "encoder": {
-            "num_layers": enc.num_layers,
-            "hidden_dim": enc.hidden_dim,
-            "num_heads": enc.num_heads,
-            "dim_head": enc.dim_head,
-            "input_dim": enc.input_dim,
-            "output_dim": enc.output_dim,
-            "conv_kernel_size": enc.conv_kernel_size,
-        },
-        "projector": {
-            "model_type": proj.model_type,
-            "num_hidden_layers": proj.num_hidden_layers,
-            "num_attention_heads": proj.num_attention_heads,
-            "hidden_size": proj.hidden_size,
-            "encoder_hidden_size": proj.encoder_hidden_size,
-            "window_size": config.window_size,
-            "downsample_rate": config.downsample_rate,
-        },
-        "decoder": {
-            "model_type": text.model_type,
-            "num_hidden_layers": text.num_hidden_layers,
-            "hidden_size": text.hidden_size,
-            "num_attention_heads": text.num_attention_heads,
-            "num_key_value_heads": text.num_key_value_heads,
-            "head_dim": text.hidden_size // text.num_attention_heads,
-            "vocab_size": text.vocab_size,
-            "max_position_embeddings": text.max_position_embeddings,
-            "tie_word_embeddings": getattr(config, "tie_word_embeddings", False),
-        },
+        "input_features": input_features.to(device),
+        "input_features_mask": input_features_mask.to(device),
+        "input_ids": input_ids.to(device),
+        "attention_mask": attention_mask.to(device),
     }
 
+
+# ---------------------------------------------------------------------------
+# Wrappers
+# ---------------------------------------------------------------------------
+
+def _patch_encoder_attention_for_export(torch: Any, encoder: Any) -> None:
+    """Replace each GraniteSpeechConformerAttention.forward with a 4D-friendly
+    manual-math version.
+
+    Why: the original code calls F.scaled_dot_product_attention with 5D
+    [bsz, num_blocks, num_heads, ctx, head_dim] tensors. PyTorch handles 5D
+    SDPA at runtime via the MATH backend, but the dynamo->ONNX converter
+    in torch 2.11 only registers a 4D adapter for aten.scaled_dot_product_attention
+    and fails with `only 4D query, key, and value are supported`.
+
+    The MATH backend is mathematically equivalent to:
+        softmax(QK^T * scale + attn_mask) @ V
+    Inlining that here avoids the converter limitation, with no numerical
+    change (verified by parity in the smoke test).
+    """
+    import math
+    import types
+
+    def _patched_forward(self, hidden_states, attention_dists):
+        hidden_states = self.pre_norm(hidden_states)
+        bsz, num_features, _ = hidden_states.shape
+
+        num_blocks = math.ceil(num_features / self.context_size)
+        remainder = num_features % self.context_size
+        if remainder > 0:
+            hidden_states = torch.nn.functional.pad(
+                hidden_states, (0, 0, 0, self.context_size - remainder)
+            )
+
+        query_states = self.to_q(hidden_states)
+        key_states, value_states = self.to_kv(hidden_states).chunk(2, dim=-1)
+
+        # Reshape to [bsz, num_blocks, num_heads, context_size, head_dim].
+        query_states = query_states.reshape(
+            bsz, num_blocks, self.context_size, self.num_heads, -1
+        ).transpose(2, 3)
+        key_states = key_states.reshape(
+            bsz, num_blocks, self.context_size, self.num_heads, -1
+        ).transpose(2, 3)
+        value_states = value_states.reshape(
+            bsz, num_blocks, self.context_size, self.num_heads, -1
+        ).transpose(2, 3)
+
+        # Shaw relative positional bias (already scaled).
+        rel_pos_emb = self.rel_pos_emb(attention_dists)
+        pos_attn = torch.einsum(
+            "b m h c d, c r d -> b m h c r", query_states, rel_pos_emb
+        ) * self.scale
+
+        if remainder > 0:
+            mask = torch.ones(
+                self.context_size, self.context_size, dtype=torch.bool,
+                device=hidden_states.device,
+            )
+            mask[:remainder, :remainder] = 0
+            mask_value = -torch.finfo(pos_attn.dtype).max
+            pos_attn[:, -1, :] = pos_attn[:, -1, :].masked_fill(mask, mask_value)
+
+        # Manual math equivalent of SDPA:
+        #   scores = (Q @ K^T) * scale + attn_mask
+        #   attn   = softmax(scores)
+        #   out    = attn @ V
+        scores = torch.matmul(query_states, key_states.transpose(-2, -1)) * self.scale
+        scores = scores + pos_attn
+        attn = torch.softmax(scores, dim=-1)
+        out = torch.matmul(attn, value_states)
+
+        out = out.transpose(2, 3).reshape(bsz, hidden_states.shape[1], -1)
+        out = self.to_out(out[:, :num_features, :])
+        return self.dropout(out)
+
+    patched = 0
+    for module in encoder.modules():
+        if type(module).__name__ == "GraniteSpeechConformerAttention":
+            module.forward = types.MethodType(_patched_forward, module)
+            patched += 1
+    print(f"  Patched {patched} GraniteSpeechConformerAttention layers (5D SDPA -> manual math).")
+
+
+def make_encoder_wrapper(torch: Any, model: Any) -> Any:
+    """Wrap GraniteSpeechCTCEncoder for ONNX export.
+
+    The encoder forward is single-input single-output, but the per-layer
+    attention uses 5D SDPA which the dynamo->ONNX converter does not
+    support; see _patch_encoder_attention_for_export.
+    """
+    nn = torch.nn
+    _patch_encoder_attention_for_export(torch, model.encoder)
+
+    class EncoderWrapper(nn.Module):
+        def __init__(self, enc: Any) -> None:
+            super().__init__()
+            self.encoder = enc
+
+        def forward(self, input_features: Any) -> Any:
+            return self.encoder(input_features)
+
+    return EncoderWrapper(model.encoder)
+
+
+def make_projector_wrapper(torch: Any, model: Any) -> Any:
+    """Projector: pads to multiple of window_size=15, runs Q-Former with 3 queries
+    per 15-frame block, downsamples 5x, projects to LLM hidden dim 2048.
+    Single-input single-output."""
+    nn = torch.nn
+
+    class ProjectorWrapper(nn.Module):
+        def __init__(self, proj: Any) -> None:
+            super().__init__()
+            self.projector = proj
+
+        def forward(self, encoder_hidden: Any) -> Any:
+            return self.projector(encoder_hidden)
+
+    return ProjectorWrapper(model.projector)
+
+
+def make_decoder_init_wrapper(torch: Any, model: Any) -> Any:
+    """Prefill graph.
+
+    Inputs:
+      input_ids       [B, S]    int64
+      audio_embeds    [B, A, 2048] float32 (projector output; padded along A)
+      attention_mask  [B, S]    int64
+
+    Returns:
+      logits          [B, S, V] float32
+      present_key_<L>, present_value_<L> for L in 0..39 (NUM_DECODER_LAYERS)
+
+    Audio fusion is mathematically equivalent to
+    `GraniteSpeechForConditionalGeneration.get_merged_audio_embeddings`,
+    but uses a cumsum + torch.gather + torch.where pattern instead of the
+    boolean-indexing + masked_scatter pattern. Background:
+
+      * The reference uses `audio_embeds[input_features_mask]` (NonZero +
+        GatherND in ONNX) followed by `masked_scatter` (ScatterND). The
+        dynamo->ONNX conversion of this pair traced numerically WRONG:
+        prefill logits diverged by ~14 vs the PyTorch reference even at
+        the trace shape, while step parity was tight to 1e-5. The bug is
+        likely in the masked_scatter -> ScatterND translator (PyTorch's
+        masked_scatter takes a 1-D-flat source and walks it sequentially;
+        ScatterND needs explicit per-element [b, s] indices, which the
+        translator must derive from the bool mask).
+      * cumsum + gather + where avoids both NonZero and ScatterND. It
+        also drops the need for an explicit audio_mask input: the cumsum
+        of `is_audio` gives the per-batch audio index at every position,
+        and gather + where assemble the merged embeddings without ever
+        addressing the padded slots in audio_embeds (no audio token in
+        input_ids points to them).
+    """
+    nn = torch.nn
+
+    class DecoderInitWrapper(nn.Module):
+        def __init__(self, m: Any) -> None:
+            super().__init__()
+            self.language_model = m.language_model
+            self.audio_token_id = m.config.audio_token_id
+
+        def forward(
+            self,
+            input_ids: Any,
+            audio_embeds: Any,
+            attention_mask: Any,
+        ) -> Any:
+            is_audio = input_ids == self.audio_token_id
+            llm_input_ids = torch.where(is_audio, torch.zeros_like(input_ids), input_ids)
+            text_embeds = self.language_model.get_input_embeddings()(llm_input_ids)
+
+            # Per-position audio index: cumulative count of audio tokens up
+            # to and including position s, minus 1 (0-based). At non-audio
+            # positions the index is unused (torch.where below selects text).
+            audio_idx = is_audio.long().cumsum(dim=1) - 1
+            audio_idx = audio_idx.clamp(min=0)
+            # gather along dim=1 across the audio axis. audio_embeds: [B, A, D]
+            # indices: [B, S, D] (broadcast over D)
+            d = audio_embeds.shape[-1]
+            idx_expanded = audio_idx.unsqueeze(-1).expand(-1, -1, d)
+            gathered_audio = torch.gather(audio_embeds, 1, idx_expanded)  # [B, S, D]
+
+            embeds = torch.where(is_audio.unsqueeze(-1), gathered_audio, text_embeds)
+
+            out = self.language_model(
+                inputs_embeds=embeds,
+                attention_mask=attention_mask,
+                use_cache=True,
+                return_dict=True,
+            )
+            kv = out.past_key_values
+            keys = [layer.keys for layer in kv.layers]
+            values = [layer.values for layer in kv.layers]
+            return (out.logits, *keys, *values)
+
+    return DecoderInitWrapper(model)
+
+
+def make_decoder_step_wrapper(torch: Any, model: Any) -> Any:
+    """Single-token step.
+
+    Inputs:
+      input_id        [B, 1]     int64
+      attention_mask  [B, T]     int64  (T = past_len + 1)
+      cache_position  [1]        int64  (single value = past_len; HF convention is 1D)
+      past_key_<L>, past_value_<L>  for L in 0..39, each [B, 4, past_len, 128]
+
+    Returns:
+      logits           [B, 1, V]
+      present_key_<L>, present_value_<L>  each [B, 4, past_len + 1, 128]
+    """
+    nn = torch.nn
+    from transformers.cache_utils import DynamicCache
+
+    class DecoderStepWrapper(nn.Module):
+        def __init__(self, m: Any) -> None:
+            super().__init__()
+            self.language_model = m.language_model
+
+        def forward(
+            self,
+            input_id: Any,
+            attention_mask: Any,
+            cache_position: Any,
+            *past_kv: Any,
+        ) -> Any:
+            n = NUM_DECODER_LAYERS
+            past_keys = list(past_kv[:n])
+            past_values = list(past_kv[n:])
+            cache = DynamicCache.from_legacy_cache(
+                tuple(zip(past_keys, past_values))
+            )
+            out = self.language_model(
+                input_ids=input_id,
+                attention_mask=attention_mask,
+                past_key_values=cache,
+                cache_position=cache_position,
+                use_cache=True,
+                return_dict=True,
+            )
+            new_keys = [layer.keys for layer in out.past_key_values.layers]
+            new_values = [layer.values for layer in out.past_key_values.layers]
+            return (out.logits, *new_keys, *new_values)
+
+    return DecoderStepWrapper(model)
+
+
+# ---------------------------------------------------------------------------
+# Export helpers (mirrors cohere_export's style)
+# ---------------------------------------------------------------------------
+
+# 2 GiB protobuf wire-format cap minus headroom.
+_INGRAPH_MAX_BYTES = (2 << 30) - (100 << 20)
+
+
+def _wrapper_weight_bytes(wrapper: Any) -> int:
+    total = 0
+    for p in wrapper.parameters():
+        total += p.numel() * p.element_size()
+    for b in wrapper.buffers():
+        total += b.numel() * b.element_size()
+    return total
+
+
+def _make_dim(torch: Any, name: str, *, min: int | None = None, max: int | None = None) -> Any:
+    kwargs: dict[str, Any] = {}
+    if min is not None:
+        kwargs["min"] = min
+    if max is not None:
+        kwargs["max"] = max
+    return torch.export.Dim(name, **kwargs)
+
+
+def _auto_dim(torch: Any) -> Any:
+    return torch.export.Dim.AUTO
+
+
+def _run_torch_export(
+    torch: Any,
+    wrapper: Any,
+    args_tuple: tuple,
+    output_path: Path,
+    *,
+    input_names: list[str],
+    output_names: list[str],
+    dynamic_axes: dict[str, dict[int, str]],
+    dynamic_shapes: Any,
+    opset: int,
+    legacy: bool,
+) -> None:
+    if legacy:
+        torch.onnx.export(
+            wrapper,
+            args_tuple,
+            str(output_path),
+            input_names=input_names,
+            output_names=output_names,
+            dynamic_axes=dynamic_axes,
+            opset_version=opset,
+            dynamo=False,
+        )
+        return
+
+    modern_opset = max(opset, 18)
+    if modern_opset != opset:
+        print(f"  Bumping opset {opset} -> {modern_opset} for the dynamo exporter.")
+
+    weight_bytes = _wrapper_weight_bytes(wrapper)
+    use_external = weight_bytes > _INGRAPH_MAX_BYTES
+    print(
+        f"  Weights ~ {weight_bytes / 1024 / 1024:.1f} MB -> "
+        f"{'external sidecar' if use_external else 'in-graph (no .data file)'}"
+    )
+
+    torch.onnx.export(
+        wrapper,
+        args_tuple,
+        str(output_path),
+        input_names=input_names,
+        output_names=output_names,
+        dynamic_shapes=dynamic_shapes,
+        opset_version=modern_opset,
+        dynamo=True,
+        external_data=use_external,
+        optimize=True,
+    )
+
+
+def _consolidate_external_data(onnx_path: Path) -> None:
+    """Sweep stale Constant_* files left by the dynamo exporter and
+    report the final layout."""
+    import onnx
+
+    data_file = onnx_path.name + ".data"
+    data_path = onnx_path.parent / data_file
+
+    proto = onnx.load(str(onnx_path), load_external_data=False)
+    has_external = any(
+        init.data_location == onnx.TensorProto.EXTERNAL
+        for init in proto.graph.initializer
+    )
+    if not has_external and data_path.exists():
+        print(f"  Removing stale {data_file} (weights are now in-graph).")
+        data_path.unlink()
+
+    keep = {onnx_path.resolve(), data_path.resolve()}
+    deleted = 0
+    for pattern in ("Constant_*", "*Constant*"):
+        for stale in onnx_path.parent.glob(pattern):
+            stale_resolved = stale.resolve()
+            if stale_resolved not in keep and stale.is_file():
+                stale.unlink()
+                deleted += 1
+    if deleted:
+        print(f"  Removed {deleted} scattered weight file(s).")
+
+    if data_path.exists():
+        total_mb = (onnx_path.stat().st_size + data_path.stat().st_size) / 1024 / 1024
+        print(
+            f"  Saved {onnx_path.name} "
+            f"({onnx_path.stat().st_size / 1024:.0f} KB graph) + "
+            f"{data_file} ({data_path.stat().st_size / 1024 / 1024:.1f} MB weights) "
+            f"[total {total_mb:.1f} MB]"
+        )
+    else:
+        print(
+            f"  Saved {onnx_path.name} "
+            f"({onnx_path.stat().st_size / 1024 / 1024:.1f} MB, weights in-graph)"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Per-module export entrypoints
+# ---------------------------------------------------------------------------
+
+def export_encoder(
+    torch: Any,
+    wrapper: Any,
+    dummy_features: Any,
+    output_path: Path,
+    opset: int,
+    legacy: bool,
+) -> None:
+    print(f"\nExporting encoder to {output_path} ...")
+
+    with torch.no_grad():
+        out = wrapper(dummy_features)
+    print(f"  PyTorch encoder output shape: {tuple(out.shape)}")
+
+    batch = _make_dim(torch, "batch", min=1, max=65535)
+    time_dim = _auto_dim(torch)
+    _run_torch_export(
+        torch,
+        wrapper,
+        (dummy_features,),
+        output_path,
+        input_names=["input_features"],
+        output_names=["encoder_hidden"],
+        dynamic_axes={
+            "input_features": {0: "batch", 1: "time_stacked"},
+            "encoder_hidden": {0: "batch", 1: "time_stacked"},
+        },
+        dynamic_shapes=({0: batch, 1: time_dim},),
+        opset=opset,
+        legacy=legacy,
+    )
+    _consolidate_external_data(output_path)
+
+
+def export_projector(
+    torch: Any,
+    wrapper: Any,
+    dummy_encoder_hidden: Any,
+    output_path: Path,
+    opset: int,
+    legacy: bool,
+) -> None:
+    print(f"\nExporting projector to {output_path} ...")
+
+    with torch.no_grad():
+        out = wrapper(dummy_encoder_hidden)
+    print(f"  PyTorch projector output shape: {tuple(out.shape)}")
+
+    batch = _make_dim(torch, "batch", min=1, max=65535)
+    time_dim = _auto_dim(torch)
+    _run_torch_export(
+        torch,
+        wrapper,
+        (dummy_encoder_hidden,),
+        output_path,
+        input_names=["encoder_hidden"],
+        output_names=["audio_embeds"],
+        dynamic_axes={
+            "encoder_hidden": {0: "batch", 1: "time_stacked"},
+            "audio_embeds":   {0: "batch", 1: "audio_len"},
+        },
+        dynamic_shapes=({0: batch, 1: time_dim},),
+        opset=opset,
+        legacy=legacy,
+    )
+    _consolidate_external_data(output_path)
+
+
+def _kv_names(prefix: str) -> list[str]:
+    return [f"{prefix}_{i}" for i in range(NUM_DECODER_LAYERS)]
+
+
+def export_decoder_init(
+    torch: Any,
+    wrapper: Any,
+    inputs: dict[str, Any],
+    output_path: Path,
+    opset: int,
+    legacy: bool,
+) -> None:
+    print(f"\nExporting decoder_init to {output_path} ...")
+
+    input_ids = inputs["input_ids"]
+    attention_mask = inputs["attention_mask"]
+    audio_embeds = inputs["audio_embeds"]
+
+    with torch.no_grad():
+        out = wrapper(input_ids, audio_embeds, attention_mask)
+    logits = out[0]
+    print(f"  PyTorch logits shape: {tuple(logits.shape)}, "
+          f"present_key_0 shape: {tuple(out[1].shape)}")
+
+    output_names = (
+        ["logits"]
+        + _kv_names("present_key")
+        + _kv_names("present_value")
+    )
+
+    batch = _make_dim(torch, "batch", min=1, max=65535)
+    prompt_len = _auto_dim(torch)
+    audio_len = _auto_dim(torch)
+
+    dynamic_axes: dict[str, dict[int, str]] = {
+        "input_ids":      {0: "batch", 1: "prompt_len"},
+        "audio_embeds":   {0: "batch", 1: "audio_len"},
+        "attention_mask": {0: "batch", 1: "prompt_len"},
+        "logits":         {0: "batch", 1: "prompt_len"},
+    }
+    for name in _kv_names("present_key") + _kv_names("present_value"):
+        dynamic_axes[name] = {0: "batch", 2: "prompt_len"}
+
+    _run_torch_export(
+        torch,
+        wrapper,
+        (input_ids, audio_embeds, attention_mask),
+        output_path,
+        input_names=["input_ids", "audio_embeds", "attention_mask"],
+        output_names=output_names,
+        dynamic_axes=dynamic_axes,
+        dynamic_shapes=(
+            {0: batch, 1: prompt_len},
+            {0: batch, 1: audio_len},
+            {0: batch, 1: prompt_len},
+        ),
+        opset=opset,
+        legacy=legacy,
+    )
+    _consolidate_external_data(output_path)
+
+
+def export_decoder_step(
+    torch: Any,
+    wrapper: Any,
+    init_inputs: dict[str, Any],
+    init_outputs: tuple,
+    output_path: Path,
+    opset: int,
+    legacy: bool,
+) -> None:
+    print(f"\nExporting decoder_step to {output_path} ...")
+
+    # Build dummy step inputs from the prefill outputs.
+    batch_size = init_inputs["input_ids"].shape[0]
+    past_len = init_inputs["input_ids"].shape[1]
+    device = init_inputs["input_ids"].device
+
+    input_id = torch.zeros((batch_size, 1), dtype=torch.long, device=device)
+    # HF convention: cache_position is 1D of length seq_len (= 1 for a step).
+    cache_position = torch.tensor([past_len], dtype=torch.long, device=device)
+    attention_mask = torch.ones((batch_size, past_len + 1), dtype=torch.long, device=device)
+
+    keys = init_outputs[1 : 1 + NUM_DECODER_LAYERS]
+    values = init_outputs[1 + NUM_DECODER_LAYERS : 1 + 2 * NUM_DECODER_LAYERS]
+
+    with torch.no_grad():
+        out = wrapper(input_id, attention_mask, cache_position, *keys, *values)
+    print(f"  PyTorch step logits shape: {tuple(out[0].shape)}")
+
+    input_names = (
+        ["input_id", "attention_mask", "cache_position"]
+        + _kv_names("past_key")
+        + _kv_names("past_value")
+    )
+    output_names = (
+        ["logits"]
+        + _kv_names("present_key")
+        + _kv_names("present_value")
+    )
+
+    batch = _make_dim(torch, "batch", min=1, max=65535)
+    past = _auto_dim(torch)
+    total = _auto_dim(torch)
+
+    dynamic_axes: dict[str, dict[int, str]] = {
+        "input_id": {0: "batch"},
+        "attention_mask": {0: "batch", 1: "total_len"},
+        # cache_position is 1D [seq_len]; the step graph fixes seq_len=1
+        # so this axis is static and we omit it from dynamic_axes.
+        "logits": {0: "batch"},
+    }
+    for name in _kv_names("past_key") + _kv_names("past_value"):
+        dynamic_axes[name] = {0: "batch", 2: "past_len"}
+    for name in _kv_names("present_key") + _kv_names("present_value"):
+        dynamic_axes[name] = {0: "batch", 2: "total_len"}
+
+    # The wrapper's signature is (input_id, attention_mask, cache_position, *past_kv),
+    # so torch.export sees 4 top-level args (the varargs collapses into one).
+    # Mirror that with the dynamic_shapes structure: 3 dicts + a tuple of 80 dicts.
+    past_kv_shapes = tuple({0: batch, 2: past} for _ in range(2 * NUM_DECODER_LAYERS))
+    dyn_shapes = (
+        {0: batch},          # input_id
+        {0: batch, 1: total},  # attention_mask
+        {},                  # cache_position: [1], static
+        past_kv_shapes,      # *past_kv as a single nested tuple
+    )
+
+    _run_torch_export(
+        torch,
+        wrapper,
+        (input_id, attention_mask, cache_position, *keys, *values),
+        output_path,
+        input_names=input_names,
+        output_names=output_names,
+        dynamic_axes=dynamic_axes,
+        dynamic_shapes=dyn_shapes,
+        opset=opset,
+        legacy=legacy,
+    )
+    _consolidate_external_data(output_path)
+
+
+# ---------------------------------------------------------------------------
+# Tokenizer / processor asset copy
+# ---------------------------------------------------------------------------
+
+def copy_processor_assets(processor: Any, output_dir: Path) -> list[str]:
+    """Save the processor's tokenizer + audio extractor assets next to the
+    ONNX files so a Vernacula runtime has everything it needs locally."""
+    print("\nSaving processor assets ...")
+    processor.save_pretrained(str(output_dir))
+    saved = sorted(p.name for p in output_dir.iterdir() if p.is_file())
+    print(f"  Saved {len(saved)} files: {', '.join(saved)}")
+    return saved
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
 
 def main() -> int:
     args = parse_args()
 
-    # Defer imports so `--help` works without the heavy stack installed.
     try:
-        from transformers import AutoConfig
+        import torch
     except ImportError:
         print(
-            "transformers is not installed. Install requirements first:\n"
+            "torch is not installed. Install requirements first:\n"
             "  pip install -r public/scripts/granite_export/requirements.txt",
             file=sys.stderr,
         )
         return 2
 
-    if args.output_dir.exists() and not args.overwrite:
-        print(
-            f"Output directory {args.output_dir} already exists. "
-            "Pass --overwrite to replace it.",
-            file=sys.stderr,
-        )
-        return 2
+    ensure_output_dir(args.output_dir, args.overwrite)
 
-    print(f"Loading config from {args.model_repo} (revision={args.revision})")
-    config = AutoConfig.from_pretrained(
-        args.model_repo,
-        revision=args.revision,
-        trust_remote_code=False,
+    dtype = {
+        "float32": torch.float32,
+        "float16": torch.float16,
+        "bfloat16": torch.bfloat16,
+    }[args.dtype]
+
+    model, processor = load_model_and_processor(
+        args.model_repo, args.revision, args.device, dtype, torch
     )
 
-    layout = describe_planned_layout(config)
-    print("Planned ONNX package layout:")
-    print(json.dumps(layout, indent=2))
-
+    inputs = make_dummy_processor_inputs(
+        torch, processor, args.dummy_seconds, args.device
+    )
     print(
-        "\nSkeleton run complete — no ONNX written.\n"
-        "The full export is tracked in a follow-up issue under #28; see\n"
-        "docs/dev/granite_speech_investigation.md sequenced plan.",
-        file=sys.stderr,
+        "  Dummy processor outputs: "
+        + ", ".join(f"{k}={tuple(v.shape)}" for k, v in inputs.items() if hasattr(v, "shape"))
     )
+    input_features = inputs["input_features"]
+    input_features_mask = inputs["input_features_mask"]
+    input_ids = inputs["input_ids"]
+    attention_mask = inputs["attention_mask"]
+
+    encoder_wrapper = make_encoder_wrapper(torch, model)
+    projector_wrapper = make_projector_wrapper(torch, model)
+
+    report: dict[str, Any] = {
+        "model_repo": args.model_repo,
+        "revision": args.revision,
+        "device": args.device,
+        "dtype": args.dtype,
+        "opset": args.opset,
+        "exporter": "legacy" if args.legacy_exporter else "dynamo",
+        "stages": {},
+    }
+
+    # -------- Encoder --------
+    enc_out: Any = None
+    if not args.skip_encoder:
+        t0 = time.time()
+        export_encoder(
+            torch,
+            encoder_wrapper,
+            input_features,
+            args.output_dir / "encoder.onnx",
+            args.opset,
+            args.legacy_exporter,
+        )
+        report["stages"]["encoder"] = {"seconds": round(time.time() - t0, 2)}
+    with torch.no_grad():
+        enc_out = encoder_wrapper(input_features)
+
+    # -------- Projector --------
+    proj_out: Any = None
+    if not args.skip_projector:
+        t0 = time.time()
+        export_projector(
+            torch,
+            projector_wrapper,
+            enc_out,
+            args.output_dir / "projector.onnx",
+            args.opset,
+            args.legacy_exporter,
+        )
+        report["stages"]["projector"] = {"seconds": round(time.time() - t0, 2)}
+    with torch.no_grad():
+        proj_out = projector_wrapper(enc_out)
+
+    # -------- Decoder --------
+    if not args.skip_decoder:
+        decoder_init_wrapper = make_decoder_init_wrapper(torch, model)
+        decoder_step_wrapper = make_decoder_step_wrapper(torch, model)
+
+        # The prefill graph expects projector output + the same
+        # input_features_mask the merger uses to gate audio frames.
+        decoder_init_inputs = {
+            "input_ids": input_ids,
+            "audio_embeds": proj_out,
+            "attention_mask": attention_mask,
+        }
+        t0 = time.time()
+        export_decoder_init(
+            torch,
+            decoder_init_wrapper,
+            decoder_init_inputs,
+            args.output_dir / "decoder_init.onnx",
+            args.opset,
+            args.legacy_exporter,
+        )
+        report["stages"]["decoder_init"] = {"seconds": round(time.time() - t0, 2)}
+
+        with torch.no_grad():
+            init_out = decoder_init_wrapper(
+                input_ids, proj_out, attention_mask
+            )
+
+        t0 = time.time()
+        export_decoder_step(
+            torch,
+            decoder_step_wrapper,
+            decoder_init_inputs,
+            init_out,
+            args.output_dir / "decoder_step.onnx",
+            args.opset,
+            args.legacy_exporter,
+        )
+        report["stages"]["decoder_step"] = {"seconds": round(time.time() - t0, 2)}
+
+    # -------- Tokenizer / processor assets --------
+    saved = copy_processor_assets(processor, args.output_dir)
+    report["processor_assets"] = saved
+
+    # -------- Export report --------
+    report_path = args.output_dir / "export-report.json"
+    report_path.write_text(json.dumps(report, indent=2))
+    print(f"\nWrote {report_path}")
+    print("Export complete.")
     return 0
 
 

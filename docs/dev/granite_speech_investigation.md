@@ -198,3 +198,321 @@ parallel pipeline.
 **Next:** lay down the skeleton (this PR), then start Run 2 — actually
 load the model and trace `forward` to confirm or refute the BPE-head
 interpretation before writing the export script proper.
+
+---
+
+## Run 2 — 2026-05-08 (model loaded, forward traced)
+
+**Question:** Does the Run 1 hypothesis hold under direct inspection of
+the public checkpoint? Specifically: is the encoder a single-output
+module (no exposed BPE head), and what is the actual prefill contract
+that `decoder_init.onnx` needs to mirror?
+
+**Method:** [`scripts/granite_export/inspect_granite_speech.py`](../../scripts/granite_export/inspect_granite_speech.py) walks the
+module tree, runs each submodule on the processor's dummy-audio output,
+and reads `GraniteSpeechForConditionalGeneration.forward` source for
+the audio-merge logic.
+
+**Environment:** transformers 4.57.6 (matches the upstream config's
+`transformers_version`), torch 2.11, torchaudio 2.11. Discovered during
+this run: the feature extractor uses **torchaudio**, not librosa
+(initial requirements.txt listed only librosa); torchaudio added to
+requirements.
+
+### Observed shapes (2 s dummy audio @ 16 kHz)
+
+```
+input_features          [1, 100, 160]     float32   from GraniteSpeechFeatureExtractor
+input_features_mask     [1, 21]           bool      from GraniteSpeechFeatureExtractor
+encoder(input_features) [1, 100, 1024]    float32
+projector(enc_out)      [1, 21, 2048]     float32
+lm logits               [1, 39, 100353]   float32
+lm DynamicCache         40 layers; layer0.keys [1, 4, 39, 128]  (GQA: 4 KV heads, head_dim 128)
+```
+
+### Run 1 hypotheses confirmed
+
+- **Encoder is single-output.** `forward(hidden_states) -> Tensor`.
+  No `aux_logits` / `ctc_logits` field on the model output.
+  [`GraniteSpeechCTCEncoder.forward`](https://github.com/huggingface/transformers/blob/main/src/transformers/models/granite_speech/modeling_granite_speech.py)
+  does use `self.out` (348-dim) and `self.out_mid` at the **middle
+  layer** for *self-conditioning* — softmax of mid-layer CTC logits is
+  projected back into the hidden stream — but those tensors are
+  internal to the forward pass and not exposed as a return value. The
+  "dual-head CTC encoder" wording in [#28](https://github.com/christopherthompson81/vernacula/issues/28)
+  refers to a training-time loss / mid-layer self-conditioning trick,
+  not two parallel ONNX outputs. The encoder ONNX is a single graph
+  with one output of shape `[B, T, 1024]`.
+- **Projector is a real BLIP-2 Q-Former + projection.** Internal
+  modules: `qformer: Blip2QFormerModel` + `linear: Linear`. The
+  windowing happens inside `forward`: pad seq_len to a multiple of
+  `window_size=15`, reshape to `[batch * nblocks, 15, 1024]`, run
+  Q-Former with 3 trainable queries per block, reshape back to
+  `[batch, nblocks * 3, 1024]`, project to 2048. Single-input,
+  single-output module — exports cleanly.
+- **Decoder accepts `inputs_embeds`** with `past_key_values` as a
+  `Cache` or list. Standard `GraniteForCausalLM` contract — same as
+  any other Granite LLM export.
+
+### Run 1 hypotheses revised
+
+- **Mel + frame-stack live in the feature extractor, not the encoder.**
+  The processor produces `input_features [B, T_post_stack, 160]`
+  directly. The encoder's `input_dim 160` is the *post-stack* dim, not
+  the pre-stack `[80, T]` shape I'd planned. Update to the planned
+  layout: `mel.onnx` (or its C# replacement) outputs
+  `[batch, T_stacked, 160]`, **not** `[batch, 80, T]`. Either bake the
+  stacking into mel.onnx or replicate
+  `GraniteSpeechFeatureExtractor` logic on the host.
+- **Audio splicing is `masked_scatter`, not concat.** `forward`'s
+  merging logic ([modeling_granite_speech.py](https://github.com/huggingface/transformers/blob/main/src/transformers/models/granite_speech/modeling_granite_speech.py)
+  `get_merged_audio_embeddings`):
+
+  ```python
+  is_audio_index = input_ids == config.audio_token_id  # 100352
+  llm_input_ids = where(is_audio_index, 0, input_ids)
+  inputs_embeds = embeddings(llm_input_ids)
+  if input_features_mask is not None:
+      audio_features = audio_features[input_features_mask]
+  inputs_embeds = inputs_embeds.masked_scatter(
+      is_audio_index.unsqueeze(-1), audio_features)
+  ```
+
+  The prompt ships with N copies of `<|audio|>` (one per projector
+  output frame), and the projector's masked output replaces those N
+  positions in the embedding stream. So **the prompt construction is
+  audio-length-aware** — the C# side has to pre-tokenize a prompt with
+  the right number of `<|audio|>` placeholders before tokenization.
+  Concretely, the processor inserts
+  `nblocks(T_input/15) * 3 / projector_downsample_rate * something`...
+  actually simpler: the processor inserts as many `<|audio|>` tokens
+  as the projector will eventually emit (21 in the 2s example).
+  C# runtime needs the same arithmetic.
+
+### Final decoder cache contract
+
+```
+DynamicCache with 40 layers
+  layer.keys   [B, 4, S, 128]
+  layer.values [B, 4, S, 128]
+```
+
+That's 40 × 2 = 80 KV tensors per step. Total KV bytes per token (fp32):
+`40 layers * 2 (K/V) * 4 KV heads * 128 head_dim * 4 bytes = 163,840
+B/token = 160 KiB/token`. For a 4096-position cache budget that's
+640 MiB per stream — fits in any modern GPU but nontrivial. Matches the
+Cohere split-self-cross pattern in spirit; the Cohere KV layout is
+distinct enough that it shouldn't reuse a `KvCacheBinding` (per
+[inference_abstraction_investigation.md](inference_abstraction_investigation.md)
+Run 3, KV layouts are not cross-portable).
+
+### Resulting export plan (revised from Run 1)
+
+| ONNX | Inputs | Outputs |
+|---|---|---|
+| `mel.onnx` (TBD) | `audio [B, samples]` | `input_features [B, T, 160]`, `input_features_mask [B, T_proj]` |
+| `encoder.onnx` | `input_features [B, T, 160]` | `encoder_hidden [B, T, 1024]` |
+| `projector.onnx` | `encoder_hidden [B, T, 1024]` | `audio_embeds [B, T_proj, 2048]` |
+| `decoder_init.onnx` | `input_ids [B, S]`, `audio_embeds [B, T_proj, 2048]`, `audio_mask [B, T_proj]`, `attention_mask [B, S]` | `logits [B, S, 100353]`, `present_kv` (40×2 × `[B, 4, S, 128]`) |
+| `decoder_step.onnx` | `input_id [B, 1]`, `past_kv` | `logits [B, 1, 100353]`, `present_kv` |
+
+Note `decoder_init` keeps the audio-merging *inside* the graph (matches
+Qwen3's pattern; Cohere doesn't need this because it's seq2seq).
+That's a `masked_scatter` + an `index` from `input_features_mask` — both
+ONNX-expressible.
+
+`mel.onnx` is annotated TBD because torchaudio's mel may or may not
+trace cleanly under `torch.onnx.export(dynamo=True)`. If it doesn't,
+the fallback is to ship the algorithm in C# as `Vernacula.Base/Inference/Mel*.cs`
+and skip the ONNX. Decided in Run 3.
+
+### Open questions that survive into Run 3
+
+- Will `torch.onnx.export(dynamo=True)` accept torchaudio's
+  `MelSpectrogram` + the frame-stacking helper as a single graph? If
+  not, fall back to a host-side C# implementation.
+- The projector's `nblocks = ceil(T/15)` padding produces a
+  data-dependent shape. The dynamo exporter is strict about
+  `GuardOnDataDependentSymNode` errors here (per cohere_export README
+  notes). If it rejects the projector, we patch with a fixed-shape
+  wrapper or fall back to the legacy TorchScript exporter.
+- Does the prompt construction need to happen in C# string-space, or
+  can we bake it into a tokenizer-level helper? Punt to the C# CLI
+  step.
+
+**Next:** start writing the actual exports in
+[`export_granite_speech_to_onnx.py`](../../scripts/granite_export/export_granite_speech_to_onnx.py)
+— encoder first (simplest), then projector, then the decoder pair,
+then the mel question.
+
+---
+
+## Run 3 — 2026-05-08 (export landed, four stages parity-green)
+
+**Question:** Land the four ONNX graphs for the base 4.1-2b checkpoint
+and confirm parity vs the reference `transformers` forward.
+
+**Method:** Replaced the stub with a full export script. Iterated on each
+piece until parity held within fp32 noise. Parity harness:
+[`test_parity.py`](../../scripts/granite_export/test_parity.py).
+
+### Final parity (B=1, 2 s dummy audio, CPU fp32, ORT 1.25)
+
+| Stage | max-abs-diff |
+|---|---|
+| `encoder.onnx`      | 3.4e-4 |
+| `projector.onnx`    | 1.4e-6 |
+| `decoder_init.onnx` | 3.9e-5 (logits), 4.4e-5 (KV) |
+| `decoder_step.onnx` | 9.1e-6 (logits), 2.3e-5 (KV) |
+
+Reference yardstick: `cohere_export` modern-path encoder lands ~3e-6.
+Our encoder is two orders looser at 3e-4 because of patch (1) below.
+Acceptable for fp32 LM consumption; worth a re-look if the C# CLI flags
+WER deltas vs PyTorch.
+
+### Three patches were necessary
+
+**(1) 5-D SDPA in the encoder → manual math.** `GraniteSpeechConformerAttention.forward`
+runs `F.scaled_dot_product_attention` on
+`[bsz, num_blocks, num_heads, ctx, head_dim]` — five dimensions for
+block-windowed attention. Torch 2.11's `aten.scaled_dot_product_attention`
+ONNX adapter only handles 4-D Q/K/V and fails with
+`only 4D query, key, and value are supported`. The original code uses the
+MATH backend, so we inline its math equivalent:
+`out = softmax((Q @ K^T) * scale + attn_mask) @ V`. That's mathematically
+identical — but the manmade matmul accumulation order differs from
+SDPA's, which is the (~3e-4 vs ~3e-6) discrepancy we see in the encoder
+parity number.
+
+Lives in
+[`_patch_encoder_attention_for_export`](../../scripts/granite_export/export_granite_speech_to_onnx.py).
+Mirrors the cohere_export Conformer-attention patch in spirit, though
+the shape mismatch is different — Cohere's was a B=1 specialization of
+`pos_emb.expand`, ours is the SDPA arity limit.
+
+**(2) `attn_implementation="eager"` for the language model.** The default
+SDPA path goes through `transformers.integrations.sdpa_attention.sdpa_attention_forward`,
+which contains a data-dependent branch `attention_mask.shape[-1] != q.shape[-1]`
+to switch between causal-only and explicit-mask SDPA. The dynamo
+exporter cannot guard symbolic dims through this branch and raises
+`GuardOnDataDependentSymNode` on the decoder_step trace. Loading with
+`attn_implementation="eager"` keeps both prefill and step on the eager
+attention path, which has no such branch and traces cleanly. No
+numerical impact (eager and SDPA are mathematically identical at fp32).
+
+**(3) Audio-merge: `masked_scatter` → cumsum + gather + where.** This was
+the load-bearing one. The reference's `get_merged_audio_embeddings` uses:
+
+```python
+valid = audio_features[input_features_mask]   # NonZero + GatherND
+embeds = embeds.masked_scatter(is_audio.unsqueeze(-1), valid)  # ScatterND
+```
+
+This traced WITHOUT raising any export error, but the resulting graph
+produced **wrong logits** at every position from the first audio token
+onward. Per-position max-diff:
+
+```
+positions 0-2 (pre-audio):    < 5e-6   ✓
+positions 3-23 (audio span):  ~10-14   ✗
+positions 24-38 (post-audio): ~5-15    ✗
+```
+
+In PyTorch the same wrapper's output matched the reference forward to
+**0.000e+00** — proving the bug was strictly in the dynamo-to-ONNX
+conversion of the boolean-index/masked_scatter pair, not in the wrapper's
+logic. Inspecting the produced ONNX showed:
+
+```
+NonZero(audio_mask) -> indices
+GatherND(audio_embeds, indices) -> flat_audio
+ScatterND(text_embeds, scatter_indices, flat_audio) -> merged
+```
+
+The most likely cause is that PyTorch's `masked_scatter` walks the
+source tensor sequentially in *flat* order while ScatterND requires
+*explicit per-element [b, s] indices* — and the translator must derive
+them from the bool mask in a way that doesn't match `masked_scatter`'s
+flat-walk semantics for B>=2 with mixed mask densities. (This explains
+why step parity stayed clean: the step graph has no scatter.)
+
+Workaround: replace the boolean-index + masked_scatter pair with
+
+```python
+audio_idx = is_audio.long().cumsum(dim=1) - 1
+audio_idx = audio_idx.clamp(min=0)
+gathered = torch.gather(audio_embeds, 1, audio_idx.unsqueeze(-1).expand(-1, -1, D))
+merged = torch.where(is_audio.unsqueeze(-1), gathered, text_embeds)
+```
+
+This avoids both NonZero and ScatterND, traces to plain Gather + Where,
+and gives 3.9e-5 logits parity (down from 14.6).
+
+Side benefit: the reformulation does not need an `audio_mask` graph
+input at all — `cumsum(is_audio)` derives the per-position audio index
+directly from `input_ids`, and the padding slots in `audio_embeds` are
+never gathered because no audio token in `input_ids` points at them.
+The C# runtime contract simplifies from
+`(input_ids, audio_embeds, audio_mask, attention_mask)` to
+`(input_ids, audio_embeds, attention_mask)`.
+
+Filing a minimal-repro issue against PyTorch is on the to-do list once
+the C# CLI lands — until then this workaround is the right answer
+even if the upstream bug gets fixed, since the cumsum form is also
+cheaper at runtime (no NonZero, no Gather-with-indirection).
+
+### Other shape decisions made during this run
+
+- **B=2 mixed-length dummy inputs.** `make_dummy_processor_inputs`
+  builds a B=2 batch with one full-length and one half-length audio
+  segment, padding both `input_features` and `input_ids` to the longer
+  length. Single-batch dummies cause the dynamo exporter to specialize
+  `batch=1` and reject the dynamic-shape contract. This is the same
+  pattern Cohere uses; the Granite Speech twist is that audio token
+  count varies between batch items, so prompt padding is also needed.
+- **`cache_position` is 1-D.** HuggingFace convention: `cache_position`
+  is `[seq_len]`, NOT `[B, seq_len]`. Passing 2-D triggers RoPE
+  position_ids broadcast errors before the export even reaches dynamo.
+  decoder_step exposes `cache_position` as a non-dynamic 1-element
+  input.
+- **Varargs + nested dynamic_shapes.** `decoder_step.forward(input_id,
+  attention_mask, cache_position, *past_kv)` exposes 4 top-level
+  parameters to torch.export (the varargs collapses), so
+  `dynamic_shapes` is a 4-tuple where the 4th entry is itself a tuple
+  of 80 dicts (one per K/V tensor across 40 layers).
+
+### Final ONNX package shape
+
+| File | Size | Notes |
+|---|---|---|
+| `encoder.onnx` + `.onnx.data` | 1.68 GB | Conformer encoder, 16 layers |
+| `projector.onnx` | 137 MB | Q-Former + linear projection |
+| `decoder_init.onnx` + `.onnx.data` | 7.0 GB | LM prefill + audio fuse |
+| `decoder_step.onnx` + `.onnx.data` | 7.0 GB | LM step on past KV |
+| Tokenizer + processor assets | ~10 MB | tokenizer.json, etc. |
+| **Total** | **~16 GB** | fp32 |
+
+The decoder pair currently ships **two full copies** of the 7 GB LM
+weights. Cohere's export shares external-data files between init and
+step via a rename trick — that optimization is queued for a follow-up
+issue alongside fp16 / sharded export. For now correctness > size.
+
+### What's deferred
+
+- **Mel ONNX (`mel.onnx`).** The torchaudio MelSpectrogram + Granite's
+  frame-stacking step is not exported. The C# runtime can produce
+  `input_features [B, T_stacked, 160]` directly using a torchaudio-
+  compatible filterbank. If parity becomes an issue, revisit.
+- **Weight sharing across decoder graphs** (see above).
+- **fp16 / quantized export.** Today's run is fp32 throughout for
+  parity validation. fp16 should mostly come for free via `--dtype
+  float16`, but each Granite micro-architecture multiplier
+  (`embedding_multiplier=12`, `logits_scaling=8`, `attention_multiplier=1/128`,
+  `residual_multiplier=0.22`) needs a parity check at fp16 precision.
+- **`-plus` and `-nar` variants.** As planned in Run 1.
+
+### Status
+
+Python export shipping. Next step in the workflow (per the standard
+cadence) is the **Python parity → C# CLI + parity → performance →
+C# GUI** chain, each tracked under issue #28 or its sub-issues.

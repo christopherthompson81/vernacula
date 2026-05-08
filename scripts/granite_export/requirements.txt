@@ -4,6 +4,7 @@
 # the base model. GPU export requires a CUDA-capable torch build.
 
 torch>=2.9,<3              # >=2.9 for the dynamo-based torch.onnx.export default
+torchaudio>=2.9,<3         # GraniteSpeechFeatureExtractor uses torchaudio mel
 transformers>=4.57         # GraniteSpeechForConditionalGeneration landed in 4.57
 accelerate>=1.0,<2         # required by from_pretrained(low_cpu_mem_usage=True)
 sentencepiece>=0.2,<1      # Granite tokenizer
