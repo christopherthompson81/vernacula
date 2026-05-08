@@ -20,9 +20,13 @@ needed.
 
 - `export_granite_speech_to_onnx.py` — exports the four ONNX graphs +
   tokenizer/processor assets + `export-report.json`
-- `test_parity.py` — loads the exported package and the reference
-  model side-by-side, runs each piece on the same dummy input, and
-  reports max-abs-diff per stage
+- `test_parity.py` — per-stage smoke parity: runs each ONNX graph on
+  dummy input alongside the reference forward and reports max-abs-diff
+- `transcribe_smoke.py` — end-to-end transcription parity: runs the
+  full ORT pipeline (encoder → projector → decoder_init → step loop)
+  on a real audio clip and compares against `model.generate()`. Catches
+  integration bugs across the full pipeline that per-stage parity
+  cannot.
 - `inspect_granite_speech.py` — read-only architecture probe used in
   Run 2 of the investigation; safe to keep around for re-checks
   against future model revisions
@@ -92,7 +96,10 @@ Notes on the decoder_init contract:
 
 ## Parity check
 
-After exporting, validate each piece against the reference forward:
+Two stages: per-graph numerical parity (`test_parity.py`) and
+end-to-end transcription parity (`transcribe_smoke.py`). Run both.
+
+### Per-stage numerical parity
 
 ```bash
 python public/scripts/granite_export/test_parity.py \
@@ -110,9 +117,23 @@ Expected per-stage max-abs-diff (CPU fp32, 2 s dummy audio):
 
 The encoder is two orders looser than the rest because the export
 substitutes a manual `softmax((Q @ K^T) * scale + bias) @ V` for the
-upstream's `F.scaled_dot_product_attention`; the converter doesn't
-support 5-D SDPA. Mathematically identical, but accumulation order
-differs. Acceptable for fp32 LM consumption.
+upstream's `F.scaled_dot_product_attention`. Mathematically identical,
+but accumulation order differs. Acceptable for fp32 LM consumption.
+
+### End-to-end transcription parity
+
+```bash
+python public/scripts/granite_export/transcribe_smoke.py \
+  --onnx-dir ./models/granite_speech_4_1_2b \
+  --audio /path/to/clip.wav \
+  --max-new-tokens 64
+```
+
+Runs the full ORT pipeline on the audio and compares the decoded
+transcript against `model.generate(..., do_sample=False, num_beams=1)`.
+Validated on a 6.4 s VCTK clip (multi-block) with exact text match;
+also on a 3.5 s clip (single-block). Use `--skip-reference` to skip the
+reference run when iterating on the ORT path only.
 
 ## Architecture summary (driving the layout)
 
@@ -135,11 +156,17 @@ differs. Acceptable for fp32 LM consumption.
   matrices. The decoder pair currently ships two full copies of the
   ~7 GB LM weights; sharing them via Cohere's external-data rename
   trick is queued for a follow-up.
-- Three patches at trace time, all justified in the investigation Run 3:
-  encoder 5-D SDPA → manual math, LM `attn_implementation="eager"` to
-  dodge a data-dependent guard in `sdpa_attention_forward`, and the
-  audio-merge cumsum-gather-where workaround for the masked_scatter
-  conversion bug.
+- Four patches at trace time, all justified in the investigation:
+  - **Encoder full attention** (Run 4): replaces upstream block
+    attention with full attention + block-diagonal mask, because
+    `num_blocks` cannot be made symbolic through the dynamo exporter.
+    Mathematically identical, ~7-15× more attention work at long T.
+  - **Encoder 5-D SDPA → manual math** (Run 3): no longer needed after
+    Run 4's full-attention rewrite (which is naturally 4-D).
+  - **LM `attn_implementation="eager"`** (Run 3): dodges a
+    data-dependent guard in `sdpa_attention_forward`.
+  - **Audio merge: cumsum-gather-where** (Run 3): works around the
+    `masked_scatter` → `ScatterND` conversion bug in torch 2.11.
 - The Granite decoder applies four scalar multipliers
   (`attention_multiplier`, `embedding_multiplier`, `logits_scaling`,
   `residual_multiplier`) that are part of the base architecture. They

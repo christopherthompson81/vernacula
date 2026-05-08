@@ -291,55 +291,96 @@ def _patch_encoder_attention_for_export(torch: Any, encoder: Any) -> None:
     import types
 
     def _patched_forward(self, hidden_states, attention_dists):
+        """Full-attention reformulation of Granite Speech block attention.
+
+        The upstream code does block attention by reshaping
+        `[B, T, inner]` into `[B, num_blocks, ctx, num_heads, head_dim]` and
+        running attention per-block. `num_blocks = ceil(T/ctx)` is a Python
+        int derived from a tensor shape, which the dynamo->ONNX exporter
+        consistently bakes as a static value at trace time — every
+        downstream reshape ends up specialising `num_blocks * ctx` to its
+        trace-time product (e.g. `200`) and fails at runtime whenever the
+        audio length yields a different block count.
+
+        The Cohere encoder export hits a similar shape of problem with
+        `_needs_conv_split` and works around it by monkey-patching the
+        Python control-flow that bakes the constant. The analogous fix
+        here is to remove the block-reshape entirely and run **full
+        attention with a block-diagonal mask** — mathematically identical,
+        traces with no num_blocks dim. Cost is O(T^2) attention work
+        instead of O(T*ctx); typical Vernacula segments (10-30 s,
+        T<=1500) fit comfortably.
+
+        The Shaw rel-pos bias is computed without materialising a
+        `[T, T, head_dim]` lookup tensor (which would hit ~5 GB at 60 s).
+        Instead we precompute `Q @ rel_pos_emb.weight.T` of shape
+        `[B, H, T, num_indices]` and gather the per-pair bias by indexing
+        with the [T, T] distance matrix.
+        """
         hidden_states = self.pre_norm(hidden_states)
         bsz, num_features, _ = hidden_states.shape
 
-        num_blocks = math.ceil(num_features / self.context_size)
-        remainder = num_features % self.context_size
-        if remainder > 0:
-            hidden_states = torch.nn.functional.pad(
-                hidden_states, (0, 0, 0, self.context_size - remainder)
-            )
+        ctx = self.context_size
+        H = self.num_heads
+        D = self.dim_head
+        device = hidden_states.device
 
-        query_states = self.to_q(hidden_states)
-        key_states, value_states = self.to_kv(hidden_states).chunk(2, dim=-1)
+        # Pad to multiple of ctx (always — branch-free).
+        remainder = num_features % ctx
+        pad_amt = (ctx - remainder) % ctx
+        hidden_states = torch.nn.functional.pad(hidden_states, (0, 0, 0, pad_amt))
+        T = hidden_states.shape[1]                                   # SymInt
 
-        # Reshape to [bsz, num_blocks, num_heads, context_size, head_dim].
-        query_states = query_states.reshape(
-            bsz, num_blocks, self.context_size, self.num_heads, -1
-        ).transpose(2, 3)
-        key_states = key_states.reshape(
-            bsz, num_blocks, self.context_size, self.num_heads, -1
-        ).transpose(2, 3)
-        value_states = value_states.reshape(
-            bsz, num_blocks, self.context_size, self.num_heads, -1
-        ).transpose(2, 3)
+        # Q/K/V: [B, T, inner] -> [B, T, H, D] -> [B, H, T, D].
+        Q = self.to_q(hidden_states).unflatten(-1, (H, D)).transpose(1, 2)
+        kv = self.to_kv(hidden_states).chunk(2, dim=-1)
+        K = kv[0].unflatten(-1, (H, D)).transpose(1, 2)
+        V = kv[1].unflatten(-1, (H, D)).transpose(1, 2)
 
-        # Shaw relative positional bias (already scaled).
-        rel_pos_emb = self.rel_pos_emb(attention_dists)
-        pos_attn = torch.einsum(
-            "b m h c d, c r d -> b m h c r", query_states, rel_pos_emb
-        ) * self.scale
+        # Standard scaled dot-product attention over the full padded T.
+        scores = torch.matmul(Q, K.transpose(-2, -1)) * self.scale   # [B, H, T, T]
 
-        if remainder > 0:
-            mask = torch.ones(
-                self.context_size, self.context_size, dtype=torch.bool,
-                device=hidden_states.device,
-            )
-            mask[:remainder, :remainder] = 0
-            mask_value = -torch.finfo(pos_attn.dtype).max
-            pos_attn[:, -1, :] = pos_attn[:, -1, :].masked_fill(mask, mask_value)
+        # Shaw relative positional bias.
+        # rel_pos_emb is an Embedding of size (2*max_pos_emb+1, D).
+        # We want pos_bias[b, h, i, j] = sum_d Q[b, h, i, d] * rel_pos_emb[idx(i, j), d] * scale,
+        # where idx(i, j) = clamp(i - j, -ctx, ctx) + max_pos_emb.
+        # Materialising rel_pos_emb at every (i, j) as a [T, T, D] tensor
+        # blows up memory at long T (~5 GB at 60 s). Instead, dot Q with
+        # the embedding weight matrix once, then gather per-pair.
+        rel_pos_w = self.rel_pos_emb.weight                          # [num_indices, D]
+        q_dot_emb = torch.matmul(Q, rel_pos_w.T)                     # [B, H, T, num_indices]
 
-        # Manual math equivalent of SDPA:
-        #   scores = (Q @ K^T) * scale + attn_mask
-        #   attn   = softmax(scores)
-        #   out    = attn @ V
-        scores = torch.matmul(query_states, key_states.transpose(-2, -1)) * self.scale
-        scores = scores + pos_attn
+        positions = torch.arange(T, device=device)
+        rel_dist = positions.view(-1, 1) - positions.view(1, -1)     # [T, T]
+        rel_idx = rel_dist.clamp(-ctx, ctx) + self.max_pos_emb       # [T, T] in [0, 2*max_pos_emb]
+        # gather: q_dot_emb has shape [B, H, T, num_indices].
+        # We want pos_bias[b, h, i, j] = q_dot_emb[b, h, i, rel_idx[i, j]].
+        # Expand rel_idx to [B, H, T, T] for gather.
+        rel_idx_exp = rel_idx.unsqueeze(0).unsqueeze(0).expand(bsz, H, T, T)
+        pos_bias = q_dot_emb.gather(-1, rel_idx_exp) * self.scale    # [B, H, T, T]
+
+        # Block mask: i, j attend only when in the same block.
+        block_idx = positions // ctx                                 # [T]
+        same_block = block_idx.unsqueeze(0) == block_idx.unsqueeze(1)  # [T, T] bool
+        # Apply rel-pos bias only within the same block.
+        pos_bias = pos_bias * same_block.to(pos_bias.dtype)
+
+        # Padded positions in the last block: positions >= num_features.
+        # Mask both rows and columns.
+        in_pad = positions >= num_features                           # [T] bool
+        pad_pair = in_pad.unsqueeze(0) | in_pad.unsqueeze(1)         # [T, T] bool
+
+        # Combine masks. Cross-block and padding positions get -inf so
+        # softmax assigns them zero probability.
+        attn_bool_mask = (~same_block) | pad_pair                    # [T, T] bool
+        mask_value = -torch.finfo(scores.dtype).max
+        attn_additive = attn_bool_mask.to(scores.dtype) * mask_value  # [T, T]
+
+        scores = scores + pos_bias + attn_additive.unsqueeze(0).unsqueeze(0)
         attn = torch.softmax(scores, dim=-1)
-        out = torch.matmul(attn, value_states)
+        out = torch.matmul(attn, V)                                  # [B, H, T, D]
 
-        out = out.transpose(2, 3).reshape(bsz, hidden_states.shape[1], -1)
+        out = out.transpose(1, 2).flatten(-2, -1)                    # [B, T, inner]
         out = self.to_out(out[:, :num_features, :])
         return self.dropout(out)
 

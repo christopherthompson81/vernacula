@@ -516,3 +516,142 @@ issue alongside fp16 / sharded export. For now correctness > size.
 Python export shipping. Next step in the workflow (per the standard
 cadence) is the **Python parity → C# CLI + parity → performance →
 C# GUI** chain, each tracked under issue #28 or its sub-issues.
+
+---
+
+## Run 4 — 2026-05-08 (encoder full-attention pivot, end-to-end transcription parity)
+
+**Question:** The Run 3 encoder export was numerically green at the
+**trace shape** but failed at runtime for any audio whose block count
+differed from the dummy. Can the encoder be reshaped to support
+variable-length input through ONNX, or do we need an architectural
+pivot?
+
+**Method:** Repeated attempts at making `num_blocks =
+math.ceil(num_features / context_size)` symbolic through the dynamo
+exporter — `unflatten` instead of `reshape`, deriving `num_blocks` from
+`hidden_states.shape[1]` after padding (SymInt path), folding
+`B*num_blocks` into the leading axis, switching to the legacy
+TorchScript exporter. Each attempt fixed one reshape and produced a
+new failure further downstream. Full diagnosis in run notes; the short
+version is that **dynamo evaluates expressions like `num_blocks * ctx`
+at trace time and bakes the result as a static constant in every
+downstream `Reshape` target**, so making `num_blocks` itself symbolic
+is necessary but not sufficient.
+
+### Cohere precedent
+
+The Cohere encoder export hit a similar shape of problem with
+`_needs_conv_split` and `_check_input_shape` — Python control-flow
+that bakes shape constants into the trace. The fix was to monkey-patch
+the path away (`_needs_conv_split = lambda x: False`); see
+[cohere_export L340-343](../../scripts/cohere_export/export_cohere_transcribe_to_onnx.py#L340-L343).
+The pattern is "bypass the optimisation, accept a worse worst case."
+
+Cohere/Qwen3/VibeVoice don't have an exact analog because none of them
+use **block attention**. Block attention is what creates the
+`num_blocks` dim in shape arithmetic; full attention sequences keep T
+as a single symbolic dim that the exporter handles cleanly.
+
+### Pivot: full attention with block-diagonal mask
+
+Replaced the block-reshape attention in `_patch_encoder_attention_for_export`
+with full attention over the padded T dimension, plus a block-diagonal
+additive mask. Mathematically identical to the upstream block
+attention; eliminates `num_blocks` from shape arithmetic entirely.
+
+Memory considerations: a naive [T, T, head_dim] rel-pos lookup blows
+up to ~5 GB at 60 s of audio. To stay efficient at long T, the
+rel-pos bias is computed via the einsum decomposition
+
+```
+q_dot_emb[b, h, i, k] = (Q @ rel_pos_emb.weight.T)[b, h, i, k]
+pos_bias[b, h, i, j] = q_dot_emb[b, h, i, rel_idx[i, j]]
+```
+
+where `rel_idx[i, j] = clamp(i - j, -ctx, ctx) + max_pos_emb`. The
+intermediate `q_dot_emb` is [B, H, T, num_indices=1025], ~33 MB at
+T=1000 — well bounded. `pos_bias` is then gathered per-pair and
+zeroed across blocks via `same_block` mask.
+
+Cost trade-off:
+
+| Audio | Block attn (upstream) | Full attn (this export) |
+|---|---|---|
+| 4 s (T~200, 1 block) | O(T·ctx) = 40 k | O(T²) = 40 k (equal) |
+| 30 s (T~1500, 8 blocks) | 300 k | 2.25 M (~7×) |
+| 60 s (T~3000, 15 blocks) | 600 k | 9 M (~15×) |
+
+For typical Vernacula segments (10–30 s) the cost is acceptable. Long
+clips are already chunked by the transcript pipeline elsewhere.
+
+### Final parity (full-attention encoder)
+
+| Stage | max-abs-diff | Notes |
+|---|---|---|
+| `encoder.onnx` | 3.4e-4 | unchanged at trace shape; manual-math accumulation order |
+| `projector.onnx` | 1.4e-6 | unchanged |
+| `decoder_init.onnx` | 3.9e-5 logits, 4.4e-5 KV | unchanged |
+| `decoder_step.onnx` | 9.1e-6 logits, 2.3e-5 KV | unchanged |
+
+**End-to-end transcription on a 6.4 s VCTK clip (multi-block, 2 encoder
+blocks at the upstream block-attn rate):**
+
+```
+ORT: "Hello, I'm from Ontario. I hope that you will select my voice for your project. Thank you."
+Ref: "Hello, I'm from Ontario. I hope that you will select my voice for your project. Thank you."
+```
+
+Exact text match. Token streams identical except for the trailing EOS
+(reference produces it; the smoke loop terminates on it). Same
+end-to-end test on a 3.5 s clip (1 block) also matches.
+
+### Notes on the rel-pos derivation
+
+The upstream encoder pre-computes a `[ctx, ctx]` `attention_dists`
+buffer in its `__init__`. The full-attention rewrite ignores that
+buffer and computes `rel_idx` from runtime `positions` of shape `[T]`.
+The two are equivalent: when restricted to within-block pairs they
+produce the same Shaw-style relative distance indices. The buffer is
+still registered on the encoder but unused in the patched forward.
+
+### Tooling: `transcribe_smoke.py`
+
+Added [`scripts/granite_export/transcribe_smoke.py`](../../scripts/granite_export/transcribe_smoke.py)
+as the end-to-end "Python parity" stage of the workflow:
+
+- Loads ORT sessions for all four ONNX graphs.
+- Runs the full pipeline (encoder → projector → decoder_init →
+  decoder_step loop) on a real audio clip with greedy decoding.
+- Compares output text and token IDs against
+  `model.generate(..., do_sample=False, num_beams=1)`.
+- Skipping the reference (`--skip-reference`) keeps the test fast for
+  ORT-only iteration.
+
+This catches integration bugs (cache_position handoff, KV layout,
+projector window alignment) that per-stage parity (`test_parity.py`)
+cannot reach. The next workflow stage — C# CLI + parity — uses the
+same shape contract but with C#'s ORT runtime in place of Python.
+
+### What's now well-bounded
+
+- Encoder accepts arbitrary T (no num_blocks constraint).
+- Projector handles arbitrary T with its window-padding logic.
+- Decoder pair has been valid since Run 3.
+
+### What's still deferred
+
+- **Mel ONNX**: still host-side. C# will reproduce torchaudio mel +
+  frame-stacking. Decision unchanged from Run 1.
+- **Weight sharing across decoder graphs**: the 7 GB LM weights are
+  duplicated between init and step. Cohere's external-data rename
+  trick should apply.
+- **fp16 / quantized export**: today fp32 throughout.
+- **Encoder perf**: the full-attention reformulation is ~7-15× more
+  attention work than the block attention at long T. If Vernacula's
+  benchmark surfaces an encoder bottleneck on longer clips, revisit
+  with a chunked-encoder strategy in the C# runtime (split into
+  ≤ctx-frame segments, run encoder per segment, concatenate). The
+  conv-kernel boundary effect is small (kernel size 15) and could be
+  further reduced with overlapped chunking.
+- **`-plus` and `-nar` variants**: as planned in Run 1.
