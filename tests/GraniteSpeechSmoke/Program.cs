@@ -628,79 +628,81 @@ internal static class Program
 
         using var runOpts = new RunOptions();
 
-        sw.Restart();
-        for (int step = 0; step < maxNewTokens; step++)
+        if (ioBinding)
         {
-            if (nextToken == EosTokenId) break;
-            generated.Add(nextToken);
-            int totalLen = pastLen + 1;
-
-            stepInputIdArr[0] = nextToken;
-            cachePosArr[0] = pastLen;
-
-            // Build input OrtValues.
-            using var stepInputId = OrtValue.CreateTensorValueFromMemory(
-                stepInputIdArr, new long[] { 1, 1 });
-            using var stepAttn = OrtValue.CreateTensorValueFromMemory(
-                attnScratch, new long[] { 1, totalLen });
-            using var cachePos = OrtValue.CreateTensorValueFromMemory(
-                cachePosArr, new long[] { 1 });
-
-            // pastKeys[L] / pastValues[L] are sized EXACTLY for pastLen.
-            // No over-allocation — keeps the diagnostic clean (rules out
-            // OrtValue mis-reading an over-allocated buffer as a possible
-            // bug source).
-            var pastKvOrtVals = new OrtValue[2 * NumDecoderLayers];
-            for (int L = 0; L < NumDecoderLayers; L++)
-            {
-                pastKvOrtVals[2 * L] = OrtValue.CreateTensorValueFromMemory(
-                    pastKeys[L], new long[] { 1, NumKvHeads, pastLen, HeadDim });
-                pastKvOrtVals[2 * L + 1] = OrtValue.CreateTensorValueFromMemory(
-                    pastValues[L], new long[] { 1, NumKvHeads, pastLen, HeadDim });
-            }
-
-            var inputValues = new List<OrtValue>(3 + 2 * NumDecoderLayers)
-            {
-                stepInputId, stepAttn, cachePos,
-            };
-            inputValues.AddRange(pastKvOrtVals);
-
-            var outputs = stepSess.Run(runOpts, stepInputNames, inputValues, stepOutputNames);
-
-            // Read logits.
-            var logitsOrt = outputs[0];
-            var logitsSpan = logitsOrt.GetTensorDataAsSpan<float>();
-            nextToken = ArgmaxLastPositionSpan(logitsSpan, 1, vocab);
-
-            // Roll KV forward: allocate fresh exact-size arrays each step
-            // and copy the new present_kv into them. Keeps OrtValue inputs
-            // tightly sized to actual data (diagnostic-clean).
-            int totalElems = 1 * NumKvHeads * totalLen * HeadDim;
-            var newKeys = new float[NumDecoderLayers][];
-            var newValues = new float[NumDecoderLayers][];
-            for (int L = 0; L < NumDecoderLayers; L++)
-            {
-                newKeys[L] = new float[totalElems];
-                newValues[L] = new float[totalElems];
-                var pkOrt = outputs[1 + L];
-                var pvOrt = outputs[1 + NumDecoderLayers + L];
-                pkOrt.GetTensorDataAsSpan<float>().CopyTo(newKeys[L]);
-                pvOrt.GetTensorDataAsSpan<float>().CopyTo(newValues[L]);
-                pkOrt.Dispose();
-                pvOrt.Dispose();
-            }
-            logitsOrt.Dispose();
-            foreach (var ov in pastKvOrtVals) ov.Dispose();
-            // Swap the buffers in for the next step.
-            for (int L = 0; L < NumDecoderLayers; L++)
-            {
-                pastKeys[L] = newKeys[L];
-                pastValues[L] = newValues[L];
-            }
-
-            pastLen = totalLen;
+            sw.Restart();
+            RunSplitJuggleStepLoopIoBinding(
+                stepSess, runOpts, maxNewTokens, vocab, ref nextToken, ref pastLen,
+                generated, pastKeys, pastValues, promptLen,
+                stepInputIdArr, cachePosArr, attnScratch);
+            sw.Stop();
         }
-        sw.Stop();
+        else
+        {
+            sw.Restart();
+            for (int step = 0; step < maxNewTokens; step++)
+            {
+                if (nextToken == EosTokenId) break;
+                generated.Add(nextToken);
+                int totalLen = pastLen + 1;
+
+                stepInputIdArr[0] = nextToken;
+                cachePosArr[0] = pastLen;
+
+                using var stepInputId = OrtValue.CreateTensorValueFromMemory(
+                    stepInputIdArr, new long[] { 1, 1 });
+                using var stepAttn = OrtValue.CreateTensorValueFromMemory(
+                    attnScratch, new long[] { 1, totalLen });
+                using var cachePos = OrtValue.CreateTensorValueFromMemory(
+                    cachePosArr, new long[] { 1 });
+
+                var pastKvOrtVals = new OrtValue[2 * NumDecoderLayers];
+                for (int L = 0; L < NumDecoderLayers; L++)
+                {
+                    pastKvOrtVals[2 * L] = OrtValue.CreateTensorValueFromMemory(
+                        pastKeys[L], new long[] { 1, NumKvHeads, pastLen, HeadDim });
+                    pastKvOrtVals[2 * L + 1] = OrtValue.CreateTensorValueFromMemory(
+                        pastValues[L], new long[] { 1, NumKvHeads, pastLen, HeadDim });
+                }
+
+                var inputValues = new List<OrtValue>(3 + 2 * NumDecoderLayers)
+                {
+                    stepInputId, stepAttn, cachePos,
+                };
+                inputValues.AddRange(pastKvOrtVals);
+
+                var outputs = stepSess.Run(runOpts, stepInputNames, inputValues, stepOutputNames);
+
+                var logitsOrt = outputs[0];
+                var logitsSpan = logitsOrt.GetTensorDataAsSpan<float>();
+                nextToken = ArgmaxLastPositionSpan(logitsSpan, 1, vocab);
+
+                int totalElems = 1 * NumKvHeads * totalLen * HeadDim;
+                var newKeys = new float[NumDecoderLayers][];
+                var newValues = new float[NumDecoderLayers][];
+                for (int L = 0; L < NumDecoderLayers; L++)
+                {
+                    newKeys[L] = new float[totalElems];
+                    newValues[L] = new float[totalElems];
+                    var pkOrt = outputs[1 + L];
+                    var pvOrt = outputs[1 + NumDecoderLayers + L];
+                    pkOrt.GetTensorDataAsSpan<float>().CopyTo(newKeys[L]);
+                    pvOrt.GetTensorDataAsSpan<float>().CopyTo(newValues[L]);
+                    pkOrt.Dispose();
+                    pvOrt.Dispose();
+                }
+                logitsOrt.Dispose();
+                foreach (var ov in pastKvOrtVals) ov.Dispose();
+                for (int L = 0; L < NumDecoderLayers; L++)
+                {
+                    pastKeys[L] = newKeys[L];
+                    pastValues[L] = newValues[L];
+                }
+
+                pastLen = totalLen;
+            }
+            sw.Stop();
+        }
 
         string text = DecodeTokens(generated, idToToken, addedTokens, byteLevelDecode);
         Console.WriteLine();
@@ -711,6 +713,116 @@ internal static class Program
         bool match = text.Trim() == expectedText.Trim();
         Console.WriteLine($"  exact match: {match}");
         return match ? 0 : 1;
+    }
+
+    // ── IOBinding step loop on the SPLIT decoder ─────────────────────────
+    //
+    // KV cache stays GPU-resident across steps. Initial pastKvs are the
+    // prefill outputs uploaded once (via host-side OrtValue, ORT auto-
+    // copies to GPU). Subsequent steps' present_kv outputs are bound to
+    // CUDA memory directly, so they become the next step's past_kv inputs
+    // with no host roundtrip.
+    //
+    // logits stay on CPU (we need to argmax host-side).
+    private static void RunSplitJuggleStepLoopIoBinding(
+        InferenceSession stepSess,
+        RunOptions runOpts,
+        int maxNewTokens,
+        int vocab,
+        ref long nextToken,
+        ref int pastLen,
+        List<long> generated,
+        float[][] pastKeys,
+        float[][] pastValues,
+        int promptLen,
+        long[] stepInputIdArr,
+        long[] cachePosArr,
+        long[] attnScratch)
+    {
+        var cudaMem = new OrtMemoryInfo("Cuda", OrtAllocatorType.DeviceAllocator, 0, OrtMemType.Default);
+        var cpuMem = OrtMemoryInfo.DefaultInstance;
+
+        // The ONNX input/output names match what split decoder_step exposes.
+        var stepInputNames = new List<string>(3 + 2 * NumDecoderLayers)
+        { "input_id", "attention_mask", "cache_position" };
+        for (int L = 0; L < NumDecoderLayers; L++)
+        {
+            stepInputNames.Add($"past_key_{L}");
+            stepInputNames.Add($"past_value_{L}");
+        }
+        var stepOutputNames = new List<string>(1 + 2 * NumDecoderLayers) { "logits" };
+        for (int L = 0; L < NumDecoderLayers; L++) stepOutputNames.Add($"present_key_{L}");
+        for (int L = 0; L < NumDecoderLayers; L++) stepOutputNames.Add($"present_value_{L}");
+
+        // pastKvs lives across iterations.
+        var pastKvs = new OrtValue[2 * NumDecoderLayers];
+        for (int L = 0; L < NumDecoderLayers; L++)
+        {
+            pastKvs[2 * L] = OrtValue.CreateTensorValueFromMemory(
+                pastKeys[L], new long[] { 1, NumKvHeads, promptLen, HeadDim });
+            pastKvs[2 * L + 1] = OrtValue.CreateTensorValueFromMemory(
+                pastValues[L], new long[] { 1, NumKvHeads, promptLen, HeadDim });
+        }
+
+        // Fresh OrtIoBinding per step (Qwen3's pattern). Reusing one
+        // binding across steps may cause ORT to alias the present_kv
+        // output buffers, corrupting the OrtValues we retain as past_kv
+        // for the next step.
+        var keepAliveBindings = new List<OrtIoBinding>();
+
+        for (int step = 0; step < maxNewTokens; step++)
+        {
+            if (nextToken == EosTokenId) break;
+            generated.Add(nextToken);
+            int totalLen = pastLen + 1;
+
+            stepInputIdArr[0] = nextToken;
+            cachePosArr[0] = pastLen;
+
+            using var stepInputId = OrtValue.CreateTensorValueFromMemory(
+                stepInputIdArr, new long[] { 1, 1 });
+            using var stepAttn = OrtValue.CreateTensorValueFromMemory(
+                attnScratch, new long[] { 1, totalLen });
+            using var cachePos = OrtValue.CreateTensorValueFromMemory(
+                cachePosArr, new long[] { 1 });
+
+            // Chain Run-with-OrtValue across steps. Each step's output
+            // OrtValues become the next step's input OrtValues. ORT on
+            // the CUDA EP keeps outputs GPU-resident; passing them as
+            // inputs to the next Run skips the host roundtrip we'd
+            // otherwise pay. RunWithBinding produced garbage on this
+            // graph for reasons we couldn't isolate; Run-with-OrtValue
+            // is the working high-perf path.
+            var inputValues = new List<OrtValue>(3 + 2 * NumDecoderLayers)
+            {
+                stepInputId, stepAttn, cachePos,
+            };
+            inputValues.AddRange(pastKvs);
+            var outputs = stepSess.Run(runOpts, stepInputNames, inputValues, stepOutputNames);
+
+            var logitsOrt = outputs[0];
+            var logitsSpan = logitsOrt.GetTensorDataAsSpan<float>();
+            nextToken = ArgmaxLastPositionSpan(logitsSpan, 1, vocab);
+
+            // Swap pastKvs: take ownership of the new GPU-resident
+            // present_kv OrtValues, dispose the previous step's pastKvs
+            // (which were either the prior step's outputs or — only for
+            // the very first step — the initial host-side uploads).
+            var oldPast = pastKvs;
+            pastKvs = new OrtValue[2 * NumDecoderLayers];
+            for (int L = 0; L < NumDecoderLayers; L++)
+            {
+                pastKvs[2 * L]     = outputs[1 + L];
+                pastKvs[2 * L + 1] = outputs[1 + NumDecoderLayers + L];
+            }
+            logitsOrt.Dispose();
+            foreach (var ov in oldPast) ov.Dispose();
+
+            pastLen = totalLen;
+        }
+
+        foreach (var ov in pastKvs) ov.Dispose();
+        foreach (var b in keepAliveBindings) b.Dispose();
     }
 
     // ── IOBinding decode path ────────────────────────────────────────────

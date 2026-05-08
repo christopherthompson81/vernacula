@@ -640,3 +640,145 @@ on this graph.
 |---|---:|---:|---:|
 | 6.4 s | 12.2× | 48.4 | 525 ms |
 | 90 s | 4.52× | 13.7 | 19.9 s |
+
+---
+
+## Run 6 — 2026-05-08 (focused-diagnosis lap: chained Run-with-OrtValue beats binding)
+
+**Question:** Run 5a observed that **both** `RunWithBinding` and the
+`Run`-with-`OrtValue` overload produced garbage on the unified
+decoder. The user's note ("memory-juggle if it doesn't fit") opened up
+testing IOBinding on the **split** decoder pair, where Cohere/Qwen3
+showed it works. Three subruns:
+
+- **6a:** Test OrtValue inputs on split decoder_step (no binding) →
+  isolates whether the bug is unified-graph-specific.
+- **6b:** Test `RunWithBinding` on split decoder_step (with
+  GPU-resident KV between steps) → the original IOBinding goal.
+- **6c:** If 6b fails, test chained `Run-with-OrtValue` (use one
+  step's output OrtValues as the next step's input OrtValues — no
+  binding API) → the IOBinding pattern *without* binding.
+
+### Memory juggling
+
+Both prefill (encoder + projector + decoder_init = ~9 GB) and step
+(decoder_step alone = ~7 GB) sessions can be on GPU sequentially. Load
+phase 1, run prefill, extract KV to host, dispose phase 1; load phase
+2 (decoder_step alone), run AR loop. Only ONE 7 GB decoder is resident
+at a time → the "duplicate weights" problem from Run 1 simply
+disappears with this loading strategy. Total resident peak: ~9 GB at
+prefill, ~7 GB at step. Comfortably fits on a 25 GB 3090.
+
+### 6a — split + Run-with-OrtValue (no binding): EXACT MATCH
+
+Per-token at 6.4 s: **23.4 ms/tok** (slower than Run 5b's 21 ms because
+this path still does host roundtrip on KV — copies present_kv to fresh
+managed arrays each step). At 90 s: **84.5 ms/tok**, exact text match.
+
+**The Run 4/5a bug IS unified-decoder-specific.** OrtValue inputs work
+fine on the split decoder_step (same per-layer KV layout, just no
+audio_embeds input and no cumsum-merge logic). The trigger appears to
+be the unified graph's audio_embeds input or its cumsum-merge.
+
+### 6b — split + RunWithBinding (proper IOBinding): GARBAGE
+
+Tried two patterns:
+- Single binding reused across steps (with `ClearBoundInputs/Outputs`).
+- Fresh `OrtIoBinding` per step (Qwen3's pattern).
+
+Both produce the same garbage transcript: first 1-2 tokens correct,
+then collapse into repeated junk. Output device variation (CPU vs CUDA
+for `present_kv` outputs) didn't help.
+
+The most likely cause: when `BindInput` receives a host-resident
+OrtValue from `CreateTensorValueFromMemory` and the session is on
+CUDA, ORT does NOT auto-transfer the data to GPU like `Run` does — it
+silently passes the host pointer to the GPU kernel, which reads
+garbage. Workaround in Cohere/Qwen3 is to bind GPU-resident OrtValues
+directly; we tried that for steps after step 0 (using step 0's GPU
+outputs as step 1's GPU inputs), still garbage. The deeper interaction
+isn't worth chasing because…
+
+### 6c — split + chained Run-with-OrtValue: EXACT MATCH at full perf
+
+Realisation: we don't actually need `RunWithBinding` to keep KV on the
+GPU across steps. **`Run`-with-`OrtValue` already does it implicitly
+when both Run calls are on the same CUDA EP.** Each step's output
+OrtValues are GPU-resident; passing them directly as the next step's
+input OrtValues skips any host roundtrip. The "IOBinding pattern"
+(GPU KV chain across steps) works without the binding API at all.
+
+```csharp
+var outputs = stepSess.Run(runOpts, names, inputValues, names);
+// outputs[1..81] are CUDA-resident OrtValues from this step's
+// present_key_<L> / present_value_<L>.
+// Take ownership and use directly as next step's past_kv:
+for (int L = 0; L < NumDecoderLayers; L++)
+{
+    pastKvs[2 * L]     = outputs[1 + L];
+    pastKvs[2 * L + 1] = outputs[1 + NumDecoderLayers + L];
+}
+```
+
+### Final perf comparison (GPU 3090, C#, fp32)
+
+| 6.4 s | wall | ms/tok | tok/s | RTF | parity |
+|---|---:|---:|---:|---:|---|
+| Run 4 baseline (unified .ToArray) | 527 ms | 21.0 | 47.6 | 12.18× | exact |
+| Run 5b (unified pre-alloc + Span.CopyTo) | 525 ms | 20.7 | 48.4 | 12.23× | exact |
+| **Run 6c (split-juggle chained Run)** | **434 ms** | **19.8** | 50.6 | **14.79×** | **exact** |
+
+| 90 s | wall | ms/tok | tok/s | RTF | parity |
+|---|---:|---:|---:|---:|---|
+| Run 4 baseline | 22 264 ms | 82.4 | 12.1 | 4.04× | exact |
+| Run 5b | 19 929 ms | 73.0 | 13.7 | 4.52× | exact |
+| **Run 6c** | **17 631 ms** | **56.2** | **17.8** | **5.11×** | **exact** |
+
+Run 6c at 90 s is **21% faster than Run 5b** and **31% faster than the
+baseline**. The C# RTF (5.11×) is now within 5% of the Python
+profiler's 5.38× on the same hardware — most of the C# overhead is
+gone.
+
+The split bundle is also smaller in resident weight terms because we
+only ever have ONE 7 GB decoder loaded at a time (phase 1: encoder +
+projector + decoder_init; phase 2: decoder_step alone). The "duplicate
+weights" problem from Run 1 only existed when both decoder graphs
+were loaded simultaneously.
+
+### Deployment story
+
+There are now two viable shipping configurations:
+
+| | Unified bundle (Run 5b) | Split bundle (Run 6c) |
+|---|---|---|
+| 90 s C# RTF | 4.52× | **5.11×** |
+| Disk size | ~9 GB | ~16 GB |
+| Resident GPU weights | 8.8 GB | 8.8 GB phase 1 / 7 GB phase 2 |
+| Session-load overhead | one-time at startup | ~1.3 s per phase transition |
+| Decoder API | DenseTensor + NamedOnnxValue | OrtValue + Run-with-OrtValue |
+| Parity | exact | exact |
+| Notes | Simpler runtime, smaller bundle | Faster, two-phase loading |
+
+For the C# CLI: **split-juggle is the recommended shipping config for
+GPU**. CPU users should stick with unified (smaller bundle, no
+phase-transition cost). The smoke supports both via `--split-juggle-test`.
+
+### Open follow-ups
+
+- **Why does `RunWithBinding` produce garbage on this graph?** Filed
+  as a known-unknown. Workaround works fine; the binding bug is worth
+  flagging upstream if anyone needs to use it for a different reason
+  (e.g., to bind device-resident OrtValues without going through
+  Python).
+- **Why does the unified decoder fail with OrtValue inputs?** Most
+  likely the audio_embeds input or the cumsum-merge logic. If we ever
+  want a single-graph deployment with the Run-with-OrtValue speed
+  win, this needs root-causing — but the split-juggle path is fully
+  equivalent and faster.
+- **Phase-transition cost** (1.3 s session load when switching from
+  decoder_init to decoder_step) is one-time per request. For batched
+  workloads it's amortised; for single-shot it's noticeable. A future
+  optimisation: keep decoder_init resident OFF the GPU (CPU) and
+  decoder_step ON the GPU, so prefill runs slowly on CPU but step
+  loop runs fast on GPU without the phase transition. Worth measuring
+  if user-facing latency becomes the bottleneck.
