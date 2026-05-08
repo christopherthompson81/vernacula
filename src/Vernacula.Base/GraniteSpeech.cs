@@ -258,10 +258,21 @@ public sealed class GraniteSpeech : IDisposable
     /// batch until the longest row finishes (straggler waste — minimised by
     /// <see cref="BatchSizer.Plan"/>'s ascending-duration packing).
     /// </summary>
+    // ── Per-stage timing accumulators (opt-in via VERNACULA_GRANITE_PROFILE=1) ─
+    private static readonly bool _profile =
+        Environment.GetEnvironmentVariable("VERNACULA_GRANITE_PROFILE") == "1";
+    public static long MelMs, EncMs, ProjMs, PrefillMs, StepLoopMs, OverheadMs;
+    public static long BatchCount, RowCount, StepCount;
+    public static int MaxBatchSeen;
+    private static readonly object _profileLock = new();
+
     private string[] TranscribeBatch(float[][] waveforms, int maxNewTokens)
     {
         int B = waveforms.Length;
         if (B == 0) return Array.Empty<string>();
+
+        var swBatch = _profile ? System.Diagnostics.Stopwatch.StartNew() : null;
+        long melLocal = 0, encLocal = 0, projLocal = 0;
 
         // ── Per-row mel + encoder + projector ───────────────────────────
         // audioEmbeds[b] is the row's [N_audio[b] * 2048] flattened buffer.
@@ -286,11 +297,13 @@ public sealed class GraniteSpeech : IDisposable
             }
 
             // Mel
+            var swStage = _profile ? System.Diagnostics.Stopwatch.StartNew() : null;
             var audioT = new DenseTensor<float>(waveforms[b], [1, waveforms[b].Length]);
             using var melResults = _mel.Run([NamedOnnxValue.CreateFromTensor("audio", audioT)]);
             var inputFeatures = melResults[0].AsTensor<float>();
             var ifShape = inputFeatures.Dimensions.ToArray();
             var ifData = inputFeatures is DenseTensor<float> dT ? dT.ToArray() : inputFeatures.ToArray();
+            if (swStage != null) { swStage.Stop(); melLocal += swStage.ElapsedMilliseconds; swStage.Restart(); }
 
             // Encoder
             using var encResults = _encoder.Run([NamedOnnxValue.CreateFromTensor(
@@ -298,6 +311,7 @@ public sealed class GraniteSpeech : IDisposable
             var encoderHidden = encResults[0].AsTensor<float>();
             var encShape = encoderHidden.Dimensions.ToArray();
             var encData = encoderHidden.ToArray();
+            if (swStage != null) { swStage.Stop(); encLocal += swStage.ElapsedMilliseconds; swStage.Restart(); }
 
             // Projector
             using var projResults = _projector.Run([NamedOnnxValue.CreateFromTensor(
@@ -312,6 +326,7 @@ public sealed class GraniteSpeech : IDisposable
             audioEmbeds[b] = ae.ToArray();
             nAudio[b]      = audioTokens;
             audioDim       = projShape[2];
+            if (swStage != null) { swStage.Stop(); projLocal += swStage.ElapsedMilliseconds; }
         }
 
         // ── Build batched, left-padded prompt ───────────────────────────
@@ -375,11 +390,15 @@ public sealed class GraniteSpeech : IDisposable
         var generated = new List<long>[B];
         for (int b = 0; b < B; b++) generated[b] = new List<long>(maxNewTokens);
         var finished      = new bool[B];
+        var loopDetected  = new bool[B];   // true iff IsRepetitionLoop fired for row b
         int finishedCount = 0;
         var nextTok       = new long[B];
 
+        long prefillLocal = 0, stepLocal = 0;
+        long stepCountLocal = 0;
         using (var runOpts = new RunOptions())
         {
+            var swPrefill = _profile ? System.Diagnostics.Stopwatch.StartNew() : null;
             // ── Prefill ─────────────────────────────────────────────────
             using var inputIdsVal = OrtValue.CreateTensorValueFromMemory(
                 inputIdsBatch, new long[] { B, sMax });
@@ -437,6 +456,8 @@ public sealed class GraniteSpeech : IDisposable
                 pastKvs[2 * L + 1] = prefillOutputs[1 + NumDecoderLayers + L];
             }
 
+            if (swPrefill != null) { swPrefill.Stop(); prefillLocal = swPrefill.ElapsedMilliseconds; }
+            var swStep = _profile ? System.Diagnostics.Stopwatch.StartNew() : null;
             // ── Step loop ───────────────────────────────────────────────
             // Reusable buffers. attn mask grows by 1 each step; pre-size to
             // the maximum we'll ever need (sMax + maxNewTokens + 1).
@@ -511,28 +532,90 @@ public sealed class GraniteSpeech : IDisposable
                     long tok = ArgmaxRowLastPosition(stepLogitsSpan, b, 1, VocabSize);
                     nextTok[b] = tok;
                     generated[b].Add(tok);
-                    if (tok == EosTokenId) { finished[b] = true; finishedCount++; }
+                    if (tok == EosTokenId)
+                    {
+                        finished[b] = true;
+                        finishedCount++;
+                    }
+                    else if (IsRepetitionLoop(generated[b]))
+                    {
+                        finished[b] = true;
+                        loopDetected[b] = true;
+                        finishedCount++;
+                    }
                 }
                 stepLogits.Dispose();
                 foreach (var ov in oldPast) ov.Dispose();
                 pastLen = totalLen;
+                stepCountLocal++;
             }
 
             foreach (var ov in pastKvs) ov.Dispose();
+            if (swStep != null) { swStep.Stop(); stepLocal = swStep.ElapsedMilliseconds; }
         }
 
-        // Trim trailing EOS from each row's generated list before decoding.
+        // Trim trailing EOS from every row, but ONLY trim the periodic loop
+        // tail on rows where the runtime detector classified the row as a
+        // runaway. Otherwise natural emphatic repetition (e.g. a speaker
+        // saying "no, no, no!") would be silently truncated.
         var texts = new string[B];
         for (int b = 0; b < B; b++)
         {
             var toks = generated[b];
             int realCount = toks.Count;
             while (realCount > 0 && toks[realCount - 1] == EosTokenId) realCount--;
-            if (realCount == toks.Count) texts[b] = DecodeTokens(toks);
-            else texts[b] = DecodeTokens(toks.GetRange(0, realCount));
+            int trimmed = loopDetected[b]
+                ? TrimRepetitionTail(toks, realCount)
+                : realCount;
+            if (trimmed == toks.Count) texts[b] = DecodeTokens(toks);
+            else texts[b] = DecodeTokens(toks.GetRange(0, trimmed));
+        }
+
+        if (swBatch != null)
+        {
+            swBatch.Stop();
+            long total = swBatch.ElapsedMilliseconds;
+            long accounted = melLocal + encLocal + projLocal + prefillLocal + stepLocal;
+            long overhead = Math.Max(0, total - accounted);
+            lock (_profileLock)
+            {
+                MelMs += melLocal; EncMs += encLocal; ProjMs += projLocal;
+                PrefillMs += prefillLocal; StepLoopMs += stepLocal; OverheadMs += overhead;
+                BatchCount++; RowCount += B; StepCount += stepCountLocal;
+                if (B > MaxBatchSeen) MaxBatchSeen = B;
+            }
+            Console.Error.WriteLine(
+                $"[granite-prof] B={B} total={total}ms (mel={melLocal} enc={encLocal} "
+              + $"proj={projLocal} prefill={prefillLocal} step={stepLocal}ms x{stepCountLocal} "
+              + $"overhead={overhead}ms)");
         }
         return texts;
     }
+
+    /// <summary>Print accumulated profile stats and reset. Returns true if profiling was on.</summary>
+    public static bool DumpProfile(System.IO.TextWriter? w = null)
+    {
+        if (!_profile) return false;
+        w ??= Console.Error;
+        lock (_profileLock)
+        {
+            long total = MelMs + EncMs + ProjMs + PrefillMs + StepLoopMs + OverheadMs;
+            w.WriteLine();
+            w.WriteLine("[granite-prof] === Aggregate ===");
+            w.WriteLine($"  batches:    {BatchCount}  rows: {RowCount}  max_B: {MaxBatchSeen}  steps: {StepCount}");
+            w.WriteLine($"  mel:        {MelMs} ms  ({Pct(MelMs, total)})");
+            w.WriteLine($"  encoder:    {EncMs} ms  ({Pct(EncMs, total)})");
+            w.WriteLine($"  projector:  {ProjMs} ms  ({Pct(ProjMs, total)})");
+            w.WriteLine($"  prefill:    {PrefillMs} ms  ({Pct(PrefillMs, total)})");
+            w.WriteLine($"  step-loop:  {StepLoopMs} ms  ({Pct(StepLoopMs, total)})");
+            w.WriteLine($"  overhead:   {OverheadMs} ms  ({Pct(OverheadMs, total)})");
+            w.WriteLine($"  total in TranscribeBatch: {total} ms");
+        }
+        return true;
+    }
+
+    private static string Pct(long part, long total) =>
+        total > 0 ? $"{100.0 * part / total:F1}%" : "0%";
 
     // ── Helpers ─────────────────────────────────────────────────────────
 
@@ -544,6 +627,58 @@ public sealed class GraniteSpeech : IDisposable
         var seg = new float[e - s];
         Array.Copy(audio, s, seg, 0, e - s);
         return seg;
+    }
+
+    /// <summary>
+    /// Detects greedy decode loops where the model has fallen into a fixed
+    /// short cycle (e.g. <c>"we, we, we, …"</c>). Returns true when the
+    /// most recent <c>3 × period</c> tokens are exactly periodic for any
+    /// period in [1..4]. 3 cycles is conservative — natural text rarely
+    /// repeats a 1-4-token motif three times in a row, but a stuck decode
+    /// always does. Once true, the row is forced to EOS so the rest of the
+    /// batch isn't dragged to <c>maxNewTokens</c> waiting on it.
+    /// </summary>
+    private static bool IsRepetitionLoop(List<long> tokens)
+    {
+        const int Cycles = 3;
+        for (int p = 1; p <= 4; p++)
+        {
+            int needed = Cycles * p;
+            if (tokens.Count < needed) continue;
+            int start = tokens.Count - needed;
+            bool periodic = true;
+            for (int i = 0; i < (Cycles - 1) * p && periodic; i++)
+                if (tokens[start + i] != tokens[start + i + p]) periodic = false;
+            if (periodic) return true;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// Walks back from <paramref name="end"/> and removes the longest
+    /// trailing periodic tail (period 1-4, ≥2 cycles). Used post-decode to
+    /// strip the start of a detected loop from the output text. Conservative:
+    /// only trims when there's a clear repeating motif.
+    /// </summary>
+    private static int TrimRepetitionTail(List<long> tokens, int end)
+    {
+        for (int p = 1; p <= 4; p++)
+        {
+            if (end < 2 * p) continue;
+            int cycles = 0;
+            int pos = end - p;
+            while (pos - p >= 0)
+            {
+                bool match = true;
+                for (int i = 0; i < p; i++)
+                    if (tokens[pos + i] != tokens[pos - p + i]) { match = false; break; }
+                if (!match) break;
+                cycles++;
+                pos -= p;
+            }
+            if (cycles >= 2) return pos + p;  // keep one cycle as the canonical motif
+        }
+        return end;
     }
 
     /// <summary>

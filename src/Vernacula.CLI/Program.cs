@@ -614,6 +614,7 @@ try
 
         Console.WriteLine();
         swAsr.Stop();
+        GraniteSpeech.DumpProfile();
     }
     else if (asrBackend == "qwen3asr")
     {

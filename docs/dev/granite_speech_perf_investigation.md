@@ -944,6 +944,114 @@ real workloads where diarization or VAD produces multiple segments. The
 single-segment chained path remains the right baseline for B=1; the
 batched path delegates to it via `TranscribeBatch(new[]{wave}, n)`.
 
+## Run 9 — 2026-05-08 — Straggler waste from runaway-loop rows
+
+**Question:** A 10 min en-US clip (159 VAD segments) ran at RTF 0.131 with
+batched Granite Speech, 1.74× *slower* than Qwen3-ASR running serially
+(RTF 0.075) on the same audio. Where is the time going?
+
+**Setup:** Added per-stage timing accumulators in `TranscribeBatch`
+(opt-in via `VERNACULA_GRANITE_PROFILE=1`). 10 batches of B=15-16 covered
+all 159 segments.
+
+**Pre-fix profile (10 min audio, 159 segs):**
+
+```
+mel:        551 ms   ( 0.7%)
+encoder:    5422 ms  ( 7.1%)
+projector:  44 ms    ( 0.1%)
+prefill:    2078 ms  ( 2.7%)
+step-loop:  67648 ms ( 89.0%)
+overhead:   283 ms   ( 0.4%)
+```
+
+Step-loop dominates at 89%, so pipeline overlap of mel/encoder/projector
+with the decoder cannot save more than ~8% even with perfect
+parallelism — there is no significant "fast stage waiting on slow stage"
+to recover.
+
+**Per-batch breakdown told the real story:**
+
+| Batch | B | Steps | Step ms | Notes |
+|---|---:|---:|---:|---|
+| 1 | 16 | **256** | 27,147 | runaway loop |
+| 2 | 16 | 6 | 250 | normal |
+| 3 | 16 | 7 | 314 | normal |
+| 4 | 16 | **256** | 28,314 | runaway loop |
+| 5 | 16 | 13 | 667 | normal |
+| 6 | 16 | 15 | 806 | normal |
+| 7 | 16 | 21 | 1,315 | normal |
+| 8 | 16 | 21 | 1,421 | normal |
+| 9 | 16 | 32 | 2,534 | normal |
+| 10 | 15 | 43 | 4,880 | normal |
+
+**Two batches each ran the 256-step `maxNewTokens` cap** because at least
+one row in each fell into a greedy loop — `"Well, uh, uh, uh, …"` and
+`"We strapped him on and we, we, we, …"`. Together those two batches ate
+**56.8 s of 76 s total step-loop time (75%)**. The other eight batches
+finished in 12 s.
+
+The pathology is straggler waste in batched greedy decode: with B=16, one
+runaway row drags 15 finished rows along for the ride until the cap, so
+each runaway costs `cap × B × per_step_ms` even though the survivors
+have long since emitted EOS.
+
+**Fix — per-row periodic-loop detector:**
+
+```csharp
+// 3 cycles of period 1..4 on the row's tail → force EOS for that row
+if (tok == EosTokenId || IsRepetitionLoop(generated[b]))
+{
+    finished[b] = true;
+    finishedCount++;
+}
+```
+
+`IsRepetitionLoop` checks the last `3 × p` tokens for any p in [1, 4];
+3 cycles is conservative — natural speech rarely repeats a 1-4-token
+motif three times in a row, but a stuck decode always does. Trim the
+tail in `TrimRepetitionTail` before decoding so the output text
+contains one cycle of the motif instead of a long repeated string.
+
+**Post-fix profile (same 10 min audio):**
+
+```
+mel:        549 ms   ( 2.5%)
+encoder:    5435 ms  (25.1%)
+projector:  49 ms    ( 0.2%)
+prefill:    2322 ms  (10.7%)
+step-loop:  13034 ms (60.1%)
+overhead:   305 ms   ( 1.4%)
+```
+
+Step count dropped from 670 to 175 (74% reduction). Total ASR wall:
+**78.3 s → 23.9 s (3.3× speedup)**. RTF: **0.131 → 0.043**.
+
+**Sanity-check against Qwen3-ASR on the same audio:**
+
+| Backend | Mode | ASR wall | RTF | Words |
+|---|---|---:|---:|---:|
+| Qwen3-ASR | serial | 43.0 s | 0.075 | 1,477 |
+| Granite (pre-fix) | batched B=16 | 78.3 s | 0.131 | 1,766 |
+| **Granite (post-fix)** | **batched B=16** | **23.9 s** | **0.043** | **1,514** |
+
+Post-fix Granite is **1.7× faster than serial Qwen3-ASR** and produces a
+word count 2.5% above Qwen3 — meaning the rep-detect removed only the
+~252 bogus repetition words from the pre-fix output, not real content.
+Spot-checks on the runaway segments confirm both: the
+`[00:05:37 - 00:05:37]` zero-duration VAD chunk where Granite looped
+`"uh, uh, uh, …"` is `"Well."` per Qwen3 and `"Well, uh"` per post-fix
+Granite — close to the actual audio (a single utterance), and the
+overlap-vs-cap behaviour is now identical between batches.
+
+**Implication on the original pipeline-stall question:** there is no
+significant stall to overlap. After the rep-detect fix the encoder is
+the largest pre-decoder cost at 25% (5.4 s on a 24 s run), but
+pipelining it with the decoder step-loop on the same CUDA stream would
+not actually overlap (single-stream serialisation). True overlap would
+require multiple CUDA streams per session — significant complexity for
+a ~5 s win on a 10 min clip. Park.
+
 ### Open follow-ups (decreasing priority)
 
 - **Concat is now the #1 ORT op (249 ms across 64 tokens at 90 s)**
