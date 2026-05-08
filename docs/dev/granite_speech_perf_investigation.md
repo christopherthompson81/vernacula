@@ -894,6 +894,56 @@ runtime than split, faster per-token than both prior paths.
 | 6.4 s | 12+× (warm) / 9.1× (cold) | 54.3 | 0.7 s |
 | 90 s | **5.96×** | **18.2** | **15.1 s** |
 
+## Run 8 — 2026-05-08 — VRAM-budgeted batching in GraniteSpeech.cs
+
+**Question:** Does cross-segment batching beat per-segment serial decode by
+the expected ~B× factor?
+
+**Setup:** `GraniteSpeech.TranscribeBatch` runs mel + encoder + projector
+**serially per row** (encoder uses full attention with no padding mask, so
+batching with zero-padded mel would contaminate the attention output of
+real positions), then runs the unified decoder **batched** with LEFT-padded
+`input_ids` and a shared `cache_position` so rotary positions for generated
+tokens are identical across rows.
+
+`audio_embeds` is right-aligned in `[B, A_max, 2048]`: the cumsum-gather
+merge picks the first `N_audio[b]` entries per row, so they sit at
+`[0, N_audio[b])` per row and the rest stay zero (never selected because
+`is_audio = (input_ids == AudioTokenId)` is False outside those positions).
+
+EOS handling: once a row emits EOS we substitute `EosTokenId` for its step
+input and freeze its output token, but keep stepping the batch until the
+longest row finishes. Wasted-step overhead is minimised by
+`BatchSizer.Plan`'s ascending-duration packing — segments of similar
+length batch together.
+
+VRAM budget: `cudaMemGetInfo` minus 3 GB safety buffer. Cost model returns
+`max(KV_at_end, prefill_logits, encoder_full_attn)` per prospective batch.
+KV dominates at long durations, prefill logits dominate at large B with
+short prompts.
+
+**Findings (3090, fp32 unified chained, CUDA EP):**
+
+| Test | Audio | Segments | Mode | ASR wall | RTF |
+|---|---:|---:|---|---:|---:|
+| VCTK_p307 single | 6.4 s | 1 | B=1 | 3.25 s | 0.508 |
+| VCTK ×4 batch | 25.0 s | 4 | B=4 | 3.66 s | 0.147 |
+| en-US 90 s | 90 s | 20 (VAD) | mixed B | 7.80 s | **0.091** |
+
+The 25 s 4-segment case ran ~3.5× faster per real-time second than the
+single-segment case (0.147 vs 0.508). The 90 s VAD-segmented run hit RTF
+0.091 (≈ 11× real time) — better than Run 7's 5.96× single-segment number
+because most VAD chunks are short and batching amortises prefill across
+them. Transcripts on all four VCTK rows matched the reference text modulo
+punctuation variance (`"Hello I'm from Toronto"` vs
+`"Hello, I'm from Toronto."`) — unrelated to batching; the model's
+punctuation is non-deterministic across prompt contexts.
+
+**Implication:** Batching is a multiplicative win on top of Run 7 for
+real workloads where diarization or VAD produces multiple segments. The
+single-segment chained path remains the right baseline for B=1; the
+batched path delegates to it via `TranscribeBatch(new[]{wave}, n)`.
+
 ### Open follow-ups (decreasing priority)
 
 - **Concat is now the #1 ORT op (249 ms across 64 tokens at 90 s)**

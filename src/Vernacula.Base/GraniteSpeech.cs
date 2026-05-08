@@ -50,8 +50,10 @@ public sealed class GraniteSpeech : IDisposable
     private const int NumDecoderLayers = 40;
     private const int NumKvHeads       = 4;     // GQA — text_config.num_key_value_heads
     private const int HeadDim          = 128;   // text_config.hidden_size / num_attention_heads
+    private const int NumAttnHeads     = 16;    // text_config.num_attention_heads (for activation sizing)
     private const int VocabSize        = 100353;
     private const int AudioTokenId     = 100352;
+    private const int PadTokenId       = 100256; // text_config.pad_token_id
     private const int EosTokenId       = 100257; // bos_token_id == eos_token_id
     private const int MaxContextLen    = 4096;   // text_config.max_position_embeddings
 
@@ -76,6 +78,19 @@ public sealed class GraniteSpeech : IDisposable
         36660, 3931, 2891, 25,
     };
 
+    // ── Batching budget ─────────────────────────────────────────────────
+    // Hard cap on rows per batch even if VRAM is plentiful. Granite Speech
+    // is a 1.84 B-param LM; activation pressure scales fast with B.
+    private const int MaxBatchSize = 16;
+
+    // VRAM safety buffer reserved for CUDA runtime + headroom for the LM
+    // logits spike at long prompts (B * S_max * 100 353 * 4 bytes peaks
+    // around 1.5 GB at B=4 / S=900 / fp32). Falls back to 3 GB on CPU-only
+    // builds where cudaMemGetInfo is unavailable.
+    private const long VramSafetyBufferBytes  = 3_000_000_000L;
+    private const long VramBudgetFallbackBytes = 3_000_000_000L;
+    private readonly long _vramBudgetForKvBytes;
+
     // ── ONNX sessions + tokenizer ───────────────────────────────────────
     private readonly InferenceSession _mel;
     private readonly InferenceSession _encoder;
@@ -98,6 +113,8 @@ public sealed class GraniteSpeech : IDisposable
 
         (_idToToken, _addedTokens) = LoadTokenizerVocab(Path.Combine(modelPath, TokenizerFile));
         _byteLevelDecode = BuildByteLevelDecodeTable();
+
+        _vramBudgetForKvBytes = QueryVramBudget();
     }
 
     public void Dispose()
@@ -142,9 +159,15 @@ public sealed class GraniteSpeech : IDisposable
 
     /// <summary>
     /// Transcribes each segment from <paramref name="segs"/> and yields
-    /// <c>(segId, text)</c> in order as each segment completes. Speaker
+    /// <c>(segId, text, speaker)</c> in order as each batch completes. Speaker
     /// labels are passed through from the input segments — Granite Speech
     /// itself doesn't do speaker diarization.
+    ///
+    /// Segments are sorted by ascending duration and packed into VRAM-budgeted
+    /// batches via <see cref="BatchSizer.Plan"/>. Within a batch, all segments
+    /// run through a single batched forward of mel + encoder + projector +
+    /// unified decoder; per-row EOS tracking lets shorter segments stop while
+    /// the longest finishes its decode.
     /// </summary>
     /// <param name="segs">Segment list as <c>(start_seconds, end_seconds, speaker_label)</c>.</param>
     /// <param name="audio">Mono 16 kHz waveform covering all segments.</param>
@@ -154,82 +177,190 @@ public sealed class GraniteSpeech : IDisposable
         float[] audio,
         int maxNewTokens = 256)
     {
-        for (int segId = 0; segId < segs.Count; segId++)
+        if (segs.Count == 0) yield break;
+
+        var durations = new double[segs.Count];
+        for (int i = 0; i < segs.Count; i++) durations[i] = segs[i].end - segs[i].start;
+
+        var plan = BatchSizer.Plan(
+            durations,
+            new GraniteBatchCostModel(maxNewTokens),
+            _vramBudgetForKvBytes,
+            MaxBatchSize);
+
+        foreach (var batch in plan)
         {
-            var (start, end, spk) = segs[segId];
-            float[] wave = ExtractSegment(audio, start, end);
-            // Extreme-short skip: <100 ms produces no useful audio tokens.
-            if (wave.Length < Config.SampleRate / 10)
+            int B = batch.Count;
+            int[] segIds = batch.SegmentIndices;
+
+            // Extract waveforms; mark short ones to skip without dropping the
+            // batch slot (we yield an empty string for them).
+            var waveforms = new float[B][];
+            var skipped = new bool[B];
+            for (int b = 0; b < B; b++)
             {
-                yield return (segId, string.Empty, spk);
-                continue;
+                var (start, end, _) = segs[segIds[b]];
+                waveforms[b] = ExtractSegment(audio, start, end);
+                skipped[b] = waveforms[b].Length < Config.SampleRate / 10;
             }
-            string text = TranscribeOne(wave, maxNewTokens);
-            yield return (segId, text, spk);
+
+            // Compact to the rows we'll actually transcribe.
+            var realIdx = new List<int>(B);
+            var realWaves = new List<float[]>(B);
+            for (int b = 0; b < B; b++)
+                if (!skipped[b]) { realIdx.Add(b); realWaves.Add(waveforms[b]); }
+
+            string[] realTexts = realWaves.Count > 0
+                ? TranscribeBatch(realWaves.ToArray(), maxNewTokens)
+                : Array.Empty<string>();
+
+            // Yield in the batch order; reinflate the skipped slots.
+            for (int b = 0; b < B; b++)
+            {
+                int segId = segIds[b];
+                string text = string.Empty;
+                if (!skipped[b])
+                {
+                    int realPos = realIdx.IndexOf(b);
+                    text = realTexts[realPos];
+                }
+                yield return (segId, text, segs[segId].spk);
+            }
         }
     }
 
     /// <summary>Convenience entry point for transcribing a single waveform.</summary>
     public string Transcribe(float[] audio16kMono, int maxNewTokens = 256)
-        => TranscribeOne(audio16kMono, maxNewTokens);
+        => TranscribeBatch(new[] { audio16kMono }, maxNewTokens)[0];
 
-    // ── Per-segment pipeline ────────────────────────────────────────────
+    // ── Batched pipeline ────────────────────────────────────────────────
 
-    private string TranscribeOne(float[] wave, int maxNewTokens)
+    /// <summary>
+    /// Runs mel + encoder + projector + unified decoder over a batch of
+    /// waveforms, generating greedy text for each row in lockstep until
+    /// every row hits EOS or <paramref name="maxNewTokens"/>.
+    ///
+    /// Key shape decisions:
+    ///   - Mel/encoder/projector run **serially per-row**: the encoder uses
+    ///     full attention with no padding mask, and batching variable-length
+    ///     audio with zero padding contaminates the attention output of real
+    ///     positions. Per-row keeps each forward at its actual length.
+    ///   - Decoder is **batched with LEFT-padded input_ids**: cache_position
+    ///     is shared [S] across the batch, so left-padding aligns every row's
+    ///     real last token at S-1 — rotary positions for generated tokens are
+    ///     identical across rows.
+    ///   - audio_embeds is right-aligned in the [B, A_max, 2048] buffer:
+    ///     the cumsum-gather merge picks the first N_audio[b] entries per
+    ///     row, so they must sit at indices [0, N_audio[b]) of audio_embeds[b].
+    ///
+    /// EOS handling: once a row emits EOS we substitute <see cref="EosTokenId"/>
+    /// for its step input and freeze its output token, but keep stepping the
+    /// batch until the longest row finishes (straggler waste — minimised by
+    /// <see cref="BatchSizer.Plan"/>'s ascending-duration packing).
+    /// </summary>
+    private string[] TranscribeBatch(float[][] waveforms, int maxNewTokens)
     {
-        // Capacity check — Granite Speech's decoder context is 4096 tokens.
-        // At 10 Hz audio embedding rate that's ~6.7 minutes max audio,
-        // minus prompt overhead. Caller is expected to pre-segment.
-        int audioTokens = NumAudioTokens(wave.Length);
-        int promptLen   = AsrPromptPrefix.Length + audioTokens + AsrPromptSuffix.Length;
-        if (promptLen + maxNewTokens > MaxContextLen)
+        int B = waveforms.Length;
+        if (B == 0) return Array.Empty<string>();
+
+        // ── Per-row mel + encoder + projector ───────────────────────────
+        // audioEmbeds[b] is the row's [N_audio[b] * 2048] flattened buffer.
+        var audioEmbeds = new float[B][];
+        var nAudio      = new int[B];
+        long audioDim   = 2048;
+        for (int b = 0; b < B; b++)
         {
-            int allowedAudio = MaxContextLen - maxNewTokens
-                             - AsrPromptPrefix.Length - AsrPromptSuffix.Length;
-            int allowedSeconds = (int)(allowedAudio
-                / (double)EffectiveWindowSize * ProjectorWindowSize * 2 * HopLength
-                / Config.SampleRate);
-            throw new InvalidOperationException(
-                $"Segment too long: prompt+max_new_tokens ({promptLen + maxNewTokens}) " +
-                $"exceeds Granite Speech context ({MaxContextLen}). " +
-                $"Pre-segment audio to ≤{allowedSeconds} s.");
+            int audioTokens = NumAudioTokens(waveforms[b].Length);
+            int promptLen   = AsrPromptPrefix.Length + audioTokens + AsrPromptSuffix.Length;
+            if (promptLen + maxNewTokens > MaxContextLen)
+            {
+                int allowedAudio = MaxContextLen - maxNewTokens
+                                 - AsrPromptPrefix.Length - AsrPromptSuffix.Length;
+                int allowedSeconds = (int)(allowedAudio
+                    / (double)EffectiveWindowSize * ProjectorWindowSize * 2 * HopLength
+                    / Config.SampleRate);
+                throw new InvalidOperationException(
+                    $"Segment too long: prompt+max_new_tokens ({promptLen + maxNewTokens}) " +
+                    $"exceeds Granite Speech context ({MaxContextLen}). " +
+                    $"Pre-segment audio to ≤{allowedSeconds} s.");
+            }
+
+            // Mel
+            var audioT = new DenseTensor<float>(waveforms[b], [1, waveforms[b].Length]);
+            using var melResults = _mel.Run([NamedOnnxValue.CreateFromTensor("audio", audioT)]);
+            var inputFeatures = melResults[0].AsTensor<float>();
+            var ifShape = inputFeatures.Dimensions.ToArray();
+            var ifData = inputFeatures is DenseTensor<float> dT ? dT.ToArray() : inputFeatures.ToArray();
+
+            // Encoder
+            using var encResults = _encoder.Run([NamedOnnxValue.CreateFromTensor(
+                "input_features", new DenseTensor<float>(ifData, ifShape))]);
+            var encoderHidden = encResults[0].AsTensor<float>();
+            var encShape = encoderHidden.Dimensions.ToArray();
+            var encData = encoderHidden.ToArray();
+
+            // Projector
+            using var projResults = _projector.Run([NamedOnnxValue.CreateFromTensor(
+                "encoder_hidden", new DenseTensor<float>(encData, encShape))]);
+            var ae = projResults[0].AsTensor<float>();
+            var projShape = ae.Dimensions.ToArray();
+            if (projShape[1] != audioTokens)
+                throw new InvalidOperationException(
+                    $"Audio token count mismatch (row {b}): formula predicts {audioTokens}, "
+                  + $"projector produced {projShape[1]}.");
+
+            audioEmbeds[b] = ae.ToArray();
+            nAudio[b]      = audioTokens;
+            audioDim       = projShape[2];
         }
 
-        long[] inputIds = BuildPromptIds(audioTokens);
+        // ── Build batched, left-padded prompt ───────────────────────────
+        var realLen = new int[B];
+        int sMax    = 0;
+        int aMax    = 0;
+        for (int b = 0; b < B; b++)
+        {
+            realLen[b] = AsrPromptPrefix.Length + nAudio[b] + AsrPromptSuffix.Length;
+            if (realLen[b] > sMax) sMax = realLen[b];
+            if (nAudio[b]  > aMax) aMax = nAudio[b];
+        }
 
-        // ── Mel ─────────────────────────────────────────────────────────
-        var audioT = new DenseTensor<float>(wave, [1, wave.Length]);
-        using var melResults = _mel.Run([NamedOnnxValue.CreateFromTensor("audio", audioT)]);
-        var inputFeatures = (DenseTensor<float>)melResults[0].AsTensor<float>();
-        var ifShape = inputFeatures.Dimensions.ToArray();
-        var ifData = inputFeatures.ToArray();
+        var inputIdsBatch = new long[B * sMax];
+        var attnMaskBatch = new long[B * sMax];
+        for (int b = 0; b < B; b++)
+        {
+            int padLen = sMax - realLen[b];
+            int rowOff = b * sMax;
+            for (int s = 0; s < padLen; s++)
+            {
+                inputIdsBatch[rowOff + s] = PadTokenId;
+                // attnMaskBatch already 0 by default
+            }
+            int p = rowOff + padLen;
+            // Prefix
+            for (int i = 0; i < AsrPromptPrefix.Length; i++) inputIdsBatch[p++] = AsrPromptPrefix[i];
+            // Audio token slots
+            for (int i = 0; i < nAudio[b]; i++)              inputIdsBatch[p++] = AudioTokenId;
+            // Suffix
+            for (int i = 0; i < AsrPromptSuffix.Length; i++) inputIdsBatch[p++] = AsrPromptSuffix[i];
+            // Real positions get attention=1
+            for (int s = padLen; s < sMax; s++) attnMaskBatch[rowOff + s] = 1L;
+        }
 
-        // ── Encoder ─────────────────────────────────────────────────────
-        using var encResults = _encoder.Run([NamedOnnxValue.CreateFromTensor(
-            "input_features", new DenseTensor<float>(ifData, ifShape))]);
-        var encoderHidden = encResults[0].AsTensor<float>();
-        var encShape = encoderHidden.Dimensions.ToArray();
-        var encData = encoderHidden.ToArray();
+        var audioEmbedsBatch = new float[B * aMax * audioDim];
+        for (int b = 0; b < B; b++)
+        {
+            int rowOff = b * aMax * (int)audioDim;
+            int n = nAudio[b] * (int)audioDim;
+            if (n > 0) Array.Copy(audioEmbeds[b], 0, audioEmbedsBatch, rowOff, n);
+            // Remaining positions stay zero — never selected by cumsum-gather
+            // because is_audio=False at non-AudioTokenId positions.
+        }
 
-        // ── Projector ───────────────────────────────────────────────────
-        using var projResults = _projector.Run([NamedOnnxValue.CreateFromTensor(
-            "encoder_hidden", new DenseTensor<float>(encData, encShape))]);
-        var audioEmbeds = projResults[0].AsTensor<float>();
-        var projShape = audioEmbeds.Dimensions.ToArray();
-        var projData = audioEmbeds.ToArray();
+        var cachePosPrefill = new long[sMax];
+        for (int i = 0; i < sMax; i++) cachePosPrefill[i] = i;
 
-        // Sanity: projector output length should match the formula. If they
-        // disagree, the audio token count in input_ids would be off and the
-        // model would hallucinate. Error out loudly rather than silently
-        // produce garbage.
-        if (projShape[1] != audioTokens)
-            throw new InvalidOperationException(
-                $"Audio token count mismatch: formula predicts {audioTokens}, "
-              + $"projector produced {projShape[1]}. Input_ids/projector output disagree.");
-
-        // ── Decoder: prefill + step loop via chained Run-with-OrtValue ──
-        // Inputs for the unified decoder graph stay in this order; build the
-        // names list once.
+        // ── Decoder: prefill + chained Run-with-OrtValue step loop ──────
         var decInputNames = new List<string>(4 + 2 * NumDecoderLayers)
         { "input_ids", "audio_embeds", "attention_mask", "cache_position" };
         for (int L = 0; L < NumDecoderLayers; L++)
@@ -241,25 +372,29 @@ public sealed class GraniteSpeech : IDisposable
         for (int L = 0; L < NumDecoderLayers; L++) decOutputNames.Add($"present_key_{L}");
         for (int L = 0; L < NumDecoderLayers; L++) decOutputNames.Add($"present_value_{L}");
 
-        long audioDim = projShape[2];
-        var generated = new List<long>(maxNewTokens);
-        long nextToken;
+        var generated = new List<long>[B];
+        for (int b = 0; b < B; b++) generated[b] = new List<long>(maxNewTokens);
+        var finished      = new bool[B];
+        int finishedCount = 0;
+        var nextTok       = new long[B];
 
         using (var runOpts = new RunOptions())
         {
             // ── Prefill ─────────────────────────────────────────────────
             using var inputIdsVal = OrtValue.CreateTensorValueFromMemory(
-                inputIds, new long[] { 1, promptLen });
+                inputIdsBatch, new long[] { B, sMax });
             using var audioVal = OrtValue.CreateTensorValueFromMemory(
-                projData, new long[] { 1, projShape[1], audioDim });
-            var attnArr = new long[promptLen];
-            for (int i = 0; i < promptLen; i++) attnArr[i] = 1L;
+                audioEmbedsBatch, new long[] { B, Math.Max(aMax, 1), audioDim });
             using var attnVal = OrtValue.CreateTensorValueFromMemory(
-                attnArr, new long[] { 1, promptLen });
-            var cpArr = new long[promptLen];
-            for (int i = 0; i < promptLen; i++) cpArr[i] = i;
+                attnMaskBatch, new long[] { B, sMax });
             using var cpVal = OrtValue.CreateTensorValueFromMemory(
-                cpArr, new long[] { promptLen });
+                cachePosPrefill, new long[] { sMax });
+
+            // Audio_embeds requires A >= 1 even when nobody has audio.
+            // Provide a 1-row zero buffer if aMax == 0 (shouldn't happen but
+            // keeps the graph valid).
+            if (aMax == 0)
+                audioEmbedsBatch = new float[B * 1 * (int)audioDim];
 
             var emptyPasts = new List<OrtValue>(2 * NumDecoderLayers);
             var prefillInputs = new List<OrtValue>(4 + 2 * NumDecoderLayers)
@@ -268,10 +403,10 @@ public sealed class GraniteSpeech : IDisposable
             {
                 var k = OrtValue.CreateTensorValueFromMemory(
                     Array.Empty<float>(),
-                    new long[] { 1, NumKvHeads, 0, HeadDim });
+                    new long[] { B, NumKvHeads, 0, HeadDim });
                 var v = OrtValue.CreateTensorValueFromMemory(
                     Array.Empty<float>(),
-                    new long[] { 1, NumKvHeads, 0, HeadDim });
+                    new long[] { B, NumKvHeads, 0, HeadDim });
                 emptyPasts.Add(k);
                 emptyPasts.Add(v);
                 prefillInputs.Add(k);
@@ -281,15 +416,20 @@ public sealed class GraniteSpeech : IDisposable
             var prefillOutputs = _decoder.Run(
                 runOpts, decInputNames, prefillInputs, decOutputNames);
 
-            // Argmax on the prefill last position; the first generated token.
+            // Argmax per row at the LAST position (S-1) — left-padding
+            // means real last token sits there for every row.
             var prefillLogitsSpan = prefillOutputs[0].GetTensorDataAsSpan<float>();
-            nextToken = ArgmaxLastPosition(prefillLogitsSpan, promptLen, VocabSize);
+            for (int b = 0; b < B; b++)
+            {
+                long tok = ArgmaxRowLastPosition(prefillLogitsSpan, b, sMax, VocabSize);
+                nextTok[b] = tok;
+                generated[b].Add(tok);
+                if (tok == EosTokenId) { finished[b] = true; finishedCount++; }
+            }
             prefillOutputs[0].Dispose();
             foreach (var p in emptyPasts) p.Dispose();
 
-            // pastKvs = the prefill's GPU-resident output OrtValues. Becomes
-            // the next step's past_kv inputs; chain forward without ever
-            // copying to managed memory.
+            // pastKvs = prefill output OrtValues, GPU-resident, chained forward.
             var pastKvs = new OrtValue[2 * NumDecoderLayers];
             for (int L = 0; L < NumDecoderLayers; L++)
             {
@@ -297,42 +437,63 @@ public sealed class GraniteSpeech : IDisposable
                 pastKvs[2 * L + 1] = prefillOutputs[1 + NumDecoderLayers + L];
             }
 
-            // ── Step loop ──────────────────────────────────────────────
-            // Reusable scratch buffers; OrtValues wrap them with the right
-            // shape for the current step.
-            long[] stepInputIdArr = new long[1];
-            long[] cachePosStepArr = new long[1];
-            long[] attnScratch = new long[promptLen + maxNewTokens + 1];
-            for (int i = 0; i < attnScratch.Length; i++) attnScratch[i] = 1L;
-            float[] dummyAudio = new float[1 * 1 * (int)audioDim]; // step audio_embeds is a no-op
-
-            int pastLen = promptLen;
-            for (int step = 0; step < maxNewTokens; step++)
+            // ── Step loop ───────────────────────────────────────────────
+            // Reusable buffers. attn mask grows by 1 each step; pre-size to
+            // the maximum we'll ever need (sMax + maxNewTokens + 1).
+            long[] stepInputIds = new long[B];
+            long[] cachePosStep = new long[1];
+            long[] stepAttnBuf  = new long[B * (sMax + maxNewTokens + 1)];
+            // Initialise step attention: row b has zeros at the LEFT pad
+            // positions [0, sMax-realLen[b]) and ones from sMax-realLen[b]
+            // onward. We append a new "1" each step.
+            for (int b = 0; b < B; b++)
             {
-                if (nextToken == EosTokenId) break;
-                generated.Add(nextToken);
+                int padLen = sMax - realLen[b];
+                int rowOff = b * (sMax + maxNewTokens + 1);
+                for (int s = padLen; s < sMax; s++) stepAttnBuf[rowOff + s] = 1L;
+            }
+            float[] dummyAudio = new float[B * 1 * (int)audioDim];
+
+            int pastLen = sMax;
+            for (int step = 0; step < maxNewTokens && finishedCount < B; step++)
+            {
                 int totalLen = pastLen + 1;
 
-                stepInputIdArr[0] = nextToken;
-                cachePosStepArr[0] = pastLen;
-                using var stepInputId = OrtValue.CreateTensorValueFromMemory(
-                    stepInputIdArr, new long[] { 1, 1 });
-                using var stepAudio = OrtValue.CreateTensorValueFromMemory(
-                    dummyAudio, new long[] { 1, 1, audioDim });
-                using var stepAttn = OrtValue.CreateTensorValueFromMemory(
-                    attnScratch, new long[] { 1, totalLen });
-                using var cachePos = OrtValue.CreateTensorValueFromMemory(
-                    cachePosStepArr, new long[] { 1 });
+                for (int b = 0; b < B; b++)
+                {
+                    stepInputIds[b] = finished[b] ? EosTokenId : nextTok[b];
+                    int rowOff = b * (sMax + maxNewTokens + 1);
+                    stepAttnBuf[rowOff + pastLen] = 1L;  // new token position
+                }
+                cachePosStep[0] = pastLen;
+
+                // Build a contiguous [B, totalLen] attn mask for this step:
+                // ORT requires the OrtValue's backing memory to match the
+                // declared shape, so we copy out the live prefix per row.
+                var stepAttnFlat = new long[B * totalLen];
+                for (int b = 0; b < B; b++)
+                {
+                    int srcOff = b * (sMax + maxNewTokens + 1);
+                    int dstOff = b * totalLen;
+                    Array.Copy(stepAttnBuf, srcOff, stepAttnFlat, dstOff, totalLen);
+                }
+
+                using var stepInputIdVal = OrtValue.CreateTensorValueFromMemory(
+                    stepInputIds, new long[] { B, 1 });
+                using var stepAudioVal = OrtValue.CreateTensorValueFromMemory(
+                    dummyAudio, new long[] { B, 1, audioDim });
+                using var stepAttnVal = OrtValue.CreateTensorValueFromMemory(
+                    stepAttnFlat, new long[] { B, totalLen });
+                using var cachePosVal = OrtValue.CreateTensorValueFromMemory(
+                    cachePosStep, new long[] { 1 });
 
                 var stepInputs = new List<OrtValue>(4 + 2 * NumDecoderLayers)
-                { stepInputId, stepAudio, stepAttn, cachePos };
+                { stepInputIdVal, stepAudioVal, stepAttnVal, cachePosVal };
                 stepInputs.AddRange(pastKvs);
 
                 var outputs = _decoder.Run(
                     runOpts, decInputNames, stepInputs, decOutputNames);
 
-                // Take ownership of the new GPU-resident KV; release the
-                // previous step's OrtValues once we've swapped pastKvs.
                 var oldPast = pastKvs;
                 pastKvs = new OrtValue[2 * NumDecoderLayers];
                 for (int L = 0; L < NumDecoderLayers; L++)
@@ -343,17 +504,34 @@ public sealed class GraniteSpeech : IDisposable
 
                 var stepLogits = outputs[0];
                 var stepLogitsSpan = stepLogits.GetTensorDataAsSpan<float>();
-                nextToken = ArgmaxLastPosition(stepLogitsSpan, 1, VocabSize);
+                // Step logits shape: [B, 1, V]
+                for (int b = 0; b < B; b++)
+                {
+                    if (finished[b]) { nextTok[b] = EosTokenId; continue; }
+                    long tok = ArgmaxRowLastPosition(stepLogitsSpan, b, 1, VocabSize);
+                    nextTok[b] = tok;
+                    generated[b].Add(tok);
+                    if (tok == EosTokenId) { finished[b] = true; finishedCount++; }
+                }
                 stepLogits.Dispose();
                 foreach (var ov in oldPast) ov.Dispose();
-
                 pastLen = totalLen;
             }
 
             foreach (var ov in pastKvs) ov.Dispose();
         }
 
-        return DecodeTokens(generated);
+        // Trim trailing EOS from each row's generated list before decoding.
+        var texts = new string[B];
+        for (int b = 0; b < B; b++)
+        {
+            var toks = generated[b];
+            int realCount = toks.Count;
+            while (realCount > 0 && toks[realCount - 1] == EosTokenId) realCount--;
+            if (realCount == toks.Count) texts[b] = DecodeTokens(toks);
+            else texts[b] = DecodeTokens(toks.GetRange(0, realCount));
+        }
+        return texts;
     }
 
     // ── Helpers ─────────────────────────────────────────────────────────
@@ -368,9 +546,16 @@ public sealed class GraniteSpeech : IDisposable
         return seg;
     }
 
-    private static long ArgmaxLastPosition(ReadOnlySpan<float> logits, int seqLen, int vocab)
+    /// <summary>
+    /// Argmax over the last position of row <paramref name="b"/> in a
+    /// [B, seqLen, vocab] logits tensor. Used both at prefill (seqLen=S_max,
+    /// last real token aligned at S_max-1 thanks to left-padding) and at
+    /// step time (seqLen=1).
+    /// </summary>
+    private static long ArgmaxRowLastPosition(
+        ReadOnlySpan<float> logits, int b, int seqLen, int vocab)
     {
-        int offset = (seqLen - 1) * vocab;
+        int offset = (b * seqLen + (seqLen - 1)) * vocab;
         long best = 0;
         float bestVal = float.NegativeInfinity;
         for (int v = 0; v < vocab; v++)
@@ -436,6 +621,82 @@ public sealed class GraniteSpeech : IDisposable
         }
 
         return (idToToken, addedContent);
+    }
+
+    // ── VRAM cost model ─────────────────────────────────────────────────
+
+    // Audio-token count derived purely from duration (samples = durSec * 16000).
+    // Mirrors NumAudioTokens but takes seconds for the cost-model API.
+    private static int EstimateAudioTokens(double durSec)
+    {
+        int samples       = (int)Math.Ceiling(durSec * Config.SampleRate);
+        int melLength     = samples / HopLength + 1;
+        int encoderLength = melLength / 2;
+        int nblocks       = (encoderLength + ProjectorWindowSize - 1) / ProjectorWindowSize;
+        return nblocks * EffectiveWindowSize;
+    }
+
+    private static int EstimatePromptLen(double durSec) =>
+        AsrPromptPrefix.Length + EstimateAudioTokens(durSec) + AsrPromptSuffix.Length;
+
+    private static int EstimateEncoderFrames(double durSec)
+    {
+        int samples   = (int)Math.Ceiling(durSec * Config.SampleRate);
+        int melLength = samples / HopLength + 1;
+        return melLength / 2;
+    }
+
+    /// <summary>
+    /// Peak-VRAM cost model for batched Granite Speech decode. Compares
+    /// three transient allocations and returns the worst case:
+    ///   1. Decoder KV at end of decode  (B × 80 × 4 × seqLen × 128 × 4 bytes)
+    ///   2. Prefill logits spike         (B × promptLen × VocabSize × 4 bytes)
+    ///   3. Encoder full-attention bias  (num_heads × T_enc² × 4 bytes, B=1 because
+    ///      mel/encoder/projector run serially)
+    /// </summary>
+    private sealed class GraniteBatchCostModel(int maxNewTokens) : IBatchCostModel
+    {
+        public long EstimatePeakBytes(int batchSize, double maxDurationSec)
+        {
+            const long bytesPerFloat = 4L;
+            int promptLen = EstimatePromptLen(maxDurationSec);
+            int seqLen    = promptLen + maxNewTokens;
+            int encFrames = EstimateEncoderFrames(maxDurationSec);
+
+            // KV cache: 2 (K+V) × 40 layers × B × 4 KV-heads × seqLen × 128 head dim
+            long kvBytes = 2L * NumDecoderLayers * batchSize * NumKvHeads
+                         * seqLen * HeadDim * bytesPerFloat;
+
+            // Prefill logits: B × promptLen × VocabSize × float — peaks at start of decode
+            long logitsBytes = (long)batchSize * promptLen * VocabSize * bytesPerFloat;
+
+            // Encoder full-attention bias [H, T, T] — runs serially per row so B=1.
+            // num_heads_encoder = 16 (Granite Speech encoder).
+            long encAttnBytes = 16L * encFrames * encFrames * bytesPerFloat;
+
+            return Math.Max(kvBytes, Math.Max(logitsBytes, encAttnBytes));
+        }
+    }
+
+    // ── CUDA VRAM query (mirrors Cohere's pattern) ──────────────────────
+
+    [System.Runtime.InteropServices.DllImport("cudart",
+        EntryPoint        = "cudaMemGetInfo",
+        ExactSpelling     = true,
+        CallingConvention = System.Runtime.InteropServices.CallingConvention.Cdecl)]
+    private static extern int CudaMemGetInfo(out ulong free, out ulong total);
+
+    private static long QueryVramBudget()
+    {
+        try
+        {
+            int rc = CudaMemGetInfo(out ulong free, out _);
+            if (rc == 0 && free > (ulong)VramSafetyBufferBytes)
+                return (long)(free - (ulong)VramSafetyBufferBytes);
+        }
+        catch (DllNotFoundException) { }
+        catch (EntryPointNotFoundException) { }
+        return VramBudgetFallbackBytes;
     }
 
     private static Dictionary<char, byte> BuildByteLevelDecodeTable()
