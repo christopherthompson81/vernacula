@@ -27,6 +27,16 @@ needed.
   on a real audio clip and compares against `model.generate()`. Catches
   integration bugs across the full pipeline that per-stage parity
   cannot.
+- `test_encoder_math_equivalence.py` — regression check that the Run 4
+  full-attention encoder rewrite is mathematically identical to the
+  upstream block-attention encoder. Loads the model twice (unpatched +
+  patched) and compares `model.encoder(features)` outputs directly.
+  Expected max-abs-diff ~1e-5 (pure fp32 noise). The other parity
+  scripts compare ORT vs PyTorch *both running the patched math*, so
+  they cannot detect a math bug introduced by the patch itself.
+- `dump_inputs_for_csharp_smoke.py` — generates fixtures
+  (`input_ids.bin`, `expected_text.txt`) for the C# CLI parity smoke
+  in `tests/GraniteSpeechSmoke/`.
 - `inspect_granite_speech.py` — read-only architecture probe used in
   Run 2 of the investigation; safe to keep around for re-checks
   against future model revisions
