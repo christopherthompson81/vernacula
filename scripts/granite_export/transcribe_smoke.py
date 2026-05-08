@@ -84,6 +84,11 @@ def run_ort_pipeline(
             f"{processor.audio_processor.sampling_rate}. Resample first."
         )
 
+    so = ort.SessionOptions()
+    so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+    providers = ["CPUExecutionProvider"]
+    timings: dict[str, float] = {}
+
     full_prompt = processor.tokenizer.apply_chat_template(
         [{"role": "user", "content": f"<|audio|>{prompt}"}],
         tokenize=False,
@@ -92,19 +97,24 @@ def run_ort_pipeline(
     # GraniteSpeechProcessor ignores return_tensors="np" and always returns
     # torch tensors. Convert to numpy at the boundary.
     proc_in = processor(full_prompt, audio_array, return_tensors="pt")
-    input_features = proc_in["input_features"].cpu().numpy().astype(np.float32)
     input_ids = proc_in["input_ids"].cpu().numpy().astype(np.int64)
     attention_mask = proc_in["attention_mask"].cpu().numpy().astype(np.int64)
-    print(
-        f"  processor: input_features={input_features.shape}, "
-        f"input_ids={input_ids.shape}"
-    )
 
-    so = ort.SessionOptions()
-    so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-    providers = ["CPUExecutionProvider"]
-
-    timings: dict[str, float] = {}
+    # input_features: prefer mel.onnx if it ships with the bundle (the C#
+    # runtime does this too — mel.onnx replaces a host-side torchaudio
+    # port). Falls back to processor output for backwards compat.
+    mel_path = onnx_dir / "mel.onnx"
+    if mel_path.exists():
+        mel_sess = ort.InferenceSession(str(mel_path), so, providers=providers)
+        audio_np = audio_array.astype(np.float32)[np.newaxis, :]
+        t0 = time.time()
+        input_features = mel_sess.run(None, {"audio": audio_np})[0]
+        timings["mel_s"] = time.time() - t0
+        print(f"  mel.onnx: input_features={input_features.shape} ({timings['mel_s']:.2f}s)")
+    else:
+        input_features = proc_in["input_features"].cpu().numpy().astype(np.float32)
+        print(f"  processor input_features: {input_features.shape} (mel.onnx not found)")
+    print(f"  prompt tokens: input_ids={input_ids.shape}")
 
     enc_sess = ort.InferenceSession(str(onnx_dir / "encoder.onnx"), so, providers=providers)
     t0 = time.time()

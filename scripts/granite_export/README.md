@@ -74,6 +74,7 @@ Useful options (mirrors cohere_export):
 
 | ONNX | Inputs | Outputs |
 |---|---|---|
+| `mel.onnx` | `audio [B, samples]` float32 | `input_features [B, T, 160]` |
 | `encoder.onnx` | `input_features [B, T, 160]` float32 | `encoder_hidden [B, T, 1024]` |
 | `projector.onnx` | `encoder_hidden [B, T, 1024]` | `audio_embeds [B, A, 2048]` |
 | `decoder_init.onnx` | `input_ids [B, S]` int64, `audio_embeds [B, A, 2048]` float32, `attention_mask [B, S]` int64 | `logits [B, S, 100353]` + `present_key_<L>`/`present_value_<L>` for L in 0..39, each `[B, 4, S, 128]` |
@@ -172,6 +173,8 @@ reference run when iterating on the ORT path only.
   `residual_multiplier`) that are part of the base architecture. They
   trace through `transformers` automatically and parity is tight, so
   no special handling is needed.
-- The mel frontend (`GraniteSpeechFeatureExtractor`) is intentionally
-  NOT exported as ONNX. The C# runtime should reproduce
-  torchaudio's mel + frame-stacking on the host.
+- `mel.onnx` exports the upstream `GraniteSpeechFeatureExtractor`
+  pipeline (torchaudio MelSpectrogram + log10/-8 dB clamp + frame
+  stack). Mel parity is ~5e-5 vs the reference processor; including
+  it in the bundle removes the need for a host-side torchaudio port
+  and matches the precedent in cohere_export / nemo_export.

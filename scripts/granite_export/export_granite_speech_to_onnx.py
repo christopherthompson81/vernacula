@@ -104,6 +104,7 @@ def parse_args() -> argparse.Namespace:
         default="float32",
     )
     parser.add_argument("--overwrite", action="store_true")
+    parser.add_argument("--skip-mel", action="store_true")
     parser.add_argument("--skip-encoder", action="store_true")
     parser.add_argument("--skip-projector", action="store_true")
     parser.add_argument("--skip-decoder", action="store_true")
@@ -126,6 +127,7 @@ def parse_args() -> argparse.Namespace:
 # ---------------------------------------------------------------------------
 
 _EXPORT_FILES = (
+    "mel.onnx",
     "encoder.onnx",
     "projector.onnx",
     "decoder_init.onnx",
@@ -390,6 +392,54 @@ def _patch_encoder_attention_for_export(torch: Any, encoder: Any) -> None:
             module.forward = types.MethodType(_patched_forward, module)
             patched += 1
     print(f"  Patched {patched} GraniteSpeechConformerAttention layers (5D SDPA -> manual math).")
+
+
+def make_mel_wrapper(torch: Any, processor: Any) -> Any:
+    """Mel + frame-stack frontend, wrapping torchaudio's MelSpectrogram +
+    Granite's GraniteSpeechFeatureExtractor post-processing chain.
+
+    Inputs:
+      audio [B, samples] float32
+
+    Outputs:
+      input_features [B, T_stacked, 160] float32
+
+    The C# runtime can drive this graph instead of re-implementing
+    torchaudio's HTK mel filterbank + the log-clamp-stack chain. We keep
+    the upstream feature extractor's exact arithmetic — log10 with a
+    -8 dB floor relative to the per-clip max, then divide by 4 and add 1
+    — so parity with `model(input_features=...)` holds.
+
+    Note: the upstream `if logmel.shape[1] % 2 == 1: drop last frame` is
+    data-dependent. We replace it with an unconditional even-frame slice
+    using `T = (T // 2) * 2` so the trace doesn't branch on parity.
+    """
+    nn = torch.nn
+
+    fe = processor.audio_processor
+    melspec_module = fe.mel_filters  # torchaudio.transforms.MelSpectrogram
+
+    class MelWrapper(nn.Module):
+        def __init__(self, melspec: Any) -> None:
+            super().__init__()
+            self.melspec = melspec
+
+        def forward(self, audio: Any) -> Any:
+            # torchaudio MelSpectrogram: [B, samples] -> [B, n_mels, T_mel]
+            mel = self.melspec(audio.float())
+            logmel = mel.transpose(-1, -2).clamp(min=1e-10).log10()
+            # max over (T, n_mels) per batch item
+            mx = logmel.amax(dim=(-2, -1), keepdim=True)
+            logmel = torch.maximum(logmel, mx - 8.0).div(4).add(1)
+            # Drop last frame if odd. Branch-free reformulation:
+            T = logmel.shape[1]
+            T_even = (T // 2) * 2
+            logmel = logmel[:, :T_even]
+            # Frame-stack pairs: [B, T_even, n_mels] -> [B, T_even/2, 2*n_mels]
+            n_mels = logmel.shape[-1]
+            return logmel.reshape(logmel.shape[0], T_even // 2, 2 * n_mels)
+
+    return MelWrapper(melspec_module)
 
 
 def make_encoder_wrapper(torch: Any, model: Any) -> Any:
@@ -685,6 +735,40 @@ def _consolidate_external_data(onnx_path: Path) -> None:
 # Per-module export entrypoints
 # ---------------------------------------------------------------------------
 
+def export_mel(
+    torch: Any,
+    wrapper: Any,
+    dummy_audio: Any,
+    output_path: Path,
+    opset: int,
+    legacy: bool,
+) -> None:
+    print(f"\nExporting mel to {output_path} ...")
+
+    with torch.no_grad():
+        out = wrapper(dummy_audio)
+    print(f"  PyTorch mel output shape: {tuple(out.shape)}")
+
+    batch = _make_dim(torch, "batch", min=1, max=65535)
+    samples = _auto_dim(torch)
+    _run_torch_export(
+        torch,
+        wrapper,
+        (dummy_audio,),
+        output_path,
+        input_names=["audio"],
+        output_names=["input_features"],
+        dynamic_axes={
+            "audio": {0: "batch", 1: "samples"},
+            "input_features": {0: "batch", 1: "T_stacked"},
+        },
+        dynamic_shapes=({0: batch, 1: samples},),
+        opset=opset,
+        legacy=legacy,
+    )
+    _consolidate_external_data(output_path)
+
+
 def export_encoder(
     torch: Any,
     wrapper: Any,
@@ -951,6 +1035,7 @@ def main() -> int:
     input_ids = inputs["input_ids"]
     attention_mask = inputs["attention_mask"]
 
+    mel_wrapper = make_mel_wrapper(torch, processor)
     encoder_wrapper = make_encoder_wrapper(torch, model)
     projector_wrapper = make_projector_wrapper(torch, model)
 
@@ -963,6 +1048,30 @@ def main() -> int:
         "exporter": "legacy" if args.legacy_exporter else "dynamo",
         "stages": {},
     }
+
+    # -------- Mel --------
+    if not args.skip_mel:
+        # B=2 mixed-length dummy audio: full and half. Using `torch.zeros`
+        # yields a degenerate logmel max (-inf-ish), so we use a small
+        # nonzero signal to keep the trace numerics stable. The graph
+        # itself is not value-dependent past the trace.
+        sr = processor.audio_processor.sampling_rate
+        n_full = int(args.dummy_seconds * sr)
+        n_half = n_full // 2
+        dummy_full = torch.full((n_full,), 1e-3, dtype=torch.float32, device=args.device)
+        dummy_half = torch.full((n_half,), 1e-3, dtype=torch.float32, device=args.device)
+        dummy_half_padded = torch.nn.functional.pad(dummy_half, (0, n_full - n_half))
+        dummy_audio = torch.stack([dummy_full, dummy_half_padded], dim=0)
+        t0 = time.time()
+        export_mel(
+            torch,
+            mel_wrapper,
+            dummy_audio,
+            args.output_dir / "mel.onnx",
+            args.opset,
+            args.legacy_exporter,
+        )
+        report["stages"]["mel"] = {"seconds": round(time.time() - t0, 2)}
 
     # -------- Encoder --------
     enc_out: Any = None

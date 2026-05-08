@@ -641,8 +641,8 @@ same shape contract but with C#'s ORT runtime in place of Python.
 
 ### What's still deferred
 
-- **Mel ONNX**: still host-side. C# will reproduce torchaudio mel +
-  frame-stacking. Decision unchanged from Run 1.
+- ~~**Mel ONNX**: still host-side. C# will reproduce torchaudio mel +
+  frame-stacking. Decision unchanged from Run 1.~~ **Resolved in Run 5.**
 - **Weight sharing across decoder graphs**: the 7 GB LM weights are
   duplicated between init and step. Cohere's external-data rename
   trick should apply.
@@ -655,3 +655,81 @@ same shape contract but with C#'s ORT runtime in place of Python.
   conv-kernel boundary effect is small (kernel size 15) and could be
   further reduced with overlapped chunking.
 - **`-plus` and `-nar` variants**: as planned in Run 1.
+
+---
+
+## Run 5 — 2026-05-08 (mel.onnx, C# CLI parity smoke)
+
+**Question:** Run 4 left the mel frontend as host-side work. Can we
+follow the cohere_export / NeMo precedent and export it as ONNX too,
+so the C# runtime doesn't need a torchaudio port?
+
+**Method:** Wrap `processor.audio_processor.mel_filters` (a
+`torchaudio.transforms.MelSpectrogram`) plus the
+`GraniteSpeechFeatureExtractor` post-processing chain
+(`log10`, `-8 dB` floor relative to per-clip max, divide by 4 + add 1,
+drop-last-frame-if-odd, 2×-frame-stack) into a `MelWrapper` and trace
+it through `torch.onnx.export(dynamo=True)`.
+
+**Findings:**
+
+- torchaudio's `MelSpectrogram` decomposes cleanly under dynamo. The
+  resulting `mel.onnx` is 0.1 MB (no learned weights — only the static
+  HTK mel filterbank and the FFT graph).
+- The "drop last frame if odd" step in the upstream code is a
+  data-dependent Python branch. Replaced unconditionally with
+  `T_even = (T // 2) * 2`. Branch-free; equivalent.
+- Parity vs the upstream processor on the 6.4 s VCTK clip: max-abs-diff
+  = **4.5e-5** on `input_features` (well below the encoder's downstream
+  3.4e-4 noise floor).
+- End-to-end `transcribe_smoke.py` with `mel.onnx` in the path produces
+  the same transcript as the processor-fed run, so the small mel diff
+  doesn't propagate into a different decode.
+
+**C# CLI parity smoke landed:**
+
+- New project [`tests/GraniteSpeechSmoke/`](../../tests/GraniteSpeechSmoke/),
+  a console app that drives the bundle from C# end-to-end (NAudio WAV
+  load → mel.onnx → encoder → projector → decoder_init → step loop →
+  GPT-2 ByteLevel BPE decode).
+- Loads the prompt token IDs from `Fixtures/input_ids.bin` (a full BPE
+  encoder in C# is a follow-up). Audio comes in via NAudio.
+- Asserts the decoded text matches `Fixtures/expected_text.txt`, which
+  was produced by `model.generate(...)` in
+  [`scripts/granite_export/dump_inputs_for_csharp_smoke.py`](../../scripts/granite_export/dump_inputs_for_csharp_smoke.py).
+- **Result on the 6.4 s VCTK clip:** exact text match.
+
+  ```
+  ORT  transcript: "Hello, I'm from Ontario. I hope that you will select my voice for your project. Thank you."
+  Ref  transcript: "Hello, I'm from Ontario. I hope that you will select my voice for your project. Thank you."
+  exact match: True
+  ```
+
+This is the "C# CLI + parity" stage of the standard cadence —
+proves the export contract is consumable from C# end-to-end. What the
+smoke does NOT yet exercise:
+
+- Encoding arbitrary prompts in C# (BPE encoder).
+- A real `GraniteSpeech.cs` backend in `Vernacula.Base` integrated
+  into `Vernacula.CLI` with batching, IOBinding, etc — that's the
+  performance / production stage.
+
+### Final ONNX package shape (with mel.onnx)
+
+| File | Size |
+|---|---|
+| `mel.onnx` | 0.1 MB |
+| `encoder.onnx` + `.onnx.data` | 1.68 GB |
+| `projector.onnx` | 137 MB |
+| `decoder_init.onnx` + `.onnx.data` | 7.0 GB |
+| `decoder_step.onnx` + `.onnx.data` | 7.0 GB |
+| Tokenizer + processor assets | ~10 MB |
+| **Total** | **~16 GB** fp32 |
+
+### Status
+
+Python export + per-stage parity + end-to-end transcription parity in
+both Python and C# are all green on the 6.4 s and 3.5 s VCTK clips.
+The export contract is stable enough to start the production
+`GraniteSpeech.cs` backend integration into `Vernacula.Base` /
+`Vernacula.CLI`.

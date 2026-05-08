@@ -1,0 +1,13 @@
+{
+  "audio_path": "/home/chris/Downloads/VCTK_p307.wav",
+  "audio_seconds": 6.419,
+  "T_stacked": 321,
+  "feature_dim": 160,
+  "prompt_len": 84,
+  "n_generated_with_eos": 23,
+  "expected_text": "Hello, I'm from Ontario. I hope that you will select my voice for your project. Thank you.",
+  "max_new_tokens": 32,
+  "model_repo": "ibm-granite/granite-speech-4.1-2b",
+  "revision": null,
+  "prompt": "transcribe the speech with proper punctuation and capitalization."
+}
