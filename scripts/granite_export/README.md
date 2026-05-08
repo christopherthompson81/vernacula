@@ -87,8 +87,25 @@ Useful options (mirrors cohere_export):
 | `mel.onnx` | `audio [B, samples]` float32 | `input_features [B, T, 160]` |
 | `encoder.onnx` | `input_features [B, T, 160]` float32 | `encoder_hidden [B, T, 1024]` |
 | `projector.onnx` | `encoder_hidden [B, T, 1024]` | `audio_embeds [B, A, 2048]` |
-| `decoder_init.onnx` | `input_ids [B, S]` int64, `audio_embeds [B, A, 2048]` float32, `attention_mask [B, S]` int64 | `logits [B, S, 100353]` + `present_key_<L>`/`present_value_<L>` for L in 0..39, each `[B, 4, S, 128]` |
-| `decoder_step.onnx` | `input_id [B, 1]`, `attention_mask [B, T]`, `cache_position [1]`, `past_key_<L>`/`past_value_<L>` each `[B, 4, T-1, 128]` | `logits [B, 1, 100353]` + `present_key_<L>`/`present_value_<L>` each `[B, 4, T, 128]` |
+| `decoder_init.onnx` (split mode) | `input_ids [B, S]` int64, `audio_embeds [B, A, 2048]` float32, `attention_mask [B, S]` int64 | `logits [B, S, 100353]` + `present_key_<L>`/`present_value_<L>` for L in 0..39, each `[B, 4, S, 128]` |
+| `decoder_step.onnx` (split mode) | `input_id [B, 1]`, `attention_mask [B, T]`, `cache_position [1]`, `past_key_<L>`/`past_value_<L>` each `[B, 4, T-1, 128]` | `logits [B, 1, 100353]` + `present_key_<L>`/`present_value_<L>` each `[B, 4, T, 128]` |
+| `decoder.onnx` (unified mode, **recommended**) | `input_ids [B, S]`, `audio_embeds [B, A>=1, 2048]`, `attention_mask [B, T]`, `cache_position [S]`, `past_key_<L>`/`past_value_<L>` each `[B, 4, past_len, 128]` (past_len=0 at prefill) | `logits [B, S, 100353]` + `present_key_<L>`/`present_value_<L>` each `[B, 4, T, 128]` |
+
+**Pass `--unified-decoder` to export the single `decoder.onnx`** instead
+of the split init/step pair. The unified graph handles both prefill
+(zero-length past_kv) and step (populated past_kv) modes through the
+same set of inputs. It's:
+
+- **Smaller on disk and resident weight footprint:** 7 GB vs 14 GB
+  (split has two copies of the 1.84 B-param LM).
+- **Faster at long audio:** 5.4× realtime on a 3090 at 90 s, vs 2.0×
+  for the fp16 split bundle. fp16 Cast overhead at the boundaries
+  cancels its kernel speedup; unified fp32 wins on cache locality.
+- **No parity loss.** fp16 dropped a single filler token at position
+  173 of the 90 s clip; unified fp32 preserves it.
+
+See [`docs/dev/granite_speech_perf_investigation.md`](../../docs/dev/granite_speech_perf_investigation.md)
+Run 3 for the full perf and parity numbers.
 
 Notes on the decoder_init contract:
 

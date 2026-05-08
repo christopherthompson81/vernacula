@@ -128,16 +128,41 @@ def run_ort_pipeline(
     timings["projector_s"] = time.time() - t0
     print(f"  projector: {proj_out.shape}  ({timings['projector_s']:.2f}s)")
 
-    init_sess = ort.InferenceSession(str(onnx_dir / "decoder_init.onnx"), so, providers=providers)
+    # Prefer the unified decoder.onnx (single graph for both prefill and step)
+    # if present; fall back to the split decoder_init/decoder_step pair.
+    unified_path = onnx_dir / "decoder.onnx"
+    is_unified = unified_path.exists()
+    if is_unified:
+        init_sess = ort.InferenceSession(str(unified_path), so, providers=providers)
+        step_sess = init_sess
+        print(f"  using unified decoder.onnx")
+    else:
+        init_sess = ort.InferenceSession(str(onnx_dir / "decoder_init.onnx"), so, providers=providers)
+        step_sess = ort.InferenceSession(str(onnx_dir / "decoder_step.onnx"), so, providers=providers)
+        print(f"  using split decoder_init/decoder_step")
+
     t0 = time.time()
-    init_outs = init_sess.run(
-        None,
-        {
+    if is_unified:
+        S = input_ids.shape[1]
+        feed: dict[str, Any] = {
             "input_ids": input_ids,
             "audio_embeds": proj_out,
             "attention_mask": attention_mask,
-        },
-    )
+            "cache_position": np.arange(S, dtype=np.int64),
+        }
+        for L in range(NUM_DECODER_LAYERS):
+            feed[f"past_key_{L}"] = np.zeros((1, 4, 0, 128), dtype=np.float32)
+            feed[f"past_value_{L}"] = np.zeros((1, 4, 0, 128), dtype=np.float32)
+        init_outs = init_sess.run(None, feed)
+    else:
+        init_outs = init_sess.run(
+            None,
+            {
+                "input_ids": input_ids,
+                "audio_embeds": proj_out,
+                "attention_mask": attention_mask,
+            },
+        )
     timings["decoder_init_s"] = time.time() - t0
     logits = init_outs[0]
     keys = list(init_outs[1 : 1 + NUM_DECODER_LAYERS])
@@ -151,8 +176,10 @@ def run_ort_pipeline(
 
     eos_id = processor.tokenizer.eos_token_id or processor.tokenizer.encode("<|end_of_text|>")[-1]
     generated: list[int] = []
-    step_sess = ort.InferenceSession(str(onnx_dir / "decoder_step.onnx"), so, providers=providers)
     past_len = input_ids.shape[1]
+
+    # Step-time dummy audio_embeds for the unified graph (cumsum-merge no-op).
+    audio_dummy = np.zeros((1, 1, proj_out.shape[-1]), dtype=np.float32)
 
     t0 = time.time()
     for _ in range(max_new_tokens):
@@ -161,11 +188,19 @@ def run_ort_pipeline(
         generated.append(next_token)
         cache_position = np.array([past_len], dtype=np.int64)
         attn = np.ones((1, past_len + 1), dtype=np.int64)
-        feed: dict[str, Any] = {
-            "input_id": np.array([[next_token]], dtype=np.int64),
-            "attention_mask": attn,
-            "cache_position": cache_position,
-        }
+        if is_unified:
+            feed = {
+                "input_ids": np.array([[next_token]], dtype=np.int64),
+                "audio_embeds": audio_dummy,
+                "attention_mask": attn,
+                "cache_position": cache_position,
+            }
+        else:
+            feed = {
+                "input_id": np.array([[next_token]], dtype=np.int64),
+                "attention_mask": attn,
+                "cache_position": cache_position,
+            }
         for i in range(NUM_DECODER_LAYERS):
             feed[f"past_key_{i}"] = keys[i]
             feed[f"past_value_{i}"] = values[i]

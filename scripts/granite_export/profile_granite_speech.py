@@ -141,8 +141,15 @@ def run_pipeline(
     label: str,
     np_mod: Any,
 ) -> dict[str, float]:
-    """Run the whole pipeline once and return per-stage timings (seconds)."""
+    """Run the whole pipeline once and return per-stage timings (seconds).
+
+    Handles both the split decoder pair (`decoder_init` + `decoder_step`)
+    and the unified `decoder` graph automatically based on which sessions
+    are present.
+    """
     timings: dict[str, float] = {}
+
+    is_unified = "decoder" in sessions
 
     full_prompt = processor.tokenizer.apply_chat_template(
         [{"role": "user", "content": f"<|audio|>{prompt}"}],
@@ -168,14 +175,27 @@ def run_pipeline(
     timings["projector"] = time.perf_counter() - t
 
     t = time.perf_counter()
-    init_outs = sessions["decoder_init"].run(
-        None,
-        {
+    if is_unified:
+        S = input_ids.shape[1]
+        feed: dict[str, Any] = {
             "input_ids": input_ids,
             "audio_embeds": proj_out,
             "attention_mask": attention_mask,
-        },
-    )
+            "cache_position": np_mod.arange(S, dtype=np_mod.int64),
+        }
+        for i in range(NUM_DECODER_LAYERS):
+            feed[f"past_key_{i}"] = np_mod.zeros((1, 4, 0, 128), dtype=np_mod.float32)
+            feed[f"past_value_{i}"] = np_mod.zeros((1, 4, 0, 128), dtype=np_mod.float32)
+        init_outs = sessions["decoder"].run(None, feed)
+    else:
+        init_outs = sessions["decoder_init"].run(
+            None,
+            {
+                "input_ids": input_ids,
+                "audio_embeds": proj_out,
+                "attention_mask": attention_mask,
+            },
+        )
     timings["decoder_init"] = time.perf_counter() - t
 
     logits = init_outs[0]
@@ -184,25 +204,35 @@ def run_pipeline(
     next_token = int(logits[0, -1, :].argmax(axis=-1))
 
     past_len = input_ids.shape[1]
+    audio_dummy = np_mod.zeros((1, 1, proj_out.shape[-1]), dtype=np_mod.float32)
     generated: list[int] = []
     step_start = time.perf_counter()
     per_token: list[float] = []
+    step_sess = sessions["decoder"] if is_unified else sessions["decoder_step"]
     for _ in range(max_tokens):
         if next_token == EOS_TOKEN_ID:
             break
         generated.append(next_token)
         cache_position = np_mod.array([past_len], dtype=np_mod.int64)
         attn = np_mod.ones((1, past_len + 1), dtype=np_mod.int64)
-        feed: dict[str, Any] = {
-            "input_id": np_mod.array([[next_token]], dtype=np_mod.int64),
-            "attention_mask": attn,
-            "cache_position": cache_position,
-        }
+        if is_unified:
+            feed = {
+                "input_ids": np_mod.array([[next_token]], dtype=np_mod.int64),
+                "audio_embeds": audio_dummy,
+                "attention_mask": attn,
+                "cache_position": cache_position,
+            }
+        else:
+            feed = {
+                "input_id": np_mod.array([[next_token]], dtype=np_mod.int64),
+                "attention_mask": attn,
+                "cache_position": cache_position,
+            }
         for i in range(NUM_DECODER_LAYERS):
             feed[f"past_key_{i}"] = keys[i]
             feed[f"past_value_{i}"] = values[i]
         t = time.perf_counter()
-        step_outs = sessions["decoder_step"].run(None, feed)
+        step_outs = step_sess.run(None, feed)
         per_token.append(time.perf_counter() - t)
         keys = list(step_outs[1 : 1 + NUM_DECODER_LAYERS])
         values = list(step_outs[1 + NUM_DECODER_LAYERS : 1 + 2 * NUM_DECODER_LAYERS])
@@ -247,14 +277,17 @@ def main() -> int:
     providers = get_providers(args.execution_provider, ort)
     print(f"providers: {providers}")
 
-    # Load sessions
-    print("Loading ONNX sessions ...")
+    # Load sessions. Auto-detect unified (`decoder.onnx`) vs split
+    # (`decoder_init.onnx` + `decoder_step.onnx`) bundles.
+    unified = (args.onnx_dir / "decoder.onnx").exists()
+    decoder_files = ["decoder"] if unified else ["decoder_init", "decoder_step"]
+    print(f"Loading ONNX sessions ({'unified' if unified else 'split'} decoder) ...")
     t = time.perf_counter()
     sessions = {
         name: make_session(
             args.onnx_dir / f"{name}.onnx", providers, args.enable_ort_profiling, ort
         )
-        for name in ("mel", "encoder", "projector", "decoder_init", "decoder_step")
+        for name in ["mel", "encoder", "projector", *decoder_files]
     }
     print(f"  loaded in {time.perf_counter() - t:.2f}s")
 

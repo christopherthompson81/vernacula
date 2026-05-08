@@ -250,3 +250,120 @@ KV tensors avoids — VibeVoice saw 5.5× from this same pattern.
   between init and step into one. Halves resident weights from 8.7 GB
   to ~5.0 GB on GPU. Bigger graph rewrite; defer until IOBinding +
   Cast cleanup are landed.
+
+---
+
+## Run 3 — 2026-05-08 (decoder unification, fp32, **shipping target**)
+
+**Question:** @user objected to fp16's 1-token parity loss at 90 s.
+Can we get the memory savings of Run 2 *without* the precision tradeoff
+by collapsing `decoder_init.onnx` + `decoder_step.onnx` into a single
+graph that handles both modes?
+
+**Method:** A single `decoder.onnx` that takes `past_kv` as a graph
+input always, with variable past length. Prefill runs with zero-length
+past_kv and `cache_position=[0..S-1]`; step runs with populated
+past_kv and `cache_position=[past_len]`. HF's
+`GraniteForCausalLM.forward` was probed first to confirm it handles a
+zero-length `DynamicCache` correctly — yes, it just runs prefill.
+
+The audio merge runs unconditionally on every call. At step time,
+`input_ids` is the next-token id which never matches
+`audio_token_id`; the cumsum-gather + `torch.where` pattern collapses
+to a no-op (text_embeds wins everywhere). Caller passes a 1-row
+dummy `audio_embeds` at step time so the gather index stays in range.
+
+Trace dummy: B=2, S=2 (mid-prompt), past_len=2 (mid-cache). Both seq
+and past_len are non-zero so dynamo doesn't specialise either; runtime
+accepts past_len=0 (prefill) and S=1 (step) once the graph is dynamic.
+
+### Parity (vs PyTorch fp32 reference)
+
+| Mode | logits | KV |
+|---|---:|---:|
+| Prefill (unified) | 3.3e-4 | 5.4e-4 |
+| Step (unified) | 9.1e-6 | 2.3e-5 |
+
+Step is bit-identical to the split `decoder_step.onnx`. Prefill is ~8×
+looser than the split `decoder_init.onnx` (different attention path
+through the same graph) but still well within fp32 noise — and **100×
+tighter than the fp16 prefill** (4.9e-2). The 1-token "ele-" filler
+that fp16 dropped on the 90 s clip is preserved.
+
+End-to-end smoke vs `model.generate()`:
+
+| Clip | text match | tokens (ORT vs ref) |
+|---|---|---|
+| 6.4 s VCTK | exact | 22 vs 23 (trailing EOS) |
+| 90 s en-US | **exact** | 254 vs 255 (trailing EOS) |
+
+### Perf — fp32 unified vs fp16 split (GPU 3090)
+
+| 6.4 s | fp32 split | fp16 split | **fp32 unified** |
+|---|---:|---:|---:|
+| mel | 11 | 10 | 9 |
+| encoder | 21 | 21 | 22 |
+| projector | 1.2 | 1.5 | 1.3 |
+| decoder_init | 37 | 25 | 30 |
+| decoder_step / token | 30.5 ms | 19.2 ms | **19.8 ms** |
+| Total | 747 ms | 483 ms | **502 ms** |
+| Tok/s | 32.8 | 52.1 | **50.4** |
+| RTF | 8.6× | 13.3× | **12.8×** |
+
+| 90 s | fp32 split | fp16 split | **fp32 unified** |
+|---|---:|---:|---:|
+| mel | OOM | 427 | 178 |
+| encoder | OOM | 897 | 619 |
+| projector | OOM | 40 | 14 |
+| decoder_init | OOM | 880 | 372 |
+| decoder_step / token | OOM | 164 ms | **61 ms** |
+| Total | OOM | 43.8 s | **16.7 s** |
+| Tok/s | OOM | 6.1 | **16.4** |
+| RTF | OOM | 2.05× | **5.38×** |
+
+### Findings
+
+- **fp32 unified is competitive with fp16 split at short audio (50.4
+  vs 52.1 tok/s) and 2.6× faster at long audio (16.4 vs 6.1 tok/s).**
+  Counterintuitive at first but reasonable in retrospect:
+  - Single 7 GB session beats two 3.5 GB sessions on cache locality —
+    one weight set resident, no inter-session memcpys.
+  - fp16's Cast-at-boundary overhead (337 ms across 22 step calls in
+    Run 2's profile) cancels half its kernel speedup.
+  - `decoder_init` is also a single session here (vs being a separate
+    7 GB load in the split case), so no duplicate weight pressure on
+    activations during prefill at long audio.
+- **No OOM at 90 s.** Resident weights drop from 15.7 GB (fp32 split)
+  to 8.8 GB (fp32 unified). Plenty of headroom on a 25 GB 3090.
+- **Greedy parity is exact at 90 s.** The "ele-" filler that fp16
+  dropped is preserved in the unified fp32 path — confirming that
+  parity loss in Run 2 was fp16-induced, not graph-induced.
+- **Single 7 GB graph (vs 14 GB split) is the right shipping target.**
+  Lower memory, faster inference, no parity loss.
+
+### Decision
+
+**Make the unified decoder the default.** The split init/step pair
+remains supported via `--no-unified-decoder` (or by omitting
+`--unified-decoder` if we keep that as the trigger), but new
+deployments target `decoder.onnx` only. Update the C# smoke and the
+production backend to use the unified contract.
+
+### Final shipping numbers (fp32 throughout, 3090)
+
+| Audio | RTF | Tok/s | Total wall |
+|---|---:|---:|---:|
+| 6.4 s | 12.8× | 50.4 | 0.50 s |
+| 90 s | 5.38× | 16.4 | 16.7 s |
+
+### Open follow-ups
+
+- **decoder_step at long context** is still the dominant cost (61
+  ms/tok at the 90 s clip vs 20 ms/tok at 6.4 s — KV cache attention
+  scales with cache size). IOBinding the KV cache should remove the
+  per-step host↔device numpy copy that the Memcpy node warnings
+  surface. VibeVoice precedent: ~5× from this same pattern.
+- **Memcpy node warnings** persist (2-3 nodes per session). Would
+  benefit from a focused diagnostic run.
+- **Encoder full-attention scaling** is now visible at 619 ms for
+  90 s — but at 4% of total runtime, not yet a priority.

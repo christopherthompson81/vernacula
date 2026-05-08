@@ -109,6 +109,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--skip-projector", action="store_true")
     parser.add_argument("--skip-decoder", action="store_true")
     parser.add_argument(
+        "--unified-decoder",
+        action="store_true",
+        help=(
+            "Export a single decoder.onnx that handles both prefill and step "
+            "via past_kv with variable past_len. Eliminates the duplicate LM "
+            "weights (fp32: 7 GB saved on disk and on GPU). The init/step "
+            "pair is skipped when this is set."
+        ),
+    )
+    parser.add_argument(
         "--legacy-exporter",
         action="store_true",
         help="Use the legacy TorchScript ONNX exporter instead of dynamo.",
@@ -130,6 +140,7 @@ _EXPORT_FILES = (
     "mel.onnx",
     "encoder.onnx",
     "projector.onnx",
+    "decoder.onnx",
     "decoder_init.onnx",
     "decoder_step.onnx",
     "config.json",
@@ -558,6 +569,92 @@ def make_decoder_init_wrapper(torch: Any, model: Any) -> Any:
     return DecoderInitWrapper(model)
 
 
+def make_decoder_unified_wrapper(torch: Any, model: Any) -> Any:
+    """One ONNX graph that handles BOTH prefill and step.
+
+    Eliminates the duplicate LM-weight copy that the split init/step pair
+    requires (each currently 7 GB at fp32 = 14 GB resident on GPU). With
+    a single graph, only one 7 GB LM copy is loaded.
+
+    The graph is structurally a step graph: it always takes `past_key/value_<L>`
+    inputs and a `cache_position`. To run prefill, the caller passes
+    zero-length past_kv tensors and `cache_position=[0, 1, ..., S-1]`; to
+    run a step, the caller passes populated past_kv and
+    `cache_position=[past_len]`. HF's `GraniteForCausalLM.forward` handles
+    empty `DynamicCache` correctly — verified directly before writing this.
+
+    The audio fuse runs unconditionally on every call. At step time,
+    `input_ids` is just the next-token id which never matches
+    `audio_token_id`; the cumsum-gather + torch.where pattern collapses to
+    a no-op (text_embeds wins everywhere). To keep the gather valid we
+    require `audio_embeds.shape[1] >= 1` even at step time — caller passes
+    a dummy 1-row tensor.
+
+    Inputs:
+      input_ids       [B, S]       int64
+      audio_embeds    [B, A, 2048] float32  (A >= 1; padded; zero-fill at step)
+      attention_mask  [B, T]       int64    (T = past_len + S)
+      cache_position  [S]          int64
+      past_key_<L>    [B, 4, past_len, 128] float32  for L in 0..39
+      past_value_<L>  [B, 4, past_len, 128] float32
+
+    Outputs:
+      logits          [B, S, 100353]
+      present_key_<L>, present_value_<L>  [B, 4, T, 128]
+    """
+    nn = torch.nn
+    from transformers.cache_utils import DynamicCache
+
+    class DecoderUnifiedWrapper(nn.Module):
+        def __init__(self, m: Any) -> None:
+            super().__init__()
+            self.language_model = m.language_model
+            self.audio_token_id = m.config.audio_token_id
+
+        def forward(
+            self,
+            input_ids: Any,
+            audio_embeds: Any,
+            attention_mask: Any,
+            cache_position: Any,
+            *past_kv: Any,
+        ) -> Any:
+            # Audio merge — same cumsum-gather-where as the prefill-only
+            # wrapper. Collapses to a no-op at step time because no audio
+            # tokens appear in the next-token input.
+            is_audio = input_ids == self.audio_token_id
+            llm_input_ids = torch.where(is_audio, torch.zeros_like(input_ids), input_ids)
+            text_embeds = self.language_model.get_input_embeddings()(llm_input_ids)
+            audio_idx = is_audio.long().cumsum(dim=1) - 1
+            audio_idx = audio_idx.clamp(min=0)
+            d = audio_embeds.shape[-1]
+            idx_expanded = audio_idx.unsqueeze(-1).expand(-1, -1, d)
+            gathered_audio = torch.gather(audio_embeds, 1, idx_expanded)
+            embeds = torch.where(is_audio.unsqueeze(-1), gathered_audio, text_embeds)
+
+            # Build a DynamicCache from the past_kv inputs. At prefill the
+            # caller supplies zero-length tensors; HF treats this as an
+            # empty cache and runs prefill normally.
+            n = NUM_DECODER_LAYERS
+            past_keys = list(past_kv[:n])
+            past_values = list(past_kv[n:])
+            cache = DynamicCache.from_legacy_cache(tuple(zip(past_keys, past_values)))
+
+            out = self.language_model(
+                inputs_embeds=embeds,
+                attention_mask=attention_mask,
+                past_key_values=cache,
+                cache_position=cache_position,
+                use_cache=True,
+                return_dict=True,
+            )
+            new_keys = [layer.keys for layer in out.past_key_values.layers]
+            new_values = [layer.values for layer in out.past_key_values.layers]
+            return (out.logits, *new_keys, *new_values)
+
+    return DecoderUnifiedWrapper(model)
+
+
 def make_decoder_step_wrapper(torch: Any, model: Any) -> Any:
     """Single-token step.
 
@@ -899,6 +996,88 @@ def export_decoder_init(
     _consolidate_external_data(output_path)
 
 
+def export_decoder_unified(
+    torch: Any,
+    wrapper: Any,
+    inputs: dict[str, Any],
+    output_path: Path,
+    opset: int,
+    legacy: bool,
+) -> None:
+    """Export the unified prefill+step graph.
+
+    The trace dummy uses S=2 (mid-prompt) and past_len=2 (mid-cache) so
+    BOTH dims stay symbolic. Specialising either to a fixed value would
+    break one of the two runtime modes.
+    """
+    print(f"\nExporting decoder_unified to {output_path} ...")
+
+    input_ids = inputs["input_ids"]
+    attention_mask = inputs["attention_mask"]
+    audio_embeds = inputs["audio_embeds"]
+    cache_position = inputs["cache_position"]
+    keys = inputs["past_keys"]
+    values = inputs["past_values"]
+
+    with torch.no_grad():
+        out = wrapper(input_ids, audio_embeds, attention_mask, cache_position, *keys, *values)
+    print(f"  PyTorch logits shape: {tuple(out[0].shape)}, "
+          f"present_key_0 shape: {tuple(out[1].shape)}")
+
+    output_names = (
+        ["logits"]
+        + _kv_names("present_key")
+        + _kv_names("present_value")
+    )
+    input_names = (
+        ["input_ids", "audio_embeds", "attention_mask", "cache_position"]
+        + _kv_names("past_key")
+        + _kv_names("past_value")
+    )
+
+    batch = _make_dim(torch, "batch", min=1, max=65535)
+    seq = _auto_dim(torch)         # input_ids[1] / cache_position[0] / new positions
+    past = _auto_dim(torch)        # past_kv[2]
+    total = _auto_dim(torch)       # attention_mask[1] / present_kv[2]
+    audio_len = _auto_dim(torch)   # audio_embeds[1]
+
+    dynamic_axes: dict[str, dict[int, str]] = {
+        "input_ids":      {0: "batch", 1: "seq"},
+        "audio_embeds":   {0: "batch", 1: "audio_len"},
+        "attention_mask": {0: "batch", 1: "total_len"},
+        # cache_position is 1-D; its single axis is "seq".
+        "cache_position": {0: "seq"},
+        "logits":         {0: "batch", 1: "seq"},
+    }
+    for name in _kv_names("past_key") + _kv_names("past_value"):
+        dynamic_axes[name] = {0: "batch", 2: "past_len"}
+    for name in _kv_names("present_key") + _kv_names("present_value"):
+        dynamic_axes[name] = {0: "batch", 2: "total_len"}
+
+    past_kv_shapes = tuple({0: batch, 2: past} for _ in range(2 * NUM_DECODER_LAYERS))
+    dyn_shapes = (
+        {0: batch, 1: seq},          # input_ids
+        {0: batch, 1: audio_len},    # audio_embeds
+        {0: batch, 1: total},        # attention_mask
+        {0: seq},                    # cache_position
+        past_kv_shapes,              # *past_kv
+    )
+
+    _run_torch_export(
+        torch,
+        wrapper,
+        (input_ids, audio_embeds, attention_mask, cache_position, *keys, *values),
+        output_path,
+        input_names=input_names,
+        output_names=output_names,
+        dynamic_axes=dynamic_axes,
+        dynamic_shapes=dyn_shapes,
+        opset=opset,
+        legacy=legacy,
+    )
+    _consolidate_external_data(output_path)
+
+
 def export_decoder_step(
     torch: Any,
     wrapper: Any,
@@ -1105,8 +1284,54 @@ def main() -> int:
     with torch.no_grad():
         proj_out = projector_wrapper(enc_out)
 
-    # -------- Decoder --------
-    if not args.skip_decoder:
+    # -------- Decoder (unified or split) --------
+    if args.unified_decoder and not args.skip_decoder:
+        unified_wrapper = make_decoder_unified_wrapper(torch, model)
+        # Trace dummy: B=2, S=2 (mid-prompt), past_len=2 (mid-cache).
+        # Both seq and past_len are non-zero so the dynamo exporter does NOT
+        # specialise either to a fixed value; runtime then accepts past_len=0
+        # (prefill) and seq=1 (step).
+        bsz = input_ids.shape[0]
+        seq_dummy = 2
+        past_dummy = 2
+        # Take the first `seq_dummy` columns of input_ids/attention_mask, then
+        # extend attention_mask to length seq_dummy + past_dummy so the
+        # cache+seq alignment matches.
+        u_input_ids = input_ids[:, :seq_dummy]
+        u_audio_embeds = proj_out
+        u_attention_mask = torch.ones(
+            (bsz, seq_dummy + past_dummy), dtype=attention_mask.dtype, device=attention_mask.device
+        )
+        u_cache_position = torch.arange(
+            past_dummy, past_dummy + seq_dummy, dtype=torch.long, device=input_ids.device
+        )
+        u_past_keys = [
+            torch.zeros((bsz, NUM_KV_HEADS, past_dummy, HEAD_DIM), dtype=torch.float32, device=input_ids.device)
+            for _ in range(NUM_DECODER_LAYERS)
+        ]
+        u_past_values = [
+            torch.zeros((bsz, NUM_KV_HEADS, past_dummy, HEAD_DIM), dtype=torch.float32, device=input_ids.device)
+            for _ in range(NUM_DECODER_LAYERS)
+        ]
+        unified_inputs = {
+            "input_ids": u_input_ids,
+            "audio_embeds": u_audio_embeds,
+            "attention_mask": u_attention_mask,
+            "cache_position": u_cache_position,
+            "past_keys": u_past_keys,
+            "past_values": u_past_values,
+        }
+        t0 = time.time()
+        export_decoder_unified(
+            torch,
+            unified_wrapper,
+            unified_inputs,
+            args.output_dir / "decoder.onnx",
+            args.opset,
+            args.legacy_exporter,
+        )
+        report["stages"]["decoder_unified"] = {"seconds": round(time.time() - t0, 2)}
+    elif not args.skip_decoder:
         decoder_init_wrapper = make_decoder_init_wrapper(torch, model)
         decoder_step_wrapper = make_decoder_step_wrapper(torch, model)
 
