@@ -521,3 +521,122 @@ overhead is real but doesn't change the deployment story.
   of the OrtValue's tensor. Should at least cut the host-side copy
   cost by removing the per-element bounds-check overhead in
   `Span<T>.ToArray()`.
+
+---
+
+## Run 5 — 2026-05-08 (smaller bite: pre-allocated KV buffers)
+
+**Question:** Run 4 left two paths open: a focused IOBinding diagnosis,
+or a smaller bite that targets the per-step `.ToArray()` allocations
+without touching the binding API. Per @user's prompt, try the smaller
+bite first; only do the diagnosis lap if there's nothing easier.
+
+**Method:** Two attempts, in order of decreasing scope.
+
+### 5a — `Run`-with-`OrtValue` (instead of `RunWithBinding`)
+
+Goal: avoid the binding API entirely while still passing OrtValues
+directly (no host roundtrip on KV). ORT C# has an overload
+`Run(RunOptions, IReadOnlyCollection<string>, IReadOnlyCollection<OrtValue>, IReadOnlyCollection<string>)` that skips the binding and uses
+OrtValues directly.
+
+**Result:** **Also produces garbage**, but with a *different* garbage
+pattern than `RunWithBinding`:
+
+```
+RunWithBinding:    "Hello,null<|fim_suffix|>'s. and.-dron for_<|fim_suffix|>..."
+Run-with-OrtValue: "Hello,nulls<|fim_suffix|>spspspspspspspspspspspsp..."
+```
+
+Different pattern, same first-correct-token-then-collapse signature.
+The fact that BOTH paths fail tells us the bug is NOT in `RunWithBinding`
+itself — it's in **how ORT consumes inputs constructed via
+`OrtValue.CreateTensorValueFromMemory`** for this specific graph.
+
+Hypotheses ruled out along the way:
+- GC moving the source array (fixed by keeping arrays in
+  `pastKvArrays[80]`; still garbage).
+- Lifetime of the disposable result list (fixed by *not* using `using`;
+  still garbage).
+- Output-buffer aliasing across reused bindings (fixed by
+  fresh-binding-per-step; still garbage).
+
+Remaining hypothesis: some incompatibility between
+`CreateTensorValueFromMemory`'s tensor representation and what the
+unified Granite decoder graph expects on its many small inputs (40×
+past_key + 40× past_value + cache_position + attention_mask). Worth
+flagging but not worth blocking on — the bigger discovery is that the
+`DenseTensor` + `NamedOnnxValue` path WORKS while the `OrtValue` path
+doesn't.
+
+### 5b — Pre-allocated KV buffers + `Span.CopyTo` (in the working path)
+
+Stays on the `DenseTensor` + `NamedOnnxValue` path. Replaces:
+
+```csharp
+pastKeys[L] = stepResults[1 + L].AsTensor<float>().ToArray();   // 80 fresh allocs / step
+```
+
+with:
+
+```csharp
+// One-time:  pastKeys[L] = new float[1 * NumKvHeads * (promptLen + maxNewTokens) * HeadDim];
+// Per step:  ((DenseTensor<float>)stepResults[1+L].AsTensor<float>())
+//                 .Buffer.Span.CopyTo(new Span<float>(pastKeys[L], 0, totalElems));
+```
+
+Net effect: 80 × maxNewTokens fresh allocations replaced with 80
+one-time allocations + 80 × maxNewTokens span-copies into pre-allocated
+buffers. Removes all GC pressure from the step loop's output extract
+and uses the JIT-vectorised `Span.CopyTo` for the host-side memcpy.
+
+**Memory cost:** 80 buffers × `1 * 4 * (promptLen + maxNewTokens) * 128`
+floats × 4 bytes = ~190 MB at the 90 s clip. Fits comfortably in
+typical heap budgets.
+
+### Results (GPU 3090, fp32 unified decoder)
+
+| 6.4 s GPU | Run 4 baseline | Run 5b pre-alloc | Δ |
+|---|---:|---:|---:|
+| Total | 527 ms | 525 ms | ~0 |
+| decoder_step / token | 21.0 ms | 20.7 ms | -1.4% |
+| Output extract | 62 ms (13.4%) | 25 ms (5.5%) | -60% |
+| Parity | exact | exact | — |
+
+| 90 s GPU | Run 4 baseline | Run 5b pre-alloc | Δ |
+|---|---:|---:|---:|
+| Total | 22 264 ms | **19 929 ms** | **-10.5%** |
+| decoder_step / token | 82.4 ms | **73.0 ms** | **-11.4%** |
+| Tok/s | 12.1 | **13.7** | **+13%** |
+| RTF | 4.04× | **4.52×** | **+12%** |
+| Output extract | 6 200 ms (29.6%) | **4 154 ms (22.4%)** | -33% |
+| Parity | exact | **exact** | — |
+
+The 4.4 s of extract that REMAINS at 90 s is pure PCIe bandwidth: 80
+buffers × ~190 MB total per step × 254 steps = ~48 GB of host-side
+memcpy across the run at ~13 GB/s, which is close to PCIe 3.0 ×16
+peak. To shrink it further the data has to stay on the GPU — which
+is exactly the IOBinding goal that Run 4 / Run 5a couldn't get to work
+on this graph.
+
+### Disposition
+
+- **Ship Run 5b.** Pre-alloc + `Span.CopyTo` is in the smoke's
+  baseline (non-IOBinding) decode path. 12% RTF win at 90 s, zero
+  parity risk.
+- **`--io-binding` flag remains** as a measurement tool; warning
+  message updated to flag both `RunWithBinding` and Run-with-OrtValue
+  failure modes.
+- **The "actual IOBinding" focused-diagnosis lap remains open.** The
+  most concrete next experiment: try IOBinding on the SPLIT decoder
+  pair (decoder_init + decoder_step). If it works there — matching
+  Qwen3's success on its split path — the bug is unified-decoder
+  specific, and the fix is graph-shape rather than C# API. Cost:
+  resurrect the split bundle for a benchmark comparison.
+
+### Updated shipping numbers (fp32 unified, GPU 3090, C#)
+
+| Audio | RTF | Tok/s | Total wall |
+|---|---:|---:|---:|
+| 6.4 s | 12.2× | 48.4 | 525 ms |
+| 90 s | 4.52× | 13.7 | 19.9 s |

@@ -118,10 +118,13 @@ internal static class Program
         }
         if (ioBinding)
         {
-            Console.Error.WriteLine("WARNING: --io-binding is experimental on the unified decoder and "
-                                  + "currently produces incorrect transcripts after the first token. "
-                                  + "Use for perf measurement only; do not trust the text output. "
-                                  + "See docs/dev/granite_speech_perf_investigation.md Run 4.");
+            Console.Error.WriteLine("WARNING: --io-binding is experimental — it produces incorrect "
+                                  + "transcripts on the unified Granite decoder. Both RunWithBinding "
+                                  + "and the OrtValue-based Run() overload produce garbage when fed "
+                                  + "OrtValue inputs created via CreateTensorValueFromMemory; only "
+                                  + "the DenseTensor + NamedOnnxValue path produces correct output. "
+                                  + "Use this flag for perf measurement only. See "
+                                  + "docs/dev/granite_speech_perf_investigation.md Run 5.");
         }
 
         var loadStopwatch = Stopwatch.StartNew();
@@ -312,12 +315,28 @@ internal static class Program
         var initShape = initLogits.Dimensions.ToArray();
         int vocabSize = (int)initShape[2];
 
+        // Pre-allocate per-layer K/V buffers sized for the MAX cache length
+        // (promptLen + maxNewTokens). Each step copies the new present_kv
+        // into the *prefix* of these buffers via Buffer.BlockCopy and binds
+        // the next step's past_kv as a DenseTensor view of [..currentLen].
+        // This avoids 20 000 .ToArray() allocations across a 90 s run.
+        int maxCacheLen = promptLen + maxNewTokens;
+        int kvElemsPerLayer = 1 * NumKvHeads * maxCacheLen * HeadDim;
         var pastKeys = new float[NumDecoderLayers][];
         var pastValues = new float[NumDecoderLayers][];
         for (int L = 0; L < NumDecoderLayers; L++)
         {
-            pastKeys[L] = initResults[1 + L].AsTensor<float>().ToArray();
-            pastValues[L] = initResults[1 + NumDecoderLayers + L].AsTensor<float>().ToArray();
+            pastKeys[L] = new float[kvElemsPerLayer];
+            pastValues[L] = new float[kvElemsPerLayer];
+            // Copy the prefill outputs into the prefix of the pre-allocated
+            // buffers. We use a temporary array because AsTensor<float>().ToArray()
+            // is the cleanest way to materialise the ORT tensor; one extra
+            // copy here is amortised across the run.
+            int prefillElems = 1 * NumKvHeads * promptLen * HeadDim;
+            var kSrc = initResults[1 + L].AsTensor<float>().ToArray();
+            var vSrc = initResults[1 + NumDecoderLayers + L].AsTensor<float>().ToArray();
+            Buffer.BlockCopy(kSrc, 0, pastKeys[L], 0, prefillElems * sizeof(float));
+            Buffer.BlockCopy(vSrc, 0, pastValues[L], 0, prefillElems * sizeof(float));
         }
         long nextToken = ArgmaxLastPosition(initLogits, promptLen, vocabSize);
         initResults.Dispose();
@@ -370,14 +389,24 @@ internal static class Program
                 feed.Add(NamedOnnxValue.CreateFromTensor("attention_mask", stepAttnT));
                 feed.Add(NamedOnnxValue.CreateFromTensor("cache_position", cachePos));
             }
+            // past_kv shapes use the actual current cache length, but the
+            // backing array is the over-allocated pastKeys/Values[L] (sized
+            // for maxCacheLen). DenseTensor reads only `1 * NumKvHeads *
+            // pastLen * HeadDim` elements from the start of the array, so
+            // the unused tail is harmless.
+            int pastElems = 1 * NumKvHeads * pastLen * HeadDim;
             for (int L = 0; L < NumDecoderLayers; L++)
             {
                 feed.Add(NamedOnnxValue.CreateFromTensor(
                     $"past_key_{L}",
-                    new DenseTensor<float>(pastKeys[L], [1, NumKvHeads, pastLen, HeadDim])));
+                    new DenseTensor<float>(
+                        new Memory<float>(pastKeys[L], 0, pastElems),
+                        [1, NumKvHeads, pastLen, HeadDim])));
                 feed.Add(NamedOnnxValue.CreateFromTensor(
                     $"past_value_{L}",
-                    new DenseTensor<float>(pastValues[L], [1, NumKvHeads, pastLen, HeadDim])));
+                    new DenseTensor<float>(
+                        new Memory<float>(pastValues[L], 0, pastElems),
+                        [1, NumKvHeads, pastLen, HeadDim])));
             }
             subsw.Stop();
             if (trace != null) trace.StepInputBuildMs += subsw.ElapsedMilliseconds;
@@ -388,12 +417,22 @@ internal static class Program
             subsw.Stop();
             if (trace != null) trace.StepRunTotalMs += subsw.ElapsedMilliseconds;
 
-            // --- output extract: KV roll-forward
+            // --- output extract: KV roll-forward via Buffer.BlockCopy into
+            // the pre-allocated buffers. Avoids 80 fresh array allocations
+            // per step (and the GC pressure that came with them).
             subsw.Restart();
+            int totalElems = 1 * NumKvHeads * totalLen * HeadDim;
+            int copyBytes = totalElems * sizeof(float);
             for (int L = 0; L < NumDecoderLayers; L++)
             {
-                pastKeys[L] = stepResults[1 + L].AsTensor<float>().ToArray();
-                pastValues[L] = stepResults[1 + NumDecoderLayers + L].AsTensor<float>().ToArray();
+                var kTensor = (DenseTensor<float>)stepResults[1 + L].AsTensor<float>();
+                var vTensor = (DenseTensor<float>)stepResults[1 + NumDecoderLayers + L].AsTensor<float>();
+                // Use the underlying buffer directly via Span<T>.CopyTo for
+                // managed-managed copies (Buffer.BlockCopy can't take a
+                // Span source). For ORT outputs, the DenseTensor wraps a
+                // contiguous buffer so the span is the right size.
+                kTensor.Buffer.Span.CopyTo(new Span<float>(pastKeys[L], 0, totalElems));
+                vTensor.Buffer.Span.CopyTo(new Span<float>(pastValues[L], 0, totalElems));
             }
             var stepLogits = stepResults[0].AsTensor<float>();
             subsw.Stop();
@@ -516,17 +555,23 @@ internal static class Program
         decSess.RunWithBinding(runOpts, binding);
 
         // Copy prefill outputs into buffers we own — do not retain references
-        // to binding-allocated OrtValues across the step loop.
+        // to binding-allocated OrtValues across the step loop. CRITICAL: we
+        // also keep the BACKING ARRAYS alive in `pastKvArrays`. OrtValue.
+        // CreateTensorValueFromMemory does not keep its source array rooted;
+        // if the array is GC'd, the OrtValue's pointer becomes invalid and
+        // ORT reads garbage. Holding a parallel array of references prevents
+        // this.
         var prefillOutputs = binding.GetOutputValues();
         var prefillLogits = prefillOutputs[0];
         var pastKvs = new OrtValue[2 * NumDecoderLayers];
+        var pastKvArrays = new float[2 * NumDecoderLayers][];
         long[] prefillKvShape = { 1, NumKvHeads, promptLen, HeadDim };
         for (int L = 0; L < NumDecoderLayers; L++)
         {
-            var kData = prefillOutputs[1 + L].GetTensorDataAsSpan<float>().ToArray();
-            var vData = prefillOutputs[1 + NumDecoderLayers + L].GetTensorDataAsSpan<float>().ToArray();
-            pastKvs[2 * L]     = OrtValue.CreateTensorValueFromMemory(kData, prefillKvShape);
-            pastKvs[2 * L + 1] = OrtValue.CreateTensorValueFromMemory(vData, prefillKvShape);
+            pastKvArrays[2 * L]     = prefillOutputs[1 + L].GetTensorDataAsSpan<float>().ToArray();
+            pastKvArrays[2 * L + 1] = prefillOutputs[1 + NumDecoderLayers + L].GetTensorDataAsSpan<float>().ToArray();
+            pastKvs[2 * L]     = OrtValue.CreateTensorValueFromMemory(pastKvArrays[2 * L], prefillKvShape);
+            pastKvs[2 * L + 1] = OrtValue.CreateTensorValueFromMemory(pastKvArrays[2 * L + 1], prefillKvShape);
             prefillOutputs[1 + L].Dispose();
             prefillOutputs[1 + NumDecoderLayers + L].Dispose();
         }
@@ -576,6 +621,20 @@ internal static class Program
         // way.
         var allBindings = new List<OrtIoBinding> { prefillBinding };
         OrtValue[]? prevStepPastKvs = null;
+
+        // The names lists are constant across steps; reuse them.
+        var stepInputNames = new List<string>(4 + 2 * NumDecoderLayers)
+        {
+            "input_ids", "audio_embeds", "attention_mask", "cache_position",
+        };
+        for (int L = 0; L < NumDecoderLayers; L++)
+        {
+            stepInputNames.Add($"past_key_{L}");
+            stepInputNames.Add($"past_value_{L}");
+        }
+        var stepOutputNames = new List<string>(1 + 2 * NumDecoderLayers) { "logits" };
+        for (int L = 0; L < NumDecoderLayers; L++) stepOutputNames.Add($"present_key_{L}");
+        for (int L = 0; L < NumDecoderLayers; L++) stepOutputNames.Add($"present_value_{L}");
         for (int step = 0; step < maxNewTokens; step++)
         {
             if (nextToken == EosTokenId) break;
@@ -593,75 +652,63 @@ internal static class Program
             subsw.Stop();
             if (trace != null) trace.StepBookkeepingMs += subsw.ElapsedMilliseconds;
 
-            // --- input build (binding)
+            // --- input build
             subsw.Restart();
-            // Fresh binding per step. Reusing the binding causes ORT to
-            // alias output buffers across steps, corrupting the KV cache:
-            // the present_key OrtValues we retained as past_kv get
-            // overwritten by the next step's outputs, and the model effectively
-            // sees the same KV cache every step (constant per-step latency,
-            // garbage transcript). A fresh binding allocates independent
-            // output OrtValues each step.
-            var stepBinding = decSess.CreateIoBinding();
-            allBindings.Add(stepBinding);
-            binding = stepBinding;
-            binding.BindInput("input_ids", stepInputId);
-            binding.BindInput("audio_embeds", stepAudio);
-            binding.BindInput("attention_mask", stepAttn);
-            binding.BindInput("cache_position", cachePos);
-            for (int L = 0; L < NumDecoderLayers; L++)
+            // After a long detour through OrtIoBinding (which produced
+            // constant per-step latency + garbage transcript on this graph,
+            // see Run 4 of the perf investigation doc), we use the OrtValue-
+            // based `Run(inputNames, inputValues, outputNames)` overload
+            // instead. This keeps all the IOBinding-style benefits — pass
+            // OrtValues directly with no DenseTensor wrapping, return
+            // OrtValues that we can re-feed as inputs without going through
+            // managed arrays — but goes through ORT's regular Run execution
+            // path, which actually consumes the past_kv inputs correctly on
+            // the unified decoder.
+            // Dispose the prior step's pastKvs now that they're not needed.
+            if (prevStepPastKvs != null)
             {
-                binding.BindInput($"past_key_{L}", pastKvs[2 * L]);
-                binding.BindInput($"past_value_{L}", pastKvs[2 * L + 1]);
+                foreach (var ov in prevStepPastKvs) ov.Dispose();
+                prevStepPastKvs = null;
             }
-            binding.BindOutputToDevice("logits", cpuMem);
+            var stepInputValues = new List<OrtValue>(4 + 2 * NumDecoderLayers)
+            {
+                stepInputId, stepAudio, stepAttn, cachePos,
+            };
             for (int L = 0; L < NumDecoderLayers; L++)
             {
-                // Bind to CPU temporarily so we can read with GetTensorDataAsSpan<float>().
-                // (Diagnostic mode — defeats the IOBinding "stay on GPU" goal but
-                // lets us verify the data flow is correct.)
-                binding.BindOutputToDevice($"present_key_{L}", cpuMem);
-                binding.BindOutputToDevice($"present_value_{L}", cpuMem);
+                stepInputValues.Add(pastKvs[2 * L]);
+                stepInputValues.Add(pastKvs[2 * L + 1]);
             }
             subsw.Stop();
             if (trace != null) trace.StepInputBuildMs += subsw.ElapsedMilliseconds;
 
-            // --- ORT.Run()
+            // --- ORT.Run() with OrtValues
+            // Important: DO NOT `using` the result — Dispose on the
+            // IDisposableReadOnlyCollection<OrtValue> may dispose the
+            // contained OrtValues, invalidating the references we capture
+            // below as pastKvs. The list shell GC-collects fine without
+            // disposal because it has no finalizer (see the VibeVoiceAsr
+            // comment in src/Vernacula.Base for the same pattern).
             subsw.Restart();
-            decSess.RunWithBinding(runOpts, binding);
+            var stepRunResult = decSess.Run(runOpts, stepInputNames, stepInputValues, stepOutputNames);
             subsw.Stop();
             if (trace != null) trace.StepRunTotalMs += subsw.ElapsedMilliseconds;
 
-            // --- output extract: copy present_kv to managed buffers and
-            // re-wrap as fresh OrtValues. This defeats the IOBinding "no
-            // copy" optimisation but isolates whether the bug is in OrtValue
-            // lifetime / buffer aliasing across bindings. If parity returns
-            // here, the IOBinding output OrtValues are not what we think they
-            // are; if it's still wrong, the bug is elsewhere.
+            // --- output extract: take ownership of fresh OrtValues from
+            // ORT's Run, defer disposing prior step's pastKvs until next
+            // iteration to avoid any chance of input-still-in-use issues.
             subsw.Restart();
-            var stepOutputs = binding.GetOutputValues();
-            var stepLogits = stepOutputs[0];
+            var stepLogits = stepRunResult[0];
             prevStepPastKvs = (OrtValue[])pastKvs.Clone();
             for (int L = 0; L < NumDecoderLayers; L++)
             {
-                pastKvs[2 * L]     = stepOutputs[1 + L];
-                pastKvs[2 * L + 1] = stepOutputs[1 + NumDecoderLayers + L];
+                pastKvs[2 * L]     = stepRunResult[1 + L];
+                pastKvs[2 * L + 1] = stepRunResult[1 + NumDecoderLayers + L];
             }
             subsw.Stop();
             if (trace != null) trace.StepOutputExtractMs += subsw.ElapsedMilliseconds;
-            if (step < 3)
-            {
-                var pkShape = pastKvs[0].GetTensorTypeAndShape().Shape;
-                var lgShape = stepLogits.GetTensorTypeAndShape().Shape;
-                var prevK = prevStepPastKvs![0];
-                var prevKShape = prevK.GetTensorTypeAndShape().Shape;
-                Console.WriteLine($"  [step {step}] cachePos={pastLen} totalLen={totalLen} "
-                                + $"input_past_k0={Shape(prevKShape.Select(s => (int)s).ToArray())} "
-                                + $"output_present_k0={Shape(pkShape.Select(s => (int)s).ToArray())} "
-                                + $"logits={Shape(lgShape.Select(s => (int)s).ToArray())}");
-            }
 
-            // --- argmax on logits (CPU-bound, zero-copy span)
+            // --- argmax on logits
             subsw.Restart();
             var stepLogitsSpan = stepLogits.GetTensorDataAsSpan<float>();
             nextToken = ArgmaxLastPositionSpan(stepLogitsSpan, 1, vocab);
