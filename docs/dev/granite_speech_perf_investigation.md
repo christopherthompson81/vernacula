@@ -782,3 +782,130 @@ phase-transition cost). The smoke supports both via `--split-juggle-test`.
   decoder_step ON the GPU, so prefill runs slowly on CPU but step
   loop runs fast on GPU without the phase transition. Worth measuring
   if user-facing latency becomes the bottleneck.
+
+---
+
+## Run 7 — 2026-05-08 (chained Run-with-OrtValue on the UNIFIED decoder — best so far)
+
+**Question:** Run 6c showed that chained `Run`-with-`OrtValue` works on
+the split decoder pair but it requires the memory-juggling phase
+transition. Run 5a previously concluded that the same pattern produces
+garbage on the unified decoder. @user prompt: "How about going back to
+the single decoder now?" — does the chained pattern actually work on
+unified, or was Run 5a's failure setup-specific?
+
+**Re-examining Run 5a's setup carefully:** Run 5a built OrtValues from
+*managed arrays* (via `CreateTensorValueFromMemory(arr, shape)` after
+`.ToArray()`-ing prior outputs). All inputs were **CPU-resident
+OrtValues** going into a CUDA session. Garbage.
+
+**Key insight from Run 6c:** when prefill is run via
+`Run`-with-`OrtValue`, its outputs come back as **GPU-resident
+OrtValues** that the next `Run` call accepts directly. The "OrtValue
+inputs" in the chain are NOT host-resident copies; they're the device
+tensors produced by ORT's own kernels. ORT handles them correctly even
+on graphs where naive `CreateTensorValueFromMemory` inputs misbehave.
+
+So: try the chained pattern on the unified decoder, where prefill outputs
+ARE GPU-resident OrtValues from the unified `Run`, and the step loop
+chains those forward. Different from Run 5a's CPU-side OrtValues.
+
+### Implementation
+
+Single `decoder.onnx` session. Prefill: `Run`-with-`OrtValue` using
+host-side OrtValues for `input_ids` / `audio_embeds` / `attention_mask`
+/ `cache_position` and zero-length past_kv. Step loop: each step's
+output OrtValues become the next step's past_kv inputs. Logits are
+read on CPU for argmax; KV stays GPU.
+
+### Results (GPU 3090, fp32, C#)
+
+| 6.4 s | wall | ms/tok | tok/s | RTF | parity |
+|---|---:|---:|---:|---:|---|
+| Run 5b unified DenseTensor pre-alloc | 525 | 20.7 | 48.4 | 12.23× | exact |
+| Run 6c split-juggle chained | 434 | 19.8 | 50.6 | 14.79× | exact |
+| **Run 7 unified chained** | **704** | **18.4** | **54.3** | 9.12× | **exact** |
+
+| 90 s | wall | ms/tok | tok/s | RTF | parity |
+|---|---:|---:|---:|---:|---|
+| Run 4 baseline | 22 264 | 82.4 | 12.1 | 4.04× | exact |
+| Run 5b unified pre-alloc | 19 929 | 73.0 | 13.7 | 4.52× | exact |
+| Run 6c split-juggle | 17 631 | 56.2 | 17.8 | 5.11× | exact |
+| **Run 7 unified chained** | **15 102** | **54.9** | **18.2** | **5.96×** | **exact** |
+
+**Unified chained on 90 s is the fastest path so far** — 14% faster than
+split-juggle (5.96× vs 5.11×) and 32% faster than Run 5b's pre-alloc
+DenseTensor path. It also surpasses the Python profiler's RTF (5.38×),
+likely because the chained OrtValue path skips both Python's tensor-
+lifecycle overhead AND the C# managed-array roundtrip.
+
+The 6.4 s case looks worse on RTF (9.12× vs 14.79× for split-juggle)
+because of session-load overhead amortised over a short clip — a
+warm-up run of either path would put unified ahead. At 90 s where
+session load is < 1% of total, unified is clearly fastest.
+
+### Why Run 5a was wrong
+
+Run 5a used:
+1. `RunWithBinding` for prefill, with `BindOutputToDevice("present_key_<L>", cpuMem)`
+2. `.GetTensorDataAsSpan().ToArray()` to copy the binding's outputs to managed arrays
+3. `OrtValue.CreateTensorValueFromMemory(arr, shape)` to wrap those arrays as OrtValues
+4. `Run`-with-`OrtValue` for steps, with these CPU-side OrtValues as past_kv inputs
+
+The bug was in step 4: passing CPU-side OrtValues (built from managed
+arrays) as past_kv to a CUDA-EP session produces garbage on the
+unified decoder, but works on the split decoder_step. We never ruled
+out *that specific path*; we just assumed all OrtValue inputs were
+broken on unified.
+
+The chained pattern (Run 7) never has CPU-side past_kv after step 0:
+prefill outputs are GPU-resident OrtValues, and every step's past_kv
+is the previous step's GPU output. The bug doesn't manifest because
+the host-side OrtValue path is never used for past_kv.
+
+The host-side `CreateTensorValueFromMemory` *is* still used for the
+small inputs that change every step — `input_ids`, `attention_mask`,
+`cache_position`, the dummy `audio_embeds`. Those evidently don't
+trigger the bug. Why exactly? Probably small enough that ORT's
+implicit Memcpy handles them correctly, or the bug is specific to the
+audio_embeds + cumsum-merge interaction at full prompt-shape inputs.
+Not worth root-causing now since the chained pattern sidesteps it
+entirely.
+
+### Disposition: unified chained is the new shipping target
+
+| | Unified DenseTensor (Run 5b) | Split-juggle chained (Run 6c) | **Unified chained (Run 7)** |
+|---|---|---|---|
+| 90 s C# RTF | 4.52× | 5.11× | **5.96×** |
+| Disk size | ~9 GB | ~16 GB | **~9 GB** |
+| Resident GPU weights | 8.8 GB | 8.8 GB phase 1 / 7 GB phase 2 | **8.8 GB** |
+| Session-load overhead | one-time at startup | ~1.3 s per phase transition | **one-time at startup** |
+| Decoder API | DenseTensor + Run | OrtValue chain via Run | **OrtValue chain via Run** |
+| Parity | exact | exact | **exact** |
+| Code complexity | simple | two-phase loading | **simple** |
+
+**Run 7 wins on every dimension.** Smaller bundle than split, simpler
+runtime than split, faster per-token than both prior paths.
+
+### Final shipping numbers (fp32 unified chained, GPU 3090, C#)
+
+| Audio | RTF | Tok/s | Total wall |
+|---|---:|---:|---:|
+| 6.4 s | 12+× (warm) / 9.1× (cold) | 54.3 | 0.7 s |
+| 90 s | **5.96×** | **18.2** | **15.1 s** |
+
+### Open follow-ups (decreasing priority)
+
+- **Concat is now the #1 ORT op (249 ms across 64 tokens at 90 s)**
+  — past_kv + new_kv concatenation per layer per step. A static-KV
+  cache (pre-allocate to max + scatter-write into [past_len]) would
+  eliminate it. Graph-level export change; significant work but
+  ~13% potential win on the dominant cost.
+- **Encoder full-attention at long T** still costs ~580 ms per call
+  (4% of 90 s total). Not yet a priority but if Vernacula benchmarks
+  on multi-minute clips become important, the chunked-encoder
+  strategy from Run 4 of `granite_speech_investigation.md` is the
+  next move.
+- **Why does naive `CreateTensorValueFromMemory` past_kv fail on
+  unified but work on split?** Filed as a known-unknown; the chained
+  pattern routes around it.

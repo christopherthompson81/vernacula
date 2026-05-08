@@ -135,13 +135,10 @@ internal static class Program
         }
         if (ioBinding)
         {
-            Console.Error.WriteLine("WARNING: --io-binding is experimental — it produces incorrect "
-                                  + "transcripts on the unified Granite decoder. Both RunWithBinding "
-                                  + "and the OrtValue-based Run() overload produce garbage when fed "
-                                  + "OrtValue inputs created via CreateTensorValueFromMemory; only "
-                                  + "the DenseTensor + NamedOnnxValue path produces correct output. "
-                                  + "Use this flag for perf measurement only. See "
-                                  + "docs/dev/granite_speech_perf_investigation.md Run 5.");
+            Console.WriteLine("--io-binding: chained Run-with-OrtValue path (KV stays GPU-resident "
+                            + "across step calls; no host roundtrip). Despite the flag name this "
+                            + "does NOT use OrtIoBinding — see Run 7 of the perf investigation doc "
+                            + "for why the binding API is bypassed and why the chain works.");
         }
 
         var loadStopwatch = Stopwatch.StartNew();
@@ -531,30 +528,39 @@ internal static class Program
         int vocab;
         var pastKeys = new float[NumDecoderLayers][];
         var pastValues = new float[NumDecoderLayers][];
+        long phase1LoadMs, melMs, encMs, projMs, initMs, kvExtractMs;
         var sw = Stopwatch.StartNew();
         {
+            sw.Restart();
             using var melSess = new InferenceSession(Path.Combine(onnxDir, "mel.onnx"), so);
             using var encSess = new InferenceSession(Path.Combine(onnxDir, "encoder.onnx"), so);
             using var projSess = new InferenceSession(Path.Combine(onnxDir, "projector.onnx"), so);
             using var initSess = new InferenceSession(Path.Combine(onnxDir, "decoder_init.onnx"), so);
+            phase1LoadMs = sw.ElapsedMilliseconds;
 
+            sw.Restart();
             var audioT = new DenseTensor<float>(audio, [1, audio.Length]);
             using var melResults = melSess.Run([NamedOnnxValue.CreateFromTensor("audio", audioT)]);
             var ifT = (DenseTensor<float>)melResults[0].AsTensor<float>();
             var ifShape = ifT.Dimensions.ToArray();
             var ifData = ifT.ToArray();
+            melMs = sw.ElapsedMilliseconds;
 
+            sw.Restart();
             using var encResults = encSess.Run([NamedOnnxValue.CreateFromTensor(
                 "input_features", new DenseTensor<float>(ifData, ifShape))]);
             var encT = encResults[0].AsTensor<float>();
             var encShape = encT.Dimensions.ToArray();
             var encData = encT.ToArray();
+            encMs = sw.ElapsedMilliseconds;
 
+            sw.Restart();
             using var projResults = projSess.Run([NamedOnnxValue.CreateFromTensor(
                 "encoder_hidden", new DenseTensor<float>(encData, encShape))]);
             var projT = projResults[0].AsTensor<float>();
             var projShape = projT.Dimensions.ToArray();
             var projData = projT.ToArray();
+            projMs = sw.ElapsedMilliseconds;
 
             var attnMask = new long[promptLen];
             for (int i = 0; i < promptLen; i++) attnMask[i] = 1L;
@@ -567,7 +573,11 @@ internal static class Program
                 NamedOnnxValue.CreateFromTensor("attention_mask",
                     new DenseTensor<long>(attnMask, [1, promptLen])),
             };
+            sw.Restart();
             using var initResults = initSess.Run(initInputs);
+            initMs = sw.ElapsedMilliseconds;
+
+            sw.Restart();
             var initLogits = initResults[0].AsTensor<float>();
             vocab = (int)initLogits.Dimensions[2];
             firstNextToken = ArgmaxLastPosition(initLogits, promptLen, vocab);
@@ -576,11 +586,17 @@ internal static class Program
                 pastKeys[L] = initResults[1 + L].AsTensor<float>().ToArray();
                 pastValues[L] = initResults[1 + NumDecoderLayers + L].AsTensor<float>().ToArray();
             }
+            kvExtractMs = sw.ElapsedMilliseconds;
             // sessions disposed at end of using block
         }
-        sw.Stop();
-        Console.WriteLine($"Phase 1 done: prefill complete, first token={firstNextToken}, KV extracted "
-                        + $"({sw.ElapsedMilliseconds} ms; sessions disposed)");
+        Console.WriteLine($"Phase 1 done: prefill complete, first token={firstNextToken}, "
+                        + $"KV extracted; sessions disposed");
+        Console.WriteLine($"  load 4 sessions:   {phase1LoadMs,5} ms");
+        Console.WriteLine($"  mel:               {melMs,5} ms");
+        Console.WriteLine($"  encoder:           {encMs,5} ms");
+        Console.WriteLine($"  projector:         {projMs,5} ms");
+        Console.WriteLine($"  decoder_init:      {initMs,5} ms");
+        Console.WriteLine($"  kv extract+argmax: {kvExtractMs,5} ms");
 
         // Force GC + give the runtime a moment to release GPU memory.
         GC.Collect();
@@ -854,53 +870,72 @@ internal static class Program
         int[] _encShape,                   // unused
         TraceReport? trace)
     {
+        return RunPipelineUnifiedChainedOrtValue(
+            decSess, projData, projShape, inputIds, maxNewTokens,
+            idToToken, addedTokens, byteLevelDecode, trace);
+    }
+
+    // Chained Run-with-OrtValue path on the UNIFIED decoder. Same shape
+    // as the split-juggle path (RunSplitJuggleStepLoopIoBinding) — each
+    // step's output OrtValues become the next step's input OrtValues, KV
+    // stays GPU-resident across calls — but applied to the single
+    // decoder.onnx that handles both prefill and step modes.
+    //
+    // Run 5a found that Run-with-OrtValue produced garbage on the unified
+    // decoder. That test, though, used CPU-side OrtValues for both the
+    // initial prefill and every step. The chained pattern is different:
+    // prefill outputs are GPU-resident OrtValues by virtue of running on
+    // the CUDA EP; subsequent steps consume them directly without ever
+    // touching managed memory. Worth retrying on unified to see if the
+    // 5a failure was specific to host-side OrtValues going through Run.
+    private static PipelineResult RunPipelineUnifiedChainedOrtValue(
+        InferenceSession decSess,
+        float[] projData,
+        int[] projShape,
+        long[] inputIds,
+        int maxNewTokens,
+        string?[] idToToken,
+        Dictionary<int, string> addedTokens,
+        Dictionary<char, byte> byteLevelDecode,
+        TraceReport? trace)
+    {
         var sw = Stopwatch.StartNew();
         int promptLen = inputIds.Length;
         long audioDim = projShape[2];
 
-        var cudaMem = new OrtMemoryInfo("Cuda", OrtAllocatorType.DeviceAllocator, 0, OrtMemType.Default);
-        var cpuMem = OrtMemoryInfo.DefaultInstance;
-
         using var runOpts = new RunOptions();
 
-        // Reusable input buffers that change shape every step. We allocate
-        // them on the host; ORT auto-copies to device per call. They are
-        // small (4-8 bytes for cache_position, ~10 KB for attention_mask at
-        // long context) so this is negligible.
-        OrtValue MakeInputIds(long[] ids, long[] shape) =>
-            OrtValue.CreateTensorValueFromMemory(ids, shape);
+        // Input/output names are fixed; build the lists once.
+        var unifiedInputNames = new List<string>(4 + 2 * NumDecoderLayers)
+        { "input_ids", "audio_embeds", "attention_mask", "cache_position" };
+        for (int L = 0; L < NumDecoderLayers; L++)
+        {
+            unifiedInputNames.Add($"past_key_{L}");
+            unifiedInputNames.Add($"past_value_{L}");
+        }
+        var unifiedOutputNames = new List<string>(1 + 2 * NumDecoderLayers) { "logits" };
+        for (int L = 0; L < NumDecoderLayers; L++) unifiedOutputNames.Add($"present_key_{L}");
+        for (int L = 0; L < NumDecoderLayers; L++) unifiedOutputNames.Add($"present_value_{L}");
 
-        // Step-time dummy audio_embeds: 1 row, value 0. Cumsum-merge no-op.
-        float[] dummyAudio = new float[1 * 1 * (int)audioDim];
-        // Build per-step OrtValues for inputs that change shape. We dispose
-        // them after RunWithBinding completes.
-
-        // ── Prefill ──────────────────────────────────────────────────────
+        // ── Prefill via Run-with-OrtValue ────────────────────────────────
+        // Outputs come back as CUDA-resident OrtValues that we feed
+        // directly to the next step. No host roundtrip.
         sw.Restart();
-        var prefillBinding = decSess.CreateIoBinding();
-        var binding = prefillBinding;
-
         long[] inputIdsShape = { 1, promptLen };
-        using var inputIdsVal = MakeInputIds(inputIds, inputIdsShape);
-        binding.BindInput("input_ids", inputIdsVal);
-
+        using var inputIdsVal = OrtValue.CreateTensorValueFromMemory(inputIds, inputIdsShape);
         long[] audioShape = { 1, projShape[1], projShape[2] };
         using var audioVal = OrtValue.CreateTensorValueFromMemory(projData, audioShape);
-        binding.BindInput("audio_embeds", audioVal);
-
         long[] attnShape = { 1, promptLen };
         long[] attnMaskArr = new long[promptLen];
         for (int i = 0; i < promptLen; i++) attnMaskArr[i] = 1L;
         using var attnVal = OrtValue.CreateTensorValueFromMemory(attnMaskArr, attnShape);
-        binding.BindInput("attention_mask", attnVal);
-
         long[] cachePosArr = new long[promptLen];
         for (int i = 0; i < promptLen; i++) cachePosArr[i] = i;
         using var cpVal = OrtValue.CreateTensorValueFromMemory(cachePosArr, new long[] { promptLen });
-        binding.BindInput("cache_position", cpVal);
 
-        // Zero-length past_kv inputs at prefill.
         var emptyPasts = new List<OrtValue>(2 * NumDecoderLayers);
+        var prefillInputs = new List<OrtValue>(4 + 2 * NumDecoderLayers)
+        { inputIdsVal, audioVal, attnVal, cpVal };
         for (int L = 0; L < NumDecoderLayers; L++)
         {
             var k = OrtValue.CreateTensorValueFromMemory(
@@ -909,103 +944,46 @@ internal static class Program
                 Array.Empty<float>(), new long[] { 1, NumKvHeads, 0, HeadDim });
             emptyPasts.Add(k);
             emptyPasts.Add(v);
-            binding.BindInput($"past_key_{L}", k);
-            binding.BindInput($"past_value_{L}", v);
+            prefillInputs.Add(k);
+            prefillInputs.Add(v);
         }
 
-        // Outputs: logits to CPU (we need argmax). present_kv also to CPU
-        // for now (diagnostic) — copy into fresh OrtValues we own so the
-        // step loop reads from buffers we control.
-        binding.BindOutputToDevice("logits", cpuMem);
-        for (int L = 0; L < NumDecoderLayers; L++)
-        {
-            binding.BindOutputToDevice($"present_key_{L}", cpuMem);
-            binding.BindOutputToDevice($"present_value_{L}", cpuMem);
-        }
-
-        decSess.RunWithBinding(runOpts, binding);
-
-        // Copy prefill outputs into buffers we own — do not retain references
-        // to binding-allocated OrtValues across the step loop. CRITICAL: we
-        // also keep the BACKING ARRAYS alive in `pastKvArrays`. OrtValue.
-        // CreateTensorValueFromMemory does not keep its source array rooted;
-        // if the array is GC'd, the OrtValue's pointer becomes invalid and
-        // ORT reads garbage. Holding a parallel array of references prevents
-        // this.
-        var prefillOutputs = binding.GetOutputValues();
-        var prefillLogits = prefillOutputs[0];
-        var pastKvs = new OrtValue[2 * NumDecoderLayers];
-        var pastKvArrays = new float[2 * NumDecoderLayers][];
-        long[] prefillKvShape = { 1, NumKvHeads, promptLen, HeadDim };
-        for (int L = 0; L < NumDecoderLayers; L++)
-        {
-            pastKvArrays[2 * L]     = prefillOutputs[1 + L].GetTensorDataAsSpan<float>().ToArray();
-            pastKvArrays[2 * L + 1] = prefillOutputs[1 + NumDecoderLayers + L].GetTensorDataAsSpan<float>().ToArray();
-            pastKvs[2 * L]     = OrtValue.CreateTensorValueFromMemory(pastKvArrays[2 * L], prefillKvShape);
-            pastKvs[2 * L + 1] = OrtValue.CreateTensorValueFromMemory(pastKvArrays[2 * L + 1], prefillKvShape);
-            prefillOutputs[1 + L].Dispose();
-            prefillOutputs[1 + NumDecoderLayers + L].Dispose();
-        }
+        var prefillOutputs = decSess.Run(runOpts, unifiedInputNames, prefillInputs, unifiedOutputNames);
         sw.Stop();
         if (trace != null) trace.DecoderInitMs = sw.ElapsedMilliseconds;
 
-        // Argmax on prefill last position.
-        var prefillLogitsTensor = prefillLogits.GetTensorDataAsSpan<float>();
+        var prefillLogits = prefillOutputs[0];
+        var prefillLogitsSpan = prefillLogits.GetTensorDataAsSpan<float>();
         long[] prefillShape = prefillLogits.GetTensorTypeAndShape().Shape;
         int vocab = (int)prefillShape[2];
-        long nextToken = ArgmaxLastPositionSpan(prefillLogitsTensor, promptLen, vocab);
+        long nextToken = ArgmaxLastPositionSpan(prefillLogitsSpan, promptLen, vocab);
         prefillLogits.Dispose();
-        Console.WriteLine($"  decoder_init (IOBinding): logits={Shape(prefillShape.Select(s => (int)s).ToArray())} ({sw.ElapsedMilliseconds} ms)");
-
+        Console.WriteLine($"  decoder_init (chained Run-with-OrtValue): logits="
+                        + $"{Shape(prefillShape.Select(s => (int)s).ToArray())} "
+                        + $"({sw.ElapsedMilliseconds} ms)");
         foreach (var p in emptyPasts) p.Dispose();
+
+        // pastKvs become the next step's input OrtValues — GPU-resident
+        // chain, no host copy.
+        var pastKvs = new OrtValue[2 * NumDecoderLayers];
+        for (int L = 0; L < NumDecoderLayers; L++)
+        {
+            pastKvs[2 * L]     = prefillOutputs[1 + L];
+            pastKvs[2 * L + 1] = prefillOutputs[1 + NumDecoderLayers + L];
+        }
 
         // ── Step loop ────────────────────────────────────────────────────
         var generated = new List<long>(maxNewTokens);
         int pastLen = promptLen;
-        var subsw = new Stopwatch();
-        var stepLoopStart = Stopwatch.StartNew();
-
-        // Step-time small inputs. We allocate scratch arrays sized for the
-        // longest possible attention_mask once; cache_position is always [1].
         long[] stepInputIdArr = new long[1];
         long[] cachePosStepArr = new long[1];
-        // attention_mask grows; allocate up to promptLen + maxNewTokens.
         long[] attnScratch = new long[promptLen + maxNewTokens + 1];
         for (int i = 0; i < attnScratch.Length; i++) attnScratch[i] = 1L;
+        // Step-time dummy audio_embeds: 1 row, allocated once.
+        float[] dummyAudio = new float[1 * 1 * (int)audioDim];
 
-        OrtValue MakeStepInputId(long tok)
-        {
-            stepInputIdArr[0] = tok;
-            return OrtValue.CreateTensorValueFromMemory(stepInputIdArr, new long[] { 1, 1 });
-        }
-        OrtValue MakeCachePos(int len)
-        {
-            cachePosStepArr[0] = len;
-            return OrtValue.CreateTensorValueFromMemory(cachePosStepArr, new long[] { 1 });
-        }
-
-        // We keep every binding alive for the whole run. Disposing a binding
-        // also frees the OrtValues it allocated for its outputs, and we
-        // retain those outputs as past_kv for the next step. The bindings
-        // themselves are cheap (just a handle to a native binding object);
-        // the heavy data is the GPU KV buffers, which we'd be holding either
-        // way.
-        var allBindings = new List<OrtIoBinding> { prefillBinding };
-        OrtValue[]? prevStepPastKvs = null;
-
-        // The names lists are constant across steps; reuse them.
-        var stepInputNames = new List<string>(4 + 2 * NumDecoderLayers)
-        {
-            "input_ids", "audio_embeds", "attention_mask", "cache_position",
-        };
-        for (int L = 0; L < NumDecoderLayers; L++)
-        {
-            stepInputNames.Add($"past_key_{L}");
-            stepInputNames.Add($"past_value_{L}");
-        }
-        var stepOutputNames = new List<string>(1 + 2 * NumDecoderLayers) { "logits" };
-        for (int L = 0; L < NumDecoderLayers; L++) stepOutputNames.Add($"present_key_{L}");
-        for (int L = 0; L < NumDecoderLayers; L++) stepOutputNames.Add($"present_value_{L}");
+        var subsw = new Stopwatch();
+        var stepLoopStart = Stopwatch.StartNew();
         for (int step = 0; step < maxNewTokens; step++)
         {
             if (nextToken == EosTokenId) break;
@@ -1014,76 +992,49 @@ internal static class Program
 
             // --- bookkeeping
             subsw.Restart();
-            using var stepInputId = MakeStepInputId(nextToken);
-            using var cachePos = MakeCachePos(pastLen);
-            using var stepAttn = OrtValue.CreateTensorValueFromMemory(
-                attnScratch, new long[] { 1, totalLen });
+            stepInputIdArr[0] = nextToken;
+            cachePosStepArr[0] = pastLen;
+            using var stepInputId = OrtValue.CreateTensorValueFromMemory(
+                stepInputIdArr, new long[] { 1, 1 });
             using var stepAudio = OrtValue.CreateTensorValueFromMemory(
                 dummyAudio, new long[] { 1, 1, audioDim });
+            using var stepAttn = OrtValue.CreateTensorValueFromMemory(
+                attnScratch, new long[] { 1, totalLen });
+            using var cachePos = OrtValue.CreateTensorValueFromMemory(
+                cachePosStepArr, new long[] { 1 });
             subsw.Stop();
             if (trace != null) trace.StepBookkeepingMs += subsw.ElapsedMilliseconds;
 
-            // --- input build
+            // --- ORT.Run() chained
             subsw.Restart();
-            // After a long detour through OrtIoBinding (which produced
-            // constant per-step latency + garbage transcript on this graph,
-            // see Run 4 of the perf investigation doc), we use the OrtValue-
-            // based `Run(inputNames, inputValues, outputNames)` overload
-            // instead. This keeps all the IOBinding-style benefits — pass
-            // OrtValues directly with no DenseTensor wrapping, return
-            // OrtValues that we can re-feed as inputs without going through
-            // managed arrays — but goes through ORT's regular Run execution
-            // path, which actually consumes the past_kv inputs correctly on
-            // the unified decoder.
-            // Dispose the prior step's pastKvs now that they're not needed.
-            if (prevStepPastKvs != null)
-            {
-                foreach (var ov in prevStepPastKvs) ov.Dispose();
-                prevStepPastKvs = null;
-            }
-            var stepInputValues = new List<OrtValue>(4 + 2 * NumDecoderLayers)
+            var stepInputs = new List<OrtValue>(4 + 2 * NumDecoderLayers)
             {
                 stepInputId, stepAudio, stepAttn, cachePos,
             };
-            for (int L = 0; L < NumDecoderLayers; L++)
-            {
-                stepInputValues.Add(pastKvs[2 * L]);
-                stepInputValues.Add(pastKvs[2 * L + 1]);
-            }
-            subsw.Stop();
-            if (trace != null) trace.StepInputBuildMs += subsw.ElapsedMilliseconds;
-
-            // --- ORT.Run() with OrtValues
-            // Important: DO NOT `using` the result — Dispose on the
-            // IDisposableReadOnlyCollection<OrtValue> may dispose the
-            // contained OrtValues, invalidating the references we capture
-            // below as pastKvs. The list shell GC-collects fine without
-            // disposal because it has no finalizer (see the VibeVoiceAsr
-            // comment in src/Vernacula.Base for the same pattern).
-            subsw.Restart();
-            var stepRunResult = decSess.Run(runOpts, stepInputNames, stepInputValues, stepOutputNames);
+            stepInputs.AddRange(pastKvs);
+            var outputs = decSess.Run(runOpts, unifiedInputNames, stepInputs, unifiedOutputNames);
             subsw.Stop();
             if (trace != null) trace.StepRunTotalMs += subsw.ElapsedMilliseconds;
 
-            // --- output extract: take ownership of fresh OrtValues from
-            // ORT's Run, defer disposing prior step's pastKvs until next
-            // iteration to avoid any chance of input-still-in-use issues.
+            // --- swap KV: dispose old, take fresh outputs as new pastKvs
             subsw.Restart();
-            var stepLogits = stepRunResult[0];
-            prevStepPastKvs = (OrtValue[])pastKvs.Clone();
+            var oldPast = pastKvs;
+            pastKvs = new OrtValue[2 * NumDecoderLayers];
             for (int L = 0; L < NumDecoderLayers; L++)
             {
-                pastKvs[2 * L]     = stepRunResult[1 + L];
-                pastKvs[2 * L + 1] = stepRunResult[1 + NumDecoderLayers + L];
+                pastKvs[2 * L]     = outputs[1 + L];
+                pastKvs[2 * L + 1] = outputs[1 + NumDecoderLayers + L];
             }
             subsw.Stop();
             if (trace != null) trace.StepOutputExtractMs += subsw.ElapsedMilliseconds;
 
-            // --- argmax on logits
+            // --- argmax
             subsw.Restart();
+            var stepLogits = outputs[0];
             var stepLogitsSpan = stepLogits.GetTensorDataAsSpan<float>();
             nextToken = ArgmaxLastPositionSpan(stepLogitsSpan, 1, vocab);
             stepLogits.Dispose();
+            foreach (var ov in oldPast) ov.Dispose();
             subsw.Stop();
             if (trace != null) trace.StepArgmaxMs += subsw.ElapsedMilliseconds;
 
@@ -1091,18 +1042,15 @@ internal static class Program
         }
         stepLoopStart.Stop();
         if (trace != null) trace.StepCount = generated.Count;
-        Console.WriteLine($"  decoder_step (IOBinding): {generated.Count} tokens "
+        Console.WriteLine($"  decoder_step (chained): {generated.Count} tokens "
                         + $"({stepLoopStart.ElapsedMilliseconds} ms total)");
 
-        // Cleanup: dispose remaining past_kv handles + every binding.
-        if (prevStepPastKvs != null)
-            foreach (var ov in prevStepPastKvs) ov.Dispose();
         foreach (var ov in pastKvs) ov.Dispose();
-        foreach (var b in allBindings) b.Dispose();
 
         string text = DecodeTokens(generated, idToToken, addedTokens, byteLevelDecode);
         return new PipelineResult(text, generated);
     }
+
 
     private static long ArgmaxLastPositionSpan(ReadOnlySpan<float> span, int seqLen, int vocab)
     {
