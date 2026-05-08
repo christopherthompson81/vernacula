@@ -97,6 +97,14 @@ public sealed class GraniteSpeech : IDisposable
     private readonly InferenceSession _projector;
     private readonly InferenceSession _decoder;
 
+    // Past-KV dtype detected from the decoder's input metadata. The fp32
+    // bundle uses tensor(float); the BF16 mixed-precision bundle uses
+    // tensor(bfloat16) for KV across the chained Run loop. We need this
+    // to construct the empty-prefill past_kv OrtValues in the right
+    // dtype — KV inputs and outputs across step calls are otherwise
+    // GPU-resident and never touch managed memory.
+    private readonly TensorElementType _pastKvDtype;
+
     private readonly string?[] _idToToken;
     private readonly Dictionary<int, string> _addedTokens;
     private readonly Dictionary<char, byte> _byteLevelDecode;
@@ -113,6 +121,10 @@ public sealed class GraniteSpeech : IDisposable
 
         (_idToToken, _addedTokens) = LoadTokenizerVocab(Path.Combine(modelPath, TokenizerFile));
         _byteLevelDecode = BuildByteLevelDecodeTable();
+
+        _pastKvDtype = _decoder.InputMetadata.TryGetValue("past_key_0", out var pkMeta)
+            ? pkMeta.ElementDataType
+            : TensorElementType.Float;
 
         _vramBudgetForKvBytes = QueryVramBudget();
     }
@@ -418,14 +430,11 @@ public sealed class GraniteSpeech : IDisposable
             var emptyPasts = new List<OrtValue>(2 * NumDecoderLayers);
             var prefillInputs = new List<OrtValue>(4 + 2 * NumDecoderLayers)
             { inputIdsVal, audioVal, attnVal, cpVal };
+            long[] emptyPastShape = { B, NumKvHeads, 0, HeadDim };
             for (int L = 0; L < NumDecoderLayers; L++)
             {
-                var k = OrtValue.CreateTensorValueFromMemory(
-                    Array.Empty<float>(),
-                    new long[] { B, NumKvHeads, 0, HeadDim });
-                var v = OrtValue.CreateTensorValueFromMemory(
-                    Array.Empty<float>(),
-                    new long[] { B, NumKvHeads, 0, HeadDim });
+                var k = CreateEmptyPastKv(emptyPastShape);
+                var v = CreateEmptyPastKv(emptyPastShape);
                 emptyPasts.Add(k);
                 emptyPasts.Add(v);
                 prefillInputs.Add(k);
@@ -627,6 +636,29 @@ public sealed class GraniteSpeech : IDisposable
         var seg = new float[e - s];
         Array.Copy(audio, s, seg, 0, e - s);
         return seg;
+    }
+
+    /// <summary>
+    /// Creates a zero-length past-KV OrtValue in the dtype the decoder
+    /// expects. The fp32 bundle uses Float; the BF16 mixed-precision
+    /// bundle uses BFloat16. ORT requires the dtype on the input
+    /// OrtValue to match the graph's declared type — mismatched fp32
+    /// fed to a BF16 graph fails with "Unexpected input data type"
+    /// before the run starts.
+    /// </summary>
+    private OrtValue CreateEmptyPastKv(long[] shape)
+    {
+        return _pastKvDtype switch
+        {
+            TensorElementType.Float    => OrtValue.CreateTensorValueFromMemory(
+                Array.Empty<float>(), shape),
+            TensorElementType.BFloat16 => OrtValue.CreateTensorValueFromMemory(
+                Array.Empty<BFloat16>(), shape),
+            TensorElementType.Float16  => OrtValue.CreateTensorValueFromMemory(
+                Array.Empty<Float16>(), shape),
+            _ => throw new InvalidOperationException(
+                $"Unsupported past_kv dtype {_pastKvDtype}. Decoder bundle should be Float, BFloat16, or Float16."),
+        };
     }
 
     /// <summary>

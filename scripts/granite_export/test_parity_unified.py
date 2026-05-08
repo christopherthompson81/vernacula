@@ -96,7 +96,13 @@ def main() -> int:
 
     so = ort.SessionOptions()
     so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-    providers = ["CPUExecutionProvider"]
+    available = ort.get_available_providers()
+    providers = (
+        ["CUDAExecutionProvider", "CPUExecutionProvider"]
+        if "CUDAExecutionProvider" in available
+        else ["CPUExecutionProvider"]
+    )
+    print(f"  ORT providers: {providers}")
 
     enc_sess = ort.InferenceSession(str(args.onnx_dir / "encoder.onnx"), so, providers=providers)
     proj_sess = ort.InferenceSession(str(args.onnx_dir / "projector.onnx"), so, providers=providers)
@@ -107,16 +113,40 @@ def main() -> int:
     print(f"  encoder out: {enc_out.shape}")
     print(f"  projector out: {proj_out.shape}")
 
+    # Detect decoder past-KV dtype — for the BF16 mixed-precision bundle the
+    # decoder's K/V tensors are bfloat16, so the empty-past dummies and the
+    # populated past_kv at step time must match.
+    past_kv_dtype = next(
+        i.type for i in dec_sess.get_inputs() if i.name == "past_key_0"
+    )
+    np_past_dtype = {
+        "tensor(float)": np.float32,
+        "tensor(float16)": np.float16,
+        "tensor(bfloat16)": "bfloat16",  # numpy lacks bfloat16; sentinel handled below
+    }[past_kv_dtype]
+    print(f"  decoder past_kv dtype: {past_kv_dtype} -> numpy={np_past_dtype}")
+
+    def to_past_dtype(arr):
+        """Cast numpy array (or torch tensor) to the decoder's past-KV
+        dtype. For bfloat16 we use ml_dtypes.bfloat16 since numpy proper
+        has no native bfloat16; ORT accepts arrays with that dtype."""
+        if isinstance(arr, torch.Tensor):
+            arr = arr.cpu().numpy()
+        if np_past_dtype == "bfloat16":
+            from ml_dtypes import bfloat16 as _bf16
+            return arr.astype(_bf16)
+        return arr.astype(np_past_dtype)
+
     # ── Mode A: prefill (past_kv zero-length) ────────────────────────────
     section("Mode A: prefill via unified decoder (past_kv zero-length)")
     B, S = input_ids.shape
     cache_position = np.arange(S, dtype=np.int64)
     empty_keys = [
-        np.zeros((B, NUM_KV_HEADS, 0, HEAD_DIM), dtype=np.float32)
+        to_past_dtype(np.zeros((B, NUM_KV_HEADS, 0, HEAD_DIM), dtype=np.float32))
         for _ in range(NUM_DECODER_LAYERS)
     ]
     empty_values = [
-        np.zeros((B, NUM_KV_HEADS, 0, HEAD_DIM), dtype=np.float32)
+        to_past_dtype(np.zeros((B, NUM_KV_HEADS, 0, HEAD_DIM), dtype=np.float32))
         for _ in range(NUM_DECODER_LAYERS)
     ]
 
@@ -173,8 +203,8 @@ def main() -> int:
         "cache_position": cache_position,
     }
     for L in range(NUM_DECODER_LAYERS):
-        feed[f"past_key_{L}"] = ref_keys[L].cpu().numpy().astype(np.float32)
-        feed[f"past_value_{L}"] = ref_values[L].cpu().numpy().astype(np.float32)
+        feed[f"past_key_{L}"] = to_past_dtype(ref_keys[L])
+        feed[f"past_value_{L}"] = to_past_dtype(ref_values[L])
     t0 = time.time()
     step_out = dec_sess.run(None, feed)
     print(f"  unified step: logits={step_out[0].shape}, kv0={step_out[1].shape}  ({time.time()-t0:.2f}s)")
