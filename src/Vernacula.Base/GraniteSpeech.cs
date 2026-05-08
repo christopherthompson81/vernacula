@@ -261,9 +261,9 @@ public sealed class GraniteSpeech : IDisposable
     // ── Per-stage timing accumulators (opt-in via VERNACULA_GRANITE_PROFILE=1) ─
     private static readonly bool _profile =
         Environment.GetEnvironmentVariable("VERNACULA_GRANITE_PROFILE") == "1";
-    public static long MelMs, EncMs, ProjMs, PrefillMs, StepLoopMs, OverheadMs;
-    public static long BatchCount, RowCount, StepCount;
-    public static int MaxBatchSeen;
+    internal static long MelMs, EncMs, ProjMs, PrefillMs, StepLoopMs, OverheadMs;
+    internal static long BatchCount, RowCount, StepCount;
+    internal static int MaxBatchSeen;
     private static readonly object _profileLock = new();
 
     private string[] TranscribeBatch(float[][] waveforms, int maxNewTokens)
