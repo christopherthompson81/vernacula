@@ -16,6 +16,7 @@ directory.
 | [`vibevoice-asr-onnx`](https://huggingface.co/christopherthompson81/vibevoice-asr-onnx) | [`vibevoice-asr-onnx/`](vibevoice-asr-onnx/) | MIT | needs upload |
 | [`voxlingua107-lid-onnx`](https://huggingface.co/christopherthompson81/voxlingua107-lid-onnx) | [`voxlingua107-lid-onnx/`](voxlingua107-lid-onnx/) | Apache-2.0 | needs upload |
 | [`indicconformer-600m-onnx`](https://huggingface.co/christopherthompson81/indicconformer-600m-onnx) | [`indicconformer-600m-onnx/`](indicconformer-600m-onnx/) | MIT | needs upload |
+| [`granite-speech-4-1-2b-onnx`](https://huggingface.co/christopherthompson81/granite-speech-4-1-2b-onnx) | [`granite-speech-4-1-2b-onnx/`](granite-speech-4-1-2b-onnx/) | Apache-2.0 | needs upload |
 
 ## What each card includes
 

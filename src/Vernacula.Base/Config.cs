@@ -180,6 +180,9 @@ public static class Config
     // ── ASR (Whisper large-v3-turbo) ─────────────────────────────────────────
     public const string WhisperTurboSubDir = "whisper_turbo";
 
+    // ── ASR (Granite Speech 4.1) ─────────────────────────────────────────────
+    public const string GraniteSpeechSubDir = "granite_speech_4_1_2b";
+
     // ── Language identification (VoxLingua107 ECAPA-TDNN) ────────────────────
     /// <summary>
     /// Directory (relative to models dir) for the Parakeet shallow-fusion
