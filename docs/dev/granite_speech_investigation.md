@@ -705,6 +705,24 @@ it through `torch.onnx.export(dynamo=True)`.
   exact match: True
   ```
 
+- **Result on a 90 s en-US conversation clip** (T_stacked=4500,
+  900 audio embeds, 918-token prompt, 254-token continuation): exact
+  text match across all 254 generated tokens. Runtime shapes:
+
+  ```
+  mel:           input_features=(1, 4500, 160)
+  encoder:       encoder_hidden=(1, 4500, 1024)
+  projector:     audio_embeds=(1, 900, 2048)
+  decoder_init:  logits=(1, 918, 100353)
+  decoder_step:  254 tokens
+  ```
+
+  This stress-tests the things the 6.4 s clip does not: the
+  full-attention encoder at 22.5× the trace shape (Run 4's `num_blocks`
+  fix), the audio-merge cumsum-gather (Run 3's `masked_scatter`
+  workaround) at 900 audio tokens, and the KV cache scaling to 1172
+  positions without drift. All clean.
+
 This is the "C# CLI + parity" stage of the standard cadence —
 proves the export contract is consumable from C# end-to-end. What the
 smoke does NOT yet exercise:
