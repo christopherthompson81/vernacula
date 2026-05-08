@@ -367,3 +367,157 @@ production backend to use the unified contract.
   benefit from a focused diagnostic run.
 - **Encoder full-attention scaling** is now visible at 619 ms for
   90 s — but at 4% of total runtime, not yet a priority.
+
+---
+
+## Run 4 — 2026-05-08 (C# tracing, IOBinding attempt)
+
+**Question:** Where does C# overhead live on top of ORT execution, and
+can IOBinding for the KV cache eliminate it?
+
+**Method:** Instrument [`tests/GraniteSpeechSmoke/Program.cs`](../../tests/GraniteSpeechSmoke/Program.cs)
+with per-stage and per-step inner timings (`ORT.Run()`, output extract,
+input build, argmax, bookkeeping). Add `--ep cuda` and run on a 3090.
+Then implement IOBinding behind `--io-binding` to keep KV cache
+GPU-resident across step calls.
+
+### C# baseline (no IOBinding)
+
+| | 6.4 s GPU | 90 s GPU |
+|---|---:|---:|
+| Total wall | 527 ms | 22 264 ms |
+| RTF | 12.18× | 4.04× |
+| decoder_step / token | 21.0 ms | 82.4 ms |
+| Tok/s | 47.6 | 12.1 |
+
+#### Per-step breakdown at 90 s (254 steps, growing KV cache)
+
+| | ms | % |
+|---|---:|---:|
+| ORT.Run() | 14 704 | **70.3%** |
+| Output extract (`.ToArray()` ×80 KV/step) | 6 200 | **29.6%** |
+| Input build (DenseTensor + NamedOnnxValue list) | 5 | 0.0% |
+| Argmax over 100 353 vocab | 8 | 0.0% |
+| Bookkeeping | 0 | 0.0% |
+
+The 29.6% on output extract is the C#-specific overhead the Python
+profiler doesn't surface. Each step copies ~190 MB (40 layers × 2 K/V ×
+[1, 4, ~1100, 128] fp32) from the GPU back to managed heap arrays just
+to re-pin them as the next step's inputs. Across the 90 s run that's
+~48 GB of host↔device round-trip.
+
+C# is ~25-35% slower than the Python profiler (16.7 s vs 22.3 s on
+90 s). Most of the gap is this output-extract overhead — Python's
+`.numpy()` apparently lands less aggressively on the GPU↔host copy
+path, or amortises better.
+
+Compared to the Python profiler:
+| | Python 90 s | C# 90 s |
+|---|---:|---:|
+| Total | 16.7 s | 22.3 s |
+| decoder_step / token | 61.1 ms | 82.4 ms |
+| Tok/s | 16.4 | 12.1 |
+
+### IOBinding attempt: implementation works, transcript broken
+
+Wrote an IOBinding decode loop following the VibeVoice and Qwen3 patterns:
+
+- One binding per step (fresh `OrtIoBinding` each iteration).
+- `BindOutputToDevice("present_key_<L>", cudaMem)` so the new KV stays
+  on GPU.
+- `BindInput("past_key_<L>", presentKvOrtValueFromPreviousStep)` —
+  no host roundtrip.
+- Logits bound to CPU memory for argmax.
+
+Result: **decode_step latency drops to 14.5 ms/token (≈1.45× faster)
+but the transcript is garbage from token 2 onward.**
+
+```
+ORT: "Hello,null<|fim_suffix|>'s. and.-dron for_<|fim_suffix|> -in trouble--<|fim_suffix|>..."
+Ref: "Hello, I'm from Ontario. I hope that you will select my voice ..."
+```
+
+#### Diagnostic findings
+
+- **KV cache shapes ARE growing correctly.** Logged at each step:
+  ```
+  [step 0] cachePos=84 totalLen=85 input_past_k0=(1, 4, 84, 128) output_present_k0=(1, 4, 85, 128)
+  [step 1] cachePos=85 totalLen=86 input_past_k0=(1, 4, 85, 128) output_present_k0=(1, 4, 86, 128)
+  [step 2] cachePos=86 totalLen=87 input_past_k0=(1, 4, 86, 128) output_present_k0=(1, 4, 87, 128)
+  ```
+  Shapes are bit-correct; `pastLen` advances; `cache_position` is
+  passed correctly.
+- **Per-step wall time stays constant at ~14.5 ms across all steps,
+  regardless of the cache size.** A correct KV-attention should grow
+  ~linearly with cache size (Python sees 19 ms → 61 ms across the
+  same range). Constant per-step time strongly suggests the model is
+  not actually attending over the larger cache — it's seeing the same
+  effective-size context every step.
+- **Same garbage with several "fix" attempts:**
+  - Deferring disposal of old past_kv until next iteration's
+    `ClearBoundInputs` releases binding refs.
+  - Fresh `OrtIoBinding` per step (rules out output-buffer aliasing
+    across reused bindings).
+  - Copy-out-and-rewrap each step — read present_kv via
+    `GetTensorDataAsSpan<float>().ToArray()` and re-create OrtValues
+    from those buffers. Even with all I/O on CPU memory and zero
+    binding-internal lifetime concerns, transcript is still garbage.
+
+So the bug is **not** in OrtValue lifetime, output-buffer aliasing,
+or input construction. The most likely remaining hypothesis: the
+binding path interacts differently with the unified decoder graph's
+Memcpy nodes (the warning at session-load: `2 Memcpy nodes are added
+to the graph`) than `Run()` does. Possibly some implicit
+host↔device transition happens in `Run()` that `RunWithBinding`
+expects the caller to have already arranged.
+
+#### Why the precedents don't immediately apply
+
+VibeVoice and Qwen3 both use IOBinding successfully on their decoder
+step graphs. Two structural differences from the unified Granite
+decoder:
+
+- **Granite has 80 separate per-layer K/V outputs** (`present_key_<L>`,
+  `present_value_<L>` for L in 0..39). Qwen3 packs all KV into a
+  single pair (`present_keys`, `present_values`) of monolithic
+  tensors. Different binding accounting load.
+- **Unified Granite handles BOTH prefill and step in one graph.**
+  VibeVoice and Qwen3 use separate prefill/step graphs. The unified
+  graph traces with "always-present past_kv" semantics and may have
+  graph-level structures (audio cumsum-merge, position-derived RoPE)
+  that interact with binding's memcpy-bypass behaviour.
+
+### Disposition
+
+**IOBinding deferred until a focused investigation can isolate the
+binding-vs-Run divergence.** The C# smoke ships with `--io-binding`
+gated behind a warning (perf measurement only, not for correctness).
+
+The fp32 unified decoder from Run 3 remains the shipping
+configuration:
+
+| Audio | RTF | Tok/s |
+|---|---:|---:|
+| 6.4 s | 12.8× | 50.4 (Python) / 47.6 (C#) |
+| 90 s | 5.38× / 4.04× (C#) | 16.4 / 12.1 |
+
+That's already comfortably real-time at long form. The C# 25-35%
+overhead is real but doesn't change the deployment story.
+
+#### Next leverage points (for a future Run)
+
+- **Isolate the IOBinding bug** with a minimum-repro on the unified
+  decoder — bind ALL inputs as CPU-side OrtValues, log what ORT
+  reports about node placement, see if the Memcpy nodes are silently
+  bypassed under binding.
+- **Try IOBinding on the SPLIT decoder pair.** If binding works
+  there (matching Qwen3's success on its split path), the unified
+  decoder's per-layer KV layout or audio-merge structure is the
+  culprit, and the fix is graph-shape rather than lifetime. Cost:
+  resurrect the split bundle (still supported) for benchmarking
+  alongside unified.
+- **Reduce the C# `.ToArray()` overhead even without IOBinding.**
+  Use `Buffer.BlockCopy` or `Marshal.Copy` from a `Memory<float>` view
+  of the OrtValue's tensor. Should at least cut the host-side copy
+  cost by removing the per-element bounds-check overhead in
+  `Span<T>.ToArray()`.
