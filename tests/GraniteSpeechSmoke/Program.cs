@@ -48,6 +48,7 @@ internal static class Program
         string ep = "cpu";          // cpu | cuda
         int warmup = 0;
         bool ioBinding = false;
+        bool splitJuggleTest = false;
         for (int i = 0; i < args.Length; i++)
         {
             switch (args[i])
@@ -59,6 +60,7 @@ internal static class Program
                 case "--ep":                ep = args[++i].ToLowerInvariant(); break;
                 case "--warmup":            warmup = int.Parse(args[++i]); break;
                 case "--io-binding":        ioBinding = true; break;
+                case "--split-juggle-test": splitJuggleTest = true; break;
                 default:
                     Console.Error.WriteLine($"Unknown arg: {args[i]}");
                     return 2;
@@ -102,10 +104,25 @@ internal static class Program
         var execProvider = ep == "cuda" ? ExecutionProvider.Cuda : ExecutionProvider.Cpu;
         var so = OrtSessionBuilder.Create(execProvider, GraphOptimizationLevel.ORT_ENABLE_ALL);
 
-        bool unified = File.Exists(Path.Combine(onnxDir, "decoder.onnx"));
+        bool unified = !splitJuggleTest && File.Exists(Path.Combine(onnxDir, "decoder.onnx"));
         Console.WriteLine($"decoder mode: {(unified ? "unified" : "split init/step")}");
         Console.WriteLine($"execution provider: {ep}");
         Console.WriteLine($"io-binding: {ioBinding}");
+        Console.WriteLine($"split-juggle-test: {splitJuggleTest}");
+
+        if (splitJuggleTest)
+        {
+            // Memory-juggling experiment: load encoder+projector+decoder_init,
+            // run prefill, dispose, then load decoder_step alone for the
+            // step loop. Tests whether OrtValue inputs work on the SPLIT
+            // decoder_step graph (which has the same per-layer KV inputs as
+            // the unified decoder but no audio_embeds input). Run 5a found
+            // OrtValue inputs produce garbage on the unified decoder; this
+            // isolates whether the audio_embeds input is the trigger or
+            // whether it's a more general issue.
+            return RunSplitJuggleTest(onnxDir, audioPath, fixturesDir,
+                                       maxNewTokens, ep, ioBinding);
+        }
         if (ioBinding && !unified)
         {
             Console.Error.WriteLine("--io-binding currently requires the unified decoder bundle.");
@@ -452,6 +469,248 @@ internal static class Program
 
         string text = DecodeTokens(generated, idToToken, addedTokens, byteLevelDecode);
         return new PipelineResult(text, generated);
+    }
+
+    // ── Split-juggle test: isolate the OrtValue-input bug ───────────────
+    //
+    // The unified decoder runs prefill and step in one graph that takes
+    // `audio_embeds` as an input. Run 5a found that OrtValue inputs to
+    // that graph produce garbage. This experiment tests the SPLIT
+    // decoder_step graph (no audio_embeds, otherwise identical per-layer
+    // KV layout) to see if the bug is unified-specific or more general.
+    //
+    // Memory budget: encoder + projector + decoder_init = ~9 GB; after
+    // dispose, load decoder_step (~7 GB). Stays comfortably under 25 GB.
+    private static int RunSplitJuggleTest(
+        string onnxDir,
+        string audioPath,
+        string fixturesDir,
+        int maxNewTokens,
+        string ep,
+        bool ioBinding)
+    {
+        // Validate split bundle is present.
+        foreach (var f in new[] { "mel.onnx", "encoder.onnx", "projector.onnx",
+                                   "decoder_init.onnx", "decoder_step.onnx" })
+        {
+            if (!File.Exists(Path.Combine(onnxDir, f)))
+            {
+                Console.Error.WriteLine($"--split-juggle-test requires the SPLIT bundle "
+                                      + $"(missing {f} in {onnxDir}).");
+                return 2;
+            }
+        }
+        if (File.Exists(Path.Combine(onnxDir, "decoder.onnx")))
+        {
+            Console.Error.WriteLine("--split-juggle-test: --onnx-dir contains the unified "
+                                  + "decoder.onnx. Point at a SPLIT bundle (no decoder.onnx).");
+            return 2;
+        }
+
+        // Load audio + fixtures.
+        var (raw, sr, ch) = AudioUtils.ReadAudio(audioPath);
+        float[] audio = AudioUtils.DownmixToMono(raw, ch);
+        if (sr != 16000) { Console.Error.WriteLine("16 kHz required."); return 2; }
+        long[] inputIds = ReadInt64Bin(Path.Combine(fixturesDir, "input_ids.bin"));
+        string expectedText = File.ReadAllText(
+            Path.Combine(fixturesDir, "expected_text.txt")).Trim();
+        var (idToToken, addedTokens) = LoadTokenizer(
+            Path.Combine(onnxDir, "tokenizer.json"));
+        var byteLevelDecode = BuildByteLevelDecodeTable();
+
+        var execProvider = ep == "cuda" ? ExecutionProvider.Cuda : ExecutionProvider.Cpu;
+        var so = OrtSessionBuilder.Create(execProvider, GraphOptimizationLevel.ORT_ENABLE_ALL);
+
+        // ── Phase 1: prefill ───────────────────────────────────────────
+        // Load mel + encoder + projector + decoder_init, run prefill,
+        // extract KV cache to managed arrays, then dispose all four
+        // sessions to free GPU memory before loading decoder_step.
+        Console.WriteLine("Phase 1: load mel/encoder/projector/decoder_init ...");
+        long firstNextToken;
+        int promptLen = inputIds.Length;
+        int vocab;
+        var pastKeys = new float[NumDecoderLayers][];
+        var pastValues = new float[NumDecoderLayers][];
+        var sw = Stopwatch.StartNew();
+        {
+            using var melSess = new InferenceSession(Path.Combine(onnxDir, "mel.onnx"), so);
+            using var encSess = new InferenceSession(Path.Combine(onnxDir, "encoder.onnx"), so);
+            using var projSess = new InferenceSession(Path.Combine(onnxDir, "projector.onnx"), so);
+            using var initSess = new InferenceSession(Path.Combine(onnxDir, "decoder_init.onnx"), so);
+
+            var audioT = new DenseTensor<float>(audio, [1, audio.Length]);
+            using var melResults = melSess.Run([NamedOnnxValue.CreateFromTensor("audio", audioT)]);
+            var ifT = (DenseTensor<float>)melResults[0].AsTensor<float>();
+            var ifShape = ifT.Dimensions.ToArray();
+            var ifData = ifT.ToArray();
+
+            using var encResults = encSess.Run([NamedOnnxValue.CreateFromTensor(
+                "input_features", new DenseTensor<float>(ifData, ifShape))]);
+            var encT = encResults[0].AsTensor<float>();
+            var encShape = encT.Dimensions.ToArray();
+            var encData = encT.ToArray();
+
+            using var projResults = projSess.Run([NamedOnnxValue.CreateFromTensor(
+                "encoder_hidden", new DenseTensor<float>(encData, encShape))]);
+            var projT = projResults[0].AsTensor<float>();
+            var projShape = projT.Dimensions.ToArray();
+            var projData = projT.ToArray();
+
+            var attnMask = new long[promptLen];
+            for (int i = 0; i < promptLen; i++) attnMask[i] = 1L;
+            var initInputs = new List<NamedOnnxValue>
+            {
+                NamedOnnxValue.CreateFromTensor("input_ids",
+                    new DenseTensor<long>(inputIds, [1, promptLen])),
+                NamedOnnxValue.CreateFromTensor("audio_embeds",
+                    new DenseTensor<float>(projData, projShape)),
+                NamedOnnxValue.CreateFromTensor("attention_mask",
+                    new DenseTensor<long>(attnMask, [1, promptLen])),
+            };
+            using var initResults = initSess.Run(initInputs);
+            var initLogits = initResults[0].AsTensor<float>();
+            vocab = (int)initLogits.Dimensions[2];
+            firstNextToken = ArgmaxLastPosition(initLogits, promptLen, vocab);
+            for (int L = 0; L < NumDecoderLayers; L++)
+            {
+                pastKeys[L] = initResults[1 + L].AsTensor<float>().ToArray();
+                pastValues[L] = initResults[1 + NumDecoderLayers + L].AsTensor<float>().ToArray();
+            }
+            // sessions disposed at end of using block
+        }
+        sw.Stop();
+        Console.WriteLine($"Phase 1 done: prefill complete, first token={firstNextToken}, KV extracted "
+                        + $"({sw.ElapsedMilliseconds} ms; sessions disposed)");
+
+        // Force GC + give the runtime a moment to release GPU memory.
+        GC.Collect();
+        GC.WaitForPendingFinalizers();
+        GC.Collect();
+
+        // ── Phase 2: load decoder_step alone, run step loop ─────────────
+        Console.WriteLine("Phase 2: load decoder_step ...");
+        sw.Restart();
+        using var stepSess = new InferenceSession(
+            Path.Combine(onnxDir, "decoder_step.onnx"), so);
+        sw.Stop();
+        Console.WriteLine($"  decoder_step loaded in {sw.ElapsedMilliseconds} ms");
+
+        // Step loop. Two modes:
+        //   io-binding=false → use Run-with-OrtValue (no DenseTensor, OrtValues built
+        //                       via CreateTensorValueFromMemory). This is the
+        //                       diagnostic mode: if it works on split but not on
+        //                       unified, the unified-decoder graph is the trigger.
+        //   io-binding=true  → use RunWithBinding (full IOBinding). Goal: keep KV
+        //                       on GPU between steps, no host roundtrip.
+        var generated = new List<long>(maxNewTokens);
+        long nextToken = firstNextToken;
+        int pastLen = promptLen;
+
+        // Pre-allocate names lists.
+        var stepInputNames = new List<string>(3 + 2 * NumDecoderLayers)
+        {
+            "input_id", "attention_mask", "cache_position",
+        };
+        for (int L = 0; L < NumDecoderLayers; L++)
+        {
+            stepInputNames.Add($"past_key_{L}");
+            stepInputNames.Add($"past_value_{L}");
+        }
+        var stepOutputNames = new List<string>(1 + 2 * NumDecoderLayers) { "logits" };
+        for (int L = 0; L < NumDecoderLayers; L++) stepOutputNames.Add($"present_key_{L}");
+        for (int L = 0; L < NumDecoderLayers; L++) stepOutputNames.Add($"present_value_{L}");
+
+        // Reusable scratch (as in Run 5b).
+        long[] stepInputIdArr = new long[1];
+        long[] cachePosArr = new long[1];
+        long[] attnScratch = new long[promptLen + maxNewTokens + 1];
+        for (int i = 0; i < attnScratch.Length; i++) attnScratch[i] = 1L;
+
+        using var runOpts = new RunOptions();
+
+        sw.Restart();
+        for (int step = 0; step < maxNewTokens; step++)
+        {
+            if (nextToken == EosTokenId) break;
+            generated.Add(nextToken);
+            int totalLen = pastLen + 1;
+
+            stepInputIdArr[0] = nextToken;
+            cachePosArr[0] = pastLen;
+
+            // Build input OrtValues.
+            using var stepInputId = OrtValue.CreateTensorValueFromMemory(
+                stepInputIdArr, new long[] { 1, 1 });
+            using var stepAttn = OrtValue.CreateTensorValueFromMemory(
+                attnScratch, new long[] { 1, totalLen });
+            using var cachePos = OrtValue.CreateTensorValueFromMemory(
+                cachePosArr, new long[] { 1 });
+
+            // pastKeys[L] / pastValues[L] are sized EXACTLY for pastLen.
+            // No over-allocation — keeps the diagnostic clean (rules out
+            // OrtValue mis-reading an over-allocated buffer as a possible
+            // bug source).
+            var pastKvOrtVals = new OrtValue[2 * NumDecoderLayers];
+            for (int L = 0; L < NumDecoderLayers; L++)
+            {
+                pastKvOrtVals[2 * L] = OrtValue.CreateTensorValueFromMemory(
+                    pastKeys[L], new long[] { 1, NumKvHeads, pastLen, HeadDim });
+                pastKvOrtVals[2 * L + 1] = OrtValue.CreateTensorValueFromMemory(
+                    pastValues[L], new long[] { 1, NumKvHeads, pastLen, HeadDim });
+            }
+
+            var inputValues = new List<OrtValue>(3 + 2 * NumDecoderLayers)
+            {
+                stepInputId, stepAttn, cachePos,
+            };
+            inputValues.AddRange(pastKvOrtVals);
+
+            var outputs = stepSess.Run(runOpts, stepInputNames, inputValues, stepOutputNames);
+
+            // Read logits.
+            var logitsOrt = outputs[0];
+            var logitsSpan = logitsOrt.GetTensorDataAsSpan<float>();
+            nextToken = ArgmaxLastPositionSpan(logitsSpan, 1, vocab);
+
+            // Roll KV forward: allocate fresh exact-size arrays each step
+            // and copy the new present_kv into them. Keeps OrtValue inputs
+            // tightly sized to actual data (diagnostic-clean).
+            int totalElems = 1 * NumKvHeads * totalLen * HeadDim;
+            var newKeys = new float[NumDecoderLayers][];
+            var newValues = new float[NumDecoderLayers][];
+            for (int L = 0; L < NumDecoderLayers; L++)
+            {
+                newKeys[L] = new float[totalElems];
+                newValues[L] = new float[totalElems];
+                var pkOrt = outputs[1 + L];
+                var pvOrt = outputs[1 + NumDecoderLayers + L];
+                pkOrt.GetTensorDataAsSpan<float>().CopyTo(newKeys[L]);
+                pvOrt.GetTensorDataAsSpan<float>().CopyTo(newValues[L]);
+                pkOrt.Dispose();
+                pvOrt.Dispose();
+            }
+            logitsOrt.Dispose();
+            foreach (var ov in pastKvOrtVals) ov.Dispose();
+            // Swap the buffers in for the next step.
+            for (int L = 0; L < NumDecoderLayers; L++)
+            {
+                pastKeys[L] = newKeys[L];
+                pastValues[L] = newValues[L];
+            }
+
+            pastLen = totalLen;
+        }
+        sw.Stop();
+
+        string text = DecodeTokens(generated, idToToken, addedTokens, byteLevelDecode);
+        Console.WriteLine();
+        Console.WriteLine($"  step loop: {generated.Count} tokens in {sw.ElapsedMilliseconds} ms "
+                        + $"({sw.ElapsedMilliseconds / (double)Math.Max(generated.Count, 1):F2} ms/tok)");
+        Console.WriteLine($"  ORT  transcript: {Quote(text)}");
+        Console.WriteLine($"  Ref  transcript: {Quote(expectedText)}");
+        bool match = text.Trim() == expectedText.Trim();
+        Console.WriteLine($"  exact match: {match}");
+        return match ? 0 : 1;
     }
 
     // ── IOBinding decode path ────────────────────────────────────────────
