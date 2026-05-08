@@ -24,6 +24,7 @@ string? qwen3AsrModelDir = null;        // defaults to <modelDir>/qwen3asr
 bool    forceQwen3AsrSerial = false;    // --qwen3asr-serial disables experimental batching
 GraphOptimizationLevel qwen3AsrOrtOptLevel = GraphOptimizationLevel.ORT_ENABLE_EXTENDED;
 string? vibevoiceModelDir = null;       // defaults to <modelDir>/vibevoice_asr
+string? graniteModelDir   = null;       // defaults to <modelDir>/granite_speech_4_1_2b
 string? profileOutputDir  = null;       // ORT profiling output dir (vibevoice only)
 int     profileMaxTokens  = 200;        // cap maxNewTokens during profiling to stay under ORT 1M event limit
 double  minAsrSeconds     = 5.0;        // minimum group span (seconds) when using segmented VibeVoice ASR
@@ -62,9 +63,9 @@ for (int i = 0; i < args.Length; i++)
         case "--skip-asr":      skipAsr = true; break;
         case "--asr":
             asrBackend = args[++i].ToLowerInvariant();
-            if (asrBackend is not ("parakeet" or "cohere" or "qwen3asr" or "vibevoice" or "whisper"))
+            if (asrBackend is not ("parakeet" or "cohere" or "qwen3asr" or "vibevoice" or "whisper" or "granite"))
             {
-                Console.Error.WriteLine($"Unknown ASR backend: {asrBackend}. Choose: parakeet, cohere, qwen3asr, vibevoice, whisper.");
+                Console.Error.WriteLine($"Unknown ASR backend: {asrBackend}. Choose: parakeet, cohere, qwen3asr, vibevoice, whisper, granite.");
                 return 1;
             }
             break;
@@ -87,6 +88,7 @@ for (int i = 0; i < args.Length; i++)
             }
             break;
         case "--vibevoice-model":  vibevoiceModelDir = args[++i]; break;
+        case "--granite-model":    graniteModelDir   = args[++i]; break;
         case "--min-asr-seconds":  minAsrSeconds     = double.Parse(args[++i]); break;
         case "--asr-buffer":       asrBufferSeconds  = double.Parse(args[++i]); break;
         case "--profile":          profileOutputDir  = args[++i]; break;
@@ -568,6 +570,40 @@ try
         Console.WriteLine($"Transcribing {totalSegs} segment(s) (Cohere)...");
         foreach (var (segId, text, meta) in cohere.Recognize(segs, audio,
                      forceLanguage: cohereLanguage))
+        {
+            cts.Token.ThrowIfCancellationRequested();
+            completed++;
+            var (start, end, spkId) = segs[segId];
+            results.Add((start, end, spkId, text));
+            Console.Write($"\r  {completed}/{totalSegs}");
+        }
+
+        Console.WriteLine();
+        swAsr.Stop();
+    }
+    else if (asrBackend == "granite")
+    {
+        string graniteDir = graniteModelDir
+            ?? (Directory.Exists(Path.Combine(modelDir, Config.GraniteSpeechSubDir))
+                ? Path.Combine(modelDir, Config.GraniteSpeechSubDir)
+                : modelDir);
+
+        if (!File.Exists(Path.Combine(graniteDir, GraniteSpeech.MelFile)))
+        {
+            Console.Error.WriteLine($"\nError: Granite Speech model not found in: {graniteDir}");
+            Console.Error.WriteLine($"Expected {GraniteSpeech.MelFile} and related files there "
+                                  + $"({GraniteSpeech.EncoderFile}, {GraniteSpeech.ProjectorFile}, "
+                                  + $"{GraniteSpeech.DecoderFile}, {GraniteSpeech.TokenizerFile}).");
+            Console.Error.WriteLine("Use --granite-model <dir> to specify the directory explicitly.");
+            return 1;
+        }
+
+        using var granite = new GraniteSpeech(graniteDir);
+        int totalSegs = segs.Count;
+        int completed = 0;
+
+        Console.WriteLine($"Transcribing {totalSegs} segment(s) (Granite Speech)...");
+        foreach (var (segId, text, _) in granite.Recognize(segs, audio))
         {
             cts.Token.ThrowIfCancellationRequested();
             completed++;
