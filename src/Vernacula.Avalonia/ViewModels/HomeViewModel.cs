@@ -7,6 +7,8 @@ using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using Vernacula.App.Models;
 using Vernacula.App.Services;
+using Vernacula.Base;
+using Vernacula.Base.Models;
 
 namespace Vernacula.App.ViewModels;
 
@@ -84,6 +86,17 @@ internal partial class HomeViewModel : ObservableObject
             ModelStatusText = $"VibeVoice-ASR weights are missing. Use Download Missing Models, or place them in {_settings.GetVibeVoiceModelsDir()}.";
         else if (_settings.Current.AsrBackend == AsrBackend.IndicConformer)
             ModelStatusText = $"IndicConformer weights are missing. Place them in {_settings.GetIndicConformerModelsDir()}.";
+        else if (_settings.Current.AsrBackend == AsrBackend.GraniteSpeech)
+            // Two install paths exist (granite_speech_4_1_2b/ and
+            // granite_speech_4_1_2b_bf16/); GetGraniteSpeechModelsDir
+            // returns the auto-pick for the current hardware. Tell the
+            // user that path explicitly — it's the one Download Missing
+            // Models would populate — but mention the sibling so a
+            // manual install ends up where the loader will look on
+            // hardware where the auto-pick differs.
+            ModelStatusText = HardwareInfo.SupportsBf16Acceleration()
+                ? $"Granite Speech weights are missing. Use Download Missing Models, or place them in {_settings.GetGraniteSpeechModelsDir()} (FP32 sibling: {Config.GraniteSpeechSubDir}/)."
+                : $"Granite Speech weights are missing. Use Download Missing Models, or place them in {_settings.GetGraniteSpeechModelsDir()}.";
         else if (_settings.Current.Segmentation == Vernacula.Base.Models.SegmentationMode.DiariZen)
             ModelStatusText = "DiariZen external weights are missing. Open Settings to review the notice and import or download them.";
         else

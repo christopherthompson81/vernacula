@@ -603,6 +603,24 @@
                             </StackPanel>
                         </RadioButton>
 
+                        <Separator Background="{DynamicResource OverlayBrush}" Margin="0,8,0,8" />
+
+                        <RadioButton GroupName="AsrBackend"
+                                     IsChecked="{Binding IsAsrGraniteSpeech, Mode=OneWay}"
+                                     Command="{Binding SetAsrBackendCommand}"
+                                     CommandParameter="GraniteSpeech"
+                                     Foreground="{DynamicResource TextBrush}">
+                            <StackPanel>
+                                <TextBlock Text="Granite Speech 4.1 (2B)"
+                                           FontWeight="SemiBold"
+                                           Foreground="{DynamicResource TextBrush}" />
+                                <TextBlock Text="IBM's 1.84B Granite-4 LLM decoder with a Conformer audio encoder. English-first; supports French, German, Spanish, Portuguese, Japanese. Downloads into granite_speech_4_1_2b/ (FP32) or granite_speech_4_1_2b_bf16/ (BF16, auto-selected on Ampere+ NVIDIA GPUs)."
+                                           Foreground="{DynamicResource SubtextBrush}"
+                                           FontSize="11"
+                                           TextWrapping="Wrap" />
+                            </StackPanel>
+                        </RadioButton>
+
                         <Expander Margin="24,10,0,0"
                                   IsExpanded="False"
                                   IsVisible="{Binding IsAsrParakeet}">

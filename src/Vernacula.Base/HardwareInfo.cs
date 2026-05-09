@@ -283,13 +283,20 @@ public static class HardwareInfo
     /// tensor cores the BF16 kernels fall back to slower paths or are unavailable
     /// (the LM decoder ops, the encoder Conv, and ORT's CPU EP <c>Where(BF16)</c>
     /// all have known coverage gaps), so the FP32 bundle is the safe default.
+    ///
+    /// Result is cached after the first call: the answer is fixed for the
+    /// lifetime of the process (GPUs don't hot-swap), and the underlying
+    /// NVML init/get/shutdown cycle is non-trivial when called repeatedly
+    /// from settings/UI flows.
     /// </summary>
-    public static bool SupportsBf16Acceleration()
+    public static bool SupportsBf16Acceleration() => _bf16Cache.Value;
+
+    private static readonly Lazy<bool> _bf16Cache = new(() =>
     {
         if (!CanProbeCudaExecutionProvider()) return false;
         var (major, _) = GetCudaComputeCapability();
         return major >= 8;
-    }
+    });
 
     private static int NvmlInitPlatform() =>
         OperatingSystem.IsWindows() ? NvmlInitWindows() : NvmlInitLinux();
