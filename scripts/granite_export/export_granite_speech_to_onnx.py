@@ -459,6 +459,12 @@ def make_encoder_wrapper(torch: Any, model: Any) -> Any:
     The encoder forward is single-input single-output, but the per-layer
     attention uses 5D SDPA which the dynamo->ONNX converter does not
     support; see _patch_encoder_attention_for_export.
+
+    Encoder always runs at fp32 — ONNX Conv only added BF16 type support at
+    opset 22, and even there the export hits dtype-binding errors at Conv
+    nodes where input/weight don't agree. Encoder is ~25% of wall time vs
+    decoder's 60%+, so keeping it fp32 sacrifices a modest fraction of the
+    BF16 win to avoid a deep ONNX/Conv compatibility hunt.
     """
     nn = torch.nn
     _patch_encoder_attention_for_export(torch, model.encoder)
@@ -477,7 +483,12 @@ def make_encoder_wrapper(torch: Any, model: Any) -> Any:
 def make_projector_wrapper(torch: Any, model: Any) -> Any:
     """Projector: pads to multiple of window_size=15, runs Q-Former with 3 queries
     per 15-frame block, downsamples 5x, projects to LLM hidden dim 2048.
-    Single-input single-output."""
+    Single-input single-output.
+
+    Projector also stays fp32 — same Conv compatibility caveat as encoder
+    applies (Q-Former blocks include conv-flavoured ops). The decoder is
+    where BF16 yields the dominant win, so projector stays at native dtype.
+    """
     nn = torch.nn
 
     class ProjectorWrapper(nn.Module):
@@ -605,11 +616,14 @@ def make_decoder_unified_wrapper(torch: Any, model: Any) -> Any:
     nn = torch.nn
     from transformers.cache_utils import DynamicCache
 
+    weight_dtype = next(model.language_model.parameters()).dtype
+
     class DecoderUnifiedWrapper(nn.Module):
         def __init__(self, m: Any) -> None:
             super().__init__()
             self.language_model = m.language_model
             self.audio_token_id = m.config.audio_token_id
+            self._weight_dtype = weight_dtype
 
         def forward(
             self,
@@ -619,6 +633,11 @@ def make_decoder_unified_wrapper(torch: Any, model: Any) -> Any:
             cache_position: Any,
             *past_kv: Any,
         ) -> Any:
+            # audio_embeds arrives as fp32 (projector stays fp32; see
+            # make_projector_wrapper). Cast to LM weight dtype at the
+            # boundary so all internal matmuls stay in weight dtype.
+            audio_embeds = audio_embeds.to(self._weight_dtype)
+
             # Audio merge — same cumsum-gather-where as the prefill-only
             # wrapper. Collapses to a no-op at step time because no audio
             # tokens appear in the next-token input.
@@ -634,7 +653,10 @@ def make_decoder_unified_wrapper(torch: Any, model: Any) -> Any:
 
             # Build a DynamicCache from the past_kv inputs. At prefill the
             # caller supplies zero-length tensors; HF treats this as an
-            # empty cache and runs prefill normally.
+            # empty cache and runs prefill normally. past_kv stays in the
+            # weight dtype across the chain — ORT chains them between
+            # `Run` calls without ever materialising on the host, so a
+            # BF16 KV is half the memory bandwidth and concat cost vs fp32.
             n = NUM_DECODER_LAYERS
             past_keys = list(past_kv[:n])
             past_values = list(past_kv[n:])
@@ -650,7 +672,9 @@ def make_decoder_unified_wrapper(torch: Any, model: Any) -> Any:
             )
             new_keys = [layer.keys for layer in out.past_key_values.layers]
             new_values = [layer.values for layer in out.past_key_values.layers]
-            return (out.logits, *new_keys, *new_values)
+            # Logits → fp32 boundary so C# argmax stays unchanged. KV stays
+            # in weight dtype (uncast).
+            return (out.logits.to(torch.float32), *new_keys, *new_values)
 
     return DecoderUnifiedWrapper(model)
 
@@ -1202,6 +1226,17 @@ def main() -> int:
         args.model_repo, args.revision, args.device, dtype, torch
     )
 
+    # Mixed-precision policy: when --dtype is BF16 (or fp16), only the
+    # language-model decoder runs in the reduced precision. Encoder and
+    # projector are cast back to fp32 because ONNX Conv has historically
+    # patchy reduced-precision support (BF16 added at opset 22 but with
+    # type-binding errors on the Conformer's depthwise convs at trace),
+    # and they account for ~25% of inference time vs the decoder's 60%+.
+    if dtype != torch.float32:
+        print(f"  Casting encoder + projector back to fp32 (mixed-precision policy)")
+        model.encoder = model.encoder.to(torch.float32)
+        model.projector = model.projector.to(torch.float32)
+
     inputs = make_dummy_processor_inputs(
         torch, processor, args.dummy_seconds, args.device
     )
@@ -1305,12 +1340,15 @@ def main() -> int:
         u_cache_position = torch.arange(
             past_dummy, past_dummy + seq_dummy, dtype=torch.long, device=input_ids.device
         )
+        # Past-KV must match decoder weight dtype — the LM's K/V projection
+        # outputs land in `dtype`, and the in-graph concat across the past_len
+        # axis fails if the supplied past tensor doesn't match.
         u_past_keys = [
-            torch.zeros((bsz, NUM_KV_HEADS, past_dummy, HEAD_DIM), dtype=torch.float32, device=input_ids.device)
+            torch.zeros((bsz, NUM_KV_HEADS, past_dummy, HEAD_DIM), dtype=dtype, device=input_ids.device)
             for _ in range(NUM_DECODER_LAYERS)
         ]
         u_past_values = [
-            torch.zeros((bsz, NUM_KV_HEADS, past_dummy, HEAD_DIM), dtype=torch.float32, device=input_ids.device)
+            torch.zeros((bsz, NUM_KV_HEADS, past_dummy, HEAD_DIM), dtype=dtype, device=input_ids.device)
             for _ in range(NUM_DECODER_LAYERS)
         ]
         unified_inputs = {

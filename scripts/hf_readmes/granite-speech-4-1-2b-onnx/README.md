@@ -31,6 +31,7 @@ ONNX Runtime.
 - **Conversion script:** [`scripts/granite_export/`](https://github.com/christopherthompson81/vernacula/tree/main/scripts/granite_export)
 - **Vernacula:** [github.com/christopherthompson81/vernacula](https://github.com/christopherthompson81/vernacula)
 - **Upstream model:** [`ibm-granite/granite-speech-4.1-2b`](https://huggingface.co/ibm-granite/granite-speech-4.1-2b)
+- **BF16 sibling bundle (Ampere+ GPUs):** [`christopherthompson81/granite-speech-4-1-2b-onnx-bf16`](https://huggingface.co/christopherthompson81/granite-speech-4-1-2b-onnx-bf16) — same content with the LM decoder in BF16, ~39% smaller and ~27% faster end-to-end on hardware with BF16 tensor cores. CPU and pre-Ampere GPU users should stay on this FP32 bundle.
 
 ## Highlights
 

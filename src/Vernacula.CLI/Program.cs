@@ -583,10 +583,26 @@ try
     }
     else if (asrBackend == "granite")
     {
-        string graniteDir = graniteModelDir
-            ?? (Directory.Exists(Path.Combine(modelDir, Config.GraniteSpeechSubDir))
-                ? Path.Combine(modelDir, Config.GraniteSpeechSubDir)
-                : modelDir);
+        // Bundle selection: when the user did not pass --granite-model, prefer
+        // the BF16 mixed-precision bundle if both (a) it's present on disk and
+        // (b) the host has CUDA EP with Ampere+ tensor cores. Otherwise fall
+        // back to the FP32 bundle. The BF16 bundle's CPU path is blocked by
+        // ORT's missing Where(BF16) kernel, so a non-Ampere or CPU-only host
+        // must use FP32 even if both bundles are downloaded.
+        string graniteDir;
+        if (graniteModelDir is not null)
+        {
+            graniteDir = graniteModelDir;
+        }
+        else
+        {
+            string bf16Dir = Path.Combine(modelDir, Config.GraniteSpeechBf16SubDir);
+            string fp32Dir = Path.Combine(modelDir, Config.GraniteSpeechSubDir);
+            bool bf16Available = Directory.Exists(bf16Dir) && HardwareInfo.SupportsBf16Acceleration();
+            graniteDir = bf16Available ? bf16Dir
+                : (Directory.Exists(fp32Dir) ? fp32Dir : modelDir);
+            Console.WriteLine($"Granite Speech bundle: {Path.GetFileName(graniteDir)}");
+        }
 
         if (!File.Exists(Path.Combine(graniteDir, GraniteSpeech.MelFile)))
         {
