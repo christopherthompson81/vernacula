@@ -60,6 +60,22 @@ internal class VocabService
         }
         else
         {
+            // Default to Parakeet for null/empty asrModel — that's the
+            // legitimate "no specific backend known" caller (e.g. a fresh
+            // editor before the job's asr_model row has been written). For
+            // an UNRECOGNISED non-null string, log a warning so the
+            // dispatch-fan-out gap is visible at startup instead of silently
+            // mis-loading a vocab. This is what bit Granite Speech the first
+            // time around: missing case here → Parakeet text-format loader
+            // hit a JSON file → empty vocab → editor rendered raw GPT-2
+            // ByteLevel chars instead of decoded text.
+            if (!string.IsNullOrWhiteSpace(asrModel))
+            {
+                Console.Error.WriteLine(
+                    $"[VocabService] WARNING: unrecognised asrModel '{asrModel}'. " +
+                    $"Falling back to Parakeet vocab loader; tokens may render incorrectly. " +
+                    $"Add a VocabKind case for this backend.");
+            }
             _kind = VocabKind.Parakeet;
             _vocab = LoadParakeetVocab(Path.Combine(modelsDir, Config.VocabFile));
         }
@@ -232,7 +248,7 @@ internal class VocabService
     {
         var bytes = new List<byte>(tokens.Count * 4);
         foreach (int token in tokens)
-            bytes.AddRange(GetVibeVoiceTokenBytes(token));
+            bytes.AddRange(GetByteLevelTokenBytes(token));
         return TrimVibeVoiceBoundaryQuotes(Encoding.UTF8.GetString(bytes.ToArray()));
     }
 
@@ -245,7 +261,7 @@ internal class VocabService
         // GraniteSpeech.DecodeTokens in Vernacula.Base.
         var bytes = new List<byte>(tokens.Count * 4);
         foreach (int token in tokens)
-            bytes.AddRange(GetVibeVoiceTokenBytes(token));
+            bytes.AddRange(GetByteLevelTokenBytes(token));
         return Encoding.UTF8.GetString(bytes.ToArray());
     }
 
@@ -262,7 +278,7 @@ internal class VocabService
 
         for (int i = 0; i < tokens.Count; i++)
         {
-            byte[] tokenBytes = GetVibeVoiceTokenBytes(tokens[i]);
+            byte[] tokenBytes = GetByteLevelTokenBytes(tokens[i]);
             string runText;
             if (tokenBytes.Length == 0)
             {
@@ -301,7 +317,7 @@ internal class VocabService
             return value;
 
         if (_kind == VocabKind.VibeVoice)
-            return Encoding.UTF8.GetString(GetVibeVoiceTokenBytes(token));
+            return Encoding.UTF8.GetString(GetByteLevelTokenBytes(token));
         if (_kind == VocabKind.Qwen3Asr)
             return Encoding.UTF8.GetString(GetQwen3AsrTokenBytes(token));
         if (_kind == VocabKind.GraniteSpeech)
@@ -309,7 +325,7 @@ internal class VocabService
             // (special tokens render as their content; regular tokens decode
             // through _byteLevelDecode). Reusing the helper here means the
             // single-token decode stays in lock-step with DecodeGraniteSpeechTokens.
-            return Encoding.UTF8.GetString(GetVibeVoiceTokenBytes(token));
+            return Encoding.UTF8.GetString(GetByteLevelTokenBytes(token));
 
         if (value.Length == 6 && value[0] == '<' && value[1] == '0' && value[2] == 'x' && value[5] == '>')
         {
@@ -366,7 +382,7 @@ internal class VocabService
 
         for (int i = 0; i < tokens.Count; i++)
         {
-            byte[] tokenBytes = GetVibeVoiceTokenBytes(tokens[i]);
+            byte[] tokenBytes = GetByteLevelTokenBytes(tokens[i]);
             string runText;
             if (tokenBytes.Length == 0)
             {
@@ -423,7 +439,15 @@ internal class VocabService
         return runs;
     }
 
-    private byte[] GetVibeVoiceTokenBytes(int token)
+    /// <summary>
+    /// Resolves a token id to its underlying byte sequence under the GPT-2
+    /// ByteLevel BPE convention: each char in the raw vocab string maps to
+    /// one byte via <see cref="_byteLevelDecode"/>; added (special) tokens
+    /// render as their literal content as UTF-8. Used by every kind that
+    /// loads its vocab through HF tokenizer.json — VibeVoice, Qwen3, and
+    /// GraniteSpeech.
+    /// </summary>
+    private byte[] GetByteLevelTokenBytes(int token)
     {
         if (_addedContent.TryGetValue(token, out var special))
             return Encoding.UTF8.GetBytes(special);

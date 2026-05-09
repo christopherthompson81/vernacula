@@ -126,6 +126,25 @@ internal class SettingsService
         return fp32Dir;
     }
 
+    /// <summary>
+    /// Returns the path to a Granite Speech tokenizer.json from whichever
+    /// sibling bundle is actually installed (BF16 preferred, FP32 fallback),
+    /// or null when neither bundle is present. The two bundles ship
+    /// identical tokenizer.json content, so file-presence — not hardware
+    /// capability — is the right gate here: the editor's vocab loader and
+    /// any other consumer that needs the tokenizer should be able to find
+    /// it regardless of whether the user is on the "right" hardware for
+    /// the bundle they happened to download.
+    /// </summary>
+    public string? TryGetGraniteSpeechTokenizerPath()
+    {
+        string bf16Path = Path.Combine(GetModelsDir(), Config.GraniteSpeechBf16SubDir, GraniteSpeech.TokenizerFile);
+        if (File.Exists(bf16Path)) return bf16Path;
+        string fp32Path = Path.Combine(GetModelsDir(), Config.GraniteSpeechSubDir, GraniteSpeech.TokenizerFile);
+        if (File.Exists(fp32Path)) return fp32Path;
+        return null;
+    }
+
     public string GetVoxLinguaModelsDir() =>
         string.IsNullOrWhiteSpace(Current.VoxLinguaModelsDir)
             ? Path.Combine(GetModelsDir(), Config.VoxLinguaSubDir)

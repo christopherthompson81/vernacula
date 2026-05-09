@@ -115,19 +115,14 @@ public partial class TranscriptEditorWindow : Window
                 ? "Granite Speech: no word-level timing; token sync is approximate."
                 : "";
 
-        // Granite ships in two sibling bundles (FP32 / BF16 mixed-precision).
-        // Tokenizer.json is identical between them; pick whichever one is
-        // installed on disk — the BF16 dir takes precedence to match
-        // SettingsService.GetGraniteSpeechModelsDir's auto-pick.
-        string? graniteVocabPath = null;
-        if (isGraniteSpeech)
-        {
-            string bf16TokPath = Path.Combine(modelsDir, Config.GraniteSpeechBf16SubDir, GraniteSpeech.TokenizerFile);
-            string fp32TokPath = Path.Combine(modelsDir, Config.GraniteSpeechSubDir, GraniteSpeech.TokenizerFile);
-            graniteVocabPath = File.Exists(bf16TokPath) ? bf16TokPath
-                : File.Exists(fp32TokPath) ? fp32TokPath
-                : null;
-        }
+        // Granite ships in two sibling bundles (FP32 / BF16 mixed-precision)
+        // with identical tokenizer.json content;
+        // SettingsService.TryGetGraniteSpeechTokenizerPath does the BF16-first
+        // probe so the editor and any other tokenizer consumer share the
+        // same resolution.
+        string? graniteVocabPath = isGraniteSpeech
+            ? App.Current.Settings.TryGetGraniteSpeechTokenizerPath()
+            : null;
 
         string? vocabPath = isCohere
             ? Path.Combine(modelsDir, "cohere_transcribe", CohereTranscribe.VocabFile)
