@@ -56,6 +56,12 @@ public static class HardwareInfo
     [DllImport("libnvidia-ml.so.1", EntryPoint = "nvmlDeviceGetMemoryInfo")]
     private static extern int NvmlDeviceGetMemoryInfoLinux(IntPtr device, out NvmlMemory memory);
 
+    [DllImport("nvml.dll", EntryPoint = "nvmlDeviceGetCudaComputeCapability")]
+    private static extern int NvmlDeviceGetCudaComputeCapabilityWindows(IntPtr device, out int major, out int minor);
+
+    [DllImport("libnvidia-ml.so.1", EntryPoint = "nvmlDeviceGetCudaComputeCapability")]
+    private static extern int NvmlDeviceGetCudaComputeCapabilityLinux(IntPtr device, out int major, out int minor);
+
     // ── GPU memory ────────────────────────────────────────────────────────────
 
     /// <summary>
@@ -239,6 +245,50 @@ public static class HardwareInfo
 
         var (totalMb, _) = GetGpuMemoryMb();
         return totalMb > 0;
+    }
+
+    /// <summary>
+    /// Returns (major, minor) CUDA compute capability of <paramref name="gpuId"/>,
+    /// or (0, 0) if NVML is unavailable or the query fails. Compute capability ≥ 8.0
+    /// indicates an Ampere-class or newer architecture with hardware BF16 tensor
+    /// cores; older parts (Volta/Turing 7.x, Pascal 6.x) lack accelerated BF16 and
+    /// will run BF16 ops via slower fallback paths.
+    /// </summary>
+    public static (int Major, int Minor) GetCudaComputeCapability(int gpuId = 0)
+    {
+        if (!OperatingSystem.IsWindows() && !OperatingSystem.IsLinux())
+            return (0, 0);
+
+        try
+        {
+            if (NvmlInitPlatform() != 0) return (0, 0);
+            try
+            {
+                if (NvmlDeviceGetHandleByIndexPlatform((uint)gpuId, out var device) != 0) return (0, 0);
+                int rc = OperatingSystem.IsWindows()
+                    ? NvmlDeviceGetCudaComputeCapabilityWindows(device, out int major, out int minor)
+                    : NvmlDeviceGetCudaComputeCapabilityLinux(device, out major, out minor);
+                if (rc != 0) return (0, 0);
+                return (major, minor);
+            }
+            finally { NvmlShutdownPlatform(); }
+        }
+        catch { return (0, 0); }
+    }
+
+    /// <summary>
+    /// True if the system has CUDA available AND a GPU with hardware-accelerated
+    /// BF16 (Ampere or newer, compute capability ≥ 8.0). Used to gate selection of
+    /// BF16 ONNX bundles like Granite Speech 4.1: on hardware that lacks BF16
+    /// tensor cores the BF16 kernels fall back to slower paths or are unavailable
+    /// (the LM decoder ops, the encoder Conv, and ORT's CPU EP <c>Where(BF16)</c>
+    /// all have known coverage gaps), so the FP32 bundle is the safe default.
+    /// </summary>
+    public static bool SupportsBf16Acceleration()
+    {
+        if (!CanProbeCudaExecutionProvider()) return false;
+        var (major, _) = GetCudaComputeCapability();
+        return major >= 8;
     }
 
     private static int NvmlInitPlatform() =>

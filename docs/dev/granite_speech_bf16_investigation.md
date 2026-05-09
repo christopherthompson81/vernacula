@@ -111,6 +111,32 @@ practice**. Hardware auto-detection should require CUDA EP (Ampere+
 preferred), not just `avx512_bf16`. CPU users — including the laptop
 target with native CPU BF16 — get the FP32 bundle.
 
+### Verified directly: C# CPU EP fails identically (2026-05-08)
+
+Built `Vernacula.CLI` with `-p:EP=Cpu` and ran the BF16 bundle on the
+6.4 s VCTK clip. Same error at `InferenceSession` construction:
+
+```
+Microsoft.ML.OnnxRuntime.OnnxRuntimeException:
+  [ErrorCode:NotImplemented] Could not find an implementation for
+  Where(16) node with name 'node_where_1'
+```
+
+This is an ORT op-kernel **registry** miss, not a runtime hardware
+gate. The CPU EP's BF16 op coverage is decided at ORT build time;
+`avx512_bf16` controls SIMD dispatch *within* an existing kernel,
+which means it can speed up a BF16 kernel that ships but cannot
+materialise one that doesn't. So:
+
+- `avx512_bf16` in `/proc/cpuinfo` is **not sufficient** for the BF16
+  bundle to load on CPU EP.
+- Auto-detect must gate on CUDA EP availability with Ampere+ tensor
+  cores — period — until ORT closes the CPU op-kernel gaps for
+  `Where` and the rest of the LM ops the decoder graph uses.
+- The 7840U laptop will use the FP32 bundle today even though its CPU
+  has native BF16 in hardware. That capability is wasted on this
+  model with current ORT.
+
 ## Run 3 — 2026-05-08 — Bundle size and per-stage profile
 
 **Setup:** Mixed-precision export at `--dtype bfloat16 --opset 18`.

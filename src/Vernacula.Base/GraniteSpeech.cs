@@ -196,7 +196,7 @@ public sealed class GraniteSpeech : IDisposable
 
         var plan = BatchSizer.Plan(
             durations,
-            new GraniteBatchCostModel(maxNewTokens),
+            new GraniteBatchCostModel(maxNewTokens, KvBytesPerElement),
             _vramBudgetForKvBytes,
             MaxBatchSize);
 
@@ -814,14 +814,31 @@ public sealed class GraniteSpeech : IDisposable
     }
 
     /// <summary>
+    /// Bytes per KV-cache element — 4 for FP32 bundles, 2 for the BF16
+    /// mixed-precision bundle. Derived once from <see cref="_pastKvDtype"/>
+    /// and passed into the cost model so smaller GPUs unlock a higher
+    /// batch cap on the BF16 bundle.
+    /// </summary>
+    private long KvBytesPerElement => _pastKvDtype switch
+    {
+        TensorElementType.BFloat16 => 2L,
+        TensorElementType.Float16  => 2L,
+        _                          => 4L,
+    };
+
+    /// <summary>
     /// Peak-VRAM cost model for batched Granite Speech decode. Compares
     /// three transient allocations and returns the worst case:
-    ///   1. Decoder KV at end of decode  (B × 80 × 4 × seqLen × 128 × 4 bytes)
-    ///   2. Prefill logits spike         (B × promptLen × VocabSize × 4 bytes)
-    ///   3. Encoder full-attention bias  (num_heads × T_enc² × 4 bytes, B=1 because
-    ///      mel/encoder/projector run serially)
+    ///   1. Decoder KV at end of decode  (B × 80 × 4 × seqLen × 128 × kvBytes)
+    ///   2. Prefill logits spike         (B × promptLen × VocabSize × 4 bytes
+    ///      — logits are always fp32 on the C# boundary regardless of
+    ///      bundle precision; the decoder graph casts BF16 → fp32 on
+    ///      output for CPU argmax)
+    ///   3. Encoder full-attention bias  (num_heads × T_enc² × 4 bytes, B=1
+    ///      — mel/encoder/projector run serially and stay fp32 in both
+    ///      bundles)
     /// </summary>
-    private sealed class GraniteBatchCostModel(int maxNewTokens) : IBatchCostModel
+    private sealed class GraniteBatchCostModel(int maxNewTokens, long kvBytesPerElement) : IBatchCostModel
     {
         public long EstimatePeakBytes(int batchSize, double maxDurationSec)
         {
@@ -830,11 +847,13 @@ public sealed class GraniteSpeech : IDisposable
             int seqLen    = promptLen + maxNewTokens;
             int encFrames = EstimateEncoderFrames(maxDurationSec);
 
-            // KV cache: 2 (K+V) × 40 layers × B × 4 KV-heads × seqLen × 128 head dim
+            // KV cache: 2 (K+V) × 40 layers × B × 4 KV-heads × seqLen × 128 head dim.
+            // BF16 bundle halves this — the dominant per-row cost on long decodes,
+            // so on smaller GPUs the BF16 bundle unlocks meaningfully higher B.
             long kvBytes = 2L * NumDecoderLayers * batchSize * NumKvHeads
-                         * seqLen * HeadDim * bytesPerFloat;
+                         * seqLen * HeadDim * kvBytesPerElement;
 
-            // Prefill logits: B × promptLen × VocabSize × float — peaks at start of decode
+            // Prefill logits: B × promptLen × VocabSize × float — peaks at start of decode.
             long logitsBytes = (long)batchSize * promptLen * VocabSize * bytesPerFloat;
 
             // Encoder full-attention bias [H, T, T] — runs serially per row so B=1.

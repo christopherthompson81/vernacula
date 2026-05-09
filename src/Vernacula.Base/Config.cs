@@ -182,6 +182,7 @@ public static class Config
 
     // ── ASR (Granite Speech 4.1) ─────────────────────────────────────────────
     public const string GraniteSpeechSubDir = "granite_speech_4_1_2b";
+    public const string GraniteSpeechBf16SubDir = "granite_speech_4_1_2b_bf16";
 
     // ── Language identification (VoxLingua107 ECAPA-TDNN) ────────────────────
     /// <summary>
