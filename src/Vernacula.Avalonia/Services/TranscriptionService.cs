@@ -1127,35 +1127,43 @@ internal class TranscriptionService
             else if (useGraniteSpeechAsr)
             {
                 // Granite Speech 4.1 — encoder + Q-Former projector + 1.84B
-                // Granite-4 LM decoder. Recognize returns just (segId, text,
-                // speaker); the C# backend doesn't surface token IDs from the
-                // greedy decode, so we store empty token/logprob arrays and
-                // synthesize timestamps from the audio duration + word count.
-                // Word-level highlighting in the editor will be a no-op for
-                // Granite-transcribed segments — adding it would require
-                // exposing the greedy tokens from GraniteSpeech.Recognize.
+                // Granite-4 LM decoder. RecognizeDetailed surfaces the
+                // post-trim BPE token IDs alongside the decoded text so the
+                // editor's word-sync UI gets per-token synthetic linear
+                // timestamps (Cohere/Qwen3 use the same scheme). Token count
+                // matches the visible text's information content because the
+                // backend has already stripped trailing EOS and any
+                // detected-runaway-loop tail before yielding.
+                //
+                // Logprobs aren't surfaced by the backend (greedy argmax
+                // discards them); stored as empty arrays. Word-level
+                // alignment beyond synthetic-linear is tracked in #36.
                 string graniteDir = _settings.GetGraniteSpeechModelsDir();
                 using var granite = new GraniteSpeech(graniteDir);
 
-                foreach (var (segId, text, _) in granite.Recognize(segsSubset, audio))
+                foreach (var (segId, text, tokens, _) in granite.RecognizeDetailed(segsSubset, audio))
                 {
                     ct.ThrowIfCancellationRequested();
                     int rid   = unfilledResultIds[segId];
                     int absId = rid - 1;
                     completed++;
 
-                    int wordCount = string.IsNullOrWhiteSpace(text)
-                        ? 0
-                        : text.Split(' ', StringSplitOptions.RemoveEmptyEntries).Length;
                     var syntheticTimestamps = BuildSyntheticTokenTimestamps(
                         segsSubset[segId].end - segsSubset[segId].start,
-                        wordCount);
+                        tokens.Count);
+
+                    // Cast long-typed BPE IDs to int for DB storage (Granite's
+                    // vocab is 100353, well under int range). Matches Cohere's
+                    // List<int> token-storage shape so downstream readers don't
+                    // need a backend-specific path.
+                    var tokensInt = new int[tokens.Count];
+                    for (int i = 0; i < tokens.Count; i++) tokensInt[i] = (int)tokens[i];
 
                     db.UpdateResult(
                         resultId:   rid,
                         asrContent: text,
                         content:    text,
-                        tokens:     JsonSerializer.Serialize(Array.Empty<int>()),
+                        tokens:     JsonSerializer.Serialize(tokensInt),
                         timestamps: JsonSerializer.Serialize(syntheticTimestamps),
                         logprobs:   JsonSerializer.Serialize(Array.Empty<float>()),
                         language:   "en");

@@ -180,16 +180,43 @@ public sealed class GraniteSpeech : IDisposable
     /// labels are passed through from the input segments — Granite Speech
     /// itself doesn't do speaker diarization.
     ///
+    /// Thin wrapper over <see cref="RecognizeDetailed"/> that drops the
+    /// per-segment token IDs. Callers that want token-level data — for
+    /// editor word-sync via synthetic linear timestamps, or for any
+    /// per-token UI — should use <see cref="RecognizeDetailed"/> directly.
+    /// </summary>
+    /// <param name="segs">Segment list as <c>(start_seconds, end_seconds, speaker_label)</c>.</param>
+    /// <param name="audio">Mono 16 kHz waveform covering all segments.</param>
+    /// <param name="maxNewTokens">Cap on generated tokens per segment.</param>
+    public IEnumerable<(int segId, string text, string speaker)> Recognize(
+        IReadOnlyList<(double start, double end, string spk)> segs,
+        float[] audio,
+        int maxNewTokens = 256)
+    {
+        foreach (var (segId, text, _, speaker) in RecognizeDetailed(segs, audio, maxNewTokens))
+            yield return (segId, text, speaker);
+    }
+
+    /// <summary>
+    /// Like <see cref="Recognize"/> but also surfaces the post-trim BPE token
+    /// IDs that produced the text. Used by the GUI's transcript editor to
+    /// drive word-level click-to-position via <c>BuildSyntheticTokenTimestamps</c>:
+    /// per-token linear timestamps over the segment duration give finer
+    /// granularity than per-word splitting and match what Cohere/Qwen3
+    /// surface today.
+    ///
+    /// Tokens are the same sequence used to produce the text: trailing EOS
+    /// stripped, periodic-loop tail trimmed when the runaway-loop detector
+    /// fired. Token count therefore matches the visible text's information
+    /// content, not the raw decode length.
+    ///
     /// Segments are sorted by ascending duration and packed into VRAM-budgeted
     /// batches via <see cref="BatchSizer.Plan"/>. Within a batch, all segments
     /// run through a single batched forward of mel + encoder + projector +
     /// unified decoder; per-row EOS tracking lets shorter segments stop while
     /// the longest finishes its decode.
     /// </summary>
-    /// <param name="segs">Segment list as <c>(start_seconds, end_seconds, speaker_label)</c>.</param>
-    /// <param name="audio">Mono 16 kHz waveform covering all segments.</param>
-    /// <param name="maxNewTokens">Cap on generated tokens per segment.</param>
-    public IEnumerable<(int segId, string text, string speaker)> Recognize(
+    public IEnumerable<(int segId, string text, IReadOnlyList<long> tokens, string speaker)> RecognizeDetailed(
         IReadOnlyList<(double start, double end, string spk)> segs,
         float[] audio,
         int maxNewTokens = 256)
@@ -211,7 +238,7 @@ public sealed class GraniteSpeech : IDisposable
             int[] segIds = batch.SegmentIndices;
 
             // Extract waveforms; mark short ones to skip without dropping the
-            // batch slot (we yield an empty string for them).
+            // batch slot (we yield an empty result for them).
             var waveforms = new float[B][];
             var skipped = new bool[B];
             for (int b = 0; b < B; b++)
@@ -227,28 +254,30 @@ public sealed class GraniteSpeech : IDisposable
             for (int b = 0; b < B; b++)
                 if (!skipped[b]) { realIdx.Add(b); realWaves.Add(waveforms[b]); }
 
-            string[] realTexts = realWaves.Count > 0
+            (string text, long[] tokens)[] realRows = realWaves.Count > 0
                 ? TranscribeBatch(realWaves.ToArray(), maxNewTokens)
-                : Array.Empty<string>();
+                : Array.Empty<(string, long[])>();
 
             // Yield in the batch order; reinflate the skipped slots.
             for (int b = 0; b < B; b++)
             {
                 int segId = segIds[b];
                 string text = string.Empty;
+                IReadOnlyList<long> tokens = Array.Empty<long>();
                 if (!skipped[b])
                 {
                     int realPos = realIdx.IndexOf(b);
-                    text = realTexts[realPos];
+                    text = realRows[realPos].text;
+                    tokens = realRows[realPos].tokens;
                 }
-                yield return (segId, text, segs[segId].spk);
+                yield return (segId, text, tokens, segs[segId].spk);
             }
         }
     }
 
     /// <summary>Convenience entry point for transcribing a single waveform.</summary>
     public string Transcribe(float[] audio16kMono, int maxNewTokens = 256)
-        => TranscribeBatch(new[] { audio16kMono }, maxNewTokens)[0];
+        => TranscribeBatch(new[] { audio16kMono }, maxNewTokens)[0].text;
 
     // ── Batched pipeline ────────────────────────────────────────────────
 
@@ -283,10 +312,10 @@ public sealed class GraniteSpeech : IDisposable
     internal static int MaxBatchSeen;
     private static readonly object _profileLock = new();
 
-    private string[] TranscribeBatch(float[][] waveforms, int maxNewTokens)
+    private (string text, long[] tokens)[] TranscribeBatch(float[][] waveforms, int maxNewTokens)
     {
         int B = waveforms.Length;
-        if (B == 0) return Array.Empty<string>();
+        if (B == 0) return Array.Empty<(string, long[])>();
 
         var swBatch = _profile ? System.Diagnostics.Stopwatch.StartNew() : null;
         long melLocal = 0, encLocal = 0, projLocal = 0;
@@ -572,7 +601,11 @@ public sealed class GraniteSpeech : IDisposable
         // tail on rows where the runtime detector classified the row as a
         // runaway. Otherwise natural emphatic repetition (e.g. a speaker
         // saying "no, no, no!") would be silently truncated.
-        var texts = new string[B];
+        // Both the decoded text AND the trimmed token list are surfaced so
+        // the GUI's synthetic-linear-timestamp logic in TranscriptionService
+        // can use real BPE tokens for editor word-sync (token count drives
+        // BuildSyntheticTokenTimestamps' interpolation granularity).
+        var rows = new (string text, long[] tokens)[B];
         for (int b = 0; b < B; b++)
         {
             var toks = generated[b];
@@ -581,8 +614,13 @@ public sealed class GraniteSpeech : IDisposable
             int trimmed = loopDetected[b]
                 ? TrimRepetitionTail(toks, realCount)
                 : realCount;
-            if (trimmed == toks.Count) texts[b] = DecodeTokens(toks);
-            else texts[b] = DecodeTokens(toks.GetRange(0, trimmed));
+            if (trimmed == toks.Count)
+                rows[b] = (DecodeTokens(toks), toks.ToArray());
+            else
+            {
+                var trimmedToks = toks.GetRange(0, trimmed);
+                rows[b] = (DecodeTokens(trimmedToks), trimmedToks.ToArray());
+            }
         }
 
         if (swBatch != null)
@@ -603,7 +641,7 @@ public sealed class GraniteSpeech : IDisposable
               + $"proj={projLocal} prefill={prefillLocal} step={stepLocal}ms x{stepCountLocal} "
               + $"overhead={overhead}ms)");
         }
-        return texts;
+        return rows;
     }
 
     /// <summary>Print accumulated profile stats and reset. Returns true if profiling was on.</summary>
