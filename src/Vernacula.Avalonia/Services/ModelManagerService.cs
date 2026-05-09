@@ -43,6 +43,19 @@ internal class ModelManagerService
     private const string IndicConformerManifestUrl =
         "https://huggingface.co/christopherthompson81/indicconformer-600m-onnx/resolve/main/manifest.json";
 
+    // Granite Speech 4.1 ships as two sibling bundles. Mixed-precision (BF16
+    // decoder, FP32 encoder/projector) is preferred on Ampere+ NVIDIA GPUs;
+    // FP32 is the safe default everywhere else (CPU, pre-Ampere, AMD).
+    // ActiveRepos picks one or the other via HardwareInfo.SupportsBf16Acceleration.
+    private const string GraniteSpeechFp32RepoBase =
+        "https://huggingface.co/christopherthompson81/granite-speech-4-1-2b-onnx/resolve/main";
+    private const string GraniteSpeechFp32ManifestUrl =
+        "https://huggingface.co/christopherthompson81/granite-speech-4-1-2b-onnx/resolve/main/manifest.json";
+    private const string GraniteSpeechBf16RepoBase =
+        "https://huggingface.co/christopherthompson81/granite-speech-4-1-2b-onnx-bf16/resolve/main";
+    private const string GraniteSpeechBf16ManifestUrl =
+        "https://huggingface.co/christopherthompson81/granite-speech-4-1-2b-onnx-bf16/resolve/main/manifest.json";
+
     // Whisper turbo pulls directly from the onnx-community pre-exported repo
     // (no re-hosting). No manifest: onnx-community doesn't ship our format, so
     // the MD5 update-check pass silently skips this repo (per
@@ -154,6 +167,48 @@ internal class ModelManagerService
             new(Path.Combine(Config.IndicConformerSubDir, Config.AsrConfigFile),           Config.AsrConfigFile),
         ];
 
+    // Granite Speech 4.1 — FP32 bundle. Both encoder (1.7 GB) and decoder
+    // (6.9 GB) ship with external .data sidecars; mel + projector are
+    // inline. Tokenizer assets follow the GPT-2 ByteLevel BPE convention
+    // (tokenizer.json, vocab.json, merges.txt, added_tokens.json,
+    // special_tokens_map.json, tokenizer_config.json).
+    private static readonly ModelAsset[] GraniteSpeechFp32Files =
+        [
+            new(Path.Combine(Config.GraniteSpeechSubDir, GraniteSpeech.MelFile),                    GraniteSpeech.MelFile),
+            new(Path.Combine(Config.GraniteSpeechSubDir, GraniteSpeech.EncoderFile),                GraniteSpeech.EncoderFile),
+            new(Path.Combine(Config.GraniteSpeechSubDir, $"{GraniteSpeech.EncoderFile}.data"),     $"{GraniteSpeech.EncoderFile}.data"),
+            new(Path.Combine(Config.GraniteSpeechSubDir, GraniteSpeech.ProjectorFile),              GraniteSpeech.ProjectorFile),
+            new(Path.Combine(Config.GraniteSpeechSubDir, GraniteSpeech.DecoderFile),                GraniteSpeech.DecoderFile),
+            new(Path.Combine(Config.GraniteSpeechSubDir, $"{GraniteSpeech.DecoderFile}.data"),     $"{GraniteSpeech.DecoderFile}.data"),
+            new(Path.Combine(Config.GraniteSpeechSubDir, GraniteSpeech.TokenizerFile),              GraniteSpeech.TokenizerFile),
+            new(Path.Combine(Config.GraniteSpeechSubDir, "vocab.json"),                             "vocab.json"),
+            new(Path.Combine(Config.GraniteSpeechSubDir, "merges.txt"),                             "merges.txt"),
+            new(Path.Combine(Config.GraniteSpeechSubDir, "added_tokens.json"),                      "added_tokens.json"),
+            new(Path.Combine(Config.GraniteSpeechSubDir, "special_tokens_map.json"),                "special_tokens_map.json"),
+            new(Path.Combine(Config.GraniteSpeechSubDir, "tokenizer_config.json"),                  "tokenizer_config.json"),
+        ];
+
+    // Granite Speech 4.1 — BF16 mixed-precision bundle. Encoder weights at
+    // BF16 fit inline (843 MB, below ORT's 2 GB external-data threshold),
+    // so there is no encoder.onnx.data; only the decoder retains its
+    // sidecar (3.5 GB). Local subdir differs to keep both bundles installable
+    // side by side; SettingsService.GetGraniteSpeechModelsDir picks the
+    // active one at runtime.
+    private static readonly ModelAsset[] GraniteSpeechBf16Files =
+        [
+            new(Path.Combine(Config.GraniteSpeechBf16SubDir, GraniteSpeech.MelFile),                GraniteSpeech.MelFile),
+            new(Path.Combine(Config.GraniteSpeechBf16SubDir, GraniteSpeech.EncoderFile),            GraniteSpeech.EncoderFile),
+            new(Path.Combine(Config.GraniteSpeechBf16SubDir, GraniteSpeech.ProjectorFile),          GraniteSpeech.ProjectorFile),
+            new(Path.Combine(Config.GraniteSpeechBf16SubDir, GraniteSpeech.DecoderFile),            GraniteSpeech.DecoderFile),
+            new(Path.Combine(Config.GraniteSpeechBf16SubDir, $"{GraniteSpeech.DecoderFile}.data"), $"{GraniteSpeech.DecoderFile}.data"),
+            new(Path.Combine(Config.GraniteSpeechBf16SubDir, GraniteSpeech.TokenizerFile),          GraniteSpeech.TokenizerFile),
+            new(Path.Combine(Config.GraniteSpeechBf16SubDir, "vocab.json"),                         "vocab.json"),
+            new(Path.Combine(Config.GraniteSpeechBf16SubDir, "merges.txt"),                         "merges.txt"),
+            new(Path.Combine(Config.GraniteSpeechBf16SubDir, "added_tokens.json"),                  "added_tokens.json"),
+            new(Path.Combine(Config.GraniteSpeechBf16SubDir, "special_tokens_map.json"),            "special_tokens_map.json"),
+            new(Path.Combine(Config.GraniteSpeechBf16SubDir, "tokenizer_config.json"),              "tokenizer_config.json"),
+        ];
+
     private static readonly ModelAsset[] VibeVoiceFiles =
         [
             new(Path.Combine(Config.VibeVoiceSubDir, VibeVoiceAsr.AudioEncoderFile),                       VibeVoiceAsr.AudioEncoderFile),
@@ -204,6 +259,23 @@ internal class ModelManagerService
                 new AssetRepo(WhisperTurboRepoBase, "", WhisperTurboFiles),
                 new AssetRepo("", "", WhisperTurboAuxFiles),
             ],
+            // Granite Speech: pick BF16 sibling repo + bundle when the host
+            // qualifies (Ampere+ NVIDIA + working CUDA EP), else FP32. The
+            // local install dir differs between the two — see
+            // GraniteSpeechBf16Files / GraniteSpeechFp32Files — so a previously
+            // downloaded FP32 bundle is preserved if BF16 later becomes the
+            // active choice (e.g. user moved to a newer GPU).
+            AsrBackend.GraniteSpeech => HardwareInfo.SupportsBf16Acceleration()
+                ?
+                [
+                    new AssetRepo(CoreRepoBase, CoreManifestUrl, CoreDiarizationFiles),
+                    new AssetRepo(GraniteSpeechBf16RepoBase, GraniteSpeechBf16ManifestUrl, GraniteSpeechBf16Files),
+                ]
+                :
+                [
+                    new AssetRepo(CoreRepoBase, CoreManifestUrl, CoreDiarizationFiles),
+                    new AssetRepo(GraniteSpeechFp32RepoBase, GraniteSpeechFp32ManifestUrl, GraniteSpeechFp32Files),
+                ],
             _ =>
             [
                 new AssetRepo(CoreRepoBase, CoreManifestUrl, [.. CoreDiarizationFiles, .. AsrFilesFp32]),

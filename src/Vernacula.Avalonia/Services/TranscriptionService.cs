@@ -118,6 +118,7 @@ internal class TranscriptionService
         bool useQwen3Asr         = string.Equals(asrModelName, "Qwen/Qwen3-ASR-1.7B", StringComparison.Ordinal);
         bool useIndicConformerAsr = string.Equals(asrModelName, "ai4bharat/indic-conformer-600m-multilingual", StringComparison.Ordinal);
         bool useWhisperTurboAsr   = string.Equals(asrModelName, "openai/whisper-large-v3-turbo", StringComparison.Ordinal);
+        bool useGraniteSpeechAsr  = string.Equals(asrModelName, "ibm-granite/granite-speech-4.1-2b", StringComparison.Ordinal);
         var  segmentationMode = _settings.Current.Segmentation;
         bool runVibeVoice     = useVibeVoiceAsr || segmentationMode == SegmentationMode.VibeVoiceBuiltin;
 
@@ -634,6 +635,7 @@ internal class TranscriptionService
                                 useCohereAsr         = string.Equals(asrModelName, "CohereLabs/cohere-transcribe-03-2026", StringComparison.Ordinal);
                                 useQwen3Asr          = string.Equals(asrModelName, "Qwen/Qwen3-ASR-1.7B", StringComparison.Ordinal);
                                 useIndicConformerAsr = string.Equals(asrModelName, "ai4bharat/indic-conformer-600m-multilingual", StringComparison.Ordinal);
+                                useGraniteSpeechAsr  = string.Equals(asrModelName, "ibm-granite/granite-speech-4.1-2b", StringComparison.Ordinal);
                                 // Reflect the switch in the results DB so the
                                 // Results view reads the *effective* backend
                                 // (and so the mismatch banner doesn't appear
@@ -1120,6 +1122,61 @@ internal class TranscriptionService
                             result.Text,
                             overridePercent));
                     }
+                }
+            }
+            else if (useGraniteSpeechAsr)
+            {
+                // Granite Speech 4.1 — encoder + Q-Former projector + 1.84B
+                // Granite-4 LM decoder. Recognize returns just (segId, text,
+                // speaker); the C# backend doesn't surface token IDs from the
+                // greedy decode, so we store empty token/logprob arrays and
+                // synthesize timestamps from the audio duration + word count.
+                // Word-level highlighting in the editor will be a no-op for
+                // Granite-transcribed segments — adding it would require
+                // exposing the greedy tokens from GraniteSpeech.Recognize.
+                string graniteDir = _settings.GetGraniteSpeechModelsDir();
+                using var granite = new GraniteSpeech(graniteDir);
+
+                foreach (var (segId, text, _) in granite.Recognize(segsSubset, audio))
+                {
+                    ct.ThrowIfCancellationRequested();
+                    int rid   = unfilledResultIds[segId];
+                    int absId = rid - 1;
+                    completed++;
+
+                    int wordCount = string.IsNullOrWhiteSpace(text)
+                        ? 0
+                        : text.Split(' ', StringSplitOptions.RemoveEmptyEntries).Length;
+                    var syntheticTimestamps = BuildSyntheticTokenTimestamps(
+                        segsSubset[segId].end - segsSubset[segId].start,
+                        wordCount);
+
+                    db.UpdateResult(
+                        resultId:   rid,
+                        asrContent: text,
+                        content:    text,
+                        tokens:     JsonSerializer.Serialize(Array.Empty<int>()),
+                        timestamps: JsonSerializer.Serialize(syntheticTimestamps),
+                        logprobs:   JsonSerializer.Serialize(Array.Empty<float>()),
+                        language:   "en");
+
+                    onSegmentText(absId, text);
+
+                    string asrText = Loc.Instance.T("progress_recognizing_segment", new() {
+                        ["i"]     = completed.ToString(),
+                        ["count"] = totalSegs.ToString() });
+                    double? overridePercent = ScaleOverallProgress(
+                        diarizationEndPercent,
+                        100,
+                        totalSegs > 0 ? completed / (double)totalSegs : 1);
+                    progress.Report(new TranscriptionProgress(
+                        TranscriptionPhase.Recognizing,
+                        completed,
+                        totalSegs,
+                        asrText,
+                        absId,
+                        text,
+                        overridePercent));
                 }
             }
             else

@@ -104,6 +104,22 @@ internal class SettingsService
     public string GetWhisperTurboModelsDir() =>
         Path.Combine(GetModelsDir(), Config.WhisperTurboSubDir);
 
+    /// <summary>
+    /// Resolves the active Granite Speech 4.1 bundle directory: prefers
+    /// the BF16 mixed-precision bundle when present on disk and the host
+    /// has CUDA EP with Ampere+ tensor cores; otherwise falls back to the
+    /// FP32 bundle. Mirrors the CLI's selection logic so editor and CLI
+    /// pick the same bundle on the same machine.
+    /// </summary>
+    public string GetGraniteSpeechModelsDir()
+    {
+        string bf16Dir = Path.Combine(GetModelsDir(), Config.GraniteSpeechBf16SubDir);
+        string fp32Dir = Path.Combine(GetModelsDir(), Config.GraniteSpeechSubDir);
+        if (Directory.Exists(bf16Dir) && HardwareInfo.SupportsBf16Acceleration())
+            return bf16Dir;
+        return fp32Dir;
+    }
+
     public string GetVoxLinguaModelsDir() =>
         string.IsNullOrWhiteSpace(Current.VoxLinguaModelsDir)
             ? Path.Combine(GetModelsDir(), Config.VoxLinguaSubDir)

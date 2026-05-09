@@ -46,6 +46,16 @@ public static class AsrLanguageSupport
         "ko", "nl", "pl", "pt", "vi", "zh",
     }.ToFrozenSet();
 
+    // IBM Granite Speech 4.1 — 6 languages from the upstream model card
+    // (https://huggingface.co/ibm-granite/granite-speech-4.1-2b). The base
+    // model targets English; the other five are evaluated but secondary.
+    // Vernacula treats it as English-first since the audio prompt template
+    // only fires for English ASR; force-language routing is not exposed.
+    private static readonly FrozenSet<string> GraniteSpeechLangs = new HashSet<string>
+    {
+        "en", "fr", "de", "es", "pt", "ja",
+    }.ToFrozenSet();
+
     // Official Qwen3-ASR 1.7B supported languages (https://github.com/QwenLM/Qwen3-ASR).
     // "tl" (Tagalog) covers the officially listed "Filipino". Cantonese (yue) omitted
     // pending token-ID support in Qwen3Asr.IsoToLanguageName.
@@ -147,6 +157,7 @@ public static class AsrLanguageSupport
         AsrBackend.VibeVoice      => VibeVoiceLangs,
         AsrBackend.IndicConformer => IndicConformerLangs,
         AsrBackend.WhisperTurbo   => WhisperTurboLangs,
+        AsrBackend.GraniteSpeech  => GraniteSpeechLangs,
         _                         => FrozenSet<string>.Empty,
     };
 
@@ -213,6 +224,7 @@ public static class AsrLanguageSupport
             AsrBackend.WhisperTurbo,
             AsrBackend.Qwen3Asr,
             AsrBackend.Cohere,
+            AsrBackend.GraniteSpeech,
             AsrBackend.Parakeet,
             AsrBackend.VibeVoice,
         };
@@ -239,6 +251,7 @@ public static class AsrLanguageSupport
         AsrBackend.VibeVoice      => "VibeVoice-ASR",
         AsrBackend.IndicConformer => "IndicConformer",
         AsrBackend.WhisperTurbo   => "Whisper Turbo",
+        AsrBackend.GraniteSpeech  => "Granite Speech 4.1",
         _                         => backend.ToString(),
     };
 
@@ -254,6 +267,7 @@ public static class AsrLanguageSupport
         "vibevoice/vibevoice-asr"                      => AsrBackend.VibeVoice,
         "ai4bharat/indic-conformer-600m-multilingual"  => AsrBackend.IndicConformer,
         "openai/whisper-large-v3-turbo"                => AsrBackend.WhisperTurbo,
+        "ibm-granite/granite-speech-4.1-2b"            => AsrBackend.GraniteSpeech,
         _                                              => (AsrBackend?)null,
     };
 
@@ -266,6 +280,7 @@ public static class AsrLanguageSupport
         AsrBackend.VibeVoice      => "vibevoice/vibevoice-asr",
         AsrBackend.IndicConformer => "ai4bharat/indic-conformer-600m-multilingual",
         AsrBackend.WhisperTurbo   => "openai/whisper-large-v3-turbo",
+        AsrBackend.GraniteSpeech  => "ibm-granite/granite-speech-4.1-2b",
         _ => throw new ArgumentOutOfRangeException(nameof(backend)),
     };
 

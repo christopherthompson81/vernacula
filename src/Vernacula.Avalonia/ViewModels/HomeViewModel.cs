@@ -84,6 +84,8 @@ internal partial class HomeViewModel : ObservableObject
             ModelStatusText = $"VibeVoice-ASR weights are missing. Use Download Missing Models, or place them in {_settings.GetVibeVoiceModelsDir()}.";
         else if (_settings.Current.AsrBackend == AsrBackend.IndicConformer)
             ModelStatusText = $"IndicConformer weights are missing. Place them in {_settings.GetIndicConformerModelsDir()}.";
+        else if (_settings.Current.AsrBackend == AsrBackend.GraniteSpeech)
+            ModelStatusText = $"Granite Speech weights are missing. Use Download Missing Models, or place them in {_settings.GetGraniteSpeechModelsDir()}.";
         else if (_settings.Current.Segmentation == Vernacula.Base.Models.SegmentationMode.DiariZen)
             ModelStatusText = "DiariZen external weights are missing. Open Settings to review the notice and import or download them.";
         else
