@@ -102,15 +102,32 @@ public partial class TranscriptEditorWindow : Window
         bool isQwen3Asr       = string.Equals(_jobAsrModel, "Qwen/Qwen3-ASR-1.7B", StringComparison.Ordinal);
         bool isVibeVoice      = string.Equals(_jobAsrModel, "vibevoice/vibevoice-asr", StringComparison.Ordinal);
         bool isIndicConformer = string.Equals(_jobAsrModel, "ai4bharat/indic-conformer-600m-multilingual", StringComparison.Ordinal);
+        bool isGraniteSpeech  = string.Equals(_jobAsrModel, "ibm-granite/granite-speech-4.1-2b", StringComparison.Ordinal);
         _isQwen3Asr = isQwen3Asr;
-        _showApproximateTimingNotice = isCohere || isQwen3Asr || isVibeVoice;
+        _showApproximateTimingNotice = isCohere || isQwen3Asr || isVibeVoice || isGraniteSpeech;
         _approximateTimingNoticeText = isCohere
             ? "Cohere Transcribe: no word-level timing; token sync is approximate."
             : isQwen3Asr
                 ? "Qwen3-ASR: no word-level timing; token sync is approximate."
             : isVibeVoice
                 ? "VibeVoice-ASR: no token-level timing; token sync is approximate."
+            : isGraniteSpeech
+                ? "Granite Speech: no word-level timing; token sync is approximate."
                 : "";
+
+        // Granite ships in two sibling bundles (FP32 / BF16 mixed-precision).
+        // Tokenizer.json is identical between them; pick whichever one is
+        // installed on disk — the BF16 dir takes precedence to match
+        // SettingsService.GetGraniteSpeechModelsDir's auto-pick.
+        string? graniteVocabPath = null;
+        if (isGraniteSpeech)
+        {
+            string bf16TokPath = Path.Combine(modelsDir, Config.GraniteSpeechBf16SubDir, GraniteSpeech.TokenizerFile);
+            string fp32TokPath = Path.Combine(modelsDir, Config.GraniteSpeechSubDir, GraniteSpeech.TokenizerFile);
+            graniteVocabPath = File.Exists(bf16TokPath) ? bf16TokPath
+                : File.Exists(fp32TokPath) ? fp32TokPath
+                : null;
+        }
 
         string? vocabPath = isCohere
             ? Path.Combine(modelsDir, "cohere_transcribe", CohereTranscribe.VocabFile)
@@ -120,11 +137,13 @@ public partial class TranscriptEditorWindow : Window
                 ? Path.Combine(modelsDir, Config.VibeVoiceSubDir, VibeVoiceAsr.TokenizerFile)
             : isIndicConformer
                 ? Path.Combine(modelsDir, Config.IndicConformerSubDir, Config.VocabFile)
+            : isGraniteSpeech
+                ? graniteVocabPath
                 : Path.Combine(parakeetModelsDir, Config.VocabFile);
         if (vocabPath is not null && File.Exists(vocabPath))
         {
             _vocab = new VocabService(
-                isCohere || isQwen3Asr || isVibeVoice || isIndicConformer
+                isCohere || isQwen3Asr || isVibeVoice || isIndicConformer || isGraniteSpeech
                     ? App.Current.Settings.GetModelsDir() : parakeetModelsDir,
                 _jobAsrModel);
         }
