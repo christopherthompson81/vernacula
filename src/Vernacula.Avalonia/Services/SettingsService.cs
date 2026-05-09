@@ -110,6 +110,12 @@ internal class SettingsService
     /// has CUDA EP with Ampere+ tensor cores; otherwise falls back to the
     /// FP32 bundle. Mirrors the CLI's selection logic so editor and CLI
     /// pick the same bundle on the same machine.
+    ///
+    /// Implicit invariant with <c>ModelManagerService.ActiveRepos</c>:
+    /// both consult <see cref="HardwareInfo.SupportsBf16Acceleration"/> to
+    /// decide which bundle to fetch (manager) vs load (this). The result
+    /// is cached process-wide on the first call, so the two call sites
+    /// always agree within a single run.
     /// </summary>
     public string GetGraniteSpeechModelsDir()
     {

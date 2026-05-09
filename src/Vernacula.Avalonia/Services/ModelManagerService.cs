@@ -181,11 +181,11 @@ internal class ModelManagerService
             new(Path.Combine(Config.GraniteSpeechSubDir, GraniteSpeech.DecoderFile),                GraniteSpeech.DecoderFile),
             new(Path.Combine(Config.GraniteSpeechSubDir, $"{GraniteSpeech.DecoderFile}.data"),     $"{GraniteSpeech.DecoderFile}.data"),
             new(Path.Combine(Config.GraniteSpeechSubDir, GraniteSpeech.TokenizerFile),              GraniteSpeech.TokenizerFile),
-            new(Path.Combine(Config.GraniteSpeechSubDir, "vocab.json"),                             "vocab.json"),
-            new(Path.Combine(Config.GraniteSpeechSubDir, "merges.txt"),                             "merges.txt"),
-            new(Path.Combine(Config.GraniteSpeechSubDir, "added_tokens.json"),                      "added_tokens.json"),
-            new(Path.Combine(Config.GraniteSpeechSubDir, "special_tokens_map.json"),                "special_tokens_map.json"),
-            new(Path.Combine(Config.GraniteSpeechSubDir, "tokenizer_config.json"),                  "tokenizer_config.json"),
+            new(Path.Combine(Config.GraniteSpeechSubDir, GraniteSpeech.VocabFile),                  GraniteSpeech.VocabFile),
+            new(Path.Combine(Config.GraniteSpeechSubDir, GraniteSpeech.MergesFile),                 GraniteSpeech.MergesFile),
+            new(Path.Combine(Config.GraniteSpeechSubDir, GraniteSpeech.AddedTokensFile),            GraniteSpeech.AddedTokensFile),
+            new(Path.Combine(Config.GraniteSpeechSubDir, GraniteSpeech.SpecialTokensFile),          GraniteSpeech.SpecialTokensFile),
+            new(Path.Combine(Config.GraniteSpeechSubDir, GraniteSpeech.TokenizerCfgFile),           GraniteSpeech.TokenizerCfgFile),
         ];
 
     // Granite Speech 4.1 — BF16 mixed-precision bundle. Encoder weights at
@@ -202,11 +202,11 @@ internal class ModelManagerService
             new(Path.Combine(Config.GraniteSpeechBf16SubDir, GraniteSpeech.DecoderFile),            GraniteSpeech.DecoderFile),
             new(Path.Combine(Config.GraniteSpeechBf16SubDir, $"{GraniteSpeech.DecoderFile}.data"), $"{GraniteSpeech.DecoderFile}.data"),
             new(Path.Combine(Config.GraniteSpeechBf16SubDir, GraniteSpeech.TokenizerFile),          GraniteSpeech.TokenizerFile),
-            new(Path.Combine(Config.GraniteSpeechBf16SubDir, "vocab.json"),                         "vocab.json"),
-            new(Path.Combine(Config.GraniteSpeechBf16SubDir, "merges.txt"),                         "merges.txt"),
-            new(Path.Combine(Config.GraniteSpeechBf16SubDir, "added_tokens.json"),                  "added_tokens.json"),
-            new(Path.Combine(Config.GraniteSpeechBf16SubDir, "special_tokens_map.json"),            "special_tokens_map.json"),
-            new(Path.Combine(Config.GraniteSpeechBf16SubDir, "tokenizer_config.json"),              "tokenizer_config.json"),
+            new(Path.Combine(Config.GraniteSpeechBf16SubDir, GraniteSpeech.VocabFile),              GraniteSpeech.VocabFile),
+            new(Path.Combine(Config.GraniteSpeechBf16SubDir, GraniteSpeech.MergesFile),             GraniteSpeech.MergesFile),
+            new(Path.Combine(Config.GraniteSpeechBf16SubDir, GraniteSpeech.AddedTokensFile),        GraniteSpeech.AddedTokensFile),
+            new(Path.Combine(Config.GraniteSpeechBf16SubDir, GraniteSpeech.SpecialTokensFile),      GraniteSpeech.SpecialTokensFile),
+            new(Path.Combine(Config.GraniteSpeechBf16SubDir, GraniteSpeech.TokenizerCfgFile),       GraniteSpeech.TokenizerCfgFile),
         ];
 
     private static readonly ModelAsset[] VibeVoiceFiles =

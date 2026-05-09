@@ -36,11 +36,16 @@ namespace Vernacula.Base;
 /// </summary>
 public sealed class GraniteSpeech : IDisposable
 {
-    public const string MelFile       = "mel.onnx";
-    public const string EncoderFile   = "encoder.onnx";
-    public const string ProjectorFile = "projector.onnx";
-    public const string DecoderFile   = "decoder.onnx";
-    public const string TokenizerFile = "tokenizer.json";
+    public const string MelFile           = "mel.onnx";
+    public const string EncoderFile       = "encoder.onnx";
+    public const string ProjectorFile     = "projector.onnx";
+    public const string DecoderFile       = "decoder.onnx";
+    public const string TokenizerFile     = "tokenizer.json";
+    public const string VocabFile         = "vocab.json";
+    public const string MergesFile        = "merges.txt";
+    public const string AddedTokensFile   = "added_tokens.json";
+    public const string SpecialTokensFile = "special_tokens_map.json";
+    public const string TokenizerCfgFile  = "tokenizer_config.json";
 
     // ── Architecture constants ──────────────────────────────────────────
     // Mirror what the Python export wrote into config.json. Hardcoded here
