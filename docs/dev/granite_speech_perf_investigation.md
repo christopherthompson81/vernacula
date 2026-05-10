@@ -2057,6 +2057,93 @@ needs static shapes to make GQA's `seqlens_k` input meaningful.
 The follow-up issue should bake in this feasibility data so the
 next investigator doesn't re-derive it.
 
+## Run 17 phase A — 2026-05-10 — SDPA spike (closed: dead)
+
+**Setup:** Issue #43, 1-day timebox. Hypothesis: switching the
+language model's attention to `attn_implementation="sdpa"` on the
+static-shape export emits a pattern ORT's `AttentionFusion` /
+`GroupQueryAttentionFusion` passes recognize, giving us fused
+attention without writing a custom graph rewriter.
+
+Implementation: added `--sdpa-attention` flag in
+`scripts/granite_export/export_granite_speech_to_onnx.py`. Granite's
+audio Q-former (`Blip2QFormerModel`) doesn't have an SDPA
+implementation, so `attn_implementation="sdpa"` at the top-level
+constructor errors. The flag instead loads with `eager` and post-load
+sets `model.language_model.config._attn_implementation = "sdpa"` —
+surgical override that leaves the audio path untouched.
+
+**Result — A1 (SDPA + dynamic shapes):** trace fails. Confirms the
+comment in the existing `load_model_and_processor` that flagged this
+path as broken. Specific error:
+
+```
+Could not guard on data-dependent expression Ne(u0, 4) (unhinted: Ne(u0, 4)).
+... attention_mask.shape[3] != 4 ...
+```
+
+PyTorch 2.11 / transformers 4.57 still hits this in dynamo-mode
+export. The original objection holds.
+
+**Result — A2 (SDPA + static shapes):** trace succeeds. ORT verbose
+load reports:
+
+| Metric                         | eager + static | **SDPA + static** |
+|--------------------------------|---------------:|------------------:|
+| Memcpy warnings                |              0 |                 0 |
+| CPU-fallback ops               |             10 |           **210** |
+|   Slice                        |              0 |               120 |
+|   Concat                       |              7 |                87 |
+|   sym_size_int                 |              1 |                 1 |
+|   add                          |              1 |                 1 |
+|   Reshape                      |              1 |                 1 |
+| `AttentionFusion modified`     |              0 |             **0** |
+| `GroupQueryAttentionFusion`    |              0 |             **0** |
+
+**SDPA + static is strictly worse than eager + static.** The pattern
+torch.onnx.export emits for SDPA at static shapes contains 200+ extra
+Slice / Concat ops (the GQA Expand+Repeat dance and KV-cache slicing
+were materialised as explicit graph nodes), AND ORT's pattern matcher
+*still* doesn't recognize the result.
+
+**Implication:** Path A is dead. The cheap `attn_implementation="sdpa"`
+shortcut doesn't auto-fuse Granite's attention pattern — neither at
+runtime-dynamic shapes (where it doesn't trace) nor at static shapes
+(where it traces a worse graph). Auto-fusion via ORT's built-in
+transformer passes is not reachable for Granite without rewriting
+either the attention module's PyTorch source or the exported ONNX
+graph directly.
+
+**Pivot:** Path B (custom graph rewriter). The earlier feasibility
+spike already confirmed `com.microsoft.GroupQueryAttention` runs on
+CUDA EP for Granite's exact config (16/4/128, BF16, do_rotary,
+past_len=768, batch=16). The remaining work is the pattern-matcher
+itself, applied to the **eager + static** export (which has cleaner
+per-layer structure than SDPA's traced output — the 200 extra
+Slice/Concat ops in SDPA's graph would make the matcher harder, not
+easier).
+
+**Honest retrospective on Phase A:** the asymmetric value-of-information
+argument from the path-comparison still held — A's failure was cheap
+(<1 day) and it gave us concrete data: we now know SDPA isn't a free
+shortcut on Granite, and we know the eager export is the cleaner
+target for path B. Next time someone proposes "just use SDPA" on a
+Granite-style model, the answer is documented.
+
+**Useful artifacts kept from Phase A:**
+
+- `--sdpa-attention` flag and the per-submodule override pattern in
+  `load_model_and_processor`. Future spikes on other transformers
+  models can reuse this.
+- The probe scripts (`/tmp/probe_ort_load.py` updated to grep
+  `AttentionFusion modified > 0` lines).
+
+**Next:** open phase B — custom graph rewriter to replace the
+per-layer attention subgraph with `com.microsoft.GroupQueryAttention`
+nodes. Detailed plan in #43.
+
+
+
 
 
 

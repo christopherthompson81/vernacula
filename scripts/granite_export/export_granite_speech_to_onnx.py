@@ -160,6 +160,20 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--sdpa-attention",
+        action="store_true",
+        help=(
+            "Run 17 phase A spike (issue #43): load the model with "
+            "attn_implementation=sdpa instead of eager, with the goal of "
+            "letting torch.onnx.export emit a pattern ORT's "
+            "AttentionFusion / GroupQueryAttentionFusion passes recognize. "
+            "Previously gated off because SDPA's data-dependent branch on "
+            "attention_mask.shape[-1] != q.shape[-1] broke dynamo with "
+            "dynamic shapes; with --static-shapes-unified those dims are "
+            "bounded at trace time and the branch should fold."
+        ),
+    )
+    parser.add_argument(
         "--dummy-seconds",
         type=float,
         default=2.0,
@@ -206,7 +220,8 @@ def ensure_output_dir(path: Path, overwrite: bool) -> None:
 # ---------------------------------------------------------------------------
 
 def load_model_and_processor(
-    repo_id: str, revision: str | None, device: str, dtype: Any, torch: Any
+    repo_id: str, revision: str | None, device: str, dtype: Any, torch: Any,
+    attn_implementation: str = "eager",
 ) -> tuple[Any, Any]:
     from transformers import AutoProcessor, GraniteSpeechForConditionalGeneration
 
@@ -214,10 +229,20 @@ def load_model_and_processor(
     print(f"Loading processor from {repo_id}{rev_suffix} ...")
     processor = AutoProcessor.from_pretrained(repo_id, revision=revision)
 
-    # `attn_implementation="eager"` keeps the language-model attention out of
-    # transformers' sdpa_attention_forward path, which contains a data-dependent
-    # branch (`attention_mask.shape[-1] != q.shape[-1]`) that the dynamo
-    # exporter cannot guard. Eager is mathematically equivalent and traces cleanly.
+    # Default `attn_implementation="eager"` because transformers' sdpa path has
+    # a data-dependent branch (`attention_mask.shape[-1] != q.shape[-1]`) that
+    # the dynamo exporter cannot guard at runtime-symbolic shapes. Eager is
+    # mathematically equivalent and traces cleanly.
+    #
+    # The --sdpa-attention flag (issue #43) overrides to "sdpa" for the
+    # *language model only* on static-shape exports — Granite's audio
+    # Q-former (Blip2QFormerModel) doesn't have an SDPA implementation, so
+    # passing attn_implementation="sdpa" at the top-level
+    # GraniteSpeechForConditionalGeneration constructor errors. Loading with
+    # eager and overriding the language_model.config._attn_implementation
+    # post-load is the surgical version. The goal is to emit a pattern
+    # ORT's AttentionFusion / GroupQueryAttentionFusion passes recognize so
+    # we get fused attention without writing a custom graph rewriter.
     print(f"Loading model from {repo_id}{rev_suffix} on {device} as {dtype} (attn_implementation=eager) ...")
     model = GraniteSpeechForConditionalGeneration.from_pretrained(
         repo_id,
@@ -226,6 +251,13 @@ def load_model_and_processor(
         low_cpu_mem_usage=True,
         attn_implementation="eager",
     )
+    if attn_implementation == "sdpa":
+        print("  Overriding language_model._attn_implementation to sdpa "
+              "(issue #43 / spike). encoder + projector stay eager.")
+        model.language_model.config._attn_implementation = "sdpa"
+    elif attn_implementation != "eager":
+        raise ValueError(
+            f"Unknown attn_implementation {attn_implementation!r}; expected eager or sdpa.")
     model.to(device)
     model.eval()
 
@@ -1322,8 +1354,10 @@ def main() -> int:
         "bfloat16": torch.bfloat16,
     }[args.dtype]
 
+    attn_impl = "sdpa" if args.sdpa_attention else "eager"
     model, processor = load_model_and_processor(
-        args.model_repo, args.revision, args.device, dtype, torch
+        args.model_repo, args.revision, args.device, dtype, torch,
+        attn_implementation=attn_impl,
     )
 
     # Mixed-precision policy: when --dtype is BF16 (or fp16), only the
