@@ -1831,9 +1831,57 @@ Phase 2 commits to **variant B**: production export at
   (`granite_speech_4_1_2b_static_bf16/`), full bundle (mel + encoder
   + projector + decoder).
 - Phase 2c: C# adaptation in `GraniteSpeech.cs` — pre-allocate KV at
-  past_len=256, pad batches to 16, pad audio_embeds to 375, attention
+  past_len, pad batches to 16, pad audio_embeds to 375, attention
   mask gates the padding.
 - Phase 2d: parity tests against the dynamic graph.
 - Run 16: end-to-end nsys benchmark — confirm cudaMemcpyAsync drops
   from 74 % to single-digit %.
+
+## Run 15 phase 2b — 2026-05-10 — Production export + sliding-window slice
+
+**Setup:** Two sub-steps.
+
+1. **Production export.** Same `--static-shapes-unified` flag at
+   production sizes (`B=16, past_len=768, audio_len=375`). 768 (not
+   256 as initially planned) sized for `audio_max=375 + prompt_overhead +
+   max_new_tokens=256` with margin. Output to sibling bundle
+   `~/.local/share/Vernacula/models/granite_speech_4_1_2b_static_bf16/`.
+
+2. **Sliding-window slice.** Modified `make_decoder_unified_wrapper`
+   to accept a `static_past_len` parameter; when set, the wrapper
+   slices KV outputs `[:, :, -static_past_len:, :]`. The graph thus
+   produces `present_kv` shape `(16, 4, 768, 128)` matching the
+   `past_kv` input shape — directly chainable as the next step's
+   input with no host-side slice. As long as `prompt_len +
+   max_new_tokens <= 768` no real cache positions are dropped (the
+   leading positions sliced off are the zero-padded prefix).
+
+**Result — graph contract verified:**
+
+```
+=== Inputs ===
+  input_ids:        [16, 'seq']           int64
+  audio_embeds:     [16, 375, 2048]       float
+  attention_mask:   [16, 'total_len']     int64
+  cache_position:   ['seq']               int64
+  past_key_0..39:   [16, 4, 768, 128]     bfloat16
+  past_value_0..39: [16, 4, 768, 128]     bfloat16
+=== Outputs ===
+  logits:             [16, 'seq', 100353]   float
+  present_key_0..39:  [16, 4, 768, 128]     bfloat16
+  present_value_0..39:[16, 4, 768, 128]     bfloat16
+```
+
+ORT verdict on the production-size sliced graph: identical to the
+2a probe — **0 Memcpy warnings, 10 CPU-fallback ops** (7 Concat + 1
+sym_size_int + 1 add + 1 Reshape, all int64 scalar arithmetic on
+the seq-dependent shape construction).
+
+**Implication:** The static-shape bundle is ready for the C# side.
+The `present_kv` output shape matches `past_kv` input shape exactly,
+so the chained `Run`-with-`OrtValue` pattern from Run 7 works
+verbatim — past_kv on next call = present_kv from this call,
+GPU-resident throughout.
+
+
 

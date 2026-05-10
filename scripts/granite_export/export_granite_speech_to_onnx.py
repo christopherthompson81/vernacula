@@ -616,7 +616,7 @@ def make_decoder_init_wrapper(torch: Any, model: Any) -> Any:
     return DecoderInitWrapper(model)
 
 
-def make_decoder_unified_wrapper(torch: Any, model: Any) -> Any:
+def make_decoder_unified_wrapper(torch: Any, model: Any, static_past_len: int | None = None) -> Any:
     """One ONNX graph that handles BOTH prefill and step.
 
     Eliminates the duplicate LM-weight copy that the split init/step pair
@@ -660,6 +660,13 @@ def make_decoder_unified_wrapper(torch: Any, model: Any) -> Any:
             self.language_model = m.language_model
             self.audio_token_id = m.config.audio_token_id
             self._weight_dtype = weight_dtype
+            # When set, the wrapper applies a sliding-window slice to the
+            # KV outputs so present_key/value become shape
+            # [B, H, static_past_len, D] (last static_past_len positions).
+            # This makes the present outputs directly chainable as next-step
+            # past_kv inputs without a CPU-side slice. Used by the
+            # --static-shapes-unified export (Run 15 phase 2c, issue #41).
+            self._static_past_len = static_past_len
 
         def forward(
             self,
@@ -708,6 +715,17 @@ def make_decoder_unified_wrapper(torch: Any, model: Any) -> Any:
             )
             new_keys = [layer.keys for layer in out.past_key_values.layers]
             new_values = [layer.values for layer in out.past_key_values.layers]
+            # When the export pins past_len, slice present KV to the last
+            # `static_past_len` positions so the output shape matches the
+            # pinned past_kv input shape. The next call's past_kv input is
+            # then identical in shape to this call's KV output, and ORT
+            # can chain them GPU-resident with no host slice. Quality is
+            # preserved as long as prompt_len + max_new_tokens <=
+            # static_past_len; the dropped positions are leading zero-pad
+            # because past_kv is right-aligned (newest at the end).
+            if self._static_past_len is not None:
+                new_keys = [k[:, :, -self._static_past_len:, :] for k in new_keys]
+                new_values = [v[:, :, -self._static_past_len:, :] for v in new_values]
             # Logits → fp32 boundary so C# argmax stays unchanged. KV stays
             # in weight dtype (uncast).
             return (out.logits.to(torch.float32), *new_keys, *new_values)
@@ -1405,7 +1423,10 @@ def main() -> int:
     # --static-shapes-probe and --static-shapes-unified both imply --unified-decoder.
     use_unified = args.unified_decoder or args.static_shapes_probe or args.static_shapes_unified
     if use_unified and not args.skip_decoder:
-        unified_wrapper = make_decoder_unified_wrapper(torch, model)
+        # When --static-shapes-unified is set, the wrapper slices KV outputs
+        # to past_len so present_kv is directly chainable as next past_kv.
+        unified_static_past_len = args.static_past_len if args.static_shapes_unified else None
+        unified_wrapper = make_decoder_unified_wrapper(torch, model, static_past_len=unified_static_past_len)
         # Trace-dummy strategy varies by export mode:
         # - default: B=input_ids.shape[0], S=2 (mid-prompt), past=2 (mid-cache);
         #   both non-zero so dynamo doesn't specialise either.
