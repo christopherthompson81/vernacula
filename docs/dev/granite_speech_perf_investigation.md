@@ -1586,3 +1586,65 @@ kernels, recovering more of the 25 % SM headroom Run 10 saw.
   multi-day effort given the existing investigation log's note that
   the unified decoder export is non-trivial.
 
+## Run 14 — 2026-05-10 — `enable_cuda_graph=1` probe (road 1 confirmed dead)
+
+**Marginal-value follow-on to Run 13.** Road 1 (disable CPU-fallback
+heuristic) had no documented user-facing knob in ORT 1.24.4 — the
+`fallback_cpu_capability` heuristic isn't a graph transformer and so
+isn't reachable via `kOrtSessionOptionsDisableSpecifiedOptimizers`,
+and `OrtCUDAProviderOptions` exposes no `disable_cpu_preferred_nodes`
+flag. The closest public-API proxy is the CUDA-graph capture knob
+`enable_cuda_graph=1`, which requires zero Memcpy nodes and static
+shapes — both of which Granite's decoder violates per Runs 12–13.
+Setting it should fail loud and corroborate the diagnosis.
+
+**Setup:** Temporarily added a `VERNACULA_GRANITE_TRY_CUDA_GRAPH=1`
+env-var gate around Granite's decoder session construction in
+`GraniteSpeech.cs`, replacing the shared SessionOptions with a fresh
+one that calls `cudaProviderOptions.UpdateOptions(["enable_cuda_graph"] = "1")`.
+Probe code reverted post-run; no permanent footprint.
+
+**Result:** Session init succeeded. ORT emitted exactly the warning
+that Run 13's analysis predicted:
+
+```
+[W:onnxruntime:, inference_session.cc:2444 Initialize]
+This model has shape massaging nodes that will execute on CPU.
+Use the graph capture feature with caution. As long as the
+intermediate shapes produced in the model using the representative
+input used to capture the graph, will match the shapes produced in
+the model for other inputs of the same shape as the representative
+input (common case), it is safe to use the graph capture feature.
+```
+
+ORT captured the full graph (CPU-resident shape-massaging nodes
+included) into a single CUDA-graph launchable unit, with shapes
+baked at the first call. The very first decoder step at a different
+shape — which is every subsequent step, since `past_key_31` grows by
+1 row each iteration — crashed:
+
+```
+[E:onnxruntime:CSharpOnnxRuntime, cuda_call.cc:123 CudaCall]
+CUDA failure 700: an illegal memory access was encountered ;
+file=cuda_graph.cc ; line=82 ; expr=cudaGraphLaunch(graph_exec, stream_);
+terminate called after throwing an instance of 'onnxruntime::OnnxRuntimeException'
+```
+
+Exit 134 (SIGABRT).
+
+**Implication:** Road 1 is dead. ORT's own message corroborates Run
+13: the "shape massaging" CPU island is exactly what's preventing
+clean GPU placement, and there's no public-API toggle that disables
+it without also breaking dynamic-shape decoding. Road 3 (static-shape
+re-export) is the only remaining path — and the same export work
+that folds out the shape island would also let `enable_cuda_graph=1`
+work as a *secondary* gain, since with static shapes capture +
+replay would be safe.
+
+**Honest retrospective on Run 14:** Run 13 had already established
+the cause; this probe added confirming evidence but no new direction.
+In hindsight, going straight to Run 15 would have been the better
+call. Cost was modest (~15 min) so net not damaging, but worth
+flagging in the next decision so we don't repeat the pattern of
+"probe an already-dead option for completeness".
+
