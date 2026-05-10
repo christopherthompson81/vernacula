@@ -138,6 +138,15 @@ public sealed class GraniteSpeech : IDisposable
                                             // step; no buffer-sharing
                                             // IOBinding possible. Run 20
                                             // phase 4.
+    private readonly bool _hasNextTokenOutput;   // Bundle was rewritten with
+                                            // --add-argmax: the LM head has
+                                            // an on-GPU Slice(last) + ArgMax
+                                            // appended and `logits` is no
+                                            // longer a graph output —
+                                            // `next_token` (int64 [B, 1])
+                                            // is. Eliminates ~6 MB of
+                                            // GPU→CPU logits transfer per
+                                            // step (Run 20 phase 9).
     private readonly int _staticBatchSize;
     private readonly int _staticPastLen;
     private readonly int _staticAudioLen;
@@ -175,6 +184,7 @@ public sealed class GraniteSpeech : IDisposable
         _isStaticBundle = false;
         _isGqaBundle = _decoder.InputMetadata.ContainsKey("seqlens_k");
         _hasPositionIdsInput = _decoder.InputMetadata.ContainsKey("position_ids");
+        _hasNextTokenOutput = _decoder.OutputMetadata.ContainsKey("next_token");
         // Dynamic GQA: GQA bundle with past_kv batch dim symbolic
         // (no static batch pinning).
         _isDynamicGqaBundle = false;
@@ -588,7 +598,12 @@ public sealed class GraniteSpeech : IDisposable
             decInputNames.Add($"past_key_{L}");
             decInputNames.Add($"past_value_{L}");
         }
-        var decOutputNames = new List<string>(1 + 2 * NumDecoderLayers) { "logits" };
+        // If the bundle was rewritten with --add-argmax, the LM head emits
+        // `next_token` (int64 [B, 1]) instead of `logits` (fp32 [B, S, V]).
+        // The argmax happens on the GPU and we only transfer 8 bytes per
+        // row per step instead of ~6 MB.
+        string headOutputName = _hasNextTokenOutput ? "next_token" : "logits";
+        var decOutputNames = new List<string>(1 + 2 * NumDecoderLayers) { headOutputName };
         for (int L = 0; L < NumDecoderLayers; L++) decOutputNames.Add($"present_key_{L}");
         for (int L = 0; L < NumDecoderLayers; L++) decOutputNames.Add($"present_value_{L}");
 
@@ -644,14 +659,31 @@ public sealed class GraniteSpeech : IDisposable
                 runOpts, decInputNames, prefillInputs, decOutputNames);
 
             // Argmax per row at the LAST position (S-1) — left-padding
-            // means real last token sits there for every row.
-            var prefillLogitsSpan = prefillOutputs[0].GetTensorDataAsSpan<float>();
-            for (int b = 0; b < B; b++)
+            // means real last token sits there for every row. With
+            // --add-argmax the head emits `next_token` (int64 [B, 1]),
+            // so we just read tokens directly; otherwise argmax the
+            // float logits on CPU.
+            if (_hasNextTokenOutput)
             {
-                long tok = ArgmaxRowLastPosition(prefillLogitsSpan, b, sMax, VocabSize);
-                nextTok[b] = tok;
-                generated[b].Add(tok);
-                if (tok == EosTokenId) { finished[b] = true; finishedCount++; }
+                var prefillTokSpan = prefillOutputs[0].GetTensorDataAsSpan<long>();
+                for (int b = 0; b < B; b++)
+                {
+                    long tok = prefillTokSpan[b];
+                    nextTok[b] = tok;
+                    generated[b].Add(tok);
+                    if (tok == EosTokenId) { finished[b] = true; finishedCount++; }
+                }
+            }
+            else
+            {
+                var prefillLogitsSpan = prefillOutputs[0].GetTensorDataAsSpan<float>();
+                for (int b = 0; b < B; b++)
+                {
+                    long tok = ArgmaxRowLastPosition(prefillLogitsSpan, b, sMax, VocabSize);
+                    nextTok[b] = tok;
+                    generated[b].Add(tok);
+                    if (tok == EosTokenId) { finished[b] = true; finishedCount++; }
+                }
             }
             prefillOutputs[0].Dispose();
             posPrefillVal?.Dispose();
@@ -692,7 +724,11 @@ public sealed class GraniteSpeech : IDisposable
             // per-step GetTensorDataAsSpan readout that pulls logits across
             // the GPU→CPU bus implicitly.
             float[] dummyAudio = new float[B * 1 * (int)audioDim];
-            float[] stepLogitsBuf = new float[B * 1 * VocabSize];
+            // With --add-argmax bundles the head output is `next_token`
+            // int64 [B, 1] — pre-allocate a small CPU buffer for it; the
+            // float logits buffer is unused in that case.
+            float[]? stepLogitsBuf = _hasNextTokenOutput ? null : new float[B * 1 * VocabSize];
+            long[]? stepNextTokenBuf = _hasNextTokenOutput ? new long[B * 1] : null;
             long[] stepPositionIds = new long[B];
 
             using var stepInputIdVal = OrtValue.CreateTensorValueFromMemory(
@@ -704,8 +740,14 @@ public sealed class GraniteSpeech : IDisposable
             using var stepPosVal = _hasPositionIdsInput
                 ? OrtValue.CreateTensorValueFromMemory(stepPositionIds, new long[] { B, 1 })
                 : null;
-            using var stepLogitsVal = OrtValue.CreateTensorValueFromMemory(
-                stepLogitsBuf, new long[] { B, 1, VocabSize });
+            using var stepLogitsVal = stepLogitsBuf is null
+                ? null
+                : OrtValue.CreateTensorValueFromMemory(
+                    stepLogitsBuf, new long[] { B, 1, VocabSize });
+            using var stepNextTokenVal = stepNextTokenBuf is null
+                ? null
+                : OrtValue.CreateTensorValueFromMemory(
+                    stepNextTokenBuf, new long[] { B, 1 });
 
             // Lifetime management across iterations follows WhisperTurbo's
             // pattern (see WhisperTurbo.cs step loop): pastKvs holds borrowed
@@ -752,11 +794,14 @@ public sealed class GraniteSpeech : IDisposable
                     stepBinding.BindInput($"past_key_{L}",   pastKvs[2 * L]);
                     stepBinding.BindInput($"past_value_{L}", pastKvs[2 * L + 1]);
                 }
-                // Bind output order matches `decOutputNames` so GetOutputValues()
-                // indices line up: [0]=logits, [1..40]=present_key_<L>,
-                // [41..80]=present_value_<L> — same convention as the non-
-                // IOBinding code path.
-                stepBinding.BindOutput("logits", stepLogitsVal);
+                // Bind output order matches `decOutputNames` so
+                // GetOutputValues() indices line up: [0]=head (logits or
+                // next_token), [1..40]=present_key_<L>, [41..80]=
+                // present_value_<L>.
+                if (_hasNextTokenOutput)
+                    stepBinding.BindOutput("next_token", stepNextTokenVal!);
+                else
+                    stepBinding.BindOutput("logits", stepLogitsVal!);
                 for (int L = 0; L < NumDecoderLayers; L++)
                     stepBinding.BindOutputToDevice($"present_key_{L}", cudaMemInfo);
                 for (int L = 0; L < NumDecoderLayers; L++)
@@ -781,25 +826,34 @@ public sealed class GraniteSpeech : IDisposable
                 prevStepOutputs?.Dispose();
                 prevStepOutputs = curOutputs;
 
-                // Logits are in stepLogitsBuf (CPU) via BindOutput — direct
-                // .NET array read, no GetTensorDataAsSpan round-trip.
-                var stepLogitsSpan = new ReadOnlySpan<float>(stepLogitsBuf);
-                for (int b = 0; b < B; b++)
+                // Read next token: either from the GPU-argmax output
+                // (`next_token`, int64) or by argmaxing the float logits
+                // on CPU.
+                if (_hasNextTokenOutput)
                 {
-                    if (finished[b]) { nextTok[b] = EosTokenId; continue; }
-                    long tok = ArgmaxRowLastPosition(stepLogitsSpan, b, 1, VocabSize);
-                    nextTok[b] = tok;
-                    generated[b].Add(tok);
-                    if (tok == EosTokenId)
+                    for (int b = 0; b < B; b++)
                     {
-                        finished[b] = true;
-                        finishedCount++;
+                        if (finished[b]) { nextTok[b] = EosTokenId; continue; }
+                        long tok = stepNextTokenBuf![b];
+                        nextTok[b] = tok;
+                        generated[b].Add(tok);
+                        if (tok == EosTokenId) { finished[b] = true; finishedCount++; }
+                        else if (IsRepetitionLoop(generated[b]))
+                        { finished[b] = true; loopDetected[b] = true; finishedCount++; }
                     }
-                    else if (IsRepetitionLoop(generated[b]))
+                }
+                else
+                {
+                    var stepLogitsSpan = new ReadOnlySpan<float>(stepLogitsBuf);
+                    for (int b = 0; b < B; b++)
                     {
-                        finished[b] = true;
-                        loopDetected[b] = true;
-                        finishedCount++;
+                        if (finished[b]) { nextTok[b] = EosTokenId; continue; }
+                        long tok = ArgmaxRowLastPosition(stepLogitsSpan, b, 1, VocabSize);
+                        nextTok[b] = tok;
+                        generated[b].Add(tok);
+                        if (tok == EosTokenId) { finished[b] = true; finishedCount++; }
+                        else if (IsRepetitionLoop(generated[b]))
+                        { finished[b] = true; loopDetected[b] = true; finishedCount++; }
                     }
                 }
                 pastLen = totalLen;

@@ -3453,6 +3453,87 @@ Remaining levers, in order of decreasing realism:
 
 This is a good place to call the perf arc done.
 
+## Run 20 phase 9 — 2026-05-10 15:55 — GPU-side argmax (negative result, lever preserved)
+
+Phase 8's profile showed GPU at peak 90 % with the remaining
+host-side cost being the per-step logits transfer
+(`[B, 1, V]` = ~6 MB GPU→CPU per step). The thinking: append
+`Slice(last position) → ArgMax(V)` to the LM head so the head
+output becomes `next_token` (int64 [B, 1]) — 8 bytes per row
+instead of 400 KB. Greedy decoding doesn't need the raw logits.
+
+### Implementation
+
+Two pieces:
+
+  - **Rewriter** (`rewrite_attention_to_mha.py`): new `--add-argmax`
+    flag. Appends two nodes — `Slice` (axes=[1], starts=[-1],
+    ends=[INT_MAX]) and `ArgMax` (axis=2, keepdims=0) — and
+    removes `logits` from the graph outputs in favour of
+    `next_token` ([B, 1] int64). The Slice runs first so the
+    ArgMax operates on a `[B, 1, V]` tensor regardless of S
+    (prefill or step).
+  - **C# driver** (`GraniteSpeech.cs`): new `_hasNextTokenOutput`
+    flag detected from the decoder's `OutputMetadata`. When set,
+    `decOutputNames[0]` is `"next_token"`; prefill reads tokens
+    via `GetTensorDataAsSpan<long>()`; the step loop binds
+    `next_token` to a pre-allocated `long[B]` buffer via
+    `BindOutput`, skipping the CPU-side argmax entirely.
+
+Both pieces auto-detect from graph metadata, so the same C#
+binary handles bundles with or without argmax.
+
+### Results (3 runs each on `/tmp/run15_short_60s.wav`)
+
+| Bundle | ASR median |
+|---|---|
+| MHA dynamic + IOBinding (phase 8) | 3.61 s |
+| **MHA dynamic + IOBinding + GPU argmax (this run)** | **3.78 s** |
+
+A ~5 % regression. Per-batch stage breakdown (from `granite-prof`):
+
+| Phase | B=16 prefill | B=16 step (25 iter) | B=2 prefill | B=2 step (35 iter) |
+|---|---|---|---|---|
+| With argmax | **236 ms** | 627 ms (25 ms/step) | **56 ms** | 684 ms (20 ms/step) |
+| Without | 444 ms | 428 ms (17 ms/step) | 98 ms | 470 ms (13 ms/step) |
+| Δ | −208 ms | **+199 ms** | −42 ms | **+214 ms** |
+
+### Interpretation
+
+The argmax pass wins at **prefill** and loses at **step**:
+
+  - Prefill: logits is `[B, S, V]`; for B=16, S~85 that's ~545 MB
+    of GPU→CPU traffic *without* argmax. Replacing with `[B, 1]`
+    int64 eliminates almost all of it. Saved ~250 ms total.
+  - Step: logits is `[B, 1, V]`; for B=16 that's ~6 MB per step.
+    Transfer cost is ~1 ms. But the CUDA `ArgMax` kernel over
+    100 353 vocab × 16 rows costs ~6 ms per step — more than it
+    saves. Lost ~360 ms across the 60-step run.
+
+The step kernel cost dominates a 60-step-heavy workload. For a
+prompt-heavy / low-generation profile (e.g. transcript summary
+prompts) the prefill saving could win.
+
+### Decision
+
+Keep both the rewriter flag and C# detection — they're plumbing
+that's correct and tested, and the right answer for some
+workloads. Default to NOT adding argmax for our ASR profile;
+the MHA-fused dynamic + IOBinding bundle (phase 8) stays the
+recommended path at 3.61 s median.
+
+### What this taught us about the remaining slack
+
+The "12 MB per step transfer" worry was already addressed by
+phase 8's `BindOutput(logits, cpu_buffer)` — that bind is fast
+because ORT does a single DMA into our pre-allocated buffer.
+The remaining step-time cost is overwhelmingly **GPU compute
+time** (now ~17 ms/step for B=16, near our ~5 ms theoretical
+floor with realistic kernel-launch overhead). There isn't a big
+software lever left in the per-step loop; the next 2-3× would
+need quantisation (ruled out by user) or a different runtime
+(TRT-LLM, ruled out by repo scope).
+
 
 
 

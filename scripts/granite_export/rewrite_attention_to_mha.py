@@ -67,6 +67,11 @@ def parse_args() -> argparse.Namespace:
                          "(GroupQueryAttention). GQA enables compute-skip via "
                          "seqlens_k and requires a coordinated cache-layout "
                          "change in the C# driver.")
+    ap.add_argument("--add-argmax", action="store_true",
+                    help="Append Slice(last)+ArgMax(V) to the LM head and "
+                         "replace `logits` with `next_token` (int64 [B, 1]) "
+                         "as a graph output. Eliminates ~6 MB of "
+                         "GPU→CPU logits transfer per step (Run 20 phase 9).")
     return ap.parse_args()
 
 
@@ -433,6 +438,67 @@ def add_gqa_graph_inputs(graph: onnx.GraphProto, batch_dim: "int | str") -> None
             "total_sequence_length", TensorProto.INT32, []))
 
 
+def add_argmax_head(graph: onnx.GraphProto) -> None:
+    """Append `Slice(logits, last_position) → ArgMax(V) → next_token` to
+    the LM head, then replace `logits` in the graph outputs with
+    `next_token` (shape [B, 1], int64).
+
+    With left-padded prompts the real last token sits at S-1 for every
+    row at prefill, and at position 0 at step (S=1). Either way "last
+    position along axis 1" is what we want. Slicing first keeps the
+    ArgMax cheap (over [B, 1, V] instead of [B, S, V]).
+
+    Dropping `logits` from outputs lets ORT keep the logits tensor as
+    an on-device intermediate (no GPU→CPU transfer per step). Greedy
+    decoding only needs the argmax index, not the raw logits."""
+    # Find and remove the `logits` graph output (preserve its dtype info).
+    logits_vi = None
+    for i, o in enumerate(graph.output):
+        if o.name == "logits":
+            logits_vi = o
+            del graph.output[i]
+            break
+    if logits_vi is None:
+        raise ValueError("`logits` not found in graph outputs")
+
+    # Borrow batch dim spec from the (now-removed) logits output.
+    batch_dim_proto = logits_vi.type.tensor_type.shape.dim[0]
+    if batch_dim_proto.dim_value > 0:
+        batch_dim: "int | str" = batch_dim_proto.dim_value
+    else:
+        batch_dim = batch_dim_proto.dim_param
+
+    # Slice(logits, starts=[-1], ends=[INT_MAX], axes=[1]) → [B, 1, V].
+    starts_init = numpy_helper.from_array(
+        np.array([-1], dtype=np.int64), name="argmax_slice_starts")
+    ends_init = numpy_helper.from_array(
+        np.array([np.iinfo(np.int64).max], dtype=np.int64), name="argmax_slice_ends")
+    axes_init = numpy_helper.from_array(
+        np.array([1], dtype=np.int64), name="argmax_slice_axes")
+    graph.initializer.extend([starts_init, ends_init, axes_init])
+
+    slice_node = helper.make_node(
+        "Slice",
+        inputs=["logits", "argmax_slice_starts", "argmax_slice_ends", "argmax_slice_axes"],
+        outputs=["logits_last"],
+        name="argmax_slice",
+    )
+    argmax_node = helper.make_node(
+        "ArgMax",
+        inputs=["logits_last"],
+        outputs=["next_token"],
+        name="argmax_head",
+        axis=2,
+        keepdims=0,        # output shape [B, 1] (drop the V axis)
+    )
+    graph.node.extend([slice_node, argmax_node])
+
+    # Add `next_token` as graph output.
+    next_token_vi = helper.make_tensor_value_info(
+        "next_token", TensorProto.INT64, [batch_dim, 1])
+    graph.output.append(next_token_vi)
+
+
 def main() -> int:
     args = parse_args()
 
@@ -511,6 +577,11 @@ def main() -> int:
     del graph.node[:]
     graph.node.extend(new_node_list)
     graph.initializer.extend(all_new_inits)
+
+    if args.add_argmax:
+        add_argmax_head(graph)
+        print(f"  Replaced `logits` output with `next_token` (int64 [B, 1]) "
+              f"via Slice(last) + ArgMax(V).")
 
     # Need com.microsoft opset
     has_msft = any(o.domain == "com.microsoft" for o in model.opset_import)
