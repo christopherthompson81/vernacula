@@ -1623,11 +1623,24 @@ public sealed class GraniteSpeech : IDisposable
             if (swPrefill != null) { swPrefill.Stop(); prefillLocal = swPrefill.ElapsedMilliseconds; }
             var swStep = _profile ? System.Diagnostics.Stopwatch.StartNew() : null;
 
-            // ── Step loop ────────────────────────────────────────────────
+            // ── Step loop with IOBinding (Run 20 phase 3) ─────────────────
+            // Bind past_key_<L> input and present_key_<L> output to the SAME
+            // OrtValue per layer. GQA detects the shared buffer (same memory
+            // address for past and present) and writes new K in place at
+            // past_kv[seqlens_k+1] without copying the rest of the cache.
+            // Per-step memcpy elimination is 80 layers × 16 × 4 × 512 × 128
+            // × 2 (bf16) = ~6.4 GB of avoided KV traffic per step iteration.
+            //
+            // Logits is bound to a pre-allocated CPU buffer so we can argmax
+            // directly without an extra GetTensorDataAsSpan round-trip.
             float[] dummyAudio = new float[B * A * (int)audioDim];
             long[] stepInputIds = new long[B];
             long[] cachePosStep = new long[1];
-            long[] stepPositionIds = new long[B];   // shape [B, 1] flattened
+            long[] stepPositionIds = new long[B];
+            float[] stepLogitsBuf = new float[B * 1 * VocabSize];
+
+            using var cudaMemInfo = new OrtMemoryInfo(
+                "Cuda", OrtAllocatorType.ArenaAllocator, 0, OrtMemType.Default);
 
             for (int step = 0; step < maxNewTokens && finishedCount < B; step++)
             {
@@ -1639,14 +1652,13 @@ public sealed class GraniteSpeech : IDisposable
                     seqlensKBuf[b] = sl;
                     int rowTotal = sl + 1;
                     if (rowTotal > maxTotalLen) maxTotalLen = rowTotal;
-                    stepPositionIds[b] = sl;          // RoPE at the write position
+                    stepPositionIds[b] = sl;
                     stepInputIds[b] = (b >= realB || finished[b]) ? EosTokenId : nextTok[b];
                 }
                 int totalLen = maxTotalLen;
                 totalSeqBuf[0] = totalLen;
-                cachePosStep[0] = totalLen - 1;       // shared; only used by dead code
+                cachePosStep[0] = totalLen - 1;
 
-                // attention_mask [B, totalLen]: real rows have 1s at [0, realLen[b]+step+1).
                 var stepMaskBatch = new long[B * totalLen];
                 for (int b = 0; b < realB; b++)
                 {
@@ -1670,26 +1682,33 @@ public sealed class GraniteSpeech : IDisposable
                     seqlensKBuf, new long[] { B });
                 using var stepTotalSeqVal = OrtValue.CreateTensorValueFromMemory(
                     totalSeqBuf, Array.Empty<long>());
+                using var stepLogitsVal = OrtValue.CreateTensorValueFromMemory(
+                    stepLogitsBuf, new long[] { B, 1, VocabSize });
 
-                var stepInputs = new List<OrtValue>(7 + 2 * NumDecoderLayers)
-                { stepInputIdVal, stepAudioVal, stepAttnVal, stepCpVal, stepPosVal };
-                stepInputs.AddRange(pastKvs);
-                stepInputs.Add(stepSeqlensVal);
-                stepInputs.Add(stepTotalSeqVal);
-
-                var outputs = _decoder.Run(
-                    runOpts, decInputNames, stepInputs, decOutputNames);
-
-                var oldPast = pastKvs;
-                pastKvs = new OrtValue[2 * NumDecoderLayers];
+                using var stepBinding = _decoder.CreateIoBinding();
+                stepBinding.BindInput("input_ids",             stepInputIdVal);
+                stepBinding.BindInput("audio_embeds",          stepAudioVal);
+                stepBinding.BindInput("attention_mask",        stepAttnVal);
+                stepBinding.BindInput("cache_position",        stepCpVal);
+                stepBinding.BindInput("position_ids",          stepPosVal);
+                stepBinding.BindInput("seqlens_k",             stepSeqlensVal);
+                stepBinding.BindInput("total_sequence_length", stepTotalSeqVal);
                 for (int L = 0; L < NumDecoderLayers; L++)
                 {
-                    pastKvs[2 * L]     = outputs[1 + L];
-                    pastKvs[2 * L + 1] = outputs[1 + NumDecoderLayers + L];
+                    stepBinding.BindInput($"past_key_{L}",   pastKvs[2 * L]);
+                    stepBinding.BindInput($"past_value_{L}", pastKvs[2 * L + 1]);
+                    // Same OrtValue as output → GQA writes new K in place.
+                    stepBinding.BindOutput($"present_key_{L}",   pastKvs[2 * L]);
+                    stepBinding.BindOutput($"present_value_{L}", pastKvs[2 * L + 1]);
                 }
+                stepBinding.BindOutput("logits", stepLogitsVal);
 
-                var stepLogits = outputs[0];
-                var stepLogitsSpan = stepLogits.GetTensorDataAsSpan<float>();
+                _decoder.RunWithBinding(runOpts, stepBinding);
+
+                // Logits are now in stepLogitsBuf (CPU). pastKvs OrtValues
+                // are unchanged references; their underlying GPU buffers
+                // have been updated in place.
+                var stepLogitsSpan = new ReadOnlySpan<float>(stepLogitsBuf);
                 for (int b = 0; b < realB; b++)
                 {
                     if (finished[b]) { nextTok[b] = EosTokenId; continue; }
@@ -1702,8 +1721,6 @@ public sealed class GraniteSpeech : IDisposable
                         finished[b] = true; loopDetected[b] = true; finishedCount++;
                     }
                 }
-                stepLogits.Dispose();
-                foreach (var ov in oldPast) ov.Dispose();
                 stepCountLocal++;
             }
 

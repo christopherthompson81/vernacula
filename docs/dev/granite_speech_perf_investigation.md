@@ -2947,6 +2947,92 @@ where to focus next:
   `/tmp/granite_gqa_all_bundle/` — serial-single-segment path,
   retained for fallback testing only.
 
+## Run 20 phase 3 — 2026-05-10 14:35 — IOBinding for in-place K/V
+
+User question: "We thought GQA would eliminate per-step KV memcpy
+without ballooning VRAM. Theory vs. result?"
+
+Honest contrast in the doc above. Phase 2's step loop used plain
+`_decoder.Run(...)` which allocates a FRESH `present_kv` buffer per
+call — same memcpy pattern as MHA. The buffer-sharing win that GQA
+documents was theoretically available but not yet realised in the
+C# driver. Phase 3 wires it via `OrtIoBinding`.
+
+### The wire change
+
+In `TranscribeStaticGqaBatched`'s step loop, replace the plain
+`Run(...)` with `RunWithBinding(...)`. Per layer:
+
+  - `BindInput("past_key_<L>", pastKvs[2*L])`
+  - `BindOutput("present_key_<L>", pastKvs[2*L])` — **same
+    `OrtValue`**. GQA detects same memory address and writes in
+    place, skipping the past → present copy.
+
+Plus a small extra: `BindOutput("logits", stepLogitsVal)` to a
+pre-allocated CPU buffer, so argmax reads native float without an
+extra `GetTensorDataAsSpan` round-trip. (Pattern lifted from
+`Qwen3Asr.cs:665` — the same in-place idiom that was discovered
+in that ASR backend's Phase-6 work.)
+
+### Results (3 runs each on `/tmp/run15_short_60s.wav`)
+
+| Bundle | ASR median |
+|---|---|
+| unfused-static (Run 18 baseline) | 13.29 s |
+| MHA-fused (Run 19) | 13.55 s |
+| GQA Phase 2 (no IOBinding) | 13.58 s |
+| **GQA Phase 3 (IOBinding, this run)** | **13.27 s** |
+| dynamic (Run 16) | ~3.4 s |
+
+Transcript still matches the unfused-static baseline through all
+18 segments.
+
+### Theory contrast
+
+The Run 20 phase 2 doc estimated ~6.4 GB of memcpy elimination
+per step (40 layers × 16 × 4 × 512 × 128 × 2 bytes × 2 for K+V).
+At ~1 TB/s HBM bandwidth that would be ~640 ms saved across 100
+steps — about 5 % of wall time.
+
+We observed ~300 ms saved (~2 %), about half the upper-bound
+estimate. Two likely explanations:
+
+1. **ORT's GQA without buffer sharing already does a partial
+   copy, not a full one.** The kernel probably memcopies only the
+   `[0, seqlens_k+1)` slice of past_kv into present_kv, then
+   writes the new K at the tail. With `realLen ≈ 80` and
+   `max_seq = 512`, that's ~16 % of the buffer, i.e. ~1 GB per
+   step instead of 6.4 GB. Saving 300 ms on ~1 GB of avoided
+   traffic is consistent with that.
+2. **FFN-bound layers don't benefit.** Even with KV write
+   eliminated, the GEMMs that follow are the bottleneck. We're
+   bandwidth-limited on the FFN, not the cache append.
+
+Either way: the theory was directionally right (memcpy
+elimination is a real lever) but the magnitude was overstated.
+This is the first time the GQA path has gone *below* the MHA
+path's wall time — a confirmation that buffer sharing works as
+claimed, just not as dramatically as the unconstrained
+back-of-envelope suggested.
+
+### Where the dynamic baseline's 4× lead still hides
+
+We've now closed the gap GQA was supposed to close (~2 %). The
+remaining 10 s of static-vs-dynamic delta is NOT in attention
+fusion, NOT in compute-skip, and NOT in KV memcpy. Run 20 phase 2
+called out three suspects worth a look:
+
+1. **`A = 192` audio pinning.** Encoder runs over 192 frames per
+   segment regardless of actual audio length. Most real segments
+   have far fewer.
+2. **Static-shape kernel selection.** ORT's graph optimizer can't
+   pick small-shape kernels when the signature pins B=16, S<=512.
+3. **Step-loop CPU overhead.** Even with IOBinding, building the
+   IO binding object, allocating per-step `stepMaskBatch`
+   buffers, and running the Python-style per-step loop has fixed
+   cost. ORT-genai's continuous-batching pattern amortises this
+   across many tokens.
+
 
 
 
