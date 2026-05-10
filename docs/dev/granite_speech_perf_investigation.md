@@ -1746,3 +1746,94 @@ Path forward likely involves a phase-1b probe of variant 3 to see
 whether partial pinning suffices, then commit to variant 1 if
 variant 3 leaves residual shape arithmetic.
 
+## Run 15 phase 2a — 2026-05-10 — Variant B probe (seq dynamic, others pinned)
+
+**Setup:** Added `--static-shapes-unified` flag plus `--static-batch /
+--static-past-len / --static-audio-len` knobs. The unified decoder
+exports with `batch / past_len / audio_len` pinned to integer
+literals; `seq` and `total_len` stay symbolic via
+`torch.export.Dim`. This is variant B from the phase-1 architectural
+discussion: a single 7 GB graph that handles both prefill and step,
+with the dim that's *architecturally* dynamic (`seq` differs between
+prefill and step) preserved as such.
+
+Probe export at small dims (`B=4, past=8, audio=8, seq=Dim(1..4096)`)
+to keep export fast and the test apples-to-apples with phase 1.
+
+```bash
+python scripts/granite_export/export_granite_speech_to_onnx.py \
+  --output-dir /tmp/granite_static_unified_probe \
+  --device cpu --dtype bfloat16 \
+  --skip-mel --skip-encoder --skip-projector \
+  --static-shapes-unified \
+  --static-batch 4 --static-past-len 8 --static-audio-len 8 \
+  --overwrite
+```
+
+**Result — graph composition:**
+
+| Metric                   | Run 13 (dynamic) | Phase 1 (all pinned) | **Phase 2a (variant B)** |
+|--------------------------|-----------------:|---------------------:|-------------------------:|
+| Total nodes              |            3,161 |                2,766 |                **2,791** |
+| Reshape                  |              300 |                  243 |                  **245** |
+| Concat                   |              278 |                  161 |                  **169** |
+| Slice                    |              199 |                  160 |                  **160** |
+| Cast                     |              170 |                  169 |                  **170** |
+| Shape                    |               59 |                  <20 |                    **3** |
+| Squeeze (`sym_size_int_*`) |             57 |                    0 |                    **0** |
+| Add                      |              336 |                  281 |                  **282** |
+
+Variant B is essentially identical to phase 1 in graph shape. The
+extra 25 nodes (2,791 vs 2,766) come from preserving `seq` /
+`total_len` symbolics — a few Concat/Reshape ops that depend on
+`total_len = past_len + seq` survive constant folding because
+`seq` is still symbolic.
+
+**Result — ORT verdict:**
+
+```
+=== Memcpy warnings: [] ===
+=== Named Memcpy boundary tensors: [] ===
+=== CPU-fallback ops (total 10, 10 unique) ===
+     7  Concat
+     1  sym_size_int
+     1  add
+     1  Reshape
+=== Raw Memcpy mentions ===
+  GraphTransformer MemcpyTransformer modified: 1 with status: OK
+```
+
+- **Zero "Memcpy nodes are added" WARNINGS.** ORT did not emit the
+  graph-level fan-out warning that fired 3 times in Run 12 (5+2+1
+  Memcpy nodes for Granite). The MemcpyTransformer pass ran but
+  produced no graph-level boundary node (or one too small to warn
+  about; the count if any is sub-warning-threshold).
+- **10 CPU-fallback ops vs Run 12's 64.** The remaining 10 are tiny
+  int64-scalar shape arithmetic (7 Concat + 1 sym_size_int + 1 add
+  + 1 Reshape) that compute `total_len` from `past_len + seq` since
+  `seq` is symbolic. Each call shuttles bytes, not megabytes.
+
+**Implication:**
+
+Variant B is production-viable. The 10 residual CPU-fallback ops
+operate on int64 scalars (sub-100 bytes each) and aren't surrounded
+by graph-level Memcpy boundary nodes — meaning ORT keeps the GPU
+tensor-flow plumbing intact and only the tiny shape arithmetic
+trips out to CPU. Order-of-magnitude reduction in measured H↔D
+volume is expected once we measure on a real run (Run 16).
+
+Phase 2 commits to **variant B**: production export at
+`B=16, past_len=256, audio_len=375` with `seq` dynamic.
+
+**Next:**
+
+- Phase 2b: production-shape export to a sibling models dir
+  (`granite_speech_4_1_2b_static_bf16/`), full bundle (mel + encoder
+  + projector + decoder).
+- Phase 2c: C# adaptation in `GraniteSpeech.cs` — pre-allocate KV at
+  past_len=256, pad batches to 16, pad audio_embeds to 375, attention
+  mask gates the padding.
+- Phase 2d: parity tests against the dynamic graph.
+- Run 16: end-to-end nsys benchmark — confirm cudaMemcpyAsync drops
+  from 74 % to single-digit %.
+

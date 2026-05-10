@@ -136,6 +136,30 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--static-shapes-unified",
+        action="store_true",
+        help=(
+            "Run 15 phase 2 (issue #41): production-target export of the "
+            "unified decoder. Pins batch / past_len / audio_len to fixed "
+            "values; keeps seq dynamic so a single graph handles both "
+            "prefill (S=prompt_len) and step (S=1). Implies --unified-decoder."
+        ),
+    )
+    parser.add_argument(
+        "--static-batch", type=int, default=16,
+        help="Pinned batch size for --static-shapes-unified (default 16).")
+    parser.add_argument(
+        "--static-past-len", type=int, default=256,
+        help="Pinned past-KV length for --static-shapes-unified (default 256).")
+    parser.add_argument(
+        "--static-audio-len", type=int, default=375,
+        help=(
+            "Pinned audio_embeds length for --static-shapes-unified "
+            "(default 375 = 30 s of audio at 12.5 fps after projector "
+            "subsampling)."
+        ),
+    )
+    parser.add_argument(
         "--dummy-seconds",
         type=float,
         default=2.0,
@@ -1040,6 +1064,7 @@ def export_decoder_unified(
     opset: int,
     legacy: bool,
     static_shapes_probe: bool = False,
+    static_shapes_unified: bool = False,
 ) -> None:
     """Export the unified prefill+step graph.
 
@@ -1088,6 +1113,33 @@ def export_decoder_unified(
         # treats the trace-dummy shape as the static shape.
         dynamic_axes: dict[str, dict[int, str]] = {}
         dyn_shapes = ({}, {}, {}, {}) + (tuple({} for _ in range(2 * NUM_DECODER_LAYERS)),)
+    elif static_shapes_unified:
+        # Phase-2 production target: pin batch / past_len / audio_len; keep
+        # seq dynamic so a single graph handles both prefill (S=prompt_len)
+        # and step (S=1). total_len = seq + past_len → dynamic too because
+        # of seq, but with past_len pinned the position-arange chain that
+        # caused Run 13's CPU island folds at past_len rather than running
+        # per-call. Empty dim dict on a dim => static (shape from dummy);
+        # Dim object => symbolic.
+        seq = _make_dim(torch, "seq", min=1, max=4096)
+        total = _make_dim(torch, "total_len", min=1, max=4096)
+
+        dynamic_axes = {
+            "input_ids":      {1: "seq"},
+            "attention_mask": {1: "total_len"},
+            "cache_position": {0: "seq"},
+            "logits":         {1: "seq"},
+        }
+        # past_kv / audio_embeds / batch all static — no dynamic_axes entry.
+
+        past_kv_shapes = tuple({} for _ in range(2 * NUM_DECODER_LAYERS))
+        dyn_shapes = (
+            {1: seq},                    # input_ids
+            {},                          # audio_embeds (fully static)
+            {1: total},                  # attention_mask
+            {0: seq},                    # cache_position
+            past_kv_shapes,              # past_kv (all static)
+        )
     else:
         batch = _make_dim(torch, "batch", min=1, max=65535)
         seq = _auto_dim(torch)         # input_ids[1] / cache_position[0] / new positions
@@ -1350,21 +1402,28 @@ def main() -> int:
         proj_out = projector_wrapper(enc_out)
 
     # -------- Decoder (unified or split) --------
-    # --static-shapes-probe implies --unified-decoder.
-    use_unified = args.unified_decoder or args.static_shapes_probe
+    # --static-shapes-probe and --static-shapes-unified both imply --unified-decoder.
+    use_unified = args.unified_decoder or args.static_shapes_probe or args.static_shapes_unified
     if use_unified and not args.skip_decoder:
         unified_wrapper = make_decoder_unified_wrapper(torch, model)
-        # Trace dummy. Without --static-shapes-probe: B=input_ids.shape[0],
-        # S=2 (mid-prompt), past=2 (mid-cache); both non-zero so dynamo doesn't
-        # specialise either to a fixed value.
-        # With --static-shapes-probe (Run 15 phase 1): B=4, S=1 (step-only),
-        # past=8, audio_len=8. Small fixed values; the export pins every dim
-        # so the constant folder can collapse the shape-arithmetic backbone.
+        # Trace-dummy strategy varies by export mode:
+        # - default: B=input_ids.shape[0], S=2 (mid-prompt), past=2 (mid-cache);
+        #   both non-zero so dynamo doesn't specialise either.
+        # - --static-shapes-probe (Run 15 phase 1): B=4, S=1, past=8, audio=8.
+        # - --static-shapes-unified (Run 15 phase 2): production sizes from CLI
+        #   (--static-batch / --static-past-len / --static-audio-len). S
+        #   stays symbolic at runtime; trace at S=2 to keep dynamo from
+        #   specialising it.
         if args.static_shapes_probe:
             bsz = 4
             seq_dummy = 1
             past_dummy = 8
             audio_dummy_len = 8
+        elif args.static_shapes_unified:
+            bsz = args.static_batch
+            seq_dummy = 2
+            past_dummy = args.static_past_len
+            audio_dummy_len = args.static_audio_len
         else:
             bsz = input_ids.shape[0]
             seq_dummy = 2
@@ -1375,7 +1434,7 @@ def main() -> int:
         # cache+seq alignment matches. In probe mode, build fresh dummies at
         # the pinned dims rather than slicing proj_out (whose batch / audio_len
         # came from the real audio).
-        if args.static_shapes_probe:
+        if args.static_shapes_probe or args.static_shapes_unified:
             audio_hidden = proj_out.shape[-1]
             u_input_ids = torch.zeros((bsz, seq_dummy), dtype=input_ids.dtype, device=input_ids.device)
             u_audio_embeds = torch.zeros(
@@ -1421,6 +1480,7 @@ def main() -> int:
             args.opset,
             args.legacy_exporter,
             static_shapes_probe=args.static_shapes_probe,
+            static_shapes_unified=args.static_shapes_unified,
         )
         report["stages"]["decoder_unified"] = {"seconds": round(time.time() - t0, 2)}
         if args.static_shapes_probe:
@@ -1429,6 +1489,12 @@ def main() -> int:
                 "batch": bsz, "seq": seq_dummy, "past_len": past_dummy,
                 "audio_len": audio_dummy_len,
             }
+        elif args.static_shapes_unified:
+            report["stages"]["decoder_unified"]["static_shapes_unified"] = True
+            report["stages"]["decoder_unified"]["pinned_dims"] = {
+                "batch": bsz, "past_len": past_dummy, "audio_len": audio_dummy_len,
+            }
+            report["stages"]["decoder_unified"]["dynamic_dims"] = ["seq", "total_len"]
     elif not args.skip_decoder:
         decoder_init_wrapper = make_decoder_init_wrapper(torch, model)
         decoder_step_wrapper = make_decoder_step_wrapper(torch, model)
