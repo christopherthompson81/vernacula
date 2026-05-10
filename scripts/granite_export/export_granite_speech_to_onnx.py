@@ -1261,19 +1261,33 @@ def export_decoder_unified(
             "cache_position": {0: "seq"},
             "logits":         {0: "batch", 1: "seq"},
         }
+        if position_ids_input:
+            dynamic_axes["position_ids"] = {0: "batch", 1: "seq"}
         for name in _kv_names("past_key") + _kv_names("past_value"):
             dynamic_axes[name] = {0: "batch", 2: "past_len"}
         for name in _kv_names("present_key") + _kv_names("present_value"):
             dynamic_axes[name] = {0: "batch", 2: "total_len"}
 
         past_kv_shapes = tuple({0: batch, 2: past} for _ in range(2 * NUM_DECODER_LAYERS))
-        dyn_shapes = (
-            {0: batch, 1: seq},          # input_ids
-            {0: batch, 1: audio_len},    # audio_embeds
-            {0: batch, 1: total},        # attention_mask
-            {0: seq},                    # cache_position
-            past_kv_shapes,              # *past_kv
-        )
+        if position_ids_input:
+            # Variadic *rest captures (position_ids, *past_kv) as a single
+            # tuple — dyn_shapes' last entry must merge them.
+            rest_shapes = ({0: batch, 1: seq},) + past_kv_shapes
+            dyn_shapes = (
+                {0: batch, 1: seq},          # input_ids
+                {0: batch, 1: audio_len},    # audio_embeds
+                {0: batch, 1: total},        # attention_mask
+                {0: seq},                    # cache_position
+                rest_shapes,                 # *rest = (position_ids, *past_kv)
+            )
+        else:
+            dyn_shapes = (
+                {0: batch, 1: seq},          # input_ids
+                {0: batch, 1: audio_len},    # audio_embeds
+                {0: batch, 1: total},        # attention_mask
+                {0: seq},                    # cache_position
+                past_kv_shapes,              # *past_kv
+            )
 
     if position_ids_input:
         trace_args = (input_ids, audio_embeds, attention_mask, cache_position,

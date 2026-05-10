@@ -3033,6 +3033,81 @@ called out three suspects worth a look:
    cost. ORT-genai's continuous-batching pattern amortises this
    across many tokens.
 
+## Run 20 phase 4 — 2026-05-10 15:00 — Dynamic-shape GQA, drop static padding
+
+User pointed out: "We picked GQA because we didn't need to pad."
+Phases 1–3 still paid the static-shape pads (B=16 dummies, A=192
+audio, S=max(realLen) prompt). Phase 4 drops them.
+
+### Plan
+
+1. Default `else` branch of `export_decoder_unified` now accepts
+   `--unified-position-ids`, threading the new input through
+   `dynamic_axes` and `dyn_shapes` (variadic-merge same as the
+   static-shapes-unified branch).
+2. Rewriter's `find_kv_chain_for_gqa` now handles the case where
+   `present_key_<L>` is the Concat output directly (no Slice
+   between Concat and graph output) — that's how the dynamic
+   export emits it.
+3. Rewriter's adapter Reshape constants change from
+   `[16, -1, HIDDEN]` to `[0, -1, HIDDEN]` (ONNX-spec '0 means
+   preserve input dim'), so the batch dim stays symbolic.
+4. Rewriter's `add_gqa_graph_inputs` now accepts either an int
+   or a symbol name for `seqlens_k`'s batch dim, copying it
+   straight from `past_key_0`'s first dim.
+5. C# adds `_isDynamicGqaBundle` detection (GQA bundle whose
+   `past_key_0[0]` is symbolic/non-positive). Dispatch routes
+   each segment through a new `TranscribeDynamicGqaSingle`:
+   B = 1 per call, audio_embeds sized to actual audio tokens,
+   input_ids to actual prompt length, past_kv starts empty
+   `[1, 4, 0, 128]` and grows by 1 per step. No padding
+   anywhere.
+
+### Results (3 runs each on `/tmp/run15_short_60s.wav`)
+
+| Bundle | ASR median |
+|---|---|
+| unfused-static | 13.29 s |
+| MHA-fused (Run 19) | 13.55 s |
+| GQA phase 2 (no IOBinding) | 13.58 s |
+| GQA phase 3 (IOBinding) | 13.27 s |
+| **GQA phase 4 (Dynamic)** | **5.23 s** ← 2.5× faster |
+| dynamic baseline (legacy unfused) | ~3.4 s |
+
+Transcript exact match through all 18 segments.
+
+### What this confirms
+
+The user's reframing was correct: the static-shape padding was
+the real ceiling, not anything in attention math or KV traffic.
+Phases 1–3 of Run 20 chased percent-level wins inside the static
+contract; phase 4 dropped the contract and gave the 2.5× drop.
+
+The original GQA pitch — "no padding needed" — was true *only*
+once we stopped doing the other padding too. Within the static
+contract, GQA's seqlens_k was being used to mask off 432 padded
+slots per layer; but the same call was still running B=16 (15
+dummies) and A=192 audio (mostly zeros). The biggest wins came
+from dropping those, not from how attention was fused.
+
+### Remaining gap to dynamic baseline (~1.8 s)
+
+Still 1.8 s behind the legacy dynamic decoder. Plausible causes:
+
+- The legacy baseline batched multiple segments per call; we
+  serialise (one segment per `_decoder.Run`). 18 calls × ~280 ms
+  vs N batched calls — fixed per-call overhead matters.
+- The legacy baseline used eager attention, not GQA-fused. For
+  small shapes (B=1, S~80) the kernel-launch saving from fusion
+  may be smaller than batching saves.
+- Per-call OrtValue allocation overhead for `stepInputIds`,
+  `stepMask`, etc. adds up across hundreds of step iterations.
+
+A first try at closing this: batched dynamic-GQA with right-
+padded prompts + per-row position_ids (same trick that worked in
+phase 2 batched, now without the static-shape outer wrapper).
+That would let us amortise per-call overhead across segments.
+
 
 
 

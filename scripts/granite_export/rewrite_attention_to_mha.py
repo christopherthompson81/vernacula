@@ -220,21 +220,34 @@ def find_kv_chain_for_gqa(kv_tensor: str, producer, consumers):
             f"Concat {concat_node.name} inputs {list(concat_node.input)} "
             f"don't match expected past_kv/fresh_kv pattern")
 
-    # Find the Slice that consumes the concat output and produces the
-    # graph's present_key_<L>/present_value_<L> output.
-    slice_node = None
+    # Locate the present_key_<L>/present_value_<L> graph-output edge.
+    # Two shapes here:
+    #   - static-shapes-unified export: Concat → Slice → graph output (the
+    #     sliding-window slice that pins present_kv to past_len).
+    #   - dynamic-shape export: Concat output IS the graph output directly
+    #     (no Slice — present_kv grows by S each call).
+    present_name = None
+    drop_node = None        # node to remove so GQA's output can claim the name
     for c in consumers.get(concat_node.output[0], []):
         if c.op_type == "Slice" and (
             c.output[0].startswith("present_key_") or
             c.output[0].startswith("present_value_")
         ):
-            slice_node = c
+            present_name = c.output[0]
+            drop_node = c
             break
-    if slice_node is None:
-        raise ValueError(
-            f"Concat {concat_node.name} output has no present_kv Slice consumer")
+    if present_name is None:
+        # Direct: Concat output is itself the graph output.
+        concat_out = concat_node.output[0]
+        if concat_out.startswith("present_key_") or concat_out.startswith("present_value_"):
+            present_name = concat_out
+            drop_node = concat_node
+        else:
+            raise ValueError(
+                f"Concat {concat_node.name} output has no present_kv "
+                f"Slice consumer and isn't itself a graph output")
 
-    return past_kv, fresh_kv, slice_node.output[0], slice_node
+    return past_kv, fresh_kv, present_name, drop_node
 
 
 def rewrite_layer_mha(graph: onnx.GraphProto, softmax: onnx.NodeProto, layer_idx: int,
@@ -255,7 +268,7 @@ def rewrite_layer_mha(graph: onnx.GraphProto, softmax: onnx.NodeProto, layer_idx
 
     # Q must be rank 3 (B, S, hidden_size). Reshape needs the batch dim
     # explicit since it can only carry one -1.
-    init_q = make_const_int64(f"{pfx}_q_shape", [16, -1, HIDDEN])
+    init_q = make_const_int64(f"{pfx}_q_shape", [0, -1, HIDDEN])
 
     # Q adapter (B, 16, S, 128) -> (B, S, 2048)
     q_adapted = f"{pfx}_q_in"
@@ -334,7 +347,7 @@ def rewrite_layer_gqa(graph: onnx.GraphProto, softmax: onnx.NodeProto, layer_idx
     pfx = f"gqa_l{layer_idx}"
 
     # Q adapter: (B, 16, S, 128) -> (B, S, 2048)
-    init_q = make_const_int64(f"{pfx}_q_shape", [16, -1, HIDDEN])
+    init_q = make_const_int64(f"{pfx}_q_shape", [0, -1, HIDDEN])
     q_adapted = f"{pfx}_q_in"
     q_nodes = [
         helper.make_node("Transpose", inputs=[q], outputs=[f"{pfx}_q_t"],
@@ -344,7 +357,7 @@ def rewrite_layer_gqa(graph: onnx.GraphProto, softmax: onnx.NodeProto, layer_idx
     ]
 
     # K/V adapters: (B, 4, S, 128) -> (B, S, 512)
-    init_kv = make_const_int64(f"{pfx}_kv_shape", [16, -1, KV_HIDDEN])
+    init_kv = make_const_int64(f"{pfx}_kv_shape", [0, -1, KV_HIDDEN])
     k_adapted = f"{pfx}_k_in"
     k_nodes = [
         helper.make_node("Transpose", inputs=[fresh_k], outputs=[f"{pfx}_k_t"],
@@ -394,14 +407,15 @@ def rewrite_layer_gqa(graph: onnx.GraphProto, softmax: onnx.NodeProto, layer_idx
     return new_nodes, new_inits, to_remove_combined
 
 
-def add_gqa_graph_inputs(graph: onnx.GraphProto, batch_size: int) -> None:
+def add_gqa_graph_inputs(graph: onnx.GraphProto, batch_dim: "int | str") -> None:
     """Append `seqlens_k` (int32, [B]) and `total_sequence_length`
     (int32, scalar) as new graph inputs so per-layer GQA nodes can
-    reference them by name."""
+    reference them by name. batch_dim may be either an int (static
+    batch) or a string symbol name (dynamic batch)."""
     existing = {i.name for i in graph.input}
     if "seqlens_k" not in existing:
         graph.input.append(helper.make_tensor_value_info(
-            "seqlens_k", TensorProto.INT32, [batch_size]))
+            "seqlens_k", TensorProto.INT32, [batch_dim]))
     if "total_sequence_length" not in existing:
         graph.input.append(helper.make_tensor_value_info(
             "total_sequence_length", TensorProto.INT32, []))
@@ -433,12 +447,14 @@ def main() -> int:
     # that every layer's GQA node references. Infer batch size from any
     # past_key_<L> graph input (they're all the same B).
     if args.mode == "gqa":
-        b = next(
-            i.type.tensor_type.shape.dim[0].dim_value
+        # batch dim: int if static (dim_value > 0), str symbol name if dynamic.
+        pk_dim0 = next(
+            i.type.tensor_type.shape.dim[0]
             for i in graph.input if i.name.startswith("past_key_")
         )
-        add_gqa_graph_inputs(graph, batch_size=b)
-        print(f"  Added GQA graph inputs: seqlens_k (int32, [{b}]) + "
+        batch_dim = pk_dim0.dim_value if pk_dim0.dim_value > 0 else pk_dim0.dim_param
+        add_gqa_graph_inputs(graph, batch_dim=batch_dim)
+        print(f"  Added GQA graph inputs: seqlens_k (int32, [{batch_dim!r}]) + "
               f"total_sequence_length (int32, scalar)")
 
     all_new_nodes: list[onnx.NodeProto] = []
