@@ -2823,6 +2823,130 @@ of the 13.3 s → 3.4 s gap as possible.
   rather than IOBinding (deliberately, after Run 7); GQA may
   force a switch.
 
+## Run 20 phase 2 — 2026-05-10 14:23 — Batched GQA via per-row position_ids
+
+Phase 1's serial-single-segment fallback regressed wall time to
+35.7 s — far worse than MHA's 13.5 s. The user correctly pointed
+out the regression was the loss of batched parallelism, not GQA
+itself. Phase 2 restores batched dispatch.
+
+### Plan
+
+To batch variable-length prompts under GQA, each row's RoPE
+positions need to track its own real prompt length. The fix is a
+new `position_ids` graph input ([B, S], int64) that the C# driver
+fills per-row, plus right-padded prompts so GQA's write slots
+align with the real-vs-pad boundary per row.
+
+Three coordinated changes:
+
+1. **Export wrapper.** New `--unified-position-ids` flag adds a
+   `position_ids` arg to `DecoderUnifiedWrapper.forward` and
+   forwards it to `language_model(position_ids=...)`. HF then
+   uses per-row positions for RoPE instead of deriving them from
+   `cache_position`. `dynamic_shapes` is updated to thread
+   `position_ids` into the variadic `*rest` so torch.export
+   accepts the signature.
+
+2. **Rewriter.** No change — GQA only consumes past_kv, fresh
+   K/V, seqlens_k, total_sequence_length. cache_position and
+   position_ids flow through unmodified upstream nodes.
+
+3. **C# driver.** New `_hasPositionIdsInput` flag detects the
+   phase-2 bundle via decoder input metadata. New
+   `TranscribeStaticGqaBatched` method:
+   - right-pads all rows to `S = max(realLen)` (real prompt at
+     `[0, realLen[b])`, PAD at `[realLen[b], S)`),
+   - sets `seqlens_k` uniformly to `S - 1` at prefill (GQA's
+     write region is derived from `seqlens_k - new_S + 1` and
+     won't accept per-row write positions in one call),
+   - switches `seqlens_k` to per-row `realLen[b] + step` at step
+     time, so step k overwrites the first un-written pad slot
+     `past_kv[b, realLen[b]+k]`,
+   - sets `position_ids` per-row: real positions get
+     `[0..realLen[b])`, pad positions continue
+     `[realLen[b]..S)` (RoPE stable through prefill→step), and
+     step k's new token uses position `realLen[b]+k`.
+
+The pad K written at prefill into `past_kv[b, realLen[b]..S)`
+gets overwritten as step k progresses; per-row `seqlens_k` means
+the attention bound `[0..realLen[b]+k+1)` never reaches an
+un-overwritten pad slot. Step-time attention is clean despite
+the pad contamination paid during prefill.
+
+### Results (3 runs each on `/tmp/run15_short_60s.wav`, --benchmark)
+
+| Bundle | ASR median | Transcript |
+|---|---|---|
+| unfused-static | 13.29 s | baseline |
+| MHA-fused (Run 19) | 13.55 s | exact match |
+| **GQA + position_ids batched (Run 20 phase 2)** | **13.58 s** | **exact match** |
+| Phase 1 serial-single-segment | 35.7 s | parity but slow |
+| dynamic | ~3.4 s | (unbeaten) |
+
+Batched GQA closes the Phase 1 regression and lands at MHA
+parity. Architecturally cleaner than MHA: left-aligned cache,
+GQA's in-place writes, no `where_2` mask path.
+
+### Why the compute-skip didn't show up
+
+The original Run 20 plan called out FFN dominance as a risk;
+profiling confirms it. Per-layer cost breakdown at B=1, S=1
+decode step with our shape regime (D=2048, D_ffn≈8192,
+num_heads=16, head_dim=128, max_seq=512):
+
+  - QKV proj: ~6 M ops
+  - Attention (full 512 cache): ~2 M ops
+  - Attention (realLen ≈ 80 cache): ~0.3 M ops
+  - O proj: ~4 M ops
+  - FFN (gate + up + down): ~50 M ops
+  - **Total**: ~62 M full vs ~60 M with compute-skip — 3% delta.
+
+The dynamic baseline's 4× lead over static-shape is therefore
+NOT about attention fusion or compute-skip. Likely candidates:
+
+- The pinned `A = 192` audio dim forces the encoder to process
+  192 frames every call even for short segments (most real
+  segments have ≪ 192 frames).
+- Static-shape kernel selection. The graph optimizer can't pick
+  small-shape kernels for B=1, S=1 actual workload when the
+  graph signature says B=16, A=192.
+- ORT's `present_key` allocation and `cache_position`/RoPE
+  computation per-call has CPU overhead that doesn't amortize
+  the way dynamic does.
+
+### Implications for future perf work
+
+Attention fusion (MHA or GQA) is a structural win — cleaner
+graph, better tooling support, foundation for KV quantization —
+but is not the perf lever. The static-shape padding costs are
+where to focus next:
+
+1. **Reduce the audio_embeds pinning.** `A = 192` forces 30 s of
+   audio compute per call. Bucketed exports at `A ∈ {32, 96,
+   192}` would let short segments use a smaller graph.
+2. **Per-segment session selection.** Multiple decoder
+   `InferenceSession`s pinned at different `past_len` values
+   (`{64, 128, 256, 512}`), dispatch by current cache length.
+3. **Drop static shape entirely for the decoder.** The
+   ORT-genai/vLLM pattern of fully dynamic + IOBinding +
+   continuous batching is the production answer; our static
+   path was always a stepping stone.
+
+### Artifacts
+
+- New export: `/tmp/granite_export_phase2/decoder.onnx`
+  (with `--unified-position-ids --static-shapes-unified
+  --static-batch 16 --static-past-len 512 --static-audio-len
+  192`). Encoder/projector/mel are symlinked from the original
+  bundle (unchanged).
+- GQA-rewritten v2 bundle:
+  `/tmp/granite_gqa_v2_bundle/` — production-shaped test bundle
+  for the phase-2 C# code path.
+- Phase 1 GQA bundle still present:
+  `/tmp/granite_gqa_all_bundle/` — serial-single-segment path,
+  retained for fallback testing only.
+
 
 
 
