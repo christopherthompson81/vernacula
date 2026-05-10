@@ -938,6 +938,12 @@ public sealed class GraniteSpeech : IDisposable
     ///
     /// All other logic (per-row mel/encoder/projector, repetition-loop
     /// detection, EOS handling, profile bookkeeping) mirrors TranscribeBatch.
+    ///
+    /// **Status (Run 20):** The static-shape contract is a 3.7× wall-time
+    /// regression vs the dynamic path. Kept for back-compat with any
+    /// static-shape bundle still on disk; prefer the dynamic export +
+    /// MHA rewriter + IOBinding path (the default TranscribeBatch route
+    /// when the bundle's past_kv batch dim is symbolic).
     /// </summary>
     private (string text, long[] tokens)[] TranscribeBatchStatic(float[][] waveforms, int maxNewTokens)
     {
@@ -1295,6 +1301,11 @@ public sealed class GraniteSpeech : IDisposable
     /// where the real K ends, so attention compute scales with the actual
     /// past length, not the buffer length — the static-padding compute-skip
     /// win this whole migration is for.
+    ///
+    /// **Status (Run 20 phase 4 onwards):** Superseded by the dynamic
+    /// MHA-fused + IOBinding path (~3.6 s vs this path's ~13 s on the
+    /// 60 s test clip). Kept for back-compat with phase 1 GQA-static
+    /// bundles. New exports should use dynamic shapes.
     /// </summary>
     private (string text, long[] tokens) TranscribeStaticGqaSingle(
         float[] waveform, int maxNewTokens)
@@ -1587,6 +1598,10 @@ public sealed class GraniteSpeech : IDisposable
     /// pad tokens get [realLen[b]..S) (continuing the sequence so RoPE
     /// is stable across the prefill→step boundary), and step k's new
     /// token uses position realLen[b] + k.
+    ///
+    /// **Status (Run 20 phase 4 onwards):** Superseded by the dynamic
+    /// MHA-fused + IOBinding path. Kept for back-compat with phase 2
+    /// GQA-static bundles that include the position_ids input.
     /// </summary>
     private (string text, long[] tokens)[] TranscribeStaticGqaBatched(
         float[][] waveforms, int maxNewTokens)
@@ -2188,353 +2203,6 @@ public sealed class GraniteSpeech : IDisposable
         return (text, outputTokens);
     }
 
-    /// <summary>
-    /// Batched dynamic-shape decode against a GQA-rewritten bundle.
-    /// Run 20 phase 5.
-    ///
-    /// BatchSizer.Plan upstream sorts segments by duration before this is
-    /// called, so realLen across rows in one batch is similar. We right-pad
-    /// to S = max(realLen) within the batch; the small pad region is masked
-    /// at attention time via attention_bias = where_2 (which the rewriter
-    /// wires in when past_seq is dynamic, since where_2's shape then
-    /// matches GQA's expectation).
-    ///
-    /// past_kv grows uniformly by 1 per step in dynamic mode (no buffer
-    /// sharing). At step k, generated K for ALL rows lands at slot S+k.
-    /// position_ids is per-row so each row's generated K is RoPE'd at its
-    /// own continuation position (realLen[b]+k), giving the usual relative-
-    /// position correctness across batch.
-    /// </summary>
-    private (string text, long[] tokens)[] TranscribeDynamicGqaBatch(
-        float[][] waveforms, int maxNewTokens)
-    {
-        int B = waveforms.Length;
-        if (B == 0) return Array.Empty<(string, long[])>();
-
-        var swBatch = _profile ? System.Diagnostics.Stopwatch.StartNew() : null;
-        long melLocal = 0, encLocal = 0, projLocal = 0;
-
-        // ── Per-row mel + encoder + projector ───────────────────────────
-        var audioEmbeds = new float[B][];
-        var nAudio      = new int[B];
-        long audioDim   = 2048;
-        for (int b = 0; b < B; b++)
-        {
-            int audioTokens = NumAudioTokens(waveforms[b].Length);
-            int promptLen   = AsrPromptPrefix.Length + audioTokens + AsrPromptSuffix.Length;
-            if (promptLen + maxNewTokens > MaxContextLen)
-                throw new InvalidOperationException(
-                    $"Segment too long: prompt+max_new_tokens ({promptLen + maxNewTokens}) "
-                  + $"exceeds Granite Speech context ({MaxContextLen}).");
-
-            var swStage = _profile ? System.Diagnostics.Stopwatch.StartNew() : null;
-            var audioT = new DenseTensor<float>(waveforms[b], [1, waveforms[b].Length]);
-            using var melResults = _mel.Run([NamedOnnxValue.CreateFromTensor("audio", audioT)]);
-            var inputFeatures = melResults[0].AsTensor<float>();
-            var ifShape = inputFeatures.Dimensions.ToArray();
-            var ifData = inputFeatures is DenseTensor<float> dT ? dT.ToArray() : inputFeatures.ToArray();
-            if (swStage != null) { swStage.Stop(); melLocal += swStage.ElapsedMilliseconds; swStage.Restart(); }
-
-            using var encResults = _encoder.Run([NamedOnnxValue.CreateFromTensor(
-                "input_features", new DenseTensor<float>(ifData, ifShape))]);
-            var encoderHidden = encResults[0].AsTensor<float>();
-            var encShape = encoderHidden.Dimensions.ToArray();
-            var encData = encoderHidden.ToArray();
-            if (swStage != null) { swStage.Stop(); encLocal += swStage.ElapsedMilliseconds; swStage.Restart(); }
-
-            using var projResults = _projector.Run([NamedOnnxValue.CreateFromTensor(
-                "encoder_hidden", new DenseTensor<float>(encData, encShape))]);
-            var ae = projResults[0].AsTensor<float>();
-            audioDim = ae.Dimensions[2];
-            if (ae.Dimensions[1] != audioTokens)
-                throw new InvalidOperationException(
-                    $"Audio token count mismatch (row {b}): formula predicts {audioTokens}, "
-                  + $"projector produced {ae.Dimensions[1]}.");
-            audioEmbeds[b] = ae.ToArray();
-            nAudio[b] = audioTokens;
-            if (swStage != null) { swStage.Stop(); projLocal += swStage.ElapsedMilliseconds; }
-        }
-
-        // ── Build right-padded prompt at batch's actual sizes ───────────
-        var realLen = new int[B];
-        int sMax = 0;
-        int aMax = 0;
-        for (int b = 0; b < B; b++)
-        {
-            realLen[b] = AsrPromptPrefix.Length + nAudio[b] + AsrPromptSuffix.Length;
-            if (realLen[b] > sMax) sMax = realLen[b];
-            if (nAudio[b]  > aMax) aMax = nAudio[b];
-        }
-        int S = sMax;
-        int A = Math.Max(aMax, 1);   // graph requires audio_embeds dim>=1 at step
-
-        // input_ids [B, S]: real prompt at [0, realLen[b]), PAD at [realLen[b], S).
-        var inputIdsBatch = new long[B * S];
-        for (int b = 0; b < B; b++)
-        {
-            int rowOff = b * S;
-            int q = rowOff;
-            for (int i = 0; i < AsrPromptPrefix.Length; i++) inputIdsBatch[q++] = AsrPromptPrefix[i];
-            for (int i = 0; i < nAudio[b]; i++) inputIdsBatch[q++] = AudioTokenId;
-            for (int i = 0; i < AsrPromptSuffix.Length; i++) inputIdsBatch[q++] = AsrPromptSuffix[i];
-            for (int i = realLen[b]; i < S; i++) inputIdsBatch[rowOff + i] = PadTokenId;
-        }
-
-        // audio_embeds [B, A, audioDim]: real audio at [0, nAudio[b]) of each
-        // row, zeros after. A = max(nAudio) within this batch — much smaller
-        // than the static-shape A=192 since the BatchSizer groups similar
-        // durations.
-        var audioEmbedsBatch = new float[B * A * (int)audioDim];
-        for (int b = 0; b < B; b++)
-        {
-            int rowOff = b * A * (int)audioDim;
-            int n = nAudio[b] * (int)audioDim;
-            if (n > 0) Array.Copy(audioEmbeds[b], 0, audioEmbedsBatch, rowOff, n);
-        }
-
-        // attention_mask [B, S]: 1s at real, 0 at pad. The graph derives
-        // where_2 from this, and where_2 reaches GQA as attention_bias —
-        // pad slots get -inf added to attention scores, so within-batch
-        // length variation doesn't contaminate row b's attention.
-        var attnMaskBatch = new long[B * S];
-        for (int b = 0; b < B; b++)
-        {
-            int rowOff = b * S;
-            for (int i = 0; i < realLen[b]; i++) attnMaskBatch[rowOff + i] = 1L;
-        }
-
-        // cache_position [S]: shared sequence index 0..S-1. With position_ids
-        // overriding per-row, this only feeds HF's where_2-construction
-        // (which we route to GQA as attention_bias).
-        var cachePosBuf = new long[S];
-        for (int i = 0; i < S; i++) cachePosBuf[i] = i;
-
-        // position_ids [B, S]: per-row. Real positions [0..realLen[b]-1] for
-        // real prompt tokens, [realLen[b]..S-1] for the padded tail (pads are
-        // masked via attention_bias so values here don't matter beyond keeping
-        // RoPE continuous through prefill→step).
-        var positionIdsBatch = new long[B * S];
-        for (int b = 0; b < B; b++)
-        {
-            int rowOff = b * S;
-            for (int i = 0; i < S; i++) positionIdsBatch[rowOff + i] = i;
-        }
-
-        // seqlens_k [B] int32: uniform = S - 1 at prefill (GQA's write region
-        // is uniform across batch in non-buffer-sharing mode).
-        var seqlensKBuf = new int[B];
-        for (int b = 0; b < B; b++) seqlensKBuf[b] = S - 1;
-        var totalSeqBuf = new int[] { S };
-
-        var decInputNames = new List<string>(7 + 2 * NumDecoderLayers)
-        { "input_ids", "audio_embeds", "attention_mask", "cache_position", "position_ids" };
-        for (int L = 0; L < NumDecoderLayers; L++)
-        {
-            decInputNames.Add($"past_key_{L}");
-            decInputNames.Add($"past_value_{L}");
-        }
-        decInputNames.Add("seqlens_k");
-        decInputNames.Add("total_sequence_length");
-
-        var decOutputNames = new List<string>(1 + 2 * NumDecoderLayers) { "logits" };
-        for (int L = 0; L < NumDecoderLayers; L++) decOutputNames.Add($"present_key_{L}");
-        for (int L = 0; L < NumDecoderLayers; L++) decOutputNames.Add($"present_value_{L}");
-
-        var generated = new List<long>[B];
-        for (int b = 0; b < B; b++) generated[b] = new List<long>(maxNewTokens);
-        var finished     = new bool[B];
-        var loopDetected = new bool[B];
-        int finishedCount = 0;
-        var nextTok      = new long[B];
-
-        long prefillLocal = 0, stepLocal = 0;
-        long stepCountLocal = 0;
-
-        using (var runOpts = new RunOptions())
-        {
-            var swPrefill = _profile ? System.Diagnostics.Stopwatch.StartNew() : null;
-
-            using var inputIdsVal = OrtValue.CreateTensorValueFromMemory(
-                inputIdsBatch, new long[] { B, S });
-            using var audioVal = OrtValue.CreateTensorValueFromMemory(
-                audioEmbedsBatch, new long[] { B, A, audioDim });
-            using var attnVal = OrtValue.CreateTensorValueFromMemory(
-                attnMaskBatch, new long[] { B, S });
-            using var cpVal = OrtValue.CreateTensorValueFromMemory(
-                cachePosBuf, new long[] { S });
-            using var posVal = OrtValue.CreateTensorValueFromMemory(
-                positionIdsBatch, new long[] { B, S });
-            using var seqlensVal = OrtValue.CreateTensorValueFromMemory(
-                seqlensKBuf, new long[] { B });
-            using var totalSeqVal = OrtValue.CreateTensorValueFromMemory(
-                totalSeqBuf, Array.Empty<long>());
-
-            // Empty past_kv: [B, kv_heads, 0, head_dim]. ORT accepts these.
-            var emptyShape = new long[] { B, NumKvHeads, 0, HeadDim };
-            var emptyPasts = new List<OrtValue>(2 * NumDecoderLayers);
-            for (int L = 0; L < NumDecoderLayers; L++)
-            {
-                emptyPasts.Add(CreateEmptyPastKv(emptyShape));
-                emptyPasts.Add(CreateEmptyPastKv(emptyShape));
-            }
-
-            var prefillInputs = new List<OrtValue>(7 + 2 * NumDecoderLayers)
-            { inputIdsVal, audioVal, attnVal, cpVal, posVal };
-            prefillInputs.AddRange(emptyPasts);
-            prefillInputs.Add(seqlensVal);
-            prefillInputs.Add(totalSeqVal);
-
-            var prefillOutputs = _decoder.Run(
-                runOpts, decInputNames, prefillInputs, decOutputNames);
-
-            // Per-row argmax at realLen[b]-1.
-            var prefillLogitsSpan = prefillOutputs[0].GetTensorDataAsSpan<float>();
-            for (int b = 0; b < B; b++)
-            {
-                long tok = ArgmaxRowAtPosition(prefillLogitsSpan, b, S, realLen[b] - 1, VocabSize);
-                nextTok[b] = tok;
-                generated[b].Add(tok);
-                if (tok == EosTokenId) { finished[b] = true; finishedCount++; }
-            }
-            prefillOutputs[0].Dispose();
-            foreach (var ov in emptyPasts) ov.Dispose();
-
-            var pastKvs = new OrtValue[2 * NumDecoderLayers];
-            for (int L = 0; L < NumDecoderLayers; L++)
-            {
-                pastKvs[2 * L]     = prefillOutputs[1 + L];
-                pastKvs[2 * L + 1] = prefillOutputs[1 + NumDecoderLayers + L];
-            }
-
-            if (swPrefill != null) { swPrefill.Stop(); prefillLocal = swPrefill.ElapsedMilliseconds; }
-            var swStep = _profile ? System.Diagnostics.Stopwatch.StartNew() : null;
-
-            // ── Step loop ────────────────────────────────────────────────
-            var dummyAudio = new float[B * 1 * (int)audioDim];
-            var stepInputIds = new long[B];
-            var stepPositionIds = new long[B];
-
-            for (int step = 0; step < maxNewTokens && finishedCount < B; step++)
-            {
-                int totalLen = S + step + 1;
-                int newKSlot = S + step;     // uniform write position
-
-                for (int b = 0; b < B; b++)
-                {
-                    stepInputIds[b] = finished[b] ? EosTokenId : nextTok[b];
-                    // RoPE position for row b's new token: continue from its
-                    // own prompt's last real position. (Step k token in row b
-                    // is semantic position realLen[b]+k.)
-                    stepPositionIds[b] = realLen[b] + step;
-                }
-                seqlensKBuf[0] = 0;  // unused — overwrite below
-                for (int b = 0; b < B; b++) seqlensKBuf[b] = newKSlot;
-                totalSeqBuf[0] = totalLen;
-
-                // attention_mask [B, totalLen]: real prompt [0, realLen[b]) +
-                // generated tail [S, totalLen). Pad slots [realLen[b], S)
-                // stay zero so attention_bias masks them.
-                var stepMaskBatch = new long[B * totalLen];
-                for (int b = 0; b < B; b++)
-                {
-                    int rowOff = b * totalLen;
-                    for (int i = 0; i < realLen[b]; i++) stepMaskBatch[rowOff + i] = 1L;
-                    for (int i = S; i < totalLen; i++)  stepMaskBatch[rowOff + i] = 1L;
-                }
-                var stepCachePos = new long[] { (long)newKSlot };
-
-                using var stepInputIdVal = OrtValue.CreateTensorValueFromMemory(
-                    stepInputIds, new long[] { B, 1 });
-                using var stepAudioVal = OrtValue.CreateTensorValueFromMemory(
-                    dummyAudio, new long[] { B, 1, audioDim });
-                using var stepAttnVal = OrtValue.CreateTensorValueFromMemory(
-                    stepMaskBatch, new long[] { B, totalLen });
-                using var stepCpVal = OrtValue.CreateTensorValueFromMemory(
-                    stepCachePos, new long[] { 1 });
-                using var stepPosVal = OrtValue.CreateTensorValueFromMemory(
-                    stepPositionIds, new long[] { B, 1 });
-                using var stepSeqlensVal = OrtValue.CreateTensorValueFromMemory(
-                    seqlensKBuf, new long[] { B });
-                using var stepTotalSeqVal = OrtValue.CreateTensorValueFromMemory(
-                    totalSeqBuf, Array.Empty<long>());
-
-                var stepInputs = new List<OrtValue>(7 + 2 * NumDecoderLayers)
-                { stepInputIdVal, stepAudioVal, stepAttnVal, stepCpVal, stepPosVal };
-                stepInputs.AddRange(pastKvs);
-                stepInputs.Add(stepSeqlensVal);
-                stepInputs.Add(stepTotalSeqVal);
-
-                var outputs = _decoder.Run(
-                    runOpts, decInputNames, stepInputs, decOutputNames);
-
-                var oldPast = pastKvs;
-                pastKvs = new OrtValue[2 * NumDecoderLayers];
-                for (int L = 0; L < NumDecoderLayers; L++)
-                {
-                    pastKvs[2 * L]     = outputs[1 + L];
-                    pastKvs[2 * L + 1] = outputs[1 + NumDecoderLayers + L];
-                }
-
-                var stepLogits = outputs[0];
-                var stepLogitsSpan = stepLogits.GetTensorDataAsSpan<float>();
-                for (int b = 0; b < B; b++)
-                {
-                    if (finished[b]) { nextTok[b] = EosTokenId; continue; }
-                    long tok = ArgmaxRowLastPosition(stepLogitsSpan, b, 1, VocabSize);
-                    nextTok[b] = tok;
-                    generated[b].Add(tok);
-                    if (tok == EosTokenId) { finished[b] = true; finishedCount++; }
-                    else if (IsRepetitionLoop(generated[b]))
-                    {
-                        finished[b] = true; loopDetected[b] = true; finishedCount++;
-                    }
-                }
-                stepLogits.Dispose();
-                foreach (var ov in oldPast) ov.Dispose();
-                stepCountLocal++;
-            }
-
-            foreach (var ov in pastKvs) ov.Dispose();
-            if (swStep != null) { swStep.Stop(); stepLocal = swStep.ElapsedMilliseconds; }
-        }
-
-        var rows = new (string text, long[] tokens)[B];
-        for (int b = 0; b < B; b++)
-        {
-            var toks = generated[b];
-            int realCount = toks.Count;
-            while (realCount > 0 && toks[realCount - 1] == EosTokenId) realCount--;
-            int trimmed = loopDetected[b] ? TrimRepetitionTail(toks, realCount) : realCount;
-            if (trimmed == toks.Count)
-                rows[b] = (DecodeTokens(toks), toks.ToArray());
-            else
-            {
-                var trimmedToks = toks.GetRange(0, trimmed);
-                rows[b] = (DecodeTokens(trimmedToks), trimmedToks.ToArray());
-            }
-        }
-
-        if (swBatch != null)
-        {
-            swBatch.Stop();
-            long total = swBatch.ElapsedMilliseconds;
-            long accounted = melLocal + encLocal + projLocal + prefillLocal + stepLocal;
-            long overhead = Math.Max(0, total - accounted);
-            lock (_profileLock)
-            {
-                MelMs += melLocal; EncMs += encLocal; ProjMs += projLocal;
-                PrefillMs += prefillLocal; StepLoopMs += stepLocal; OverheadMs += overhead;
-                BatchCount++; RowCount += B; StepCount += stepCountLocal;
-                if (B > MaxBatchSeen) MaxBatchSeen = B;
-            }
-            Console.Error.WriteLine(
-                $"[granite-prof] B={B} S={S} A={A} total={total}ms (mel={melLocal} enc={encLocal} "
-              + $"proj={projLocal} prefill={prefillLocal} step={stepLocal}ms x{stepCountLocal} "
-              + $"overhead={overhead}ms) dynamic-gqa-batched");
-        }
-
-        return rows;
-    }
 
     /// <summary>Print accumulated profile stats and reset. Returns true if profiling was on.</summary>
     public static bool DumpProfile(System.IO.TextWriter? w = null)
