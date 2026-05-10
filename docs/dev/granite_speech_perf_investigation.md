@@ -1458,3 +1458,131 @@ for end-to-end latency. Not worth chasing now, but the 5-node count
 is higher than it should be and may bite us if we ever need
 diarization to be cheaper.
 
+## Run 13 — 2026-05-10 — Decoder ONNX inspection: 300 Reshape ops on a per-step shape-arithmetic backbone
+
+**Setup:**
+
+Loaded `~/.local/share/Vernacula/models/granite_speech_4_1_2b_bf16/decoder.onnx`
+graph proto (no external weight load — the proto itself is 7 MB; the
+weights are 3.5 GB in `decoder.onnx.data`). Walked the graph with the
+`onnx` Python library to characterise the shape-arithmetic surface
+and locate the verbose-log named nodes. Inspection script saved at
+`/tmp/inspect_decoder.py`.
+
+**Result — graph composition:**
+
+```
+nodes=3161  inputs=84  outputs=81
+
+Op-type histogram (top 10):
+   523  Mul
+   362  MatMul          ← the GPU GEMMs we saw in nsys gpu_kern_sum
+   336  Add
+   300  Reshape         ← every one with int64 shape input
+   278  Concat          ← per-layer KV concat per step (Run 9 follow-up)
+   201  Transpose
+   199  Slice
+   170  Cast
+    87  Unsqueeze
+    86  Expand
+```
+
+**Reshape audit:** 300 ops, **all 300 with int64 shape inputs**. None
+in int32. That kills the road-2 hypothesis from Run 12 (cast int64 →
+int32) — the shape-arithmetic chain is uniformly int64, and ORT's
+CPU-fallback heuristic is overhead-based, not dtype-based, so a
+targeted int64-to-int32 cast wouldn't shift the heuristic's verdict.
+
+**Result — view_2 traced:**
+
+```
+Reshape(node_view_2)
+  ← arange_1 (int64)              from Range(node_arange_1)
+  ← val_202  (int64)              shape param
+       └── Range(node_arange_1)
+             ← val_168 (int64)
+             ← sym_size_int_521 (int64)
+                  └── Squeeze(node_sym_size_int_521)
+                        ← val_67 (int64)
+                             └── Concat(node_Concat_202)
+                                   ← val_67 (int64)
+                                   ← val_193 (int64)
+                                        └── Shape(node_Shape_67)
+                                              ← past_key_31 (bf16)
+```
+
+`view_2` is at the *end* of a shape-arithmetic chain that originates
+from `Shape(past_key_31)` — i.e. **a per-step attention-mask /
+position-offset reconstruction parameterised by the past_key cache
+length**. The chain is: extract the cache shape → squeeze the seq-len
+dimension → concat with another seq-len dimension → build a Range →
+Reshape to the attention-mask layout. The entire chain is int64 and,
+per ORT's heuristic verdict, runs on CPU.
+
+`val_39` and `sym_size_int_147` weren't found by direct lookup —
+the verbose-log "val_N" / "sym_size_int_N" identifiers come from
+ORT's post-optimisation tensor renaming, not the original export.
+The walk-back from `view_2` is enough to understand the pattern.
+
+**Result — the multiplier:**
+
+`past_key_31` is the past-key tensor for **layer 31**. The graph has
+32 transformer layers (indices 0–31). Each layer has its own copy of
+this shape-arithmetic chain. The dynamic export captures the same
+mask reconstruction *32 times*, once per layer, all firing per
+decoder step. With 9 batches × ~150 steps × 32 layers, the CPU
+island executes ≈ 43 k times per inference run. That matches the
+137 k cudaMemcpyAsync calls and 51 GB transfer volume measured in
+Run 11 to within order-of-magnitude.
+
+**Implication — fix selection:**
+
+| Road | Run 12 verdict | Run 13 verdict |
+|---|---|---|
+| 1. Disable CPU-fallback heuristic for Reshape | Cheapest probe | **Risky** — ORT's CUDA EP may not implement Range, Squeeze-of-int64-scalar, dynamic Concat. If any miss, we get either runtime error or a worse fallback. Try only as a quick probe with a fail-safe. |
+| 2. Cast Reshape int64 → int32 | Worth trying | **Dead.** All 300 Reshape inputs are int64; the heuristic is overhead-based, not dtype-based. Cast wouldn't shift its verdict and the surrounding chain is int64 too. |
+| 3. Static-shape re-export | Most invasive | **The structurally correct fix.** Baking a fixed batch + max-seq-len at export time lets ONNX's constant folding eliminate the entire shape-arithmetic backbone. Mask becomes a constant initializer; Range/Concat/Squeeze/Shape collapse to a baked tensor. |
+
+Road 3 is what we should pursue. Concretely, it means revising
+`scripts/granite_export/export_granite_speech_to_onnx.py` to:
+
+- Pin `batch_size` and `max_seq_len` (and possibly `kv_cache_len`) to
+  concrete dimensions during export, instead of `dynamic_axes`.
+- Run ORT's `OptimizedModel` pass (or `onnx.optimizer.constant_folding`)
+  post-export to fold the now-static shape arithmetic.
+- Verify the exported decoder no longer contains the 300 Reshapes,
+  the 59 Shape ops, the 57 Squeeze sym_size_int_* nodes, etc.
+
+This couples to the static-KV cache work named as Run 9's #1
+follow-up — the same export rewrite addresses both. Doing them
+together is the right scope.
+
+**Aside — graph composition vs. measured kernel mix:** the gpu_kern_sum
+top entries from Run 11 (bf16 GEMMs averaging 27 µs) reconcile
+cleanly: 362 MatMul + 86 Expand + 80 Neg etc. all run on GPU; the
+shape-arithmetic backbone (300 Reshape + 199 Slice + 170 Cast + 87
+Unsqueeze + 59 Shape + 57 Squeeze + 278 Concat) is what ORT pushes
+to CPU. The fragmented-small-GEMM signature (avg 27 µs) is likely
+because the per-step shape island stalls between kernels — once the
+CPU islands are gone, the GEMMs may also coalesce into longer-running
+kernels, recovering more of the 25 % SM headroom Run 10 saw.
+
+**Next moves:**
+
+- **Run 14 (probe)**: try road 1 as a fail-safe probe — set whatever
+  ORT exposes for "disable CPU-fallback heuristic" (the current
+  candidate is `kOrtSessionOptionsDisableCPUEPFallback` or one of
+  the `optimization.disable_*` knobs in 1.24.x; needs a quick
+  research lookup) on Granite's decoder session and re-run Run 11
+  measurement. If cudaMemcpyAsync drops dramatically, we have a
+  short-term stopgap that doesn't require a re-export. If it errors
+  out (e.g. "op not supported on CUDA EP"), road 3 is confirmed
+  necessary.
+- **Run 15 (the actual fix)**: static-shape re-export of the unified
+  decoder, with constant folding to eliminate the shape-arithmetic
+  backbone. Verify the resulting graph has zero CPU-fallback Reshape
+  warnings and re-run Run 11 measurement to confirm cudaMemcpyAsync
+  drops to single-digit %. This is the road-3 work and likely a
+  multi-day effort given the existing investigation log's note that
+  the unified decoder export is non-trivial.
+
