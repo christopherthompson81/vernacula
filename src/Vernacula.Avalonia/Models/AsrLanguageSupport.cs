@@ -158,7 +158,9 @@ public static class AsrLanguageSupport
         AsrBackend.IndicConformer => IndicConformerLangs,
         AsrBackend.WhisperTurbo   => WhisperTurboLangs,
         AsrBackend.GraniteSpeech  => GraniteSpeechLangs,
-        _                         => FrozenSet<string>.Empty,
+        _ => throw new ArgumentOutOfRangeException(nameof(backend),
+            $"AsrLanguageSupport.Get has no language set for {backend}. "
+            + "See docs/dev/asr_backend_dispatch.md."),
     };
 
     // ── Cross-language fallback policy ───────────────────────────────────────
@@ -252,7 +254,9 @@ public static class AsrLanguageSupport
         AsrBackend.IndicConformer => "IndicConformer",
         AsrBackend.WhisperTurbo   => "Whisper Turbo",
         AsrBackend.GraniteSpeech  => "Granite Speech 4.1",
-        _                         => backend.ToString(),
+        _ => throw new ArgumentOutOfRangeException(nameof(backend),
+            $"AsrLanguageSupport.DisplayName has no UI label for {backend}. "
+            + "See docs/dev/asr_backend_dispatch.md."),
     };
 
     /// <summary>

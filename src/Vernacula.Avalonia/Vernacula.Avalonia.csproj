@@ -96,4 +96,10 @@
     <ProjectReference Include="..\Vernacula.Base\Vernacula.Base.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- Dispatch-fan-out coverage test (issue #37) reflects on internal
+         types (SettingsService, SettingsViewModel, VocabService). -->
+    <InternalsVisibleTo Include="AsrBackendCoverage" />
+  </ItemGroup>
+
 </Project>

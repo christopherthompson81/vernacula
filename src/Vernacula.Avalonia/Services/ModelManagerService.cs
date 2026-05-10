@@ -238,6 +238,10 @@ internal class ModelManagerService
 
         return _settings.Current.AsrBackend switch
         {
+            AsrBackend.Parakeet =>
+            [
+                new AssetRepo(CoreRepoBase, CoreManifestUrl, [.. CoreDiarizationFiles, .. AsrFilesFp32]),
+            ],
             AsrBackend.Cohere =>
             [
                 new AssetRepo(CoreRepoBase, CoreManifestUrl, CoreDiarizationFiles),
@@ -276,10 +280,18 @@ internal class ModelManagerService
                     new AssetRepo(CoreRepoBase, CoreManifestUrl, CoreDiarizationFiles),
                     new AssetRepo(GraniteSpeechFp32RepoBase, GraniteSpeechFp32ManifestUrl, GraniteSpeechFp32Files),
                 ],
-            _ =>
-            [
-                new AssetRepo(CoreRepoBase, CoreManifestUrl, [.. CoreDiarizationFiles, .. AsrFilesFp32]),
-            ],
+            // VibeVoice is handled by the early-return at the top of the
+            // method (it can be the segmentation backend even when the
+            // AsrBackend isn't VibeVoice). If a future enum value is added
+            // without a switch arm here, this throws to surface the gap
+            // rather than silently inheriting Parakeet's repo set — which
+            // is what the previous `_ => [Core+AsrFilesFp32]` default did
+            // and what issue #37 is about. InvalidOperationException
+            // (rather than ArgumentOutOfRangeException) because the
+            // discriminator is read from settings state, not a parameter.
+            _ => throw new InvalidOperationException(
+                $"ModelManagerService.ActiveRepos has no asset repos for {_settings.Current.AsrBackend}. "
+                + "See docs/dev/asr_backend_dispatch.md."),
         };
     }
 

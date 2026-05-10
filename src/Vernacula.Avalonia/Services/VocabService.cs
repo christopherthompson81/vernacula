@@ -3,6 +3,7 @@ using System.IO;
 using System.Text;
 using System.Text.Json;
 using Avalonia.Media;
+using Vernacula.App.Models;
 using Vernacula.Base;
 
 namespace Vernacula.App.Services;
@@ -13,7 +14,27 @@ namespace Vernacula.App.Services;
 /// </summary>
 internal class VocabService
 {
-    private enum VocabKind { Parakeet, Cohere, Qwen3Asr, VibeVoice, IndicConformer, GraniteSpeech }
+    internal enum VocabKind { Parakeet, Cohere, Qwen3Asr, VibeVoice, IndicConformer, GraniteSpeech, WhisperTurbo }
+
+    /// <summary>
+    /// Maps an <see cref="AsrBackend"/> to the <see cref="VocabKind"/> the
+    /// editor uses to decode its tokens. Throws on an unmapped backend so
+    /// the dispatch-fan-out coverage test catches new backends that forget
+    /// to wire VocabService — see <c>docs/dev/asr_backend_dispatch.md</c>.
+    /// </summary>
+    internal static VocabKind KindOfBackend(AsrBackend backend) => backend switch
+    {
+        AsrBackend.Parakeet       => VocabKind.Parakeet,
+        AsrBackend.Cohere         => VocabKind.Cohere,
+        AsrBackend.Qwen3Asr       => VocabKind.Qwen3Asr,
+        AsrBackend.VibeVoice      => VocabKind.VibeVoice,
+        AsrBackend.IndicConformer => VocabKind.IndicConformer,
+        AsrBackend.GraniteSpeech  => VocabKind.GraniteSpeech,
+        AsrBackend.WhisperTurbo   => VocabKind.WhisperTurbo,
+        _ => throw new ArgumentOutOfRangeException(nameof(backend),
+            $"VocabService has no VocabKind mapping for {backend}. "
+            + "Add a case to KindOfBackend and a constructor branch."),
+    };
 
     private readonly Dictionary<int, string> _vocab;
     private readonly VocabKind _kind;
@@ -22,7 +43,19 @@ internal class VocabService
 
     public VocabService(string modelsDir, string? asrModel = null)
     {
-        if (string.Equals(asrModel, "CohereLabs/cohere-transcribe-03-2026", StringComparison.Ordinal))
+        // Explicit Parakeet branch — without it, callers passing the canonical
+        // Parakeet model name "nvidia/parakeet-tdt-0.6b-v3" would fall through
+        // to the unknown-non-null fallback below and emit a misleading
+        // "unrecognised asrModel" warning. The dispatch coverage test
+        // (tests/AsrBackendCoverage) asserts every backend's ModelName is
+        // recognized without warning; this branch is what makes that pass
+        // for the default backend.
+        if (string.Equals(asrModel, "nvidia/parakeet-tdt-0.6b-v3", StringComparison.Ordinal))
+        {
+            _kind = VocabKind.Parakeet;
+            _vocab = LoadParakeetVocab(Path.Combine(modelsDir, Config.VocabFile));
+        }
+        else if (string.Equals(asrModel, "CohereLabs/cohere-transcribe-03-2026", StringComparison.Ordinal))
         {
             _kind = VocabKind.Cohere;
             _vocab = LoadCohereVocab(Path.Combine(modelsDir, "cohere_transcribe", CohereTranscribe.VocabFile));
@@ -56,6 +89,19 @@ internal class VocabService
             string fp32TokPath = Path.Combine(modelsDir, Config.GraniteSpeechSubDir, GraniteSpeech.TokenizerFile);
             string tokPath = File.Exists(bf16TokPath) ? bf16TokPath : fp32TokPath;
             (_vocab, _addedContent) = LoadVibeVoiceVocab(tokPath);
+            _byteLevelDecode = BuildByteLevelDecode();
+        }
+        else if (string.Equals(asrModel, "openai/whisper-large-v3-turbo", StringComparison.Ordinal))
+        {
+            // Whisper's tokenizer.json is the same HF-format file the Vibe /
+            // Qwen3 / Granite paths consume — model.vocab + added_tokens, with
+            // the GPT-2 ByteLevel BPE pre-tokenizer family. Reusing the loader
+            // keeps the editor in lock-step with WhisperTurbo.DecodeTokens in
+            // Vernacula.Base. Whisper's specials live in added_tokens (id ≥
+            // 50257, e.g. <|startoftranscript|>); they render as their literal
+            // content if they ever reach the editor's per-token surface.
+            _kind = VocabKind.WhisperTurbo;
+            (_vocab, _addedContent) = LoadVibeVoiceVocab(Path.Combine(modelsDir, Config.WhisperTurboSubDir, WhisperTurbo.TokenizerFile));
             _byteLevelDecode = BuildByteLevelDecode();
         }
         else
@@ -165,11 +211,18 @@ internal class VocabService
     {
         return _kind switch
         {
-            VocabKind.Cohere        => DecodeCohereTokens(tokens),
-            VocabKind.Qwen3Asr      => DecodeQwen3AsrTokens(tokens),
-            VocabKind.VibeVoice     => DecodeVibeVoiceTokens(tokens),
-            VocabKind.GraniteSpeech => DecodeGraniteSpeechTokens(tokens),
-            _                       => DecodeParakeetTokens(tokens),
+            VocabKind.Cohere         => DecodeCohereTokens(tokens),
+            VocabKind.Qwen3Asr       => DecodeQwen3AsrTokens(tokens),
+            VocabKind.VibeVoice      => DecodeVibeVoiceTokens(tokens),
+            VocabKind.GraniteSpeech  => DecodeGraniteSpeechTokens(tokens),
+            // Whisper shares Qwen3's leading-space-strip + GPT-2 ByteLevel
+            // family. Mirrors WhisperTurbo.DecodeTokens in Vernacula.Base.
+            VocabKind.WhisperTurbo   => DecodeQwen3AsrTokens(tokens),
+            VocabKind.Parakeet       => DecodeParakeetTokens(tokens),
+            VocabKind.IndicConformer => DecodeParakeetTokens(tokens),
+            _ => throw new InvalidOperationException(
+                $"VocabService.DecodeTokens has no case for {_kind}; "
+                + "see docs/dev/asr_backend_dispatch.md."),
         };
     }
 
@@ -179,7 +232,7 @@ internal class VocabService
     {
         if (_kind == VocabKind.Cohere)
             return GetCohereTokenRuns(tokens, logprobs);
-        if (_kind == VocabKind.Qwen3Asr)
+        if (_kind == VocabKind.Qwen3Asr || _kind == VocabKind.WhisperTurbo)
             return GetQwen3AsrTokenRuns(tokens, logprobs);
         if (_kind == VocabKind.VibeVoice)
             return GetVibeVoiceTokenRuns(tokens, logprobs, targetText);
@@ -318,7 +371,7 @@ internal class VocabService
 
         if (_kind == VocabKind.VibeVoice)
             return Encoding.UTF8.GetString(GetByteLevelTokenBytes(token));
-        if (_kind == VocabKind.Qwen3Asr)
+        if (_kind == VocabKind.Qwen3Asr || _kind == VocabKind.WhisperTurbo)
             return Encoding.UTF8.GetString(GetQwen3AsrTokenBytes(token));
         if (_kind == VocabKind.GraniteSpeech)
             // Granite shares VibeVoice's GPT-2-ByteLevel byte resolution path
