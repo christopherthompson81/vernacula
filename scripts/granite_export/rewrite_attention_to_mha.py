@@ -13,11 +13,21 @@ Mul/Add applied to Q and K, the past_kv Concat, and the GQA broadcast
 Expand all stay in place — MHA wants K/V already broadcast to 16 heads
 and already RoPE'd, which is exactly what those upstream nodes produce.
 
-The matcher emits transpose+reshape adapters around MHA because MHA's
-input layout is (B, S, num_heads × head_dim) flat-hidden whereas the
-existing chain produces (B, num_heads, S, head_dim) split-hidden. The
-adapters are constant-folded by ORT in many cases (transpose+reshape
-of static dims).
+Layout (Run 19 — grounded in ORT contrib spec on `main`):
+
+  - Q is fed via Transpose+Reshape adapter into (B, S, num_heads*head_dim)
+    rank-3 form. MHA requires query rank 3 or 5.
+  - K and V are fed DIRECTLY in their native (B, num_heads, T, head_dim)
+    rank-4 layout. The contrib spec accepts this for the `key`/`value`
+    inputs (described as "past_key with shape (batch_size, num_heads,
+    kv_sequence_length, head_size)"). This eliminates the K/V adapter
+    Transpose+Reshape pair and any head-ordering bug in it — the most
+    likely cause of iter-2's partial-correctness output.
+  - The graph's per-call additive mask (`where_2`-style; bf16, encodes
+    both key-padding and causal triangulation) is fed as `attention_bias`
+    (input 5; renamed from `relative_position_bias` in current ORT). The
+    spec confirms it is a literal element-wise add on QxK' with shape
+    (batch_size or 1, num_heads or 1, S, total_S).
 
 USAGE (called as a post-export step):
 
@@ -164,20 +174,22 @@ def add_q_kv_adapter_nodes(prefix: str, src: str, dst: str) -> list[onnx.NodePro
 def rewrite_layer(graph: onnx.GraphProto, softmax: onnx.NodeProto, layer_idx: int,
                   producer, consumers):
     """Rewrite one layer's attention. Returns (added_nodes, added_initializers,
-    nodes_to_remove). Reuses the per-call additive mask `where_2` (or whatever
-    the graph computes once and shares across all 40 layers' Add nodes) as
-    MHA's relative_position_bias — that mask already encodes both
-    key-padding AND causal restrictions, so we don't need to feed a separate
-    key_padding_mask."""
+    nodes_to_remove).
+
+    Iter 5 wiring:
+      - Q: Transpose+Reshape adapter to (B, S, hidden_size).
+      - K, V: passed directly in (B, num_heads, T, head_dim) — ORT MHA
+        accepts this rank-4 layout for the `key`/`value` inputs.
+      - attention_bias: graph's `where_2` mask (bf16, additive, encodes
+        causal+padding) fed unchanged as MHA input 5.
+    """
     q, k, v, mask, output_tensor, to_remove = find_attention_block(softmax, producer, consumers)
 
     pfx = f"mha_l{layer_idx}"
 
-    # Adapter shape constants (shared across Q/K/V):
-    # We can't fold seq/total_len since they're symbolic. Use [-1, -1, HIDDEN]
-    # — but Reshape only allows one -1. So use [B=16, -1, HIDDEN]:
+    # Q must be rank 3 (B, S, hidden_size). Reshape needs the batch dim
+    # explicit since it can only carry one -1.
     init_q = make_const_int64(f"{pfx}_q_shape", [16, -1, HIDDEN])
-    init_kv = make_const_int64(f"{pfx}_kv_shape", [16, -1, HIDDEN])
 
     # Q adapter (B, 16, S, 128) -> (B, S, 2048)
     q_adapted = f"{pfx}_q_in"
@@ -188,40 +200,20 @@ def rewrite_layer(graph: onnx.GraphProto, softmax: onnx.NodeProto, layer_idx: in
                          outputs=[q_adapted], name=f"{pfx}_q_reshape"),
     ]
 
-    # K adapter
-    k_adapted = f"{pfx}_k_in"
-    k_nodes = [
-        helper.make_node("Transpose", inputs=[k], outputs=[f"{pfx}_k_t"],
-                         name=f"{pfx}_k_transpose", perm=[0, 2, 1, 3]),
-        helper.make_node("Reshape", inputs=[f"{pfx}_k_t", f"{pfx}_kv_shape"],
-                         outputs=[k_adapted], name=f"{pfx}_k_reshape"),
-    ]
-
-    # V adapter
-    v_adapted = f"{pfx}_v_in"
-    v_nodes = [
-        helper.make_node("Transpose", inputs=[v], outputs=[f"{pfx}_v_t"],
-                         name=f"{pfx}_v_transpose", perm=[0, 2, 1, 3]),
-        helper.make_node("Reshape", inputs=[f"{pfx}_v_t", f"{pfx}_kv_shape"],
-                         outputs=[v_adapted], name=f"{pfx}_v_reshape"),
-    ]
-
-    # MultiHeadAttention. Iter 4 — re-test where_2 as relative_position_bias
-    # but cast to fp32 first (in case iter 2's garbled output was a dtype
-    # precision issue rather than a wiring issue). where_2 is bf16 in the
-    # original graph; ORT MHA may compute attention scores in fp32
-    # internally and add an fp32-promoted bias, but if the cast happens
-    # incorrectly we'd see drift.
+    # K and V are already in (B, num_heads, T, head_dim) at the source
+    # tensors `k` and `v`. Pass them straight through.
     mha_out = f"{pfx}_out"
-    mask_fp32 = f"{pfx}_mask_fp32"
-    scale = 1.0 / (HEAD_DIM ** 0.5)
-    mask_cast_node = helper.make_node(
-        "Cast", inputs=[mask], outputs=[mask_fp32],
-        name=f"{pfx}_mask_cast", to=TensorProto.FLOAT,
-    )
+    # Granite uses an unusual scale: 1/head_dim (= 0.0078125 for head_dim=128),
+    # not the conventional 1/sqrt(head_dim). This is the `attention_multiplier`
+    # in IBM Granite's HF config; it shows up in the unfused graph as the
+    # initializer `scalar_tensor_default_2 = 0.0078125`. Passing the wrong
+    # scale here (e.g., 1/sqrt(head_dim) ~= 0.0884) makes attention 11.3×
+    # too peaky per layer; one layer is recoverable but it compounds across
+    # 40 layers into garbled output (Run 19 bisect, 2026-05-10).
+    scale = 1.0 / HEAD_DIM
     mha_node = helper.make_node(
         "MultiHeadAttention",
-        inputs=[q_adapted, k_adapted, v_adapted, "", "", mask_fp32],
+        inputs=[q_adapted, k, v, "", "", mask],
         outputs=[mha_out],
         name=f"{pfx}_node",
         domain="com.microsoft",
@@ -236,24 +228,9 @@ def rewrite_layer(graph: onnx.GraphProto, softmax: onnx.NodeProto, layer_idx: in
             if inp == output_tensor:
                 c.input[i] = mha_out
 
-    new_nodes = q_nodes + k_nodes + v_nodes + [mask_cast_node, mha_node]
-    new_inits = [init_q, init_kv]
+    new_nodes = q_nodes + [mha_node]
+    new_inits = [init_q]
     return new_nodes, new_inits, to_remove
-
-
-def add_mask_int32(graph: onnx.GraphProto) -> str:
-    """Add a Cast node that converts the existing graph-input attention_mask
-    (int64) to int32 for MHA. Returns the int32 tensor name."""
-    out_name = "mha_mask_int32"
-    cast = helper.make_node(
-        "Cast",
-        inputs=["attention_mask"],
-        outputs=[out_name],
-        name="mha_mask_cast_int32",
-        to=TensorProto.INT32,
-    )
-    graph.node.insert(0, cast)
-    return out_name
 
 
 def main() -> int:
@@ -275,10 +252,6 @@ def main() -> int:
     )
     print(f"  Rewriting layers: {target_layers}")
 
-    # Cast the graph's attention_mask (int64) to int32 once for all layers'
-    # MHA key_padding_mask consumers.
-    add_mask_int32(graph)
-
     all_new_nodes: list[onnx.NodeProto] = []
     all_new_inits: list[onnx.TensorProto] = []
     all_remove: list[onnx.NodeProto] = []
@@ -292,7 +265,7 @@ def main() -> int:
         except ValueError as e:
             print(f"  layer {li}: SKIP — {e}")
             continue
-        print(f"  layer {li}: replaced {len(rem)} nodes with MHA + 6 adapter nodes")
+        print(f"  layer {li}: replaced {len(rem)} nodes with MHA + {len(new_n) - 1} adapter nodes")
         all_new_nodes.extend(new_n)
         all_new_inits.extend(new_i)
         all_remove.extend(rem)

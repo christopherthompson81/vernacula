@@ -2475,13 +2475,268 @@ function. The answer changes which iter-5 plan is correct:
   the recon phase are reproducible if you need to re-verify GQA's
   left-alignment or MHA's mask semantics.
 
+## Run 19 — 2026-05-10 11:51 — ORT MHA semantics ground-truthed
 
+**Goal of this run:** before writing any iter-5 code, verify the
+iter-4 speculative claim that ORT's `relative_position_bias` is
+"relative-position-style only" (and therefore that iter-2's
+where_2-as-RPB wiring couldn't have been semantically correct).
 
+**Method:** read the authoritative ORT contrib op spec
+(`docs/ContribOperators.md`) plus the CUDA op implementation
+(`onnxruntime/contrib_ops/cuda/bert/multihead_attention.cc`) and
+the kernel scale path (`attention_impl.cu`) on `main`.
 
+### Findings (verbatim from ORT main)
 
+1. **The input is no longer named `relative_position_bias`** — it
+   was renamed to `attention_bias` in current ORT. The contrib spec
+   says:
 
+   > **`attention_bias`** (optional) : T — bias added to QxK' with
+   > shape `(batch_size or 1, num_heads or 1, sequence_length,
+   > total_sequence_length)`
 
+   "Bias added to QxK'" is a literal element-wise additive bias.
+   No relative-position indexing; broadcast over batch and heads
+   is supported via the `or 1` dims.
 
+2. **Kernel data flow is a literal pointer assign**, not a
+   computed function:
+
+   ```cpp
+   data.attention_bias = reinterpret_cast<const CudaT*>(
+       attention_bias->Data<T>());
+   ```
+
+   It is forwarded into `QkvToContext` and added element-wise to
+   scores before softmax. (Default scale 1/sqrt(head_size) is
+   confirmed in `attention_impl.cu`; matches Granite's
+   head_size=128.)
+
+3. **`unidirectional` is a flat causal-mask attribute** —
+   "Whether every token can only attend to previous tokens.
+   Default 0." When `past_key`/`past_value` are also provided,
+   MHA concatenates internally and `total_sequence_length =
+   past_sequence_length + sequence_length`; the present_key
+   output shape is `(B, num_heads, total_sequence_length,
+   head_size)`, confirming internal concat. The ORT-side
+   causal mask therefore covers the new query positions
+   correctly relative to the cached past — i.e., iter 3's
+   "Q[s] only sees [0,s]" symptom only happens when you
+   pre-concat K *and* set `unidirectional=1` (no `past_key`
+   input given). With proper `past_key` plumbing, causal would
+   be applied with the right offset.
+
+4. **`key` accepts a (B, num_heads, kv_seq_len, head_size)
+   layout** — per the spec, the `key` input may be in
+   "past_key with shape (batch_size, num_heads,
+   kv_sequence_length, head_size)" form. **This means we can
+   feed K (and V) directly in the post-Transpose layout
+   without a Transpose+Reshape adapter**, which the rewriter
+   currently uses. Same for `value`. (Q is still required as
+   `(B, S, hidden_size)`.) Big simplification for the rewrite.
+
+5. **`key_padding_mask` shapes** include `(batch_size,
+   sequence_length, total_sequence_length)` — a 3D per-(q,k)
+   binary mask. Type constraint M is `tensor(int32)`, so it
+   can't carry the float `-inf` of where_2 directly; it would
+   have to be derived as a binary causal+padding mask. Likely
+   not needed if `attention_bias` works.
+
+6. **Restrictions when `attention_bias` is non-null**:
+   Flash Attention, Lean Attention, fused cross-attention, and
+   fused TRT self-attention paths are disabled. cuDNN SDPA and
+   memory-efficient attention remain available (with alignment
+   constraints). So feeding where_2 as `attention_bias` *does*
+   prevent the most aggressive fast paths — but cuDNN SDPA is
+   still on the table and is typically the winner on Hopper-
+   class hardware for our shape regime.
+
+### Implication — iter-4's hypothesis is DISPROVEN
+
+`attention_bias` is a literal additive mask. Iter-2's wiring
+(feeding where_2 as RPB) was **semantically correct** for the
+mask semantics. The partial-correct ("Garrett, of course none
+of them") output therefore came from a *different* bug, not
+from RPB being misinterpreted. Candidate bugs, in priority
+order, given what we now know:
+
+a. **Q/K/V head-layout adapter in the rewriter.** Iter 2 wraps
+   the existing Transpose+Reshape pair to produce `(B, S,
+   hidden_size)` for all three of MHA's `query/key/value`
+   inputs. If the head ordering inside `hidden_size` doesn't
+   match MHA's internal `(num_heads, head_size)` interpretation,
+   per-head outputs would be permuted — exactly the kind of
+   "almost right tokens, mostly wrong" output we saw. **This is
+   the most likely root cause.** It's also testable cheaply: feed
+   K and V in the new spec-supported `(B, num_heads, S, head_size)`
+   layout directly, eliminating the K/V adapter entirely.
+
+b. **Numerical drift.** Original computes scores in fp32 with bf16
+   K/V dequantized at the matmul. MHA may accumulate in bf16. We
+   should be able to bound this by comparing per-layer attention
+   output L2 deltas; if drift compounds across 40 layers it could
+   produce iter-2-style output, but a 16-tap GEMM in bf16 is
+   typically <1e-3 relative error, which shouldn't garble decoding.
+
+c. **Scale.** Default `1/sqrt(head_size)` matches Granite. Unless
+   the original graph hides a non-default scale upstream of the
+   QK matmul (e.g., a `Mul(0.125)` we mis-attributed as the
+   1/sqrt scale when actually it's a separate logit_scaling),
+   this isn't the bug. Worth a 5-min audit of the unfused graph
+   structure around the QK matmul to confirm.
+
+### Iter-5 plan (revised, grounded in spec)
+
+The hand-off recommended either "stick with iter 2 if RPB is
+literal" OR "do past_key plumbing if RPB is relative-position-
+only". Given finding 1 above, the answer is **option A — stick
+with iter-2-style wiring** and fix the layout bug, not option B
+(past_kv plumbing). But the spec (finding 4) lets us simplify
+iter 2 in a way that *also* eliminates the most likely bug:
+
+1. Revert `scripts/granite_export/rewrite_attention_to_mha.py`
+   to iter-2 (`b9246cf`).
+2. Change K and V wiring: instead of the Transpose+Reshape pair
+   that produces `(B, S, hidden_size)`, feed K and V as `(B,
+   num_heads, S, head_size)` directly into MHA's `key`/`value`.
+   This is what the spec calls the "past_key shape" form and is
+   accepted natively.
+3. Keep `where_2` as `attention_bias` (rename in code from RPB).
+4. Build a per-layer parity harness: dump attention output of
+   layer 0 from both unfused-static and rewritten bundles on the
+   same input, diff. Walk layers 1..N if 0 matches.
+5. Only if a→b doesn't close the gap, consider past_kv plumbing.
+   It's now a fallback, not the primary plan.
+
+### Hand-off note for the next investigator
+
+**Don't** revert the iter-4 commit (`e8ed2ad`) — its dtype-
+rejection finding is still useful for ruling out the cast
+approach. Just branch from `b9246cf` (iter 2) for the actual
+rewriter changes, and treat this Run 19 entry as the spec
+ground truth that supersedes iter 4's speculative diagnosis.
+
+The single highest-value thing to do first is to compare a
+single rewritten layer's attention output against unfused on
+identical Q/K/V inputs. If they match bitwise (or to fp32 noise
+floor), the wiring is right and we just had a layout bug; if
+they don't, the diff is the next clue.
+
+## Run 19 — 2026-05-10 12:34 — Parity achieved (Granite scale = 1/head_dim)
+
+Implemented the iter-5 plan (drop K/V Transpose+Reshape adapter,
+feed K/V in (B, num_heads, T, head_dim) directly into MHA's
+`key`/`value`; keep `where_2` as `attention_bias`; drop the
+iter-4 fp32 cast on the bias). Output bundles staged at
+`/tmp/granite_iter5_*_bundle/` with hardlinked `decoder.onnx.data`
+to avoid duplicating the 3.6 GB sidecar.
+
+### Layer-by-layer bisect (e2e on `/tmp/run15_short_60s.wav`)
+
+| Layers rewritten | First-segment transcript |
+|---|---|
+| 0 only | "all kinds of telephone calls of course none of them were Garrett and so I mean I was just getting more and more as I would answer the phone it would not be Garrett I" — **matches baseline** |
+| 0–1 | mostly correct, "I'm saying" instead of "and so I mean" |
+| 0–9 | correct words, lower-case "garret", doubled "as as" |
+| 0–19 | derails partway: "none of them are gar- i- i mean i-" |
+| 0–39 | fully derailed: "all kinds of garret's of course none of them would be as i- as a as" — same as iter 2 |
+
+The progressive degradation pattern was the smoking gun: per-layer
+rewrite is geometrically correct, but error compounds across layers.
+
+### Root cause — Granite uses `attention_multiplier = 1/head_dim`, not `1/sqrt(head_dim)`
+
+Direct inspection of the unfused graph initializers:
+
+  scalar_tensor_default_2 = 0.0078125  # = 1/128 = 1/head_dim
+  clone_80                = 0.0
+  scalar_tensor_default_1 = -3.39e+38   # bf16 -inf
+
+`scalar_tensor_default_2` is the multiplicand of the per-layer
+score-scale Mul (`node_mul_313 = matmul_1 * scalar_tensor_default_2`).
+It is `1/head_dim`, not `1/sqrt(head_dim) ≈ 0.0884`. This is IBM
+Granite's `attention_multiplier` hyperparameter — the architecture
+intentionally diverges from the standard scaled-dot-product norm.
+
+The rewriter was passing `scale = 1/sqrt(head_dim)` to MHA, making
+attention 11.3× too peaky per layer. One layer is recoverable; 40
+layers compounds catastrophically.
+
+### Fix
+
+`scripts/granite_export/rewrite_attention_to_mha.py`:
+
+  scale = 1.0 / HEAD_DIM    # was 1.0 / (HEAD_DIM ** 0.5)
+
+### Verification (3 runs each on `/tmp/run15_short_60s.wav`, --benchmark)
+
+| Bundle | ASR wall (median) | Transcript |
+|---|---|---|
+| `granite_speech_4_1_2b_static_bf16` (unfused) | 13.29 s | baseline |
+| `granite_iter5_all_bundle_v2` (MHA fused, scale=1/128) | 13.55 s | exact match to baseline through full 60 s clip |
+
+Parity holds across all 18 segments and through long-context
+prefill. The transcript matches the unfused-static baseline at the
+visible-output level.
+
+### Perf result — fusion does not improve wall time
+
+MHA fusion is roughly at parity with the unfused-static path (+2%,
+within noise). The dynamic-shape baseline (~3.4 s) remains
+unbeaten. Possible explanations:
+
+- The static-shape padding of `seq + 512` to a fixed length is
+  the dominant cost; fusing the inner attention loop saves a
+  small fraction of total compute.
+- ORT's MHA CUDA kernel may not select the most optimal path
+  for our shape regime (S typically tiny during decode, T = past
+  + 1 up to 512, num_heads = 16, head_dim = 128). Flash and
+  fused TRT paths are disabled because we feed `attention_bias`.
+- The Q-side Transpose+Reshape adapter introduces small overhead;
+  K and V are fed natively now but Q can't be rank-4 per spec.
+
+### Implications
+
+- **Phase B's fusion goal is met for correctness** — the rewriter
+  produces a graph that loads on CUDA EP, runs end-to-end, and
+  produces parity transcripts. This is reusable for other
+  Granite-family models with the same scaling convention.
+- **Phase B does NOT close the perf gap to dynamic.** The static-
+  shape contract is the binding cost, not the per-layer attention
+  fusion. Future perf work should focus on: (a) reducing padding,
+  e.g. bucketed past_seq lengths; (b) IOBinding to keep K/V on
+  device between steps; (c) cuDNN attention path with attention_bias
+  support if available.
+- **The K/V (B, H, T, D) simplification is a real win** even at
+  perf parity: the rewriter is shorter and the graph has 80 fewer
+  Transpose+Reshape pairs (2 per layer × 40 layers).
+
+### Artifacts
+
+- Rewriter at `scripts/granite_export/rewrite_attention_to_mha.py`
+  with iter-5 wiring (drop K/V adapter, scale=1/128).
+- Working bundle at `/tmp/granite_iter5_all_bundle_v2/` (symlinks
+  to encoder/projector/mel/tokenizer files; hardlink to .data
+  sidecar; only `decoder.onnx` is new).
+- `/tmp/probe_iter5_load.py` — verbose-load probe; useful when
+  iterating on the rewriter to verify MHA placement.
+
+### Next investigator: where to go from here
+
+The parity bug is closed. The fusion is a wash for perf. Open
+questions for whoever picks this up:
+
+1. Is the static-shape contract still worth keeping? The 4× perf
+   gap to dynamic suggests the static path may not justify the
+   complexity, unless it unlocks something elsewhere (DirectML?
+   Specific deployment constraints?).
+2. If we keep static, the next perf lever is reducing the padded
+   T length. Bucketed past_seq (e.g. round up to multiples of 64
+   instead of always padding to 512) could reclaim a lot.
+3. The MHA-fused graph is reusable for any Granite model variant.
+   Apply the rewriter to Granite 8B / instruct / etc. as needed.
 
 
 
