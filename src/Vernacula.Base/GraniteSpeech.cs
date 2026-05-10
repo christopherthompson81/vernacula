@@ -559,9 +559,30 @@ public sealed class GraniteSpeech : IDisposable
         var cachePosPrefill = new long[sMax];
         for (int i = 0; i < sMax; i++) cachePosPrefill[i] = i;
 
+        // Run 20 phase 6: dynamic-MHA-fused bundles also pass through this
+        // path, but their graph signature includes a `position_ids` input
+        // (the --unified-position-ids export adds it so the C# driver can
+        // feed per-row RoPE positions). Build per-row position_ids that
+        // map left-padded slot indices to the row's semantic positions
+        // [0, realLen[b]).
+        long[]? positionIdsPrefill = null;
+        if (_hasPositionIdsInput)
+        {
+            positionIdsPrefill = new long[B * sMax];
+            for (int b = 0; b < B; b++)
+            {
+                int padLen = sMax - realLen[b];
+                int rowOff = b * sMax;
+                for (int s = 0; s < sMax; s++)
+                    positionIdsPrefill[rowOff + s] = Math.Max(0, s - padLen);
+            }
+        }
+
         // ── Decoder: prefill + chained Run-with-OrtValue step loop ──────
-        var decInputNames = new List<string>(4 + 2 * NumDecoderLayers)
+        int baseInputCount = _hasPositionIdsInput ? 5 : 4;
+        var decInputNames = new List<string>(baseInputCount + 2 * NumDecoderLayers)
         { "input_ids", "audio_embeds", "attention_mask", "cache_position" };
+        if (_hasPositionIdsInput) decInputNames.Add("position_ids");
         for (int L = 0; L < NumDecoderLayers; L++)
         {
             decInputNames.Add($"past_key_{L}");
@@ -599,9 +620,15 @@ public sealed class GraniteSpeech : IDisposable
             if (aMax == 0)
                 audioEmbedsBatch = new float[B * 1 * (int)audioDim];
 
+            OrtValue? posPrefillVal = positionIdsPrefill is null
+                ? null
+                : OrtValue.CreateTensorValueFromMemory(
+                    positionIdsPrefill, new long[] { B, sMax });
+
             var emptyPasts = new List<OrtValue>(2 * NumDecoderLayers);
-            var prefillInputs = new List<OrtValue>(4 + 2 * NumDecoderLayers)
+            var prefillInputs = new List<OrtValue>(baseInputCount + 2 * NumDecoderLayers)
             { inputIdsVal, audioVal, attnVal, cpVal };
+            if (posPrefillVal is not null) prefillInputs.Add(posPrefillVal);
             long[] emptyPastShape = { B, NumKvHeads, 0, HeadDim };
             for (int L = 0; L < NumDecoderLayers; L++)
             {
@@ -627,6 +654,7 @@ public sealed class GraniteSpeech : IDisposable
                 if (tok == EosTokenId) { finished[b] = true; finishedCount++; }
             }
             prefillOutputs[0].Dispose();
+            posPrefillVal?.Dispose();
             foreach (var p in emptyPasts) p.Dispose();
 
             // pastKvs = prefill output OrtValues, GPU-resident, chained forward.
@@ -689,8 +717,21 @@ public sealed class GraniteSpeech : IDisposable
                 using var cachePosVal = OrtValue.CreateTensorValueFromMemory(
                     cachePosStep, new long[] { 1 });
 
-                var stepInputs = new List<OrtValue>(4 + 2 * NumDecoderLayers)
+                // Per-row position_ids for the new step token: realLen[b] + step.
+                long[]? stepPositionIds = null;
+                OrtValue? stepPosVal = null;
+                if (_hasPositionIdsInput)
+                {
+                    stepPositionIds = new long[B];
+                    for (int b = 0; b < B; b++)
+                        stepPositionIds[b] = realLen[b] + step;
+                    stepPosVal = OrtValue.CreateTensorValueFromMemory(
+                        stepPositionIds, new long[] { B, 1 });
+                }
+
+                var stepInputs = new List<OrtValue>(baseInputCount + 2 * NumDecoderLayers)
                 { stepInputIdVal, stepAudioVal, stepAttnVal, cachePosVal };
+                if (stepPosVal is not null) stepInputs.Add(stepPosVal);
                 stepInputs.AddRange(pastKvs);
 
                 var outputs = _decoder.Run(
@@ -726,6 +767,7 @@ public sealed class GraniteSpeech : IDisposable
                     }
                 }
                 stepLogits.Dispose();
+                stepPosVal?.Dispose();
                 foreach (var ov in oldPast) ov.Dispose();
                 pastLen = totalLen;
                 stepCountLocal++;

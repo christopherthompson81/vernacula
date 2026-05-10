@@ -3193,6 +3193,72 @@ Three forks:
 The user is asking us to keep going; option 1 is the obvious
 next experiment.
 
+## Run 20 phase 6 — 2026-05-10 15:15 — MHA-fused dynamic batched works
+
+Re-rewrote the dynamic export with `--mode mha` instead of `gqa`.
+MHA's CUDA kernel implements `attention_bias` (Run 19 used it),
+so the same right-padded variable-length batching that CUDA GQA
+rejected now works.
+
+### C# wiring
+
+Generalised the legacy `TranscribeBatch` (dynamic path) to pass
+`position_ids` when the graph signature includes it
+(`_hasPositionIdsInput`). Per-row position_ids map left-padded
+slot s to semantic position `max(0, s - padLen[b])`, and step
+k's new token gets `realLen[b] + step`. No other changes — the
+existing left-padded prompt layout, attention_mask, and dynamic
+past_kv flow all work unchanged because MHA fusion only replaces
+the inner attention compute, not the surrounding plumbing.
+
+### Results (3 runs each on `/tmp/run15_short_60s.wav`)
+
+| Bundle | ASR median |
+|---|---|
+| unfused-static (Run 18 baseline) | 13.29 s |
+| MHA-fused static (Run 19) | 13.55 s |
+| GQA static phase 3 (IOBinding) | 13.27 s |
+| GQA dynamic phase 4 (B=1 serial) | 5.23 s |
+| **MHA-fused dynamic batched (this run)** | **4.76 s** |
+| legacy dynamic baseline (~Run 16) | ~3.4 s |
+
+Transcript exact match through all 18 segments.
+
+Profile shows the BatchSizer-grouped batches were sized
+`B=16, ~2.36 s` and `B=2, ~0.95 s` — the bulk amortisation
+happened in the first batch. ~280 ms/segment in the B=16 batch
+(vs ~280 ms/segment in B=1 GQA phase 4); the per-call overhead
+saving is real but small.
+
+### Why MHA-dynamic isn't far ahead of GQA-dynamic B=1
+
+The 0.5 s edge from batching is modest because the dominant
+per-token cost is FFN, not attention or per-call dispatch.
+Batched dispatch can't reduce FFN compute per token; it only
+amortises fixed per-call costs (binding setup, kernel launch
+counts on small ops). For our shapes, those fixed costs are
+already small.
+
+### Remaining gap to the legacy dynamic baseline (~1.4 s)
+
+Likely candidates, none of which our attention work touches:
+
+- The legacy baseline is unfused — every layer issues separate
+  MatMul/Mul/Add/Softmax kernels. MHA fusion saves kernel
+  launches, but for our small per-token shapes that's offset by
+  the extra Transpose+Reshape adapters our rewriter inserts.
+- Per-segment encoder/projector are serial in both paths. Mel
+  takes ~40 ms, encoder ~540 ms, projector ~10 ms across the
+  18-segment run; encoder dominates and could parallelise.
+- ORT may be choosing different decoder kernels for the fused
+  vs unfused graphs.
+
+A direct test: run the un-rewritten dynamic decoder against the
+same `TranscribeBatch` path and benchmark. If it matches the
+3.4 s baseline, MHA fusion is a net regression in dynamic mode;
+if it matches the 4.76 s phase-6 number, the gap is elsewhere
+(encoder, kernel selection).
+
 
 
 
