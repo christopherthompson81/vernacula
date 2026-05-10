@@ -238,6 +238,10 @@ internal class ModelManagerService
 
         return _settings.Current.AsrBackend switch
         {
+            AsrBackend.Parakeet =>
+            [
+                new AssetRepo(CoreRepoBase, CoreManifestUrl, [.. CoreDiarizationFiles, .. AsrFilesFp32]),
+            ],
             AsrBackend.Cohere =>
             [
                 new AssetRepo(CoreRepoBase, CoreManifestUrl, CoreDiarizationFiles),
@@ -276,10 +280,13 @@ internal class ModelManagerService
                     new AssetRepo(CoreRepoBase, CoreManifestUrl, CoreDiarizationFiles),
                     new AssetRepo(GraniteSpeechFp32RepoBase, GraniteSpeechFp32ManifestUrl, GraniteSpeechFp32Files),
                 ],
-            _ =>
-            [
-                new AssetRepo(CoreRepoBase, CoreManifestUrl, [.. CoreDiarizationFiles, .. AsrFilesFp32]),
-            ],
+            // VibeVoice is handled in the early-return above (it can be the
+            // segmentation backend even when the AsrBackend isn't VibeVoice);
+            // any branch that lands here for VibeVoice is a programmer error.
+            _ => throw new ArgumentOutOfRangeException(
+                "AsrBackend",
+                $"ModelManagerService.ActiveRepos has no asset repos for {_settings.Current.AsrBackend}. "
+                + "See docs/dev/asr_backend_dispatch.md."),
         };
     }
 

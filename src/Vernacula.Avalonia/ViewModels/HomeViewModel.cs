@@ -86,6 +86,8 @@ internal partial class HomeViewModel : ObservableObject
             ModelStatusText = $"VibeVoice-ASR weights are missing. Use Download Missing Models, or place them in {_settings.GetVibeVoiceModelsDir()}.";
         else if (_settings.Current.AsrBackend == AsrBackend.IndicConformer)
             ModelStatusText = $"IndicConformer weights are missing. Place them in {_settings.GetIndicConformerModelsDir()}.";
+        else if (_settings.Current.AsrBackend == AsrBackend.WhisperTurbo)
+            ModelStatusText = $"Whisper Turbo weights are missing. Use Download Missing Models, or place them in {_settings.GetWhisperTurboModelsDir()}.";
         else if (_settings.Current.AsrBackend == AsrBackend.GraniteSpeech)
             // Two install paths exist (granite_speech_4_1_2b/ and
             // granite_speech_4_1_2b_bf16/); GetGraniteSpeechModelsDir

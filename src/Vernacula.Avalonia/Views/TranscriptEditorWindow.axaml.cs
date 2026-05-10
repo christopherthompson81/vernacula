@@ -103,8 +103,12 @@ public partial class TranscriptEditorWindow : Window
         bool isVibeVoice      = string.Equals(_jobAsrModel, "vibevoice/vibevoice-asr", StringComparison.Ordinal);
         bool isIndicConformer = string.Equals(_jobAsrModel, "ai4bharat/indic-conformer-600m-multilingual", StringComparison.Ordinal);
         bool isGraniteSpeech  = string.Equals(_jobAsrModel, "ibm-granite/granite-speech-4.1-2b", StringComparison.Ordinal);
+        bool isWhisperTurbo   = string.Equals(_jobAsrModel, "openai/whisper-large-v3-turbo", StringComparison.Ordinal);
         _isQwen3Asr = isQwen3Asr;
-        _showApproximateTimingNotice = isCohere || isQwen3Asr || isVibeVoice || isGraniteSpeech;
+        // Whisper persists empty timestamps + logprobs (see TranscriptionService
+        // Phase 4 Whisper branch); editor falls back to segment-level positioning,
+        // which is the same approximate-sync UX as the others below.
+        _showApproximateTimingNotice = isCohere || isQwen3Asr || isVibeVoice || isGraniteSpeech || isWhisperTurbo;
         _approximateTimingNoticeText = isCohere
             ? "Cohere Transcribe: no word-level timing; token sync is approximate."
             : isQwen3Asr
@@ -113,6 +117,8 @@ public partial class TranscriptEditorWindow : Window
                 ? "VibeVoice-ASR: no token-level timing; token sync is approximate."
             : isGraniteSpeech
                 ? "Granite Speech: no word-level timing; token sync is approximate."
+            : isWhisperTurbo
+                ? "Whisper Turbo: no per-token timing; token sync is approximate."
                 : "";
 
         // Granite ships in two sibling bundles (FP32 / BF16 mixed-precision)
@@ -134,11 +140,13 @@ public partial class TranscriptEditorWindow : Window
                 ? Path.Combine(modelsDir, Config.IndicConformerSubDir, Config.VocabFile)
             : isGraniteSpeech
                 ? graniteVocabPath
+            : isWhisperTurbo
+                ? Path.Combine(modelsDir, Config.WhisperTurboSubDir, WhisperTurbo.TokenizerFile)
                 : Path.Combine(parakeetModelsDir, Config.VocabFile);
         if (vocabPath is not null && File.Exists(vocabPath))
         {
             _vocab = new VocabService(
-                isCohere || isQwen3Asr || isVibeVoice || isIndicConformer || isGraniteSpeech
+                isCohere || isQwen3Asr || isVibeVoice || isIndicConformer || isGraniteSpeech || isWhisperTurbo
                     ? App.Current.Settings.GetModelsDir() : parakeetModelsDir,
                 _jobAsrModel);
         }
