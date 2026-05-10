@@ -1067,3 +1067,157 @@ a ~5 s win on a 10 min clip. Park.
 - **Why does naive `CreateTensorValueFromMemory` past_kv fail on
   unified but work on split?** Filed as a known-unknown; the chained
   pattern routes around it.
+
+## Run 10 — 2026-05-10 — GPU-utilization baseline (perf round 2)
+
+**Tracking issue:** #41 (perf round 2). User-observed symptom: GPU
+cores didn't max out during a > 10 min Granite Speech run on RTX 3090
+with the BF16 bundle. Run 9 left the breakdown at encoder 25% / prefill
+11% / step-loop 60% on a 10 min clip — so "GPU not maxed" could mean
+several distinct things:
+
+- Bursty utilization → kernel-launch overhead or per-step CPU sync
+  points (token argmax, EOS check, KV concat orchestration) leaving
+  the GPU idle between launches.
+- Steady-but-low utilization → memory-bandwidth bound (KV concat is a
+  bandwidth-heavy op; consistent with concat being the #1 ORT op
+  named in Run 9's follow-ups).
+- Long idle gaps with peaky compute → cudaMemcpy preludes or
+  encoder-decoder transitions stalling on host sync.
+
+The symptom alone doesn't pick between these. Run 10's job is to
+quantify the utilization curve and pick the diagnosis from there.
+
+**Question:** Is the under-utilization bursty or steady-but-low?
+
+**Setup:** Concurrent measurement on a > 10 min clip on the RTX 3090
+(BF16 bundle). The existing `VERNACULA_GRANITE_PROFILE=1` per-stage
+wall captures *what* the wall-clock breakdown is; `nvidia-smi dmon -s u`
+running in parallel captures *whether the GPU is busy* sample-by-sample.
+Post-correlate by timestamp.
+
+```bash
+# Terminal 1 — start utilization sampler with HH:MM:SS timestamps,
+# 1Hz default. -s u = utilization counters (sm, mem, enc, dec).
+# Pipe to a log so we can correlate with the CLI's [granite-prof] lines.
+nvidia-smi dmon -s u -o T > /tmp/run10_dmon.log &
+DMON_PID=$!
+
+# Terminal 1 — run the CLI on the > 10 min clip. The CLI's stderr
+# carries [granite-prof] B=N total=Xms ... lines per batch and the
+# aggregate dump on shutdown; tee for later analysis.
+VERNACULA_GRANITE_PROFILE=1 \
+  dotnet run --project src/Vernacula.CLI -p:EP=Cuda -- \
+    --audio <CLIP_PATH> \
+    --asr ibm-granite/granite-speech-4.1-2b \
+    2> /tmp/run10_cli.stderr
+
+kill $DMON_PID
+```
+
+What we'll be looking at in the dmon log:
+- `sm` column — % of streaming multiprocessor cycles active.
+  Sustained high (~95%+) = compute-bound; sustained low = idle gap.
+- `mem` column — % of memory-controller cycles active. High while
+  `sm` is moderate suggests bandwidth-bound (e.g. KV concat).
+- Variance across the time series — bursty samples (alternating
+  high/low at 1 Hz cadence) suggests per-batch granularity stalls;
+  smooth low values suggest a structural cap.
+
+If the utilization data is ambiguous at 1 Hz, follow-up with
+`nsys profile --stats=true --output=/tmp/run10 dotnet ...` for a
+kernel-level timeline. Park nsys for now — the dmon answer is cheap
+and likely sufficient to pick the next move.
+
+**Result:**
+
+Audio was a 600 s en-US clip; Sortformer produced 132 VAD segments;
+Granite ran 9 batches (max B=16, last B=4). Aggregate from
+`VERNACULA_GRANITE_PROFILE=1`:
+
+```
+batches:    9  rows: 132  max_B: 16  steps: 266
+mel:        630 ms   ( 2.8%)
+encoder:    4021 ms  (18.2%)
+projector:  79 ms    ( 0.4%)
+prefill:    2227 ms  (10.1%)
+step-loop:  14968 ms (67.6%)
+overhead:   224 ms   ( 1.0%)
+total:      22149 ms
+```
+
+RTF 0.037 — comparable to Run 9's post-fix 0.043 on a similar 10 min
+clip. Wall-time shape matches Run 9's profile (step-loop ~67%, encoder
+~18%); no regression.
+
+Per-batch breakdown (steps column matters most for the diagnosis):
+
+| # | B | total | mel | enc | proj | prefill | step | step-count |
+|--:|--:|--:|--:|--:|--:|--:|--:|--:|
+| 1 | 16 | 709 | 18 | 247 | 3 | 174 | 240 | 8 |
+| 2 | 16 | 466 | 16 | 145 | 2 | 92 | 187 | 7 |
+| 3 | 16 | 514 | 16 | 222 | 3 | 80 | 168 | 6 |
+| 4 | 16 | 964 | 23 | 498 | 0 | 174 | 237 | 6 |
+| 5 | 16 | 1113 | 40 | 453 | 3 | 116 | 473 | 13 |
+| 6 | 16 | 1842 | 67 | 582 | 10 | 156 | 1002 | 21 |
+| 7 | 16 | 3552 | 118 | 715 | 16 | 528 | 2149 | 33 |
+| 8 | 16 | 7329 | 231 | 810 | 29 | 731 | 5502 | **64** |
+| 9 |  4 | 5660 | 101 | 349 | 13 | 176 | 5010 | **108** |
+
+`nvidia-smi dmon -s u` 1 Hz timeline (sm = SM-cycle %, mem = memory-
+controller cycle %) cross-referenced with the wall-clock phases:
+
+| t (s) | phase | sm % | mem % |
+|---|---|---|---|
+| 08:24:08–18 | Sortformer diarization | 18–41 | 12–25 |
+| 08:24:19–23 | **idle gap (model load)** | 3–4 | 0–1 |
+| 08:24:24–35 | ASR batches 1–5 (light) | 25–65 | 7–23 |
+| 08:24:37–52 | **ASR batches 6–9 (heavy)** | 65–100, mostly 75–85 | 11–44, mostly 12–22 |
+
+**Implication:**
+
+Three distinct findings, each pointing at a different next move:
+
+1. **The "GPU not maxed" symptom is real and is mainly about the
+   step-loop**. During the heavy batches (6–9) where the step-loop
+   dominates, SM averages ~75% with peaks at 100%, while mem stays at
+   12–22%. That signature — high-but-not-pegged SM, low mem, bursty —
+   is the classic **kernel-launch overhead / per-step CPU-sync**
+   pattern, not memory-bandwidth bound. With 26 decoder layers each
+   running qkv-proj + attention + KV-concat + FFN per step, a B=16
+   step at ~46 ms (batch 8: 5502 ms / 64 steps / 16 rows ≈ 5 ms per
+   row-step) is suspicious — that's ~150+ kernels at ~30 µs each, near
+   the launch-overhead floor. **nsys is the right next tool** to see
+   the gaps directly. Whether the right fix is static-KV (fewer
+   kernels per step), CUDA graphs (one launch per step), or just the
+   concat elimination from Run 9's follow-up depends on what nsys
+   shows.
+
+2. **A 5 s idle gap between diarization end and ASR start** —
+   `08:24:19–23`, sm at 3–4%. That's load-gap waste of ~22% of the
+   ASR-phase wall on this clip. Pre-warming Granite (load weights,
+   prime the decoder kernels) during the tail of Sortformer would
+   recover most of it. Cheap relative to the kernel-launch fix and
+   independent of it.
+
+3. **A new straggler leaked past Run 9's rep-detect** — batch 9 ran
+   108 steps on B=4, eating 5.0 s on its own (23% of total wall) for
+   only 4 segments. The pattern Run 9 fixed (`"uh, uh, uh, …"`,
+   3-cycles-of-period-1-to-4) doesn't catch this one; the runaway
+   row's tail must be either a longer period, a lower cycle count, or
+   a near-but-not-exact repetition. Worth a separate investigation
+   step before any optimisation work — straggler waste at this
+   magnitude dominates the kernel-overhead question.
+
+**Next moves (decreasing priority):**
+
+- **Run 11**: nsys profile of one heavy batch (e.g. batch 8 or 9) to
+  see kernel-level gaps. `nsys profile --stats=true` plus the existing
+  `[granite-prof]` output gives us the exact gap pattern in the step
+  loop.
+- **Run 12**: investigate the batch-9 straggler. Pull the offending
+  segment's actual decoded text and check what motif Run 9's detector
+  missed.
+- **Run 13** (cheap, parallel-able): pre-warm Granite during
+  diarization to eliminate the 5 s idle gap.
+
