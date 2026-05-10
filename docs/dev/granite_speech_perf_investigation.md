@@ -2400,6 +2400,83 @@ dedicated past inputs. Requires:
 This is a coordinated re-export + rewriter change. ~1-day fresh-
 session work; won't fit in this agent-loop session.
 
+---
+
+## For the next investigator (start here)
+
+The iter-1-to-iter-4 evidence is in the Run 18 entries above. **Don't
+build on iter-4's speculative claim that ORT's
+`relative_position_bias` is "relative-position-style only" — that
+was a guess from this session, not a verified fact.** The first move
+should be to ground-truth what ORT MHA actually does with its
+inputs.
+
+**Before writing any code, read these two ORT source files:**
+
+- `onnxruntime/contrib_ops/cuda/bert/multihead_attention.cc` — the
+  CUDA implementation. Specifically how `relative_position_bias`,
+  `key_padding_mask`, and `unidirectional` are combined.
+- `onnxruntime/contrib_ops/cpu/bert/multihead_attention_helper.h`
+  — input validation and shape semantics.
+
+These tell you definitively whether RPB is treated as a literal
+additive `(B, num_heads, S, T)` mask or as a relative-position
+function. The answer changes which iter-5 plan is correct:
+
+- **If RPB is literal additive:** iter 2's wiring should have worked.
+  The bug is somewhere else (head layout? scale? something we
+  missed). Re-examine the rewriter's adapter Transpose+Reshape
+  geometry. Add intermediate-tensor inspection (run unfused vs
+  rewritten on the same inputs, compare logits at each layer's
+  attention output).
+- **If RPB is relative-position-only:** iter 5's past_key plumbing
+  is the right path. Coordinated change to (a) the export
+  wrapper to declare past_kv as 16-head, (b) the rewriter to
+  feed MHA's past_key directly, (c) C# adaptation if cache shape
+  changes.
+
+**Fast feedback loop for iter 5:**
+
+1. Modify only ONE layer in the rewriter (`--layers 0`).
+2. End-to-end transcribe via the C# CLI on
+   `/tmp/run15_short_60s.wav` with bundle pointing at
+   `~/.local/share/Vernacula/models/granite_speech_4_1_2b_static_mha_bf16`
+   (the existing test bundle; copy your new layer-0 decoder.onnx in).
+3. If the output is identical to the unfused-static run on the same
+   clip, the wiring is right; extend to all 40 layers.
+4. If the output diverges, you've narrowed the bug to one layer's
+   wiring at the C# observable level — easier to debug than a
+   garbled cascade across 40 layers.
+
+**Branch state:**
+
+- `43-granite-fused-attention` (pushed). 8 commits.
+- The C# static-shape adaptation is cherry-picked from PR #44's
+  reverted phase 2c (commit `87b6c2c`). It's needed to test the
+  rewritten bundle end-to-end.
+- The rewriter is at `scripts/granite_export/rewrite_attention_to_mha.py`.
+  Currently in iter-4 wiring (RPB cast, dtype-rejected). Revert
+  that file to iter-2's commit (`b9246cf`) for the cleanest
+  starting point if pursuing the "RPB is literal" branch.
+
+**Tooling reminders:**
+
+- `--static-shapes-unified` flag in the export script gives you a
+  Granite decoder.onnx with seq dynamic and other dims pinned. The
+  iter-5 work probably wants `--static-shapes-unified --sdpa-attention`
+  (still eager unless you have a reason to test sdpa); past_kv is
+  declared 4-head currently, that's the dim you'd change for iter 5.
+- `VERNACULA_ORT_VERBOSE=1` env var (in `OrtSessionBuilder`)
+  enables ORT INFO-level logging across sessions. Use to verify
+  MHA placement on CUDA EP and check fusion-modified counts.
+- `/tmp/probe_ort_load.py` is a quick verbose-load probe — point it
+  at any decoder.onnx to see CPU fallbacks + Memcpy warnings.
+- `/tmp/probe_gqa_alignment.py` and `/tmp/probe_mha_mask.py` from
+  the recon phase are reproducible if you need to re-verify GQA's
+  left-alignment or MHA's mask semantics.
+
+
+
 
 
 
