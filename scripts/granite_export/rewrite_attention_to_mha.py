@@ -206,21 +206,25 @@ def rewrite_layer(graph: onnx.GraphProto, softmax: onnx.NodeProto, layer_idx: in
                          outputs=[v_adapted], name=f"{pfx}_v_reshape"),
     ]
 
-    # MultiHeadAttention. We feed the original graph's per-call additive
-    # mask (`where_2`-style; bf16 with 0 for attend / -inf for ignore +
-    # causal triangulation) as relative_position_bias. ORT MHA adds this
-    # to the attention scores before softmax — same semantics as the
-    # original Add node we removed, so per-layer behaviour is preserved.
+    # MultiHeadAttention. We pass the graph's raw attention_mask (cast to
+    # int32 once at the top of the graph) as key_padding_mask, plus
+    # is_unidirectional=1 to have MHA apply causal masking internally.
+    # This wiring lets MHA's CUDA kernel skip masked positions in COMPUTE,
+    # not just zero them post-softmax — that's the difference between
+    # "correct output but slow" (relative_position_bias path) and
+    # "correct AND fast". Relevant ORT MHA implementation skip happens
+    # only via key_padding_mask + is_unidirectional, not via RPB.
     mha_out = f"{pfx}_out"
     scale = 1.0 / (HEAD_DIM ** 0.5)
     mha_node = helper.make_node(
         "MultiHeadAttention",
-        inputs=[q_adapted, k_adapted, v_adapted, "", "", mask],
+        inputs=[q_adapted, k_adapted, v_adapted, "", "mha_mask_int32"],
         outputs=[mha_out],
         name=f"{pfx}_node",
         domain="com.microsoft",
         num_heads=NUM_HEADS,
         scale=scale,
+        unidirectional=1,
     )
 
     # Rewire output_tensor consumers to use mha_out instead.
@@ -268,6 +272,10 @@ def main() -> int:
         else [int(x) for x in args.layers.split(",")]
     )
     print(f"  Rewriting layers: {target_layers}")
+
+    # Cast the graph's attention_mask (int64) to int32 once for all layers'
+    # MHA key_padding_mask consumers.
+    add_mask_int32(graph)
 
     all_new_nodes: list[onnx.NodeProto] = []
     all_new_inits: list[onnx.TensorProto] = []

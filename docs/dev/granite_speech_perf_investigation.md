@@ -2298,6 +2298,62 @@ as starting points. The rewriter itself is committed; future
 investigators can iterate on the wiring without re-deriving the
 pattern map.
 
+### Iteration 3 (key_padding_mask + is_unidirectional)
+
+Sharper diagnosis after the user observed the perf regression
+wasn't expected as a parity-debugging artifact: the
+`relative_position_bias` path is **purely additive** — added to
+attention scores after they've been computed over all positions.
+ORT MHA can only skip masked positions in COMPUTE via
+`key_padding_mask` + `is_unidirectional`, not via RPB. So the
+parity bug and the perf regression were likely the same bug.
+
+Switched the rewriter to feed the graph's raw `attention_mask`
+(cast to int32) as `key_padding_mask`, and set
+`is_unidirectional=1` for causal handling. End-to-end on the 60 s
+clip:
+
+- Output: **"all kinds of telephone calls, of course, none of them"**
+  — first ~12 words match the baseline almost perfectly, then
+  derails into a repetition loop ("would get more as i would
+  answer would i would i would..."). Not parity yet.
+- Wall: **19.7 s** (worse than iter 2's 8.98 s) — but this is
+  because derailment inflates step count from 36 to 98. Per-step
+  time is hard to compare across runs with different convergence
+  behaviour.
+
+**Diagnosis (clearer now):** with `is_unidirectional=1` AND
+pre-concatenated K (no `past_key` argument to MHA), MHA applies
+causal masking as if the entire K is "new tokens". So Q at position
+`s` only attends to K at `[0, s]` — completely missing the cached
+positions `[0, P)`. The first prefill token sees nothing, the
+second sees only the first, etc. After prefill, the cache has very
+little useful context, so the model can decode a few tokens from
+limited state and then derails.
+
+**Architectural fix (next iteration):** feed `past_key` /
+`past_value` via MHA's dedicated past inputs, NOT pre-concatenated.
+MHA then knows there's an offset of length P, and applies causal
+correctly: `Q[s]` attends to past `[0, P)` + new `[P, P+s]`. This
+requires:
+
+- Bypass the existing `Concat(past_key_0, new_K)` chain. Instead,
+  feed `past_key_0` graph input directly to MHA's `past_key` input
+  (after Expand from 4 to 16 heads to match `num_heads`).
+- Feed the new step's K (post-RoPE, pre-Concat) as MHA's `key`
+  input, also Expanded to 16 heads.
+- The Expand needs to happen before MHA, which currently happens
+  AFTER the Concat in the unfused graph. Rewrite reorder.
+- MHA outputs `present_key` directly at the post-concat shape,
+  which then needs the wrapper-level slice to match the
+  static-shape contract. May need a separate Slice node after MHA.
+
+This is a ~1-day refactor of the rewriter, not a 30-min tweak.
+Same scope as a fresh-session day-2-follow-up. Pausing iteration
+loop here so it doesn't blur into a multi-day session.
+
+
+
 
 
 
