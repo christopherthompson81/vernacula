@@ -2057,6 +2057,1488 @@ needs static shapes to make GQA's `seqlens_k` input meaningful.
 The follow-up issue should bake in this feasibility data so the
 next investigator doesn't re-derive it.
 
+## Run 17 phase A — 2026-05-10 — SDPA spike (closed: dead)
+
+**Setup:** Issue #43, 1-day timebox. Hypothesis: switching the
+language model's attention to `attn_implementation="sdpa"` on the
+static-shape export emits a pattern ORT's `AttentionFusion` /
+`GroupQueryAttentionFusion` passes recognize, giving us fused
+attention without writing a custom graph rewriter.
+
+Implementation: added `--sdpa-attention` flag in
+`scripts/granite_export/export_granite_speech_to_onnx.py`. Granite's
+audio Q-former (`Blip2QFormerModel`) doesn't have an SDPA
+implementation, so `attn_implementation="sdpa"` at the top-level
+constructor errors. The flag instead loads with `eager` and post-load
+sets `model.language_model.config._attn_implementation = "sdpa"` —
+surgical override that leaves the audio path untouched.
+
+**Result — A1 (SDPA + dynamic shapes):** trace fails. Confirms the
+comment in the existing `load_model_and_processor` that flagged this
+path as broken. Specific error:
+
+```
+Could not guard on data-dependent expression Ne(u0, 4) (unhinted: Ne(u0, 4)).
+... attention_mask.shape[3] != 4 ...
+```
+
+PyTorch 2.11 / transformers 4.57 still hits this in dynamo-mode
+export. The original objection holds.
+
+**Result — A2 (SDPA + static shapes):** trace succeeds. ORT verbose
+load reports:
+
+| Metric                         | eager + static | **SDPA + static** |
+|--------------------------------|---------------:|------------------:|
+| Memcpy warnings                |              0 |                 0 |
+| CPU-fallback ops               |             10 |           **210** |
+|   Slice                        |              0 |               120 |
+|   Concat                       |              7 |                87 |
+|   sym_size_int                 |              1 |                 1 |
+|   add                          |              1 |                 1 |
+|   Reshape                      |              1 |                 1 |
+| `AttentionFusion modified`     |              0 |             **0** |
+| `GroupQueryAttentionFusion`    |              0 |             **0** |
+
+**SDPA + static is strictly worse than eager + static.** The pattern
+torch.onnx.export emits for SDPA at static shapes contains 200+ extra
+Slice / Concat ops (the GQA Expand+Repeat dance and KV-cache slicing
+were materialised as explicit graph nodes), AND ORT's pattern matcher
+*still* doesn't recognize the result.
+
+**Implication:** Path A is dead. The cheap `attn_implementation="sdpa"`
+shortcut doesn't auto-fuse Granite's attention pattern — neither at
+runtime-dynamic shapes (where it doesn't trace) nor at static shapes
+(where it traces a worse graph). Auto-fusion via ORT's built-in
+transformer passes is not reachable for Granite without rewriting
+either the attention module's PyTorch source or the exported ONNX
+graph directly.
+
+**Pivot:** Path B (custom graph rewriter). The earlier feasibility
+spike already confirmed `com.microsoft.GroupQueryAttention` runs on
+CUDA EP for Granite's exact config (16/4/128, BF16, do_rotary,
+past_len=768, batch=16). The remaining work is the pattern-matcher
+itself, applied to the **eager + static** export (which has cleaner
+per-layer structure than SDPA's traced output — the 200 extra
+Slice/Concat ops in SDPA's graph would make the matcher harder, not
+easier).
+
+**Honest retrospective on Phase A:** the asymmetric value-of-information
+argument from the path-comparison still held — A's failure was cheap
+(<1 day) and it gave us concrete data: we now know SDPA isn't a free
+shortcut on Granite, and we know the eager export is the cleaner
+target for path B. Next time someone proposes "just use SDPA" on a
+Granite-style model, the answer is documented.
+
+**Useful artifacts kept from Phase A:**
+
+- `--sdpa-attention` flag and the per-submodule override pattern in
+  `load_model_and_processor`. Future spikes on other transformers
+  models can reuse this.
+- The probe scripts (`/tmp/probe_ort_load.py` updated to grep
+  `AttentionFusion modified > 0` lines).
+
+**Next:** open phase B — custom graph rewriter to replace the
+per-layer attention subgraph with `com.microsoft.GroupQueryAttention`
+nodes. Detailed plan in #43.
+
+## Run 18 — 2026-05-10 — Phase B reconnaissance: pattern map + alignment probes
+
+Phase B starts with reconnaissance, not engineering. Three concrete
+probes before committing to multi-day implementation:
+
+### Probe 1 — Granite's per-layer attention pattern
+
+Walked the eager+static decoder.onnx, anchored on the 40 Softmax
+nodes (one per layer). Each layer's attention block is uniform:
+
+```
+output_proj ← Reshape ← Transpose ← MatMul(softmax_out, V_full)
+                                    ↑
+                                   Softmax ← Add(scores, mask) ← Mul(scale, ·) ← MatMul(Q, K_full^T)
+                                                                                  ↑       ↑
+                                                                                  Q       K_full = Concat(past_K, new_K)
+```
+
+40 / 40 layers match this exact pattern — the rewriter target is
+clean. Anchor: walk back from each Softmax to its parent MatMul
+(scores), and forward to its child MatMul (× V).
+
+### Probe 2 — GQA cache-alignment
+
+Built a minimal `com.microsoft.GroupQueryAttention` graph with two
+test cache layouts: left-aligned (real KV at slots `[0, seqlens_k)`,
+padding after) vs right-aligned (zeros at `[0, P-real)`, real after).
+Compared GQA's output to a hand-rolled reference for each.
+
+| Configuration                            | GQA mean abs | Reference mean abs | Match? |
+|------------------------------------------|-------------:|-------------------:|:------:|
+| Left-aligned cache, seqlens_k=4          |     0.036117 |           0.036117 | **✓ exact** |
+| Right-aligned cache, seqlens_k=4         |     0.016493 |           0.032659 | ✗      |
+
+**GQA assumes left-aligned cache.** Granite's existing static-shape
+export uses right-aligned (slice `[-P:]`). Using GQA would require
+re-architecting the cache layout: re-export wrapper without the
+`[-P:]` slice, C# tracks per-row cache lengths and writes new K/V
+at the next slot, no slicing needed if we never exceed `P`. That's
+substantial extra scope (5-7 days) on top of the rewriter.
+
+### Probe 3 — MHA with custom mask
+
+Built a minimal `com.microsoft.MultiHeadAttention` graph with a
+`(B, T)` `key_padding_mask` and the same right-aligned cache
+configuration:
+
+| Probe                                         | mean abs | Reference matches? |
+|-----------------------------------------------|---------:|:------------------:|
+| MHA with mask convention `1=pad, 0=attend`    | 0.000000 | ✗ (all zeros)      |
+| MHA with mask convention `1=attend, 0=pad`    | 0.035227 | **✓ exact**        |
+
+**MHA accepts a custom `(B, T)` mask** with convention `1=attend,
+0=ignore` (standard HF transformers convention). Right-aligned cache
+just works — the mask gates whatever's in the cache, regardless of
+where the real KV sits. **No re-architecture needed.**
+
+### Implication
+
+**MHA is the right fused op for Granite, not GQA.** The phase B
+plan changes:
+
+- Replace each attention block with `com.microsoft.MultiHeadAttention`
+  (not GroupQueryAttention).
+- Keep the existing 80 Expand ops (4 KV heads → 16 heads); MHA
+  wants K/V already broadcast to 16 heads.
+- Feed the existing attention_mask through unchanged (just cast
+  to int32 if needed).
+- Past_kv keeps right-aligned layout. No C# rearchitecture.
+- C# side: minimal change — perhaps just one `Cast` from int64 mask
+  to int32, or re-shape into `seqlens_k` if MHA needs it. TBD on
+  closer look.
+
+Phase B effort revised back down to **3-4 days**:
+
+- Day 1: pattern matcher; replace one layer's attention with MHA;
+  verify it loads.
+- Day 2: extend to all 40 layers; per-layer parity vs unfused.
+- Day 3: end-to-end smoke test + minor C# mask conversion.
+- Day 4: perf benchmark.
+
+Bonus: MHA fusion generalizes to other transformer backends
+(Qwen3, VibeVoice) where the GQA-with-left-align approach was
+Granite-specific.
+
+## Run 18 phase B day 1+ — Rewriter implemented, partial parity (WIP)
+
+**Setup:** Wrote `scripts/granite_export/rewrite_attention_to_mha.py`.
+Anchors on each Softmax node, walks back/forward to identify the 7
+unfused-attention nodes (MatMul + Mul-scale + Add-mask + Softmax +
+MatMul + Transpose + Reshape), and replaces them with a single
+`com.microsoft.MultiHeadAttention` node fed via Q/K/V Transpose+Reshape
+adapters. The rewriter operates on the static-shape eager-export
+decoder.onnx as a post-export step.
+
+**Iteration 1 — naive raw-mask wiring:** Initial implementation passed
+the graph's `attention_mask` input (cast to int32) as MHA's
+`key_padding_mask`. Result: graph loaded cleanly, zero new CPU
+fallbacks vs unfused baseline, MHA placed on CUDA EP. End-to-end
+smoke: **garbage transcript** ("`<|fim_middle|>-- --  - -s,`").
+
+Diagnosis: by feeding only the raw (B, T) attention_mask, we lost
+the **causal masking** that the original graph's per-layer Add node
+applied. Granite's exported graph computes a single shared
+`(B, 1, S, T)` additive mask (`where_2`) that encodes both key-padding
+*and* causal triangulation; this mask is reused across all 40 layers'
+attention Add nodes.
+
+**Iteration 2 — feed `where_2` as `relative_position_bias`:** Updated
+the rewriter to pass `where_2` (the original shared additive mask)
+to MHA's `relative_position_bias` input. This is added to attention
+scores before softmax — the exact semantics of the original Add. End
+to end on the 60s clip:
+
+- Output: **partially correct**. "all kinds of garret's of course
+  none of them would be as i- as a as" vs the correct baseline
+  "all kinds of telephone calls of course none of them were Garrett
+  and so I mean...". "Garrett" + "of course none of them" match
+  approximately; the rest is mangled.
+- Wall: **8.98 s** (vs unfused-static 12.1 s, dynamic 3.4 s). MHA +
+  where_2 is faster than unfused-static but still 2.6× slower than
+  dynamic.
+
+**Implication:** Iteration 2 moved us from "complete garbage" to
+"garbled but recognizable" output. The mask wiring is on the right
+track but there's at least one more bug in the rewrite, and the
+compute regression hasn't been eliminated.
+
+**Possible remaining bugs (in priority order):**
+
+1. **Head layout in the adapter.** The Transpose+Reshape pair is
+   supposed to convert `(B, num_heads, S, head_dim)` to
+   `(B, S, num_heads × head_dim)` with heads-outer flattening. May
+   not match MHA's internal interpretation.
+2. **`relative_position_bias` shape mismatch.** ORT MHA expects this
+   tensor in `(B or 1, num_heads, S, T)` layout. Our `where_2` is
+   `(B, 1, S, T)` which should broadcast across heads — but if MHA
+   treats the second dim as actual head index rather than broadcast,
+   we'd have a layout mismatch.
+3. **`is_unidirectional` attribute** — MHA may apply implicit causal
+   masking; explicitly setting `is_unidirectional=0` to disable it
+   could matter.
+4. **Numerical drift.** Original computes attention in fp32 (with bf16
+   K/V dequantized at the matmul); MHA may use bf16 accumulators
+   internally. Could explain partial-correctness.
+
+**Decision: pause and ship the partial work as a checkpoint.** Phase B
+day 2 was meant to be "extend matcher + parity test"; we got
+"matcher implemented + partial parity". Closing the remaining gap is
+plausibly another day of debugging, but the agent-loop time spent
+here suggests it's worth handing the next iteration to a fresh
+session with the partial-output diff and the four hypotheses above
+as starting points. The rewriter itself is committed; future
+investigators can iterate on the wiring without re-deriving the
+pattern map.
+
+### Iteration 3 (key_padding_mask + is_unidirectional)
+
+Sharper diagnosis after the user observed the perf regression
+wasn't expected as a parity-debugging artifact: the
+`relative_position_bias` path is **purely additive** — added to
+attention scores after they've been computed over all positions.
+ORT MHA can only skip masked positions in COMPUTE via
+`key_padding_mask` + `is_unidirectional`, not via RPB. So the
+parity bug and the perf regression were likely the same bug.
+
+Switched the rewriter to feed the graph's raw `attention_mask`
+(cast to int32) as `key_padding_mask`, and set
+`is_unidirectional=1` for causal handling. End-to-end on the 60 s
+clip:
+
+- Output: **"all kinds of telephone calls, of course, none of them"**
+  — first ~12 words match the baseline almost perfectly, then
+  derails into a repetition loop ("would get more as i would
+  answer would i would i would..."). Not parity yet.
+- Wall: **19.7 s** (worse than iter 2's 8.98 s) — but this is
+  because derailment inflates step count from 36 to 98. Per-step
+  time is hard to compare across runs with different convergence
+  behaviour.
+
+**Diagnosis (clearer now):** with `is_unidirectional=1` AND
+pre-concatenated K (no `past_key` argument to MHA), MHA applies
+causal masking as if the entire K is "new tokens". So Q at position
+`s` only attends to K at `[0, s]` — completely missing the cached
+positions `[0, P)`. The first prefill token sees nothing, the
+second sees only the first, etc. After prefill, the cache has very
+little useful context, so the model can decode a few tokens from
+limited state and then derails.
+
+**Architectural fix (next iteration):** feed `past_key` /
+`past_value` via MHA's dedicated past inputs, NOT pre-concatenated.
+MHA then knows there's an offset of length P, and applies causal
+correctly: `Q[s]` attends to past `[0, P)` + new `[P, P+s]`. This
+requires:
+
+- Bypass the existing `Concat(past_key_0, new_K)` chain. Instead,
+  feed `past_key_0` graph input directly to MHA's `past_key` input
+  (after Expand from 4 to 16 heads to match `num_heads`).
+- Feed the new step's K (post-RoPE, pre-Concat) as MHA's `key`
+  input, also Expanded to 16 heads.
+- The Expand needs to happen before MHA, which currently happens
+  AFTER the Concat in the unfused graph. Rewrite reorder.
+- MHA outputs `present_key` directly at the post-concat shape,
+  which then needs the wrapper-level slice to match the
+  static-shape contract. May need a separate Slice node after MHA.
+
+This is a ~1-day refactor of the rewriter, not a 30-min tweak.
+Same scope as a fresh-session day-2-follow-up. Pausing iteration
+loop here so it doesn't blur into a multi-day session.
+
+### Iteration 4 (where_2 as RPB cast to fp32)
+
+Quick experiment to rule out dtype precision as the iter-2 bug
+cause. Cast where_2 (bf16) to fp32 before feeding as RPB.
+
+Result: ORT MHA rejects with `Type Error: Type parameter (T) of
+Optype (MultiHeadAttention) bound to different types (tensor(bfloat16)
+and tensor(float))`. ORT enforces RPB dtype to match Q/K/V dtype.
+Can't promote the mask cleanly without converting Q/K/V too.
+
+Implication: iter 2's "garbled but recognizable" output wasn't a
+dtype precision issue. Most likely root cause is that ORT MHA's
+`relative_position_bias` is intended for *relative* position
+encodings (T5/ALiBi style) and may not interpret arbitrary
+additive masks literally. The semantics of "RPB[s, t] is added
+to attention_scores[s, t]" sounds simple, but the implementation
+might index it as "RPB[s - t]" or similar relative-position
+function. This would explain why iter 2 produced output that
+*almost* matched (relative positions in the unmasked region behave
+similarly across q-positions) but with subtle drift.
+
+Full evidence-based diagnosis at this point:
+- iter 1 (raw KPM, no causal): garbage. Missing causal entirely.
+- iter 2 (where_2 as RPB): garbled. RPB likely interpreted
+  relative-position-style, not as literal additive mask.
+- iter 3 (KPM + unidirectional, pre-concat K): correct ~12 tokens
+  then derails. Causal applied as if K is all "new" — misses
+  cached past positions [0, P).
+- iter 4 (where_2 as RPB cast to fp32): dtype-rejected.
+
+The PATH FORWARD is iter 5: feed past_key/past_value via MHA's
+dedicated past inputs. Requires:
+
+1. Re-export with past_key/past_value declared as 16-head (Expand
+   from 4 to 16 heads at export time, before the wrapper-level
+   slice). Cache memory grows 4× but still fits comfortably
+   (~168 MB for 16 KV heads × 512 past × 128 head_dim × 80
+   tensors at bf16).
+2. Rewriter consumes past_key_<L> graph input directly as MHA's
+   past_key (not the post-concat tensor).
+3. New_K post-RoPE → MHA's key input (after Expand to 16 heads).
+4. unidirectional=1 + key_padding_mask for causal + masking.
+5. MHA's present_key output replaces the wrapper-level slice path
+   (or composes with it; depends on shape conventions).
+
+This is a coordinated re-export + rewriter change. ~1-day fresh-
+session work; won't fit in this agent-loop session.
+
+---
+
+## For the next investigator (start here)
+
+The iter-1-to-iter-4 evidence is in the Run 18 entries above. **Don't
+build on iter-4's speculative claim that ORT's
+`relative_position_bias` is "relative-position-style only" — that
+was a guess from this session, not a verified fact.** The first move
+should be to ground-truth what ORT MHA actually does with its
+inputs.
+
+**Before writing any code, read these two ORT source files:**
+
+- `onnxruntime/contrib_ops/cuda/bert/multihead_attention.cc` — the
+  CUDA implementation. Specifically how `relative_position_bias`,
+  `key_padding_mask`, and `unidirectional` are combined.
+- `onnxruntime/contrib_ops/cpu/bert/multihead_attention_helper.h`
+  — input validation and shape semantics.
+
+These tell you definitively whether RPB is treated as a literal
+additive `(B, num_heads, S, T)` mask or as a relative-position
+function. The answer changes which iter-5 plan is correct:
+
+- **If RPB is literal additive:** iter 2's wiring should have worked.
+  The bug is somewhere else (head layout? scale? something we
+  missed). Re-examine the rewriter's adapter Transpose+Reshape
+  geometry. Add intermediate-tensor inspection (run unfused vs
+  rewritten on the same inputs, compare logits at each layer's
+  attention output).
+- **If RPB is relative-position-only:** iter 5's past_key plumbing
+  is the right path. Coordinated change to (a) the export
+  wrapper to declare past_kv as 16-head, (b) the rewriter to
+  feed MHA's past_key directly, (c) C# adaptation if cache shape
+  changes.
+
+**Fast feedback loop for iter 5:**
+
+1. Modify only ONE layer in the rewriter (`--layers 0`).
+2. End-to-end transcribe via the C# CLI on
+   `/tmp/run15_short_60s.wav` with bundle pointing at
+   `~/.local/share/Vernacula/models/granite_speech_4_1_2b_static_mha_bf16`
+   (the existing test bundle; copy your new layer-0 decoder.onnx in).
+3. If the output is identical to the unfused-static run on the same
+   clip, the wiring is right; extend to all 40 layers.
+4. If the output diverges, you've narrowed the bug to one layer's
+   wiring at the C# observable level — easier to debug than a
+   garbled cascade across 40 layers.
+
+**Branch state:**
+
+- `43-granite-fused-attention` (pushed). 8 commits.
+- The C# static-shape adaptation is cherry-picked from PR #44's
+  reverted phase 2c (commit `87b6c2c`). It's needed to test the
+  rewritten bundle end-to-end.
+- The rewriter is at `scripts/granite_export/rewrite_attention_to_mha.py`.
+  Currently in iter-4 wiring (RPB cast, dtype-rejected). Revert
+  that file to iter-2's commit (`b9246cf`) for the cleanest
+  starting point if pursuing the "RPB is literal" branch.
+
+**Tooling reminders:**
+
+- `--static-shapes-unified` flag in the export script gives you a
+  Granite decoder.onnx with seq dynamic and other dims pinned. The
+  iter-5 work probably wants `--static-shapes-unified --sdpa-attention`
+  (still eager unless you have a reason to test sdpa); past_kv is
+  declared 4-head currently, that's the dim you'd change for iter 5.
+- `VERNACULA_ORT_VERBOSE=1` env var (in `OrtSessionBuilder`)
+  enables ORT INFO-level logging across sessions. Use to verify
+  MHA placement on CUDA EP and check fusion-modified counts.
+- `/tmp/probe_ort_load.py` is a quick verbose-load probe — point it
+  at any decoder.onnx to see CPU fallbacks + Memcpy warnings.
+- `/tmp/probe_gqa_alignment.py` and `/tmp/probe_mha_mask.py` from
+  the recon phase are reproducible if you need to re-verify GQA's
+  left-alignment or MHA's mask semantics.
+
+## Run 19 — 2026-05-10 11:51 — ORT MHA semantics ground-truthed
+
+**Goal of this run:** before writing any iter-5 code, verify the
+iter-4 speculative claim that ORT's `relative_position_bias` is
+"relative-position-style only" (and therefore that iter-2's
+where_2-as-RPB wiring couldn't have been semantically correct).
+
+**Method:** read the authoritative ORT contrib op spec
+(`docs/ContribOperators.md`) plus the CUDA op implementation
+(`onnxruntime/contrib_ops/cuda/bert/multihead_attention.cc`) and
+the kernel scale path (`attention_impl.cu`) on `main`.
+
+### Findings (verbatim from ORT main)
+
+1. **The input is no longer named `relative_position_bias`** — it
+   was renamed to `attention_bias` in current ORT. The contrib spec
+   says:
+
+   > **`attention_bias`** (optional) : T — bias added to QxK' with
+   > shape `(batch_size or 1, num_heads or 1, sequence_length,
+   > total_sequence_length)`
+
+   "Bias added to QxK'" is a literal element-wise additive bias.
+   No relative-position indexing; broadcast over batch and heads
+   is supported via the `or 1` dims.
+
+2. **Kernel data flow is a literal pointer assign**, not a
+   computed function:
+
+   ```cpp
+   data.attention_bias = reinterpret_cast<const CudaT*>(
+       attention_bias->Data<T>());
+   ```
+
+   It is forwarded into `QkvToContext` and added element-wise to
+   scores before softmax. (Default scale 1/sqrt(head_size) is
+   confirmed in `attention_impl.cu`; matches Granite's
+   head_size=128.)
+
+3. **`unidirectional` is a flat causal-mask attribute** —
+   "Whether every token can only attend to previous tokens.
+   Default 0." When `past_key`/`past_value` are also provided,
+   MHA concatenates internally and `total_sequence_length =
+   past_sequence_length + sequence_length`; the present_key
+   output shape is `(B, num_heads, total_sequence_length,
+   head_size)`, confirming internal concat. The ORT-side
+   causal mask therefore covers the new query positions
+   correctly relative to the cached past — i.e., iter 3's
+   "Q[s] only sees [0,s]" symptom only happens when you
+   pre-concat K *and* set `unidirectional=1` (no `past_key`
+   input given). With proper `past_key` plumbing, causal would
+   be applied with the right offset.
+
+4. **`key` accepts a (B, num_heads, kv_seq_len, head_size)
+   layout** — per the spec, the `key` input may be in
+   "past_key with shape (batch_size, num_heads,
+   kv_sequence_length, head_size)" form. **This means we can
+   feed K (and V) directly in the post-Transpose layout
+   without a Transpose+Reshape adapter**, which the rewriter
+   currently uses. Same for `value`. (Q is still required as
+   `(B, S, hidden_size)`.) Big simplification for the rewrite.
+
+5. **`key_padding_mask` shapes** include `(batch_size,
+   sequence_length, total_sequence_length)` — a 3D per-(q,k)
+   binary mask. Type constraint M is `tensor(int32)`, so it
+   can't carry the float `-inf` of where_2 directly; it would
+   have to be derived as a binary causal+padding mask. Likely
+   not needed if `attention_bias` works.
+
+6. **Restrictions when `attention_bias` is non-null**:
+   Flash Attention, Lean Attention, fused cross-attention, and
+   fused TRT self-attention paths are disabled. cuDNN SDPA and
+   memory-efficient attention remain available (with alignment
+   constraints). So feeding where_2 as `attention_bias` *does*
+   prevent the most aggressive fast paths — but cuDNN SDPA is
+   still on the table and is typically the winner on Hopper-
+   class hardware for our shape regime.
+
+### Implication — iter-4's hypothesis is DISPROVEN
+
+`attention_bias` is a literal additive mask. Iter-2's wiring
+(feeding where_2 as RPB) was **semantically correct** for the
+mask semantics. The partial-correct ("Garrett, of course none
+of them") output therefore came from a *different* bug, not
+from RPB being misinterpreted. Candidate bugs, in priority
+order, given what we now know:
+
+a. **Q/K/V head-layout adapter in the rewriter.** Iter 2 wraps
+   the existing Transpose+Reshape pair to produce `(B, S,
+   hidden_size)` for all three of MHA's `query/key/value`
+   inputs. If the head ordering inside `hidden_size` doesn't
+   match MHA's internal `(num_heads, head_size)` interpretation,
+   per-head outputs would be permuted — exactly the kind of
+   "almost right tokens, mostly wrong" output we saw. **This is
+   the most likely root cause.** It's also testable cheaply: feed
+   K and V in the new spec-supported `(B, num_heads, S, head_size)`
+   layout directly, eliminating the K/V adapter entirely.
+
+b. **Numerical drift.** Original computes scores in fp32 with bf16
+   K/V dequantized at the matmul. MHA may accumulate in bf16. We
+   should be able to bound this by comparing per-layer attention
+   output L2 deltas; if drift compounds across 40 layers it could
+   produce iter-2-style output, but a 16-tap GEMM in bf16 is
+   typically <1e-3 relative error, which shouldn't garble decoding.
+
+c. **Scale.** Default `1/sqrt(head_size)` matches Granite. Unless
+   the original graph hides a non-default scale upstream of the
+   QK matmul (e.g., a `Mul(0.125)` we mis-attributed as the
+   1/sqrt scale when actually it's a separate logit_scaling),
+   this isn't the bug. Worth a 5-min audit of the unfused graph
+   structure around the QK matmul to confirm.
+
+### Iter-5 plan (revised, grounded in spec)
+
+The hand-off recommended either "stick with iter 2 if RPB is
+literal" OR "do past_key plumbing if RPB is relative-position-
+only". Given finding 1 above, the answer is **option A — stick
+with iter-2-style wiring** and fix the layout bug, not option B
+(past_kv plumbing). But the spec (finding 4) lets us simplify
+iter 2 in a way that *also* eliminates the most likely bug:
+
+1. Revert `scripts/granite_export/rewrite_attention_to_mha.py`
+   to iter-2 (`b9246cf`).
+2. Change K and V wiring: instead of the Transpose+Reshape pair
+   that produces `(B, S, hidden_size)`, feed K and V as `(B,
+   num_heads, S, head_size)` directly into MHA's `key`/`value`.
+   This is what the spec calls the "past_key shape" form and is
+   accepted natively.
+3. Keep `where_2` as `attention_bias` (rename in code from RPB).
+4. Build a per-layer parity harness: dump attention output of
+   layer 0 from both unfused-static and rewritten bundles on the
+   same input, diff. Walk layers 1..N if 0 matches.
+5. Only if a→b doesn't close the gap, consider past_kv plumbing.
+   It's now a fallback, not the primary plan.
+
+### Hand-off note for the next investigator
+
+**Don't** revert the iter-4 commit (`e8ed2ad`) — its dtype-
+rejection finding is still useful for ruling out the cast
+approach. Just branch from `b9246cf` (iter 2) for the actual
+rewriter changes, and treat this Run 19 entry as the spec
+ground truth that supersedes iter 4's speculative diagnosis.
+
+The single highest-value thing to do first is to compare a
+single rewritten layer's attention output against unfused on
+identical Q/K/V inputs. If they match bitwise (or to fp32 noise
+floor), the wiring is right and we just had a layout bug; if
+they don't, the diff is the next clue.
+
+## Run 19 — 2026-05-10 12:34 — Parity achieved (Granite scale = 1/head_dim)
+
+Implemented the iter-5 plan (drop K/V Transpose+Reshape adapter,
+feed K/V in (B, num_heads, T, head_dim) directly into MHA's
+`key`/`value`; keep `where_2` as `attention_bias`; drop the
+iter-4 fp32 cast on the bias). Output bundles staged at
+`/tmp/granite_iter5_*_bundle/` with hardlinked `decoder.onnx.data`
+to avoid duplicating the 3.6 GB sidecar.
+
+### Layer-by-layer bisect (e2e on `/tmp/run15_short_60s.wav`)
+
+| Layers rewritten | First-segment transcript |
+|---|---|
+| 0 only | "all kinds of telephone calls of course none of them were Garrett and so I mean I was just getting more and more as I would answer the phone it would not be Garrett I" — **matches baseline** |
+| 0–1 | mostly correct, "I'm saying" instead of "and so I mean" |
+| 0–9 | correct words, lower-case "garret", doubled "as as" |
+| 0–19 | derails partway: "none of them are gar- i- i mean i-" |
+| 0–39 | fully derailed: "all kinds of garret's of course none of them would be as i- as a as" — same as iter 2 |
+
+The progressive degradation pattern was the smoking gun: per-layer
+rewrite is geometrically correct, but error compounds across layers.
+
+### Root cause — Granite uses `attention_multiplier = 1/head_dim`, not `1/sqrt(head_dim)`
+
+Direct inspection of the unfused graph initializers:
+
+  scalar_tensor_default_2 = 0.0078125  # = 1/128 = 1/head_dim
+  clone_80                = 0.0
+  scalar_tensor_default_1 = -3.39e+38   # bf16 -inf
+
+`scalar_tensor_default_2` is the multiplicand of the per-layer
+score-scale Mul (`node_mul_313 = matmul_1 * scalar_tensor_default_2`).
+It is `1/head_dim`, not `1/sqrt(head_dim) ≈ 0.0884`. This is IBM
+Granite's `attention_multiplier` hyperparameter — the architecture
+intentionally diverges from the standard scaled-dot-product norm.
+
+The rewriter was passing `scale = 1/sqrt(head_dim)` to MHA, making
+attention 11.3× too peaky per layer. One layer is recoverable; 40
+layers compounds catastrophically.
+
+### Fix
+
+`scripts/granite_export/rewrite_attention_to_mha.py`:
+
+  scale = 1.0 / HEAD_DIM    # was 1.0 / (HEAD_DIM ** 0.5)
+
+### Verification (3 runs each on `/tmp/run15_short_60s.wav`, --benchmark)
+
+| Bundle | ASR wall (median) | Transcript |
+|---|---|---|
+| `granite_speech_4_1_2b_static_bf16` (unfused) | 13.29 s | baseline |
+| `granite_iter5_all_bundle_v2` (MHA fused, scale=1/128) | 13.55 s | exact match to baseline through full 60 s clip |
+
+Parity holds across all 18 segments and through long-context
+prefill. The transcript matches the unfused-static baseline at the
+visible-output level.
+
+### Perf result — fusion does not improve wall time
+
+MHA fusion is roughly at parity with the unfused-static path (+2%,
+within noise). The dynamic-shape baseline (~3.4 s) remains
+unbeaten. Possible explanations:
+
+- The static-shape padding of `seq + 512` to a fixed length is
+  the dominant cost; fusing the inner attention loop saves a
+  small fraction of total compute.
+- ORT's MHA CUDA kernel may not select the most optimal path
+  for our shape regime (S typically tiny during decode, T = past
+  + 1 up to 512, num_heads = 16, head_dim = 128). Flash and
+  fused TRT paths are disabled because we feed `attention_bias`.
+- The Q-side Transpose+Reshape adapter introduces small overhead;
+  K and V are fed natively now but Q can't be rank-4 per spec.
+
+### Implications
+
+- **Phase B's fusion goal is met for correctness** — the rewriter
+  produces a graph that loads on CUDA EP, runs end-to-end, and
+  produces parity transcripts. This is reusable for other
+  Granite-family models with the same scaling convention.
+- **Phase B does NOT close the perf gap to dynamic.** The static-
+  shape contract is the binding cost, not the per-layer attention
+  fusion. Future perf work should focus on: (a) reducing padding,
+  e.g. bucketed past_seq lengths; (b) IOBinding to keep K/V on
+  device between steps; (c) cuDNN attention path with attention_bias
+  support if available.
+- **The K/V (B, H, T, D) simplification is a real win** even at
+  perf parity: the rewriter is shorter and the graph has 80 fewer
+  Transpose+Reshape pairs (2 per layer × 40 layers).
+
+### Artifacts
+
+- Rewriter at `scripts/granite_export/rewrite_attention_to_mha.py`
+  with iter-5 wiring (drop K/V adapter, scale=1/128).
+- Working bundle at `/tmp/granite_iter5_all_bundle_v2/` (symlinks
+  to encoder/projector/mel/tokenizer files; hardlink to .data
+  sidecar; only `decoder.onnx` is new).
+- `/tmp/probe_iter5_load.py` — verbose-load probe; useful when
+  iterating on the rewriter to verify MHA placement.
+
+### Next investigator: where to go from here
+
+The parity bug is closed. The fusion is a wash for perf. Open
+questions for whoever picks this up:
+
+1. Is the static-shape contract still worth keeping? The 4× perf
+   gap to dynamic suggests the static path may not justify the
+   complexity, unless it unlocks something elsewhere (DirectML?
+   Specific deployment constraints?).
+2. If we keep static, the next perf lever is reducing the padded
+   T length. Bucketed past_seq (e.g. round up to multiples of 64
+   instead of always padding to 512) could reclaim a lot.
+3. The MHA-fused graph is reusable for any Granite model variant.
+   Apply the rewriter to Granite 8B / instruct / etc. as needed.
+
+## Run 20 — 2026-05-10 — GQA + cache-layout migration (plan)
+
+MHA fusion at parity but no perf win (Run 19). The static-shape
+padding to `seq+512` is the dominant cost: every layer recomputes
+attention over 512 cached positions even when only a fraction are
+real. **GQA** is the standard ORT op that fixes this — its
+`seqlens_k` per-batch input tells the kernel where the real K
+ends, and compute past that point is skipped (not zeroed).
+
+### Why GQA, not MHA + tighter padding
+
+A bucketed-past_seq scheme (multiple sessions for 64/128/256/512)
+works but multiplies graph load time and resident memory by N. GQA
+does compute-skip in a single static graph, which is what we want.
+
+### The coordinated change (3 surfaces)
+
+The migration touches export, rewriter, and C# driver because the
+cache layout itself must change from right-aligned-with-sliding-
+window (today) to **left-aligned max-sized buffer** (GQA's required
+layout):
+
+  - past_kv buffer: `[B, kv_num_heads=4, max_seq=512, 128]`.
+  - real data at `[0, current_seq_len)` per batch row.
+  - zero/garbage at `[current_seq_len, max_seq)`.
+  - `seqlens_k[b] = total_seq[b] - 1` written as graph input each step.
+
+### Stage A — Rewriter (`--mode gqa`)
+
+Most of the work happens here. The rewriter:
+
+1. Adds two new graph inputs: `seqlens_k` (int32, shape `[B]`) and
+   `total_sequence_length` (int32, scalar).
+2. For each layer, walks the existing chain back through Expand
+   (4→16) and Concat to find:
+   - the `past_key_<L>` graph input (already exists),
+   - the **fresh K** tensor (post-RoPE, pre-Concat, shape `[B, 4,
+     S, 128]`).
+3. Replaces the unfused attention block with a GroupQueryAttention
+   node:
+   - inputs: `[query (B,S,2048), key (B,S,512), value (B,S,512),
+     past_key_<L>, past_value_<L>, seqlens_k, total_sequence_length]`
+   - outputs: `[output, present_key, present_value]`
+   - attrs: `num_heads=16, kv_num_heads=4, scale=1/128, do_rotary=0`
+4. Adapter shape ops:
+   - Q: existing Transpose+Reshape (B,16,S,128)→(B,S,2048).
+   - K, V: new Transpose+Reshape (B,4,S,128)→(B,S,512).
+5. Rewires `present_key_<L>` graph output to GQA's `present_key`
+   (the existing Concat→Slice chain becomes dead).
+
+### Stage B — C# driver
+
+1. Switch from left-padded prompts to **right-padded** so real
+   tokens occupy `[0, realLen[b])` of the prefill K input. (This
+   is what GQA expects in `key`.) Argmax position becomes
+   `realLen[b]-1` per batch row instead of `S-1`.
+2. Allocate past_kv buffers at `[B, 4, max_seq=P, 128]` and bind
+   them via IOBinding so present_key writes happen in place.
+3. Compute `seqlens_k` and `total_sequence_length` per call:
+   - prefill: `seqlens_k[b] = realLen[b] - 1`,
+     `total_sequence_length = max(realLen)`.
+   - step: `seqlens_k[b] = realLen[b] + step`,
+     `total_sequence_length = max(realLen) + step + 1`.
+4. cache_position: change from "starts at P" to "starts at 0"
+   (left-aligned cache, position N is the Nth real token).
+
+### Stage C — End-to-end test + benchmark
+
+Same `/tmp/run15_short_60s.wav` clip and the unfused-static
+baseline (~13.3 s) as the parity reference. Goal: close as much
+of the 13.3 s → 3.4 s gap as possible.
+
+### Risk / unknowns
+
+- Whether GQA on CUDA EP supports bf16 K/V cache as effectively
+  as the unfused path. (T_CACHE constraint includes bfloat16, so
+  yes, but kernel selection might prefer fp16.)
+- Whether the right-padding switch in C# breaks any existing
+  parity test in `tests/GraniteSpeechSmoke`. Likely needs a
+  fixture rebuild.
+- IOBinding correctness for the in-place present_key write across
+  step iterations. We currently use chained OrtValue passing
+  rather than IOBinding (deliberately, after Run 7); GQA may
+  force a switch.
+
+## Run 20 phase 2 — 2026-05-10 14:23 — Batched GQA via per-row position_ids
+
+Phase 1's serial-single-segment fallback regressed wall time to
+35.7 s — far worse than MHA's 13.5 s. The user correctly pointed
+out the regression was the loss of batched parallelism, not GQA
+itself. Phase 2 restores batched dispatch.
+
+### Plan
+
+To batch variable-length prompts under GQA, each row's RoPE
+positions need to track its own real prompt length. The fix is a
+new `position_ids` graph input ([B, S], int64) that the C# driver
+fills per-row, plus right-padded prompts so GQA's write slots
+align with the real-vs-pad boundary per row.
+
+Three coordinated changes:
+
+1. **Export wrapper.** New `--unified-position-ids` flag adds a
+   `position_ids` arg to `DecoderUnifiedWrapper.forward` and
+   forwards it to `language_model(position_ids=...)`. HF then
+   uses per-row positions for RoPE instead of deriving them from
+   `cache_position`. `dynamic_shapes` is updated to thread
+   `position_ids` into the variadic `*rest` so torch.export
+   accepts the signature.
+
+2. **Rewriter.** No change — GQA only consumes past_kv, fresh
+   K/V, seqlens_k, total_sequence_length. cache_position and
+   position_ids flow through unmodified upstream nodes.
+
+3. **C# driver.** New `_hasPositionIdsInput` flag detects the
+   phase-2 bundle via decoder input metadata. New
+   `TranscribeStaticGqaBatched` method:
+   - right-pads all rows to `S = max(realLen)` (real prompt at
+     `[0, realLen[b])`, PAD at `[realLen[b], S)`),
+   - sets `seqlens_k` uniformly to `S - 1` at prefill (GQA's
+     write region is derived from `seqlens_k - new_S + 1` and
+     won't accept per-row write positions in one call),
+   - switches `seqlens_k` to per-row `realLen[b] + step` at step
+     time, so step k overwrites the first un-written pad slot
+     `past_kv[b, realLen[b]+k]`,
+   - sets `position_ids` per-row: real positions get
+     `[0..realLen[b])`, pad positions continue
+     `[realLen[b]..S)` (RoPE stable through prefill→step), and
+     step k's new token uses position `realLen[b]+k`.
+
+The pad K written at prefill into `past_kv[b, realLen[b]..S)`
+gets overwritten as step k progresses; per-row `seqlens_k` means
+the attention bound `[0..realLen[b]+k+1)` never reaches an
+un-overwritten pad slot. Step-time attention is clean despite
+the pad contamination paid during prefill.
+
+### Results (3 runs each on `/tmp/run15_short_60s.wav`, --benchmark)
+
+| Bundle | ASR median | Transcript |
+|---|---|---|
+| unfused-static | 13.29 s | baseline |
+| MHA-fused (Run 19) | 13.55 s | exact match |
+| **GQA + position_ids batched (Run 20 phase 2)** | **13.58 s** | **exact match** |
+| Phase 1 serial-single-segment | 35.7 s | parity but slow |
+| dynamic | ~3.4 s | (unbeaten) |
+
+Batched GQA closes the Phase 1 regression and lands at MHA
+parity. Architecturally cleaner than MHA: left-aligned cache,
+GQA's in-place writes, no `where_2` mask path.
+
+### Why the compute-skip didn't show up
+
+The original Run 20 plan called out FFN dominance as a risk;
+profiling confirms it. Per-layer cost breakdown at B=1, S=1
+decode step with our shape regime (D=2048, D_ffn≈8192,
+num_heads=16, head_dim=128, max_seq=512):
+
+  - QKV proj: ~6 M ops
+  - Attention (full 512 cache): ~2 M ops
+  - Attention (realLen ≈ 80 cache): ~0.3 M ops
+  - O proj: ~4 M ops
+  - FFN (gate + up + down): ~50 M ops
+  - **Total**: ~62 M full vs ~60 M with compute-skip — 3% delta.
+
+The dynamic baseline's 4× lead over static-shape is therefore
+NOT about attention fusion or compute-skip. Likely candidates:
+
+- The pinned `A = 192` audio dim forces the encoder to process
+  192 frames every call even for short segments (most real
+  segments have ≪ 192 frames).
+- Static-shape kernel selection. The graph optimizer can't pick
+  small-shape kernels for B=1, S=1 actual workload when the
+  graph signature says B=16, A=192.
+- ORT's `present_key` allocation and `cache_position`/RoPE
+  computation per-call has CPU overhead that doesn't amortize
+  the way dynamic does.
+
+### Implications for future perf work
+
+Attention fusion (MHA or GQA) is a structural win — cleaner
+graph, better tooling support, foundation for KV quantization —
+but is not the perf lever. The static-shape padding costs are
+where to focus next:
+
+1. **Reduce the audio_embeds pinning.** `A = 192` forces 30 s of
+   audio compute per call. Bucketed exports at `A ∈ {32, 96,
+   192}` would let short segments use a smaller graph.
+2. **Per-segment session selection.** Multiple decoder
+   `InferenceSession`s pinned at different `past_len` values
+   (`{64, 128, 256, 512}`), dispatch by current cache length.
+3. **Drop static shape entirely for the decoder.** The
+   ORT-genai/vLLM pattern of fully dynamic + IOBinding +
+   continuous batching is the production answer; our static
+   path was always a stepping stone.
+
+### Artifacts
+
+- New export: `/tmp/granite_export_phase2/decoder.onnx`
+  (with `--unified-position-ids --static-shapes-unified
+  --static-batch 16 --static-past-len 512 --static-audio-len
+  192`). Encoder/projector/mel are symlinked from the original
+  bundle (unchanged).
+- GQA-rewritten v2 bundle:
+  `/tmp/granite_gqa_v2_bundle/` — production-shaped test bundle
+  for the phase-2 C# code path.
+- Phase 1 GQA bundle still present:
+  `/tmp/granite_gqa_all_bundle/` — serial-single-segment path,
+  retained for fallback testing only.
+
+## Run 20 phase 3 — 2026-05-10 14:35 — IOBinding for in-place K/V
+
+User question: "We thought GQA would eliminate per-step KV memcpy
+without ballooning VRAM. Theory vs. result?"
+
+Honest contrast in the doc above. Phase 2's step loop used plain
+`_decoder.Run(...)` which allocates a FRESH `present_kv` buffer per
+call — same memcpy pattern as MHA. The buffer-sharing win that GQA
+documents was theoretically available but not yet realised in the
+C# driver. Phase 3 wires it via `OrtIoBinding`.
+
+### The wire change
+
+In `TranscribeStaticGqaBatched`'s step loop, replace the plain
+`Run(...)` with `RunWithBinding(...)`. Per layer:
+
+  - `BindInput("past_key_<L>", pastKvs[2*L])`
+  - `BindOutput("present_key_<L>", pastKvs[2*L])` — **same
+    `OrtValue`**. GQA detects same memory address and writes in
+    place, skipping the past → present copy.
+
+Plus a small extra: `BindOutput("logits", stepLogitsVal)` to a
+pre-allocated CPU buffer, so argmax reads native float without an
+extra `GetTensorDataAsSpan` round-trip. (Pattern lifted from
+`Qwen3Asr.cs:665` — the same in-place idiom that was discovered
+in that ASR backend's Phase-6 work.)
+
+### Results (3 runs each on `/tmp/run15_short_60s.wav`)
+
+| Bundle | ASR median |
+|---|---|
+| unfused-static (Run 18 baseline) | 13.29 s |
+| MHA-fused (Run 19) | 13.55 s |
+| GQA Phase 2 (no IOBinding) | 13.58 s |
+| **GQA Phase 3 (IOBinding, this run)** | **13.27 s** |
+| dynamic (Run 16) | ~3.4 s |
+
+Transcript still matches the unfused-static baseline through all
+18 segments.
+
+### Theory contrast
+
+The Run 20 phase 2 doc estimated ~6.4 GB of memcpy elimination
+per step (40 layers × 16 × 4 × 512 × 128 × 2 bytes × 2 for K+V).
+At ~1 TB/s HBM bandwidth that would be ~640 ms saved across 100
+steps — about 5 % of wall time.
+
+We observed ~300 ms saved (~2 %), about half the upper-bound
+estimate. Two likely explanations:
+
+1. **ORT's GQA without buffer sharing already does a partial
+   copy, not a full one.** The kernel probably memcopies only the
+   `[0, seqlens_k+1)` slice of past_kv into present_kv, then
+   writes the new K at the tail. With `realLen ≈ 80` and
+   `max_seq = 512`, that's ~16 % of the buffer, i.e. ~1 GB per
+   step instead of 6.4 GB. Saving 300 ms on ~1 GB of avoided
+   traffic is consistent with that.
+2. **FFN-bound layers don't benefit.** Even with KV write
+   eliminated, the GEMMs that follow are the bottleneck. We're
+   bandwidth-limited on the FFN, not the cache append.
+
+Either way: the theory was directionally right (memcpy
+elimination is a real lever) but the magnitude was overstated.
+This is the first time the GQA path has gone *below* the MHA
+path's wall time — a confirmation that buffer sharing works as
+claimed, just not as dramatically as the unconstrained
+back-of-envelope suggested.
+
+### Where the dynamic baseline's 4× lead still hides
+
+We've now closed the gap GQA was supposed to close (~2 %). The
+remaining 10 s of static-vs-dynamic delta is NOT in attention
+fusion, NOT in compute-skip, and NOT in KV memcpy. Run 20 phase 2
+called out three suspects worth a look:
+
+1. **`A = 192` audio pinning.** Encoder runs over 192 frames per
+   segment regardless of actual audio length. Most real segments
+   have far fewer.
+2. **Static-shape kernel selection.** ORT's graph optimizer can't
+   pick small-shape kernels when the signature pins B=16, S<=512.
+3. **Step-loop CPU overhead.** Even with IOBinding, building the
+   IO binding object, allocating per-step `stepMaskBatch`
+   buffers, and running the Python-style per-step loop has fixed
+   cost. ORT-genai's continuous-batching pattern amortises this
+   across many tokens.
+
+## Run 20 phase 4 — 2026-05-10 15:00 — Dynamic-shape GQA, drop static padding
+
+User pointed out: "We picked GQA because we didn't need to pad."
+Phases 1–3 still paid the static-shape pads (B=16 dummies, A=192
+audio, S=max(realLen) prompt). Phase 4 drops them.
+
+### Plan
+
+1. Default `else` branch of `export_decoder_unified` now accepts
+   `--unified-position-ids`, threading the new input through
+   `dynamic_axes` and `dyn_shapes` (variadic-merge same as the
+   static-shapes-unified branch).
+2. Rewriter's `find_kv_chain_for_gqa` now handles the case where
+   `present_key_<L>` is the Concat output directly (no Slice
+   between Concat and graph output) — that's how the dynamic
+   export emits it.
+3. Rewriter's adapter Reshape constants change from
+   `[16, -1, HIDDEN]` to `[0, -1, HIDDEN]` (ONNX-spec '0 means
+   preserve input dim'), so the batch dim stays symbolic.
+4. Rewriter's `add_gqa_graph_inputs` now accepts either an int
+   or a symbol name for `seqlens_k`'s batch dim, copying it
+   straight from `past_key_0`'s first dim.
+5. C# adds `_isDynamicGqaBundle` detection (GQA bundle whose
+   `past_key_0[0]` is symbolic/non-positive). Dispatch routes
+   each segment through a new `TranscribeDynamicGqaSingle`:
+   B = 1 per call, audio_embeds sized to actual audio tokens,
+   input_ids to actual prompt length, past_kv starts empty
+   `[1, 4, 0, 128]` and grows by 1 per step. No padding
+   anywhere.
+
+### Results (3 runs each on `/tmp/run15_short_60s.wav`)
+
+| Bundle | ASR median |
+|---|---|
+| unfused-static | 13.29 s |
+| MHA-fused (Run 19) | 13.55 s |
+| GQA phase 2 (no IOBinding) | 13.58 s |
+| GQA phase 3 (IOBinding) | 13.27 s |
+| **GQA phase 4 (Dynamic)** | **5.23 s** ← 2.5× faster |
+| dynamic baseline (legacy unfused) | ~3.4 s |
+
+Transcript exact match through all 18 segments.
+
+### What this confirms
+
+The user's reframing was correct: the static-shape padding was
+the real ceiling, not anything in attention math or KV traffic.
+Phases 1–3 of Run 20 chased percent-level wins inside the static
+contract; phase 4 dropped the contract and gave the 2.5× drop.
+
+The original GQA pitch — "no padding needed" — was true *only*
+once we stopped doing the other padding too. Within the static
+contract, GQA's seqlens_k was being used to mask off 432 padded
+slots per layer; but the same call was still running B=16 (15
+dummies) and A=192 audio (mostly zeros). The biggest wins came
+from dropping those, not from how attention was fused.
+
+### Remaining gap to dynamic baseline (~1.8 s)
+
+Still 1.8 s behind the legacy dynamic decoder. Plausible causes:
+
+- The legacy baseline batched multiple segments per call; we
+  serialise (one segment per `_decoder.Run`). 18 calls × ~280 ms
+  vs N batched calls — fixed per-call overhead matters.
+- The legacy baseline used eager attention, not GQA-fused. For
+  small shapes (B=1, S~80) the kernel-launch saving from fusion
+  may be smaller than batching saves.
+- Per-call OrtValue allocation overhead for `stepInputIds`,
+  `stepMask`, etc. adds up across hundreds of step iterations.
+
+A first try at closing this: batched dynamic-GQA with right-
+padded prompts + per-row position_ids (same trick that worked in
+phase 2 batched, now without the static-shape outer wrapper).
+That would let us amortise per-call overhead across segments.
+
+## Run 20 phase 5 — 2026-05-10 15:05 — Batched dynamic GQA blocked by CUDA kernel
+
+Tried the obvious next step: TranscribeDynamicGqaBatch with B=N
+where the BatchSizer-grouped segments are right-padded to
+S = max(realLen) within the batch. With attention_bias = where_2
+wired through (the rewriter auto-detects past_seq dynamic and
+threads `mask` into GQA input slot 10), small intra-batch pad
+should be masked just like MHA Run 19 did.
+
+### What broke
+
+ORT runtime error on the first GQA node:
+
+```
+Non-zero status code returned while running GroupQueryAttention
+node. Name:'gqa_l0_node' Status Message:
+attention_bias is not supported in GroupQueryAttention cuda
+kernel.
+```
+
+`attention_bias` IS in the contrib op spec for
+`com.microsoft.GroupQueryAttention` (input slot 10), but the
+CUDA kernel hasn't implemented it yet. The CPU implementation
+probably has it; we'd hit a Memcpy fallback if we forced CPU,
+which would erase any perf win.
+
+### Why per-row seqlens_k can't substitute
+
+In dynamic / non-buffer-sharing mode, GQA's write region is
+uniform across batch: new K appends at past_seq..past_seq+new_S
+for every row. So even though `seqlens_k` is per-row (it controls
+per-row attention bound), it cannot reroute the WRITE.
+
+Concrete example with batch realLens = [99, 95, 90], S = 99:
+After prefill, the cache has past_seq = S = 99 (uniform), with
+real K at [0, realLen[b]) and pad K at [realLen[b], 99) for
+shorter rows. Step 0's new K lands at slot 99 for every row.
+Row 1 (realLen = 95): its generated tokens are at slots [99, …),
+but the slot [95] in cache still holds prefill pad K. Any
+per-row attention bound that's contiguous from 0 either includes
+slot 95 (poisoning the score with pad K) or skips slot 99 (which
+holds the actual generated K). There's no clean cut.
+
+This is the same constraint that made phase 2 static GQA need
+buffer-sharing mode + per-row write positions — non-buffer mode
+loses that lever.
+
+### Quick attempt without attention_bias
+
+Tried it anyway: removed the attention_bias wiring, accepted
+that BatchSizer-sorted segments would have small intra-batch
+pad. Result: transcript broke ("all the new York, and 'The new
+York Timescale 2'" instead of "all kinds of telephone calls of
+course…"). Even a few pad K slots within `seqlens_k+1`
+contaminate softmax enough to derail decoding.
+
+### Revert
+
+`TranscribeDynamicGqaBatch` reverts to looping
+`TranscribeDynamicGqaSingle` per segment — back to the phase-4
+working state at 5.23 s. The plumbing for the batched path is
+left in `rewrite_attention_to_mha.py` (auto-wires
+attention_bias when past_seq is dynamic) for the day the CUDA
+kernel grows the input.
+
+### Where this leaves us
+
+Three forks:
+
+1. **MHA-fused dynamic + batched.** MHA's CUDA kernel DOES
+   support `attention_bias` (Run 19 used it). Re-rewriting the
+   dynamic export with `--mode mha` should give a batched-capable
+   dynamic path. Fused attention, with per-row pad masking via
+   where_2. Likely the cleanest next step.
+2. **Exact-realLen binning.** Only batch segments with
+   identical realLen, fall back to B=1 otherwise. Bin sizes will
+   often be small (1–3) on real audio, so the amortisation win
+   is limited.
+3. **Stop here.** 5.23 s / 0.09 RTF is well under real-time and
+   the user-visible feature works. The legacy 3.4 s baseline is
+   nice but not a feature blocker.
+
+The user is asking us to keep going; option 1 is the obvious
+next experiment.
+
+## Run 20 phase 6 — 2026-05-10 15:15 — MHA-fused dynamic batched works
+
+Re-rewrote the dynamic export with `--mode mha` instead of `gqa`.
+MHA's CUDA kernel implements `attention_bias` (Run 19 used it),
+so the same right-padded variable-length batching that CUDA GQA
+rejected now works.
+
+### C# wiring
+
+Generalised the legacy `TranscribeBatch` (dynamic path) to pass
+`position_ids` when the graph signature includes it
+(`_hasPositionIdsInput`). Per-row position_ids map left-padded
+slot s to semantic position `max(0, s - padLen[b])`, and step
+k's new token gets `realLen[b] + step`. No other changes — the
+existing left-padded prompt layout, attention_mask, and dynamic
+past_kv flow all work unchanged because MHA fusion only replaces
+the inner attention compute, not the surrounding plumbing.
+
+### Results (3 runs each on `/tmp/run15_short_60s.wav`)
+
+| Bundle | ASR median |
+|---|---|
+| unfused-static (Run 18 baseline) | 13.29 s |
+| MHA-fused static (Run 19) | 13.55 s |
+| GQA static phase 3 (IOBinding) | 13.27 s |
+| GQA dynamic phase 4 (B=1 serial) | 5.23 s |
+| **MHA-fused dynamic batched (this run)** | **4.76 s** |
+| legacy dynamic baseline (~Run 16) | ~3.4 s |
+
+Transcript exact match through all 18 segments.
+
+Profile shows the BatchSizer-grouped batches were sized
+`B=16, ~2.36 s` and `B=2, ~0.95 s` — the bulk amortisation
+happened in the first batch. ~280 ms/segment in the B=16 batch
+(vs ~280 ms/segment in B=1 GQA phase 4); the per-call overhead
+saving is real but small.
+
+### Why MHA-dynamic isn't far ahead of GQA-dynamic B=1
+
+The 0.5 s edge from batching is modest because the dominant
+per-token cost is FFN, not attention or per-call dispatch.
+Batched dispatch can't reduce FFN compute per token; it only
+amortises fixed per-call costs (binding setup, kernel launch
+counts on small ops). For our shapes, those fixed costs are
+already small.
+
+### Remaining gap to the legacy dynamic baseline (~1.4 s)
+
+Likely candidates, none of which our attention work touches:
+
+- The legacy baseline is unfused — every layer issues separate
+  MatMul/Mul/Add/Softmax kernels. MHA fusion saves kernel
+  launches, but for our small per-token shapes that's offset by
+  the extra Transpose+Reshape adapters our rewriter inserts.
+- Per-segment encoder/projector are serial in both paths. Mel
+  takes ~40 ms, encoder ~540 ms, projector ~10 ms across the
+  18-segment run; encoder dominates and could parallelise.
+- ORT may be choosing different decoder kernels for the fused
+  vs unfused graphs.
+
+A direct test: run the un-rewritten dynamic decoder against the
+same `TranscribeBatch` path and benchmark. If it matches the
+3.4 s baseline, MHA fusion is a net regression in dynamic mode;
+if it matches the 4.76 s phase-6 number, the gap is elsewhere
+(encoder, kernel selection).
+
+## Run 20 phase 7 — 2026-05-10 15:20 — Tracing the gap: it doesn't exist
+
+User question: "We should trace a run and figure out where the
+opportunity exists (if there is one)." Followed by: "Might be
+we're counting VAD or something?"
+
+Both prompts pointed at the same suspicion: the comparison
+target (3.4 s) was wrong somehow.
+
+### Two tests
+
+**Test 1 — Same C# path, un-rewritten dynamic decoder.** Used
+`/tmp/granite_export_dynamic/decoder.onnx` as-is (no MHA
+fusion, no GQA rewriter, just the dynamic export with
+`--unified-position-ids`). Three trials:
+
+  - ASR median: **4.71 s** (vs MHA-fused 4.76 s)
+
+Unfused and MHA-fused dynamic are identical within noise. So
+MHA fusion isn't adding any cost OR any benefit in dynamic
+mode — the kernel launch saving from fusion is offset by the
+adapter Transpose+Reshape overhead. **MHA fusion is irrelevant
+to wall time in dynamic mode.**
+
+**Test 2 — Decompose the 4.7 s.** Audit the swAsr stopwatch:
+
+  - swAsr starts at Program.cs:410, AFTER swDiar.Stop(). So
+    diarization / VAD is NOT in ASR.
+  - swAsr stops after the Recognize enumeration completes.
+  - Between start and the granite branch: bundle selection
+    branching only, no model work.
+
+So the swAsr stopwatch covers:
+
+  - GraniteSpeech ctor (loads decoder.onnx + ~3.5 GB weights
+    onto GPU, plus mel/encoder/projector sessions).
+  - The Recognize call (TranscribeBatch + yields).
+
+Instrumented the ctor directly:
+
+  [granite-prof] session load: 1387 ms
+  [granite-prof] B=16 total=2336 ms (mel=41 enc=521 proj=7 prefill=442 step=1294 x25 overhead=31)
+  [granite-prof] B=2  total= 954 ms (mel=25 enc=110 proj=3 prefill= 55 step= 755 x35 overhead= 6)
+  ASR: 4685 ms
+
+  → session load 1387 ms + batches 3290 ms + dispatch ~10 ms ≈ 4685 ms
+
+### Conclusion
+
+The "1.4 s residual gap to the 3.4 s legacy baseline" is
+entirely the cold-start `new GraniteSpeech(...)` session-load
+cost. **Subtracting that, our actual decode work is 3.29 s —
+essentially at the legacy baseline.**
+
+The "3.4 s baseline" in the doc was almost certainly measured
+without ctor cost (likely a warm session, or the baseline run
+just happened to start with a primed disk cache). It is NOT a
+target our attention work missed.
+
+### What this means for the perf investigation
+
+We're at the floor. The Run 20 perf arc closes here:
+
+  - GQA static phases (1–3): 13.27 s. Capped by static-shape
+    padding.
+  - GQA dynamic phase 4 (B=1): 5.23 s. Dropped static-shape
+    padding, gained ~2.5×.
+  - GQA dynamic phase 5 (batched): blocked by CUDA kernel
+    missing attention_bias.
+  - MHA dynamic phase 6 (batched): 4.76 s. Marginal win over
+    phase 4. Same as un-rewritten dynamic, confirming fusion is
+    neutral here.
+  - Phase 7 (this entry): the residual gap to the cited 3.4 s
+    baseline is cold-start ctor cost, not perf opportunity.
+
+If there's still a perf lever, it's in the encoder
+(~540 ms/run, serial across segments) or in eliminating
+cold-start (preloaded singleton GraniteSpeech in the GUI/server
+context). The decoder itself is not the bottleneck.
+
+### Final state of the branch
+
+The MHA-fused dynamic bundle (this phase) is the recommended
+production path: clean fusion, dynamic shapes, batched dispatch.
+It's not faster than un-rewritten dynamic, but it's also not
+slower, and the rewriter scaffolding will become useful again
+when ORT's CUDA GQA grows `attention_bias` support (at which
+point the same export can be re-rewritten to GQA for whatever
+kernel-launch savings exist in larger-shape workloads).
+
+## Run 20 phase 8 — 2026-05-10 15:38 — IOBinding for the dynamic step loop
+
+GPU sampling at phase 7 showed 65 % idle and mean 18 % during
+the run. The biggest user-side lever was the per-step
+`GetTensorDataAsSpan<float>()` on the logits OrtValue — an
+implicit GPU→CPU copy that synchronises and stalls the host
+between iterations. Binding logits to a pre-allocated CPU buffer
+via `OrtIoBinding.BindOutput(name, ortValue)` writes the result
+directly into our .NET array and skips the round-trip.
+
+### Change
+
+In `TranscribeBatch` (the dynamic-MHA path), pre-allocate the
+constant-shape inputs (input_ids, audio_embeds, cache_position,
+position_ids) and the logits output buffer once. Each step
+constructs only the attention_mask OrtValue (whose shape grows)
+and a fresh `OrtIoBinding`, binds the pre-allocated inputs and
+the logits output, then calls `RunWithBinding`. present_kv
+OrtValues come back from `GetOutputValues()` and feed forward via
+the prev/cur collection-disposal pattern lifted from
+`WhisperTurbo.cs` — `pastKvs` holds borrowed references into the
+previous step's collection until the next step's binding has
+consumed them.
+
+Two bugs surfaced during development and were worth recording:
+
+1. **Disposal of the `GetOutputValues()` collection** — wrapping
+   it in `using var` disposes the inner OrtValues at end of
+   scope, which invalidates the `pastKvs` references that the
+   next iteration's binding needs. Fix: hold the collection in
+   `prevStepOutputs` and `Dispose()` it AFTER the next iteration
+   has swapped `pastKvs` off it (matches WhisperTurbo's pattern).
+2. **Output-bind index mismatch** — I bound outputs interleaved
+   (key_0, value_0, key_1, value_1, …) but indexed
+   `pastKvs[2L] = curOutputs[1+L]` as if all keys came first.
+   Symptom: transcript decoded as plausible bytes but semantically
+   garbage ("all kinds of 'ss<|fim_suffix|> been [aa…"). Fix: bind
+   outputs in the same order as `decOutputNames` — logits, then
+   all present_key in layer order, then all present_value.
+
+### Results (3 runs each on `/tmp/run15_short_60s.wav`)
+
+| Bundle | ASR median | Δ vs Phase 6 |
+|---|---|---|
+| MHA-fused dynamic (Phase 6, no IOBinding) | 4.76 s | baseline |
+| **MHA-fused dynamic + IOBinding (this run)** | **3.61 s** | **−24 %** |
+| legacy unfused dynamic reference | ~3.4 s | parity |
+
+Transcript exact match through all 18 segments.
+
+### GPU utilization comparison
+
+Sampled with `nvidia-smi -lms 30` during a full ASR run:
+
+| Phase | Mean GPU | Max GPU | 0-9 % bin |
+|---|---|---|---|
+| Phase 6 (4.76 s) | 18 % | 82 % | 65 % |
+| Phase 8 (3.61 s) | 14 % | 90 % | 72 % |
+
+Mean went down because the run completes faster, so the fixed
+cold-start cost is a bigger fraction of the sampled window. But
+the PEAKS went up (82 → 90 %) — when the GPU is actually doing
+decode work, it's now driven harder per second of wall time.
+
+### Where the wall time goes now
+
+Total ASR: 3.61 s
+  - cold-start session load: ~1.4 s (decoder.onnx + 3.5 GB weights
+    onto GPU, plus mel/encoder/projector sessions).
+  - actual decode work: ~2.2 s (warm-equivalent).
+
+For long-running deployments (GUI, server) where the GraniteSpeech
+instance is created once and reused, the relevant number is the
+~2.2 s warm decode — about **35 % faster than the legacy dynamic
+baseline** if that baseline included session load, or **at
+parity** if it didn't.
+
+### What's left on the GPU floor
+
+GPU still idle 72 % of wall time in this run, but most of that
+is the cold-start phase. Within the decode portion, peaks reach
+90 % so utilisation during compute is healthy.
+
+Remaining levers, in order of decreasing realism:
+
+1. **Pinned (page-locked) CPU memory for logits.** Current
+   `BindOutput` with a regular .NET array still does a
+   pageable-host copy. Pinned host memory enables async cudaMemcpy
+   that overlaps with the next step's kernel launches. Modest win
+   (~5-10 %) but achievable.
+2. **Encoder parallelism.** Encoder takes ~540 ms across the
+   18-segment run, serially per segment. Batched encoder call
+   would amortise this. Encoder/projector aren't the wall-time
+   bottleneck anymore so this is small.
+3. **Pre-loaded singleton GraniteSpeech.** Move the ~1.4 s
+   ctor cost out of the user-perceived ASR window. This is an
+   app-architecture change (long-running session vs per-CLI-call
+   reload), not a Granite kernel change.
+4. **CUDA graph capture.** Requires re-pinning shapes, regressing
+   to the slower static-shape contract. Not worth it given that
+   path was 13.3 s.
+
+This is a good place to call the perf arc done.
+
+## Run 20 phase 9 — 2026-05-10 15:55 — GPU-side argmax (negative result, lever preserved)
+
+Phase 8's profile showed GPU at peak 90 % with the remaining
+host-side cost being the per-step logits transfer
+(`[B, 1, V]` = ~6 MB GPU→CPU per step). The thinking: append
+`Slice(last position) → ArgMax(V)` to the LM head so the head
+output becomes `next_token` (int64 [B, 1]) — 8 bytes per row
+instead of 400 KB. Greedy decoding doesn't need the raw logits.
+
+### Implementation
+
+Two pieces:
+
+  - **Rewriter** (`rewrite_attention_to_mha.py`): new `--add-argmax`
+    flag. Appends two nodes — `Slice` (axes=[1], starts=[-1],
+    ends=[INT_MAX]) and `ArgMax` (axis=2, keepdims=0) — and
+    removes `logits` from the graph outputs in favour of
+    `next_token` ([B, 1] int64). The Slice runs first so the
+    ArgMax operates on a `[B, 1, V]` tensor regardless of S
+    (prefill or step).
+  - **C# driver** (`GraniteSpeech.cs`): new `_hasNextTokenOutput`
+    flag detected from the decoder's `OutputMetadata`. When set,
+    `decOutputNames[0]` is `"next_token"`; prefill reads tokens
+    via `GetTensorDataAsSpan<long>()`; the step loop binds
+    `next_token` to a pre-allocated `long[B]` buffer via
+    `BindOutput`, skipping the CPU-side argmax entirely.
+
+Both pieces auto-detect from graph metadata, so the same C#
+binary handles bundles with or without argmax.
+
+### Results (3 runs each on `/tmp/run15_short_60s.wav`)
+
+| Bundle | ASR median |
+|---|---|
+| MHA dynamic + IOBinding (phase 8) | 3.61 s |
+| **MHA dynamic + IOBinding + GPU argmax (this run)** | **3.78 s** |
+
+A ~5 % regression. Per-batch stage breakdown (from `granite-prof`):
+
+| Phase | B=16 prefill | B=16 step (25 iter) | B=2 prefill | B=2 step (35 iter) |
+|---|---|---|---|---|
+| With argmax | **236 ms** | 627 ms (25 ms/step) | **56 ms** | 684 ms (20 ms/step) |
+| Without | 444 ms | 428 ms (17 ms/step) | 98 ms | 470 ms (13 ms/step) |
+| Δ | −208 ms | **+199 ms** | −42 ms | **+214 ms** |
+
+### Interpretation
+
+The argmax pass wins at **prefill** and loses at **step**:
+
+  - Prefill: logits is `[B, S, V]`; for B=16, S~85 that's ~545 MB
+    of GPU→CPU traffic *without* argmax. Replacing with `[B, 1]`
+    int64 eliminates almost all of it. Saved ~250 ms total.
+  - Step: logits is `[B, 1, V]`; for B=16 that's ~6 MB per step.
+    Transfer cost is ~1 ms. But the CUDA `ArgMax` kernel over
+    100 353 vocab × 16 rows costs ~6 ms per step — more than it
+    saves. Lost ~360 ms across the 60-step run.
+
+The step kernel cost dominates a 60-step-heavy workload. For a
+prompt-heavy / low-generation profile (e.g. transcript summary
+prompts) the prefill saving could win.
+
+### Decision
+
+Keep both the rewriter flag and C# detection — they're plumbing
+that's correct and tested, and the right answer for some
+workloads. Default to NOT adding argmax for our ASR profile;
+the MHA-fused dynamic + IOBinding bundle (phase 8) stays the
+recommended path at 3.61 s median.
+
+### What this taught us about the remaining slack
+
+The "12 MB per step transfer" worry was already addressed by
+phase 8's `BindOutput(logits, cpu_buffer)` — that bind is fast
+because ORT does a single DMA into our pre-allocated buffer.
+The remaining step-time cost is overwhelmingly **GPU compute
+time** (now ~17 ms/step for B=16, near our ~5 ms theoretical
+floor with realistic kernel-launch overhead). There isn't a big
+software lever left in the per-step loop; the next 2-3× would
+need quantisation (ruled out by user) or a different runtime
+(TRT-LLM, ruled out by repo scope).
+
+
+
+
+
+
 
 
 

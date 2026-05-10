@@ -160,6 +160,32 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--unified-position-ids",
+        action="store_true",
+        help=(
+            "Run 20 phase 2: add `position_ids` (int64, [B, S]) as a new "
+            "graph input to the unified decoder, and pass it to "
+            "language_model(position_ids=...). This lets the C# driver "
+            "feed per-row RoPE positions, which the GQA-rewritten bundle "
+            "needs to support batched variable-length prompts without "
+            "going serial. Only meaningful with --static-shapes-unified."
+        ),
+    )
+    parser.add_argument(
+        "--sdpa-attention",
+        action="store_true",
+        help=(
+            "Run 17 phase A spike (issue #43): load the model with "
+            "attn_implementation=sdpa instead of eager, with the goal of "
+            "letting torch.onnx.export emit a pattern ORT's "
+            "AttentionFusion / GroupQueryAttentionFusion passes recognize. "
+            "Previously gated off because SDPA's data-dependent branch on "
+            "attention_mask.shape[-1] != q.shape[-1] broke dynamo with "
+            "dynamic shapes; with --static-shapes-unified those dims are "
+            "bounded at trace time and the branch should fold."
+        ),
+    )
+    parser.add_argument(
         "--dummy-seconds",
         type=float,
         default=2.0,
@@ -206,7 +232,8 @@ def ensure_output_dir(path: Path, overwrite: bool) -> None:
 # ---------------------------------------------------------------------------
 
 def load_model_and_processor(
-    repo_id: str, revision: str | None, device: str, dtype: Any, torch: Any
+    repo_id: str, revision: str | None, device: str, dtype: Any, torch: Any,
+    attn_implementation: str = "eager",
 ) -> tuple[Any, Any]:
     from transformers import AutoProcessor, GraniteSpeechForConditionalGeneration
 
@@ -214,10 +241,20 @@ def load_model_and_processor(
     print(f"Loading processor from {repo_id}{rev_suffix} ...")
     processor = AutoProcessor.from_pretrained(repo_id, revision=revision)
 
-    # `attn_implementation="eager"` keeps the language-model attention out of
-    # transformers' sdpa_attention_forward path, which contains a data-dependent
-    # branch (`attention_mask.shape[-1] != q.shape[-1]`) that the dynamo
-    # exporter cannot guard. Eager is mathematically equivalent and traces cleanly.
+    # Default `attn_implementation="eager"` because transformers' sdpa path has
+    # a data-dependent branch (`attention_mask.shape[-1] != q.shape[-1]`) that
+    # the dynamo exporter cannot guard at runtime-symbolic shapes. Eager is
+    # mathematically equivalent and traces cleanly.
+    #
+    # The --sdpa-attention flag (issue #43) overrides to "sdpa" for the
+    # *language model only* on static-shape exports — Granite's audio
+    # Q-former (Blip2QFormerModel) doesn't have an SDPA implementation, so
+    # passing attn_implementation="sdpa" at the top-level
+    # GraniteSpeechForConditionalGeneration constructor errors. Loading with
+    # eager and overriding the language_model.config._attn_implementation
+    # post-load is the surgical version. The goal is to emit a pattern
+    # ORT's AttentionFusion / GroupQueryAttentionFusion passes recognize so
+    # we get fused attention without writing a custom graph rewriter.
     print(f"Loading model from {repo_id}{rev_suffix} on {device} as {dtype} (attn_implementation=eager) ...")
     model = GraniteSpeechForConditionalGeneration.from_pretrained(
         repo_id,
@@ -226,6 +263,13 @@ def load_model_and_processor(
         low_cpu_mem_usage=True,
         attn_implementation="eager",
     )
+    if attn_implementation == "sdpa":
+        print("  Overriding language_model._attn_implementation to sdpa "
+              "(issue #43 / spike). encoder + projector stay eager.")
+        model.language_model.config._attn_implementation = "sdpa"
+    elif attn_implementation != "eager":
+        raise ValueError(
+            f"Unknown attn_implementation {attn_implementation!r}; expected eager or sdpa.")
     model.to(device)
     model.eval()
 
@@ -616,7 +660,12 @@ def make_decoder_init_wrapper(torch: Any, model: Any) -> Any:
     return DecoderInitWrapper(model)
 
 
-def make_decoder_unified_wrapper(torch: Any, model: Any, static_past_len: int | None = None) -> Any:
+def make_decoder_unified_wrapper(
+    torch: Any,
+    model: Any,
+    static_past_len: int | None = None,
+    position_ids_input: bool = False,
+) -> Any:
     """One ONNX graph that handles BOTH prefill and step.
 
     Eliminates the duplicate LM-weight copy that the split init/step pair
@@ -667,6 +716,13 @@ def make_decoder_unified_wrapper(torch: Any, model: Any, static_past_len: int | 
             # past_kv inputs without a CPU-side slice. Used by the
             # --static-shapes-unified export (Run 15 phase 2c, issue #41).
             self._static_past_len = static_past_len
+            # When True, the wrapper takes `position_ids` ([B, S], int64)
+            # as a new positional input between cache_position and past_kv,
+            # and forwards it to language_model(position_ids=...). HF then
+            # uses per-row positions for RoPE, which lets the C# driver
+            # batch variable-length prompts without a shared-position
+            # contortion. See --unified-position-ids (Run 20 phase 2).
+            self._position_ids_input = position_ids_input
 
         def forward(
             self,
@@ -674,8 +730,14 @@ def make_decoder_unified_wrapper(torch: Any, model: Any, static_past_len: int | 
             audio_embeds: Any,
             attention_mask: Any,
             cache_position: Any,
-            *past_kv: Any,
+            *rest: Any,
         ) -> Any:
+            if self._position_ids_input:
+                position_ids = rest[0]
+                past_kv = rest[1:]
+            else:
+                position_ids = None
+                past_kv = rest
             # audio_embeds arrives as fp32 (projector stays fp32; see
             # make_projector_wrapper). Cast to LM weight dtype at the
             # boundary so all internal matmuls stay in weight dtype.
@@ -708,6 +770,7 @@ def make_decoder_unified_wrapper(torch: Any, model: Any, static_past_len: int | 
             out = self.language_model(
                 inputs_embeds=embeds,
                 attention_mask=attention_mask,
+                position_ids=position_ids,
                 past_key_values=cache,
                 cache_position=cache_position,
                 use_cache=True,
@@ -1083,6 +1146,7 @@ def export_decoder_unified(
     legacy: bool,
     static_shapes_probe: bool = False,
     static_shapes_unified: bool = False,
+    position_ids_input: bool = False,
 ) -> None:
     """Export the unified prefill+step graph.
 
@@ -1104,11 +1168,17 @@ def export_decoder_unified(
     attention_mask = inputs["attention_mask"]
     audio_embeds = inputs["audio_embeds"]
     cache_position = inputs["cache_position"]
+    position_ids = inputs.get("position_ids")
     keys = inputs["past_keys"]
     values = inputs["past_values"]
 
     with torch.no_grad():
-        out = wrapper(input_ids, audio_embeds, attention_mask, cache_position, *keys, *values)
+        if position_ids_input:
+            out = wrapper(input_ids, audio_embeds, attention_mask, cache_position,
+                          position_ids, *keys, *values)
+        else:
+            out = wrapper(input_ids, audio_embeds, attention_mask, cache_position,
+                          *keys, *values)
     print(f"  PyTorch logits shape: {tuple(out[0].shape)}, "
           f"present_key_0 shape: {tuple(out[1].shape)}")
 
@@ -1117,8 +1187,11 @@ def export_decoder_unified(
         + _kv_names("present_key")
         + _kv_names("present_value")
     )
+    base_inputs = ["input_ids", "audio_embeds", "attention_mask", "cache_position"]
+    if position_ids_input:
+        base_inputs = base_inputs + ["position_ids"]
     input_names = (
-        ["input_ids", "audio_embeds", "attention_mask", "cache_position"]
+        base_inputs
         + _kv_names("past_key")
         + _kv_names("past_value")
     )
@@ -1148,16 +1221,31 @@ def export_decoder_unified(
             "cache_position": {0: "seq"},
             "logits":         {1: "seq"},
         }
+        if position_ids_input:
+            dynamic_axes["position_ids"] = {1: "seq"}
         # past_kv / audio_embeds / batch all static — no dynamic_axes entry.
 
         past_kv_shapes = tuple({} for _ in range(2 * NUM_DECODER_LAYERS))
-        dyn_shapes = (
-            {1: seq},                    # input_ids
-            {},                          # audio_embeds (fully static)
-            {1: total},                  # attention_mask
-            {0: seq},                    # cache_position
-            past_kv_shapes,              # past_kv (all static)
-        )
+        if position_ids_input:
+            # The wrapper's *rest captures (position_ids, *past_kv) as one
+            # variadic, so dyn_shapes' last entry must be the merged tuple
+            # — not a separate top-level entry.
+            rest_shapes = ({1: seq},) + past_kv_shapes
+            dyn_shapes = (
+                {1: seq},                # input_ids
+                {},                      # audio_embeds (fully static)
+                {1: total},              # attention_mask
+                {0: seq},                # cache_position
+                rest_shapes,             # *rest = (position_ids, *past_kv)
+            )
+        else:
+            dyn_shapes = (
+                {1: seq},                # input_ids
+                {},                      # audio_embeds (fully static)
+                {1: total},              # attention_mask
+                {0: seq},                # cache_position
+                past_kv_shapes,          # past_kv (all static)
+            )
     else:
         batch = _make_dim(torch, "batch", min=1, max=65535)
         seq = _auto_dim(torch)         # input_ids[1] / cache_position[0] / new positions
@@ -1173,24 +1261,44 @@ def export_decoder_unified(
             "cache_position": {0: "seq"},
             "logits":         {0: "batch", 1: "seq"},
         }
+        if position_ids_input:
+            dynamic_axes["position_ids"] = {0: "batch", 1: "seq"}
         for name in _kv_names("past_key") + _kv_names("past_value"):
             dynamic_axes[name] = {0: "batch", 2: "past_len"}
         for name in _kv_names("present_key") + _kv_names("present_value"):
             dynamic_axes[name] = {0: "batch", 2: "total_len"}
 
         past_kv_shapes = tuple({0: batch, 2: past} for _ in range(2 * NUM_DECODER_LAYERS))
-        dyn_shapes = (
-            {0: batch, 1: seq},          # input_ids
-            {0: batch, 1: audio_len},    # audio_embeds
-            {0: batch, 1: total},        # attention_mask
-            {0: seq},                    # cache_position
-            past_kv_shapes,              # *past_kv
-        )
+        if position_ids_input:
+            # Variadic *rest captures (position_ids, *past_kv) as a single
+            # tuple — dyn_shapes' last entry must merge them.
+            rest_shapes = ({0: batch, 1: seq},) + past_kv_shapes
+            dyn_shapes = (
+                {0: batch, 1: seq},          # input_ids
+                {0: batch, 1: audio_len},    # audio_embeds
+                {0: batch, 1: total},        # attention_mask
+                {0: seq},                    # cache_position
+                rest_shapes,                 # *rest = (position_ids, *past_kv)
+            )
+        else:
+            dyn_shapes = (
+                {0: batch, 1: seq},          # input_ids
+                {0: batch, 1: audio_len},    # audio_embeds
+                {0: batch, 1: total},        # attention_mask
+                {0: seq},                    # cache_position
+                past_kv_shapes,              # *past_kv
+            )
 
+    if position_ids_input:
+        trace_args = (input_ids, audio_embeds, attention_mask, cache_position,
+                      position_ids, *keys, *values)
+    else:
+        trace_args = (input_ids, audio_embeds, attention_mask, cache_position,
+                      *keys, *values)
     _run_torch_export(
         torch,
         wrapper,
-        (input_ids, audio_embeds, attention_mask, cache_position, *keys, *values),
+        trace_args,
         output_path,
         input_names=input_names,
         output_names=output_names,
@@ -1322,8 +1430,10 @@ def main() -> int:
         "bfloat16": torch.bfloat16,
     }[args.dtype]
 
+    attn_impl = "sdpa" if args.sdpa_attention else "eager"
     model, processor = load_model_and_processor(
-        args.model_repo, args.revision, args.device, dtype, torch
+        args.model_repo, args.revision, args.device, dtype, torch,
+        attn_implementation=attn_impl,
     )
 
     # Mixed-precision policy: when --dtype is BF16 (or fp16), only the
@@ -1426,7 +1536,12 @@ def main() -> int:
         # When --static-shapes-unified is set, the wrapper slices KV outputs
         # to past_len so present_kv is directly chainable as next past_kv.
         unified_static_past_len = args.static_past_len if args.static_shapes_unified else None
-        unified_wrapper = make_decoder_unified_wrapper(torch, model, static_past_len=unified_static_past_len)
+        unified_position_ids = bool(getattr(args, "unified_position_ids", False))
+        unified_wrapper = make_decoder_unified_wrapper(
+            torch, model,
+            static_past_len=unified_static_past_len,
+            position_ids_input=unified_position_ids,
+        )
         # Trace-dummy strategy varies by export mode:
         # - default: B=input_ids.shape[0], S=2 (mid-prompt), past=2 (mid-cache);
         #   both non-zero so dynamo doesn't specialise either.
@@ -1492,6 +1607,12 @@ def main() -> int:
             "past_keys": u_past_keys,
             "past_values": u_past_values,
         }
+        if unified_position_ids:
+            # Per-row positions. At trace time, all rows share the same
+            # seq_dummy positions; at runtime the C# driver fills per-row.
+            unified_inputs["position_ids"] = torch.arange(
+                seq_dummy, dtype=torch.long, device=input_ids.device
+            ).unsqueeze(0).expand(bsz, -1).contiguous()
         t0 = time.time()
         export_decoder_unified(
             torch,
@@ -1502,6 +1623,7 @@ def main() -> int:
             args.legacy_exporter,
             static_shapes_probe=args.static_shapes_probe,
             static_shapes_unified=args.static_shapes_unified,
+            position_ids_input=unified_position_ids,
         )
         report["stages"]["decoder_unified"] = {"seconds": round(time.time() - t0, 2)}
         if args.static_shapes_probe:
