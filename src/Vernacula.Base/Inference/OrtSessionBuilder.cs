@@ -39,6 +39,14 @@ public static class OrtSessionBuilder
         if (enableProfiling)
             opts.EnableProfiling = true;
 
+        // VERNACULA_ORT_VERBOSE=1 turns on ORT INFO-level logging across every
+        // session built through this factory. Used to diagnose graph-level
+        // surprises like "5 Memcpy nodes are added to the graph"
+        // (issue #41 perf round 2 / Run 12). Default is ORT's normal warning
+        // floor; opt-in only because INFO is chatty.
+        if (Environment.GetEnvironmentVariable("VERNACULA_ORT_VERBOSE") == "1")
+            opts.LogSeverityLevel = OrtLoggingLevel.ORT_LOGGING_LEVEL_INFO;
+
         usedCuda = false;
         switch (ep)
         {

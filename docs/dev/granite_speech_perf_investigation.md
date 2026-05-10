@@ -1331,3 +1331,130 @@ memcpy nodes are gone.
 - Run 13–14 (after Run 12): batch-9 straggler investigation, Granite
   pre-warm during diarization.
 
+## Run 12 — 2026-05-10 — Verbose ORT log: it's 64 CPU-fallback Reshape ops, not the 2 memcpy nodes
+
+**Setup:**
+
+Added `OrtLoggingLevel.ORT_LOGGING_LEVEL_INFO` to
+`OrtSessionBuilder.Create` gated on env var
+`VERNACULA_ORT_VERBOSE=1` (one-line change in
+`src/Vernacula.Base/Inference/OrtSessionBuilder.cs`). Re-ran the same
+600 s clip:
+
+```bash
+VERNACULA_ORT_VERBOSE=1 dotnet run --project src/Vernacula.CLI \
+  -p:EP=Cuda --no-build --no-restore -- \
+  --audio en-US_sample_01.wav \
+  --model ~/.local/share/Vernacula/models \
+  --asr granite \
+  2> /tmp/run12_ort_verbose.stderr
+```
+
+**Result — first reset on the diagnosis:**
+
+The "5 Memcpy nodes" warning Run 11 attributed to Granite's
+unified decoder is actually **Sortformer's**. Sortformer's
+`SortformerStreamer` constructor builds its `SessionOptions` inline
+and never routes through `OrtSessionBuilder.Create`, so the verbose
+env var doesn't propagate to its logger. The verbose-INFO lines that
+*do* appear are bracketed by Granite's four `Initializing session`
+markers, which gives an unambiguous attribution:
+
+| ORT pass        | Memcpy nodes | Named in INFO log                                   |
+|-----------------|-------------:|-----------------------------------------------------|
+| Sortformer      | 5            | (no INFO; not via OrtSessionBuilder)               |
+| Granite #1      | **2**        | `MemcpyFromHost after val_39`, `MemcpyToHost before view_2` |
+| Granite #2      | **1**        | `MemcpyFromHost after sym_size_int_147`             |
+| Granite #3      | 0            | clean                                               |
+| Granite #4      | 0            | clean                                               |
+
+So Granite's real graph-level memcpy footprint is **3 nodes total
+across 4 graphs**, not 8.
+
+**Result — second reset, the actual cause:**
+
+Three graph-level memcpy nodes can't on their own produce the
+137 k transfers / 51 GB-each-way that Run 11 measured. The verbose
+log explains why:
+
+```
+$ grep -c "Force fallback to CPU execution for node: node_Reshape" \
+    /tmp/run12_ort_verbose.stderr
+64
+```
+
+**ORT's `fallback_cpu_capability` heuristic pushes 64 Reshape ops to
+CPU** in Granite's hottest graph. The reasoning ORT logs verbatim is
+*"the CPU execution path is deemed faster than overhead involved with
+execution on other EPs capable of executing this node"* — i.e. the
+heuristic considers Reshape itself a metadata-only op (stride change,
+no compute) and figures CPU wins. What the heuristic doesn't model:
+when the surrounding ops are GPU GEMMs / attention / layernorms, the
+"fast CPU reshape" forces D→H + H→D shuttling around it.
+
+Why only 2 graph-level Memcpy nodes despite 64 CPU-resident
+Reshapes: ORT's MemcpyTransformer aggregates adjacent CPU-resident
+ops into a single CPU island and inserts memcpy at the island's
+boundaries, not at every individual node. So one Memcpy node fires
+*for every step × every layer × every iteration* of the loop carrying
+the GPU↔CPU boundary. That's the multiplier that produces 23 k D→H
+transfers (51 GB) from a single nominal `view_2` boundary.
+
+`val_39` and `view_2` (PyTorch's `view` is reshape) are almost
+certainly two ends of one CPU island carrying a per-layer KV
+reshape. `sym_size_int_147` is graph-level shape arithmetic (the
+`sym_size` prefix is torch.onnx.export's tracer-emitted symbolic
+size operator) — separate but smaller cost.
+
+**Implication:**
+
+The fix is at the export layer in `scripts/granite_export/`. Three
+plausible roads, in increasing scope:
+
+1. **Disable the CPU-fallback heuristic for Reshape** — ORT has had
+   knobs to disable individual transformers (e.g. via session config
+   `kOrtSessionOptionsDisableCPUEPFallback` or graph-level
+   annotations). If we can opt out of this specific heuristic without
+   losing genuinely-cheap CPU placement, that's the cheapest fix and
+   doesn't require a re-export.
+2. **Cast Reshape index inputs to int32** — ORT's CUDA Reshape kernel
+   may prefer int32 over int64; torch.onnx.export sometimes emits
+   int64 shape tensors that the heuristic flags as CPU-preferred. A
+   targeted post-export pass that rewrites these to int32 might
+   change ORT's verdict on the same nodes.
+3. **Re-architect the export to bake in shapes** — many of the
+   reshapes are likely tracer artifacts from torch's symbolic-shape
+   handling. A static-shape export (one batch size, one seq length
+   per session) could fold most of them out at export time. Bigger
+   change; couples to the static-KV cache work in Run 9's follow-ups.
+
+The 2 graph-level Memcpy nodes (val_39, view_2) and the 1 in graph #2
+(sym_size_int_147) are downstream symptoms of the Reshape-CPU-island
+problem, not independent issues. Fix the Reshape placement and they
+go away.
+
+**Next moves (further revised):**
+
+- **Run 13**: open the unified decoder ONNX in netron / inspect with
+  the `onnx` Python lib. Walk back from `view_2` to find which
+  Reshape it represents — the "second view" in the graph by
+  topological order, since ORT's view names are positional. Identify
+  the surrounding ops to check whether road 1 (CPU-fallback knob),
+  road 2 (int32 cast), or road 3 (export rewrite) is the cleanest
+  fix. The decoder ONNX lives at
+  `~/.local/share/Vernacula/models/granite_speech_4_1_2b_bf16/decoder.onnx`
+  (or the FP32 sibling).
+- **Run 14**: try road 1 first as a fast probe — set
+  `kOrtSessionOptionsDisableCPUEPFallback` (or current equivalent)
+  on Granite's decoder session, re-run Run 11 measurement. If
+  cudaMemcpyAsync drops from 74 % to single-digit %, we're done; if
+  it doesn't drop, road 2 or 3 is required.
+
+**Aside — Sortformer's 5 memcpy nodes:** filed as a known-unknown.
+Sortformer's chunked-streaming pattern handles its memcpy load OK
+(see Run 4 in `granite_speech_investigation.md` for context), and
+diarization is already fast enough to not be on the critical path
+for end-to-end latency. Not worth chasing now, but the 5-node count
+is higher than it should be and may bite us if we ever need
+diarization to be cheaper.
+
