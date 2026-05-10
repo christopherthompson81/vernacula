@@ -1221,3 +1221,113 @@ Three distinct findings, each pointing at a different next move:
 - **Run 13** (cheap, parallel-able): pre-warm Granite during
   diarization to eliminate the 5 s idle gap.
 
+## Run 11 — 2026-05-10 — nsys profile flips the diagnosis
+
+**Setup:**
+
+```bash
+nsys profile --output=/tmp/run11_granite --stats=true \
+  --trace=cuda,osrt,nvtx --force-overwrite=true -- \
+  dotnet run --project src/Vernacula.CLI -p:EP=Cuda --no-restore -- \
+    --audio en-US_sample_01.wav \
+    --model ~/.local/share/Vernacula/models \
+    --asr granite \
+  > /tmp/run11_nsys_stats.txt 2> /tmp/run11_cli.stderr
+```
+
+Same 600 s clip as Run 10. Run 11 wall ran ~32 s (Run 10 was 22 s),
+so nsys overhead ≈ 45%. Higher than the typical 10–30%; nsys's
+`--trace=cuda` is comprehensive but expensive. The relative shape is
+what matters — absolute timings here are not directly comparable to
+Run 10's, but the percentages by category are.
+
+**Result — `cuda_api_sum` (host CPU time in CUDA API calls):**
+
+| Time % | Total (ns)       | Calls   | Avg (ns) | Max (ns)    | Name                       |
+|-------:|-----------------:|--------:|---------:|------------:|----------------------------|
+|   74.6 | 13,005,929,504   | 180,411 |   72,090 | 514,817,620 | cudaMemcpyAsync            |
+|   15.8 |  2,763,786,661   | 766,493 |    3,605 |  35,911,011 | cudaLaunchKernel           |
+|    4.0 |    701,355,047   |   1,817 |  385,996 |  49,576,049 | cudaMemcpy (sync)          |
+|    1.8 |    306,633,007   |  77,641 |    3,949 |     435,486 | cuLaunchKernel             |
+|    0.7 |    128,270,708   |      98 |1,308,884 | 120,890,783 | cudaMalloc                 |
+|    0.7 |    116,251,775   |   3,281 |   35,431 |     317,743 | cudaStreamSynchronize      |
+
+**Result — `cuda_gpu_mem_time_sum` (actual on-device memcpy time):**
+
+| Time % | Total (ns)    | Count   | Avg (ns) | Max (ns)    | Operation             |
+|-------:|--------------:|--------:|---------:|------------:|-----------------------|
+|   51.5 | 5,015,844,626 |  23,108 |  217,061 | 436,080,861 | memcpy D→H            |
+|   47.7 | 4,643,312,979 | 114,044 |   40,715 |  49,505,101 | memcpy H→D            |
+|    0.6 |    56,117,214 |  44,323 |    1,266 |      12,064 | memcpy D→D            |
+|    0.2 |    19,017,897 |  28,338 |      671 |      23,424 | memset                |
+
+**Result — `cuda_gpu_mem_size_sum` (volume shipped):**
+
+| Total (MB)  | Count   | Avg (MB) | Max (MB)  | Operation  |
+|------------:|--------:|---------:|----------:|------------|
+|  51,474.154 |  23,108 |    2.228 |   1,329.5 | memcpy D→H |
+|  51,061.202 | 114,044 |    0.448 |     411.0 | memcpy H→D |
+|   1,411.014 |  44,323 |    0.032 |       2.8 | memcpy D→D |
+
+**Result — top GPU kernels (`cuda_gpu_kern_sum`, head):**
+
+All bf16 GEMMs and ORT elementwise/cast/concat kernels. Avg per-call
+time is small (top entry is 27 µs avg over 31,920 calls); the work
+is **fragmented**.
+
+**Implication — the diagnosis flipped:**
+
+Run 10 hypothesised kernel-launch overhead (high SM, low mem). The
+nsys data says no:
+
+- **74.6 % of host CUDA API time is `cudaMemcpyAsync`**, not
+  `cudaLaunchKernel`. Launch overhead is real but secondary (15.8 %).
+- **9.7 s of actual on-device memcpy time** out of a 22 s wall (44 %).
+  H→D and D→H are nearly balanced.
+- **51 GB shipped each direction** in 22 s. Single largest D→H
+  transfer is **1.3 GB** — almost certainly a full-batch encoder or
+  attention activation that ORT decided to materialise on host.
+- **137 k memcpy operations** in 22 s (≈ 6,200/sec). Nothing about
+  the inference itself needs that many H↔D crossings.
+
+The ORT warning we have ignored from day one was the smoking gun:
+
+```
+5 Memcpy nodes are added to the graph main_graph for CUDAExecutionProvider.
+It might have negative impact on performance (including unable to run CUDA graph).
+```
+
+ORT inserts a Memcpy node every time a CUDA-resident producer feeds a
+CPU-resident consumer (or vice-versa) in the graph. With 5 such nodes
+in the unified decoder, every step pays ≥ 5 H↔D round-trips, *plus*
+the matching launches each side. Multiply by step-count × layers ×
+batch and the 137 k transfers fall out exactly.
+
+This also explains why SM utilisation in Run 10 sat at 75 % rather
+than 100 %: the GPU was repeatedly draining its work queue while the
+host shipped data back and re-uploaded it. The 1 Hz dmon sampler
+couldn't see the gaps but they're there in nsys.
+
+**What this means for the candidate fixes:**
+
+| Fix                       | Run 11 verdict                                |
+|---------------------------|-----------------------------------------------|
+| Static-KV cache           | Doesn't address memcpy nodes; do later.       |
+| CUDA graphs               | **Blocked** by memcpy nodes per ORT's warning.|
+| Multi-stream overlap      | Wouldn't help — the gaps are H↔D, not stream. |
+| **Eliminate memcpy nodes**| **The right move.** Find and fix the 5 nodes. |
+
+The fragmented small-GEMM signature in `gpu_kern_sum` (30 k bf16
+64×64 GEMMs averaging 27 µs) becomes the next concern *after* the
+memcpy nodes are gone.
+
+**Next moves (revised):**
+
+- **Run 12**: re-run with `session_options.log_severity_level=1` to
+  get verbose ORT output naming the 5 Memcpy nodes. They likely sit
+  between shape ops (Reshape / Slice / Gather with int64 indices),
+  type casts, or a non-CUDA-supported op the export emitted. Fix at
+  the export layer in `scripts/granite_export/` — graph-level, not C#.
+- Run 13–14 (after Run 12): batch-9 straggler investigation, Granite
+  pre-warm during diarization.
+
