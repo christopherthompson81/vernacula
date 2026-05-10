@@ -1883,5 +1883,181 @@ so the chained `Run`-with-`OrtValue` pattern from Run 7 works
 verbatim — past_kv on next call = present_kv from this call,
 GPU-resident throughout.
 
+## Run 15 phase 2c — 2026-05-10 — C# adaptation reveals a fundamental compute trade-off; rolled back
+
+**Setup:**
+
+Wrote `TranscribeBatchStatic` in `GraniteSpeech.cs` as a sibling to
+`TranscribeBatch` (the dynamic-shape path). Detected via input
+metadata (`past_key_0` dimensions all positive); reads pinned dims
+from the graph (no hardcoded 16/768/375). Pads batch to
+`StaticBatchSize` with PAD-token rows, audio_embeds to
+`StaticAudioLen`, attention mask to `[B, P + S]` at prefill /
+`[B, P + 1]` at step. cache_position uses `[P..P+S-1]` for prefill,
+`[P+S+step]` for step.
+
+**Result — output parity:**
+
+On a 60 s clip both paths produced near-identical transcripts.
+One minor wording difference (`"and so I mean"` vs `"I mean"`)
+likely from the RoPE phase shift (cache_position starts at `P`
+in static vs `0` in dynamic). Architecture is correct.
+
+**Result — perf, head-to-head on the same 60 s clip:**
+
+| Path                | Total wall | Prefill | Step-loop | Steps | ms / step |
+|---------------------|----------:|--------:|----------:|------:|----------:|
+| Dynamic             | **3.4 s** | 498 ms  | 2,135 ms  | 60    | **35.6**  |
+| Static, past_len=768| 15.6 s    | 1,914 ms| 12,940 ms | 58    | 223       |
+| Static, past_len=512| 12.1 s    | 1,644 ms| 9,693 ms  | 60    | 161       |
+
+The static path is **3.6×–4.5× slower wall-time** than dynamic.
+Per-step is **4.5×–6.3× slower**. Driver: the graph's attention
+runs over the full pinned `past_kv + seq` length even when most
+positions are masked. ORT/PyTorch's exported attention computes
+`Q · K^T` against the entire pinned cache and applies the mask as a
+post-hoc add-`-inf` on softmax inputs — the multiply happens
+regardless, so masked positions still cost compute.
+
+Math: `Q · K^T` per step has FLOPs proportional to `B · H_q · 1 ·
+(P + 1) · D`. For `P=512` that's `16 · 16 · 513 · 128 = 168 M FLOPs`
+per layer per step. For dynamic with average cache `~200`:
+`16 · 16 · 201 · 128 = 66 M FLOPs`. Ratio matches the ~2.5×
+per-step regression.
+
+**Result — VRAM:**
+
+Static also uses **more VRAM** than dynamic, not less. Long-prompt
+batches (`S=207`, `P=768`) OOM at 24 GB on RTX 3090 trying to
+allocate logits (1.33 GB). Peak attention scratch at prefill is
+`O(B · H · S · (P+S))` ≈ 16 GB at `P=768`. Even `P=512` OOMs at
+the largest batch on the 600 s clip.
+
+**Implication — variant B is the wrong architecture for this
+workload:**
+
+The diagnosis from Runs 11–13 was correct: ORT's per-step
+shape-arithmetic CPU island IS the dynamic graph's biggest single
+cost (44 % of wall, 9.7 s on a 22 s job). The static-shape rewrite
+ELIMINATES that cost — Runs 14, 15p1, 15p2a/b verified zero
+Memcpy warnings, zero CPU-fallback ops, zero of the 51 GB
+H↔D shuttle Run 11 measured.
+
+But the static-shape graph trades 9.7 s of memcpy time for **30+
+seconds of unmasked-attention compute regression**. Net result:
+4× slower. We've fixed the *measured* bottleneck but exposed a
+*larger* one underneath — Granite's exported attention isn't
+mask-sparse-aware.
+
+**There is no cheap middle ground.** Smaller `past_len` narrows
+the gap proportionally (768 → 4.5×; 512 → 3.6×; 256 ≈ 2.4×) but
+caps audio length and never reaches dynamic. Bucket scheduling
+(multiple static graphs with shared initializers) is multi-day
+work AND still slower than dynamic, just not by 5×. The actual
+fix path is **kernel-level mask-aware attention** —
+`com.microsoft.MultiHeadAttention` with the right mask config, or
+a `GroupQueryAttention` op with `cu_seqlens`-style packed
+variable-length attention. Both are substantial export-script /
+ONNX surgery beyond the scope of this investigation.
+
+**Decision: roll back the C# adaptation.** Phase 2c (the static
+`TranscribeBatch` path) is reverted; phase 2b (the
+`--static-shapes-unified` export-script flag and sliced wrapper)
+stays as a tool that the future fused-attention work can build
+on. The investigation log is the deliverable.
+
+**Honest retrospective on Phase 2:**
+
+Three things we did right:
+- Validated the diagnosis with measurement at every step (no
+  speculative fixes).
+- Honored the user's "we're still in parity phase" pushback —
+  ran the smoke test, saw OOM, didn't dismiss it as a config
+  issue.
+- Ran the head-to-head perf comparison on a clip both paths
+  could complete, instead of arguing from theory.
+
+One thing we got wrong:
+- I anchored on "the per-step CPU island IS the bottleneck" from
+  Run 11 and assumed eliminating it would dominate. Should have
+  modelled the static-attention compute cost up front — it was
+  predictable from the dim sizes (`P=768` is 4–8× the average
+  cache length in dynamic) and would have raised the question
+  "is the trade worth it?" before three days of phase-2 work.
+  Filed under "always do the back-of-the-envelope before
+  committing to multi-day implementation."
+
+**Next steps:**
+
+- Open follow-up issue for "Granite perf via fused mask-aware
+  attention" with all the data we've gathered. The attention
+  surgery is the actual fix path.
+- Phase 1's `--static-shapes-probe` and phase 2b's
+  `--static-shapes-unified` flags + sliced wrapper stay in
+  `scripts/granite_export/`. They're useful tools for the
+  follow-up: any fused-attention export needs to start from a
+  static-shape graph, so the work isn't lost.
+- The other Run 9 follow-ups (static-KV cache, chunked encoder,
+  encoder pre-warm during diarization) are independent of this
+  decision and can land separately.
+
+### Spike: GQA feasibility check (pre-commit to next workstream)
+
+Before opening a follow-up issue for "fused mask-aware attention",
+ran a quick spike to confirm the path is reachable:
+
+**Test 1 — does ORT's CUDA EP support GQA at Granite's config?**
+
+Built a minimal ONNX graph with a single `com.microsoft.GroupQueryAttention`
+node configured for Granite (num_heads=16, kv_num_heads=4,
+head_dim=128, BF16, do_rotary, past_len=768, batch=16). Loaded in
+ORT 1.25 with verbose logging. Result: **session loads cleanly,
+zero Memcpy warnings, zero CPU-fallback ops.** The op is supported
+on CUDA EP for our exact config — the end-state is reachable.
+
+**Test 2 — does ORT auto-fuse the unfused exported attention?**
+
+ORT's graph-optimization pipeline includes `AttentionFusion` and
+`GroupQueryAttentionFusion` passes that look for unfused attention
+patterns and rewrite them as fused ops. Re-checked the Run 12
+verbose log on the dynamic Granite decoder. Across all 4 sessions:
+
+```
+GraphTransformer AttentionFusion modified: 0
+GraphTransformer GroupQueryAttentionFusion modified: 0
+```
+
+**Zero matches.** ORT's pattern matcher doesn't recognize Granite's
+exported attention pattern. The dynamo-exported pattern (Q/K/V
+projections → cast → reshape → matmul → mask add → softmax → matmul
+→ reshape) deviates from what the fusion passes look for. Likely
+candidates: the GQA expand/repeat pattern doesn't match, or a Cast
+/ Reshape sits in the wrong place, or RoPE handling is structured
+differently than ORT expects.
+
+**Implication for the follow-up workstream:**
+
+The fused-attention path is **viable but not free**. We can't get
+auto-fusion via ORT's built-in passes — we'd need either:
+
+1. Modify the wrapper to use `F.scaled_dot_product_attention`
+   explicitly so torch.onnx.export emits a pattern ORT recognizes.
+   ~1-day spike to test whether SDPA gets auto-fused on this model.
+2. Write a custom graph rewriter in `scripts/granite_export/` that
+   identifies Granite's per-layer attention subgraph and replaces
+   with `GroupQueryAttention` nodes. ~3-5 days of pattern-matching
+   surgery; reliably solves the problem regardless of whether SDPA
+   auto-fuses.
+
+Path 1 is the cheap probe; if it works, we're done. If not, path 2
+is the structural fix. Both paths build on phase 1's
+`--static-shapes-unified` export tool — any fused-attention export
+needs static shapes to make GQA's `seqlens_k` input meaningful.
+
+The follow-up issue should bake in this feasibility data so the
+next investigator doesn't re-derive it.
+
+
+
 
 
