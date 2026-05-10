@@ -313,7 +313,7 @@ def rewrite_layer_mha(graph: onnx.GraphProto, softmax: onnx.NodeProto, layer_idx
 
 
 def rewrite_layer_gqa(graph: onnx.GraphProto, softmax: onnx.NodeProto, layer_idx: int,
-                      producer, consumers):
+                      producer, consumers, pass_attention_bias: bool = False):
     """Rewrite one layer's attention to GroupQueryAttention. Returns
     (added_nodes, added_initializers, nodes_to_remove).
 
@@ -339,7 +339,7 @@ def rewrite_layer_gqa(graph: onnx.GraphProto, softmax: onnx.NodeProto, layer_idx
         GQA only does scoring + cache append.
       - scale=1/HEAD_DIM: Granite's attention_multiplier (Run 19 finding).
     """
-    q, k, v, _mask, output_tensor, to_remove = find_attention_block(softmax, producer, consumers)
+    q, k, v, mask, output_tensor, to_remove = find_attention_block(softmax, producer, consumers)
 
     past_k, fresh_k, present_k_name, k_slice = find_kv_chain_for_gqa(k, producer, consumers)
     past_v, fresh_v, present_v_name, v_slice = find_kv_chain_for_gqa(v, producer, consumers)
@@ -375,13 +375,25 @@ def rewrite_layer_gqa(graph: onnx.GraphProto, softmax: onnx.NodeProto, layer_idx
 
     gqa_out = f"{pfx}_out"
     scale = 1.0 / HEAD_DIM
-    gqa_node = helper.make_node(
-        "GroupQueryAttention",
-        inputs=[
+    if pass_attention_bias:
+        # attention_bias is GQA input slot 10. Fill slots 7..9 with empty.
+        gqa_inputs = [
             q_adapted, k_adapted, v_adapted,
             past_k, past_v,
             "seqlens_k", "total_sequence_length",
-        ],
+            "", "",      # cos_cache, sin_cache (do_rotary=0)
+            "",          # position_ids (not used; RoPE applied upstream)
+            mask,        # attention_bias = where_2
+        ]
+    else:
+        gqa_inputs = [
+            q_adapted, k_adapted, v_adapted,
+            past_k, past_v,
+            "seqlens_k", "total_sequence_length",
+        ]
+    gqa_node = helper.make_node(
+        "GroupQueryAttention",
+        inputs=gqa_inputs,
         outputs=[gqa_out, present_k_name, present_v_name],
         name=f"{pfx}_node",
         domain="com.microsoft",
@@ -440,22 +452,39 @@ def main() -> int:
     )
     print(f"  Mode: {args.mode}; rewriting layers: {target_layers}")
 
-    rewrite_fn = rewrite_layer_mha if args.mode == "mha" else rewrite_layer_gqa
+    if args.mode == "mha":
+        rewrite_fn = lambda graph, sm, li, producer, consumers: rewrite_layer_mha(
+            graph, sm, li, producer, consumers)
+    else:
+        rewrite_fn = lambda graph, sm, li, producer, consumers: rewrite_layer_gqa(
+            graph, sm, li, producer, consumers,
+            pass_attention_bias=pass_attention_bias)
     fused_op = "MHA" if args.mode == "mha" else "GQA"
 
     # GQA needs two extra graph inputs (seqlens_k, total_sequence_length)
     # that every layer's GQA node references. Infer batch size from any
     # past_key_<L> graph input (they're all the same B).
+    pass_attention_bias = False
     if args.mode == "gqa":
         # batch dim: int if static (dim_value > 0), str symbol name if dynamic.
-        pk_dim0 = next(
-            i.type.tensor_type.shape.dim[0]
-            for i in graph.input if i.name.startswith("past_key_")
+        pk_input = next(
+            i for i in graph.input if i.name.startswith("past_key_")
         )
+        pk_dim0 = pk_input.type.tensor_type.shape.dim[0]
         batch_dim = pk_dim0.dim_value if pk_dim0.dim_value > 0 else pk_dim0.dim_param
+        # CUDA's GQA kernel doesn't yet support the attention_bias input
+        # (only listed in the contrib spec; "attention_bias is not supported
+        # in GroupQueryAttention cuda kernel" at runtime). So we never wire
+        # it, even when shapes would match. Variable-length batching relies
+        # on BatchSizer grouping similar-length segments and tolerating the
+        # small pad contamination — the LLM is robust to PAD-token K at
+        # the few trailing slots when realLen variation within a batch is
+        # ~one or two tokens.
+        pass_attention_bias = False
         add_gqa_graph_inputs(graph, batch_dim=batch_dim)
+        bias_note = "with attention_bias=where_2" if pass_attention_bias else "(no attention_bias)"
         print(f"  Added GQA graph inputs: seqlens_k (int32, [{batch_dim!r}]) + "
-              f"total_sequence_length (int32, scalar)")
+              f"total_sequence_length (int32, scalar) {bias_note}")
 
     all_new_nodes: list[onnx.NodeProto] = []
     all_new_inits: list[onnx.TensorProto] = []

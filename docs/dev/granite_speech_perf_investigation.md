@@ -3108,6 +3108,91 @@ padded prompts + per-row position_ids (same trick that worked in
 phase 2 batched, now without the static-shape outer wrapper).
 That would let us amortise per-call overhead across segments.
 
+## Run 20 phase 5 — 2026-05-10 15:05 — Batched dynamic GQA blocked by CUDA kernel
+
+Tried the obvious next step: TranscribeDynamicGqaBatch with B=N
+where the BatchSizer-grouped segments are right-padded to
+S = max(realLen) within the batch. With attention_bias = where_2
+wired through (the rewriter auto-detects past_seq dynamic and
+threads `mask` into GQA input slot 10), small intra-batch pad
+should be masked just like MHA Run 19 did.
+
+### What broke
+
+ORT runtime error on the first GQA node:
+
+```
+Non-zero status code returned while running GroupQueryAttention
+node. Name:'gqa_l0_node' Status Message:
+attention_bias is not supported in GroupQueryAttention cuda
+kernel.
+```
+
+`attention_bias` IS in the contrib op spec for
+`com.microsoft.GroupQueryAttention` (input slot 10), but the
+CUDA kernel hasn't implemented it yet. The CPU implementation
+probably has it; we'd hit a Memcpy fallback if we forced CPU,
+which would erase any perf win.
+
+### Why per-row seqlens_k can't substitute
+
+In dynamic / non-buffer-sharing mode, GQA's write region is
+uniform across batch: new K appends at past_seq..past_seq+new_S
+for every row. So even though `seqlens_k` is per-row (it controls
+per-row attention bound), it cannot reroute the WRITE.
+
+Concrete example with batch realLens = [99, 95, 90], S = 99:
+After prefill, the cache has past_seq = S = 99 (uniform), with
+real K at [0, realLen[b]) and pad K at [realLen[b], 99) for
+shorter rows. Step 0's new K lands at slot 99 for every row.
+Row 1 (realLen = 95): its generated tokens are at slots [99, …),
+but the slot [95] in cache still holds prefill pad K. Any
+per-row attention bound that's contiguous from 0 either includes
+slot 95 (poisoning the score with pad K) or skips slot 99 (which
+holds the actual generated K). There's no clean cut.
+
+This is the same constraint that made phase 2 static GQA need
+buffer-sharing mode + per-row write positions — non-buffer mode
+loses that lever.
+
+### Quick attempt without attention_bias
+
+Tried it anyway: removed the attention_bias wiring, accepted
+that BatchSizer-sorted segments would have small intra-batch
+pad. Result: transcript broke ("all the new York, and 'The new
+York Timescale 2'" instead of "all kinds of telephone calls of
+course…"). Even a few pad K slots within `seqlens_k+1`
+contaminate softmax enough to derail decoding.
+
+### Revert
+
+`TranscribeDynamicGqaBatch` reverts to looping
+`TranscribeDynamicGqaSingle` per segment — back to the phase-4
+working state at 5.23 s. The plumbing for the batched path is
+left in `rewrite_attention_to_mha.py` (auto-wires
+attention_bias when past_seq is dynamic) for the day the CUDA
+kernel grows the input.
+
+### Where this leaves us
+
+Three forks:
+
+1. **MHA-fused dynamic + batched.** MHA's CUDA kernel DOES
+   support `attention_bias` (Run 19 used it). Re-rewriting the
+   dynamic export with `--mode mha` should give a batched-capable
+   dynamic path. Fused attention, with per-row pad masking via
+   where_2. Likely the cleanest next step.
+2. **Exact-realLen binning.** Only batch segments with
+   identical realLen, fall back to B=1 otherwise. Bin sizes will
+   often be small (1–3) on real audio, so the amortisation win
+   is limited.
+3. **Stop here.** 5.23 s / 0.09 RTF is well under real-time and
+   the user-visible feature works. The legacy 3.4 s baseline is
+   nice but not a feature blocker.
+
+The user is asking us to keep going; option 1 is the obvious
+next experiment.
+
 
 
 
