@@ -124,6 +124,42 @@ def parse_args() -> argparse.Namespace:
         help="Use the legacy TorchScript ONNX exporter instead of dynamo.",
     )
     parser.add_argument(
+        "--static-shapes-probe",
+        action="store_true",
+        help=(
+            "Run 15 phase 1 (issue #41): export the unified decoder with "
+            "all dims pinned to small fixed values (B=4, S=1, past_len=8, "
+            "audio_len=8). Step-only graph; not production-usable. The probe "
+            "confirms whether the dynamo exporter folds the shape-arithmetic "
+            "backbone (Run 13's CPU island) when dims are constants. "
+            "Implies --unified-decoder."
+        ),
+    )
+    parser.add_argument(
+        "--static-shapes-unified",
+        action="store_true",
+        help=(
+            "Run 15 phase 2 (issue #41): production-target export of the "
+            "unified decoder. Pins batch / past_len / audio_len to fixed "
+            "values; keeps seq dynamic so a single graph handles both "
+            "prefill (S=prompt_len) and step (S=1). Implies --unified-decoder."
+        ),
+    )
+    parser.add_argument(
+        "--static-batch", type=int, default=16,
+        help="Pinned batch size for --static-shapes-unified (default 16).")
+    parser.add_argument(
+        "--static-past-len", type=int, default=256,
+        help="Pinned past-KV length for --static-shapes-unified (default 256).")
+    parser.add_argument(
+        "--static-audio-len", type=int, default=375,
+        help=(
+            "Pinned audio_embeds length for --static-shapes-unified "
+            "(default 375 = 30 s of audio at 12.5 fps after projector "
+            "subsampling)."
+        ),
+    )
+    parser.add_argument(
         "--dummy-seconds",
         type=float,
         default=2.0,
@@ -580,7 +616,7 @@ def make_decoder_init_wrapper(torch: Any, model: Any) -> Any:
     return DecoderInitWrapper(model)
 
 
-def make_decoder_unified_wrapper(torch: Any, model: Any) -> Any:
+def make_decoder_unified_wrapper(torch: Any, model: Any, static_past_len: int | None = None) -> Any:
     """One ONNX graph that handles BOTH prefill and step.
 
     Eliminates the duplicate LM-weight copy that the split init/step pair
@@ -624,6 +660,13 @@ def make_decoder_unified_wrapper(torch: Any, model: Any) -> Any:
             self.language_model = m.language_model
             self.audio_token_id = m.config.audio_token_id
             self._weight_dtype = weight_dtype
+            # When set, the wrapper applies a sliding-window slice to the
+            # KV outputs so present_key/value become shape
+            # [B, H, static_past_len, D] (last static_past_len positions).
+            # This makes the present outputs directly chainable as next-step
+            # past_kv inputs without a CPU-side slice. Used by the
+            # --static-shapes-unified export (Run 15 phase 2c, issue #41).
+            self._static_past_len = static_past_len
 
         def forward(
             self,
@@ -672,6 +715,17 @@ def make_decoder_unified_wrapper(torch: Any, model: Any) -> Any:
             )
             new_keys = [layer.keys for layer in out.past_key_values.layers]
             new_values = [layer.values for layer in out.past_key_values.layers]
+            # When the export pins past_len, slice present KV to the last
+            # `static_past_len` positions so the output shape matches the
+            # pinned past_kv input shape. The next call's past_kv input is
+            # then identical in shape to this call's KV output, and ORT
+            # can chain them GPU-resident with no host slice. Quality is
+            # preserved as long as prompt_len + max_new_tokens <=
+            # static_past_len; the dropped positions are leading zero-pad
+            # because past_kv is right-aligned (newest at the end).
+            if self._static_past_len is not None:
+                new_keys = [k[:, :, -self._static_past_len:, :] for k in new_keys]
+                new_values = [v[:, :, -self._static_past_len:, :] for v in new_values]
             # Logits → fp32 boundary so C# argmax stays unchanged. KV stays
             # in weight dtype (uncast).
             return (out.logits.to(torch.float32), *new_keys, *new_values)
@@ -1027,14 +1081,24 @@ def export_decoder_unified(
     output_path: Path,
     opset: int,
     legacy: bool,
+    static_shapes_probe: bool = False,
+    static_shapes_unified: bool = False,
 ) -> None:
     """Export the unified prefill+step graph.
 
     The trace dummy uses S=2 (mid-prompt) and past_len=2 (mid-cache) so
     BOTH dims stay symbolic. Specialising either to a fixed value would
     break one of the two runtime modes.
+
+    With ``static_shapes_probe=True`` (Run 15 phase 1 / issue #41), all
+    five dims (batch, seq, past_len, total_len, audio_len) are pinned to
+    integer literals so the dynamo exporter can constant-fold the
+    per-step shape-arithmetic backbone identified in Run 13. The result
+    is a step-only graph, not production-usable; phase 1 just confirms
+    whether the constant folding works at all.
     """
-    print(f"\nExporting decoder_unified to {output_path} ...")
+    print(f"\nExporting decoder_unified to {output_path}"
+          f"{' (static-shapes probe)' if static_shapes_probe else ''} ...")
 
     input_ids = inputs["input_ids"]
     attention_mask = inputs["attention_mask"]
@@ -1059,33 +1123,69 @@ def export_decoder_unified(
         + _kv_names("past_value")
     )
 
-    batch = _make_dim(torch, "batch", min=1, max=65535)
-    seq = _auto_dim(torch)         # input_ids[1] / cache_position[0] / new positions
-    past = _auto_dim(torch)        # past_kv[2]
-    total = _auto_dim(torch)       # attention_mask[1] / present_kv[2]
-    audio_len = _auto_dim(torch)   # audio_embeds[1]
+    if static_shapes_probe:
+        # Phase-1 probe: pin every dim to its trace-dummy value. The
+        # dummy was built at B=input_ids.shape[0], S=input_ids.shape[1],
+        # past=past_keys[0].shape[2], audio_len=audio_embeds.shape[1].
+        # Empty dynamic_axes / dynamic_shapes => the dynamo exporter
+        # treats the trace-dummy shape as the static shape.
+        dynamic_axes: dict[str, dict[int, str]] = {}
+        dyn_shapes = ({}, {}, {}, {}) + (tuple({} for _ in range(2 * NUM_DECODER_LAYERS)),)
+    elif static_shapes_unified:
+        # Phase-2 production target: pin batch / past_len / audio_len; keep
+        # seq dynamic so a single graph handles both prefill (S=prompt_len)
+        # and step (S=1). total_len = seq + past_len → dynamic too because
+        # of seq, but with past_len pinned the position-arange chain that
+        # caused Run 13's CPU island folds at past_len rather than running
+        # per-call. Empty dim dict on a dim => static (shape from dummy);
+        # Dim object => symbolic.
+        seq = _make_dim(torch, "seq", min=1, max=4096)
+        total = _make_dim(torch, "total_len", min=1, max=4096)
 
-    dynamic_axes: dict[str, dict[int, str]] = {
-        "input_ids":      {0: "batch", 1: "seq"},
-        "audio_embeds":   {0: "batch", 1: "audio_len"},
-        "attention_mask": {0: "batch", 1: "total_len"},
-        # cache_position is 1-D; its single axis is "seq".
-        "cache_position": {0: "seq"},
-        "logits":         {0: "batch", 1: "seq"},
-    }
-    for name in _kv_names("past_key") + _kv_names("past_value"):
-        dynamic_axes[name] = {0: "batch", 2: "past_len"}
-    for name in _kv_names("present_key") + _kv_names("present_value"):
-        dynamic_axes[name] = {0: "batch", 2: "total_len"}
+        dynamic_axes = {
+            "input_ids":      {1: "seq"},
+            "attention_mask": {1: "total_len"},
+            "cache_position": {0: "seq"},
+            "logits":         {1: "seq"},
+        }
+        # past_kv / audio_embeds / batch all static — no dynamic_axes entry.
 
-    past_kv_shapes = tuple({0: batch, 2: past} for _ in range(2 * NUM_DECODER_LAYERS))
-    dyn_shapes = (
-        {0: batch, 1: seq},          # input_ids
-        {0: batch, 1: audio_len},    # audio_embeds
-        {0: batch, 1: total},        # attention_mask
-        {0: seq},                    # cache_position
-        past_kv_shapes,              # *past_kv
-    )
+        past_kv_shapes = tuple({} for _ in range(2 * NUM_DECODER_LAYERS))
+        dyn_shapes = (
+            {1: seq},                    # input_ids
+            {},                          # audio_embeds (fully static)
+            {1: total},                  # attention_mask
+            {0: seq},                    # cache_position
+            past_kv_shapes,              # past_kv (all static)
+        )
+    else:
+        batch = _make_dim(torch, "batch", min=1, max=65535)
+        seq = _auto_dim(torch)         # input_ids[1] / cache_position[0] / new positions
+        past = _auto_dim(torch)        # past_kv[2]
+        total = _auto_dim(torch)       # attention_mask[1] / present_kv[2]
+        audio_len = _auto_dim(torch)   # audio_embeds[1]
+
+        dynamic_axes = {
+            "input_ids":      {0: "batch", 1: "seq"},
+            "audio_embeds":   {0: "batch", 1: "audio_len"},
+            "attention_mask": {0: "batch", 1: "total_len"},
+            # cache_position is 1-D; its single axis is "seq".
+            "cache_position": {0: "seq"},
+            "logits":         {0: "batch", 1: "seq"},
+        }
+        for name in _kv_names("past_key") + _kv_names("past_value"):
+            dynamic_axes[name] = {0: "batch", 2: "past_len"}
+        for name in _kv_names("present_key") + _kv_names("present_value"):
+            dynamic_axes[name] = {0: "batch", 2: "total_len"}
+
+        past_kv_shapes = tuple({0: batch, 2: past} for _ in range(2 * NUM_DECODER_LAYERS))
+        dyn_shapes = (
+            {0: batch, 1: seq},          # input_ids
+            {0: batch, 1: audio_len},    # audio_embeds
+            {0: batch, 1: total},        # attention_mask
+            {0: seq},                    # cache_position
+            past_kv_shapes,              # *past_kv
+        )
 
     _run_torch_export(
         torch,
@@ -1320,23 +1420,56 @@ def main() -> int:
         proj_out = projector_wrapper(enc_out)
 
     # -------- Decoder (unified or split) --------
-    if args.unified_decoder and not args.skip_decoder:
-        unified_wrapper = make_decoder_unified_wrapper(torch, model)
-        # Trace dummy: B=2, S=2 (mid-prompt), past_len=2 (mid-cache).
-        # Both seq and past_len are non-zero so the dynamo exporter does NOT
-        # specialise either to a fixed value; runtime then accepts past_len=0
-        # (prefill) and seq=1 (step).
-        bsz = input_ids.shape[0]
-        seq_dummy = 2
-        past_dummy = 2
+    # --static-shapes-probe and --static-shapes-unified both imply --unified-decoder.
+    use_unified = args.unified_decoder or args.static_shapes_probe or args.static_shapes_unified
+    if use_unified and not args.skip_decoder:
+        # When --static-shapes-unified is set, the wrapper slices KV outputs
+        # to past_len so present_kv is directly chainable as next past_kv.
+        unified_static_past_len = args.static_past_len if args.static_shapes_unified else None
+        unified_wrapper = make_decoder_unified_wrapper(torch, model, static_past_len=unified_static_past_len)
+        # Trace-dummy strategy varies by export mode:
+        # - default: B=input_ids.shape[0], S=2 (mid-prompt), past=2 (mid-cache);
+        #   both non-zero so dynamo doesn't specialise either.
+        # - --static-shapes-probe (Run 15 phase 1): B=4, S=1, past=8, audio=8.
+        # - --static-shapes-unified (Run 15 phase 2): production sizes from CLI
+        #   (--static-batch / --static-past-len / --static-audio-len). S
+        #   stays symbolic at runtime; trace at S=2 to keep dynamo from
+        #   specialising it.
+        if args.static_shapes_probe:
+            bsz = 4
+            seq_dummy = 1
+            past_dummy = 8
+            audio_dummy_len = 8
+        elif args.static_shapes_unified:
+            bsz = args.static_batch
+            seq_dummy = 2
+            past_dummy = args.static_past_len
+            audio_dummy_len = args.static_audio_len
+        else:
+            bsz = input_ids.shape[0]
+            seq_dummy = 2
+            past_dummy = 2
+            audio_dummy_len = None  # use proj_out as-is below
         # Take the first `seq_dummy` columns of input_ids/attention_mask, then
         # extend attention_mask to length seq_dummy + past_dummy so the
-        # cache+seq alignment matches.
-        u_input_ids = input_ids[:, :seq_dummy]
-        u_audio_embeds = proj_out
-        u_attention_mask = torch.ones(
-            (bsz, seq_dummy + past_dummy), dtype=attention_mask.dtype, device=attention_mask.device
-        )
+        # cache+seq alignment matches. In probe mode, build fresh dummies at
+        # the pinned dims rather than slicing proj_out (whose batch / audio_len
+        # came from the real audio).
+        if args.static_shapes_probe or args.static_shapes_unified:
+            audio_hidden = proj_out.shape[-1]
+            u_input_ids = torch.zeros((bsz, seq_dummy), dtype=input_ids.dtype, device=input_ids.device)
+            u_audio_embeds = torch.zeros(
+                (bsz, audio_dummy_len, audio_hidden), dtype=proj_out.dtype, device=proj_out.device
+            )
+            u_attention_mask = torch.ones(
+                (bsz, seq_dummy + past_dummy), dtype=attention_mask.dtype, device=attention_mask.device
+            )
+        else:
+            u_input_ids = input_ids[:, :seq_dummy]
+            u_audio_embeds = proj_out
+            u_attention_mask = torch.ones(
+                (bsz, seq_dummy + past_dummy), dtype=attention_mask.dtype, device=attention_mask.device
+            )
         u_cache_position = torch.arange(
             past_dummy, past_dummy + seq_dummy, dtype=torch.long, device=input_ids.device
         )
@@ -1367,8 +1500,22 @@ def main() -> int:
             args.output_dir / "decoder.onnx",
             args.opset,
             args.legacy_exporter,
+            static_shapes_probe=args.static_shapes_probe,
+            static_shapes_unified=args.static_shapes_unified,
         )
         report["stages"]["decoder_unified"] = {"seconds": round(time.time() - t0, 2)}
+        if args.static_shapes_probe:
+            report["stages"]["decoder_unified"]["static_shapes_probe"] = True
+            report["stages"]["decoder_unified"]["pinned_dims"] = {
+                "batch": bsz, "seq": seq_dummy, "past_len": past_dummy,
+                "audio_len": audio_dummy_len,
+            }
+        elif args.static_shapes_unified:
+            report["stages"]["decoder_unified"]["static_shapes_unified"] = True
+            report["stages"]["decoder_unified"]["pinned_dims"] = {
+                "batch": bsz, "past_len": past_dummy, "audio_len": audio_dummy_len,
+            }
+            report["stages"]["decoder_unified"]["dynamic_dims"] = ["seq", "total_len"]
     elif not args.skip_decoder:
         decoder_init_wrapper = make_decoder_init_wrapper(torch, model)
         decoder_step_wrapper = make_decoder_step_wrapper(torch, model)

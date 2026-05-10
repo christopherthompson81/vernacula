@@ -1067,3 +1067,997 @@ a ~5 s win on a 10 min clip. Park.
 - **Why does naive `CreateTensorValueFromMemory` past_kv fail on
   unified but work on split?** Filed as a known-unknown; the chained
   pattern routes around it.
+
+## Run 10 — 2026-05-10 — GPU-utilization baseline (perf round 2)
+
+**Tracking issue:** #41 (perf round 2). User-observed symptom: GPU
+cores didn't max out during a > 10 min Granite Speech run on RTX 3090
+with the BF16 bundle. Run 9 left the breakdown at encoder 25% / prefill
+11% / step-loop 60% on a 10 min clip — so "GPU not maxed" could mean
+several distinct things:
+
+- Bursty utilization → kernel-launch overhead or per-step CPU sync
+  points (token argmax, EOS check, KV concat orchestration) leaving
+  the GPU idle between launches.
+- Steady-but-low utilization → memory-bandwidth bound (KV concat is a
+  bandwidth-heavy op; consistent with concat being the #1 ORT op
+  named in Run 9's follow-ups).
+- Long idle gaps with peaky compute → cudaMemcpy preludes or
+  encoder-decoder transitions stalling on host sync.
+
+The symptom alone doesn't pick between these. Run 10's job is to
+quantify the utilization curve and pick the diagnosis from there.
+
+**Question:** Is the under-utilization bursty or steady-but-low?
+
+**Setup:** Concurrent measurement on a > 10 min clip on the RTX 3090
+(BF16 bundle). The existing `VERNACULA_GRANITE_PROFILE=1` per-stage
+wall captures *what* the wall-clock breakdown is; `nvidia-smi dmon -s u`
+running in parallel captures *whether the GPU is busy* sample-by-sample.
+Post-correlate by timestamp.
+
+```bash
+# Terminal 1 — start utilization sampler with HH:MM:SS timestamps,
+# 1Hz default. -s u = utilization counters (sm, mem, enc, dec).
+# Pipe to a log so we can correlate with the CLI's [granite-prof] lines.
+nvidia-smi dmon -s u -o T > /tmp/run10_dmon.log &
+DMON_PID=$!
+
+# Terminal 1 — run the CLI on the > 10 min clip. The CLI's stderr
+# carries [granite-prof] B=N total=Xms ... lines per batch and the
+# aggregate dump on shutdown; tee for later analysis.
+VERNACULA_GRANITE_PROFILE=1 \
+  dotnet run --project src/Vernacula.CLI -p:EP=Cuda -- \
+    --audio <CLIP_PATH> \
+    --asr ibm-granite/granite-speech-4.1-2b \
+    2> /tmp/run10_cli.stderr
+
+kill $DMON_PID
+```
+
+What we'll be looking at in the dmon log:
+- `sm` column — % of streaming multiprocessor cycles active.
+  Sustained high (~95%+) = compute-bound; sustained low = idle gap.
+- `mem` column — % of memory-controller cycles active. High while
+  `sm` is moderate suggests bandwidth-bound (e.g. KV concat).
+- Variance across the time series — bursty samples (alternating
+  high/low at 1 Hz cadence) suggests per-batch granularity stalls;
+  smooth low values suggest a structural cap.
+
+If the utilization data is ambiguous at 1 Hz, follow-up with
+`nsys profile --stats=true --output=/tmp/run10 dotnet ...` for a
+kernel-level timeline. Park nsys for now — the dmon answer is cheap
+and likely sufficient to pick the next move.
+
+**Result:**
+
+Audio was a 600 s en-US clip; Sortformer produced 132 VAD segments;
+Granite ran 9 batches (max B=16, last B=4). Aggregate from
+`VERNACULA_GRANITE_PROFILE=1`:
+
+```
+batches:    9  rows: 132  max_B: 16  steps: 266
+mel:        630 ms   ( 2.8%)
+encoder:    4021 ms  (18.2%)
+projector:  79 ms    ( 0.4%)
+prefill:    2227 ms  (10.1%)
+step-loop:  14968 ms (67.6%)
+overhead:   224 ms   ( 1.0%)
+total:      22149 ms
+```
+
+RTF 0.037 — comparable to Run 9's post-fix 0.043 on a similar 10 min
+clip. Wall-time shape matches Run 9's profile (step-loop ~67%, encoder
+~18%); no regression.
+
+Per-batch breakdown (steps column matters most for the diagnosis):
+
+| # | B | total | mel | enc | proj | prefill | step | step-count |
+|--:|--:|--:|--:|--:|--:|--:|--:|--:|
+| 1 | 16 | 709 | 18 | 247 | 3 | 174 | 240 | 8 |
+| 2 | 16 | 466 | 16 | 145 | 2 | 92 | 187 | 7 |
+| 3 | 16 | 514 | 16 | 222 | 3 | 80 | 168 | 6 |
+| 4 | 16 | 964 | 23 | 498 | 0 | 174 | 237 | 6 |
+| 5 | 16 | 1113 | 40 | 453 | 3 | 116 | 473 | 13 |
+| 6 | 16 | 1842 | 67 | 582 | 10 | 156 | 1002 | 21 |
+| 7 | 16 | 3552 | 118 | 715 | 16 | 528 | 2149 | 33 |
+| 8 | 16 | 7329 | 231 | 810 | 29 | 731 | 5502 | **64** |
+| 9 |  4 | 5660 | 101 | 349 | 13 | 176 | 5010 | **108** |
+
+`nvidia-smi dmon -s u` 1 Hz timeline (sm = SM-cycle %, mem = memory-
+controller cycle %) cross-referenced with the wall-clock phases:
+
+| t (s) | phase | sm % | mem % |
+|---|---|---|---|
+| 08:24:08–18 | Sortformer diarization | 18–41 | 12–25 |
+| 08:24:19–23 | **idle gap (model load)** | 3–4 | 0–1 |
+| 08:24:24–35 | ASR batches 1–5 (light) | 25–65 | 7–23 |
+| 08:24:37–52 | **ASR batches 6–9 (heavy)** | 65–100, mostly 75–85 | 11–44, mostly 12–22 |
+
+**Implication:**
+
+Three distinct findings, each pointing at a different next move:
+
+1. **The "GPU not maxed" symptom is real and is mainly about the
+   step-loop**. During the heavy batches (6–9) where the step-loop
+   dominates, SM averages ~75% with peaks at 100%, while mem stays at
+   12–22%. That signature — high-but-not-pegged SM, low mem, bursty —
+   is the classic **kernel-launch overhead / per-step CPU-sync**
+   pattern, not memory-bandwidth bound. With 26 decoder layers each
+   running qkv-proj + attention + KV-concat + FFN per step, a B=16
+   step at ~46 ms (batch 8: 5502 ms / 64 steps / 16 rows ≈ 5 ms per
+   row-step) is suspicious — that's ~150+ kernels at ~30 µs each, near
+   the launch-overhead floor. **nsys is the right next tool** to see
+   the gaps directly. Whether the right fix is static-KV (fewer
+   kernels per step), CUDA graphs (one launch per step), or just the
+   concat elimination from Run 9's follow-up depends on what nsys
+   shows.
+
+2. **A 5 s idle gap between diarization end and ASR start** —
+   `08:24:19–23`, sm at 3–4%. That's load-gap waste of ~22% of the
+   ASR-phase wall on this clip. Pre-warming Granite (load weights,
+   prime the decoder kernels) during the tail of Sortformer would
+   recover most of it. Cheap relative to the kernel-launch fix and
+   independent of it.
+
+3. **A new straggler leaked past Run 9's rep-detect** — batch 9 ran
+   108 steps on B=4, eating 5.0 s on its own (23% of total wall) for
+   only 4 segments. The pattern Run 9 fixed (`"uh, uh, uh, …"`,
+   3-cycles-of-period-1-to-4) doesn't catch this one; the runaway
+   row's tail must be either a longer period, a lower cycle count, or
+   a near-but-not-exact repetition. Worth a separate investigation
+   step before any optimisation work — straggler waste at this
+   magnitude dominates the kernel-overhead question.
+
+**Next moves (decreasing priority):**
+
+- **Run 11**: nsys profile of one heavy batch (e.g. batch 8 or 9) to
+  see kernel-level gaps. `nsys profile --stats=true` plus the existing
+  `[granite-prof]` output gives us the exact gap pattern in the step
+  loop.
+- **Run 12**: investigate the batch-9 straggler. Pull the offending
+  segment's actual decoded text and check what motif Run 9's detector
+  missed.
+- **Run 13** (cheap, parallel-able): pre-warm Granite during
+  diarization to eliminate the 5 s idle gap.
+
+## Run 11 — 2026-05-10 — nsys profile flips the diagnosis
+
+**Setup:**
+
+```bash
+nsys profile --output=/tmp/run11_granite --stats=true \
+  --trace=cuda,osrt,nvtx --force-overwrite=true -- \
+  dotnet run --project src/Vernacula.CLI -p:EP=Cuda --no-restore -- \
+    --audio en-US_sample_01.wav \
+    --model ~/.local/share/Vernacula/models \
+    --asr granite \
+  > /tmp/run11_nsys_stats.txt 2> /tmp/run11_cli.stderr
+```
+
+Same 600 s clip as Run 10. Run 11 wall ran ~32 s (Run 10 was 22 s),
+so nsys overhead ≈ 45%. Higher than the typical 10–30%; nsys's
+`--trace=cuda` is comprehensive but expensive. The relative shape is
+what matters — absolute timings here are not directly comparable to
+Run 10's, but the percentages by category are.
+
+**Result — `cuda_api_sum` (host CPU time in CUDA API calls):**
+
+| Time % | Total (ns)       | Calls   | Avg (ns) | Max (ns)    | Name                       |
+|-------:|-----------------:|--------:|---------:|------------:|----------------------------|
+|   74.6 | 13,005,929,504   | 180,411 |   72,090 | 514,817,620 | cudaMemcpyAsync            |
+|   15.8 |  2,763,786,661   | 766,493 |    3,605 |  35,911,011 | cudaLaunchKernel           |
+|    4.0 |    701,355,047   |   1,817 |  385,996 |  49,576,049 | cudaMemcpy (sync)          |
+|    1.8 |    306,633,007   |  77,641 |    3,949 |     435,486 | cuLaunchKernel             |
+|    0.7 |    128,270,708   |      98 |1,308,884 | 120,890,783 | cudaMalloc                 |
+|    0.7 |    116,251,775   |   3,281 |   35,431 |     317,743 | cudaStreamSynchronize      |
+
+**Result — `cuda_gpu_mem_time_sum` (actual on-device memcpy time):**
+
+| Time % | Total (ns)    | Count   | Avg (ns) | Max (ns)    | Operation             |
+|-------:|--------------:|--------:|---------:|------------:|-----------------------|
+|   51.5 | 5,015,844,626 |  23,108 |  217,061 | 436,080,861 | memcpy D→H            |
+|   47.7 | 4,643,312,979 | 114,044 |   40,715 |  49,505,101 | memcpy H→D            |
+|    0.6 |    56,117,214 |  44,323 |    1,266 |      12,064 | memcpy D→D            |
+|    0.2 |    19,017,897 |  28,338 |      671 |      23,424 | memset                |
+
+**Result — `cuda_gpu_mem_size_sum` (volume shipped):**
+
+| Total (MB)  | Count   | Avg (MB) | Max (MB)  | Operation  |
+|------------:|--------:|---------:|----------:|------------|
+|  51,474.154 |  23,108 |    2.228 |   1,329.5 | memcpy D→H |
+|  51,061.202 | 114,044 |    0.448 |     411.0 | memcpy H→D |
+|   1,411.014 |  44,323 |    0.032 |       2.8 | memcpy D→D |
+
+**Result — top GPU kernels (`cuda_gpu_kern_sum`, head):**
+
+All bf16 GEMMs and ORT elementwise/cast/concat kernels. Avg per-call
+time is small (top entry is 27 µs avg over 31,920 calls); the work
+is **fragmented**.
+
+**Implication — the diagnosis flipped:**
+
+Run 10 hypothesised kernel-launch overhead (high SM, low mem). The
+nsys data says no:
+
+- **74.6 % of host CUDA API time is `cudaMemcpyAsync`**, not
+  `cudaLaunchKernel`. Launch overhead is real but secondary (15.8 %).
+- **9.7 s of actual on-device memcpy time** out of a 22 s wall (44 %).
+  H→D and D→H are nearly balanced.
+- **51 GB shipped each direction** in 22 s. Single largest D→H
+  transfer is **1.3 GB** — almost certainly a full-batch encoder or
+  attention activation that ORT decided to materialise on host.
+- **137 k memcpy operations** in 22 s (≈ 6,200/sec). Nothing about
+  the inference itself needs that many H↔D crossings.
+
+The ORT warning we have ignored from day one was the smoking gun:
+
+```
+5 Memcpy nodes are added to the graph main_graph for CUDAExecutionProvider.
+It might have negative impact on performance (including unable to run CUDA graph).
+```
+
+ORT inserts a Memcpy node every time a CUDA-resident producer feeds a
+CPU-resident consumer (or vice-versa) in the graph. With 5 such nodes
+in the unified decoder, every step pays ≥ 5 H↔D round-trips, *plus*
+the matching launches each side. Multiply by step-count × layers ×
+batch and the 137 k transfers fall out exactly.
+
+This also explains why SM utilisation in Run 10 sat at 75 % rather
+than 100 %: the GPU was repeatedly draining its work queue while the
+host shipped data back and re-uploaded it. The 1 Hz dmon sampler
+couldn't see the gaps but they're there in nsys.
+
+**What this means for the candidate fixes:**
+
+| Fix                       | Run 11 verdict                                |
+|---------------------------|-----------------------------------------------|
+| Static-KV cache           | Doesn't address memcpy nodes; do later.       |
+| CUDA graphs               | **Blocked** by memcpy nodes per ORT's warning.|
+| Multi-stream overlap      | Wouldn't help — the gaps are H↔D, not stream. |
+| **Eliminate memcpy nodes**| **The right move.** Find and fix the 5 nodes. |
+
+The fragmented small-GEMM signature in `gpu_kern_sum` (30 k bf16
+64×64 GEMMs averaging 27 µs) becomes the next concern *after* the
+memcpy nodes are gone.
+
+**Next moves (revised):**
+
+- **Run 12**: re-run with `session_options.log_severity_level=1` to
+  get verbose ORT output naming the 5 Memcpy nodes. They likely sit
+  between shape ops (Reshape / Slice / Gather with int64 indices),
+  type casts, or a non-CUDA-supported op the export emitted. Fix at
+  the export layer in `scripts/granite_export/` — graph-level, not C#.
+- Run 13–14 (after Run 12): batch-9 straggler investigation, Granite
+  pre-warm during diarization.
+
+## Run 12 — 2026-05-10 — Verbose ORT log: it's 64 CPU-fallback Reshape ops, not the 2 memcpy nodes
+
+**Setup:**
+
+Added `OrtLoggingLevel.ORT_LOGGING_LEVEL_INFO` to
+`OrtSessionBuilder.Create` gated on env var
+`VERNACULA_ORT_VERBOSE=1` (one-line change in
+`src/Vernacula.Base/Inference/OrtSessionBuilder.cs`). Re-ran the same
+600 s clip:
+
+```bash
+VERNACULA_ORT_VERBOSE=1 dotnet run --project src/Vernacula.CLI \
+  -p:EP=Cuda --no-build --no-restore -- \
+  --audio en-US_sample_01.wav \
+  --model ~/.local/share/Vernacula/models \
+  --asr granite \
+  2> /tmp/run12_ort_verbose.stderr
+```
+
+**Result — first reset on the diagnosis:**
+
+The "5 Memcpy nodes" warning Run 11 attributed to Granite's
+unified decoder is actually **Sortformer's**. Sortformer's
+`SortformerStreamer` constructor builds its `SessionOptions` inline
+and never routes through `OrtSessionBuilder.Create`, so the verbose
+env var doesn't propagate to its logger. The verbose-INFO lines that
+*do* appear are bracketed by Granite's four `Initializing session`
+markers, which gives an unambiguous attribution:
+
+| ORT pass        | Memcpy nodes | Named in INFO log                                   |
+|-----------------|-------------:|-----------------------------------------------------|
+| Sortformer      | 5            | (no INFO; not via OrtSessionBuilder)               |
+| Granite #1      | **2**        | `MemcpyFromHost after val_39`, `MemcpyToHost before view_2` |
+| Granite #2      | **1**        | `MemcpyFromHost after sym_size_int_147`             |
+| Granite #3      | 0            | clean                                               |
+| Granite #4      | 0            | clean                                               |
+
+So Granite's real graph-level memcpy footprint is **3 nodes total
+across 4 graphs**, not 8.
+
+**Result — second reset, the actual cause:**
+
+Three graph-level memcpy nodes can't on their own produce the
+137 k transfers / 51 GB-each-way that Run 11 measured. The verbose
+log explains why:
+
+```
+$ grep -c "Force fallback to CPU execution for node: node_Reshape" \
+    /tmp/run12_ort_verbose.stderr
+64
+```
+
+**ORT's `fallback_cpu_capability` heuristic pushes 64 Reshape ops to
+CPU** in Granite's hottest graph. The reasoning ORT logs verbatim is
+*"the CPU execution path is deemed faster than overhead involved with
+execution on other EPs capable of executing this node"* — i.e. the
+heuristic considers Reshape itself a metadata-only op (stride change,
+no compute) and figures CPU wins. What the heuristic doesn't model:
+when the surrounding ops are GPU GEMMs / attention / layernorms, the
+"fast CPU reshape" forces D→H + H→D shuttling around it.
+
+Why only 2 graph-level Memcpy nodes despite 64 CPU-resident
+Reshapes: ORT's MemcpyTransformer aggregates adjacent CPU-resident
+ops into a single CPU island and inserts memcpy at the island's
+boundaries, not at every individual node. So one Memcpy node fires
+*for every step × every layer × every iteration* of the loop carrying
+the GPU↔CPU boundary. That's the multiplier that produces 23 k D→H
+transfers (51 GB) from a single nominal `view_2` boundary.
+
+`val_39` and `view_2` (PyTorch's `view` is reshape) are almost
+certainly two ends of one CPU island carrying a per-layer KV
+reshape. `sym_size_int_147` is graph-level shape arithmetic (the
+`sym_size` prefix is torch.onnx.export's tracer-emitted symbolic
+size operator) — separate but smaller cost.
+
+**Implication:**
+
+The fix is at the export layer in `scripts/granite_export/`. Three
+plausible roads, in increasing scope:
+
+1. **Disable the CPU-fallback heuristic for Reshape** — ORT has had
+   knobs to disable individual transformers (e.g. via session config
+   `kOrtSessionOptionsDisableCPUEPFallback` or graph-level
+   annotations). If we can opt out of this specific heuristic without
+   losing genuinely-cheap CPU placement, that's the cheapest fix and
+   doesn't require a re-export.
+2. **Cast Reshape index inputs to int32** — ORT's CUDA Reshape kernel
+   may prefer int32 over int64; torch.onnx.export sometimes emits
+   int64 shape tensors that the heuristic flags as CPU-preferred. A
+   targeted post-export pass that rewrites these to int32 might
+   change ORT's verdict on the same nodes.
+3. **Re-architect the export to bake in shapes** — many of the
+   reshapes are likely tracer artifacts from torch's symbolic-shape
+   handling. A static-shape export (one batch size, one seq length
+   per session) could fold most of them out at export time. Bigger
+   change; couples to the static-KV cache work in Run 9's follow-ups.
+
+The 2 graph-level Memcpy nodes (val_39, view_2) and the 1 in graph #2
+(sym_size_int_147) are downstream symptoms of the Reshape-CPU-island
+problem, not independent issues. Fix the Reshape placement and they
+go away.
+
+**Next moves (further revised):**
+
+- **Run 13**: open the unified decoder ONNX in netron / inspect with
+  the `onnx` Python lib. Walk back from `view_2` to find which
+  Reshape it represents — the "second view" in the graph by
+  topological order, since ORT's view names are positional. Identify
+  the surrounding ops to check whether road 1 (CPU-fallback knob),
+  road 2 (int32 cast), or road 3 (export rewrite) is the cleanest
+  fix. The decoder ONNX lives at
+  `~/.local/share/Vernacula/models/granite_speech_4_1_2b_bf16/decoder.onnx`
+  (or the FP32 sibling).
+- **Run 14**: try road 1 first as a fast probe — set
+  `kOrtSessionOptionsDisableCPUEPFallback` (or current equivalent)
+  on Granite's decoder session, re-run Run 11 measurement. If
+  cudaMemcpyAsync drops from 74 % to single-digit %, we're done; if
+  it doesn't drop, road 2 or 3 is required.
+
+**Aside — Sortformer's 5 memcpy nodes:** filed as a known-unknown.
+Sortformer's chunked-streaming pattern handles its memcpy load OK
+(see Run 4 in `granite_speech_investigation.md` for context), and
+diarization is already fast enough to not be on the critical path
+for end-to-end latency. Not worth chasing now, but the 5-node count
+is higher than it should be and may bite us if we ever need
+diarization to be cheaper.
+
+## Run 13 — 2026-05-10 — Decoder ONNX inspection: 300 Reshape ops on a per-step shape-arithmetic backbone
+
+**Setup:**
+
+Loaded `~/.local/share/Vernacula/models/granite_speech_4_1_2b_bf16/decoder.onnx`
+graph proto (no external weight load — the proto itself is 7 MB; the
+weights are 3.5 GB in `decoder.onnx.data`). Walked the graph with the
+`onnx` Python library to characterise the shape-arithmetic surface
+and locate the verbose-log named nodes. Inspection script saved at
+`/tmp/inspect_decoder.py`.
+
+**Result — graph composition:**
+
+```
+nodes=3161  inputs=84  outputs=81
+
+Op-type histogram (top 10):
+   523  Mul
+   362  MatMul          ← the GPU GEMMs we saw in nsys gpu_kern_sum
+   336  Add
+   300  Reshape         ← every one with int64 shape input
+   278  Concat          ← per-layer KV concat per step (Run 9 follow-up)
+   201  Transpose
+   199  Slice
+   170  Cast
+    87  Unsqueeze
+    86  Expand
+```
+
+**Reshape audit:** 300 ops, **all 300 with int64 shape inputs**. None
+in int32. That kills the road-2 hypothesis from Run 12 (cast int64 →
+int32) — the shape-arithmetic chain is uniformly int64, and ORT's
+CPU-fallback heuristic is overhead-based, not dtype-based, so a
+targeted int64-to-int32 cast wouldn't shift the heuristic's verdict.
+
+**Result — view_2 traced:**
+
+```
+Reshape(node_view_2)
+  ← arange_1 (int64)              from Range(node_arange_1)
+  ← val_202  (int64)              shape param
+       └── Range(node_arange_1)
+             ← val_168 (int64)
+             ← sym_size_int_521 (int64)
+                  └── Squeeze(node_sym_size_int_521)
+                        ← val_67 (int64)
+                             └── Concat(node_Concat_202)
+                                   ← val_67 (int64)
+                                   ← val_193 (int64)
+                                        └── Shape(node_Shape_67)
+                                              ← past_key_31 (bf16)
+```
+
+`view_2` is at the *end* of a shape-arithmetic chain that originates
+from `Shape(past_key_31)` — i.e. **a per-step attention-mask /
+position-offset reconstruction parameterised by the past_key cache
+length**. The chain is: extract the cache shape → squeeze the seq-len
+dimension → concat with another seq-len dimension → build a Range →
+Reshape to the attention-mask layout. The entire chain is int64 and,
+per ORT's heuristic verdict, runs on CPU.
+
+`val_39` and `sym_size_int_147` weren't found by direct lookup —
+the verbose-log "val_N" / "sym_size_int_N" identifiers come from
+ORT's post-optimisation tensor renaming, not the original export.
+The walk-back from `view_2` is enough to understand the pattern.
+
+**Result — the multiplier:**
+
+`past_key_31` is the past-key tensor for **layer 31**. The graph has
+32 transformer layers (indices 0–31). Each layer has its own copy of
+this shape-arithmetic chain. The dynamic export captures the same
+mask reconstruction *32 times*, once per layer, all firing per
+decoder step. With 9 batches × ~150 steps × 32 layers, the CPU
+island executes ≈ 43 k times per inference run. That matches the
+137 k cudaMemcpyAsync calls and 51 GB transfer volume measured in
+Run 11 to within order-of-magnitude.
+
+**Implication — fix selection:**
+
+| Road | Run 12 verdict | Run 13 verdict |
+|---|---|---|
+| 1. Disable CPU-fallback heuristic for Reshape | Cheapest probe | **Risky** — ORT's CUDA EP may not implement Range, Squeeze-of-int64-scalar, dynamic Concat. If any miss, we get either runtime error or a worse fallback. Try only as a quick probe with a fail-safe. |
+| 2. Cast Reshape int64 → int32 | Worth trying | **Dead.** All 300 Reshape inputs are int64; the heuristic is overhead-based, not dtype-based. Cast wouldn't shift its verdict and the surrounding chain is int64 too. |
+| 3. Static-shape re-export | Most invasive | **The structurally correct fix.** Baking a fixed batch + max-seq-len at export time lets ONNX's constant folding eliminate the entire shape-arithmetic backbone. Mask becomes a constant initializer; Range/Concat/Squeeze/Shape collapse to a baked tensor. |
+
+Road 3 is what we should pursue. Concretely, it means revising
+`scripts/granite_export/export_granite_speech_to_onnx.py` to:
+
+- Pin `batch_size` and `max_seq_len` (and possibly `kv_cache_len`) to
+  concrete dimensions during export, instead of `dynamic_axes`.
+- Run ORT's `OptimizedModel` pass (or `onnx.optimizer.constant_folding`)
+  post-export to fold the now-static shape arithmetic.
+- Verify the exported decoder no longer contains the 300 Reshapes,
+  the 59 Shape ops, the 57 Squeeze sym_size_int_* nodes, etc.
+
+This couples to the static-KV cache work named as Run 9's #1
+follow-up — the same export rewrite addresses both. Doing them
+together is the right scope.
+
+**Aside — graph composition vs. measured kernel mix:** the gpu_kern_sum
+top entries from Run 11 (bf16 GEMMs averaging 27 µs) reconcile
+cleanly: 362 MatMul + 86 Expand + 80 Neg etc. all run on GPU; the
+shape-arithmetic backbone (300 Reshape + 199 Slice + 170 Cast + 87
+Unsqueeze + 59 Shape + 57 Squeeze + 278 Concat) is what ORT pushes
+to CPU. The fragmented-small-GEMM signature (avg 27 µs) is likely
+because the per-step shape island stalls between kernels — once the
+CPU islands are gone, the GEMMs may also coalesce into longer-running
+kernels, recovering more of the 25 % SM headroom Run 10 saw.
+
+**Next moves:**
+
+- **Run 14 (probe)**: try road 1 as a fail-safe probe — set whatever
+  ORT exposes for "disable CPU-fallback heuristic" (the current
+  candidate is `kOrtSessionOptionsDisableCPUEPFallback` or one of
+  the `optimization.disable_*` knobs in 1.24.x; needs a quick
+  research lookup) on Granite's decoder session and re-run Run 11
+  measurement. If cudaMemcpyAsync drops dramatically, we have a
+  short-term stopgap that doesn't require a re-export. If it errors
+  out (e.g. "op not supported on CUDA EP"), road 3 is confirmed
+  necessary.
+- **Run 15 (the actual fix)**: static-shape re-export of the unified
+  decoder, with constant folding to eliminate the shape-arithmetic
+  backbone. Verify the resulting graph has zero CPU-fallback Reshape
+  warnings and re-run Run 11 measurement to confirm cudaMemcpyAsync
+  drops to single-digit %. This is the road-3 work and likely a
+  multi-day effort given the existing investigation log's note that
+  the unified decoder export is non-trivial.
+
+## Run 14 — 2026-05-10 — `enable_cuda_graph=1` probe (road 1 confirmed dead)
+
+**Marginal-value follow-on to Run 13.** Road 1 (disable CPU-fallback
+heuristic) had no documented user-facing knob in ORT 1.24.4 — the
+`fallback_cpu_capability` heuristic isn't a graph transformer and so
+isn't reachable via `kOrtSessionOptionsDisableSpecifiedOptimizers`,
+and `OrtCUDAProviderOptions` exposes no `disable_cpu_preferred_nodes`
+flag. The closest public-API proxy is the CUDA-graph capture knob
+`enable_cuda_graph=1`, which requires zero Memcpy nodes and static
+shapes — both of which Granite's decoder violates per Runs 12–13.
+Setting it should fail loud and corroborate the diagnosis.
+
+**Setup:** Temporarily added a `VERNACULA_GRANITE_TRY_CUDA_GRAPH=1`
+env-var gate around Granite's decoder session construction in
+`GraniteSpeech.cs`, replacing the shared SessionOptions with a fresh
+one that calls `cudaProviderOptions.UpdateOptions(["enable_cuda_graph"] = "1")`.
+Probe code reverted post-run; no permanent footprint.
+
+**Result:** Session init succeeded. ORT emitted exactly the warning
+that Run 13's analysis predicted:
+
+```
+[W:onnxruntime:, inference_session.cc:2444 Initialize]
+This model has shape massaging nodes that will execute on CPU.
+Use the graph capture feature with caution. As long as the
+intermediate shapes produced in the model using the representative
+input used to capture the graph, will match the shapes produced in
+the model for other inputs of the same shape as the representative
+input (common case), it is safe to use the graph capture feature.
+```
+
+ORT captured the full graph (CPU-resident shape-massaging nodes
+included) into a single CUDA-graph launchable unit, with shapes
+baked at the first call. The very first decoder step at a different
+shape — which is every subsequent step, since `past_key_31` grows by
+1 row each iteration — crashed:
+
+```
+[E:onnxruntime:CSharpOnnxRuntime, cuda_call.cc:123 CudaCall]
+CUDA failure 700: an illegal memory access was encountered ;
+file=cuda_graph.cc ; line=82 ; expr=cudaGraphLaunch(graph_exec, stream_);
+terminate called after throwing an instance of 'onnxruntime::OnnxRuntimeException'
+```
+
+Exit 134 (SIGABRT).
+
+**Implication:** Road 1 is dead. ORT's own message corroborates Run
+13: the "shape massaging" CPU island is exactly what's preventing
+clean GPU placement, and there's no public-API toggle that disables
+it without also breaking dynamic-shape decoding. Road 3 (static-shape
+re-export) is the only remaining path — and the same export work
+that folds out the shape island would also let `enable_cuda_graph=1`
+work as a *secondary* gain, since with static shapes capture +
+replay would be safe.
+
+**Honest retrospective on Run 14:** Run 13 had already established
+the cause; this probe added confirming evidence but no new direction.
+In hindsight, going straight to Run 15 would have been the better
+call. Cost was modest (~15 min) so net not damaging, but worth
+flagging in the next decision so we don't repeat the pattern of
+"probe an already-dead option for completeness".
+
+## Run 15 phase 1 — 2026-05-10 — Static-shapes export probe: shape island eliminated
+
+**Setup:**
+
+Added a `--static-shapes-probe` flag to
+`scripts/granite_export/export_granite_speech_to_onnx.py`. When set,
+the unified decoder export pins all dims (`batch=4`, `seq=1`,
+`past_len=8`, `audio_len=8`) to fixed integer literals at trace time
+rather than `torch.export.Dim` symbolics. Output saved to
+`/tmp/granite_static_probe/decoder.onnx` so the production bundle
+isn't disturbed.
+
+The probe is intentionally tiny — small dims keep the export fast
+(~3 minutes vs 10+ for production sizes) and the constant-folding
+behaviour we're testing is dim-independent: if folding works at
+small dims it works at large dims.
+
+```bash
+python scripts/granite_export/export_granite_speech_to_onnx.py \
+  --output-dir /tmp/granite_static_probe --device cpu --dtype bfloat16 \
+  --skip-mel --skip-encoder --skip-projector \
+  --static-shapes-probe --overwrite
+```
+
+**Result — graph composition vs Run 13:**
+
+| Metric                          | Dynamic (Run 13) | Static probe | Δ          |
+|---------------------------------|-----------------:|-------------:|-----------:|
+| Total nodes                     |            3,161 |        2,766 | **−395 (−12%)** |
+| Reshape                         |              300 |          243 | −57 (−19%) |
+| **Concat**                      |              278 |          161 | **−117 (−42%)** |
+| Slice                           |              199 |          160 | −39 (−20%) |
+| Cast                            |              170 |          169 | −1         |
+| Shape                           |               59 |          <20 | substantial drop |
+| **Squeeze (`sym_size_int_*`)**  |               57 |        **0** | **−100%**  |
+| Add                             |              336 |          281 | −55        |
+
+Every `sym_size_int_*` symbolic-size scalar extraction folded out.
+The per-step KV-cache `Concat` count dropped 42 % (from Run 9's
+named #1 follow-up). Reshape dropped 19 %.
+
+**Result — ORT verdict on the static graph:**
+
+Loaded the probe `decoder.onnx` in ORT 1.25 with `log_severity_level=1`
+(verbose) using a small Python harness:
+
+```
+=== Memcpy warnings: [] ===
+=== Named Memcpy boundary tensors: [] ===
+=== CPU-fallback ops (total 0, 0 unique) ===
+Session loaded OK
+```
+
+**Zero Memcpy nodes. Zero CPU-fallback ops.** The 64 Reshape CPU
+fallbacks Run 12 measured collapsed to zero on the static-shape
+graph — every remaining Reshape now runs on CUDA EP. The 2 graph-
+level Memcpy nodes from Run 12 (`val_39`, `view_2`,
+`sym_size_int_147`) are gone with their CPU island.
+
+**Implication:**
+
+Road 3 is conclusively validated. The static-shape rewrite at the
+export layer eliminates the bottleneck Run 11 measured (74 % of
+host CUDA API time = `cudaMemcpyAsync`, 51 GB shipped each way,
+137 k transfers). Phase 2 — adapting Granite to ship a production-
+sized static-shape graph and updating C# to handle pinned dims — is
+justified.
+
+Phase 1 is intentionally not production-usable (`B=4, S=1, P=8,
+A=8` is a step-only toy). Phase 2 picks the production architecture.
+
+**Phase 2 architectural choice:**
+
+Three viable variants, in increasing scope:
+
+1. **Single static-shape unified decoder at production maxes** —
+   `B=16, S=??, P=256, A=AUDIO_MAX`. Prefill and step share the same
+   graph by padding short prefills to `S=PROMPT_MAX`. Simplest C#;
+   prefill wastes some compute on padding. Memory: same as today
+   (single 7 GB graph).
+2. **Static-shape split: prefill + step graphs.** Run 3 originally
+   chose unified over split for memory (7 GB vs 14 GB) and parity.
+   With static shapes the trade returns:
+   `prefill (S=PROMPT_LEN, P=0)` + `step (S=1, P=256)`. Both static.
+   2 ONNX sessions, 14 GB. C# manages two sessions per pipeline.
+3. **Hybrid: static-shape unified with pinned past_len only.** Keep
+   `batch` and `seq` dynamic, pin `past_len=256` and `audio_len=AUDIO_MAX`.
+   Less constant folding (the position-arange chain still depends on
+   `past_len + seq` which has a dynamic component) but minimal C#
+   change. Probe needed to confirm whether ORT still flags any
+   Reshape ops as CPU-preferred under partial pinning.
+
+Variant 3 is the cheapest C# adaptation. Variant 1 is the cleanest.
+Variant 2 doubles VRAM unnecessarily given variant 1's existence.
+Path forward likely involves a phase-1b probe of variant 3 to see
+whether partial pinning suffices, then commit to variant 1 if
+variant 3 leaves residual shape arithmetic.
+
+## Run 15 phase 2a — 2026-05-10 — Variant B probe (seq dynamic, others pinned)
+
+**Setup:** Added `--static-shapes-unified` flag plus `--static-batch /
+--static-past-len / --static-audio-len` knobs. The unified decoder
+exports with `batch / past_len / audio_len` pinned to integer
+literals; `seq` and `total_len` stay symbolic via
+`torch.export.Dim`. This is variant B from the phase-1 architectural
+discussion: a single 7 GB graph that handles both prefill and step,
+with the dim that's *architecturally* dynamic (`seq` differs between
+prefill and step) preserved as such.
+
+Probe export at small dims (`B=4, past=8, audio=8, seq=Dim(1..4096)`)
+to keep export fast and the test apples-to-apples with phase 1.
+
+```bash
+python scripts/granite_export/export_granite_speech_to_onnx.py \
+  --output-dir /tmp/granite_static_unified_probe \
+  --device cpu --dtype bfloat16 \
+  --skip-mel --skip-encoder --skip-projector \
+  --static-shapes-unified \
+  --static-batch 4 --static-past-len 8 --static-audio-len 8 \
+  --overwrite
+```
+
+**Result — graph composition:**
+
+| Metric                   | Run 13 (dynamic) | Phase 1 (all pinned) | **Phase 2a (variant B)** |
+|--------------------------|-----------------:|---------------------:|-------------------------:|
+| Total nodes              |            3,161 |                2,766 |                **2,791** |
+| Reshape                  |              300 |                  243 |                  **245** |
+| Concat                   |              278 |                  161 |                  **169** |
+| Slice                    |              199 |                  160 |                  **160** |
+| Cast                     |              170 |                  169 |                  **170** |
+| Shape                    |               59 |                  <20 |                    **3** |
+| Squeeze (`sym_size_int_*`) |             57 |                    0 |                    **0** |
+| Add                      |              336 |                  281 |                  **282** |
+
+Variant B is essentially identical to phase 1 in graph shape. The
+extra 25 nodes (2,791 vs 2,766) come from preserving `seq` /
+`total_len` symbolics — a few Concat/Reshape ops that depend on
+`total_len = past_len + seq` survive constant folding because
+`seq` is still symbolic.
+
+**Result — ORT verdict:**
+
+```
+=== Memcpy warnings: [] ===
+=== Named Memcpy boundary tensors: [] ===
+=== CPU-fallback ops (total 10, 10 unique) ===
+     7  Concat
+     1  sym_size_int
+     1  add
+     1  Reshape
+=== Raw Memcpy mentions ===
+  GraphTransformer MemcpyTransformer modified: 1 with status: OK
+```
+
+- **Zero "Memcpy nodes are added" WARNINGS.** ORT did not emit the
+  graph-level fan-out warning that fired 3 times in Run 12 (5+2+1
+  Memcpy nodes for Granite). The MemcpyTransformer pass ran but
+  produced no graph-level boundary node (or one too small to warn
+  about; the count if any is sub-warning-threshold).
+- **10 CPU-fallback ops vs Run 12's 64.** The remaining 10 are tiny
+  int64-scalar shape arithmetic (7 Concat + 1 sym_size_int + 1 add
+  + 1 Reshape) that compute `total_len` from `past_len + seq` since
+  `seq` is symbolic. Each call shuttles bytes, not megabytes.
+
+**Implication:**
+
+Variant B is production-viable. The 10 residual CPU-fallback ops
+operate on int64 scalars (sub-100 bytes each) and aren't surrounded
+by graph-level Memcpy boundary nodes — meaning ORT keeps the GPU
+tensor-flow plumbing intact and only the tiny shape arithmetic
+trips out to CPU. Order-of-magnitude reduction in measured H↔D
+volume is expected once we measure on a real run (Run 16).
+
+Phase 2 commits to **variant B**: production export at
+`B=16, past_len=256, audio_len=375` with `seq` dynamic.
+
+**Next:**
+
+- Phase 2b: production-shape export to a sibling models dir
+  (`granite_speech_4_1_2b_static_bf16/`), full bundle (mel + encoder
+  + projector + decoder).
+- Phase 2c: C# adaptation in `GraniteSpeech.cs` — pre-allocate KV at
+  past_len, pad batches to 16, pad audio_embeds to 375, attention
+  mask gates the padding.
+- Phase 2d: parity tests against the dynamic graph.
+- Run 16: end-to-end nsys benchmark — confirm cudaMemcpyAsync drops
+  from 74 % to single-digit %.
+
+## Run 15 phase 2b — 2026-05-10 — Production export + sliding-window slice
+
+**Setup:** Two sub-steps.
+
+1. **Production export.** Same `--static-shapes-unified` flag at
+   production sizes (`B=16, past_len=768, audio_len=375`). 768 (not
+   256 as initially planned) sized for `audio_max=375 + prompt_overhead +
+   max_new_tokens=256` with margin. Output to sibling bundle
+   `~/.local/share/Vernacula/models/granite_speech_4_1_2b_static_bf16/`.
+
+2. **Sliding-window slice.** Modified `make_decoder_unified_wrapper`
+   to accept a `static_past_len` parameter; when set, the wrapper
+   slices KV outputs `[:, :, -static_past_len:, :]`. The graph thus
+   produces `present_kv` shape `(16, 4, 768, 128)` matching the
+   `past_kv` input shape — directly chainable as the next step's
+   input with no host-side slice. As long as `prompt_len +
+   max_new_tokens <= 768` no real cache positions are dropped (the
+   leading positions sliced off are the zero-padded prefix).
+
+**Result — graph contract verified:**
+
+```
+=== Inputs ===
+  input_ids:        [16, 'seq']           int64
+  audio_embeds:     [16, 375, 2048]       float
+  attention_mask:   [16, 'total_len']     int64
+  cache_position:   ['seq']               int64
+  past_key_0..39:   [16, 4, 768, 128]     bfloat16
+  past_value_0..39: [16, 4, 768, 128]     bfloat16
+=== Outputs ===
+  logits:             [16, 'seq', 100353]   float
+  present_key_0..39:  [16, 4, 768, 128]     bfloat16
+  present_value_0..39:[16, 4, 768, 128]     bfloat16
+```
+
+ORT verdict on the production-size sliced graph: identical to the
+2a probe — **0 Memcpy warnings, 10 CPU-fallback ops** (7 Concat + 1
+sym_size_int + 1 add + 1 Reshape, all int64 scalar arithmetic on
+the seq-dependent shape construction).
+
+**Implication:** The static-shape bundle is ready for the C# side.
+The `present_kv` output shape matches `past_kv` input shape exactly,
+so the chained `Run`-with-`OrtValue` pattern from Run 7 works
+verbatim — past_kv on next call = present_kv from this call,
+GPU-resident throughout.
+
+## Run 15 phase 2c — 2026-05-10 — C# adaptation reveals a fundamental compute trade-off; rolled back
+
+**Setup:**
+
+Wrote `TranscribeBatchStatic` in `GraniteSpeech.cs` as a sibling to
+`TranscribeBatch` (the dynamic-shape path). Detected via input
+metadata (`past_key_0` dimensions all positive); reads pinned dims
+from the graph (no hardcoded 16/768/375). Pads batch to
+`StaticBatchSize` with PAD-token rows, audio_embeds to
+`StaticAudioLen`, attention mask to `[B, P + S]` at prefill /
+`[B, P + 1]` at step. cache_position uses `[P..P+S-1]` for prefill,
+`[P+S+step]` for step.
+
+**Result — output parity:**
+
+On a 60 s clip both paths produced near-identical transcripts.
+One minor wording difference (`"and so I mean"` vs `"I mean"`)
+likely from the RoPE phase shift (cache_position starts at `P`
+in static vs `0` in dynamic). Architecture is correct.
+
+**Result — perf, head-to-head on the same 60 s clip:**
+
+| Path                | Total wall | Prefill | Step-loop | Steps | ms / step |
+|---------------------|----------:|--------:|----------:|------:|----------:|
+| Dynamic             | **3.4 s** | 498 ms  | 2,135 ms  | 60    | **35.6**  |
+| Static, past_len=768| 15.6 s    | 1,914 ms| 12,940 ms | 58    | 223       |
+| Static, past_len=512| 12.1 s    | 1,644 ms| 9,693 ms  | 60    | 161       |
+
+The static path is **3.6×–4.5× slower wall-time** than dynamic.
+Per-step is **4.5×–6.3× slower**. Driver: the graph's attention
+runs over the full pinned `past_kv + seq` length even when most
+positions are masked. ORT/PyTorch's exported attention computes
+`Q · K^T` against the entire pinned cache and applies the mask as a
+post-hoc add-`-inf` on softmax inputs — the multiply happens
+regardless, so masked positions still cost compute.
+
+Math: `Q · K^T` per step has FLOPs proportional to `B · H_q · 1 ·
+(P + 1) · D`. For `P=512` that's `16 · 16 · 513 · 128 = 168 M FLOPs`
+per layer per step. For dynamic with average cache `~200`:
+`16 · 16 · 201 · 128 = 66 M FLOPs`. Ratio matches the ~2.5×
+per-step regression.
+
+**Result — VRAM:**
+
+Static also uses **more VRAM** than dynamic, not less. Long-prompt
+batches (`S=207`, `P=768`) OOM at 24 GB on RTX 3090 trying to
+allocate logits (1.33 GB). Peak attention scratch at prefill is
+`O(B · H · S · (P+S))` ≈ 16 GB at `P=768`. Even `P=512` OOMs at
+the largest batch on the 600 s clip.
+
+**Implication — variant B is the wrong architecture for this
+workload:**
+
+The diagnosis from Runs 11–13 was correct: ORT's per-step
+shape-arithmetic CPU island IS the dynamic graph's biggest single
+cost (44 % of wall, 9.7 s on a 22 s job). The static-shape rewrite
+ELIMINATES that cost — Runs 14, 15p1, 15p2a/b verified zero
+Memcpy warnings, zero CPU-fallback ops, zero of the 51 GB
+H↔D shuttle Run 11 measured.
+
+But the static-shape graph trades 9.7 s of memcpy time for **30+
+seconds of unmasked-attention compute regression**. Net result:
+4× slower. We've fixed the *measured* bottleneck but exposed a
+*larger* one underneath — Granite's exported attention isn't
+mask-sparse-aware.
+
+**There is no cheap middle ground.** Smaller `past_len` narrows
+the gap proportionally (768 → 4.5×; 512 → 3.6×; 256 ≈ 2.4×) but
+caps audio length and never reaches dynamic. Bucket scheduling
+(multiple static graphs with shared initializers) is multi-day
+work AND still slower than dynamic, just not by 5×. The actual
+fix path is **kernel-level mask-aware attention** —
+`com.microsoft.MultiHeadAttention` with the right mask config, or
+a `GroupQueryAttention` op with `cu_seqlens`-style packed
+variable-length attention. Both are substantial export-script /
+ONNX surgery beyond the scope of this investigation.
+
+**Decision: roll back the C# adaptation.** Phase 2c (the static
+`TranscribeBatch` path) is reverted; phase 2b (the
+`--static-shapes-unified` export-script flag and sliced wrapper)
+stays as a tool that the future fused-attention work can build
+on. The investigation log is the deliverable.
+
+**Honest retrospective on Phase 2:**
+
+Three things we did right:
+- Validated the diagnosis with measurement at every step (no
+  speculative fixes).
+- Honored the user's "we're still in parity phase" pushback —
+  ran the smoke test, saw OOM, didn't dismiss it as a config
+  issue.
+- Ran the head-to-head perf comparison on a clip both paths
+  could complete, instead of arguing from theory.
+
+One thing we got wrong:
+- I anchored on "the per-step CPU island IS the bottleneck" from
+  Run 11 and assumed eliminating it would dominate. Should have
+  modelled the static-attention compute cost up front — it was
+  predictable from the dim sizes (`P=768` is 4–8× the average
+  cache length in dynamic) and would have raised the question
+  "is the trade worth it?" before three days of phase-2 work.
+  Filed under "always do the back-of-the-envelope before
+  committing to multi-day implementation."
+
+**Next steps:**
+
+- Open follow-up issue for "Granite perf via fused mask-aware
+  attention" with all the data we've gathered. The attention
+  surgery is the actual fix path.
+- Phase 1's `--static-shapes-probe` and phase 2b's
+  `--static-shapes-unified` flags + sliced wrapper stay in
+  `scripts/granite_export/`. They're useful tools for the
+  follow-up: any fused-attention export needs to start from a
+  static-shape graph, so the work isn't lost.
+- The other Run 9 follow-ups (static-KV cache, chunked encoder,
+  encoder pre-warm during diarization) are independent of this
+  decision and can land separately.
+
+### Spike: GQA feasibility check (pre-commit to next workstream)
+
+Before opening a follow-up issue for "fused mask-aware attention",
+ran a quick spike to confirm the path is reachable:
+
+**Test 1 — does ORT's CUDA EP support GQA at Granite's config?**
+
+Built a minimal ONNX graph with a single `com.microsoft.GroupQueryAttention`
+node configured for Granite (num_heads=16, kv_num_heads=4,
+head_dim=128, BF16, do_rotary, past_len=768, batch=16). Loaded in
+ORT 1.25 with verbose logging. Result: **session loads cleanly,
+zero Memcpy warnings, zero CPU-fallback ops.** The op is supported
+on CUDA EP for our exact config — the end-state is reachable.
+
+**Test 2 — does ORT auto-fuse the unfused exported attention?**
+
+ORT's graph-optimization pipeline includes `AttentionFusion` and
+`GroupQueryAttentionFusion` passes that look for unfused attention
+patterns and rewrite them as fused ops. Re-checked the Run 12
+verbose log on the dynamic Granite decoder. Across all 4 sessions:
+
+```
+GraphTransformer AttentionFusion modified: 0
+GraphTransformer GroupQueryAttentionFusion modified: 0
+```
+
+**Zero matches.** ORT's pattern matcher doesn't recognize Granite's
+exported attention pattern. The dynamo-exported pattern (Q/K/V
+projections → cast → reshape → matmul → mask add → softmax → matmul
+→ reshape) deviates from what the fusion passes look for. Likely
+candidates: the GQA expand/repeat pattern doesn't match, or a Cast
+/ Reshape sits in the wrong place, or RoPE handling is structured
+differently than ORT expects.
+
+**Implication for the follow-up workstream:**
+
+The fused-attention path is **viable but not free**. We can't get
+auto-fusion via ORT's built-in passes — we'd need either:
+
+1. Modify the wrapper to use `F.scaled_dot_product_attention`
+   explicitly so torch.onnx.export emits a pattern ORT recognizes.
+   ~1-day spike to test whether SDPA gets auto-fused on this model.
+2. Write a custom graph rewriter in `scripts/granite_export/` that
+   identifies Granite's per-layer attention subgraph and replaces
+   with `GroupQueryAttention` nodes. ~3-5 days of pattern-matching
+   surgery; reliably solves the problem regardless of whether SDPA
+   auto-fuses.
+
+Path 1 is the cheap probe; if it works, we're done. If not, path 2
+is the structural fix. Both paths build on phase 1's
+`--static-shapes-unified` export tool — any fused-attention export
+needs static shapes to make GQA's `seqlens_k` input meaningful.
+
+The follow-up issue should bake in this feasibility data so the
+next investigator doesn't re-derive it.
+
+
+
+
+
