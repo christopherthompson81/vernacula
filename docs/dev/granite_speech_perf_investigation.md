@@ -1648,3 +1648,101 @@ call. Cost was modest (~15 min) so net not damaging, but worth
 flagging in the next decision so we don't repeat the pattern of
 "probe an already-dead option for completeness".
 
+## Run 15 phase 1 — 2026-05-10 — Static-shapes export probe: shape island eliminated
+
+**Setup:**
+
+Added a `--static-shapes-probe` flag to
+`scripts/granite_export/export_granite_speech_to_onnx.py`. When set,
+the unified decoder export pins all dims (`batch=4`, `seq=1`,
+`past_len=8`, `audio_len=8`) to fixed integer literals at trace time
+rather than `torch.export.Dim` symbolics. Output saved to
+`/tmp/granite_static_probe/decoder.onnx` so the production bundle
+isn't disturbed.
+
+The probe is intentionally tiny — small dims keep the export fast
+(~3 minutes vs 10+ for production sizes) and the constant-folding
+behaviour we're testing is dim-independent: if folding works at
+small dims it works at large dims.
+
+```bash
+python scripts/granite_export/export_granite_speech_to_onnx.py \
+  --output-dir /tmp/granite_static_probe --device cpu --dtype bfloat16 \
+  --skip-mel --skip-encoder --skip-projector \
+  --static-shapes-probe --overwrite
+```
+
+**Result — graph composition vs Run 13:**
+
+| Metric                          | Dynamic (Run 13) | Static probe | Δ          |
+|---------------------------------|-----------------:|-------------:|-----------:|
+| Total nodes                     |            3,161 |        2,766 | **−395 (−12%)** |
+| Reshape                         |              300 |          243 | −57 (−19%) |
+| **Concat**                      |              278 |          161 | **−117 (−42%)** |
+| Slice                           |              199 |          160 | −39 (−20%) |
+| Cast                            |              170 |          169 | −1         |
+| Shape                           |               59 |          <20 | substantial drop |
+| **Squeeze (`sym_size_int_*`)**  |               57 |        **0** | **−100%**  |
+| Add                             |              336 |          281 | −55        |
+
+Every `sym_size_int_*` symbolic-size scalar extraction folded out.
+The per-step KV-cache `Concat` count dropped 42 % (from Run 9's
+named #1 follow-up). Reshape dropped 19 %.
+
+**Result — ORT verdict on the static graph:**
+
+Loaded the probe `decoder.onnx` in ORT 1.25 with `log_severity_level=1`
+(verbose) using a small Python harness:
+
+```
+=== Memcpy warnings: [] ===
+=== Named Memcpy boundary tensors: [] ===
+=== CPU-fallback ops (total 0, 0 unique) ===
+Session loaded OK
+```
+
+**Zero Memcpy nodes. Zero CPU-fallback ops.** The 64 Reshape CPU
+fallbacks Run 12 measured collapsed to zero on the static-shape
+graph — every remaining Reshape now runs on CUDA EP. The 2 graph-
+level Memcpy nodes from Run 12 (`val_39`, `view_2`,
+`sym_size_int_147`) are gone with their CPU island.
+
+**Implication:**
+
+Road 3 is conclusively validated. The static-shape rewrite at the
+export layer eliminates the bottleneck Run 11 measured (74 % of
+host CUDA API time = `cudaMemcpyAsync`, 51 GB shipped each way,
+137 k transfers). Phase 2 — adapting Granite to ship a production-
+sized static-shape graph and updating C# to handle pinned dims — is
+justified.
+
+Phase 1 is intentionally not production-usable (`B=4, S=1, P=8,
+A=8` is a step-only toy). Phase 2 picks the production architecture.
+
+**Phase 2 architectural choice:**
+
+Three viable variants, in increasing scope:
+
+1. **Single static-shape unified decoder at production maxes** —
+   `B=16, S=??, P=256, A=AUDIO_MAX`. Prefill and step share the same
+   graph by padding short prefills to `S=PROMPT_MAX`. Simplest C#;
+   prefill wastes some compute on padding. Memory: same as today
+   (single 7 GB graph).
+2. **Static-shape split: prefill + step graphs.** Run 3 originally
+   chose unified over split for memory (7 GB vs 14 GB) and parity.
+   With static shapes the trade returns:
+   `prefill (S=PROMPT_LEN, P=0)` + `step (S=1, P=256)`. Both static.
+   2 ONNX sessions, 14 GB. C# manages two sessions per pipeline.
+3. **Hybrid: static-shape unified with pinned past_len only.** Keep
+   `batch` and `seq` dynamic, pin `past_len=256` and `audio_len=AUDIO_MAX`.
+   Less constant folding (the position-arange chain still depends on
+   `past_len + seq` which has a dynamic component) but minimal C#
+   change. Probe needed to confirm whether ORT still flags any
+   Reshape ops as CPU-preferred under partial pinning.
+
+Variant 3 is the cheapest C# adaptation. Variant 1 is the cleanest.
+Variant 2 doubles VRAM unnecessarily given variant 1's existence.
+Path forward likely involves a phase-1b probe of variant 3 to see
+whether partial pinning suffices, then commit to variant 1 if
+variant 3 leaves residual shape arithmetic.
+
