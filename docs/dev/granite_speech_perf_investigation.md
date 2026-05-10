@@ -2738,6 +2738,92 @@ questions for whoever picks this up:
 3. The MHA-fused graph is reusable for any Granite model variant.
    Apply the rewriter to Granite 8B / instruct / etc. as needed.
 
+## Run 20 — 2026-05-10 — GQA + cache-layout migration (plan)
+
+MHA fusion at parity but no perf win (Run 19). The static-shape
+padding to `seq+512` is the dominant cost: every layer recomputes
+attention over 512 cached positions even when only a fraction are
+real. **GQA** is the standard ORT op that fixes this — its
+`seqlens_k` per-batch input tells the kernel where the real K
+ends, and compute past that point is skipped (not zeroed).
+
+### Why GQA, not MHA + tighter padding
+
+A bucketed-past_seq scheme (multiple sessions for 64/128/256/512)
+works but multiplies graph load time and resident memory by N. GQA
+does compute-skip in a single static graph, which is what we want.
+
+### The coordinated change (3 surfaces)
+
+The migration touches export, rewriter, and C# driver because the
+cache layout itself must change from right-aligned-with-sliding-
+window (today) to **left-aligned max-sized buffer** (GQA's required
+layout):
+
+  - past_kv buffer: `[B, kv_num_heads=4, max_seq=512, 128]`.
+  - real data at `[0, current_seq_len)` per batch row.
+  - zero/garbage at `[current_seq_len, max_seq)`.
+  - `seqlens_k[b] = total_seq[b] - 1` written as graph input each step.
+
+### Stage A — Rewriter (`--mode gqa`)
+
+Most of the work happens here. The rewriter:
+
+1. Adds two new graph inputs: `seqlens_k` (int32, shape `[B]`) and
+   `total_sequence_length` (int32, scalar).
+2. For each layer, walks the existing chain back through Expand
+   (4→16) and Concat to find:
+   - the `past_key_<L>` graph input (already exists),
+   - the **fresh K** tensor (post-RoPE, pre-Concat, shape `[B, 4,
+     S, 128]`).
+3. Replaces the unfused attention block with a GroupQueryAttention
+   node:
+   - inputs: `[query (B,S,2048), key (B,S,512), value (B,S,512),
+     past_key_<L>, past_value_<L>, seqlens_k, total_sequence_length]`
+   - outputs: `[output, present_key, present_value]`
+   - attrs: `num_heads=16, kv_num_heads=4, scale=1/128, do_rotary=0`
+4. Adapter shape ops:
+   - Q: existing Transpose+Reshape (B,16,S,128)→(B,S,2048).
+   - K, V: new Transpose+Reshape (B,4,S,128)→(B,S,512).
+5. Rewires `present_key_<L>` graph output to GQA's `present_key`
+   (the existing Concat→Slice chain becomes dead).
+
+### Stage B — C# driver
+
+1. Switch from left-padded prompts to **right-padded** so real
+   tokens occupy `[0, realLen[b])` of the prefill K input. (This
+   is what GQA expects in `key`.) Argmax position becomes
+   `realLen[b]-1` per batch row instead of `S-1`.
+2. Allocate past_kv buffers at `[B, 4, max_seq=P, 128]` and bind
+   them via IOBinding so present_key writes happen in place.
+3. Compute `seqlens_k` and `total_sequence_length` per call:
+   - prefill: `seqlens_k[b] = realLen[b] - 1`,
+     `total_sequence_length = max(realLen)`.
+   - step: `seqlens_k[b] = realLen[b] + step`,
+     `total_sequence_length = max(realLen) + step + 1`.
+4. cache_position: change from "starts at P" to "starts at 0"
+   (left-aligned cache, position N is the Nth real token).
+
+### Stage C — End-to-end test + benchmark
+
+Same `/tmp/run15_short_60s.wav` clip and the unfused-static
+baseline (~13.3 s) as the parity reference. Goal: close as much
+of the 13.3 s → 3.4 s gap as possible.
+
+### Risk / unknowns
+
+- Whether GQA on CUDA EP supports bf16 K/V cache as effectively
+  as the unfused path. (T_CACHE constraint includes bfloat16, so
+  yes, but kernel selection might prefer fp16.)
+- Whether the right-padding switch in C# breaks any existing
+  parity test in `tests/GraniteSpeechSmoke`. Likely needs a
+  fixture rebuild.
+- IOBinding correctness for the in-place present_key write across
+  step iterations. We currently use chained OrtValue passing
+  rather than IOBinding (deliberately, after Run 7); GQA may
+  force a switch.
+
+
 
 
 
