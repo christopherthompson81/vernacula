@@ -2227,6 +2227,79 @@ Bonus: MHA fusion generalizes to other transformer backends
 (Qwen3, VibeVoice) where the GQA-with-left-align approach was
 Granite-specific.
 
+## Run 18 phase B day 1+ — Rewriter implemented, partial parity (WIP)
+
+**Setup:** Wrote `scripts/granite_export/rewrite_attention_to_mha.py`.
+Anchors on each Softmax node, walks back/forward to identify the 7
+unfused-attention nodes (MatMul + Mul-scale + Add-mask + Softmax +
+MatMul + Transpose + Reshape), and replaces them with a single
+`com.microsoft.MultiHeadAttention` node fed via Q/K/V Transpose+Reshape
+adapters. The rewriter operates on the static-shape eager-export
+decoder.onnx as a post-export step.
+
+**Iteration 1 — naive raw-mask wiring:** Initial implementation passed
+the graph's `attention_mask` input (cast to int32) as MHA's
+`key_padding_mask`. Result: graph loaded cleanly, zero new CPU
+fallbacks vs unfused baseline, MHA placed on CUDA EP. End-to-end
+smoke: **garbage transcript** ("`<|fim_middle|>-- --  - -s,`").
+
+Diagnosis: by feeding only the raw (B, T) attention_mask, we lost
+the **causal masking** that the original graph's per-layer Add node
+applied. Granite's exported graph computes a single shared
+`(B, 1, S, T)` additive mask (`where_2`) that encodes both key-padding
+*and* causal triangulation; this mask is reused across all 40 layers'
+attention Add nodes.
+
+**Iteration 2 — feed `where_2` as `relative_position_bias`:** Updated
+the rewriter to pass `where_2` (the original shared additive mask)
+to MHA's `relative_position_bias` input. This is added to attention
+scores before softmax — the exact semantics of the original Add. End
+to end on the 60s clip:
+
+- Output: **partially correct**. "all kinds of garret's of course
+  none of them would be as i- as a as" vs the correct baseline
+  "all kinds of telephone calls of course none of them were Garrett
+  and so I mean...". "Garrett" + "of course none of them" match
+  approximately; the rest is mangled.
+- Wall: **8.98 s** (vs unfused-static 12.1 s, dynamic 3.4 s). MHA +
+  where_2 is faster than unfused-static but still 2.6× slower than
+  dynamic.
+
+**Implication:** Iteration 2 moved us from "complete garbage" to
+"garbled but recognizable" output. The mask wiring is on the right
+track but there's at least one more bug in the rewrite, and the
+compute regression hasn't been eliminated.
+
+**Possible remaining bugs (in priority order):**
+
+1. **Head layout in the adapter.** The Transpose+Reshape pair is
+   supposed to convert `(B, num_heads, S, head_dim)` to
+   `(B, S, num_heads × head_dim)` with heads-outer flattening. May
+   not match MHA's internal interpretation.
+2. **`relative_position_bias` shape mismatch.** ORT MHA expects this
+   tensor in `(B or 1, num_heads, S, T)` layout. Our `where_2` is
+   `(B, 1, S, T)` which should broadcast across heads — but if MHA
+   treats the second dim as actual head index rather than broadcast,
+   we'd have a layout mismatch.
+3. **`is_unidirectional` attribute** — MHA may apply implicit causal
+   masking; explicitly setting `is_unidirectional=0` to disable it
+   could matter.
+4. **Numerical drift.** Original computes attention in fp32 (with bf16
+   K/V dequantized at the matmul); MHA may use bf16 accumulators
+   internally. Could explain partial-correctness.
+
+**Decision: pause and ship the partial work as a checkpoint.** Phase B
+day 2 was meant to be "extend matcher + parity test"; we got
+"matcher implemented + partial parity". Closing the remaining gap is
+plausibly another day of debugging, but the agent-loop time spent
+here suggests it's worth handing the next iteration to a fresh
+session with the partial-output diff and the four hypotheses above
+as starting points. The rewriter itself is committed; future
+investigators can iterate on the wiring without re-deriving the
+pattern map.
+
+
+
 
 
 

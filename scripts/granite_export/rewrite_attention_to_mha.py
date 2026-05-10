@@ -162,9 +162,13 @@ def add_q_kv_adapter_nodes(prefix: str, src: str, dst: str) -> list[onnx.NodePro
 
 
 def rewrite_layer(graph: onnx.GraphProto, softmax: onnx.NodeProto, layer_idx: int,
-                  producer, consumers, mask_int32_tensor: str):
+                  producer, consumers):
     """Rewrite one layer's attention. Returns (added_nodes, added_initializers,
-    nodes_to_remove)."""
+    nodes_to_remove). Reuses the per-call additive mask `where_2` (or whatever
+    the graph computes once and shares across all 40 layers' Add nodes) as
+    MHA's relative_position_bias — that mask already encodes both
+    key-padding AND causal restrictions, so we don't need to feed a separate
+    key_padding_mask."""
     q, k, v, mask, output_tensor, to_remove = find_attention_block(softmax, producer, consumers)
 
     pfx = f"mha_l{layer_idx}"
@@ -202,12 +206,16 @@ def rewrite_layer(graph: onnx.GraphProto, softmax: onnx.NodeProto, layer_idx: in
                          outputs=[v_adapted], name=f"{pfx}_v_reshape"),
     ]
 
-    # MultiHeadAttention. All layers share the same int32 mask.
+    # MultiHeadAttention. We feed the original graph's per-call additive
+    # mask (`where_2`-style; bf16 with 0 for attend / -inf for ignore +
+    # causal triangulation) as relative_position_bias. ORT MHA adds this
+    # to the attention scores before softmax — same semantics as the
+    # original Add node we removed, so per-layer behaviour is preserved.
     mha_out = f"{pfx}_out"
     scale = 1.0 / (HEAD_DIM ** 0.5)
     mha_node = helper.make_node(
         "MultiHeadAttention",
-        inputs=[q_adapted, k_adapted, v_adapted, "", mask_int32_tensor],
+        inputs=[q_adapted, k_adapted, v_adapted, "", "", mask],
         outputs=[mha_out],
         name=f"{pfx}_node",
         domain="com.microsoft",
@@ -261,9 +269,6 @@ def main() -> int:
     )
     print(f"  Rewriting layers: {target_layers}")
 
-    # Add the int32 mask cast once (shared across all layers).
-    mask_int32 = add_mask_int32(graph)
-
     all_new_nodes: list[onnx.NodeProto] = []
     all_new_inits: list[onnx.TensorProto] = []
     all_remove: list[onnx.NodeProto] = []
@@ -273,7 +278,7 @@ def main() -> int:
             raise ValueError(f"Layer {li} out of range; graph has {len(softmaxes)} layers")
         sm = softmaxes[li]
         try:
-            new_n, new_i, rem = rewrite_layer(graph, sm, li, producer, consumers, mask_int32)
+            new_n, new_i, rem = rewrite_layer(graph, sm, li, producer, consumers)
         except ValueError as e:
             print(f"  layer {li}: SKIP — {e}")
             continue
