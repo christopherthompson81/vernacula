@@ -2142,6 +2142,93 @@ Granite-style model, the answer is documented.
 per-layer attention subgraph with `com.microsoft.GroupQueryAttention`
 nodes. Detailed plan in #43.
 
+## Run 18 — 2026-05-10 — Phase B reconnaissance: pattern map + alignment probes
+
+Phase B starts with reconnaissance, not engineering. Three concrete
+probes before committing to multi-day implementation:
+
+### Probe 1 — Granite's per-layer attention pattern
+
+Walked the eager+static decoder.onnx, anchored on the 40 Softmax
+nodes (one per layer). Each layer's attention block is uniform:
+
+```
+output_proj ← Reshape ← Transpose ← MatMul(softmax_out, V_full)
+                                    ↑
+                                   Softmax ← Add(scores, mask) ← Mul(scale, ·) ← MatMul(Q, K_full^T)
+                                                                                  ↑       ↑
+                                                                                  Q       K_full = Concat(past_K, new_K)
+```
+
+40 / 40 layers match this exact pattern — the rewriter target is
+clean. Anchor: walk back from each Softmax to its parent MatMul
+(scores), and forward to its child MatMul (× V).
+
+### Probe 2 — GQA cache-alignment
+
+Built a minimal `com.microsoft.GroupQueryAttention` graph with two
+test cache layouts: left-aligned (real KV at slots `[0, seqlens_k)`,
+padding after) vs right-aligned (zeros at `[0, P-real)`, real after).
+Compared GQA's output to a hand-rolled reference for each.
+
+| Configuration                            | GQA mean abs | Reference mean abs | Match? |
+|------------------------------------------|-------------:|-------------------:|:------:|
+| Left-aligned cache, seqlens_k=4          |     0.036117 |           0.036117 | **✓ exact** |
+| Right-aligned cache, seqlens_k=4         |     0.016493 |           0.032659 | ✗      |
+
+**GQA assumes left-aligned cache.** Granite's existing static-shape
+export uses right-aligned (slice `[-P:]`). Using GQA would require
+re-architecting the cache layout: re-export wrapper without the
+`[-P:]` slice, C# tracks per-row cache lengths and writes new K/V
+at the next slot, no slicing needed if we never exceed `P`. That's
+substantial extra scope (5-7 days) on top of the rewriter.
+
+### Probe 3 — MHA with custom mask
+
+Built a minimal `com.microsoft.MultiHeadAttention` graph with a
+`(B, T)` `key_padding_mask` and the same right-aligned cache
+configuration:
+
+| Probe                                         | mean abs | Reference matches? |
+|-----------------------------------------------|---------:|:------------------:|
+| MHA with mask convention `1=pad, 0=attend`    | 0.000000 | ✗ (all zeros)      |
+| MHA with mask convention `1=attend, 0=pad`    | 0.035227 | **✓ exact**        |
+
+**MHA accepts a custom `(B, T)` mask** with convention `1=attend,
+0=ignore` (standard HF transformers convention). Right-aligned cache
+just works — the mask gates whatever's in the cache, regardless of
+where the real KV sits. **No re-architecture needed.**
+
+### Implication
+
+**MHA is the right fused op for Granite, not GQA.** The phase B
+plan changes:
+
+- Replace each attention block with `com.microsoft.MultiHeadAttention`
+  (not GroupQueryAttention).
+- Keep the existing 80 Expand ops (4 KV heads → 16 heads); MHA
+  wants K/V already broadcast to 16 heads.
+- Feed the existing attention_mask through unchanged (just cast
+  to int32 if needed).
+- Past_kv keeps right-aligned layout. No C# rearchitecture.
+- C# side: minimal change — perhaps just one `Cast` from int64 mask
+  to int32, or re-shape into `seqlens_k` if MHA needs it. TBD on
+  closer look.
+
+Phase B effort revised back down to **3-4 days**:
+
+- Day 1: pattern matcher; replace one layer's attention with MHA;
+  verify it loads.
+- Day 2: extend to all 40 layers; per-layer parity vs unfused.
+- Day 3: end-to-end smoke test + minor C# mask conversion.
+- Day 4: perf benchmark.
+
+Bonus: MHA fusion generalizes to other transformer backends
+(Qwen3, VibeVoice) where the GQA-with-left-align approach was
+Granite-specific.
+
+
+
 
 
 
