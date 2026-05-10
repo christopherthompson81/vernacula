@@ -2352,6 +2352,56 @@ This is a ~1-day refactor of the rewriter, not a 30-min tweak.
 Same scope as a fresh-session day-2-follow-up. Pausing iteration
 loop here so it doesn't blur into a multi-day session.
 
+### Iteration 4 (where_2 as RPB cast to fp32)
+
+Quick experiment to rule out dtype precision as the iter-2 bug
+cause. Cast where_2 (bf16) to fp32 before feeding as RPB.
+
+Result: ORT MHA rejects with `Type Error: Type parameter (T) of
+Optype (MultiHeadAttention) bound to different types (tensor(bfloat16)
+and tensor(float))`. ORT enforces RPB dtype to match Q/K/V dtype.
+Can't promote the mask cleanly without converting Q/K/V too.
+
+Implication: iter 2's "garbled but recognizable" output wasn't a
+dtype precision issue. Most likely root cause is that ORT MHA's
+`relative_position_bias` is intended for *relative* position
+encodings (T5/ALiBi style) and may not interpret arbitrary
+additive masks literally. The semantics of "RPB[s, t] is added
+to attention_scores[s, t]" sounds simple, but the implementation
+might index it as "RPB[s - t]" or similar relative-position
+function. This would explain why iter 2 produced output that
+*almost* matched (relative positions in the unmasked region behave
+similarly across q-positions) but with subtle drift.
+
+Full evidence-based diagnosis at this point:
+- iter 1 (raw KPM, no causal): garbage. Missing causal entirely.
+- iter 2 (where_2 as RPB): garbled. RPB likely interpreted
+  relative-position-style, not as literal additive mask.
+- iter 3 (KPM + unidirectional, pre-concat K): correct ~12 tokens
+  then derails. Causal applied as if K is all "new" — misses
+  cached past positions [0, P).
+- iter 4 (where_2 as RPB cast to fp32): dtype-rejected.
+
+The PATH FORWARD is iter 5: feed past_key/past_value via MHA's
+dedicated past inputs. Requires:
+
+1. Re-export with past_key/past_value declared as 16-head (Expand
+   from 4 to 16 heads at export time, before the wrapper-level
+   slice). Cache memory grows 4× but still fits comfortably
+   (~168 MB for 16 KV heads × 512 past × 128 head_dim × 80
+   tensors at bf16).
+2. Rewriter consumes past_key_<L> graph input directly as MHA's
+   past_key (not the post-concat tensor).
+3. New_K post-RoPE → MHA's key input (after Expand to 16 heads).
+4. unidirectional=1 + key_padding_mask for causal + masking.
+5. MHA's present_key output replaces the wrapper-level slice path
+   (or composes with it; depends on shape conventions).
+
+This is a coordinated re-export + rewriter change. ~1-day fresh-
+session work; won't fit in this agent-loop session.
+
+
+
 
 
 

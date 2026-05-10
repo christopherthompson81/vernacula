@@ -206,25 +206,27 @@ def rewrite_layer(graph: onnx.GraphProto, softmax: onnx.NodeProto, layer_idx: in
                          outputs=[v_adapted], name=f"{pfx}_v_reshape"),
     ]
 
-    # MultiHeadAttention. We pass the graph's raw attention_mask (cast to
-    # int32 once at the top of the graph) as key_padding_mask, plus
-    # is_unidirectional=1 to have MHA apply causal masking internally.
-    # This wiring lets MHA's CUDA kernel skip masked positions in COMPUTE,
-    # not just zero them post-softmax — that's the difference between
-    # "correct output but slow" (relative_position_bias path) and
-    # "correct AND fast". Relevant ORT MHA implementation skip happens
-    # only via key_padding_mask + is_unidirectional, not via RPB.
+    # MultiHeadAttention. Iter 4 — re-test where_2 as relative_position_bias
+    # but cast to fp32 first (in case iter 2's garbled output was a dtype
+    # precision issue rather than a wiring issue). where_2 is bf16 in the
+    # original graph; ORT MHA may compute attention scores in fp32
+    # internally and add an fp32-promoted bias, but if the cast happens
+    # incorrectly we'd see drift.
     mha_out = f"{pfx}_out"
+    mask_fp32 = f"{pfx}_mask_fp32"
     scale = 1.0 / (HEAD_DIM ** 0.5)
+    mask_cast_node = helper.make_node(
+        "Cast", inputs=[mask], outputs=[mask_fp32],
+        name=f"{pfx}_mask_cast", to=TensorProto.FLOAT,
+    )
     mha_node = helper.make_node(
         "MultiHeadAttention",
-        inputs=[q_adapted, k_adapted, v_adapted, "", "mha_mask_int32"],
+        inputs=[q_adapted, k_adapted, v_adapted, "", "", mask_fp32],
         outputs=[mha_out],
         name=f"{pfx}_node",
         domain="com.microsoft",
         num_heads=NUM_HEADS,
         scale=scale,
-        unidirectional=1,
     )
 
     # Rewire output_tensor consumers to use mha_out instead.
@@ -234,7 +236,7 @@ def rewrite_layer(graph: onnx.GraphProto, softmax: onnx.NodeProto, layer_idx: in
             if inp == output_tensor:
                 c.input[i] = mha_out
 
-    new_nodes = q_nodes + k_nodes + v_nodes + [mha_node]
+    new_nodes = q_nodes + k_nodes + v_nodes + [mask_cast_node, mha_node]
     new_inits = [init_q, init_kv]
     return new_nodes, new_inits, to_remove
 
