@@ -31,6 +31,10 @@ namespace Vernacula.Tests.AsrBackendCoverage;
 /// manual-review.
 /// </para>
 /// </summary>
+[CollectionDefinition(nameof(AsrBackendCoverageTests), DisableParallelization = true)]
+public class AsrBackendCoverageCollection { }
+
+[Collection(nameof(AsrBackendCoverageTests))]
 public class AsrBackendCoverageTests
 {
     public static IEnumerable<object[]> AllBackends =>
@@ -104,9 +108,16 @@ public class AsrBackendCoverageTests
         // backend's ModelName(). The constructor logs a stderr warning on the
         // unrecognized-non-null fallback (see commit a68e416). Capture stderr
         // and assert no warning fired. Vocab-loaders tolerate missing files
-        // so a temp dir without any installed models is sufficient.
+        // so an empty temp dir without any installed models is sufficient;
+        // the Guid-named subdir guarantees no stray /tmp file (e.g. an
+        // unrelated tokenizer.json from another tool) accidentally satisfies
+        // a File.Exists probe and changes loader behaviour.
+        //
+        // Console.SetError is process-global, so this whole class lives in
+        // [Collection(nameof(AsrBackendCoverageTests))] with parallelization
+        // disabled to keep the swap from racing with a parallel test.
         string modelName = AsrLanguageSupport.ModelName(backend);
-        string tempDir = Path.GetTempPath();
+        string tempDir = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
 
         var origErr = Console.Error;
         using var stderr = new StringWriter();

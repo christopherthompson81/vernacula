@@ -53,6 +53,16 @@ all switch expressions, defaults throw:
 - `DisplayName(AsrBackend)` — UI label
 - `LanguageOptions(AsrBackend)` — derived from `Get`
 
+**Behaviour change in this PR:** `Get` previously returned
+`FrozenSet<string>.Empty` for unknown backends and `DisplayName`
+returned `backend.ToString()`; both now throw
+`ArgumentOutOfRangeException`. Callers that ever pass a runtime-cast
+`AsrBackend` value (e.g. `(AsrBackend)999` from a corrupt settings
+file) will now crash where they previously fell back silently.
+That's a deliberate regression — the silent fallback was the original
+drift vector — but it does mean defensive callers should validate via
+`Enum.IsDefined` before forwarding.
+
 ### 3. `ModelManagerService.ActiveRepos` *[throw]*
 
 `src/Vernacula.Avalonia/Services/ModelManagerService.cs`. Switch

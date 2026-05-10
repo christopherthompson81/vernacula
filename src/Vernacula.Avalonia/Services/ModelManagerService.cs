@@ -280,11 +280,16 @@ internal class ModelManagerService
                     new AssetRepo(CoreRepoBase, CoreManifestUrl, CoreDiarizationFiles),
                     new AssetRepo(GraniteSpeechFp32RepoBase, GraniteSpeechFp32ManifestUrl, GraniteSpeechFp32Files),
                 ],
-            // VibeVoice is handled in the early-return above (it can be the
-            // segmentation backend even when the AsrBackend isn't VibeVoice);
-            // any branch that lands here for VibeVoice is a programmer error.
-            _ => throw new ArgumentOutOfRangeException(
-                "AsrBackend",
+            // VibeVoice is handled by the early-return at the top of the
+            // method (it can be the segmentation backend even when the
+            // AsrBackend isn't VibeVoice). If a future enum value is added
+            // without a switch arm here, this throws to surface the gap
+            // rather than silently inheriting Parakeet's repo set — which
+            // is what the previous `_ => [Core+AsrFilesFp32]` default did
+            // and what issue #37 is about. InvalidOperationException
+            // (rather than ArgumentOutOfRangeException) because the
+            // discriminator is read from settings state, not a parameter.
+            _ => throw new InvalidOperationException(
                 $"ModelManagerService.ActiveRepos has no asset repos for {_settings.Current.AsrBackend}. "
                 + "See docs/dev/asr_backend_dispatch.md."),
         };
