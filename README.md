@@ -11,7 +11,7 @@
 
 Vernacula converts audio into accurate, multi-speaker transcripts on your own computer. It ships as a reusable library (`Vernacula.Base`), a command-line tool (`Vernacula.CLI`), and a cross-platform desktop app (`Vernacula-Desktop`, built on Avalonia UI).
 
-Powered by NVIDIA's [Parakeet TDT v3](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3) and [Sortformer](https://huggingface.co/nvidia/diar_sortformer_4spk-v2.1) by default, with optional pluggable backends (Cohere Transcribe, Qwen3-ASR, VibeVoice-ASR). Parakeet v3 posts a **Word Error Rate of 4.85** on Google's FLEURS benchmark. Most modern computers will transcribe one hour of audio in about five minutes; GPU-accelerated systems are significantly faster.
+Powered by NVIDIA's [Parakeet TDT v3](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3) and [Sortformer](https://huggingface.co/nvidia/diar_sortformer_4spk-v2.1) by default, with optional pluggable backends (Cohere Transcribe, Qwen3-ASR, VibeVoice-ASR, Granite Speech 4.1). Parakeet v3 posts a **Word Error Rate of 4.85** on Google's FLEURS benchmark. Most modern computers will transcribe one hour of audio in about five minutes; GPU-accelerated systems are significantly faster.
 
 ## Demo
 
@@ -27,7 +27,7 @@ More screenshots and a feature tour live in [docs/desktop-app.md](docs/desktop-a
 - **Multi-speaker detection** — identifies and labels up to four concurrent speakers
 - **No audio length limits** — streaming and segmentation handle indefinite file lengths
 - **Transcript editor** with confidence colouring, audio playback, and word-level timestamps
-- **Pluggable ASR backends** — Parakeet TDT v3, Cohere Transcribe, Qwen3-ASR, VibeVoice-ASR
+- **Pluggable ASR backends** — Parakeet TDT v3, Cohere Transcribe, Qwen3-ASR, VibeVoice-ASR, Granite Speech 4.1
 - **Shallow KenLM fusion** for domain-specific English (general, medical)
 - **Export** to XLSX, CSV, JSON, SRT, Markdown, DOCX, and SQLite
 - **GPU acceleration** via CUDA (DirectML on Windows), with automatic CPU fallback
@@ -45,6 +45,7 @@ Vernacula's models are converted in-house from upstream PyTorch / NeMo / Hugging
 | Qwen3-ASR | [Qwen/Qwen3-ASR-0.6B](https://huggingface.co/Qwen/Qwen3-ASR-0.6B), [Qwen3-ASR-1.7B](https://huggingface.co/Qwen/Qwen3-ASR-1.7B) | [scripts/qwen3asr_export](scripts/qwen3asr_export) |
 | Cohere Transcribe | [CohereLabs/cohere-transcribe-03-2026](https://huggingface.co/CohereLabs/cohere-transcribe-03-2026) | [scripts/cohere_export](scripts/cohere_export) |
 | VibeVoice-ASR | [microsoft/VibeVoice-ASR-HF](https://huggingface.co/microsoft/VibeVoice-ASR-HF) | [scripts/vibevoice_export](scripts/vibevoice_export) |
+| Granite Speech 4.1 | [ibm-granite/granite-speech-4.1-2b](https://huggingface.co/ibm-granite/granite-speech-4.1-2b) | [scripts/granite_export](scripts/granite_export) |
 | DeepFilterNet3 (streaming) | [Rikorose/DeepFilterNet](https://github.com/Rikorose/DeepFilterNet) | [scripts/deepfilternet3_export](scripts/deepfilternet3_export) |
 | DiariZen + WeSpeaker | [BUTSpeechFIT/DiariZen](https://github.com/BUTSpeechFIT/DiariZen) | [scripts/diarizen_export](scripts/diarizen_export) |
 | VoxLingua107 (language ID) | [speechbrain/lang-id-voxlingua107-ecapa](https://huggingface.co/speechbrain/lang-id-voxlingua107-ecapa) | [scripts/voxlingua107_export](scripts/voxlingua107_export) |
