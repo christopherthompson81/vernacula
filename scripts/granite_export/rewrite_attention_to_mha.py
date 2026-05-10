@@ -47,9 +47,11 @@ import numpy as np
 import onnx
 from onnx import helper, numpy_helper, TensorProto
 
-NUM_HEADS = 16
-HEAD_DIM  = 128
-HIDDEN    = NUM_HEADS * HEAD_DIM  # 2048
+NUM_HEADS    = 16
+NUM_KV_HEADS = 4
+HEAD_DIM     = 128
+HIDDEN       = NUM_HEADS * HEAD_DIM        # 2048
+KV_HIDDEN    = NUM_KV_HEADS * HEAD_DIM     # 512
 
 
 def parse_args() -> argparse.Namespace:
@@ -60,6 +62,11 @@ def parse_args() -> argparse.Namespace:
                     help="Output decoder.onnx with attention rewritten to MHA.")
     ap.add_argument("--layers", type=str, default=None,
                     help="Comma-separated layer indices to rewrite (default: all).")
+    ap.add_argument("--mode", choices=["mha", "gqa"], default="mha",
+                    help="Fusion target: mha (MultiHeadAttention, default) or gqa "
+                         "(GroupQueryAttention). GQA enables compute-skip via "
+                         "seqlens_k and requires a coordinated cache-layout "
+                         "change in the C# driver.")
     return ap.parse_args()
 
 
@@ -171,10 +178,69 @@ def add_q_kv_adapter_nodes(prefix: str, src: str, dst: str) -> list[onnx.NodePro
     ]
 
 
-def rewrite_layer(graph: onnx.GraphProto, softmax: onnx.NodeProto, layer_idx: int,
-                  producer, consumers):
-    """Rewrite one layer's attention. Returns (added_nodes, added_initializers,
-    nodes_to_remove).
+def find_kv_chain_for_gqa(kv_tensor: str, producer, consumers):
+    """Walk back from the K/V tensor consumed by the attention MatMul (post
+    broadcast 4→16) to the underlying Concat that joins the past_kv graph
+    input with the fresh K/V (post-RoPE for K, post-Transpose for V).
+
+    Returns:
+      past_kv:      name of the past_key_<L>/past_value_<L> graph input.
+      fresh_kv:     name of the fresh K/V tensor (B, num_kv_heads, S, head_dim).
+      present_kv:   name of the present_key_<L>/present_value_<L> graph output
+                    (currently produced by a Slice on top of the Concat).
+      slice_node:   the Slice node that produces present_kv; must be removed
+                    so the GQA op can claim the graph-output name.
+    """
+    # Walk back through Transpose/Reshape/Expand/Unsqueeze chain until Concat.
+    cur = kv_tensor
+    for _ in range(10):
+        n = producer.get(cur)
+        if n is None:
+            raise ValueError(f"Hit graph input {cur} before finding Concat")
+        if n.op_type == "Concat":
+            concat_node = n
+            break
+        if n.op_type not in ("Transpose", "Reshape", "Expand", "Unsqueeze"):
+            raise ValueError(
+                f"Unexpected op {n.op_type} ({n.name}) walking back K/V chain")
+        cur = n.input[0]
+    else:
+        raise ValueError("K/V chain too deep; expected Concat within 10 hops")
+
+    # Identify which Concat input is the past_kv graph input by name pattern.
+    past_kv = None
+    fresh_kv = None
+    for inp in concat_node.input:
+        if inp.startswith("past_key_") or inp.startswith("past_value_"):
+            past_kv = inp
+        else:
+            fresh_kv = inp
+    if past_kv is None or fresh_kv is None:
+        raise ValueError(
+            f"Concat {concat_node.name} inputs {list(concat_node.input)} "
+            f"don't match expected past_kv/fresh_kv pattern")
+
+    # Find the Slice that consumes the concat output and produces the
+    # graph's present_key_<L>/present_value_<L> output.
+    slice_node = None
+    for c in consumers.get(concat_node.output[0], []):
+        if c.op_type == "Slice" and (
+            c.output[0].startswith("present_key_") or
+            c.output[0].startswith("present_value_")
+        ):
+            slice_node = c
+            break
+    if slice_node is None:
+        raise ValueError(
+            f"Concat {concat_node.name} output has no present_kv Slice consumer")
+
+    return past_kv, fresh_kv, slice_node.output[0], slice_node
+
+
+def rewrite_layer_mha(graph: onnx.GraphProto, softmax: onnx.NodeProto, layer_idx: int,
+                      producer, consumers):
+    """Rewrite one layer's attention to MultiHeadAttention. Returns
+    (added_nodes, added_initializers, nodes_to_remove).
 
     Iter 5 wiring:
       - Q: Transpose+Reshape adapter to (B, S, hidden_size).
@@ -233,6 +299,114 @@ def rewrite_layer(graph: onnx.GraphProto, softmax: onnx.NodeProto, layer_idx: in
     return new_nodes, new_inits, to_remove
 
 
+def rewrite_layer_gqa(graph: onnx.GraphProto, softmax: onnx.NodeProto, layer_idx: int,
+                      producer, consumers):
+    """Rewrite one layer's attention to GroupQueryAttention. Returns
+    (added_nodes, added_initializers, nodes_to_remove).
+
+    Layout (Run 20):
+      - Q: Transpose+Reshape adapter to (B, S, hidden_size=2048) rank-3.
+      - K, V: walked back through Expand(4→16) + Concat(past, fresh) to
+        the fresh K/V (post-RoPE for K, post-Transpose for V) in
+        (B, kv_num_heads=4, S, head_dim=128); adapted via Transpose+Reshape
+        to (B, S, kv_hidden_size=512) rank-3 for GQA's key/value inputs.
+      - past_key, past_value: graph inputs past_key_<L>/past_value_<L>
+        feed directly into GQA (BNSH layout, max-sized buffer).
+      - seqlens_k, total_sequence_length: new graph inputs (added once
+        at the top level by main()), passed into every layer's GQA.
+      - No attention_bias is wired: GQA does causal masking internally
+        via seqlens_k. We rely on the C# driver to right-pad prompts
+        and pass per-call seqlens_k that reflects the true real length
+        per batch row, which excludes pad tokens from compute and
+        attention without an explicit mask.
+      - Output: GQA's `present_key`/`present_value` directly claim the
+        graph output names `present_key_<L>`/`present_value_<L>` (the
+        original Slice→graph_output path is removed and replaced).
+      - do_rotary=0: RoPE is already applied in the graph (HF wrapper);
+        GQA only does scoring + cache append.
+      - scale=1/HEAD_DIM: Granite's attention_multiplier (Run 19 finding).
+    """
+    q, k, v, _mask, output_tensor, to_remove = find_attention_block(softmax, producer, consumers)
+
+    past_k, fresh_k, present_k_name, k_slice = find_kv_chain_for_gqa(k, producer, consumers)
+    past_v, fresh_v, present_v_name, v_slice = find_kv_chain_for_gqa(v, producer, consumers)
+
+    pfx = f"gqa_l{layer_idx}"
+
+    # Q adapter: (B, 16, S, 128) -> (B, S, 2048)
+    init_q = make_const_int64(f"{pfx}_q_shape", [16, -1, HIDDEN])
+    q_adapted = f"{pfx}_q_in"
+    q_nodes = [
+        helper.make_node("Transpose", inputs=[q], outputs=[f"{pfx}_q_t"],
+                         name=f"{pfx}_q_transpose", perm=[0, 2, 1, 3]),
+        helper.make_node("Reshape", inputs=[f"{pfx}_q_t", f"{pfx}_q_shape"],
+                         outputs=[q_adapted], name=f"{pfx}_q_reshape"),
+    ]
+
+    # K/V adapters: (B, 4, S, 128) -> (B, S, 512)
+    init_kv = make_const_int64(f"{pfx}_kv_shape", [16, -1, KV_HIDDEN])
+    k_adapted = f"{pfx}_k_in"
+    k_nodes = [
+        helper.make_node("Transpose", inputs=[fresh_k], outputs=[f"{pfx}_k_t"],
+                         name=f"{pfx}_k_transpose", perm=[0, 2, 1, 3]),
+        helper.make_node("Reshape", inputs=[f"{pfx}_k_t", f"{pfx}_kv_shape"],
+                         outputs=[k_adapted], name=f"{pfx}_k_reshape"),
+    ]
+    v_adapted = f"{pfx}_v_in"
+    v_nodes = [
+        helper.make_node("Transpose", inputs=[fresh_v], outputs=[f"{pfx}_v_t"],
+                         name=f"{pfx}_v_transpose", perm=[0, 2, 1, 3]),
+        helper.make_node("Reshape", inputs=[f"{pfx}_v_t", f"{pfx}_kv_shape"],
+                         outputs=[v_adapted], name=f"{pfx}_v_reshape"),
+    ]
+
+    gqa_out = f"{pfx}_out"
+    scale = 1.0 / HEAD_DIM
+    gqa_node = helper.make_node(
+        "GroupQueryAttention",
+        inputs=[
+            q_adapted, k_adapted, v_adapted,
+            past_k, past_v,
+            "seqlens_k", "total_sequence_length",
+        ],
+        outputs=[gqa_out, present_k_name, present_v_name],
+        name=f"{pfx}_node",
+        domain="com.microsoft",
+        num_heads=NUM_HEADS,
+        kv_num_heads=NUM_KV_HEADS,
+        scale=scale,
+        do_rotary=0,
+    )
+
+    # Rewire output_tensor consumers (o_proj input) -> gqa_out.
+    for c in consumers.get(output_tensor, []):
+        for i, inp in enumerate(c.input):
+            if inp == output_tensor:
+                c.input[i] = gqa_out
+
+    # Old Slice nodes that produced present_key_<L>/present_value_<L> are
+    # removed; GQA's outputs claim those graph-output names. The upstream
+    # K/V chain (Concat → Unsqueeze → Expand → Reshape → Transpose) becomes
+    # dead once the original attention nodes are gone — ORT DCE handles it.
+    new_nodes = q_nodes + k_nodes + v_nodes + [gqa_node]
+    new_inits = [init_q, init_kv]
+    to_remove_combined = to_remove + [k_slice, v_slice]
+    return new_nodes, new_inits, to_remove_combined
+
+
+def add_gqa_graph_inputs(graph: onnx.GraphProto, batch_size: int) -> None:
+    """Append `seqlens_k` (int32, [B]) and `total_sequence_length`
+    (int32, scalar) as new graph inputs so per-layer GQA nodes can
+    reference them by name."""
+    existing = {i.name for i in graph.input}
+    if "seqlens_k" not in existing:
+        graph.input.append(helper.make_tensor_value_info(
+            "seqlens_k", TensorProto.INT32, [batch_size]))
+    if "total_sequence_length" not in existing:
+        graph.input.append(helper.make_tensor_value_info(
+            "total_sequence_length", TensorProto.INT32, []))
+
+
 def main() -> int:
     args = parse_args()
 
@@ -250,7 +424,22 @@ def main() -> int:
         list(range(len(softmaxes))) if args.layers is None
         else [int(x) for x in args.layers.split(",")]
     )
-    print(f"  Rewriting layers: {target_layers}")
+    print(f"  Mode: {args.mode}; rewriting layers: {target_layers}")
+
+    rewrite_fn = rewrite_layer_mha if args.mode == "mha" else rewrite_layer_gqa
+    fused_op = "MHA" if args.mode == "mha" else "GQA"
+
+    # GQA needs two extra graph inputs (seqlens_k, total_sequence_length)
+    # that every layer's GQA node references. Infer batch size from any
+    # past_key_<L> graph input (they're all the same B).
+    if args.mode == "gqa":
+        b = next(
+            i.type.tensor_type.shape.dim[0].dim_value
+            for i in graph.input if i.name.startswith("past_key_")
+        )
+        add_gqa_graph_inputs(graph, batch_size=b)
+        print(f"  Added GQA graph inputs: seqlens_k (int32, [{b}]) + "
+              f"total_sequence_length (int32, scalar)")
 
     all_new_nodes: list[onnx.NodeProto] = []
     all_new_inits: list[onnx.TensorProto] = []
@@ -261,11 +450,11 @@ def main() -> int:
             raise ValueError(f"Layer {li} out of range; graph has {len(softmaxes)} layers")
         sm = softmaxes[li]
         try:
-            new_n, new_i, rem = rewrite_layer(graph, sm, li, producer, consumers)
+            new_n, new_i, rem = rewrite_fn(graph, sm, li, producer, consumers)
         except ValueError as e:
             print(f"  layer {li}: SKIP — {e}")
             continue
-        print(f"  layer {li}: replaced {len(rem)} nodes with MHA + {len(new_n) - 1} adapter nodes")
+        print(f"  layer {li}: replaced {len(rem)} nodes with {fused_op} + {len(new_n) - 1} adapter nodes")
         all_new_nodes.extend(new_n)
         all_new_inits.extend(new_i)
         all_remove.extend(rem)
