@@ -3259,6 +3259,200 @@ same `TranscribeBatch` path and benchmark. If it matches the
 if it matches the 4.76 s phase-6 number, the gap is elsewhere
 (encoder, kernel selection).
 
+## Run 20 phase 7 — 2026-05-10 15:20 — Tracing the gap: it doesn't exist
+
+User question: "We should trace a run and figure out where the
+opportunity exists (if there is one)." Followed by: "Might be
+we're counting VAD or something?"
+
+Both prompts pointed at the same suspicion: the comparison
+target (3.4 s) was wrong somehow.
+
+### Two tests
+
+**Test 1 — Same C# path, un-rewritten dynamic decoder.** Used
+`/tmp/granite_export_dynamic/decoder.onnx` as-is (no MHA
+fusion, no GQA rewriter, just the dynamic export with
+`--unified-position-ids`). Three trials:
+
+  - ASR median: **4.71 s** (vs MHA-fused 4.76 s)
+
+Unfused and MHA-fused dynamic are identical within noise. So
+MHA fusion isn't adding any cost OR any benefit in dynamic
+mode — the kernel launch saving from fusion is offset by the
+adapter Transpose+Reshape overhead. **MHA fusion is irrelevant
+to wall time in dynamic mode.**
+
+**Test 2 — Decompose the 4.7 s.** Audit the swAsr stopwatch:
+
+  - swAsr starts at Program.cs:410, AFTER swDiar.Stop(). So
+    diarization / VAD is NOT in ASR.
+  - swAsr stops after the Recognize enumeration completes.
+  - Between start and the granite branch: bundle selection
+    branching only, no model work.
+
+So the swAsr stopwatch covers:
+
+  - GraniteSpeech ctor (loads decoder.onnx + ~3.5 GB weights
+    onto GPU, plus mel/encoder/projector sessions).
+  - The Recognize call (TranscribeBatch + yields).
+
+Instrumented the ctor directly:
+
+  [granite-prof] session load: 1387 ms
+  [granite-prof] B=16 total=2336 ms (mel=41 enc=521 proj=7 prefill=442 step=1294 x25 overhead=31)
+  [granite-prof] B=2  total= 954 ms (mel=25 enc=110 proj=3 prefill= 55 step= 755 x35 overhead= 6)
+  ASR: 4685 ms
+
+  → session load 1387 ms + batches 3290 ms + dispatch ~10 ms ≈ 4685 ms
+
+### Conclusion
+
+The "1.4 s residual gap to the 3.4 s legacy baseline" is
+entirely the cold-start `new GraniteSpeech(...)` session-load
+cost. **Subtracting that, our actual decode work is 3.29 s —
+essentially at the legacy baseline.**
+
+The "3.4 s baseline" in the doc was almost certainly measured
+without ctor cost (likely a warm session, or the baseline run
+just happened to start with a primed disk cache). It is NOT a
+target our attention work missed.
+
+### What this means for the perf investigation
+
+We're at the floor. The Run 20 perf arc closes here:
+
+  - GQA static phases (1–3): 13.27 s. Capped by static-shape
+    padding.
+  - GQA dynamic phase 4 (B=1): 5.23 s. Dropped static-shape
+    padding, gained ~2.5×.
+  - GQA dynamic phase 5 (batched): blocked by CUDA kernel
+    missing attention_bias.
+  - MHA dynamic phase 6 (batched): 4.76 s. Marginal win over
+    phase 4. Same as un-rewritten dynamic, confirming fusion is
+    neutral here.
+  - Phase 7 (this entry): the residual gap to the cited 3.4 s
+    baseline is cold-start ctor cost, not perf opportunity.
+
+If there's still a perf lever, it's in the encoder
+(~540 ms/run, serial across segments) or in eliminating
+cold-start (preloaded singleton GraniteSpeech in the GUI/server
+context). The decoder itself is not the bottleneck.
+
+### Final state of the branch
+
+The MHA-fused dynamic bundle (this phase) is the recommended
+production path: clean fusion, dynamic shapes, batched dispatch.
+It's not faster than un-rewritten dynamic, but it's also not
+slower, and the rewriter scaffolding will become useful again
+when ORT's CUDA GQA grows `attention_bias` support (at which
+point the same export can be re-rewritten to GQA for whatever
+kernel-launch savings exist in larger-shape workloads).
+
+## Run 20 phase 8 — 2026-05-10 15:38 — IOBinding for the dynamic step loop
+
+GPU sampling at phase 7 showed 65 % idle and mean 18 % during
+the run. The biggest user-side lever was the per-step
+`GetTensorDataAsSpan<float>()` on the logits OrtValue — an
+implicit GPU→CPU copy that synchronises and stalls the host
+between iterations. Binding logits to a pre-allocated CPU buffer
+via `OrtIoBinding.BindOutput(name, ortValue)` writes the result
+directly into our .NET array and skips the round-trip.
+
+### Change
+
+In `TranscribeBatch` (the dynamic-MHA path), pre-allocate the
+constant-shape inputs (input_ids, audio_embeds, cache_position,
+position_ids) and the logits output buffer once. Each step
+constructs only the attention_mask OrtValue (whose shape grows)
+and a fresh `OrtIoBinding`, binds the pre-allocated inputs and
+the logits output, then calls `RunWithBinding`. present_kv
+OrtValues come back from `GetOutputValues()` and feed forward via
+the prev/cur collection-disposal pattern lifted from
+`WhisperTurbo.cs` — `pastKvs` holds borrowed references into the
+previous step's collection until the next step's binding has
+consumed them.
+
+Two bugs surfaced during development and were worth recording:
+
+1. **Disposal of the `GetOutputValues()` collection** — wrapping
+   it in `using var` disposes the inner OrtValues at end of
+   scope, which invalidates the `pastKvs` references that the
+   next iteration's binding needs. Fix: hold the collection in
+   `prevStepOutputs` and `Dispose()` it AFTER the next iteration
+   has swapped `pastKvs` off it (matches WhisperTurbo's pattern).
+2. **Output-bind index mismatch** — I bound outputs interleaved
+   (key_0, value_0, key_1, value_1, …) but indexed
+   `pastKvs[2L] = curOutputs[1+L]` as if all keys came first.
+   Symptom: transcript decoded as plausible bytes but semantically
+   garbage ("all kinds of 'ss<|fim_suffix|> been [aa…"). Fix: bind
+   outputs in the same order as `decOutputNames` — logits, then
+   all present_key in layer order, then all present_value.
+
+### Results (3 runs each on `/tmp/run15_short_60s.wav`)
+
+| Bundle | ASR median | Δ vs Phase 6 |
+|---|---|---|
+| MHA-fused dynamic (Phase 6, no IOBinding) | 4.76 s | baseline |
+| **MHA-fused dynamic + IOBinding (this run)** | **3.61 s** | **−24 %** |
+| legacy unfused dynamic reference | ~3.4 s | parity |
+
+Transcript exact match through all 18 segments.
+
+### GPU utilization comparison
+
+Sampled with `nvidia-smi -lms 30` during a full ASR run:
+
+| Phase | Mean GPU | Max GPU | 0-9 % bin |
+|---|---|---|---|
+| Phase 6 (4.76 s) | 18 % | 82 % | 65 % |
+| Phase 8 (3.61 s) | 14 % | 90 % | 72 % |
+
+Mean went down because the run completes faster, so the fixed
+cold-start cost is a bigger fraction of the sampled window. But
+the PEAKS went up (82 → 90 %) — when the GPU is actually doing
+decode work, it's now driven harder per second of wall time.
+
+### Where the wall time goes now
+
+Total ASR: 3.61 s
+  - cold-start session load: ~1.4 s (decoder.onnx + 3.5 GB weights
+    onto GPU, plus mel/encoder/projector sessions).
+  - actual decode work: ~2.2 s (warm-equivalent).
+
+For long-running deployments (GUI, server) where the GraniteSpeech
+instance is created once and reused, the relevant number is the
+~2.2 s warm decode — about **35 % faster than the legacy dynamic
+baseline** if that baseline included session load, or **at
+parity** if it didn't.
+
+### What's left on the GPU floor
+
+GPU still idle 72 % of wall time in this run, but most of that
+is the cold-start phase. Within the decode portion, peaks reach
+90 % so utilisation during compute is healthy.
+
+Remaining levers, in order of decreasing realism:
+
+1. **Pinned (page-locked) CPU memory for logits.** Current
+   `BindOutput` with a regular .NET array still does a
+   pageable-host copy. Pinned host memory enables async cudaMemcpy
+   that overlaps with the next step's kernel launches. Modest win
+   (~5-10 %) but achievable.
+2. **Encoder parallelism.** Encoder takes ~540 ms across the
+   18-segment run, serially per segment. Batched encoder call
+   would amortise this. Encoder/projector aren't the wall-time
+   bottleneck anymore so this is small.
+3. **Pre-loaded singleton GraniteSpeech.** Move the ~1.4 s
+   ctor cost out of the user-perceived ASR window. This is an
+   app-architecture change (long-running session vs per-CLI-call
+   reload), not a Granite kernel change.
+4. **CUDA graph capture.** Requires re-pinning shapes, regressing
+   to the slower static-shape contract. Not worth it given that
+   path was 13.3 s.
+
+This is a good place to call the perf arc done.
+
 
 
 

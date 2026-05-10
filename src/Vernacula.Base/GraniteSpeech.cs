@@ -682,8 +682,40 @@ public sealed class GraniteSpeech : IDisposable
                 int rowOff = b * (sMax + maxNewTokens + 1);
                 for (int s = padLen; s < sMax; s++) stepAttnBuf[rowOff + s] = 1L;
             }
+            // ── Step-loop IOBinding (Run 20 phase 8) ───────────────────────
+            // Pre-allocate the constant-shape inputs (input_ids, audio_embeds,
+            // cache_position, position_ids) and the logits OUTPUT buffer
+            // once, then re-use them every iteration. attention_mask and
+            // past_kv still vary shape per step so they get fresh
+            // OrtValues, but everything else stops re-allocating ~60 times.
+            // Binding `logits` to a pre-allocated CPU buffer also skips the
+            // per-step GetTensorDataAsSpan readout that pulls logits across
+            // the GPU→CPU bus implicitly.
             float[] dummyAudio = new float[B * 1 * (int)audioDim];
+            float[] stepLogitsBuf = new float[B * 1 * VocabSize];
+            long[] stepPositionIds = new long[B];
 
+            using var stepInputIdVal = OrtValue.CreateTensorValueFromMemory(
+                stepInputIds, new long[] { B, 1 });
+            using var stepAudioVal = OrtValue.CreateTensorValueFromMemory(
+                dummyAudio, new long[] { B, 1, audioDim });
+            using var cachePosVal = OrtValue.CreateTensorValueFromMemory(
+                cachePosStep, new long[] { 1 });
+            using var stepPosVal = _hasPositionIdsInput
+                ? OrtValue.CreateTensorValueFromMemory(stepPositionIds, new long[] { B, 1 })
+                : null;
+            using var stepLogitsVal = OrtValue.CreateTensorValueFromMemory(
+                stepLogitsBuf, new long[] { B, 1, VocabSize });
+
+            // Lifetime management across iterations follows WhisperTurbo's
+            // pattern (see WhisperTurbo.cs step loop): pastKvs holds borrowed
+            // references into either prefillOutputs or the previous step's
+            // bound output collection. `prevStepOutputs` keeps that
+            // collection alive until the NEXT iteration has consumed (re-bound)
+            // its OrtValues — at which point we can release it.
+            using var cudaMemInfo = new OrtMemoryInfo(
+                "Cuda", OrtAllocatorType.ArenaAllocator, 0, OrtMemType.Default);
+            IDisposableReadOnlyCollection<OrtValue>? prevStepOutputs = null;
             int pastLen = sMax;
             for (int step = 0; step < maxNewTokens && finishedCount < B; step++)
             {
@@ -693,13 +725,11 @@ public sealed class GraniteSpeech : IDisposable
                 {
                     stepInputIds[b] = finished[b] ? EosTokenId : nextTok[b];
                     int rowOff = b * (sMax + maxNewTokens + 1);
-                    stepAttnBuf[rowOff + pastLen] = 1L;  // new token position
+                    stepAttnBuf[rowOff + pastLen] = 1L;
+                    if (_hasPositionIdsInput) stepPositionIds[b] = realLen[b] + step;
                 }
                 cachePosStep[0] = pastLen;
 
-                // Build a contiguous [B, totalLen] attn mask for this step:
-                // ORT requires the OrtValue's backing memory to match the
-                // declared shape, so we copy out the live prefix per row.
                 var stepAttnFlat = new long[B * totalLen];
                 for (int b = 0; b < B; b++)
                 {
@@ -707,47 +737,53 @@ public sealed class GraniteSpeech : IDisposable
                     int dstOff = b * totalLen;
                     Array.Copy(stepAttnBuf, srcOff, stepAttnFlat, dstOff, totalLen);
                 }
-
-                using var stepInputIdVal = OrtValue.CreateTensorValueFromMemory(
-                    stepInputIds, new long[] { B, 1 });
-                using var stepAudioVal = OrtValue.CreateTensorValueFromMemory(
-                    dummyAudio, new long[] { B, 1, audioDim });
                 using var stepAttnVal = OrtValue.CreateTensorValueFromMemory(
                     stepAttnFlat, new long[] { B, totalLen });
-                using var cachePosVal = OrtValue.CreateTensorValueFromMemory(
-                    cachePosStep, new long[] { 1 });
 
-                // Per-row position_ids for the new step token: realLen[b] + step.
-                long[]? stepPositionIds = null;
-                OrtValue? stepPosVal = null;
-                if (_hasPositionIdsInput)
+                using var stepBinding = _decoder.CreateIoBinding();
+                stepBinding.BindInput("input_ids",      stepInputIdVal);
+                stepBinding.BindInput("audio_embeds",   stepAudioVal);
+                stepBinding.BindInput("attention_mask", stepAttnVal);
+                stepBinding.BindInput("cache_position", cachePosVal);
+                if (stepPosVal is not null)
+                    stepBinding.BindInput("position_ids", stepPosVal);
+                for (int L = 0; L < NumDecoderLayers; L++)
                 {
-                    stepPositionIds = new long[B];
-                    for (int b = 0; b < B; b++)
-                        stepPositionIds[b] = realLen[b] + step;
-                    stepPosVal = OrtValue.CreateTensorValueFromMemory(
-                        stepPositionIds, new long[] { B, 1 });
+                    stepBinding.BindInput($"past_key_{L}",   pastKvs[2 * L]);
+                    stepBinding.BindInput($"past_value_{L}", pastKvs[2 * L + 1]);
                 }
+                // Bind output order matches `decOutputNames` so GetOutputValues()
+                // indices line up: [0]=logits, [1..40]=present_key_<L>,
+                // [41..80]=present_value_<L> — same convention as the non-
+                // IOBinding code path.
+                stepBinding.BindOutput("logits", stepLogitsVal);
+                for (int L = 0; L < NumDecoderLayers; L++)
+                    stepBinding.BindOutputToDevice($"present_key_{L}", cudaMemInfo);
+                for (int L = 0; L < NumDecoderLayers; L++)
+                    stepBinding.BindOutputToDevice($"present_value_{L}", cudaMemInfo);
 
-                var stepInputs = new List<OrtValue>(baseInputCount + 2 * NumDecoderLayers)
-                { stepInputIdVal, stepAudioVal, stepAttnVal, cachePosVal };
-                if (stepPosVal is not null) stepInputs.Add(stepPosVal);
-                stepInputs.AddRange(pastKvs);
+                _decoder.RunWithBinding(runOpts, stepBinding);
+                var curOutputs = stepBinding.GetOutputValues();
 
-                var outputs = _decoder.Run(
-                    runOpts, decInputNames, stepInputs, decOutputNames);
-
-                var oldPast = pastKvs;
                 pastKvs = new OrtValue[2 * NumDecoderLayers];
                 for (int L = 0; L < NumDecoderLayers; L++)
                 {
-                    pastKvs[2 * L]     = outputs[1 + L];
-                    pastKvs[2 * L + 1] = outputs[1 + NumDecoderLayers + L];
+                    pastKvs[2 * L]     = curOutputs[1 + L];
+                    pastKvs[2 * L + 1] = curOutputs[1 + NumDecoderLayers + L];
                 }
 
-                var stepLogits = outputs[0];
-                var stepLogitsSpan = stepLogits.GetTensorDataAsSpan<float>();
-                // Step logits shape: [B, 1, V]
+                // The previous iteration's collection no longer has any
+                // active borrowers (we just swapped pastKvs off it), so it
+                // can go. On the FIRST step, prevStepOutputs is null —
+                // pastKvs was pointing into prefillOutputs there, which we
+                // intentionally don't dispose because it owns the per-step
+                // logits OrtValue we already disposed earlier.
+                prevStepOutputs?.Dispose();
+                prevStepOutputs = curOutputs;
+
+                // Logits are in stepLogitsBuf (CPU) via BindOutput — direct
+                // .NET array read, no GetTensorDataAsSpan round-trip.
+                var stepLogitsSpan = new ReadOnlySpan<float>(stepLogitsBuf);
                 for (int b = 0; b < B; b++)
                 {
                     if (finished[b]) { nextTok[b] = EosTokenId; continue; }
@@ -766,14 +802,11 @@ public sealed class GraniteSpeech : IDisposable
                         finishedCount++;
                     }
                 }
-                stepLogits.Dispose();
-                stepPosVal?.Dispose();
-                foreach (var ov in oldPast) ov.Dispose();
                 pastLen = totalLen;
                 stepCountLocal++;
             }
 
-            foreach (var ov in pastKvs) ov.Dispose();
+            prevStepOutputs?.Dispose();
             if (swStep != null) { swStep.Stop(); stepLocal = swStep.ElapsedMilliseconds; }
         }
 
