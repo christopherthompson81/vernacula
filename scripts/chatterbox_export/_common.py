@@ -26,14 +26,33 @@ except ImportError:  # pragma: no cover - optional until BF16 path is used
 # Chatterbox-wide constants extracted from the upstream Python package /
 # Vlad's reference script. Keep these in sync with `chatterbox-tts`.
 S3GEN_SR = 24000
-SPEECH_VOCAB_SIZE = 6561
+S3_SR = 16_000
+
+# Speech-token vocabulary.
+#   - SPEECH_BASE_VOCAB_SIZE is the count of "real" speech tokens (ids
+#     0..SPEECH_BASE_VOCAB_SIZE-1) emitted by the S3 tokenizer.
+#   - The three special ids that follow it happen to share numeric
+#     adjacency, but the names refer to different concepts: don't use
+#     `SPEECH_BASE_VOCAB_SIZE` as a token id.
+SPEECH_BASE_VOCAB_SIZE = 6561
 START_SPEECH_TOKEN = 6561
 STOP_SPEECH_TOKEN = 6562
 EXAGGERATION_TOKEN = 6563
-S3_SR = 16_000
+
+# Llama backbone dims (verified at runtime against
+# chatterbox.t3.tfmr.config — 30 layers, 16 KV heads, 64 head_dim).
+LLM_HIDDEN_SIZE = 1024
 LLM_NUM_LAYERS = 30
 LLM_NUM_KV_HEADS = 16
-LLM_HEAD_DIM = 64
+LLM_NUM_ATTN_HEADS = 16
+LLM_HEAD_DIM = LLM_HIDDEN_SIZE // LLM_NUM_ATTN_HEADS  # 64
+
+# Output projection dims (verified against chatterbox.t3.speech_head and
+# .text_head Linear layers). The LM emits 8194 speech-vocab logits per
+# step; only the lower SPEECH_BASE_VOCAB_SIZE + 3 are "named". The
+# remaining 1630 are reserved/unused — likely a power-of-2-adjacent pad.
+SPEECH_HEAD_OUTPUT_DIM = 8194
+TEXT_HEAD_OUTPUT_DIM = 704
 
 
 def fail(message: str):

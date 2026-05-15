@@ -128,15 +128,24 @@ def hash_file(path: Path) -> str:
     return h.hexdigest()
 
 
+DUMMY_AUDIO_SAMPLES = 312_936  # 13.039 s at 24 kHz, matches Vlad's dummy
+DUMMY_AUDIO_SEED = 0
+
+
 def load_audio_prompt(path: Path | None, target_sr: int, device, dtype):
-    """Return a 1xN audio tensor at target_sr. If path is None, return
-    random noise sized for the dummy export (~13 s at 24 kHz, matching
-    Vlad's reference dummy size for trace shape stability).
+    """Return a 1xN audio tensor at target_sr.
+
+    If `path` is None, generate a *deterministic* random-noise prompt
+    by seeding a fresh Generator. Re-running the same command without
+    --audio-prompt produces byte-identical audio bytes → byte-identical
+    speech tokens → byte-identical conditional_decoder.onnx hashes.
+    Required for the parity test in E4 and for the artifact_hashes in
+    export-report.json to be reproducible across runs.
     """
     import torch
     if path is None:
-        # 312_936 samples == 13.039 s at 24 kHz, matching Vlad's dummy
-        return torch.randn(1, 312_936, device=device, dtype=dtype)
+        gen = torch.Generator(device=device).manual_seed(DUMMY_AUDIO_SEED)
+        return torch.randn(1, DUMMY_AUDIO_SAMPLES, device=device, dtype=dtype, generator=gen)
     import librosa
     waveform, _sr = librosa.load(str(path), sr=target_sr, mono=True)
     return torch.from_numpy(waveform).unsqueeze(0).to(device=device, dtype=dtype)
@@ -293,7 +302,7 @@ def slim_and_externalize(output_dir: Path, filenames: list[str]) -> None:
             slimmed = onnxslim.slim(str(path))
         except Exception as e:
             print(f"    slim failed for {fn}: {type(e).__name__}: {e}")
-            print(f"    falling back to raw externalization")
+            print("    falling back to raw externalization")
         if slimmed is None:
             # Re-load the raw export (torch.onnx.export wrote it inline)
             # and rewrite with external data.
