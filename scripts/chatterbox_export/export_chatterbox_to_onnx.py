@@ -45,7 +45,6 @@ from _common import (
     LLM_NUM_LAYERS,
     LLM_NUM_KV_HEADS,
     LLM_HEAD_DIM,
-    SPEECH_HEAD_OUTPUT_DIM,
 )
 
 add_local_script_path()
@@ -174,16 +173,29 @@ def build_reference_input_ids(device):
 
 
 def apply_safe_dense_patch(chatterbox_model, SafeDenseLayer):
-    """Replace `s3gen.speaker_encoder.xvector.dense` (DenseLayer wrapping
-    BatchNorm1d) with `SafeDenseLayer` (LayerNorm). Required for the
-    speech_encoder graph to export. Vlad asserts this is inference-equivalent;
-    E2 parity test must verify numerically.
+    """REMOVED — DO NOT USE.
+
+    Vlad's `SafeDenseLayer` (BatchNorm1d→LayerNorm substitution) was
+    introduced to work around an apparent ONNX export issue with the
+    upstream `DenseLayer`. Direct testing (probe_dense.py) showed that
+    the upstream layer ONNX-exports cleanly on CPU; the original
+    failure was the same CUDA-side `torch.jit.trace` bug we hit on
+    the cond decoder, not a symbolic-conversion problem.
+
+    The substitution drops BatchNorm1d's running mean/var (which
+    encode learned activation statistics) and replaces with a
+    randomly-initialized LayerNorm. Parity test E4 confirmed this
+    drifts speaker_embeddings by 93% of dynamic range (cosine sim
+    0.81 instead of 1.0), silently degrading voice-clone quality.
+
+    Function preserved as a stub so callers fail loudly if it's ever
+    re-introduced. The export script now skips this call entirely.
     """
-    old = chatterbox_model.s3gen.speaker_encoder.xvector.dense
-    new = SafeDenseLayer(old.linear.in_channels, old.linear.out_channels)
-    new.linear.weight.data.copy_(old.linear.weight.data)
-    chatterbox_model.s3gen.speaker_encoder.xvector.dense = new
-    return True
+    raise RuntimeError(
+        "SafeDenseLayer substitution was removed after parity test "
+        "showed it drifts speaker_embeddings by ~93%. Use upstream "
+        "DenseLayer directly (export speech_encoder on CPU)."
+    )
 
 
 def export_embed_tokens(embed_tokens_mod, input_ids, position_ids, exaggeration,
@@ -211,27 +223,54 @@ def export_embed_tokens(embed_tokens_mod, input_ids, position_ids, exaggeration,
 
 
 def export_speech_encoder(prepare_conditionals_mod, audio_values, out_path: Path,
-                          opset: int, item_patch: bool):
+                          opset: int, item_patch: bool, chatterbox_model):
+    """Export the speech encoder on CPU.
+
+    On CUDA, `torch.jit.trace` hits the same kind of spurious
+    cuda:0/cpu device mismatch as the cond decoder (probe via
+    `probe_dense.py`). Eager mode works on CUDA. Workaround: move the
+    module + inputs to CPU just for the export. ONNX graph is
+    device-independent; ORT can still run it on CUDA EP at session load.
+
+    Also applies a scoped patch to `DenseLayer.forward` to specialize
+    away the `if len(x.shape) == 2` branch, which makes ONNX BatchNorm
+    fail with "unknown channel size" (the if-node hides the channel
+    dim from the symbolic checker). The patched forward assumes 2D
+    input; only the 2D branch is ever exercised by the pipeline
+    (verified via probe_dense_shape.py).
+    """
     import torch
+    from _export_patches import patched_dense_layer_for_export
     print(f"  exporting speech_encoder.onnx (opset {opset}) ...")
     t0 = time.perf_counter()
-    with item_no_op_patch(item_patch):
-        torch.onnx.export(
-            prepare_conditionals_mod,
-            (audio_values,),
-            str(out_path),
-            export_params=True,
-            opset_version=opset,
-            input_names=["audio_values"],
-            output_names=["audio_features", "audio_tokens", "speaker_embeddings", "speaker_features"],
-            dynamic_axes={
-                "audio_values": {0: "batch_size", 1: "num_samples"},
-                "audio_features": {0: "batch_size", 1: "sequence_length"},
-                "audio_tokens": {0: "batch_size", 1: "audio_sequence_length"},
-                "speaker_embeddings": {0: "batch_size"},
-                "speaker_features": {0: "batch_size", 1: "feature_dim"},
-            },
-        )
+    orig_device = next(prepare_conditionals_mod.parameters()).device
+    prepare_conditionals_mod.cpu()
+    audio_values_cpu = audio_values.cpu()
+    prev_default = torch.get_default_device() if hasattr(torch, "get_default_device") else None
+    torch.set_default_device("cpu")
+    try:
+        with item_no_op_patch(item_patch), \
+             patched_dense_layer_for_export(chatterbox_model.s3gen.speaker_encoder):
+            torch.onnx.export(
+                prepare_conditionals_mod,
+                (audio_values_cpu,),
+                str(out_path),
+                export_params=True,
+                opset_version=opset,
+                input_names=["audio_values"],
+                output_names=["audio_features", "audio_tokens", "speaker_embeddings", "speaker_features"],
+                dynamic_axes={
+                    "audio_values": {0: "batch_size", 1: "num_samples"},
+                    "audio_features": {0: "batch_size", 1: "sequence_length"},
+                    "audio_tokens": {0: "batch_size", 1: "audio_sequence_length"},
+                    "speaker_embeddings": {0: "batch_size"},
+                    "speaker_features": {0: "batch_size", 1: "feature_dim"},
+                },
+            )
+    finally:
+        if prev_default is not None:
+            torch.set_default_device(prev_default)
+        prepare_conditionals_mod.to(orig_device)
     print(f"    done ({time.perf_counter() - t0:.1f}s)  {out_path.stat().st_size / 1e6:.2f} MB")
 
 
@@ -304,7 +343,6 @@ def build_lm_wrapper(chatterbox_model, device):
     `language_model.onnx` so consumers (and our own C# orchestrator)
     can swap our export for theirs.
     """
-    import torch
     import torch.nn as nn
 
     class LMWithSpeechHead(nn.Module):
@@ -463,8 +501,12 @@ def main() -> None:
     )
     print(f"  s3gen + t3 parameter count: {param_count:,}")
 
-    print("Applying SafeDenseLayer monkeypatch on speaker_encoder.xvector.dense ...")
-    patched = apply_safe_dense_patch(chatterbox_model, ci.SafeDenseLayer)
+    # SafeDenseLayer monkey-patch removed — see apply_safe_dense_patch
+    # docstring. Upstream DenseLayer with BatchNorm1d ONNX-exports
+    # cleanly on CPU. The substitution silently degraded voice cloning.
+    # tracked in export-report.json so old reports stay comparable;
+    # future cleanup can drop the field.
+    patched = False
 
     print("Building export wrappers ...")
     prepare_conditionals = ci.PrepareConditionalsModel(chatterbox_model).eval().to(device)
@@ -506,6 +548,7 @@ def main() -> None:
             prepare_conditionals, audio_values,
             args.output_dir / "speech_encoder.onnx",
             opset=args.opset_speech_encoder, item_patch=args.with_item_patch,
+            chatterbox_model=chatterbox_model,
         )
         graphs_exported.append("speech_encoder.onnx")
 

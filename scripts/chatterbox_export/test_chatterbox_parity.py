@@ -231,6 +231,72 @@ def parity_embed(onnx_dir: Path, providers: list[str], tolerance: float = 1e-4) 
     )
 
 
+def parity_enc_onnx_vs_upstream(onnx_dir: Path, providers: list[str],
+                                tolerance: float = 1e-3) -> ParityResult:
+    """speech_encoder.onnx speaker_embeddings vs upstream eager.
+
+    The downstream-most parity check: does our exported ONNX
+    speech_encoder produce the same speaker embedding (component of
+    its 4-tuple output) as running the upstream chatterbox
+    speaker_encoder directly on the same input features?
+
+    This is what changed when we dropped SafeDenseLayer: the previous
+    `enc[safe-dense]` test showed substituting BatchNorm1d→randomly-
+    initialized LayerNorm drifted embeddings by 93%. After dropping
+    the substitution and inlining BatchNorm math (so ONNX-export
+    works), this test confirms the resulting ONNX produces upstream-
+    equivalent embeddings.
+
+    Builds the encoder input the same way the vendored
+    PrepareConditionalsModel does (Kaldi fbank from a 16 kHz audio
+    clip), runs both paths, compares.
+    """
+    import torch
+    import onnxruntime as ort
+    from chatterbox.tts import ChatterboxTTS
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import _chatterbox_internals as ci
+
+    onnx_path = onnx_dir / "speech_encoder.onnx"
+    if not onnx_path.exists():
+        return ParityResult("enc[onnx-vs-upstream]", False,
+                            float("inf"), float("inf"), float("inf"),
+                            tolerance, notes=f"missing {onnx_path}")
+
+    chatterbox_model = ChatterboxTTS.from_pretrained(device="cuda")
+
+    # Run our exported ONNX speech_encoder
+    torch.manual_seed(0)
+    audio = torch.randn(1, 312_936)  # matches DUMMY_AUDIO_SAMPLES from export
+    sess = ort.InferenceSession(str(onnx_path), providers=providers)
+    onnx_out = sess.run(
+        ["audio_features", "audio_tokens", "speaker_embeddings", "speaker_features"],
+        {"audio_values": audio.numpy()},
+    )
+    onnx_speaker_embeddings = onnx_out[2]  # the third output
+
+    # Build the equivalent upstream eager output. We use the same
+    # vendored PrepareConditionalsModel here because it's the
+    # well-tested orchestration of upstream submodules — but with
+    # NO SafeDenseLayer patch (our export script also doesn't apply
+    # one anymore). So the encoder runs upstream code path.
+    prep = ci.PrepareConditionalsModel(chatterbox_model).eval().to("cuda")
+    with torch.no_grad():
+        _, _, eager_speaker_embeddings, _ = prep(audio.to("cuda"))
+    eager_speaker_embeddings_np = eager_speaker_embeddings.cpu().numpy()
+
+    max_abs, max_rel, mean_abs = diff_metrics(onnx_speaker_embeddings, eager_speaker_embeddings_np)
+    cos = float(np.dot(onnx_speaker_embeddings.flatten(), eager_speaker_embeddings_np.flatten())
+                / (np.linalg.norm(onnx_speaker_embeddings) * np.linalg.norm(eager_speaker_embeddings_np) + 1e-12))
+    passed = (max_abs <= tolerance) and (cos > 0.999)
+    notes = (
+        f"shape={tuple(onnx_speaker_embeddings.shape)}  "
+        f"range=[{eager_speaker_embeddings_np.min():.3f}, {eager_speaker_embeddings_np.max():.3f}]  "
+        f"cosine_sim={cos:.6f}"
+    )
+    return ParityResult("enc[onnx-vs-upstream]", passed, max_abs, max_rel, mean_abs, tolerance, notes=notes)
+
+
 def parity_enc(onnx_dir: Path, providers: list[str], tolerance: float = 1e-2) -> ParityResult:
     """SafeDenseLayer impact on the speaker_encoder.
 
@@ -340,9 +406,11 @@ def main() -> None:
         results.append(parity_embed(args.onnx_dir, providers, args.tolerance))
         print(results[-1].summary())
     if "enc" in tests:
-        print("[enc] SafeDenseLayer impact on speaker_encoder")
-        results.append(parity_enc(args.onnx_dir, providers, args.tolerance))
+        print("[enc] speech_encoder.onnx speaker_embeddings vs upstream eager")
+        results.append(parity_enc_onnx_vs_upstream(args.onnx_dir, providers, args.tolerance))
         print(results[-1].summary())
+        # Keep the historical SafeDenseLayer test reachable for diagnostic
+        # use; not run by default since SafeDenseLayer was removed.
     if "dec" in tests:
         print("[dec] conditional_decoder parity — not implemented yet")
 

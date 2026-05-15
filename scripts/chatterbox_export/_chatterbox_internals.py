@@ -690,9 +690,14 @@ class PrepareConditionalsModel(torch.nn.Module):
         spkr_device = next(self.cond_enc.spkr_enc.parameters()).device
         speaker_emb = torch.zeros(1, self.speaker_embed_size, device=spkr_device)
         with torch.no_grad():
-            self.cond_spkr = self.cond_enc.spkr_enc(
+            cond_spkr_init = self.cond_enc.spkr_enc(
                 speaker_emb.view(-1, self.speaker_embed_size)
             )[:, None].detach()  # (B, 1, dim)
+        # register_buffer so .to(device) / .cpu() actually move it.
+        # Plain-attribute assignment (Vlad's original) leaves it on its
+        # init-time device when the wrapper is moved — broke the
+        # speech_encoder export-on-cpu workaround.
+        self.register_buffer("cond_spkr", cond_spkr_init)
 
     def mel_spectrogram(self, y, n_fft=1920, num_mels=80, sampling_rate=24000, hop_size=480, win_size=1920,
                     fmin=0, fmax=8000, center=False):

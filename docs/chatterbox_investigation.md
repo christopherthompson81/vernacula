@@ -382,4 +382,106 @@ maintenance debt. E3's LM is ours and clean.
 and E5 (export-report finalization, audit cleanup, optional fp16 path).
 Parity is the next gate before any C# consumer takes a dependency.
 
-## Run 5 — pending — E4 parity tests
+## Run 5 — 2026-05-15 — E4 parity catches a real bug; SafeDenseLayer removed
+
+**Question:** Do the four exported ONNX graphs produce numerically
+correct outputs vs upstream PyTorch chatterbox? (E4.)
+
+**Approach:** Per-graph parity framework in
+[test_chatterbox_parity.py](../scripts/chatterbox_export/test_chatterbox_parity.py).
+For each graph, run our ONNX through ORT and run the equivalent
+upstream PyTorch forward on the same inputs; compare via
+max-abs-diff + max-rel-diff + mean-abs-diff + (where appropriate)
+argmax agreement and cosine similarity.
+
+**Three tests landed; all three now pass:**
+
+| Test | Result | Notes |
+|---|---|---|
+| `lm` | PASS | logit max-abs 2.5e-3 on a [-7.7, 4.3] range, argmax tokens agree exactly. Normal SDPA-vs-PyTorch numerical noise. |
+| `embed` | PASS | bit-perfect (max_abs = 0). InputsEmbeds wrapper is uncontested. |
+| `enc[onnx-vs-upstream]` | PASS | speaker_embeddings cosine sim 0.999999 vs upstream eager, max_abs 3.4e-3. **Only after** SafeDenseLayer removal. |
+
+**The SafeDenseLayer bug:**
+
+The first version of `enc[safe-dense]` (a with-vs-without-patch
+diagnostic on the stock chatterbox model) revealed that Vlad's
+`SafeDenseLayer` substitution **drifted speaker_embeddings by 93% of
+dynamic range** (cosine sim 0.81 instead of 1.0). The substitution
+copies only the Conv1d weight from upstream and replaces the
+BatchNorm1d with a randomly-initialized LayerNorm. Vlad's stated
+reason ("safe at inference") was wrong: BatchNorm1d's running
+mean/var encode learned activation statistics that the random
+LayerNorm cannot match.
+
+A separate probe ([probe_dense.py](../scripts/chatterbox_export/_export_patches.py))
+showed that upstream `DenseLayer` with `BatchNorm1d` ONNX-exports
+fine on CPU — Vlad's earlier failure was the same generic CUDA
+trace bug we hit on the cond decoder, not a symbolic-conversion
+issue. **The substitution was unnecessary AND wrong.**
+
+**The fix turned into a four-step debug:**
+
+1. Removed the `apply_safe_dense_patch` call from `main()`.
+2. Added `register_buffer` for `cond_spkr` (it was a plain attribute,
+   so `.cpu()` skipped it during the new CPU-export path).
+3. First patch attempt: monkey-patch `DenseLayer.forward` to skip
+   the `if len(x.shape) == 2` branch. **Didn't work** — `squeeze(-1)`
+   is shape-conditional and produced its own ONNX `If` node.
+4. Second attempt: skip the `Conv1d`-with-`unsqueeze`/`squeeze` trick;
+   use a true `nn.Linear`. **Didn't work** — ONNX shape inference
+   couldn't propagate channel dim through `Linear` either.
+5. Third attempt: explicit `reshape(-1, 192)` after Linear. **Didn't
+   work** — even an explicit Reshape with static target shape didn't
+   give the BatchNorm symbolic the channel info it wanted.
+6. Final fix: `_DenseLayerExportShim` (in `_export_patches.py`)
+   replaces the entire DenseLayer with a Linear + inlined-BatchNorm
+   math. BatchNorm1d at inference (with `affine=False`, which the
+   xvector dense uses) is just `(x - running_mean) * rsqrt(running_var
+   + eps)`. Pure arithmetic, no BatchNorm op in the graph. **Works.**
+
+The shim copies BN running mean/var as buffers; behavior is
+mathematically identical to upstream BN at inference.
+
+**Side effects of dropping SafeDenseLayer:**
+
+- One inert function (`apply_safe_dense_patch`) preserved as a stub
+  that raises if anyone tries to re-introduce it.
+- Speech encoder export now runs on CPU (same trace-bug workaround
+  as cond decoder). Export time went from 9 s on CUDA to ~8 s on
+  CPU — no meaningful change. The exported ONNX runs on any EP at
+  session-load time.
+- One scoped patch (`patched_dense_layer_for_export` +
+  `_DenseLayerExportShim`) is now active during the speech_encoder
+  export. The earlier WIP patches in `_export_patches.py` (S3Tokenizer
+  STFT/forward/rotary) remain inert — kept as seeds for the
+  S3Tokenizer de-vendoring follow-up.
+
+**Final smoke export numbers, post-fix:**
+
+| Graph | Header | Sidecar | Total |
+|---|---|---|---|
+| embed_tokens.onnx | 17 KB | 61.6 MB | 61.6 MB |
+| speech_encoder.onnx | 1.1 MB | 1.05 GB | 1.05 GB |
+| language_model.onnx | 810 KB | 2.05 GB | 2.05 GB |
+| conditional_decoder.onnx | 32 MB | 533 MB | 565 MB |
+
+Total ~3.6 GB (unchanged from Run 4).
+
+**What this means:**
+
+Voice-clone quality from `speech_encoder.onnx` is now upstream-faithful.
+Anyone who was previously using a Vlad-pattern export was getting
+silently degraded speaker embeddings — and there was no way to know
+without parity tests. The E4 framework paid for itself on its first
+real test.
+
+**Still ahead:**
+- Cond decoder parity (spectral distance on waveform output).
+- Optional: `_chatterbox_internals.py` cleanup. Several big chunks
+  (S3Tokenizer family ~600 LOC, ISTFT ~106 LOC) are still vendored.
+  Replacing them with patches would shrink the surface further; the
+  WIP `_export_patches.py` work has the seeds. Decision can wait
+  until cond decoder parity is in.
+
+## Run 6 — pending — Conditional decoder parity

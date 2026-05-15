@@ -197,6 +197,92 @@ def patched_rotary_for_export(root_module):
             module.freqs_cis = original
 
 
+# ── chatterbox.models.s3gen.xvector.DenseLayer.forward ────────────────
+# Upstream's DenseLayer.forward branches on `if len(x.shape) == 2` to
+# handle both 2D and 3D inputs. The branch produces an ONNX `If` node
+# whose output channel size is unknown to the symbolic checker, which
+# then refuses BatchNorm1d ("ONNX export of batch_norm for unknown
+# channel size"). Probe (probe_dense_shape.py) showed only one
+# DenseLayer instance in the speech_encoder pipeline and it's always
+# called with 2D input. Specialize the forward to the 2D branch and
+# the symbolic check passes.
+#
+# Parity note: the if-branch only changes shape handling; mathematics
+# is identical for inputs of any rank. Specializing to 2D drops the
+# rank-3 path that's never taken in practice. Verified by parity:
+# upstream eager 3D input would now fail, but no downstream caller
+# uses 3D, so the specialization is safe at inference.
+
+class _DenseLayerExportShim(torch.nn.Module):
+    """Drop-in replacement for chatterbox DenseLayer used during ONNX
+    export only. Same math, no opaque ops.
+
+    Upstream's DenseLayer wraps Conv1d-with-kernel-1 plus a
+    `if len(x.shape) == 2:` branch, then a Sequential containing
+    BatchNorm1d (`affine=False`). Three nested ONNX-shape-inference
+    failures cascade through:
+      - The if-branch produces an `If` node hiding the channel dim
+      - The squeeze(-1) is shape-conditional, producing another `If`
+      - Even after replacing both with explicit Linear+Reshape, ONNX
+        shape inference still can't propagate channel info to BatchNorm,
+        which refuses with "unknown channel size".
+    Workaround: inline the entire BatchNorm math as arithmetic ops.
+    BatchNorm1d at inference (affine=False) is just
+        y = (x - running_mean) / sqrt(running_var + eps)
+    — pure ops with statically-shaped buffers, no symbolic gymnastics.
+    Weights and BN running stats are copied byte-for-byte.
+    """
+
+    def __init__(self, upstream_dense):
+        super().__init__()
+        # Linear weights from the Conv1d-kernel-1
+        weight = upstream_dense.linear.weight.detach()  # (C_out, C_in, 1)
+        c_out, c_in = weight.shape[0], weight.shape[1]
+        bias = upstream_dense.linear.bias.detach() if upstream_dense.linear.bias is not None else None
+        self.linear = torch.nn.Linear(c_in, c_out, bias=bias is not None)
+        with torch.no_grad():
+            self.linear.weight.copy_(weight.squeeze(-1))
+            if bias is not None:
+                self.linear.bias.copy_(bias)
+
+        # Inline BatchNorm1d: pull running stats from the upstream BN.
+        # We assume affine=False (verified for chatterbox xvector dense).
+        # If a different config appears, this needs to learn weight/bias.
+        bn = upstream_dense.nonlinear.batchnorm
+        assert not bn.affine, "DenseLayerExportShim assumes BatchNorm1d(affine=False)"
+        self.register_buffer("bn_running_mean", bn.running_mean.detach().clone())
+        self.register_buffer("bn_running_var", bn.running_var.detach().clone())
+        self.bn_eps = float(bn.eps)
+
+    def forward(self, x):
+        y = self.linear(x)  # (B, C_out)
+        # Inline BatchNorm: y = (y - mean) / sqrt(var + eps)
+        y = (y - self.bn_running_mean) * torch.rsqrt(self.bn_running_var + self.bn_eps)
+        return y
+
+
+@contextmanager
+def patched_dense_layer_for_export(speaker_encoder):
+    """Swap every DenseLayer under speaker_encoder for the export shim.
+
+    Restoration is by parent-attribute reassignment — captured at patch
+    time so the original module returns to its slot on context exit.
+    """
+    from chatterbox.models.s3gen.xvector import DenseLayer
+    swaps = []  # list of (parent, attr_name, original_module)
+    for parent in speaker_encoder.modules():
+        for name, child in parent.named_children():
+            if isinstance(child, DenseLayer):
+                shim = _DenseLayerExportShim(child).to(next(child.parameters()).device).eval()
+                swaps.append((parent, name, child))
+                setattr(parent, name, shim)
+    try:
+        yield speaker_encoder
+    finally:
+        for parent, name, original in swaps:
+            setattr(parent, name, original)
+
+
 @contextmanager
 def patched_s3tokenizer_for_export(tokenizer):
     """Temporarily swap log_mel_spectrogram + forward for export-friendly versions.
