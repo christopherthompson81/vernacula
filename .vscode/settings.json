@@ -1,0 +1,7 @@
+{
+  // Keep C# Dev Kit's language-service cache out of the project tree.
+  // With this set to false, the .csproj.lscache files land in
+  // VSCode's global cache dir instead of next to each .csproj.
+  // See https://aka.ms/lscache.
+  "dotnet.projectsystem.cacheInProjectFolder": false
+}

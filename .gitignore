@@ -9,3 +9,8 @@ tmp/
 .claude/
 *.scratch.md
 *.scratch/
+
+# C# Dev Kit language-service cache. Should be redirected out of the
+# project tree via .vscode/settings.json, but keep an ignore here in
+# case a contributor overrides that setting.
+*.lscache
