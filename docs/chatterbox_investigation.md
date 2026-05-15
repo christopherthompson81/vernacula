@@ -312,4 +312,74 @@ and "Vlad's script just works for him" does not protect us:
   PyTorch reference numerically? We haven't checked yet. The smoke
   proves export *succeeds*; correctness comes in E4.
 
-## Run 4 — pending — Commit E2 state and start E3 (Llama LM export)
+## Run 4 — 2026-05-15 — E3 lands: Llama LM export, no debug fixes needed
+
+**Question:** Can we export `chatterbox.t3.tfmr` (Llama backbone, 30
+layers × 16 KV-heads × 64 head_dim) + `chatterbox.t3.speech_head`
+(Linear 1024→8194) as a single ONNX graph with HF-schema KV-cache I/O?
+
+**Approach:**
+
+- `LMWithSpeechHead` wrapper inside [export_chatterbox_to_onnx.py](../scripts/chatterbox_export/export_chatterbox_to_onnx.py):
+  ~30 lines of nn.Module that takes positional args
+  `(inputs_embeds, attention_mask, *past_kv_flat)`, reshapes the flat
+  KV tuple into HF's legacy tuple-of-tuples format, runs
+  `tfmr(...)` with `use_cache=True`, projects through `speech_head`, and
+  flattens `present_key_values` back to a positional output tuple.
+- Input names match the published `onnx-community/chatterbox-ONNX`
+  bundle's `language_model.onnx`:
+  `past_key_values.{N}.{key,value}` for N in 0..29 (62 ONNX inputs
+  including inputs_embeds + attention_mask). Output names follow
+  `present.{N}.{key,value}` (61 outputs).
+- Dynamic axes: batch dim + sequence-length dim + past-sequence-length
+  dim across all the KV tensors.
+- Dummy inputs for trace: `B=1, S=4, past_kv_len=0` ("prefill"
+  config). dynamic_axes lets ORT consume any shape at runtime.
+
+**Result:** **LM exported cleanly on first try.** Zero debug fixes.
+Contrast with E2's 13-fix journey.
+
+**Smoke export (full four-graph CUDA run):**
+
+| Graph | Export time | Header | Sidecar | Total |
+|---|---|---|---|---|
+| embed_tokens.onnx | 0.3 s | 17 KB | 61.6 MB | 61.6 MB |
+| speech_encoder.onnx | 9.5 s | 1.1 MB | 1.05 GB | 1.05 GB |
+| language_model.onnx | 8.6 s | 810 KB | 2.05 GB | 2.05 GB |
+| conditional_decoder.onnx | 62.4 s | 32 MB | 533 MB | 565 MB |
+| **Total** | **~80 s** | | | **3.6 GB** |
+
+Cond decoder is the slow one because it still runs on CPU (the upstream
+`CausalBlock1D` trace bug from Run 3 fix #11). The other three export
+on CUDA.
+
+**Cross-check against `onnx-community/chatterbox-ONNX` fp32:**
+
+| File | Theirs | Ours |
+|---|---|---|
+| `language_model.onnx` | 171 KB header + 2.08 GB sidecar | 810 KB header + 2.05 GB sidecar |
+
+Total LM bytes match within 1% — 30 MB delta plausibly from opset
+differences (we use 18; theirs is unspecified) or different external-data
+packing. Our header is ~5× bigger, probably more graph metadata; not a
+concern for runtime.
+
+**Why E3 was easy (in contrast to E2):**
+
+1. `tfmr` is a stock `transformers.LlamaModel` — HF's transformers code
+   is already ONNX-aware and well-trodden.
+2. `speech_head` is a single `nn.Linear`. Nothing for the tracer to
+   choke on.
+3. We didn't vendor anything. The wrapper is 30 lines of our own code.
+   No upstream surface area to hit.
+4. The KV-cache schema is a well-documented HF pattern; matching it
+   meant copying the naming convention from vibevoice_export.
+
+The take-away for E5 cleanup: E2's vendored graphs carry most of the
+maintenance debt. E3's LM is ours and clean.
+
+**Still ahead:** E4 (three-layer parity test against PyTorch reference)
+and E5 (export-report finalization, audit cleanup, optional fp16 path).
+Parity is the next gate before any C# consumer takes a dependency.
+
+## Run 5 — pending — E4 parity tests

@@ -1,23 +1,22 @@
 #!/usr/bin/env python3
 """Export Chatterbox TTS to ONNX.
 
-Stage 0 step E2: implements three of the four graphs by orchestrating
-the wrapper modules vendored in `_chatterbox_internals.py`:
+Stage 0 implements all four graphs:
 
   * `embed_tokens.onnx`        — text token embedding + position handling
   * `speech_encoder.onnx`      — speech encoder + S3 tokenizer + cond prep
+  * `language_model.onnx`      — Llama backbone + speech_head, KV-cache I/O
   * `conditional_decoder.onnx` — speech tokens + conditioning → waveform
 
-The Llama language model graph lands in step E3 (separate work — we own
-that export from scratch, not adapted from Vlad's reference).
+Graphs 1, 2, 4 were adapted from VladOS95-cyber's MIT-licensed reference
+and vendored in `_chatterbox_internals.py`. Graph 3 (the LM) is fully
+ours — Vlad's script never exported it.
 
 Run:
 
     python scripts/chatterbox_export/export_chatterbox_to_onnx.py \\
         --output-dir ./models/chatterbox_export \\
         --device cuda --dtype float32
-
-`--skip-language-model` is set by default at the CLI layer until E3 lands.
 """
 from __future__ import annotations
 
@@ -32,6 +31,8 @@ from pathlib import Path
 from _common import (
     add_local_script_path,
     ensure_output_dir,
+    kv_input_names,
+    kv_output_names,
     nvidia_smi_query,
     read_ort_available_providers,
     resolve_device,
@@ -40,6 +41,11 @@ from _common import (
     EXAGGERATION_TOKEN,
     START_SPEECH_TOKEN,
     S3GEN_SR,
+    LLM_HIDDEN_SIZE,
+    LLM_NUM_LAYERS,
+    LLM_NUM_KV_HEADS,
+    LLM_HEAD_DIM,
+    SPEECH_HEAD_OUTPUT_DIM,
 )
 
 add_local_script_path()
@@ -69,8 +75,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--lm-graph-mode", default="unified", choices=["unified", "prefill+step"])
     p.add_argument("--skip-embed-tokens", action="store_true")
     p.add_argument("--skip-speech-encoder", action="store_true")
-    p.add_argument("--skip-language-model", action="store_true", default=True,
-                   help="(default: skipped until E3 lands)")
+    p.add_argument("--skip-language-model", action="store_true",
+                   help="Skip the LM graph (it's the heaviest — ~2 GB fp32)")
     p.add_argument("--skip-conditional-decoder", action="store_true")
     p.add_argument("--overwrite", action="store_true")
     p.add_argument("--audio-prompt", type=Path, default=None,
@@ -279,6 +285,110 @@ def export_conditional_decoder(cond_decoder_mod, speech_tokens, speaker_embeddin
     print(f"    done ({time.perf_counter() - t0:.1f}s)  {out_path.stat().st_size / 1e6:.2f} MB")
 
 
+def build_lm_wrapper(chatterbox_model, device):
+    """Wrap chatterbox.t3.tfmr + .speech_head into a single nn.Module
+    that exposes the HF KV-cache I/O schema.
+
+    Inputs (one positional arg per ONNX input):
+      - inputs_embeds: (B, S, LLM_HIDDEN_SIZE=1024)
+      - attention_mask: (B, S_total) where S_total = past_kv_len + S
+      - past_key_values.{N}.key, past_key_values.{N}.value  for N in 0..29
+            each: (B, LLM_NUM_KV_HEADS=16, past_kv_len, LLM_HEAD_DIM=64)
+
+    Outputs:
+      - logits: (B, S, SPEECH_HEAD_OUTPUT_DIM=8194)
+      - present.{N}.key, present.{N}.value  for N in 0..29
+            each: (B, 16, past_kv_len + S, 64)
+
+    Schema matches the published `onnx-community/chatterbox-ONNX`
+    `language_model.onnx` so consumers (and our own C# orchestrator)
+    can swap our export for theirs.
+    """
+    import torch
+    import torch.nn as nn
+
+    class LMWithSpeechHead(nn.Module):
+        def __init__(self, tfmr, speech_head):
+            super().__init__()
+            self.tfmr = tfmr
+            self.speech_head = speech_head
+
+        def forward(self, inputs_embeds, attention_mask, *past_kv_flat):
+            # Reshape flat (key0, value0, key1, value1, ...) into HF's
+            # legacy tuple-of-tuples format. transformers 4.46.3 accepts
+            # both this and the new Cache class; we use the legacy form
+            # to match Vlad's flow and the published bundle. Transformers
+            # 4.47+ removes legacy; that's a follow-up.
+            past_kv = tuple(
+                (past_kv_flat[2 * i], past_kv_flat[2 * i + 1])
+                for i in range(LLM_NUM_LAYERS)
+            )
+            out = self.tfmr(
+                inputs_embeds=inputs_embeds,
+                attention_mask=attention_mask,
+                past_key_values=past_kv,
+                use_cache=True,
+            )
+            logits = self.speech_head(out.last_hidden_state)
+            # Flatten present_key_values to a positional output tuple.
+            present_flat = []
+            for layer_kv in out.past_key_values:
+                present_flat.append(layer_kv[0])
+                present_flat.append(layer_kv[1])
+            return (logits, *present_flat)
+
+    return LMWithSpeechHead(chatterbox_model.t3.tfmr, chatterbox_model.t3.speech_head).eval().to(device)
+
+
+def export_language_model(lm_mod, out_path: Path, opset: int, device, dtype, item_patch: bool):
+    """Export the Llama-with-speech-head graph with KV-cache I/O.
+
+    Uses small dummy shapes for the trace (batch=1, seq=4, past=0). The
+    dynamic_axes spec lets ORT consume arbitrary batch / sequence /
+    past_length at runtime; the published HF bundle uses the same shape
+    pattern.
+    """
+    import torch
+    print(f"  exporting language_model.onnx (opset {opset}) ...")
+    t0 = time.perf_counter()
+
+    # Dummy inputs. seq=4 / past=0 is the "prefill" config; the graph
+    # supports growing past_kv_len at runtime via the dynamic axis.
+    B, S, past_len = 1, 4, 0
+    inputs_embeds = torch.randn(B, S, LLM_HIDDEN_SIZE, device=device, dtype=dtype)
+    attention_mask = torch.ones(B, past_len + S, dtype=torch.int64, device=device)
+    past_kv_flat = []
+    for _ in range(LLM_NUM_LAYERS):
+        past_kv_flat.append(torch.zeros(B, LLM_NUM_KV_HEADS, past_len, LLM_HEAD_DIM, device=device, dtype=dtype))
+        past_kv_flat.append(torch.zeros(B, LLM_NUM_KV_HEADS, past_len, LLM_HEAD_DIM, device=device, dtype=dtype))
+
+    input_names = ["inputs_embeds", "attention_mask"] + kv_input_names(LLM_NUM_LAYERS)
+    output_names = ["logits"] + kv_output_names(LLM_NUM_LAYERS)
+
+    dynamic_axes = {
+        "inputs_embeds": {0: "batch_size", 1: "sequence_length"},
+        "attention_mask": {0: "batch_size", 1: "total_sequence_length"},
+        "logits": {0: "batch_size", 1: "sequence_length"},
+    }
+    for name in kv_input_names(LLM_NUM_LAYERS):
+        dynamic_axes[name] = {0: "batch_size", 2: "past_sequence_length"}
+    for name in kv_output_names(LLM_NUM_LAYERS):
+        dynamic_axes[name] = {0: "batch_size", 2: "total_sequence_length"}
+
+    with item_no_op_patch(item_patch):
+        torch.onnx.export(
+            lm_mod,
+            (inputs_embeds, attention_mask, *past_kv_flat),
+            str(out_path),
+            export_params=True,
+            opset_version=opset,
+            input_names=input_names,
+            output_names=output_names,
+            dynamic_axes=dynamic_axes,
+        )
+    print(f"    done ({time.perf_counter() - t0:.1f}s)  {out_path.stat().st_size / 1e6:.2f} MB")
+
+
 def slim_and_externalize(output_dir: Path, filenames: list[str]) -> None:
     """Post-export onnxslim pass + external data save.
 
@@ -399,6 +509,20 @@ def main() -> None:
         )
         graphs_exported.append("speech_encoder.onnx")
 
+    if not args.skip_language_model:
+        # LM export uses tiny dummy inputs (B=1, S=4, past=0); shape
+        # generality comes from dynamic_axes. Runs on the same device as
+        # the rest of the chatterbox model — t3.tfmr stays on cuda
+        # because cond_decoder.cpu() in the next step only touches s3gen.
+        lm_mod = build_lm_wrapper(chatterbox_model, device)
+        export_language_model(
+            lm_mod, args.output_dir / "language_model.onnx",
+            opset=args.opset_language_model, device=device, dtype=torch.float32,
+            item_patch=args.with_item_patch,
+        )
+        graphs_exported.append("language_model.onnx")
+        del lm_mod  # release the wrapper; tfmr/speech_head are still owned by chatterbox_model
+
     if not args.skip_conditional_decoder:
         # Cond decoder needs real speech tokens + speaker conditioning. Run
         # PrepareConditionalsModel + InputsEmbeds + (eager Llama LM) to get
@@ -452,9 +576,6 @@ def main() -> None:
         print("\nPost-export: onnxslim + external data ...")
         slim_and_externalize(args.output_dir, graphs_exported)
 
-    if args.skip_language_model:
-        print("\n[skipped] language_model.onnx (E3 work — not yet implemented)")
-
     # Provenance: hash everything we emitted
     hashes = {}
     for fn in graphs_exported:
@@ -479,7 +600,7 @@ def main() -> None:
         lm_graph_mode=args.lm_graph_mode,
         safe_dense_layer_patched=patched,
         extra={
-            "stage": "E2-graphs-only",
+            "stage": "E3-all-four-graphs",
             "graphs_exported": graphs_exported,
             "artifact_hashes": hashes,
             "environment": env,
