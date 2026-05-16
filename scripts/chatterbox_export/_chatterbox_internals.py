@@ -30,11 +30,6 @@ chatterbox submodules that present an ONNX-export-friendly interface:
 
 Notes:
 
-  * The global `torch.Tensor.item = lambda x: x` monkeypatch from Vlad's
-    script is INTENTIONALLY OMITTED. If the export raises on a `.item()`
-    call, apply the patch via the scoped context manager in
-    `export_chatterbox_to_onnx.py::item_no_op_patch` rather than as a
-    global mutation.
   * `EXAGGERATION_TOKEN = 6563` verified against upstream constants
     (`chatterbox.models.t3.t3`).
 """
