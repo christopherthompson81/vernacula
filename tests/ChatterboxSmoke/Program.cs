@@ -93,6 +93,12 @@ internal static class Program
             diagDir = ExpandHome(diagDir);
             Directory.CreateDirectory(diagDir);
             Console.WriteLine($"[diag] dumping LM step-0/step-1 + token sequence to {diagDir}");
+            if (useIoBinding)
+            {
+                Console.WriteLine("[diag] --io-binding is on: past_kv at step 1 is GPU-resident "
+                    + "and will NOT be dumped (extracting would defeat IoBinding). "
+                    + "Use --no-io-binding for full past_kv diag artifacts.");
+            }
         }
         if (onnxDir is null || voicePath is null || outPath is null)
         {
@@ -399,8 +405,11 @@ internal static class Program
         foreach (var v in emptyPastValues) v.Dispose();
 
         // First argmax: prefill logits has shape [1, sTotal, vocab]; we want the [-1, :] row.
+        // Read vocab from tensor metadata directly (robust against future batch>1
+        // changes that would silently miscompute as `batch_size * vocab` if derived
+        // from span length).
+        int vocab = (int)prefillOutputs[0].GetTensorTypeAndShape().Shape[2];
         var prefillLogitsSpan = prefillOutputs[0].GetTensorDataAsSpan<float>();
-        int vocab = prefillLogitsSpan.Length / sTotal;
         var lastLogits = prefillLogitsSpan.Slice((sTotal - 1) * vocab, vocab).ToArray();
         MaybeDumpStep(diagDir, 0, lastLogits, inputsEmbeds, attentionMask, null, null);
         foreach (var t in generateTokens)
@@ -444,7 +453,11 @@ internal static class Program
             lm.RunWithBinding(runOpts, binding);
             var curStep = binding.GetOutputValues();
 
-            // prevStep's OrtValues are no longer referenced; safe to dispose.
+            // Safe to dispose prevStep here even though `binding` (which holds
+            // BindInput references to prevStep's OrtValues) is still alive:
+            // RunWithBinding has completed and ORT only reads the input
+            // OrtValues during the Run call, not afterward. Same pattern as
+            // WhisperTurbo.cs::TranscribeBatch — established in this codebase.
             prevStep.Dispose();
             prevStep = curStep;
 
