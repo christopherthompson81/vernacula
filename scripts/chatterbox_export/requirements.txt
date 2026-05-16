@@ -1,0 +1,31 @@
+chatterbox-tts==0.1.5
+transformers==4.46.3
+torch==2.6.0
+torchaudio==2.6.0
+# Pin numpy to chatterbox-tts's allowed range (0.1.4-0.1.6 cap at <1.26).
+# This needs Python 3.10 — no prebuilt numpy<1.26 wheels exist for cp312.
+# Stay on 0.1.5 rather than 0.1.4 because 0.1.4 depends on raw `pkuseg`
+# which requires Python.h at build time; 0.1.5 switched to
+# `spacy-pkuseg` which ships prebuilt wheels. transformers==4.46.3 is
+# kept identical to Vlad's reference; 0.1.7+ bumped to transformers 5.x
+# and breaks his wrapper API.
+numpy>=1.24,<1.26
+librosa==0.11.0
+soundfile>=0.12,<1
+huggingface_hub>=0.34,<2
+accelerate>=1.10,<2
+onnx==1.18.0
+# Both Vlad's pinned onnxslim versions (0.1.59, 0.1.68) require
+# sympy>=1.13.3, conflicting with torch 2.6.0 (sympy==1.13.1). 0.1.93
+# relaxed to sympy>=1.13.1. The post-export slim pass should be
+# version-tolerant; re-verify the cmd compares clean against
+# Vlad's reference if we hit a regression.
+onnxslim>=0.1.93,<0.2
+onnxscript>=0.3,<1
+onnxruntime-gpu>=1.22,<2
+ml_dtypes>=0.5,<1
+safetensors>=0.5,<1
+# resemble-perth (transitive via chatterbox-tts) uses pkg_resources,
+# removed in setuptools 80+. Pin to keep PerthImplicitWatermarker
+# importable at chatterbox model construction time.
+setuptools<80

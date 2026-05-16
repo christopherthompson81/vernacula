@@ -9,3 +9,7 @@ tmp/
 .claude/
 *.scratch.md
 *.scratch/
+
+# C# Dev Kit
+samples/
+*.lscache
