@@ -71,15 +71,18 @@ internal static class Program
         string? outPath = "/tmp/chatterbox_out_cs.wav";
         string ep = "cuda";
         string? diagDir = null;
+        bool useIoBinding = true;
         for (int i = 0; i < args.Length; i++)
         {
             switch (args[i])
             {
-                case "--onnx-dir": onnxDir = args[++i]; break;
-                case "--voice":    voicePath = args[++i]; break;
-                case "--out":      outPath = args[++i]; break;
-                case "--ep":       ep = args[++i].ToLowerInvariant(); break;
-                case "--diag":     diagDir = args[++i]; break;
+                case "--onnx-dir":      onnxDir = args[++i]; break;
+                case "--voice":         voicePath = args[++i]; break;
+                case "--out":           outPath = args[++i]; break;
+                case "--ep":            ep = args[++i].ToLowerInvariant(); break;
+                case "--diag":          diagDir = args[++i]; break;
+                case "--io-binding":    useIoBinding = true; break;
+                case "--no-io-binding": useIoBinding = false; break;
                 default:
                     Console.Error.WriteLine($"Unknown arg: {args[i]}");
                     return 2;
@@ -192,123 +195,13 @@ internal static class Program
         var inputsEmbeds = ConcatSeq(condEmb, textEmbTensor, LlmHidden);  // [1, sTotal, 1024]
 
         // ── LM autoregressive loop ────────────────────────────────────────
-        // attention_mask starts at sTotal, grows by 1 per step.
-        // past_kv starts empty (T_past=0), grows by sTotal at step 0 then by 1 per step.
-        // generate_tokens accumulates the sampled speech tokens.
-        var attentionMask = new long[sTotal];
-        Array.Fill(attentionMask, 1);
-        var pastKv = new float[LlmLayers * 2][];          // pairs of (key, value) per layer
-        var pastKvShape = new int[] { 1, LlmKvHeads, 0, LlmHeadDim };
-        for (int k = 0; k < pastKv.Length; k++) pastKv[k] = [];
-
-        var generateTokens = new List<long> { StartSpeechToken };
-        var lmSw = new Stopwatch();
-        lmSw.Start();
-        int actualSteps = 0;
-        for (int step = 0; step < MaxLmSteps; step++)
-        {
-            // Build LM input dict for this step.
-            var inputs = new List<NamedOnnxValue>(2 + 2 * LlmLayers);
-            int seqIn = step == 0 ? sTotal : 1;
-            inputs.Add(NamedOnnxValue.CreateFromTensor("inputs_embeds",
-                new DenseTensor<float>(inputsEmbeds, [1, seqIn, LlmHidden])));
-            inputs.Add(NamedOnnxValue.CreateFromTensor("attention_mask",
-                new DenseTensor<long>(attentionMask, [1, attentionMask.Length])));
-            int tPast = pastKvShape[2];
-            for (int layer = 0; layer < LlmLayers; layer++)
-            {
-                inputs.Add(NamedOnnxValue.CreateFromTensor(
-                    $"past_key_values.{layer}.key",
-                    new DenseTensor<float>(pastKv[2 * layer], pastKvShape)));
-                inputs.Add(NamedOnnxValue.CreateFromTensor(
-                    $"past_key_values.{layer}.value",
-                    new DenseTensor<float>(pastKv[2 * layer + 1], pastKvShape)));
-            }
-
-            using var lmOut = lm.Run(inputs);
-            var outList = lmOut.ToList();
-            var logits = outList[0].AsTensor<float>();  // [1, seqIn, vocab]
-
-            // Slice logits of the LAST position; apply repetition penalty in-place.
-            int vocab = logits.Dimensions[2];
-            var lastLogits = new float[vocab];
-            int logitsOffset = (seqIn - 1) * vocab;
-            // logits is row-major: [1, seqIn, vocab]; copy out the [-1, :] row.
-            var logitsBuf = logits.ToArray();
-            Array.Copy(logitsBuf, logitsOffset, lastLogits, 0, vocab);
-
-            if (diagDir is not null && step <= 1)
-            {
-                // Dump per-step logits + LM-input snapshot so the Python
-                // compare_lm_step{0,1}.py scripts can replay-and-compare for
-                // the LM-divergence investigation. Step 0 isolates the prefill;
-                // step 1 isolates the KV-refeed cycle. Only fires when --diag
-                // is passed; otherwise this branch is dead.
-                Console.WriteLine($"[step{step}] logits[-1, :10] (pre-penalty): "
-                    + string.Join(", ", lastLogits.Take(10).Select(x => x.ToString("F6"))));
-                Console.WriteLine($"[step{step}] logits sum: {lastLogits.Sum():F4}, argmax(pre-penalty): {Argmax(lastLogits)}");
-                File.WriteAllBytes(Path.Combine(diagDir, $"cs_step{step}_logits.bin"),
-                    MemoryMarshal.AsBytes<float>(lastLogits).ToArray());
-                File.WriteAllBytes(Path.Combine(diagDir, $"cs_step{step}_inputs_embeds.bin"),
-                    MemoryMarshal.AsBytes<float>(inputsEmbeds).ToArray());
-                File.WriteAllBytes(Path.Combine(diagDir, $"cs_step{step}_attention_mask.bin"),
-                    MemoryMarshal.AsBytes<long>(attentionMask).ToArray());
-                if (step == 1)
-                {
-                    // Dump the first KV layer so we can verify the KV-refeed
-                    // roundtrip didn't corrupt anything.
-                    File.WriteAllBytes(Path.Combine(diagDir, "cs_step1_past_kv_l0_key.bin"),
-                        MemoryMarshal.AsBytes<float>(pastKv[0]).ToArray());
-                    File.WriteAllBytes(Path.Combine(diagDir, "cs_step1_past_kv_l0_value.bin"),
-                        MemoryMarshal.AsBytes<float>(pastKv[1]).ToArray());
-                    Console.WriteLine($"[step1] past_kv shape={ShapeStr(pastKvShape)}  "
-                        + $"l0_key sum={pastKv[0].Sum():F4}  l0_value sum={pastKv[1].Sum():F4}");
-                }
-            }
-
-            foreach (var t in generateTokens)
-            {
-                if (lastLogits[t] > 0) lastLogits[t] /= RepetitionPenalty;
-            }
-            long nextToken = Argmax(lastLogits);
-            generateTokens.Add(nextToken);
-            if (nextToken == StopSpeechToken) { actualSteps = step + 1; break; }
-
-            // Stash present_kv into past_kv for next iter. The output shape's
-            // T grows by seqIn each step (sTotal on step 0, then 1).
-            // TODO(perf): IoBinding to keep KV GPU-resident. The .AsTensor<float>().ToArray()
-            // pair below copies GPU→CPU→GPU 60 times per step (30 layers × {key,value}),
-            // dominating the ~32 ms/step. WhisperTurbo.cs:601-624 is the template — it
-            // binds present.{layer}.* outputs to CUDA memory and chains them as the next
-            // step's past_key_values inputs via OrtValue, eliminating the host round-trip.
-            int tPresent = tPast + seqIn;
-            pastKvShape = [1, LlmKvHeads, tPresent, LlmHeadDim];
-            for (int layer = 0; layer < LlmLayers; layer++)
-            {
-                pastKv[2 * layer]     = outList[1 + 2 * layer].AsTensor<float>().ToArray();
-                pastKv[2 * layer + 1] = outList[2 + 2 * layer].AsTensor<float>().ToArray();
-            }
-
-            // Re-embed the new token at position (step + 1).
-            var nextIdT = new DenseTensor<long>(new long[] { nextToken }, [1, 1]);
-            var nextPosT = new DenseTensor<long>(new long[] { (long)(step + 1) }, [1, 1]);
-            var nextExagT = new DenseTensor<float>(new float[] { Exaggeration }, [1]);
-            using var nextEmbOut = emb.Run([
-                NamedOnnxValue.CreateFromTensor("input_ids", nextIdT),
-                NamedOnnxValue.CreateFromTensor("position_ids", nextPosT),
-                NamedOnnxValue.CreateFromTensor("exaggeration", nextExagT),
-            ]);
-            inputsEmbeds = nextEmbOut.First().AsTensor<float>().ToArray();
-
-            // Grow attention_mask by 1.
-            var grown = new long[attentionMask.Length + 1];
-            Array.Copy(attentionMask, grown, attentionMask.Length);
-            grown[^1] = 1;
-            attentionMask = grown;
-            actualSteps = step + 1;
-        }
+        var lmSw = Stopwatch.StartNew();
+        var (generateTokens, actualSteps) = useIoBinding
+            ? RunLmLoopIoBinding(lm, emb, inputsEmbeds, sTotal, diagDir)
+            : RunLmLoopBasic(lm, emb, inputsEmbeds, sTotal, diagDir);
         lmSw.Stop();
-        Console.WriteLine($"LM: {actualSteps} steps, generated {generateTokens.Count - 1} tokens (incl. STOP/no-STOP)  [{lmSw.ElapsedMilliseconds} ms, {lmSw.ElapsedMilliseconds / (double)actualSteps:F1} ms/step]");
+        Console.WriteLine($"LM ({(useIoBinding ? "io-binding" : "basic")}): {actualSteps} steps, generated {generateTokens.Count - 1} tokens "
+            + $"[{lmSw.ElapsedMilliseconds} ms, {lmSw.ElapsedMilliseconds / (double)actualSteps:F1} ms/step]");
 
         if (diagDir is not null)
         {
@@ -367,6 +260,264 @@ internal static class Program
         totalSw.Stop();
         Console.WriteLine($"Wrote {outPath}  [total {totalSw.ElapsedMilliseconds / 1000.0:F1}s]");
         return 0;
+    }
+
+    /// <summary>
+    /// LM autoregressive loop, basic Run path. Each step builds 60
+    /// NamedOnnxValue inputs (30 layers × {key,value}) from CPU-resident
+    /// past_kv arrays, runs the session, copies all 60 KV outputs back
+    /// to CPU via .AsTensor&lt;float&gt;().ToArray(). On a 3090, ~32 ms/step
+    /// dominated by the host roundtrip. Kept for A/B comparison vs the
+    /// IoBinding version below.
+    /// </summary>
+    private static (List<long> tokens, int steps) RunLmLoopBasic(
+        InferenceSession lm, InferenceSession emb,
+        float[] inputsEmbeds, int sTotal, string? diagDir)
+    {
+        var attentionMask = new long[sTotal];
+        Array.Fill(attentionMask, 1);
+        var pastKv = new float[LlmLayers * 2][];
+        var pastKvShape = new int[] { 1, LlmKvHeads, 0, LlmHeadDim };
+        for (int k = 0; k < pastKv.Length; k++) pastKv[k] = [];
+
+        var generateTokens = new List<long> { StartSpeechToken };
+        int actualSteps = 0;
+        for (int step = 0; step < MaxLmSteps; step++)
+        {
+            var inputs = new List<NamedOnnxValue>(2 + 2 * LlmLayers);
+            int seqIn = step == 0 ? sTotal : 1;
+            inputs.Add(NamedOnnxValue.CreateFromTensor("inputs_embeds",
+                new DenseTensor<float>(inputsEmbeds, [1, seqIn, LlmHidden])));
+            inputs.Add(NamedOnnxValue.CreateFromTensor("attention_mask",
+                new DenseTensor<long>(attentionMask, [1, attentionMask.Length])));
+            int tPast = pastKvShape[2];
+            for (int layer = 0; layer < LlmLayers; layer++)
+            {
+                inputs.Add(NamedOnnxValue.CreateFromTensor($"past_key_values.{layer}.key",
+                    new DenseTensor<float>(pastKv[2 * layer], pastKvShape)));
+                inputs.Add(NamedOnnxValue.CreateFromTensor($"past_key_values.{layer}.value",
+                    new DenseTensor<float>(pastKv[2 * layer + 1], pastKvShape)));
+            }
+
+            using var lmOut = lm.Run(inputs);
+            var outList = lmOut.ToList();
+            var logits = outList[0].AsTensor<float>();
+            int vocab = logits.Dimensions[2];
+            var lastLogits = new float[vocab];
+            int logitsOffset = (seqIn - 1) * vocab;
+            var logitsBuf = logits.ToArray();
+            Array.Copy(logitsBuf, logitsOffset, lastLogits, 0, vocab);
+
+            MaybeDumpStep(diagDir, step, lastLogits, inputsEmbeds, attentionMask,
+                          pastKv, pastKvShape);
+
+            foreach (var t in generateTokens)
+                if (lastLogits[t] > 0) lastLogits[t] /= RepetitionPenalty;
+            long nextToken = Argmax(lastLogits);
+            generateTokens.Add(nextToken);
+            if (nextToken == StopSpeechToken) { actualSteps = step + 1; break; }
+
+            int tPresent = tPast + seqIn;
+            pastKvShape = [1, LlmKvHeads, tPresent, LlmHeadDim];
+            for (int layer = 0; layer < LlmLayers; layer++)
+            {
+                pastKv[2 * layer]     = outList[1 + 2 * layer].AsTensor<float>().ToArray();
+                pastKv[2 * layer + 1] = outList[2 + 2 * layer].AsTensor<float>().ToArray();
+            }
+
+            var nextIdT = new DenseTensor<long>(new long[] { nextToken }, [1, 1]);
+            var nextPosT = new DenseTensor<long>(new long[] { (long)(step + 1) }, [1, 1]);
+            var nextExagT = new DenseTensor<float>(new float[] { Exaggeration }, [1]);
+            using var nextEmbOut = emb.Run([
+                NamedOnnxValue.CreateFromTensor("input_ids", nextIdT),
+                NamedOnnxValue.CreateFromTensor("position_ids", nextPosT),
+                NamedOnnxValue.CreateFromTensor("exaggeration", nextExagT),
+            ]);
+            inputsEmbeds = nextEmbOut.First().AsTensor<float>().ToArray();
+
+            var grown = new long[attentionMask.Length + 1];
+            Array.Copy(attentionMask, grown, attentionMask.Length);
+            grown[^1] = 1;
+            attentionMask = grown;
+            actualSteps = step + 1;
+        }
+        return (generateTokens, actualSteps);
+    }
+
+    /// <summary>
+    /// LM autoregressive loop, IoBinding path. KV cache stays GPU-resident
+    /// across steps — each step's `present.{layer}.{key,value}` outputs are
+    /// bound to CUDA memory, then the NEXT step's `past_key_values.{layer}.*`
+    /// inputs reference those same OrtValues directly. Logits are bound to
+    /// CPU memory so we can do argmax + rep-penalty on host. Embeds stay on
+    /// host (small, cheap to copy per step). Pattern is adapted from
+    /// WhisperTurbo.cs::TranscribeBatch's step loop.
+    /// </summary>
+    private static (List<long> tokens, int steps) RunLmLoopIoBinding(
+        InferenceSession lm, InferenceSession emb,
+        float[] inputsEmbeds, int sTotal, string? diagDir)
+    {
+        using var cudaMemInfo = new OrtMemoryInfo("Cuda", OrtAllocatorType.ArenaAllocator, 0, OrtMemType.Default);
+        using var cpuMemInfo  = new OrtMemoryInfo("Cpu",  OrtAllocatorType.ArenaAllocator, 0, OrtMemType.Default);
+        using var runOpts     = new RunOptions();
+
+        var attentionMask = new long[sTotal];
+        Array.Fill(attentionMask, 1);
+        var generateTokens = new List<long> { StartSpeechToken };
+
+        // Prefill (step 0): empty past_kv. The empty OrtValues live for the
+        // lifetime of the prefill binding only (we replace them with prefill
+        // outputs on step 1).
+        var emptyPastValues = new List<OrtValue>(LlmLayers * 2);
+        for (int i = 0; i < LlmLayers * 2; i++)
+            emptyPastValues.Add(OrtValue.CreateTensorValueFromMemory(
+                Array.Empty<float>(), [1L, LlmKvHeads, 0L, LlmHeadDim]));
+
+        IDisposableReadOnlyCollection<OrtValue> prefillOutputs;
+        {
+            using var prefillEmbeds = OrtValue.CreateTensorValueFromMemory(
+                inputsEmbeds, [1L, sTotal, LlmHidden]);
+            using var prefillMask = OrtValue.CreateTensorValueFromMemory(
+                attentionMask, [1L, sTotal]);
+            using var binding = lm.CreateIoBinding();
+            binding.BindInput("inputs_embeds", prefillEmbeds);
+            binding.BindInput("attention_mask", prefillMask);
+            for (int layer = 0; layer < LlmLayers; layer++)
+            {
+                binding.BindInput($"past_key_values.{layer}.key",   emptyPastValues[2 * layer]);
+                binding.BindInput($"past_key_values.{layer}.value", emptyPastValues[2 * layer + 1]);
+            }
+            binding.BindOutputToDevice("logits", cpuMemInfo);
+            for (int layer = 0; layer < LlmLayers; layer++)
+            {
+                binding.BindOutputToDevice($"present.{layer}.key",   cudaMemInfo);
+                binding.BindOutputToDevice($"present.{layer}.value", cudaMemInfo);
+            }
+            lm.RunWithBinding(runOpts, binding);
+            prefillOutputs = binding.GetOutputValues();
+        }
+        foreach (var v in emptyPastValues) v.Dispose();
+
+        // First argmax: prefill logits has shape [1, sTotal, vocab]; we want the [-1, :] row.
+        var prefillLogitsSpan = prefillOutputs[0].GetTensorDataAsSpan<float>();
+        int vocab = prefillLogitsSpan.Length / sTotal;
+        var lastLogits = prefillLogitsSpan.Slice((sTotal - 1) * vocab, vocab).ToArray();
+        MaybeDumpStep(diagDir, 0, lastLogits, inputsEmbeds, attentionMask, null, null);
+        foreach (var t in generateTokens)
+            if (lastLogits[t] > 0) lastLogits[t] /= RepetitionPenalty;
+        long nextToken = Argmax(lastLogits);
+        generateTokens.Add(nextToken);
+        if (nextToken == StopSpeechToken)
+        {
+            prefillOutputs.Dispose();
+            return (generateTokens, 1);
+        }
+
+        // Embed the new token (CPU output).
+        inputsEmbeds = EmbedOne(emb, nextToken, 1);
+        attentionMask = Grow(attentionMask, 1);
+
+        // Step loop. prevStep[1..60] = present_kv (CUDA), prevStep[0] = logits (CPU).
+        IDisposableReadOnlyCollection<OrtValue> prevStep = prefillOutputs;
+        int actualSteps = 1;
+        for (int step = 1; step < MaxLmSteps; step++)
+        {
+            using var stepEmbeds = OrtValue.CreateTensorValueFromMemory(
+                inputsEmbeds, [1L, 1L, LlmHidden]);
+            using var stepMask = OrtValue.CreateTensorValueFromMemory(
+                attentionMask, [1L, attentionMask.Length]);
+            using var binding = lm.CreateIoBinding();
+            binding.BindInput("inputs_embeds", stepEmbeds);
+            binding.BindInput("attention_mask", stepMask);
+            for (int layer = 0; layer < LlmLayers; layer++)
+            {
+                // Chain prev step's CUDA-resident KV directly — no host roundtrip.
+                binding.BindInput($"past_key_values.{layer}.key",   prevStep[1 + 2 * layer]);
+                binding.BindInput($"past_key_values.{layer}.value", prevStep[1 + 2 * layer + 1]);
+            }
+            binding.BindOutputToDevice("logits", cpuMemInfo);
+            for (int layer = 0; layer < LlmLayers; layer++)
+            {
+                binding.BindOutputToDevice($"present.{layer}.key",   cudaMemInfo);
+                binding.BindOutputToDevice($"present.{layer}.value", cudaMemInfo);
+            }
+            lm.RunWithBinding(runOpts, binding);
+            var curStep = binding.GetOutputValues();
+
+            // prevStep's OrtValues are no longer referenced; safe to dispose.
+            prevStep.Dispose();
+            prevStep = curStep;
+
+            // Argmax on step logits ([1, 1, vocab]).
+            var stepLogitsSpan = curStep[0].GetTensorDataAsSpan<float>();
+            lastLogits = stepLogitsSpan.Slice(0, vocab).ToArray();
+            MaybeDumpStep(diagDir, step, lastLogits, inputsEmbeds, attentionMask, null, null);
+            foreach (var t in generateTokens)
+                if (lastLogits[t] > 0) lastLogits[t] /= RepetitionPenalty;
+            nextToken = Argmax(lastLogits);
+            generateTokens.Add(nextToken);
+            if (nextToken == StopSpeechToken) { actualSteps = step + 1; break; }
+
+            inputsEmbeds = EmbedOne(emb, nextToken, step + 1);
+            attentionMask = Grow(attentionMask, 1);
+            actualSteps = step + 1;
+        }
+        prevStep.Dispose();
+        return (generateTokens, actualSteps);
+    }
+
+    /// <summary>Run embed_tokens.onnx for a single token at the given position. CPU output.</summary>
+    private static float[] EmbedOne(InferenceSession emb, long token, int position)
+    {
+        var idT  = new DenseTensor<long>(new long[] { token }, [1, 1]);
+        var posT = new DenseTensor<long>(new long[] { (long)position }, [1, 1]);
+        var exT  = new DenseTensor<float>(new float[] { Exaggeration }, [1]);
+        using var o = emb.Run([
+            NamedOnnxValue.CreateFromTensor("input_ids", idT),
+            NamedOnnxValue.CreateFromTensor("position_ids", posT),
+            NamedOnnxValue.CreateFromTensor("exaggeration", exT),
+        ]);
+        return o.First().AsTensor<float>().ToArray();
+    }
+
+    /// <summary>Grow attention_mask by `n` trailing 1s.</summary>
+    private static long[] Grow(long[] mask, int n)
+    {
+        var grown = new long[mask.Length + n];
+        Array.Copy(mask, grown, mask.Length);
+        for (int i = mask.Length; i < grown.Length; i++) grown[i] = 1;
+        return grown;
+    }
+
+    /// <summary>
+    /// Diagnostic dump for LM step 0/1 — shared by both basic and IoBinding
+    /// LM-loop paths. Only fires when diagDir is non-null. The basic path passes
+    /// past_kv (CPU arrays); the IoBinding path passes null since KV lives on
+    /// CUDA and host extraction would defeat the purpose.
+    /// </summary>
+    private static void MaybeDumpStep(string? diagDir, int step,
+        float[] lastLogits, float[] inputsEmbeds, long[] attentionMask,
+        float[][]? pastKv, int[]? pastKvShape)
+    {
+        if (diagDir is null || step > 1) return;
+        Console.WriteLine($"[step{step}] logits[-1, :10] (pre-penalty): "
+            + string.Join(", ", lastLogits.Take(10).Select(x => x.ToString("F6"))));
+        Console.WriteLine($"[step{step}] logits sum: {lastLogits.Sum():F4}, argmax(pre-penalty): {Argmax(lastLogits)}");
+        File.WriteAllBytes(Path.Combine(diagDir, $"cs_step{step}_logits.bin"),
+            MemoryMarshal.AsBytes<float>(lastLogits).ToArray());
+        File.WriteAllBytes(Path.Combine(diagDir, $"cs_step{step}_inputs_embeds.bin"),
+            MemoryMarshal.AsBytes<float>(inputsEmbeds).ToArray());
+        File.WriteAllBytes(Path.Combine(diagDir, $"cs_step{step}_attention_mask.bin"),
+            MemoryMarshal.AsBytes<long>(attentionMask).ToArray());
+        if (step == 1 && pastKv is not null && pastKvShape is not null)
+        {
+            File.WriteAllBytes(Path.Combine(diagDir, "cs_step1_past_kv_l0_key.bin"),
+                MemoryMarshal.AsBytes<float>(pastKv[0]).ToArray());
+            File.WriteAllBytes(Path.Combine(diagDir, "cs_step1_past_kv_l0_value.bin"),
+                MemoryMarshal.AsBytes<float>(pastKv[1]).ToArray());
+            Console.WriteLine($"[step1] past_kv shape={ShapeStr(pastKvShape)}  "
+                + $"l0_key sum={pastKv[0].Sum():F4}  l0_value sum={pastKv[1].Sum():F4}");
+        }
     }
 
     /// <summary>

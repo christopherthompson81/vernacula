@@ -41,12 +41,20 @@ Tested on RTX 3090, ORT 1.24.4, warm pre-optimization caches:
 
 | Path | Total | Session load | LM (174 steps) | CFM (10 steps) | mel2wav |
 |---|---|---|---|---|---|
-| Monolithic (1 cond decoder onnx) | ~180s | ~175s | 5.6s | (inside dec) | (inside dec) |
-| Split (3 cond decoder graphs)    | **12s** | **3.3s** | 5.6s | 0.5s | 0.24s |
+| Monolithic (1 cond decoder onnx, basic Run)   | ~180s | ~175s | 5.6s | (inside dec) | (inside dec) |
+| Split (3 cond decoder graphs, basic Run)      | 10.0s | 3.2s  | 5.4s | 0.5s | 0.23s |
+| Split + `--io-binding` (default)              | **6.1s** | **3.1s** | **1.5s** | 0.5s | 0.23s |
 
 The 50× session-load speedup comes from `cfm_estimator.onnx` containing
 ONE Euler-step forward (3K nodes) instead of the 10× unrolled estimator
 (70K nodes in the monolithic). Same math; the loop is just in C# now.
+
+The 3.5× LM speedup (`--io-binding`) comes from chaining the LM's KV-cache
+outputs as the next step's inputs via `OrtValue` references instead of
+copying GPU→CPU→GPU each step. Pattern adapted from
+`WhisperTurbo.cs::TranscribeBatch`. Toggle off with `--no-io-binding` if
+you want to A/B (both paths produce bit-identical token sequences;
+verified per-step logits match to max_abs=0).
 
 ## Usage
 
