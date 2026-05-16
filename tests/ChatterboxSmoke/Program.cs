@@ -135,19 +135,28 @@ internal static class Program
             Console.WriteLine($"  {name}: {sw.ElapsedMilliseconds} ms  cache={Hit(hit)}  src={sz / 1e6:F0} MB");
             return s;
         }
-        // Detect cond decoder layout: prefer 3-graph split if all 3 are present,
-        // else fall back to the monolithic conditional_decoder.onnx.
-        bool splitMode = File.Exists(Path.Combine(onnxDir, "flow_encoder.onnx"))
-                      && File.Exists(Path.Combine(onnxDir, "cfm_estimator.onnx"))
-                      && File.Exists(Path.Combine(onnxDir, "mel2wav.onnx"));
-        Console.WriteLine($"Cond decoder mode: {(splitMode ? "SPLIT (3 graphs)" : "MONOLITHIC (1 graph)")}");
+        // Detect cond decoder layout. Preference order:
+        //   1. MERGED  — conditional_decoder_loop.onnx (Phase 2: single graph
+        //                with embedded ONNX Loop for the CFM solve)
+        //   2. SPLIT   — flow_encoder + cfm_estimator + mel2wav (Phase 1)
+        //   3. MONOLITHIC — conditional_decoder.onnx (pre-perf-work)
+        bool mergedAvail = File.Exists(Path.Combine(onnxDir, "conditional_decoder_loop.onnx"));
+        bool splitAvail = File.Exists(Path.Combine(onnxDir, "flow_encoder.onnx"))
+                       && File.Exists(Path.Combine(onnxDir, "cfm_estimator.onnx"))
+                       && File.Exists(Path.Combine(onnxDir, "mel2wav.onnx"));
+        string mode = mergedAvail ? "MERGED" : (splitAvail ? "SPLIT" : "MONOLITHIC");
+        Console.WriteLine($"Cond decoder mode: {mode}");
 
         var totalLoadSw = Stopwatch.StartNew();
         var enc = LoadOne("speech_encoder.onnx");
         var emb = LoadOne("embed_tokens.onnx");
         var lm  = LoadOne("language_model.onnx");
-        InferenceSession? dec = null, flowEnc = null, cfmEst = null, m2w = null;
-        if (splitMode)
+        InferenceSession? dec = null, flowEnc = null, cfmEst = null, m2w = null, merged = null;
+        if (mergedAvail)
+        {
+            merged = LoadOne("conditional_decoder_loop.onnx");
+        }
+        else if (splitAvail)
         {
             flowEnc = LoadOne("flow_encoder.onnx");
             cfmEst  = LoadOne("cfm_estimator.onnx");
@@ -158,10 +167,11 @@ internal static class Program
             dec = LoadOne("conditional_decoder.onnx");
         }
         totalLoadSw.Stop();
-        int sessionCount = 3 + (splitMode ? 3 : 1);
+        int sessionCount = 3 + (mergedAvail ? 1 : (splitAvail ? 3 : 1));
         Console.WriteLine($"Loaded {sessionCount} sessions in {totalLoadSw.ElapsedMilliseconds} ms total  (ep={ep})");
         using var _enc = enc; using var _emb = emb; using var _lm = lm;
-        using var _dec = dec; using var _flowEnc = flowEnc; using var _cfmEst = cfmEst; using var _m2w = m2w;
+        using var _dec = dec; using var _flowEnc = flowEnc; using var _cfmEst = cfmEst;
+        using var _m2w = m2w; using var _merged = merged;
 
         // ── Voice prompt → 24 kHz mono, padded/cropped to 312_936 ─────────
         sw.Restart();
@@ -258,7 +268,8 @@ internal static class Program
             speechTokens[audioTokArr.Length + i] = generateTokens[genStart + i];
         Console.WriteLine($"speech_tokens: shape=(1, {speechTokens.Length})  ({audioTokArr.Length} from voice + {genCount} from LM)");
 
-        // ── Cond decoder: split path (3 graphs + CFM loop in C#) or monolithic ──
+        // ── Cond decoder: merged Loop graph (Phase 2), 3-graph split (Phase 1),
+        //    or monolithic (pre-perf-work). Picked by the detection above.
         sw.Restart();
         var speechTokT = new DenseTensor<long>(speechTokens, [1, speechTokens.Length]);
         var spkEmbT = new DenseTensor<float>(spkEmb.ToArray(), spkEmb.Dimensions.ToArray());
@@ -266,7 +277,23 @@ internal static class Program
 
         float[] samples;
         int nSamples;
-        if (splitMode)
+        if (mergedAvail)
+        {
+            // Single Run on conditional_decoder_loop.onnx — same I/O contract
+            // as the monolithic conditional_decoder.onnx, but internally drives
+            // the CFM solve via an ONNX Loop body. No C# loop orchestration.
+            using var loopOut = merged!.Run([
+                NamedOnnxValue.CreateFromTensor("speech_tokens", speechTokT),
+                NamedOnnxValue.CreateFromTensor("speaker_embeddings", spkEmbT),
+                NamedOnnxValue.CreateFromTensor("speaker_features", spkFeatT),
+            ]);
+            var wavTensor = loopOut.First().AsTensor<float>();
+            sw.Stop();
+            nSamples = wavTensor.Dimensions[1];
+            Console.WriteLine($"cond_decoder (merged-Loop): waveform=(1, {nSamples}) → {nSamples / (float)S3GenSr:F2}s  [{sw.ElapsedMilliseconds} ms]");
+            samples = wavTensor.ToArray();
+        }
+        else if (splitAvail)
         {
             samples = RunSplitCondDecoder(flowEnc!, cfmEst!, m2w!, speechTokT, spkEmbT, spkFeatT, sw);
             nSamples = samples.Length;
