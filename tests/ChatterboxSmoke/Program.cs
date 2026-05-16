@@ -29,20 +29,23 @@ namespace Vernacula.ChatterboxSmoke;
 
 internal static class Program
 {
-    // Constants — must match scripts/chatterbox_export/_common.py.
-    private const int StartSpeechToken = 6561;
-    private const int StopSpeechToken = 6562;
-    private const int ExaggerationToken = 6563;
-    private const int LlmLayers = 30;
-    private const int LlmKvHeads = 16;
-    private const int LlmHeadDim = 64;
-    private const int LlmHidden = 1024;
-    private const int S3GenSr = 24_000;
-    private const int DummyAudioSamples = 312_936;  // 13.04 s @ 24 kHz
-    private const int MelBins = 80;
-    private const int PromptLen = 500;     // spk_feat.shape[1], fixed
-    private const int CfmSteps = 10;       // n_timesteps for solve_euler
-    private const float CfgRate = 0.7f;    // inference_cfg_rate (= flow.decoder.inference_cfg_rate)
+    // Constants — must match scripts/chatterbox_export/_common.py and the
+    // chatterbox upstream values it pulls from. Each entry below cites the
+    // Python source-of-truth. If those change, this list silently drifts;
+    // a future pass should read the dynamic ones from export-report.json.
+    private const int StartSpeechToken = 6561;   // _common.py::START_SPEECH_TOKEN
+    private const int StopSpeechToken = 6562;    // _common.py::STOP_SPEECH_TOKEN
+    private const int ExaggerationToken = 6563;  // _common.py::EXAGGERATION_TOKEN
+    private const int LlmLayers = 30;            // _common.py::LLM_NUM_LAYERS
+    private const int LlmKvHeads = 16;           // _common.py::LLM_NUM_KV_HEADS
+    private const int LlmHeadDim = 64;           // _common.py::LLM_HEAD_DIM
+    private const int LlmHidden = 1024;          // _common.py::LLM_HIDDEN_SIZE
+    private const int S3GenSr = 24_000;          // _common.py::S3GEN_SR
+    private const int DummyAudioSamples = 312_936;  // _common.py::DUMMY_AUDIO_SAMPLES (13.04 s @ 24 kHz)
+    private const int MelBins = 80;              // chatterbox.s3gen.flow.output_size
+    private const int PromptLen = 500;           // speaker_features.shape[1], fixed by the speech_encoder export contract
+    private const int CfmSteps = 10;             // flow.decoder n_timesteps; chatterbox tunes for this value
+    private const float CfgRate = 0.7f;          // chatterbox.s3gen.flow.decoder.inference_cfg_rate
 
     // The Ezreal-and-Jinx sentence, pre-tokenized via chatterbox's EnTokenizer.
     // Wrapping: [EXAGGERATION_TOKEN, ...text..., START_SPEECH_TOKEN, START_SPEECH_TOKEN].
@@ -57,9 +60,9 @@ internal static class Program
         0, StartSpeechToken, StartSpeechToken,
     ];
 
-    private const float Exaggeration = 0.5f;
-    private const float RepetitionPenalty = 1.2f;
-    private const int MaxLmSteps = 256;
+    private const float Exaggeration = 0.5f;     // listen_test.py::EXAGGERATION (default-ish)
+    private const float RepetitionPenalty = 1.2f;  // listen_test.py LM-loop rep-penalty divisor
+    private const int MaxLmSteps = 256;          // listen_test.py LM-loop max_new_tokens
 
     private static int Main(string[] args)
     {
@@ -67,6 +70,7 @@ internal static class Program
         string? voicePath = null;
         string? outPath = "/tmp/chatterbox_out_cs.wav";
         string ep = "cuda";
+        string? diagDir = null;
         for (int i = 0; i < args.Length; i++)
         {
             switch (args[i])
@@ -75,10 +79,17 @@ internal static class Program
                 case "--voice":    voicePath = args[++i]; break;
                 case "--out":      outPath = args[++i]; break;
                 case "--ep":       ep = args[++i].ToLowerInvariant(); break;
+                case "--diag":     diagDir = args[++i]; break;
                 default:
                     Console.Error.WriteLine($"Unknown arg: {args[i]}");
                     return 2;
             }
+        }
+        if (diagDir is not null)
+        {
+            diagDir = ExpandHome(diagDir);
+            Directory.CreateDirectory(diagDir);
+            Console.WriteLine($"[diag] dumping LM step-0/step-1 + token sequence to {diagDir}");
         }
         if (onnxDir is null || voicePath is null || outPath is null)
         {
@@ -226,24 +237,29 @@ internal static class Program
             var logitsBuf = logits.ToArray();
             Array.Copy(logitsBuf, logitsOffset, lastLogits, 0, vocab);
 
-            if (step <= 1)
+            if (diagDir is not null && step <= 1)
             {
-                // DIAGNOSTIC: dump per-step logits + LM-input snapshot for cross-check
-                // vs Python listen_test. Step 0 isolates the prefill; step 1 isolates
-                // the KV-refeed cycle. Remove once parity is established.
+                // Dump per-step logits + LM-input snapshot so the Python
+                // compare_lm_step{0,1}.py scripts can replay-and-compare for
+                // the LM-divergence investigation. Step 0 isolates the prefill;
+                // step 1 isolates the KV-refeed cycle. Only fires when --diag
+                // is passed; otherwise this branch is dead.
                 Console.WriteLine($"[step{step}] logits[-1, :10] (pre-penalty): "
                     + string.Join(", ", lastLogits.Take(10).Select(x => x.ToString("F6"))));
                 Console.WriteLine($"[step{step}] logits sum: {lastLogits.Sum():F4}, argmax(pre-penalty): {Argmax(lastLogits)}");
-                File.WriteAllBytes($"/tmp/cs_step{step}_logits.bin", MemoryMarshal.AsBytes<float>(lastLogits).ToArray());
-                File.WriteAllBytes($"/tmp/cs_step{step}_inputs_embeds.bin", MemoryMarshal.AsBytes<float>(inputsEmbeds).ToArray());
-                File.WriteAllBytes($"/tmp/cs_step{step}_attention_mask.bin", MemoryMarshal.AsBytes<long>(attentionMask).ToArray());
+                File.WriteAllBytes(Path.Combine(diagDir, $"cs_step{step}_logits.bin"),
+                    MemoryMarshal.AsBytes<float>(lastLogits).ToArray());
+                File.WriteAllBytes(Path.Combine(diagDir, $"cs_step{step}_inputs_embeds.bin"),
+                    MemoryMarshal.AsBytes<float>(inputsEmbeds).ToArray());
+                File.WriteAllBytes(Path.Combine(diagDir, $"cs_step{step}_attention_mask.bin"),
+                    MemoryMarshal.AsBytes<long>(attentionMask).ToArray());
                 if (step == 1)
                 {
-                    // Dump the first KV (key+value) layer so we can verify the
-                    // KV-refeed roundtrip didn't corrupt anything.
-                    File.WriteAllBytes("/tmp/cs_step1_past_kv_l0_key.bin",
+                    // Dump the first KV layer so we can verify the KV-refeed
+                    // roundtrip didn't corrupt anything.
+                    File.WriteAllBytes(Path.Combine(diagDir, "cs_step1_past_kv_l0_key.bin"),
                         MemoryMarshal.AsBytes<float>(pastKv[0]).ToArray());
-                    File.WriteAllBytes("/tmp/cs_step1_past_kv_l0_value.bin",
+                    File.WriteAllBytes(Path.Combine(diagDir, "cs_step1_past_kv_l0_value.bin"),
                         MemoryMarshal.AsBytes<float>(pastKv[1]).ToArray());
                     Console.WriteLine($"[step1] past_kv shape={ShapeStr(pastKvShape)}  "
                         + $"l0_key sum={pastKv[0].Sum():F4}  l0_value sum={pastKv[1].Sum():F4}");
@@ -260,6 +276,11 @@ internal static class Program
 
             // Stash present_kv into past_kv for next iter. The output shape's
             // T grows by seqIn each step (sTotal on step 0, then 1).
+            // TODO(perf): IoBinding to keep KV GPU-resident. The .AsTensor<float>().ToArray()
+            // pair below copies GPU→CPU→GPU 60 times per step (30 layers × {key,value}),
+            // dominating the ~32 ms/step. WhisperTurbo.cs:601-624 is the template — it
+            // binds present.{layer}.* outputs to CUDA memory and chains them as the next
+            // step's past_key_values inputs via OrtValue, eliminating the host round-trip.
             int tPresent = tPast + seqIn;
             pastKvShape = [1, LlmKvHeads, tPresent, LlmHeadDim];
             for (int layer = 0; layer < LlmLayers; layer++)
@@ -289,10 +310,14 @@ internal static class Program
         lmSw.Stop();
         Console.WriteLine($"LM: {actualSteps} steps, generated {generateTokens.Count - 1} tokens (incl. STOP/no-STOP)  [{lmSw.ElapsedMilliseconds} ms, {lmSw.ElapsedMilliseconds / (double)actualSteps:F1} ms/step]");
 
-        // DIAGNOSTIC: dump full token sequence for divergence hunting.
-        File.WriteAllBytes("/tmp/cs_tokens.bin",
-            MemoryMarshal.AsBytes<long>(generateTokens.ToArray()).ToArray());
-        Console.WriteLine($"[diag] wrote /tmp/cs_tokens.bin ({generateTokens.Count} tokens)");
+        if (diagDir is not null)
+        {
+            // Full token sequence for divergence-hunting (line up against
+            // Python's listen_test sequence to find the first differing step).
+            File.WriteAllBytes(Path.Combine(diagDir, "cs_tokens.bin"),
+                MemoryMarshal.AsBytes<long>(generateTokens.ToArray()).ToArray());
+            Console.WriteLine($"[diag] wrote {diagDir}/cs_tokens.bin ({generateTokens.Count} tokens)");
+        }
 
         // ── Build speech_tokens: [audio_tokens, generated[1:-1]] ──────────
         // Strip START_SPEECH at front; strip STOP at back if present.
