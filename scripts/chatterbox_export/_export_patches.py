@@ -406,6 +406,186 @@ def _make_mel2wav_istft_via_our_istft(istft_module):
     return _mel2wav_istft_patched
 
 
+# ── SineGen noise/phase determinism (DIAGNOSTIC PROBE) ────────────────
+# Upstream `SineGen.forward` has two random sources:
+#   1. `phase_vec = Uniform(-pi, pi).sample(...)` — random initial phase
+#      per call
+#   2. `noise = noise_amp * torch.randn_like(sine_waves)` — random noise
+#      mixed into the sine signal
+# Both are stochastic per call in PyTorch eager. ONNX traces them as
+# RandomNormal/RandomUniform ops which ORT runs with its own RNG —
+# uncorrelated with PyTorch's. The result: eager and ONNX use different
+# random samples even with same input → outputs diverge in the noise
+# component, which the resblocks may amplify.
+#
+# This patch zeros both random sources for diagnostic purposes — if
+# dec parity becomes good with this active, NSF random is the cause
+# and the production fix is to precompute the noise as a buffer.
+
+def _sinegen_forward_deterministic(self, f0):
+    """Deterministic replacement for SineGen.forward — zero noise, zero phase."""
+    import numpy as np
+    import torch
+
+    F_mat = torch.zeros(f0.size(0), self.harmonic_num + 1, f0.size(-1),
+                        device=f0.device)
+    for i in range(self.harmonic_num + 1):
+        F_mat[:, i:i + 1, :] = f0 * (i + 1) / self.sampling_rate
+
+    theta_mat = 2 * np.pi * (torch.cumsum(F_mat, dim=-1) % 1)
+    # phase_vec ZEROED (was: u_dist.sample(...) — random per call)
+    phase_vec = torch.zeros(
+        f0.size(0), self.harmonic_num + 1, 1,
+        device=f0.device, dtype=F_mat.dtype,
+    )
+
+    sine_waves = self.sine_amp * torch.sin(theta_mat + phase_vec)
+    uv = self._f02uv(f0)
+    # noise ZEROED (was: noise_amp * torch.randn_like(sine_waves))
+    noise = torch.zeros_like(sine_waves)
+    sine_waves = sine_waves * uv + noise
+    return sine_waves, uv, noise
+
+
+@contextmanager
+def patched_sinegen_deterministic(mel2wav):
+    """Make SineGen deterministic for diagnostic/parity work."""
+    sine_gen = mel2wav.m_source.l_sin_gen
+    original = sine_gen.forward
+    sine_gen.forward = types.MethodType(_sinegen_forward_deterministic, sine_gen)
+    try:
+        yield sine_gen
+    finally:
+        sine_gen.forward = original
+
+
+# ── flow.inference dynamic-shape rewrite ──────────────────────────────
+# Upstream `flow.inference` does Python-int arithmetic on tensor
+# shapes:
+#     mel_len1, mel_len2 = prompt_feat.shape[1], h.shape[1] - prompt_feat.shape[1]
+#     conds = torch.zeros([1, mel_len1 + mel_len2, self.output_size], ...)
+#     ...
+#     feat = feat[:, :, mel_len1:]
+# These Python ints get baked into the ONNX trace as static constants.
+# At runtime, inputs with different lengths fail with shape-mismatch
+# errors (LeftShape vs RightShape on Mul). The export's `dynamic_axes`
+# spec doesn't help because the shape values were captured pre-graph.
+#
+# Replacement uses tensor-shape-preserving construction: `h.new_zeros`
+# with `h.shape[1]` (a SymInt during trace), and `narrow` slicing
+# that keeps the start index symbolic.
+
+def _solve_euler_dynamic(self, x, t_span, mu, mask, spks, cond):
+    """Replacement for CausalConditionalCFM.solve_euler.
+
+    Upstream allocates the CFG _in buffers via
+    `torch.zeros([2, 80, x.size(2)], ...)` — `x.size(2)` becomes a
+    Python int, baking the time dimension into the trace. Replace
+    with `torch.cat([zeros_like(x), zeros_like(x)])` style
+    construction that propagates symbolic shapes through ONNX.
+    """
+    t, _, dt = t_span[0], t_span[-1], t_span[1] - t_span[0]
+    t = t.unsqueeze(dim=0)
+
+    sol = []
+
+    # Build CFG-pair tensors via cat-of-zeros_like to keep last dim symbolic.
+    x_in = torch.cat([torch.zeros_like(x), torch.zeros_like(x)], dim=0)
+    mask_in = torch.cat([torch.zeros_like(mask), torch.zeros_like(mask)], dim=0)
+    mu_in = torch.cat([torch.zeros_like(mu), torch.zeros_like(mu)], dim=0)
+    t_in = torch.zeros(2, device=x.device, dtype=x.dtype)
+    spks_in = torch.cat([torch.zeros_like(spks), torch.zeros_like(spks)], dim=0)
+    cond_in = torch.cat([torch.zeros_like(cond), torch.zeros_like(cond)], dim=0)
+
+    for step in range(1, len(t_span)):
+        x_in[:] = x
+        mask_in[:] = mask
+        mu_in[0] = mu
+        t_in[:] = t.unsqueeze(0)
+        spks_in[0] = spks
+        cond_in[0] = cond
+        dphi_dt = self.forward_estimator(
+            x_in, mask_in,
+            mu_in, t_in,
+            spks_in,
+            cond_in,
+        )
+        dphi_dt, cfg_dphi_dt = torch.split(dphi_dt, [x.size(0), x.size(0)], dim=0)
+        dphi_dt = ((1.0 + self.inference_cfg_rate) * dphi_dt - self.inference_cfg_rate * cfg_dphi_dt)
+        x = x + dt * dphi_dt
+        t = t + dt
+        sol.append(x)
+        if step < len(t_span) - 1:
+            dt = t_span[step + 1] - t
+
+    return sol[-1].float()
+
+
+def _flow_inference_dynamic(self,
+                            token, token_len,
+                            prompt_token, prompt_token_len,
+                            prompt_feat, prompt_feat_len,
+                            embedding,
+                            finalize):
+    print(f"[patched _flow_inference_dynamic called, token shape={tuple(token.shape)}]")  # DEBUG
+    """Drop-in replacement for chatterbox.s3gen.flow.MaskedDiffWithXvec.inference.
+
+    Mathematically identical to upstream for the single-batch
+    no-padding case (which is our entire deployment). Mask construction
+    uses shape-derived `ones_like` to keep ONNX dynamic — upstream's
+    `make_pad_mask(...)` does `lengths.max()` which collapses to a
+    Python int and bakes the time dim.
+    """
+    import torch.nn.functional as F
+
+    embedding = F.normalize(embedding, dim=1)
+    embedding = self.spk_embed_affine_layer(embedding)
+
+    token = torch.cat([prompt_token, token], dim=1)
+    # Embed first so we have a tensor with the time dim symbolic.
+    token = self.input_embedding(
+        torch.clamp(token, min=0, max=self.input_embedding.num_embeddings - 1)
+    )
+    # All-True mask of shape (B, T, 1), derived from `token`'s shape via
+    # ones_like on a sliced view. Avoids make_pad_mask's lengths.max()
+    # int-collapse.
+    mask = torch.ones_like(token[:, :, :1])
+    token = token * mask
+
+    # Encoder needs token_len. We pass the int-level length through but
+    # use token's symbolic shape for downstream mask construction.
+    h, h_lengths = self.encoder(token, prompt_token_len + (token_len.new_tensor([0]) + token.shape[1]))
+    if finalize is False:
+        h = h[:, :-self.pre_lookahead_len * self.token_mel_ratio]
+
+    h = self.encoder_proj(h)
+    prompt_len = prompt_feat.shape[1]
+
+    # conds: zeros of shape (B, total_len, output_size) where
+    # total_len = h.shape[1]. Constructed via a new_zeros that takes
+    # h.shape[0:1] + Size((output_size,)) — symbolic through ONNX.
+    conds_tail_len_tensor = h.shape[1] - prompt_len
+    conds_head = prompt_feat  # (B, prompt_len, output_size)
+    # tail zeros derived from h's shape, using symbolic subtraction
+    # via narrow on h itself.
+    conds_tail = torch.zeros_like(h.narrow(1, 0, conds_tail_len_tensor)[..., :self.output_size])
+    conds = torch.cat([conds_head, conds_tail], dim=1).transpose(1, 2)
+
+    # Mask for decoder: all-True (B, 1, total_len) derived from h.
+    mask2 = torch.ones_like(h[:, :, :1]).transpose(1, 2)  # (B, 1, total_len)
+
+    feat, _ = self.decoder(
+        mu=h.transpose(1, 2).contiguous(),
+        mask=mask2,
+        spks=embedding,
+        cond=conds,
+        n_timesteps=10,
+    )
+    # Slice off the prompt portion via narrow to keep dim symbolic.
+    feat = feat.narrow(2, prompt_len, feat.shape[2] - prompt_len)
+    return feat.float(), None
+
+
 @contextmanager
 def patched_cond_decoder_for_export(s3gen, istft_module):
     """Patch upstream s3gen.flow + mel2wav for ONNX export.
@@ -422,16 +602,21 @@ def patched_cond_decoder_for_export(s3gen, istft_module):
     saved = {
         "flow.inference": flow.inference,
         "flow.decoder.forward": flow.decoder.forward,
+        "flow.decoder.solve_euler": flow.decoder.solve_euler,
         "mel2wav.inference": mel2wav.inference,
         "mel2wav._stft": mel2wav._stft,
         "mel2wav._istft": mel2wav._istft,
     }
 
-    # Strip inference_mode and rebind as bound methods
-    flow.inference = types.MethodType(_strip_inference_mode(flow.inference.__func__), flow)
+    # Strip inference_mode and swap flow.inference for the
+    # dynamic-shape rewrite. Also patch solve_euler to use shape-
+    # preserving zero allocation (zeros_like instead of torch.zeros
+    # with .size() ints).
+    flow.inference = types.MethodType(_flow_inference_dynamic, flow)
     flow.decoder.forward = types.MethodType(
         _strip_inference_mode(flow.decoder.forward.__func__), flow.decoder
     )
+    flow.decoder.solve_euler = types.MethodType(_solve_euler_dynamic, flow.decoder)
     mel2wav.inference = types.MethodType(
         _strip_inference_mode(mel2wav.inference.__func__), mel2wav
     )
@@ -447,6 +632,7 @@ def patched_cond_decoder_for_export(s3gen, istft_module):
     finally:
         flow.inference = saved["flow.inference"]
         flow.decoder.forward = saved["flow.decoder.forward"]
+        flow.decoder.solve_euler = saved["flow.decoder.solve_euler"]
         mel2wav.inference = saved["mel2wav.inference"]
         mel2wav._stft = saved["mel2wav._stft"]
         mel2wav._istft = saved["mel2wav._istft"]

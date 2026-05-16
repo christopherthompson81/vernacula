@@ -396,7 +396,7 @@ def parity_dec(onnx_dir: Path, providers: list[str], tolerance: float = 1e-2) ->
     from chatterbox.tts import ChatterboxTTS
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     import _chatterbox_internals as ci
-    from _export_patches import patched_cond_decoder_for_export
+    from _export_patches import patched_cond_decoder_for_export, patched_sinegen_deterministic
 
     onnx_path = onnx_dir / "conditional_decoder.onnx"
     if not onnx_path.exists():
@@ -442,8 +442,11 @@ def parity_dec(onnx_dir: Path, providers: list[str], tolerance: float = 1e-2) ->
 
         # Apply the same patches the ONNX export used, so we're
         # comparing patched-eager vs patched-ONNX (rather than
-        # mixing in upstream's torch.istft path here).
-        with patched_cond_decoder_for_export(chatterbox_model.s3gen, ci.istft):
+        # mixing in upstream's torch.istft path here). Includes the
+        # deterministic SineGen probe to remove NSF stochasticity as
+        # a confound.
+        with patched_cond_decoder_for_export(chatterbox_model.s3gen, ci.istft), \
+             patched_sinegen_deterministic(chatterbox_model.s3gen.mel2wav):
             wav_eager = cd_eager(speech_tokens, spk_emb, spk_feat).cpu().numpy()
 
     # Run ONNX

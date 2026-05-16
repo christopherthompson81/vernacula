@@ -303,7 +303,7 @@ def export_conditional_decoder(cond_decoder_mod, speech_tokens, speaker_embeddin
     Resulting ONNX is device-independent.
     """
     import torch
-    from _export_patches import patched_cond_decoder_for_export
+    from _export_patches import patched_cond_decoder_for_export, patched_sinegen_deterministic
     print(f"  exporting conditional_decoder.onnx (opset {opset}) ...")
     t0 = time.perf_counter()
     cond_decoder_mod = cond_decoder_mod.cpu()
@@ -320,7 +320,8 @@ def export_conditional_decoder(cond_decoder_mod, speech_tokens, speaker_embeddin
     torch.set_default_device("cpu")
     try:
         with item_no_op_patch(item_patch), \
-             patched_cond_decoder_for_export(chatterbox_model.s3gen, ci.istft):
+             patched_cond_decoder_for_export(chatterbox_model.s3gen, ci.istft), \
+             patched_sinegen_deterministic(chatterbox_model.s3gen.mel2wav):
             torch.onnx.export(
                 cond_decoder_mod,
                 (speech_tokens_cpu, speaker_embeddings_cpu, speaker_features_cpu),
