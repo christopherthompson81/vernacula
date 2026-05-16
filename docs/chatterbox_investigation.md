@@ -1041,3 +1041,88 @@ state to a deterministic value.
 
 The previous "deferred to E5+" item on this drift is closed. The export
 is faithful.
+
+## Run 12 — 2026-05-16 — Phase 2 ONNX Loop merge integrated into the export
+
+After PR #50 landed the split cond decoder (3 small graphs +
+C#-side CFM loop), the obvious follow-up: stitch the three sub-graphs
+back into a single ONNX with the CFM solve as an ONNX `Loop` op, so the
+C# pipeline can pick a single-Run path while keeping the smaller-graph
+optimization wins.
+
+**Approach: post-export graph surgery, then fold into the exporter.**
+
+Stepwise to keep each step reviewable:
+
+1. `scripts/_export_utils/merge_cond_decoder_loop.py` — pure
+   `onnx`-Python surgery that takes the 3 split graphs and emits
+   `conditional_decoder_loop.onnx`. Inline flow_encoder + mel2wav,
+   prefix-rename their nodes, wire `flow_encoder` outputs into a
+   `Loop` op whose body is the inlined `cfm_estimator` plus a CFG
+   combine + Euler step. Trip count = 10; loop-carried value is `x`
+   (the mel-shape tensor being denoised). Cosine `t_span` and `dts`
+   precomputed as outer-graph initializers.
+
+2. ChatterboxSmoke auto-detect: prefer `MERGED` if
+   `conditional_decoder_loop.onnx` is present, else fall back to
+   `SPLIT` (3 graphs), else `MONOLITHIC` (1 graph). Single `Run` on
+   the merged path replaces the 10-iteration C# CFM solve loop.
+
+3. **This run:** integrate the merge into `export_chatterbox_to_onnx.py`
+   as a `--merge-cond-decoder` flag (implies `--split-cond-decoder`).
+   Runs after `onnxslim` so the merged graph is built from slimmed
+   sub-graphs. `EXPORT_FILES` extended so the overwrite check sees
+   the new artifact.
+
+**Subgraph initializer hoisting (sidesteps issue #56).**
+`build_loop_body` was originally written to leave the inlined
+cfm_estimator initializers (~1500 of them) inside the body subgraph.
+Cleaner structurally, but ORT's serialization of optimized models with
+a Loop body duplicates body-scope initializers into the outer
+namespace, breaking round-trip with `OptimizedModelFilePath` ("X
+initializer name is not unique"). Refactor: `build_loop_body` returns
+`(body, list[outer_initializers_to_hoist])`; caller adds them to the
+outer graph's initializer list. The body references them by their
+prefixed name; ONNX subgraphs see outer-scope initializers. Matches
+how a native PyTorch ONNX Loop export emits weights.
+
+Note: the structural hoist did NOT make the cache round-trip — ORT
+still inserts body-scope constants after optimization. Issue #56
+remains open; cache miss on warm load is logged but not blocking
+(2.3s reload vs cold). Not fixing here; addressing separately.
+
+**IR-version pin.** `onnx 1.18.0` defaults to IR 13; the sub-graphs
+ship at IR 8 (PyTorch `torch.onnx.export` default for opset 18). ORT
+< 1.24 caps at IR 11, so the merged graph wasn't loadable from the
+chatterbox-export venv (ORT 1.23.2). Fix: `model.ir_version =
+min(fe.ir_version, ce.ir_version, mw.ir_version)`.
+
+**Parity: `parity_loop_merged` added.** Runs the merged graph and the
+3-graph split orchestration on identical speech_tokens, compares
+waveforms via mel-spectral L1 (same metric as
+`parity_split_pipeline` because waveform-`max_abs` is unstable under
+CUDA `ScatterND` reduction-order nondeterminism inside the Loop
+body):
+
+| | Value | Threshold |
+|---|---|---|
+| `mel_log_l1` | 9.3e-3 | 0.5 (PASS, 50× headroom) |
+| wav `max_abs` | 2.5e-2 | (diagnostic only) |
+| wav `mean_abs` | 4.6e-4 | (diagnostic only) |
+
+The waveform-level deltas are phase noise from `ScatterND` —
+acoustically equivalent. Same finding pattern as the deferred-LM
+investigation in PR #55: max-abs-on-waveform is a misleading metric
+for ASR-grade audio equivalence; mel-domain L1 is what the rest of
+the suite uses for the same reason.
+
+**ChatterboxSmoke perf, merged path:**
+- Total: 7.3s (cold cache on merged graph)
+- speech_encoder: 713 ms
+- LM (174 steps, io-binding): 1.48s
+- cond decoder (1 Run on merged): 725 ms
+  - vs `SPLIT --io-binding`: 0.73s (10 CFM Runs + 1 mel2wav Run)
+  - Equivalent wall time; the win is graph count, not per-step
+    compute — gives downstream code (CLI, GUI) a cleaner "one ONNX
+    per stage" mental model and removes the C# CFM loop maintenance
+    burden.

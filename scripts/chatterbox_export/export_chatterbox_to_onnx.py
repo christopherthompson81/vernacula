@@ -55,6 +55,10 @@ EXPORT_FILES = [
     "speech_encoder.onnx",
     "language_model.onnx",
     "conditional_decoder.onnx",
+    "flow_encoder.onnx",
+    "cfm_estimator.onnx",
+    "mel2wav.onnx",
+    "conditional_decoder_loop.onnx",
     "export-report.json",
 ]
 
@@ -88,6 +92,14 @@ def parse_args() -> argparse.Namespace:
                         "graphs. Cuts the largest graph (cfm_estimator) from "
                         "70K nodes to ~7K — the 10x CFM unroll lives in C# "
                         "instead. See docs/chatterbox_investigation.md Run 12.")
+    p.add_argument("--merge-cond-decoder", action="store_true",
+                   help="After --split-cond-decoder, stitch the three sub-graphs "
+                        "back together into conditional_decoder_loop.onnx — a "
+                        "single ONNX with the CFM solve embedded as a Loop op. "
+                        "Lets the C# pipeline pick a single-Run path while "
+                        "keeping the small-graph optimization wins. Implies "
+                        "--split-cond-decoder. See "
+                        "scripts/_export_utils/merge_cond_decoder_loop.py.")
     p.add_argument("--overwrite", action="store_true")
     p.add_argument("--audio-prompt", type=Path, default=None,
                    help="Reference audio at any sample rate. If omitted, a 13 s torch.randn dummy is used "
@@ -571,6 +583,10 @@ def slim_and_externalize(output_dir: Path, filenames: list[str]) -> None:
 def main() -> None:
     args = parse_args()
 
+    if args.merge_cond_decoder and not args.split_cond_decoder:
+        # The merge needs the three split sub-graphs as input.
+        args.split_cond_decoder = True
+
     print("Chatterbox ONNX export — Stage 0 / E2")
     print(f"  repo_id: {args.repo_id}")
     print(f"  revision: {args.revision or '(latest)'}")
@@ -773,6 +789,25 @@ def main() -> None:
     if graphs_exported and not args.no_onnxslim:
         print("\nPost-export: onnxslim + external data ...")
         slim_and_externalize(args.output_dir, graphs_exported)
+
+    if args.merge_cond_decoder and not args.skip_conditional_decoder:
+        # Stitch the three split sub-graphs into a single ONNX with the CFM
+        # solve embedded as a Loop op. Done AFTER onnxslim so we merge the
+        # slimmed sub-graphs (smaller intermediate; same math).
+        print("\nPost-export: merge split cond decoder → conditional_decoder_loop.onnx ...")
+        _export_utils_dir = Path(__file__).resolve().parent.parent
+        if str(_export_utils_dir) not in sys.path:
+            sys.path.insert(0, str(_export_utils_dir))
+        from _export_utils.merge_cond_decoder_loop import merge as merge_cond_decoder_loop
+        merged_path = args.output_dir / "conditional_decoder_loop.onnx"
+        merge_cond_decoder_loop(
+            args.output_dir / "flow_encoder.onnx",
+            args.output_dir / "cfm_estimator.onnx",
+            args.output_dir / "mel2wav.onnx",
+            merged_path,
+            opset=args.opset_conditional_decoder,
+        )
+        graphs_exported.append("conditional_decoder_loop.onnx")
 
     # Provenance: hash everything we emitted
     hashes = {}
