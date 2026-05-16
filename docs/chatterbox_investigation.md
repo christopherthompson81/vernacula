@@ -818,3 +818,124 @@ pattern bites.
 2. End-to-end listen test against the trace-shape cond decoder ONNX
    with the pad-to-trace-length convention, to confirm the MVP shipping
    path actually produces intelligible speech.
+
+## Run 10 — 2026-05-16 — Cond decoder is fully dynamic-shape now
+
+**Question:** Run 8 stalled at a "trace-shape-only" cond decoder ONNX
+because we hit baked dims inside diffusers Attention. Run 9 (dynamo
+experiment) confirmed dynamo wasn't a shortcut around that wall. With
+the legacy trace path: can we actually finish the dynamic-shape work
+with a systematic approach instead of "patch one bake → re-export →
+discover next"?
+
+**Method:** Up-front inventory rather than peel-the-onion.
+
+1. Built a scanner (`/tmp/scan_bakes.py`) that walks every `Constant`
+   node in the ONNX, decodes small int tensors, then reports every
+   downstream consumer whose constant input contains a "suspect"
+   trace-derived integer (the trace-time mel-frame count, its 2x, its
+   /2, etc.).
+2. Ran it against the trace-shape export and got **45 hits across 2
+   clusters in a single pass** — far more useful than chasing one
+   runtime error at a time.
+
+**Findings from the scan:**
+
+| Cluster | Where | Op pattern | Verdict |
+|---|---|---|---|
+| 1 | `/encoder/encoders.{0..5}/self_attn/Concat_7` + `up_encoders.{0..3}` (10 hits) | Concat builds `[batch_dim, -1, 512]` shape | **FALSE POSITIVE** — 512 = `h × d_k = 8 × 64` = inner_dim, a model architecture constant, not a trace-length bake. Coincidence that trace length 512 == inner_dim. |
+| 2 | `/decoder/Reshape*` + `Equal*` + `Where*` + `Expand*` (35 hits) | Shape constants `[80, T]` and `[2, 80, T]` | **REAL** — these all collapse to T-baked Reshape/Expand pairs. |
+
+**Bisecting Cluster 2:**
+
+False trails I followed before finding the real culprit:
+
+1. **`einops.repeat(spks, "b c -> b c t", t=x.shape[-1])` in
+   `ConditionalDecoder.forward`** — sounded right, but my patched
+   `_estimator_forward_dynamic` replacement (using multiplicative
+   broadcast via `ones_like(x[:, :1, :])`) had **zero effect** on the
+   bake count (still 35). False trail.
+2. **`rand_noise[:, :, :mu.size(2)]` in `CausalConditionalCFM.forward`**
+   — `mu.size(2)` collapses to a Python int. Replaced with `narrow(2,
+   0, mu.shape[2])`, which keeps a SymInt-derived length. Still 35
+   bakes. Necessary but not sufficient.
+3. **Diagnostic**: replaced `rand_noise.narrow(...)` with
+   `torch.zeros_like(mu)` entirely. Still 35 bakes — confirming
+   `rand_noise` is **not** the source.
+
+**The actual bake source:** solve_euler's in-place broadcast assigns.
+
+```python
+# Upstream (and our Run 8 patch) had:
+x_in = torch.zeros([2, 80, x.size(2)], ...)  # bakes T directly
+# or our patched version:
+x_in = torch.cat([torch.zeros_like(x), torch.zeros_like(x)], dim=0)
+# Then INSIDE the loop:
+x_in[:] = x       # broadcast assign  ← THE BAKE
+mask_in[:] = mask
+```
+
+`x_in[:] = x` with `x_in: [2, 80, T]` and `x: [1, 80, T]` requires
+broadcasting x. torch.jit.trace records this as
+`Reshape(x, [80, T]) → Expand(_, [2, 80, T])` — and `[80, T]` /
+`[2, 80, T]` get baked as constants. Each of the 10 CFM solve
+iterations produced 3-4 baked nodes, giving the 35 total.
+
+**The fix:** pure cat construction, no broadcast assigns.
+
+```python
+# CFG-pair tensors that don't change across iterations:
+mu_in    = torch.cat([mu, torch.zeros_like(mu)],   dim=0)   # row 0 = mu, row 1 = zeros (unconditional)
+spks_in  = torch.cat([spks, torch.zeros_like(spks)], dim=0)
+cond_in  = torch.cat([cond, torch.zeros_like(cond)], dim=0)
+mask_in  = torch.cat([mask, mask],                  dim=0)   # both rows = mask
+
+for step in range(1, len(t_span)):
+    # x and t change each iter; rebuild via cat (no broadcast)
+    x_in  = torch.cat([x, x], dim=0)
+    t_cur = t.unsqueeze(0)
+    t_in  = torch.cat([t_cur, t_cur], dim=0).view(2)
+    dphi_dt = self.forward_estimator(x_in, mask_in, mu_in, t_in, spks_in, cond_in)
+    ...
+```
+
+cat-of-same-shape produces `[2, 80, T_sym]` without any broadcast
+target shape needed. The trace stays fully symbolic.
+
+**Verification:**
+
+- Bake scanner: **0 baked trace-derived constants** in the new export.
+- Listen test at natural LM length (456 speech tokens, ≠ trace-time
+  505): produced 8.2s WAV cleanly with no shape errors. Trailing
+  static is gone (no zero-pad needed).
+- Dec parity at natural 505 length: runs end-to-end without shape
+  errors. mel_log_l1 = 0.78 envelope drift remains — that's the
+  separate quality issue deferred to E5+, unrelated to dynamic shape.
+
+**Code cleanup:**
+
+- Dropped `--cond-decoder-trace-len` CLI flag and the trace-length
+  padding logic from `export_chatterbox_to_onnx.py` (no longer needed).
+- Dropped `cond_decoder_trace_len` from export-report.json schema.
+- Dropped pad-and-rerun-eager logic from `test_chatterbox_parity.py::parity_dec`.
+- Listen test: dropped TRACED_LEN constant, pad logic, and output trim.
+  Just feeds the natural speech_tokens length now.
+- Kept `_cfm_forward_dynamic` (narrow-based rand_noise slice) — even
+  though insufficient on its own, it's the principled way to express
+  the dynamic slice and removes one bake source.
+
+**The general lesson** worth remembering across this whole investigation:
+when torch.jit.trace bakes a dim, the bake is at the place that
+*forces* a Reshape or Expand target shape, not necessarily the
+place the dim was first referenced. In-place broadcast assigns
+(`x_in[:] = x`) are a particularly silent offender — they look like
+no-ops semantically but compile to Reshape+Expand with baked target.
+Pure cat-based construction avoids the broadcast entirely.
+
+**What's next:**
+
+The dynamic-shape work is done. Remaining open thread is the
+mel-spectral envelope drift (mel_log_l1 ~0.78). That's a quality
+issue inside HiFi-GAN mel2wav export, not a shape issue. Defer to
+E5+ unless it turns out to bite intelligibility — current listen
+tests are intelligible.

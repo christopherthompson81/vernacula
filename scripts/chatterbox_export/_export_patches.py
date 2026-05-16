@@ -496,32 +496,38 @@ def patched_sinegen_deterministic(mel2wav):
 def _solve_euler_dynamic(self, x, t_span, mu, mask, spks, cond):
     """Replacement for CausalConditionalCFM.solve_euler.
 
-    Upstream allocates the CFG _in buffers via
-    `torch.zeros([2, 80, x.size(2)], ...)` — `x.size(2)` becomes a
-    Python int, baking the time dimension into the trace. Replace
-    with `torch.cat([zeros_like(x), zeros_like(x)])` style
-    construction that propagates symbolic shapes through ONNX.
+    Upstream allocates `torch.zeros([2, 80, x.size(2)])` buffers and
+    fills them via in-place broadcasts (`x_in[:] = x`, `mu_in[0] = mu`).
+    Both patterns bake T into the trace:
+      1. The zeros allocation bakes T via `x.size(2)` int collapse.
+      2. The broadcast assign `x_in[:] = x` traces as
+         `Reshape(x, [80, T]) → Expand(_, [2, 80, T])`, baking T in
+         the Reshape's shape constant.
+
+    Fix: build the CFG-pair tensors via `torch.cat` of the actual
+    tensors (no broadcast). For CFG rows: `cat([cond_row, zeros_like])`
+    matches upstream's "row 0 = real, row 1 = zeros" CFG pattern with
+    no broadcast involved, so the trace stays symbolic.
     """
     t, _, dt = t_span[0], t_span[-1], t_span[1] - t_span[0]
     t = t.unsqueeze(dim=0)
 
     sol = []
 
-    # Build CFG-pair tensors via cat-of-zeros_like to keep last dim symbolic.
-    x_in = torch.cat([torch.zeros_like(x), torch.zeros_like(x)], dim=0)
-    mask_in = torch.cat([torch.zeros_like(mask), torch.zeros_like(mask)], dim=0)
-    mu_in = torch.cat([torch.zeros_like(mu), torch.zeros_like(mu)], dim=0)
-    t_in = torch.zeros(2, device=x.device, dtype=x.dtype)
-    spks_in = torch.cat([torch.zeros_like(spks), torch.zeros_like(spks)], dim=0)
-    cond_in = torch.cat([torch.zeros_like(cond), torch.zeros_like(cond)], dim=0)
+    # CFG-pair tensors that are constant across solve iterations.
+    # Row 0 = real, row 1 = zeros for unconditional pass (mu, spks, cond).
+    # mask is the same in both rows (upstream did `mask_in[:] = mask`).
+    mu_in = torch.cat([mu, torch.zeros_like(mu)], dim=0)
+    spks_in = torch.cat([spks, torch.zeros_like(spks)], dim=0)
+    cond_in = torch.cat([cond, torch.zeros_like(cond)], dim=0)
+    mask_in = torch.cat([mask, mask], dim=0)
 
     for step in range(1, len(t_span)):
-        x_in[:] = x
-        mask_in[:] = mask
-        mu_in[0] = mu
-        t_in[:] = t.unsqueeze(0)
-        spks_in[0] = spks
-        cond_in[0] = cond
+        # x and t are updated each iteration; rebuild their CFG-pairs.
+        x_in = torch.cat([x, x], dim=0)
+        t_cur = t.unsqueeze(0)
+        t_in = torch.cat([t_cur, t_cur], dim=0).view(2)
+
         dphi_dt = self.forward_estimator(
             x_in, mask_in,
             mu_in, t_in,
@@ -545,7 +551,6 @@ def _flow_inference_dynamic(self,
                             prompt_feat, prompt_feat_len,
                             embedding,
                             finalize):
-    print(f"[patched _flow_inference_dynamic called, token shape={tuple(token.shape)}]")  # DEBUG
     """Drop-in replacement for chatterbox.s3gen.flow.MaskedDiffWithXvec.inference.
 
     Mathematically identical to upstream for the single-batch
@@ -604,6 +609,30 @@ def _flow_inference_dynamic(self,
     return feat.float(), None
 
 
+def _cfm_forward_dynamic(self, mu, mask, n_timesteps, temperature=1.0, spks=None, cond=None):
+    """Replacement for CausalConditionalCFM.forward.
+
+    Upstream slices a precomputed `rand_noise: (1, 80, 15000)` buffer
+    by `mu.size(2)`:
+
+        z = self.rand_noise[:, :, :mu.size(2)] * temperature
+
+    `mu.size(2)` collapses to a Python int via torch.jit.trace, baking
+    T into 35 downstream Reshape/Equal/Where/Expand ops (the whole CFM
+    solve loop inherits z's baked shape). Replace with `narrow`, which
+    accepts a SymInt-derived length.
+    """
+    # narrow(dim, start, length) preserves symbolic length when length
+    # is derived from a Shape/Gather chain. `mu.shape[2]` here is
+    # symbolic in the trace; only `mu.size(2)` collapses.
+    # narrow with a SymInt-derived length keeps the slice symbolic.
+    z = self.rand_noise.narrow(2, 0, mu.shape[2]).to(mu.device).to(mu.dtype) * temperature
+    t_span = torch.linspace(0, 1, n_timesteps + 1, device=mu.device, dtype=mu.dtype)
+    if self.t_scheduler == 'cosine':
+        t_span = 1 - torch.cos(t_span * 0.5 * torch.pi)
+    return self.solve_euler(z, t_span=t_span, mu=mu, mask=mask, spks=spks, cond=cond), None
+
+
 @contextmanager
 def patched_cond_decoder_for_export(s3gen, istft_module):
     """Patch upstream s3gen.flow + mel2wav for ONNX export.
@@ -612,6 +641,8 @@ def patched_cond_decoder_for_export(s3gen, istft_module):
       flow.decoder.forward (CausalConditionalCFM), mel2wav.inference.
     - Patches mel2wav._stft and mel2wav._istft to avoid complex tensors,
       reusing the supplied `istft_module` (our scatter_add ISTFT).
+    - Replaces ConditionalDecoder.forward (the CFM estimator) with a
+      symbolic-broadcast version that avoids einops.repeat's T-baking.
     """
     flow = s3gen.flow
     mel2wav = s3gen.mel2wav
@@ -626,18 +657,15 @@ def patched_cond_decoder_for_export(s3gen, istft_module):
         "mel2wav._istft": mel2wav._istft,
     }
 
-    # Strip inference_mode and swap flow.inference for the
-    # dynamic-shape rewrite. Also patch solve_euler to use shape-
-    # preserving zero allocation (zeros_like instead of torch.zeros
-    # with .size() ints).
+    # Strip inference_mode from flow.inference and swap it for the
+    # dynamic-shape rewrite. flow.decoder.forward (CausalConditionalCFM)
+    # is replaced with `_cfm_forward_dynamic`, which slices rand_noise
+    # symbolically (the upstream `rand_noise[:, :, :mu.size(2)]` bakes
+    # T into the whole CFM solve graph — see _cfm_forward_dynamic
+    # docstring). solve_euler stays patched for its own CFG bake.
     flow.inference = types.MethodType(_flow_inference_dynamic, flow)
-    flow.decoder.forward = types.MethodType(
-        _strip_inference_mode(flow.decoder.forward.__func__), flow.decoder
-    )
+    flow.decoder.forward = types.MethodType(_cfm_forward_dynamic, flow.decoder)
     flow.decoder.solve_euler = types.MethodType(_solve_euler_dynamic, flow.decoder)
-    # NOTE: cond decoder estimator uses diffusers Attention internally,
-    # which has its own shape-baking. Not patched here — see module
-    # docstring above _solve_euler_dynamic for the deferred-work note.
     mel2wav.inference = types.MethodType(
         _strip_inference_mode(mel2wav.inference.__func__), mel2wav
     )

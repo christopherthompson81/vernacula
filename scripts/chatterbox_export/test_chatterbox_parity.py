@@ -449,7 +449,8 @@ def parity_dec(onnx_dir: Path, providers: list[str], tolerance: float = 1e-2) ->
              patched_sinegen_deterministic(chatterbox_model.s3gen.mel2wav):
             wav_eager = cd_eager(speech_tokens, spk_emb, spk_feat).cpu().numpy()
 
-    # Run ONNX
+    # Run ONNX at the natural speech_tokens length. The cond decoder is
+    # now fully dynamic-shape (see docs/chatterbox_investigation.md Run 10).
     sess = ort.InferenceSession(str(onnx_path), providers=providers)
     wav_onnx = sess.run(["waveform"], {
         "speech_tokens": speech_tokens.cpu().numpy(),
