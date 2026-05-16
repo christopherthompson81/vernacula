@@ -633,6 +633,92 @@ def _cfm_forward_dynamic(self, mu, mask, n_timesteps, temperature=1.0, spks=None
     return self.solve_euler(z, t_span=t_span, mu=mu, mask=mask, spks=spks, cond=cond), None
 
 
+class MinimalAttnProcessor:
+    """Minimal drop-in replacement for diffusers' AttnProcessor2_0 — for our
+    specific cond decoder usage only.
+
+    Upstream's AttnProcessor2_0 supports many code paths
+    (input_ndim==4 reshape, spatial_norm, group_norm, norm_cross,
+    residual_connection, rescale_output_factor, prepare_attention_mask's
+    F.pad branch, repeat_interleave for out_dim=3, etc.). None of those
+    apply to our calls into BasicTransformerBlock.attn1/attn2 — we always
+    pass 3D hidden_states with a pre-built (B, T, T) bias mask, and the
+    BasicTransformerBlock owns the residual+norm wrapper. Each upstream
+    code path that traces conditionally still emits ops via torch.jit.trace
+    even when the branch is dead at runtime — that's where the 400+
+    nodes per Attention block come from.
+
+    This processor does the strict minimum: Q/K/V projections, head
+    reshape, SDPA, head un-reshape, output projection. Per
+    docs/chatterbox_investigation.md Run 12 the upstream Attention
+    contributes ~57% of cond_decoder nodes (48 blocks × ~400 nodes each
+    out of ~70K total); replacing it should cut node count roughly in
+    half and pull load time down with it.
+
+    Bit-equivalent to AttnProcessor2_0 in our usage pattern (verified by
+    `parity_attention`). Re-using `attn.to_q/k/v/out` preserves the model
+    weights exactly.
+    """
+    def __call__(self, attn, hidden_states, encoder_hidden_states=None,
+                 attention_mask=None, temb=None, *args, **kwargs):
+        import torch.nn.functional as F
+        if encoder_hidden_states is None:
+            encoder_hidden_states = hidden_states
+
+        B, T, _ = hidden_states.shape
+        H = attn.heads
+
+        # Q from hidden_states; K, V from encoder_hidden_states (self-attn → same tensor).
+        query = attn.to_q(hidden_states)
+        key = attn.to_k(encoder_hidden_states)
+        value = attn.to_v(encoder_hidden_states)
+        D = key.shape[-1] // H
+
+        # (B, T, H*D) → (B, H, T, D)
+        query = query.view(B, T, H, D).transpose(1, 2)
+        key = key.view(B, -1, H, D).transpose(1, 2)
+        value = value.view(B, -1, H, D).transpose(1, 2)
+
+        # Mask comes in as (B, T, T) bias — broadcast to (B, 1, T, T) so SDPA
+        # broadcasts across heads. unsqueeze (not expand) keeps the broadcast
+        # virtual; ORT lowers to a single Add inside the SDPA path.
+        if attention_mask is not None and attention_mask.dim() == 3:
+            attention_mask = attention_mask.unsqueeze(1)
+
+        out = F.scaled_dot_product_attention(
+            query, key, value,
+            attn_mask=attention_mask, dropout_p=0.0, is_causal=False,
+        )
+        # (B, H, T, D) → (B, T, H*D)
+        out = out.transpose(1, 2).reshape(B, T, H * D)
+        # Output projection. attn.to_out is a ModuleList: [Linear, Dropout].
+        # Dropout is a no-op in eval; skip explicitly to drop one node.
+        return attn.to_out[0](out)
+
+
+def _install_minimal_attn_processors(estimator):
+    """Set MinimalAttnProcessor on every Attention module in the cond decoder
+    estimator (chatterbox's ConditionalDecoder). Returns a dict mapping
+    `id(module) -> original processor` so the caller can restore.
+    """
+    saved = {}
+    proc = MinimalAttnProcessor()
+    for module in estimator.modules():
+        cls = type(module).__name__
+        if cls == "BasicTransformerBlock":
+            for name in ("attn1", "attn2"):
+                attn = getattr(module, name, None)
+                if attn is not None:
+                    saved[id(attn)] = (attn, attn.processor)
+                    attn.set_processor(proc)
+    return saved
+
+
+def _restore_attn_processors(saved):
+    for attn, orig in saved.values():
+        attn.set_processor(orig)
+
+
 # Canonical seed for the CFM rand_noise. Used in both ONNX export and
 # parity tests so the two are bit-comparable. Chosen arbitrarily; the
 # exact value doesn't matter, only that it's stable across runs.
@@ -692,6 +778,7 @@ def patched_cond_decoder_for_export(s3gen, istft_module):
     flow.decoder.forward = types.MethodType(_cfm_forward_dynamic, flow.decoder)
     flow.decoder.solve_euler = types.MethodType(_solve_euler_dynamic, flow.decoder)
     flow.decoder.rand_noise = _seeded_rand_noise_like(flow.decoder.rand_noise)
+    saved_attn = _install_minimal_attn_processors(flow.decoder.estimator)
     mel2wav.inference = types.MethodType(
         _strip_inference_mode(mel2wav.inference.__func__), mel2wav
     )
@@ -709,6 +796,7 @@ def patched_cond_decoder_for_export(s3gen, istft_module):
         flow.decoder.forward = saved["flow.decoder.forward"]
         flow.decoder.solve_euler = saved["flow.decoder.solve_euler"]
         flow.decoder.rand_noise = saved["flow.decoder.rand_noise"]
+        _restore_attn_processors(saved_attn)
         mel2wav.inference = saved["mel2wav.inference"]
         mel2wav._stft = saved["mel2wav._stft"]
         mel2wav._istft = saved["mel2wav._istft"]

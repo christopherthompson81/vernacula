@@ -692,3 +692,129 @@ class ConditionalDecoder(nn.Module):
         head = wav[:, :n] * self.trim_fade
         tail = wav[:, n:]
         return torch.cat([head, tail], dim=1)
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Split-graph cond decoder (Phase 1 of the perf work — see Run 12 of
+# docs/chatterbox_investigation.md). Replaces the monolithic
+# ConditionalDecoder above with three smaller modules that each export
+# to their own ONNX file. The 10× CFM solve unrolling that bloated the
+# monolithic file from 70K nodes lives in C# now (~30 lines of orchestration
+# code), so cfm_estimator.onnx contains exactly one estimator forward.
+# ─────────────────────────────────────────────────────────────────────────
+
+
+class FlowEncoderWrapper(nn.Module):
+    """Half of `chatterbox.s3gen.flow.MaskedDiffWithXvec.inference`: everything
+    up to (but not including) the CFM `decoder` call. Outputs the tensors the
+    CFM solve loop needs as inputs (mu, mask, embedding, cond) plus the
+    deterministic initial latent z (sliced from the seeded rand_noise buffer).
+
+    Outputs:
+      - mu          (B, 80, T_mel)   — encoder output, transposed; input to CFM
+      - mask        (B, 1, T_mel)    — all-ones mask (we don't use chunking)
+      - embedding   (B, 80)          — speaker-embedding after spk_embed_affine
+      - cond        (B, 80, T_mel)   — conditioning tensor (prompt_feat + zeros)
+      - z           (B, 80, T_mel)   — initial CFM latent (rand_noise[:, :, :T_mel])
+
+    Caller (C#) drives the CFM solve loop using cfm_estimator.onnx, then
+    trims feat[:, :, prompt_len:] and feeds to mel2wav.onnx.
+
+    Active patches must include `_seeded_rand_noise_like` (for reproducible z)
+    — applied automatically by `patched_cond_decoder_for_export`.
+    """
+
+    def __init__(self, model):
+        super().__init__()
+        self.flow = model.s3gen.flow
+
+    def forward(self, speech_tokens, speaker_embeddings, speaker_features):
+        import torch.nn.functional as F
+        B = speech_tokens.shape[0]
+        device = speech_tokens.device
+
+        # spk embedding (matches upstream flow.inference)
+        embedding = F.normalize(speaker_embeddings, dim=1)
+        embedding = self.flow.spk_embed_affine_layer(embedding)
+
+        # token → embed → mask. Empty prompt_token (we don't use the prompt-
+        # token concat path); matches what the monolithic ConditionalDecoder
+        # wrapper does.
+        token = self.flow.input_embedding(
+            torch.clamp(speech_tokens, min=0,
+                        max=self.flow.input_embedding.num_embeddings - 1)
+        )
+        mask = torch.ones_like(token[:, :, :1])
+        token = token * mask
+
+        # Encoder — token_len is the int sequence length passed as a 1-D tensor.
+        token_len_int = token_len_tensor(B, speech_tokens.shape[1], device)
+        h, _ = self.flow.encoder(token, token_len_int)
+
+        h = self.flow.encoder_proj(h)
+        prompt_len = speaker_features.shape[1]
+
+        # conds: prompt_feat concatenated with zero-tail (matches upstream)
+        conds_tail_len = h.shape[1] - prompt_len
+        conds_head = speaker_features
+        conds_tail = torch.zeros_like(
+            h.narrow(1, 0, conds_tail_len)[..., :self.flow.output_size]
+        )
+        cond = torch.cat([conds_head, conds_tail], dim=1).transpose(1, 2)
+
+        # Decoder-side mask: all-ones (B, 1, T_mel)
+        mel_mask = torch.ones_like(h[:, :, :1]).transpose(1, 2)
+        mu = h.transpose(1, 2).contiguous()
+
+        # CFM initial latent z. self.flow.decoder.rand_noise has been pinned
+        # to a seeded canonical value by patched_cond_decoder_for_export
+        # (see Run 11) so this is reproducible across exports.
+        z = self.flow.decoder.rand_noise.narrow(2, 0, mu.shape[2]).to(device).to(mu.dtype)
+
+        return mu, mel_mask, embedding, cond, z
+
+
+def token_len_tensor(batch_size, length, device):
+    """The flow encoder's `xs_lens` arg — 1-D length per batch item. Kept as
+    a helper because the +0+shape trick keeps the length symbolic in the trace."""
+    base = torch.full((batch_size,), length, dtype=torch.long, device=device)
+    return base + (base.new_tensor([0]) + 0)
+
+
+class CfmEstimatorWrapper(nn.Module):
+    """Wraps `flow.decoder.estimator` (the matcha-style ConditionalDecoder
+    UNet) as a standalone module. Exports to cfm_estimator.onnx with ONE
+    forward call traced — the C# CFM solve loop calls it N=10 times with
+    different (x_in, t_in) at each iteration. Inputs are CFG-doubled
+    (batch=2) per upstream's solve_euler convention; C# does the CFG split
+    and combine after each call.
+    """
+
+    def __init__(self, model):
+        super().__init__()
+        self.estimator = model.s3gen.flow.decoder.estimator
+
+    def forward(self, x_in, mask_in, mu_in, t_in, spks_in, cond_in):
+        return self.estimator(x_in, mask_in, mu_in, t_in, spks_in, cond_in)
+
+
+class Mel2WavWrapper(nn.Module):
+    """Wraps `mel2wav.inference` + the trim_fade ref-clip-spillover patch
+    as a standalone module. Inputs the post-solve mel (B, 80, T_mel); outputs
+    the trimmed waveform (B, N_samples).
+
+    The trim_fade buffer is baked into this graph as a constant initializer,
+    so C# doesn't need to know about it.
+    """
+
+    def __init__(self, model):
+        super().__init__()
+        self.mel2wav = model.s3gen.mel2wav
+        self.register_buffer("trim_fade", model.s3gen.trim_fade.detach().clone())
+
+    def forward(self, mel):
+        wav, _ = self.mel2wav.inference(speech_feat=mel)
+        n = self.trim_fade.shape[0]
+        head = wav[:, :n] * self.trim_fade
+        tail = wav[:, n:]
+        return torch.cat([head, tail], dim=1)

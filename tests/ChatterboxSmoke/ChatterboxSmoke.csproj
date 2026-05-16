@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>Vernacula.ChatterboxSmoke</RootNamespace>
+    <AssemblyName>ChatterboxSmoke</AssemblyName>
+    <Platforms>x64</Platforms>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- .Gpu includes CPU as fallback; covers both EP modes (cpu and cuda). -->
+    <PackageReference Include="Microsoft.ML.OnnxRuntime.Gpu" Version="1.24.4" />
+    <PackageReference Include="NAudio" Version="2.2.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Vernacula.Base\Vernacula.Base.csproj">
+      <Private>true</Private>
+      <SetConfiguration>EP=Cuda</SetConfiguration>
+    </ProjectReference>
+  </ItemGroup>
+
+</Project>
