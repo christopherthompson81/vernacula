@@ -72,17 +72,21 @@ internal static class Program
         string ep = "cuda";
         string? diagDir = null;
         bool useIoBinding = true;
+        string? text = null;
+        string? tokenizerJson = null;
         for (int i = 0; i < args.Length; i++)
         {
             switch (args[i])
             {
-                case "--onnx-dir":      onnxDir = args[++i]; break;
-                case "--voice":         voicePath = args[++i]; break;
-                case "--out":           outPath = args[++i]; break;
-                case "--ep":            ep = args[++i].ToLowerInvariant(); break;
-                case "--diag":          diagDir = args[++i]; break;
-                case "--io-binding":    useIoBinding = true; break;
-                case "--no-io-binding": useIoBinding = false; break;
+                case "--onnx-dir":       onnxDir = args[++i]; break;
+                case "--voice":          voicePath = args[++i]; break;
+                case "--out":            outPath = args[++i]; break;
+                case "--ep":             ep = args[++i].ToLowerInvariant(); break;
+                case "--diag":           diagDir = args[++i]; break;
+                case "--io-binding":     useIoBinding = true; break;
+                case "--no-io-binding":  useIoBinding = false; break;
+                case "--text":           text = args[++i]; break;
+                case "--tokenizer-json": tokenizerJson = args[++i]; break;
                 default:
                     Console.Error.WriteLine($"Unknown arg: {args[i]}");
                     return 2;
@@ -177,13 +181,37 @@ internal static class Program
         sw.Stop();
         Console.WriteLine($"speech_encoder: cond_emb={ShapeStr(condEmb.Dimensions)}  audio_tokens={ShapeStr(audioTokens.Dimensions)}  [{sw.ElapsedMilliseconds} ms]");
 
+        // ── Compute LM input_ids — from --text via the tokenizer if given,
+        //    else fall back to the hardcoded Ezreal sentence (backward-compat). ──
+        long[] inputIds;
+        if (text is not null)
+        {
+            var tokenizerPath = tokenizerJson ?? LocateCachedTokenizerJson();
+            if (tokenizerPath is null)
+            {
+                Console.Error.WriteLine(
+                    "--text given but no tokenizer.json found. Pass --tokenizer-json <path>, "
+                    + "or download via `huggingface-cli download ResembleAI/chatterbox tokenizer.json`.");
+                return 2;
+            }
+            var tokenizer = new EnTokenizer(tokenizerPath);
+            inputIds = tokenizer.WrapForLm(text);
+            Console.WriteLine($"Tokenized \"{text[..Math.Min(text.Length, 50)]}{(text.Length > 50 ? "..." : "")}\" "
+                + $"→ {inputIds.Length} tokens");
+        }
+        else
+        {
+            inputIds = InputIds;
+            Console.WriteLine($"Using hardcoded Ezreal sentence ({inputIds.Length} tokens). Pass --text \"...\" for arbitrary input.");
+        }
+
         // ── embed_tokens.onnx — text prompt to embeddings ─────────────────
         sw.Restart();
-        int sText = InputIds.Length;
+        int sText = inputIds.Length;
         var positionIds = new long[sText];
         for (int i = 0; i < sText; i++)
-            positionIds[i] = InputIds[i] >= StartSpeechToken ? 0 : i - 1;
-        var inputIdsT = new DenseTensor<long>(InputIds.ToArray(), [1, sText]);
+            positionIds[i] = inputIds[i] >= StartSpeechToken ? 0 : i - 1;
+        var inputIdsT = new DenseTensor<long>(inputIds.ToArray(), [1, sText]);
         var posIdsT = new DenseTensor<long>(positionIds, [1, sText]);
         var exagT = new DenseTensor<float>(new float[] { Exaggeration }, [1]);
         using var embOut = emb.Run([
@@ -748,4 +776,24 @@ internal static class Program
         => path.StartsWith("~/") ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), path[2..]) : path;
 
     private static string Hit(bool b) => b ? "HIT" : "miss";
+
+    /// <summary>
+    /// Best-effort lookup of the chatterbox tokenizer.json in the standard HF
+    /// hub cache. Returns null if not present; the user can override with
+    /// --tokenizer-json. Matches the layout
+    /// `~/.cache/huggingface/hub/models--ResembleAI--chatterbox/snapshots/*/tokenizer.json`.
+    /// </summary>
+    private static string? LocateCachedTokenizerJson()
+    {
+        var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        var snapshotsDir = Path.Combine(home,
+            ".cache", "huggingface", "hub", "models--ResembleAI--chatterbox", "snapshots");
+        if (!Directory.Exists(snapshotsDir)) return null;
+        foreach (var snap in Directory.EnumerateDirectories(snapshotsDir))
+        {
+            var p = Path.Combine(snap, "tokenizer.json");
+            if (File.Exists(p)) return p;
+        }
+        return null;
+    }
 }

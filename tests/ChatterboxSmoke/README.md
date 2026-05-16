@@ -19,10 +19,12 @@ into `Chatterbox.Base` / `Chatterbox.CLI` / `Chatterbox.Avalonia`.
    trace-time canonical input length).
 3. Runs `speech_encoder` to get `audio_tokens`, `speaker_embeddings`,
    `speaker_features`, and the conditioning `cond_emb` for the LM.
-4. Runs `embed_tokens` with a **hardcoded text token sequence** (the
-   "Ezreal and Jinx teamed up..." sentence from the Python listen test).
-   Text tokenization in C# is a separate concern (Stage 1 step 1 of
-   `chatterbox.scratch.md`).
+4. Runs `embed_tokens` with the LM input token sequence. With `--text`,
+   the C# `EnTokenizer` (BPE port of upstream `chatterbox.models.tokenizers
+   .EnTokenizer`) encodes the sentence and wraps it in the
+   `[EXAGGERATION, START, ...bpe..., STOP, START_SPEECH, START_SPEECH]`
+   layout the LM expects. Without `--text`, falls back to the hardcoded
+   "Ezreal and Jinx teamed up..." sentence for back-compat.
 5. Runs the Llama LM autoregressively with a growing KV-cache for up to
    256 steps, applying upstream's repetition-penalty (1.2 if logit > 0
    else no-op). Stops on `STOP_SPEECH_TOKEN = 6562`.
@@ -62,16 +64,26 @@ verified per-step logits match to max_abs=0).
 dotnet run --project tests/ChatterboxSmoke -- \
     --onnx-dir /path/to/cb_dyn5 \
     --voice ~/Downloads/voice_prompt.wav \
+    --text "Hello world. This is fresh text." \
     --out /tmp/chatterbox_out_cs.wav \
     --ep cuda
 ```
 
 Flags:
-- `--onnx-dir` — directory containing the four `.onnx` files.
+- `--onnx-dir` — directory containing the `.onnx` files.
 - `--voice` — reference WAV at any sample rate / channel count.
+- `--text "..."` — text to synthesize. If omitted, uses a hardcoded
+  Ezreal-and-Jinx sentence (back-compat with pre-tokenizer behavior).
+- `--tokenizer-json <path>` — chatterbox `tokenizer.json`. If omitted,
+  auto-locates from the HuggingFace hub cache at
+  `~/.cache/huggingface/hub/models--ResembleAI--chatterbox/snapshots/*/`.
 - `--out` — output WAV path (default `/tmp/chatterbox_out_cs.wav`).
 - `--ep cpu | cuda` — execution provider. `cuda` requires
   `Microsoft.ML.OnnxRuntime.Gpu`; falls back to CPU if CUDA unavailable.
+- `--io-binding | --no-io-binding` — toggle the LM KV-cache IoBinding
+  optimization. Default on.
+- `--diag <dir>` — dump LM step-0/step-1 + token sequence to `<dir>` for
+  the deferred LM-divergence investigation.
 
 ## What this proves (and doesn't)
 
