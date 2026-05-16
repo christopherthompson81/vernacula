@@ -11,10 +11,12 @@
 //   2. Split on added-token spans (longest-match), emitting their token IDs
 //      directly. The text between special spans goes through BPE.
 //   3. BPE encode each non-special chunk:
-//      a. Decompose into single-char tokens.
+//      a. Decompose into single-codepoint tokens (Rune-iterated so emoji
+//         and other surrogate-pair chars count as one token, not two).
 //      b. Repeatedly merge adjacent pairs using the priority order from
 //         tokenizer.json's merges list (lower rank = higher priority).
-//      c. Map final tokens to vocab IDs.
+//      c. Map final tokens to vocab IDs. Codepoints not in the BPE base
+//         alphabet emit [UNK] (id 1) and act as a merge barrier.
 //
 // Pre-tokenizer skip: tokenizer.json specifies `pre_tokenizer.type =
 // "Whitespace"` (HF's regex split on `\w+|[^\w\s]+`). This implementation
@@ -117,6 +119,12 @@ internal sealed class EnTokenizer
     private void AssertNoBoundarySpanningMerges()
     {
         var specials = _addedTokensByLongestFirst.Select(t => t.text).ToHashSet();
+        // .NET `\w` is Unicode-aware by default ([\p{L}\p{Mn}\p{Nd}\p{Pc}]+
+        // roughly); Python's `re` `\w` is also Unicode-aware unless the
+        // `re.ASCII` flag is set. HF tokenizers uses Python's default, so
+        // the two definitions align. Even if they didn't perfectly match,
+        // this assertion is conservative: a false positive throws (forcing
+        // re-evaluation), never silently corrupts output.
         var wordOnly = new Regex(@"^\w+$");
         var punctOnly = new Regex(@"^[^\w\s]+$");
         foreach (var ((a, b), _) in _mergeRank)
@@ -138,6 +146,13 @@ internal sealed class EnTokenizer
     /// </summary>
     public long[] Encode(string text)
     {
+        // Match upstream EnTokenizer.encode: literal spaces become the
+        // [SPACE] added-token text. There is no escape syntax: a user who
+        // types the literal substring "[SPACE]" gets the SPACE token in the
+        // middle of their text — same as upstream Python (HF tokenizers don't
+        // provide an escape either). Same applies to "[START]", "[STOP]",
+        // "[UNK]", "[UH]". Acceptable since the LM input convention treats
+        // these as control tokens anyway.
         text = text.Replace(" ", "[SPACE]");
         var ids = new List<long>(text.Length);
         int pos = 0;
@@ -187,12 +202,13 @@ internal sealed class EnTokenizer
     }
 
     /// <summary>
-    /// Decompose the run into characters, emitting [UNK] for any char that
-    /// isn't a single-token entry in the vocab (chars outside chatterbox's
+    /// Decompose the run into Unicode codepoints (Rune-iterated, not
+    /// char-iterated), emitting [UNK] for any codepoint that isn't a
+    /// single-token entry in the vocab (codepoints outside chatterbox's
     /// BPE base alphabet — e.g. emoji, ideographic scripts). UNK acts as a
     /// barrier: BPE merges run independently on each contiguous run of known
-    /// chars between the UNKs. Verified equivalent to upstream HF tokenizers
-    /// behavior on adjacent-unknown and surrounded-unknown cases.
+    /// codepoints between the UNKs. Verified equivalent to upstream HF
+    /// tokenizers behavior on adjacent-unknown and surrounded-unknown cases.
     /// </summary>
     private void BpeEncodeRun(ReadOnlySpan<char> run, List<long> outIds)
     {
@@ -224,7 +240,7 @@ internal sealed class EnTokenizer
     }
 
     /// <summary>
-    /// Standard BPE on a list of in-vocab single-char tokens: repeatedly
+    /// Standard BPE on a list of in-vocab single-codepoint tokens: repeatedly
     /// merge the adjacent pair with the lowest rank in `_mergeRank` until no
     /// pair has a rank, then map final tokens to IDs.
     /// </summary>
