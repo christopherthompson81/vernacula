@@ -45,6 +45,8 @@ from _common import (
     choose_onnx_providers,
     fail,
     read_export_report,
+    EXAGGERATION_TOKEN,
+    START_SPEECH_TOKEN,
     LLM_HIDDEN_SIZE,
     LLM_NUM_LAYERS,
     LLM_NUM_KV_HEADS,
@@ -364,6 +366,122 @@ def parity_enc(onnx_dir: Path, providers: list[str], tolerance: float = 1e-2) ->
     return ParityResult("enc[safe-dense]", passed, max_abs, max_rel, mean_abs, tolerance, notes=notes)
 
 
+def parity_dec(onnx_dir: Path, providers: list[str], tolerance: float = 1e-2) -> ParityResult:
+    """conditional_decoder.onnx waveform vs upstream eager.
+
+    Build the same speech_tokens / speaker_emb / speaker_features
+    pipeline both ways:
+      A: upstream eager (cond decoder runs upstream flow.inference
+         + mel2wav.inference in PyTorch)
+      C: ONNX via ORT (same wrapper, exported with the four cond-
+         decoder patches active).
+
+    Compare with **mel-spectral distance**, NOT time-domain cosine.
+
+    Why: upstream HiFi-GAN-NSF's SourceModule injects fresh
+    `torch.randn_like` noise on every call (line in SineGen.forward).
+    Time-domain waveforms are inherently non-deterministic — two
+    consecutive eager runs already differ by ~4e-2 max-abs and
+    cosine ~0.12, before ONNX is involved. The randomness is
+    perceptually inaudible (envelope unchanged, noise-floor only),
+    but it makes time-domain bit-comparison meaningless.
+
+    Mel-spectral distance compares the spectral envelope, which is
+    what the model actually controls. A pass means the ONNX wav is
+    perceptually identical to the eager wav up to the inherent
+    upstream stochasticity.
+    """
+    import torch
+    import onnxruntime as ort
+    from chatterbox.tts import ChatterboxTTS
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import _chatterbox_internals as ci
+    from _export_patches import patched_cond_decoder_for_export
+
+    onnx_path = onnx_dir / "conditional_decoder.onnx"
+    if not onnx_path.exists():
+        return ParityResult("dec", False, float("inf"), float("inf"), float("inf"),
+                            tolerance, notes=f"missing {onnx_path}")
+
+    chatterbox_model = ChatterboxTTS.from_pretrained(device="cuda")
+    prep = ci.PrepareConditionalsModel(chatterbox_model).eval().to("cuda")
+    et = ci.InputsEmbeds(chatterbox_model).eval().to("cuda")
+    cd_eager = ci.ConditionalDecoder(chatterbox_model).eval().to("cuda")
+    ci.istft.to("cuda")
+
+    # Same audio prompt as the export uses
+    torch.manual_seed(0)
+    audio = torch.randn(1, 312_936, device="cuda")
+    ids = torch.tensor([[EXAGGERATION_TOKEN] + [255, 281, 39, 46, 56, 2, 53, 2, 286, 41, 37, 2, 136, 122,
+        49, 2, 152, 2, 103, 2, 277, 21, 101, 7, 2, 301, 55, 34, 28, 7, 2, 53, 2, 296, 18, 18, 115, 2, 51, 2, 33, 245,
+        2, 17, 190, 2, 42, 2, 50, 18, 125, 4, 32, 2, 290, 169, 142, 2, 41, 2, 43, 2, 18, 29, 91, 2, 25, 186, 8, 20,
+        14, 80, 2, 29, 86, 213, 216, 9, 0, START_SPEECH_TOKEN, START_SPEECH_TOKEN]], dtype=torch.long, device="cuda")
+    pos = torch.where(ids >= START_SPEECH_TOKEN, torch.zeros_like(ids),
+                      torch.arange(ids.shape[1], device="cuda").unsqueeze(0) - 1)
+    ex = torch.tensor([0.5], device="cuda")
+
+    with torch.no_grad():
+        cond_emb, prompt_token, spk_emb, spk_feat = prep(audio_values=audio)
+        text_emb = et(ids, pos, ex)
+        inputs_embeds = torch.cat((cond_emb, text_emb), dim=1)
+        llm = chatterbox_model.t3.tfmr
+        sh = chatterbox_model.t3.speech_head
+        gt = torch.tensor([[START_SPEECH_TOKEN]], dtype=torch.long, device="cuda")
+        pkv = None
+        for i in range(256):
+            o = llm(inputs_embeds=inputs_embeds, past_key_values=pkv)
+            pkv = o.past_key_values
+            nl = sh(o.last_hidden_state[:, -1, :])
+            nt = torch.argmax(nl, dim=-1).unsqueeze(-1)
+            gt = torch.cat((gt, nt), dim=-1)
+            if (nt.view(-1) == 6562).all():
+                break
+            p = torch.full((ids.shape[0], 1), i + 1, dtype=torch.long, device="cuda")
+            inputs_embeds = et(nt, p, ex)
+        speech_tokens = torch.cat([prompt_token, gt[:, 1:-1]], dim=1)
+
+        # Apply the same patches the ONNX export used, so we're
+        # comparing patched-eager vs patched-ONNX (rather than
+        # mixing in upstream's torch.istft path here).
+        with patched_cond_decoder_for_export(chatterbox_model.s3gen, ci.istft):
+            wav_eager = cd_eager(speech_tokens, spk_emb, spk_feat).cpu().numpy()
+
+    # Run ONNX
+    sess = ort.InferenceSession(str(onnx_path), providers=providers)
+    wav_onnx = sess.run(["waveform"], {
+        "speech_tokens": speech_tokens.cpu().numpy(),
+        "speaker_embeddings": spk_emb.cpu().numpy(),
+        "speaker_features": spk_feat.cpu().numpy(),
+    })[0]
+
+    max_abs, max_rel, mean_abs = diff_metrics(wav_onnx, wav_eager)
+
+    # Mel-spectral L1 — robust to NSF noise. Compare 80-bin log-mel
+    # spectrograms of the two waveforms; this measures envelope match
+    # (what the model actually predicts) and ignores phase + per-call
+    # noise-injection randomness. Threshold 0.5 is conservative — for
+    # bit-equivalent eager runs this is ~0.05 (signed by NSF noise floor).
+    import torchaudio.transforms as T
+    mel_t = T.MelSpectrogram(sample_rate=24000, n_fft=1024, hop_length=256, n_mels=80)
+    log_mel_eager = torch.log(torch.clamp(mel_t(torch.from_numpy(wav_eager[0]).float()), min=1e-5))
+    log_mel_onnx = torch.log(torch.clamp(mel_t(torch.from_numpy(wav_onnx[0]).float()), min=1e-5))
+    mel_l1 = float((log_mel_eager - log_mel_onnx).abs().mean())
+
+    # Cosine on time-domain reported but informational only — not pass-criterion.
+    cos = float(np.dot(wav_eager.flatten(), wav_onnx.flatten())
+                / (np.linalg.norm(wav_eager) * np.linalg.norm(wav_onnx) + 1e-12))
+
+    mel_threshold = 0.5
+    passed = mel_l1 <= mel_threshold
+    notes = (
+        f"shape={tuple(wav_onnx.shape)}  "
+        f"range=[{wav_eager.min():.3f}, {wav_eager.max():.3f}]  "
+        f"mel_log_l1={mel_l1:.4e} (thr={mel_threshold})  "
+        f"cosine_sim={cos:.4f} (informational, NSF noise expected)"
+    )
+    return ParityResult("dec", passed, max_abs, max_rel, mean_abs, mel_threshold, notes=notes)
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--onnx-dir", type=Path, required=True,
@@ -412,7 +530,9 @@ def main() -> None:
         # Keep the historical SafeDenseLayer test reachable for diagnostic
         # use; not run by default since SafeDenseLayer was removed.
     if "dec" in tests:
-        print("[dec] conditional_decoder parity — not implemented yet")
+        print("[dec] conditional_decoder.onnx waveform vs upstream eager")
+        results.append(parity_dec(args.onnx_dir, providers, args.tolerance))
+        print(results[-1].summary())
 
     print()
     failed = [r for r in results if not r.passed]

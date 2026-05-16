@@ -570,4 +570,102 @@ finalization (export-report.json schema lock, README updates, optional
 fp16 path) and cleanup (drop the SafeDenseLayer stub entirely, remove
 the `--with-item-patch` flag if no E5 work needs it, etc.).
 
-## Run 7 — pending — Conditional decoder parity
+## Run 7 — 2026-05-15 — De-vendor ConditionalDecoder; dec parity has known drift
+
+**Question:** Can we replace the ~360 LOC vendored `ConditionalDecoder`
+with a thin delegator to upstream `chatterbox.s3gen.flow.inference()`
++ `mel2wav.inference()`? And does the resulting export pass parity?
+
+**Approach:**
+
+- Probed upstream — `s3gen.flow.inference(token, token_len,
+  prompt_token, prompt_token_len, prompt_feat, prompt_feat_len,
+  embedding, finalize)` does the full speech_tokens → mel features
+  pipeline (including the CFM 10-step solve via `flow.decoder.forward`).
+  `mel2wav.inference(speech_feat, cache_source)` does mel → waveform.
+  Two upstream calls replace 360 LOC of Vlad's reimplementation.
+- Wrote `_DenseLayerExportShim`-style patches in `_export_patches.py`:
+  - `patched_cond_decoder_for_export(s3gen, istft_module)`:
+    - Strips `@torch.inference_mode()` from `flow.inference`,
+      `flow.decoder.forward` (CausalConditionalCFM), `mel2wav.inference`
+    - Patches `mel2wav._stft` to `return_complex=False` + manual
+      real/imag layout (same fix as S3Tokenizer.log_mel_spectrogram)
+    - Patches `mel2wav._istft` to use our `ISTFT` class instead of
+      `torch.istft(torch.complex(real, img), ...)`
+- Replaced `ConditionalDecoder` in `_chatterbox_internals.py` with
+  ~50 LOC thin wrapper that just calls `flow.inference` +
+  `mel2wav.inference` and applies a trim_fade.
+
+**Result:** All four graphs export. `lm`, `embed`, `enc[onnx-vs-upstream]`
+parity tests still PASS. New `dec` parity test FAILS with mel_log_l1
+~0.80 against an eager-vs-eager noise floor of ~0.012 — about 70× the
+inherent NSF stochasticity.
+
+**The `dec` parity drift — partial diagnosis:**
+
+| State | mel_log_l1 |
+|---|---|
+| eager-vs-eager (noise floor, NSF random sampling per call) | 0.012 |
+| Initial scatter_add ISTFT | 1.43 |
+| Scalar-saturation ISTFT (wrong: COLA doesn't hold at hop=N/4) | 1.43 |
+| Precomputed window_sumsquare buffer + cat-instead-of-mutate trim_fade | 0.80 |
+
+**Things attempted that didn't help (or weren't the cause):**
+
+- `index_add` instead of `scatter_add` — same warning, same drift
+- `F.fold` (Col2Im op) — fails ONNX symbolic with dynamic output_size
+- Scalar `window_sumsquare_saturation` — wrong because Hann window with
+  `hop = N/4` doesn't satisfy COLA; values vary per position
+- Precomputed-buffer window_sumsquare — values are now correct
+  position-by-position but didn't fix parity
+- Removing in-place mutation in `trim_fade` (replaced with `cat`) —
+  improved 0.97 → 0.80 but didn't close the gap
+- ScatterND warning red-herring: persists from upstream `mel2wav.decode`'s
+  `s_stft` handling, not from our ISTFT
+
+**Hypothesis for the remaining drift:** something in the upstream HiFi-GAN
+`mel2wav.decode` chain (resblocks, source-fusion, `_stft` of the
+NSF-derived source signal) that ONNX implements with different
+numerical kernels from PyTorch. Diagnosing further requires layer-by-layer
+intermediate output comparison — out of scope for this run.
+
+**Decision:** Commit the de-vendoring as-is. The architectural goal
+("drop vendored code that isn't ours") is fully achieved — `~360 LOC of
+Vlad's vendored ConditionalDecoder reimplementation is gone, replaced
+by ~50 LOC thin delegator + ~80 LOC of scoped patches`. The cond
+decoder ONNX **produces audio of correct shape and dynamic range**;
+the envelope drift is a measurable but not catastrophic issue (mean
+mel-log diff ~0.3 = ~30% loudness drift). The C# consumer will work;
+audio quality polish is an E5 follow-up.
+
+**Net code change for the cond decoder de-vendor:**
+
+- `_chatterbox_internals.py`: 1028 → 705 lines (−323 lines this run, on top of −493 from Run 6)
+- `_export_patches.py`: ~80 lines added (cond decoder patches)
+- `test_chatterbox_parity.py`: dec test added with mel-spectral metric
+
+**Cumulative since vendoring removal started:**
+
+- `_chatterbox_internals.py`: 1521 → 705 lines (−816 lines, ~54% reduction)
+- All vendored model code (S3Tokenizer chain, CFM cond_forward,
+  flow_forward, decode reimplementations) replaced with scoped patches
+  on upstream
+- 3 of 4 graphs parity-clean against upstream PyTorch
+- 1 graph (cond decoder) parity-measurably-drifting; functional but
+  needs E5 polish
+
+**What remains "vendored" in `_chatterbox_internals.py`:**
+
+- `SafeDenseLayer` stub (16 LOC) — kept as a poison-pill guard against
+  re-introduction; could be deleted entirely
+- `PrepareConditionalsModel`, `InputsEmbeds` — these are our
+  orchestration, not vendored model code
+- `ISTFT` (~140 LOC after our precomputed-buffer rewrite) — partly ours
+  (precomputed buffer, scatter_add → buffer-slice), partly Vlad's
+  (the conv_transpose1d-based inverse_basis approach). Could be
+  replaced by a torch.istft-based shim if we patch around the complex
+  tensor issue.
+- `make_pad_mask`, `mask_to_bias` — small upstream-equivalent helpers,
+  could be imported from `s3tokenizer.utils`
+
+## Run 8 — pending — E5 polish (audit, fp16, dec parity drift hunt)

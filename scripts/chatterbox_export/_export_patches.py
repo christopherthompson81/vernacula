@@ -338,6 +338,120 @@ def patched_dense_layer_for_export(speaker_encoder):
             setattr(parent, name, original)
 
 
+# ── Cond-decoder patches for chatterbox.s3gen.flow + mel2wav ─────────
+# Upstream provides `flow.inference(...)` and `mel2wav.inference(...)`
+# that together do what Vlad's vendored ConditionalDecoder
+# reimplemented in ~360 LOC. To use them, we need to bypass three
+# upstream ONNX-unfriendly patterns:
+#
+#   1. `@torch.inference_mode()` on `flow.inference`,
+#      `CausalConditionalCFM.forward`, `mel2wav.inference`. Inference
+#      mode poisons tensors with a flag that JIT trace's
+#      save_for_backward chokes on. (Same fix as the FSQ codebook in
+#      the S3Tokenizer chain — replace with @torch.no_grad.)
+#
+#   2. `mel2wav._stft` uses `torch.stft(return_complex=True)` then
+#      `view_as_real`. Same issue as S3Tokenizer.log_mel_spectrogram.
+#      Replacement uses `return_complex=False` and indexes [..., 0]/
+#      [..., 1] for real/imag.
+#
+#   3. `mel2wav._istft` builds `torch.complex(real, img)` then calls
+#      `torch.istft(...)`. ONNX has neither op. Replacement uses our
+#      existing `ISTFT` class (in `_chatterbox_internals.py`) which
+#      implements iSTFT via Conv1d + scatter_add window_sumsquare.
+
+
+def _strip_inference_mode(method):
+    """Wrap a method so its @torch.inference_mode decorator is skipped.
+
+    Returns the raw function from the decorated method; callers should
+    rebind via `types.MethodType`. The decorator chain wraps a _DecoratorContextManager
+    around the original function, accessible via `__wrapped__`.
+    """
+    while hasattr(method, "__wrapped__"):
+        method = method.__wrapped__
+    return method
+
+
+def _mel2wav_stft_real_format(self, x):
+    """Replacement for `mel2wav._stft` — return_complex=False, no view_as_real."""
+    spec = torch.stft(
+        x,
+        self.istft_params["n_fft"],
+        self.istft_params["hop_len"],
+        self.istft_params["n_fft"],
+        window=self.stft_window.to(x.device),
+        return_complex=False,
+    )  # (B, F, TT, 2)
+    return spec[..., 0], spec[..., 1]
+
+
+def _make_mel2wav_istft_via_our_istft(istft_module):
+    """Build a replacement for `mel2wav._istft` that uses our ISTFT
+    (Conv1d + scatter_add window_sumsquare) instead of torch.istft +
+    torch.complex.
+
+    Closes over the istft module so the patched method has access to it.
+    """
+
+    def _mel2wav_istft_patched(self, magnitude, phase):
+        magnitude = torch.clip(magnitude, max=1e2)
+        real = magnitude * torch.cos(phase)
+        img = magnitude * torch.sin(phase)
+        # Stack real/imag along channel dim → (B, 2F, TT) — the format
+        # our ISTFT class expects (recombine_magnitude_phase).
+        spec = torch.cat([real, img], dim=1)
+        return istft_module(spec)
+
+    return _mel2wav_istft_patched
+
+
+@contextmanager
+def patched_cond_decoder_for_export(s3gen, istft_module):
+    """Patch upstream s3gen.flow + mel2wav for ONNX export.
+
+    - Strips `@torch.inference_mode()` from flow.inference,
+      flow.decoder.forward (CausalConditionalCFM), mel2wav.inference.
+    - Patches mel2wav._stft and mel2wav._istft to avoid complex tensors,
+      reusing the supplied `istft_module` (our scatter_add ISTFT).
+    """
+    flow = s3gen.flow
+    mel2wav = s3gen.mel2wav
+
+    # Save originals
+    saved = {
+        "flow.inference": flow.inference,
+        "flow.decoder.forward": flow.decoder.forward,
+        "mel2wav.inference": mel2wav.inference,
+        "mel2wav._stft": mel2wav._stft,
+        "mel2wav._istft": mel2wav._istft,
+    }
+
+    # Strip inference_mode and rebind as bound methods
+    flow.inference = types.MethodType(_strip_inference_mode(flow.inference.__func__), flow)
+    flow.decoder.forward = types.MethodType(
+        _strip_inference_mode(flow.decoder.forward.__func__), flow.decoder
+    )
+    mel2wav.inference = types.MethodType(
+        _strip_inference_mode(mel2wav.inference.__func__), mel2wav
+    )
+
+    # Swap STFT/iSTFT
+    mel2wav._stft = types.MethodType(_mel2wav_stft_real_format, mel2wav)
+    mel2wav._istft = types.MethodType(
+        _make_mel2wav_istft_via_our_istft(istft_module), mel2wav
+    )
+
+    try:
+        yield s3gen
+    finally:
+        flow.inference = saved["flow.inference"]
+        flow.decoder.forward = saved["flow.decoder.forward"]
+        mel2wav.inference = saved["mel2wav.inference"]
+        mel2wav._stft = saved["mel2wav._stft"]
+        mel2wav._istft = saved["mel2wav._istft"]
+
+
 @contextmanager
 def patched_s3tokenizer_for_export(tokenizer):
     """Temporarily swap log_mel_spectrogram + forward for export-friendly versions.

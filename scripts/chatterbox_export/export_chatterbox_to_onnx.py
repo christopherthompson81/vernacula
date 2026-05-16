@@ -70,7 +70,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--opset-embed-tokens", type=int, default=20)
     p.add_argument("--opset-speech-encoder", type=int, default=20)
     p.add_argument("--opset-language-model", type=int, default=18)
-    p.add_argument("--opset-conditional-decoder", type=int, default=17)
+    p.add_argument("--opset-conditional-decoder", type=int, default=18,
+                   help="Cond decoder needs opset 18+ for the Col2Im op "
+                        "(F.fold-based window_sumsquare in our ISTFT). "
+                        "Lower opset triggers a scatter_add path that has "
+                        "ONNX duplicate-index correctness issues.")
     p.add_argument("--lm-graph-mode", default="unified", choices=["unified", "prefill+step"])
     p.add_argument("--skip-embed-tokens", action="store_true")
     p.add_argument("--skip-speech-encoder", action="store_true")
@@ -282,34 +286,41 @@ def export_speech_encoder(prepare_conditionals_mod, audio_values, out_path: Path
 
 
 def export_conditional_decoder(cond_decoder_mod, speech_tokens, speaker_embeddings,
-                               speaker_features, out_path: Path, opset: int, item_patch: bool):
+                               speaker_features, out_path: Path, opset: int, item_patch: bool,
+                               chatterbox_model):
     """Export the conditional decoder.
 
-    On CUDA, torch.jit.trace (used internally by torch.onnx.export) fails
-    inside upstream chatterbox `CausalBlock1D.block(x * mask)` with a
-    spurious cuda:0/cpu device-mismatch — confirmed by repro outside ONNX
-    via direct torch.jit.trace. Eager mode runs the same code path
-    cleanly. Workaround: move the module + inputs to CPU just for the
-    export. The resulting ONNX graph is device-independent; ORT will run
-    it on CUDA at session-load time.
+    The new ConditionalDecoder is a thin wrapper that delegates to
+    upstream `chatterbox.s3gen.flow.inference()` + `mel2wav.inference()`.
+    We apply `patched_cond_decoder_for_export` to strip
+    `@torch.inference_mode()` from those upstream methods (poisoned
+    tensors break the JIT trace) and to swap `mel2wav._stft` /
+    `_istft` for ONNX-friendly real-format implementations. The iSTFT
+    is rerouted through our `ISTFT` class.
 
-    `set_default_device("cpu")` is also pinned for the duration of the
-    export so any intermediates the tracer materializes land on CPU.
+    Still runs on CPU — same JIT-trace-on-CUDA bug as before
+    (CausalBlock1D `x * mask` device mismatch, confirmed outside ONNX).
+    Resulting ONNX is device-independent.
     """
     import torch
+    from _export_patches import patched_cond_decoder_for_export
     print(f"  exporting conditional_decoder.onnx (opset {opset}) ...")
     t0 = time.perf_counter()
     cond_decoder_mod = cond_decoder_mod.cpu()
     speech_tokens_cpu = speech_tokens.cpu()
     speaker_embeddings_cpu = speaker_embeddings.cpu()
     speaker_features_cpu = speaker_features.cpu()
-    # The vendored `istft` singleton is held by reference inside cond_decoder.
-    import _chatterbox_internals as ci  # noqa - already imported in main; reimport keeps the function self-contained
+    import _chatterbox_internals as ci
     ci.istft.cpu()
+    # Move upstream s3gen submodules to cpu too — patched _istft
+    # references our istft singleton, but the upstream
+    # mel2wav/flow modules need to be on cpu for the trace.
+    chatterbox_model.s3gen.cpu()
     prev_default = torch.get_default_device() if hasattr(torch, "get_default_device") else None
     torch.set_default_device("cpu")
     try:
-        with item_no_op_patch(item_patch):
+        with item_no_op_patch(item_patch), \
+             patched_cond_decoder_for_export(chatterbox_model.s3gen, ci.istft):
             torch.onnx.export(
                 cond_decoder_mod,
                 (speech_tokens_cpu, speaker_embeddings_cpu, speaker_features_cpu),
@@ -619,6 +630,7 @@ def main() -> None:
             cond_decoder, speech_tokens, speaker_embeddings, speaker_features,
             args.output_dir / "conditional_decoder.onnx",
             opset=args.opset_conditional_decoder, item_patch=args.with_item_patch,
+            chatterbox_model=chatterbox_model,
         )
         graphs_exported.append("conditional_decoder.onnx")
 
