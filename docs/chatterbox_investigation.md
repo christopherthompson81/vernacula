@@ -746,4 +746,75 @@ ways to ship around this:
   (378 tokens for the VCTK reference voice) and produces audio of the
   expected shape with the expected dynamic range.
 
-## Run 9 — pending — Pick MVP path: pad-to-trace-length on C# side, or revisit later
+## Run 9 — 2026-05-15 — Dynamo experiment: not a shortcut around the diffusers wall
+
+**Question:** Run 8 ended with the cond decoder stuck at a baked
+`/decoder/Reshape_9 = [80, 756]` inside `diffusers.models.attention_processor.Attention`.
+Before sinking weeks into patching diffusers' Attention surface, is
+`torch.onnx.dynamo_export` (TorchDynamo + torch.export) a meaningfully
+shorter path? It's PyTorch 2.x's newer ONNX exporter, designed for
+dynamic shapes via symbolic tracing rather than concrete-tensor tracing.
+
+**What we tried:**
+
+- Dynamo path on the cond decoder, full CFM=10 solve, CUDA. Hung 25+
+  minutes, killed.
+- Dynamo + CFM=1 (one-step CFM, diagnostic) + CUDA. Device-placement
+  errors during export — dynamo trips on mixed-device tensors that
+  legacy trace silently coerces.
+- Dynamo + CFM=1 + CPU. Completed in **104.7s** — proving dynamo can
+  in principle export this graph.
+
+**Patches still required for dynamo to even start:**
+
+| Failure | Patch |
+|---|---|
+| `aten._fft_r2c` not supported by ONNX exporter | Wrote a Conv1d-based STFT (real-only DFT projection matrix), verified bit-equivalent to `torch.stft` (max-abs 1.4e-6) |
+| `_add_optional_chunk_mask` has `.item()` (data-dependent guard, dynamo forbids) | `_add_optional_chunk_mask_no_guard`: drop the chunk-size branch, use the static path unconditionally |
+
+So just getting dynamo to *complete* required two non-trivial patches.
+
+**The runtime result was the same kind of failure:**
+
+The CFM=1 CPU export produced an ONNX graph that, at inference time,
+failed with a shape mismatch `197760 vs 198240` — exactly one mel hop
+off (480 samples). Tracing back: dynamo had emitted many "Ignored
+guard" warnings during export. Each "ignored guard" is a place where
+dynamo silently specialized on a concrete value rather than keeping a
+SymInt. At runtime those baked values mismatch the real input — same
+root cause as the legacy path, different reporting.
+
+**Conclusion:**
+
+Dynamo is **not a shortcut around the diffusers wall**. It exports a
+different ONNX graph from legacy trace, but it bakes shapes in many of
+the same places, just behind a less-obvious warning channel ("Ignored
+guard" rather than a hard error). Fixing dynamo means hunting down
+each ignored guard and adjusting the upstream code so dynamo keeps the
+SymInt — comparable depth-of-fix to the legacy patch path. And dynamo
+also brought *additional* failures (FFT, data-dependent guards) that
+legacy handles without help.
+
+**Decision:** Revert dynamo experiment, stay on legacy trace path,
+ship MVP with C# orchestrator padding `speech_tokens` to trace-time
+length. Revisit estimator rewrite (Option 2 in Run 8) if/when the pad
+pattern bites.
+
+**Code state:**
+
+- All dynamo-experiment code reverted to `c4be929` via
+  `git checkout c4be929 -- _export_patches.py export_chatterbox_to_onnx.py`.
+- `_export_patches.py` and `export_chatterbox_to_onnx.py` back to the
+  legacy CFM=10 trace path with the three dynamic-shape patches from
+  Run 8.
+- `/tmp/cb_dyno/` (dynamo ONNX dir) and the Conv1d-STFT / no-guard
+  patches are gone, not committed.
+- `scripts/chatterbox_export/_chatterbox_internals.py` unchanged.
+
+**What's next (Run 10):** Resume legacy iteration. Two threads open:
+1. The dec parity envelope drift (mel_log_l1 ~0.80 vs noise floor 0.012)
+   — needs layer-by-layer intermediate-output comparison inside upstream
+   HiFi-GAN mel2wav. E5+ polish, not MVP-blocking.
+2. End-to-end listen test against the trace-shape cond decoder ONNX
+   with the pad-to-trace-length convention, to confirm the MVP shipping
+   path actually produces intelligible speech.
