@@ -39,6 +39,10 @@ internal static class Program
     private const int LlmHidden = 1024;
     private const int S3GenSr = 24_000;
     private const int DummyAudioSamples = 312_936;  // 13.04 s @ 24 kHz
+    private const int MelBins = 80;
+    private const int PromptLen = 500;     // spk_feat.shape[1], fixed
+    private const int CfmSteps = 10;       // n_timesteps for solve_euler
+    private const float CfgRate = 0.7f;    // inference_cfg_rate (= flow.decoder.inference_cfg_rate)
 
     // The Ezreal-and-Jinx sentence, pre-tokenized via chatterbox's EnTokenizer.
     // Wrapping: [EXAGGERATION_TOKEN, ...text..., START_SPEECH_TOKEN, START_SPEECH_TOKEN].
@@ -63,7 +67,6 @@ internal static class Program
         string? voicePath = null;
         string? outPath = "/tmp/chatterbox_out_cs.wav";
         string ep = "cuda";
-        bool skipDec = false;
         for (int i = 0; i < args.Length; i++)
         {
             switch (args[i])
@@ -72,7 +75,6 @@ internal static class Program
                 case "--voice":    voicePath = args[++i]; break;
                 case "--out":      outPath = args[++i]; break;
                 case "--ep":       ep = args[++i].ToLowerInvariant(); break;
-                case "--skip-cond-decoder": skipDec = true; break;
                 default:
                     Console.Error.WriteLine($"Unknown arg: {args[i]}");
                     return 2;
@@ -109,14 +111,33 @@ internal static class Program
             Console.WriteLine($"  {name}: {sw.ElapsedMilliseconds} ms  cache={Hit(hit)}  src={sz / 1e6:F0} MB");
             return s;
         }
+        // Detect cond decoder layout: prefer 3-graph split if all 3 are present,
+        // else fall back to the monolithic conditional_decoder.onnx.
+        bool splitMode = File.Exists(Path.Combine(onnxDir, "flow_encoder.onnx"))
+                      && File.Exists(Path.Combine(onnxDir, "cfm_estimator.onnx"))
+                      && File.Exists(Path.Combine(onnxDir, "mel2wav.onnx"));
+        Console.WriteLine($"Cond decoder mode: {(splitMode ? "SPLIT (3 graphs)" : "MONOLITHIC (1 graph)")}");
+
         var totalLoadSw = Stopwatch.StartNew();
         var enc = LoadOne("speech_encoder.onnx");
         var emb = LoadOne("embed_tokens.onnx");
         var lm  = LoadOne("language_model.onnx");
-        var dec = LoadOne("conditional_decoder.onnx");
+        InferenceSession? dec = null, flowEnc = null, cfmEst = null, m2w = null;
+        if (splitMode)
+        {
+            flowEnc = LoadOne("flow_encoder.onnx");
+            cfmEst  = LoadOne("cfm_estimator.onnx");
+            m2w     = LoadOne("mel2wav.onnx");
+        }
+        else
+        {
+            dec = LoadOne("conditional_decoder.onnx");
+        }
         totalLoadSw.Stop();
-        Console.WriteLine($"Loaded 4 sessions in {totalLoadSw.ElapsedMilliseconds} ms total  (ep={ep})");
-        using var _enc = enc; using var _emb = emb; using var _lm = lm; using var _dec = dec;
+        int sessionCount = 3 + (splitMode ? 3 : 1);
+        Console.WriteLine($"Loaded {sessionCount} sessions in {totalLoadSw.ElapsedMilliseconds} ms total  (ep={ep})");
+        using var _enc = enc; using var _emb = emb; using var _lm = lm;
+        using var _dec = dec; using var _flowEnc = flowEnc; using var _cfmEst = cfmEst; using var _m2w = m2w;
 
         // ── Voice prompt → 24 kHz mono, padded/cropped to 312_936 ─────────
         sw.Restart();
@@ -285,23 +306,34 @@ internal static class Program
             speechTokens[audioTokArr.Length + i] = generateTokens[genStart + i];
         Console.WriteLine($"speech_tokens: shape=(1, {speechTokens.Length})  ({audioTokArr.Length} from voice + {genCount} from LM)");
 
-        // ── conditional_decoder.onnx → waveform ───────────────────────────
+        // ── Cond decoder: split path (3 graphs + CFM loop in C#) or monolithic ──
         sw.Restart();
         var speechTokT = new DenseTensor<long>(speechTokens, [1, speechTokens.Length]);
         var spkEmbT = new DenseTensor<float>(spkEmb.ToArray(), spkEmb.Dimensions.ToArray());
         var spkFeatT = new DenseTensor<float>(spkFeat.ToArray(), spkFeat.Dimensions.ToArray());
-        using var decOut = dec.Run([
-            NamedOnnxValue.CreateFromTensor("speech_tokens", speechTokT),
-            NamedOnnxValue.CreateFromTensor("speaker_embeddings", spkEmbT),
-            NamedOnnxValue.CreateFromTensor("speaker_features", spkFeatT),
-        ]);
-        var wavTensor = decOut.First().AsTensor<float>();    // [1, N]
-        sw.Stop();
-        int nSamples = wavTensor.Dimensions[1];
-        Console.WriteLine($"cond_decoder: waveform=(1, {nSamples}) → {nSamples / (float)S3GenSr:F2}s  [{sw.ElapsedMilliseconds} ms]");
+
+        float[] samples;
+        int nSamples;
+        if (splitMode)
+        {
+            samples = RunSplitCondDecoder(flowEnc!, cfmEst!, m2w!, speechTokT, spkEmbT, spkFeatT, sw);
+            nSamples = samples.Length;
+        }
+        else
+        {
+            using var decOut = dec!.Run([
+                NamedOnnxValue.CreateFromTensor("speech_tokens", speechTokT),
+                NamedOnnxValue.CreateFromTensor("speaker_embeddings", spkEmbT),
+                NamedOnnxValue.CreateFromTensor("speaker_features", spkFeatT),
+            ]);
+            var wavTensor = decOut.First().AsTensor<float>();
+            sw.Stop();
+            nSamples = wavTensor.Dimensions[1];
+            Console.WriteLine($"cond_decoder (monolithic): waveform=(1, {nSamples}) → {nSamples / (float)S3GenSr:F2}s  [{sw.ElapsedMilliseconds} ms]");
+            samples = wavTensor.ToArray();
+        }
 
         // ── Write WAV ─────────────────────────────────────────────────────
-        var samples = wavTensor.ToArray();
         var fmt = WaveFormat.CreateIeeeFloatWaveFormat(S3GenSr, 1);
         using (var writer = new WaveFileWriter(outPath, fmt))
         {
@@ -310,6 +342,128 @@ internal static class Program
         totalSw.Stop();
         Console.WriteLine($"Wrote {outPath}  [total {totalSw.ElapsedMilliseconds / 1000.0:F1}s]");
         return 0;
+    }
+
+    /// <summary>
+    /// Orchestrate the 3-graph split cond decoder: run flow_encoder, then
+    /// the CFM solve loop (10 cosine-scheduled Euler steps with CFG, one
+    /// cfm_estimator.onnx call per step), trim the prompt prefix from the
+    /// final mel, then run mel2wav. Mirrors parity_split_pipeline in
+    /// scripts/chatterbox_export/test_chatterbox_parity.py.
+    /// </summary>
+    private static float[] RunSplitCondDecoder(
+        InferenceSession flowEnc, InferenceSession cfmEst, InferenceSession m2w,
+        DenseTensor<long> speechTokT, DenseTensor<float> spkEmbT, DenseTensor<float> spkFeatT,
+        Stopwatch sw)
+    {
+        // 1) flow_encoder: speech_tokens → mu, mel_mask, embedding, cond, z
+        sw.Restart();
+        using var encOut = flowEnc.Run([
+            NamedOnnxValue.CreateFromTensor("speech_tokens", speechTokT),
+            NamedOnnxValue.CreateFromTensor("speaker_embeddings", spkEmbT),
+            NamedOnnxValue.CreateFromTensor("speaker_features", spkFeatT),
+        ]);
+        var encList = encOut.ToList();
+        var muT       = encList[0].AsTensor<float>();   // [1, 80, T_mel]
+        var maskT     = encList[1].AsTensor<float>();   // [1, 1,  T_mel]
+        var embedT    = encList[2].AsTensor<float>();   // [1, 80]
+        var condT     = encList[3].AsTensor<float>();   // [1, 80, T_mel]
+        var zT        = encList[4].AsTensor<float>();   // [1, 80, T_mel]
+        int tMel = muT.Dimensions[2];
+        sw.Stop();
+        Console.WriteLine($"flow_encoder: mu={ShapeStr(muT.Dimensions)}  T_mel={tMel}  [{sw.ElapsedMilliseconds} ms]");
+
+        // Materialize to flat arrays once; the CFM loop builds CFG-doubled
+        // copies per step (cat-along-batch) without re-reading the originals.
+        float[] mu      = muT.ToArray();
+        float[] mask    = maskT.ToArray();
+        float[] embed   = embedT.ToArray();
+        float[] cond    = condT.ToArray();
+        float[] x       = zT.ToArray();    // current CFM state, evolves each step
+
+        // 2) CFM solve loop. Cosine-scheduled t_span (matches upstream's
+        //    t_scheduler='cosine'). 10 Euler steps. Per step: CFG-double
+        //    the inputs along batch, run cfm_estimator, split + combine
+        //    with CFG rate, take an Euler step.
+        sw.Restart();
+        var tSpan = new float[CfmSteps + 1];
+        for (int i = 0; i <= CfmSteps; i++)
+        {
+            float linear = i / (float)CfmSteps;
+            tSpan[i] = 1.0f - MathF.Cos(linear * 0.5f * MathF.PI);
+        }
+        float t = tSpan[0];
+        float dt = tSpan[1] - tSpan[0];
+        int muLen = mu.Length;       // = T_mel * 80
+        int maskLen = mask.Length;   // = T_mel
+        int embedLen = embed.Length; // = 80
+        for (int step = 1; step <= CfmSteps; step++)
+        {
+            // CFG-double along batch dim 0. Each "_in" is shape [2, ...].
+            var xIn = CatBatch(x, x);
+            var maskIn = CatBatch(mask, mask);
+            var muIn = CatBatch(mu, new float[muLen]);             // row 0 = mu, row 1 = zeros
+            var condIn = CatBatch(cond, new float[cond.Length]);
+            var spksIn = CatBatch(embed, new float[embedLen]);
+            var tIn = new float[] { t, t };
+
+            using var estOut = cfmEst.Run([
+                NamedOnnxValue.CreateFromTensor("x_in",     new DenseTensor<float>(xIn, [2, MelBins, tMel])),
+                NamedOnnxValue.CreateFromTensor("mask_in",  new DenseTensor<float>(maskIn, [2, 1, tMel])),
+                NamedOnnxValue.CreateFromTensor("mu_in",    new DenseTensor<float>(muIn, [2, MelBins, tMel])),
+                NamedOnnxValue.CreateFromTensor("t_in",     new DenseTensor<float>(tIn, [2])),
+                NamedOnnxValue.CreateFromTensor("spks_in",  new DenseTensor<float>(spksIn, [2, MelBins])),
+                NamedOnnxValue.CreateFromTensor("cond_in",  new DenseTensor<float>(condIn, [2, MelBins, tMel])),
+            ]);
+            var dphi = estOut.First().AsTensor<float>().ToArray();  // [2, 80, T_mel]
+            int half = dphi.Length / 2;
+            // CFG combine: (1+cfg) * cond_part - cfg * uncond_part; Euler step.
+            float a = 1.0f + CfgRate;
+            for (int i = 0; i < half; i++)
+            {
+                float c = dphi[i];
+                float u = dphi[half + i];
+                x[i] = x[i] + dt * (a * c - CfgRate * u);
+            }
+            t = tSpan[step];
+            if (step < CfmSteps) dt = tSpan[step + 1] - t;
+        }
+        sw.Stop();
+        Console.WriteLine($"cfm_solve_loop: {CfmSteps} steps  [{sw.ElapsedMilliseconds} ms, {sw.ElapsedMilliseconds / (double)CfmSteps:F1} ms/step]");
+
+        // 3) Trim mel: drop the prompt prefix (the first PromptLen mel frames).
+        //    x is row-major [1, 80, T_mel]; we want [1, 80, T_mel - PromptLen]
+        //    keeping the tail along the last dim.
+        int tTrim = tMel - PromptLen;
+        var feat = new float[MelBins * tTrim];
+        for (int c = 0; c < MelBins; c++)
+        {
+            Array.Copy(x, c * tMel + PromptLen, feat, c * tTrim, tTrim);
+        }
+
+        // 4) mel2wav: trimmed mel → waveform (trim_fade is baked into the graph).
+        sw.Restart();
+        using var m2wOut = m2w.Run([
+            NamedOnnxValue.CreateFromTensor("mel", new DenseTensor<float>(feat, [1, MelBins, tTrim])),
+        ]);
+        var wavTensor = m2wOut.First().AsTensor<float>();
+        sw.Stop();
+        int n = wavTensor.Dimensions[1];
+        Console.WriteLine($"mel2wav: waveform=(1, {n}) → {n / (float)S3GenSr:F2}s  [{sw.ElapsedMilliseconds} ms]");
+        return wavTensor.ToArray();
+    }
+
+    /// <summary>
+    /// Concatenate two flat tensors of identical size along (implicit) dim 0.
+    /// Used to build the CFG-pair tensors for cfm_estimator: row 0 = real,
+    /// row 1 = the other half (zeros for mu/cond/spks; same as row 0 for x/mask).
+    /// </summary>
+    private static float[] CatBatch(float[] a, float[] b)
+    {
+        var r = new float[a.Length + b.Length];
+        Array.Copy(a, 0, r, 0, a.Length);
+        Array.Copy(b, 0, r, a.Length, b.Length);
+        return r;
     }
 
     // ── Helpers ──────────────────────────────────────────────────────────

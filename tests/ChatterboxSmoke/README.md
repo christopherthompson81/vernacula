@@ -8,9 +8,12 @@ into `Chatterbox.Base` / `Chatterbox.CLI` / `Chatterbox.Avalonia`.
 
 ## What it does
 
-1. Loads `speech_encoder.onnx`, `embed_tokens.onnx`, `language_model.onnx`,
-   `conditional_decoder.onnx` via `OrtSessionBuilder.Create` (CUDA EP with
-   CPU fallback).
+1. Loads ORT sessions via `OrtSessionBuilder.CreateCachedSession` (CUDA EP
+   with CPU fallback; pre-optimization cache next to each `.onnx`).
+   Auto-detects cond decoder layout — uses the 3-graph **split path**
+   (`flow_encoder.onnx`, `cfm_estimator.onnx`, `mel2wav.onnx`) if those
+   files are present, otherwise falls back to the monolithic
+   `conditional_decoder.onnx`.
 2. Reads a voice prompt WAV, resamples to 24 kHz mono via NAudio's
    `WdlResamplingSampleProvider`, pads/crops to 312,936 samples (the
    trace-time canonical input length).
@@ -24,8 +27,26 @@ into `Chatterbox.Base` / `Chatterbox.CLI` / `Chatterbox.Avalonia`.
    256 steps, applying upstream's repetition-penalty (1.2 if logit > 0
    else no-op). Stops on `STOP_SPEECH_TOKEN = 6562`.
 6. Concatenates `audio_tokens` (from the voice clone) with the generated
-   speech tokens; runs `conditional_decoder.onnx` to get the waveform.
+   speech tokens, then runs the cond decoder. In **split mode**:
+   `flow_encoder.onnx` → CFM solve loop in C# (10 cosine-scheduled
+   Euler steps, each one call of `cfm_estimator.onnx` on a CFG-doubled
+   batch, then a CFG-combine + Euler step) → trim mel prompt prefix →
+   `mel2wav.onnx`. In monolithic mode: single `conditional_decoder.onnx`
+   call.
 7. Writes the result as a 24 kHz mono float32 WAV via `NAudio.WaveFileWriter`.
+
+## Performance notes
+
+Tested on RTX 3090, ORT 1.24.4, warm pre-optimization caches:
+
+| Path | Total | Session load | LM (174 steps) | CFM (10 steps) | mel2wav |
+|---|---|---|---|---|---|
+| Monolithic (1 cond decoder onnx) | ~180s | ~175s | 5.6s | (inside dec) | (inside dec) |
+| Split (3 cond decoder graphs)    | **12s** | **3.3s** | 5.6s | 0.5s | 0.24s |
+
+The 50× session-load speedup comes from `cfm_estimator.onnx` containing
+ONE Euler-step forward (3K nodes) instead of the 10× unrolled estimator
+(70K nodes in the monolithic). Same math; the loop is just in C# now.
 
 ## Usage
 
