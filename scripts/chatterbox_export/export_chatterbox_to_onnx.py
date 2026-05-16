@@ -80,6 +80,14 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--skip-language-model", action="store_true",
                    help="Skip the LM graph (it's the heaviest — ~2 GB fp32)")
     p.add_argument("--skip-conditional-decoder", action="store_true")
+    p.add_argument("--split-cond-decoder", action="store_true",
+                   help="Export the cond decoder as three smaller graphs "
+                        "(flow_encoder.onnx, cfm_estimator.onnx, mel2wav.onnx) "
+                        "instead of one monolithic conditional_decoder.onnx. "
+                        "C# orchestrates the CFM solve loop using the smaller "
+                        "graphs. Cuts the largest graph (cfm_estimator) from "
+                        "70K nodes to ~7K — the 10x CFM unroll lives in C# "
+                        "instead. See docs/chatterbox_investigation.md Run 12.")
     p.add_argument("--overwrite", action="store_true")
     p.add_argument("--audio-prompt", type=Path, default=None,
                    help="Reference audio at any sample rate. If omitted, a 13 s torch.randn dummy is used "
@@ -319,6 +327,107 @@ def export_conditional_decoder(cond_decoder_mod, speech_tokens, speaker_embeddin
         if prev_default is not None:
             torch.set_default_device(prev_default)
     print(f"    done ({time.perf_counter() - t0:.1f}s)  {out_path.stat().st_size / 1e6:.2f} MB")
+
+
+def _export_on_cpu(model_obj, args_tuple, out_path: Path, opset: int,
+                   input_names: list, output_names: list, dynamic_axes: dict,
+                   chatterbox_model):
+    """Common harness for split cond-decoder sub-graph exports — sets up the
+    patched_cond_decoder_for_export context, moves everything to CPU (same
+    jit-trace-on-CUDA bug as the monolithic path), then calls torch.onnx.export.
+    """
+    import torch
+    from _export_patches import patched_cond_decoder_for_export, patched_sinegen_deterministic
+    import _chatterbox_internals as ci
+    print(f"  exporting {out_path.name} (opset {opset}) ...")
+    t0 = time.perf_counter()
+    model_obj = model_obj.cpu()
+    args_cpu = tuple(a.cpu() if hasattr(a, "cpu") else a for a in args_tuple)
+    ci.istft.cpu()
+    chatterbox_model.s3gen.cpu()
+    prev_default = torch.get_default_device() if hasattr(torch, "get_default_device") else None
+    torch.set_default_device("cpu")
+    try:
+        with patched_cond_decoder_for_export(chatterbox_model.s3gen, ci.istft), \
+             patched_sinegen_deterministic(chatterbox_model.s3gen.mel2wav):
+            torch.onnx.export(
+                model_obj, args_cpu, str(out_path),
+                export_params=True, opset_version=opset,
+                input_names=input_names, output_names=output_names,
+                dynamic_axes=dynamic_axes,
+            )
+    finally:
+        if prev_default is not None:
+            torch.set_default_device(prev_default)
+    print(f"    done ({time.perf_counter() - t0:.1f}s)  {out_path.stat().st_size / 1e6:.2f} MB")
+
+
+def export_flow_encoder(flow_enc_mod, speech_tokens, speaker_embeddings,
+                        speaker_features, out_path: Path, opset: int,
+                        chatterbox_model):
+    """Phase 1 split: speech_tokens → (mu, mask, embedding, cond, z).
+
+    See `FlowEncoderWrapper` for the contract. C# drives the CFM solve loop
+    using these outputs + cfm_estimator.onnx.
+    """
+    _export_on_cpu(
+        flow_enc_mod, (speech_tokens, speaker_embeddings, speaker_features),
+        out_path, opset,
+        input_names=["speech_tokens", "speaker_embeddings", "speaker_features"],
+        output_names=["mu", "mel_mask", "embedding", "cond", "z"],
+        dynamic_axes={
+            "speech_tokens":      {0: "batch_size", 1: "num_speech_tokens"},
+            "speaker_embeddings": {0: "batch_size"},
+            "speaker_features":   {0: "batch_size", 1: "prompt_len"},
+            "mu":         {0: "batch_size", 2: "num_mel_frames"},
+            "mel_mask":   {0: "batch_size", 2: "num_mel_frames"},
+            "embedding":  {0: "batch_size"},
+            "cond":       {0: "batch_size", 2: "num_mel_frames"},
+            "z":          {0: "batch_size", 2: "num_mel_frames"},
+        },
+        chatterbox_model=chatterbox_model,
+    )
+
+
+def export_cfm_estimator(cfm_est_mod, x_in, mask_in, mu_in, t_in,
+                         spks_in, cond_in, out_path: Path, opset: int,
+                         chatterbox_model):
+    """Phase 1 split: one CFM estimator forward (the body of the solve_euler
+    loop). C# calls this N=10 times per utterance. Inputs are CFG-doubled
+    (batch=2); C# does the cat/split + Euler-step math between calls.
+    """
+    _export_on_cpu(
+        cfm_est_mod, (x_in, mask_in, mu_in, t_in, spks_in, cond_in),
+        out_path, opset,
+        input_names=["x_in", "mask_in", "mu_in", "t_in", "spks_in", "cond_in"],
+        output_names=["dphi_dt"],
+        dynamic_axes={
+            "x_in":     {0: "cfg_batch", 2: "num_mel_frames"},
+            "mask_in":  {0: "cfg_batch", 2: "num_mel_frames"},
+            "mu_in":    {0: "cfg_batch", 2: "num_mel_frames"},
+            "t_in":     {0: "cfg_batch"},
+            "spks_in":  {0: "cfg_batch"},
+            "cond_in":  {0: "cfg_batch", 2: "num_mel_frames"},
+            "dphi_dt":  {0: "cfg_batch", 2: "num_mel_frames"},
+        },
+        chatterbox_model=chatterbox_model,
+    )
+
+
+def export_mel2wav(m2w_mod, mel, out_path: Path, opset: int, chatterbox_model):
+    """Phase 1 split: mel → waveform via the HiFi-GAN mel2wav.inference,
+    with trim_fade pre-baked into the graph as a constant initializer.
+    """
+    _export_on_cpu(
+        m2w_mod, (mel,), out_path, opset,
+        input_names=["mel"],
+        output_names=["waveform"],
+        dynamic_axes={
+            "mel":      {0: "batch_size", 2: "num_mel_frames"},
+            "waveform": {0: "batch_size", 1: "num_samples"},
+        },
+        chatterbox_model=chatterbox_model,
+    )
 
 
 def build_lm_wrapper(chatterbox_model, device):
@@ -603,13 +712,63 @@ def main() -> None:
             speech_tokens = torch.cat([prompt_token, generate_tokens[:, 1:-1]], dim=1)
             print(f"  speech_tokens: shape={tuple(speech_tokens.shape)}")
 
-        export_conditional_decoder(
-            cond_decoder, speech_tokens, speaker_embeddings, speaker_features,
-            args.output_dir / "conditional_decoder.onnx",
-            opset=args.opset_conditional_decoder,
-            chatterbox_model=chatterbox_model,
-        )
-        graphs_exported.append("conditional_decoder.onnx")
+        if args.split_cond_decoder:
+            # Build the three sub-wrappers and synthesize per-stage trace inputs.
+            flow_enc = ci.FlowEncoderWrapper(chatterbox_model).eval().to(device)
+            cfm_est = ci.CfmEstimatorWrapper(chatterbox_model).eval().to(device)
+            m2w = ci.Mel2WavWrapper(chatterbox_model).eval().to(device)
+
+            # 1) flow_encoder: speech_tokens → mu, mask, embedding, cond, z.
+            export_flow_encoder(
+                flow_enc, speech_tokens, speaker_embeddings, speaker_features,
+                args.output_dir / "flow_encoder.onnx",
+                opset=args.opset_conditional_decoder,
+                chatterbox_model=chatterbox_model,
+            )
+            graphs_exported.append("flow_encoder.onnx")
+
+            # 2) cfm_estimator: build CFG-doubled trace inputs by running
+            #    flow_encoder once (eager). The export_flow_encoder call
+            #    above left everything on CPU; flow_enc + its s3gen refs are
+            #    now on CPU, so run with CPU inputs here too.
+            from _export_patches import patched_cond_decoder_for_export as _pcde
+            with torch.no_grad(), _pcde(chatterbox_model.s3gen, ci.istft):
+                _mu, _mask, _emb, _cond, _z = flow_enc(
+                    speech_tokens.cpu(), speaker_embeddings.cpu(), speaker_features.cpu()
+                )
+            x_in_trace = torch.cat([_z, _z], dim=0)
+            mask_in_trace = torch.cat([_mask, _mask], dim=0)
+            mu_in_trace = torch.cat([_mu, torch.zeros_like(_mu)], dim=0)
+            t_in_trace = torch.zeros(2, dtype=_z.dtype)
+            spks_in_trace = torch.cat([_emb, torch.zeros_like(_emb)], dim=0)
+            cond_in_trace = torch.cat([_cond, torch.zeros_like(_cond)], dim=0)
+            export_cfm_estimator(
+                cfm_est, x_in_trace, mask_in_trace, mu_in_trace, t_in_trace,
+                spks_in_trace, cond_in_trace,
+                args.output_dir / "cfm_estimator.onnx",
+                opset=args.opset_conditional_decoder,
+                chatterbox_model=chatterbox_model,
+            )
+            graphs_exported.append("cfm_estimator.onnx")
+
+            # 3) mel2wav: trace with a mel of the same shape the C# loop
+            #    will produce (matching flow_encoder's z, then narrowed
+            #    past prompt_len). For tracing purposes any [B, 80, T]
+            #    mel works; use _mu directly.
+            export_mel2wav(
+                m2w, _mu, args.output_dir / "mel2wav.onnx",
+                opset=args.opset_conditional_decoder,
+                chatterbox_model=chatterbox_model,
+            )
+            graphs_exported.append("mel2wav.onnx")
+        else:
+            export_conditional_decoder(
+                cond_decoder, speech_tokens, speaker_embeddings, speaker_features,
+                args.output_dir / "conditional_decoder.onnx",
+                opset=args.opset_conditional_decoder,
+                chatterbox_model=chatterbox_model,
+            )
+            graphs_exported.append("conditional_decoder.onnx")
 
     if graphs_exported and not args.no_onnxslim:
         print("\nPost-export: onnxslim + external data ...")

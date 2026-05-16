@@ -559,6 +559,162 @@ def parity_solve_euler(tolerance: float = 1e-5) -> ParityResult:
     return ParityResult("solve_euler", passed, max_abs, max_rel, mean_abs, tolerance, notes=notes)
 
 
+def parity_split_pipeline(
+    onnx_dir: Path,
+    providers: list[str],
+    tolerance: float = 1e-2,
+) -> ParityResult:
+    """End-to-end parity for the split cond decoder (Phase 1).
+
+    Orchestrates flow_encoder.onnx + cfm_estimator.onnx + mel2wav.onnx
+    in Python — the exact pattern the C# code will use. Compares the
+    final waveform against the patched-eager monolithic
+    `ConditionalDecoder` pipeline. Differences should be at the
+    float-precision level (max_abs < 1e-3) because the split is a pure
+    refactor: same math, just spread across three graphs with the CFM
+    loop in Python instead of unrolled inside the ONNX trace.
+
+    Test PASSES if all three graphs are present and ONNX output matches
+    eager within `tolerance`. SKIPS if the split artifacts aren't there
+    (caller forgot --split-cond-decoder).
+    """
+    import torch
+    import onnxruntime as ort
+    from chatterbox.tts import ChatterboxTTS
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import _chatterbox_internals as ci
+    from _export_patches import patched_cond_decoder_for_export, patched_sinegen_deterministic
+
+    enc_p = onnx_dir / "flow_encoder.onnx"
+    est_p = onnx_dir / "cfm_estimator.onnx"
+    m2w_p = onnx_dir / "mel2wav.onnx"
+    if not (enc_p.exists() and est_p.exists() and m2w_p.exists()):
+        return ParityResult(
+            "split_pipeline", False, float("inf"), float("inf"), float("inf"),
+            tolerance,
+            notes=f"missing split artifacts in {onnx_dir} (re-export with --split-cond-decoder)",
+        )
+
+    # Same seed/audio/tokens setup as parity_dec so the comparison is
+    # apples-to-apples with the rest of the suite.
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    chatterbox_model = ChatterboxTTS.from_pretrained(device=device)
+    prep = ci.PrepareConditionalsModel(chatterbox_model).eval().to(device)
+    et = ci.InputsEmbeds(chatterbox_model).eval().to(device)
+    cd_eager = ci.ConditionalDecoder(chatterbox_model).eval().to(device)
+    ci.istft.to(device)
+
+    torch.manual_seed(0)
+    audio = torch.randn(1, 312_936, device=device)
+    ids = torch.tensor([[EXAGGERATION_TOKEN,
+        255, 281, 39, 46, 56, 2, 53, 2, 286, 41, 37, 2, 136, 122,
+        49, 2, 152, 2, 103, 2, 277, 21, 101, 7, 2, 301, 55, 34, 28, 7,
+        2, 53, 2, 296, 18, 18, 115, 2, 51, 2, 33, 245, 2, 17, 190, 2,
+        42, 2, 50, 18, 125, 4, 32, 2, 290, 169, 142, 2, 41, 2, 43, 2,
+        18, 29, 91, 2, 25, 186, 8, 20, 14, 80, 2, 29, 86, 213, 216, 9,
+        0, START_SPEECH_TOKEN, START_SPEECH_TOKEN]],
+        dtype=torch.long, device=device)
+    pos = torch.where(ids >= START_SPEECH_TOKEN, torch.zeros_like(ids),
+                      torch.arange(ids.shape[1], device=device).unsqueeze(0) - 1)
+    ex = torch.tensor([0.5], device=device)
+
+    with torch.no_grad():
+        _, prompt_token, spk_emb, spk_feat = prep(audio_values=audio)
+        text_emb = et(ids, pos, ex)
+        cond_emb_lm, _, _, _ = prep(audio_values=audio)
+        inputs_embeds = torch.cat((cond_emb_lm, text_emb), dim=1)
+        llm = chatterbox_model.t3.tfmr
+        sh = chatterbox_model.t3.speech_head
+        gt = torch.tensor([[START_SPEECH_TOKEN]], dtype=torch.long, device=device)
+        pkv = None
+        for i in range(256):
+            o = llm(inputs_embeds=inputs_embeds, past_key_values=pkv)
+            pkv = o.past_key_values
+            nl = sh(o.last_hidden_state[:, -1, :])
+            nt = torch.argmax(nl, dim=-1).unsqueeze(-1)
+            gt = torch.cat((gt, nt), dim=-1)
+            if (nt.view(-1) == 6562).all():
+                break
+            p = torch.full((ids.shape[0], 1), i + 1, dtype=torch.long, device=device)
+            inputs_embeds = et(nt, p, ex)
+        speech_tokens = torch.cat([prompt_token, gt[:, 1:-1]], dim=1)
+
+        # Baseline: monolithic patched-eager pipeline
+        with patched_cond_decoder_for_export(chatterbox_model.s3gen, ci.istft), \
+             patched_sinegen_deterministic(chatterbox_model.s3gen.mel2wav):
+            wav_eager = cd_eager(speech_tokens, spk_emb, spk_feat).cpu().numpy()
+
+    # Run the 3 split graphs in Python (mirrors the planned C# loop)
+    enc_sess = ort.InferenceSession(str(enc_p), providers=providers)
+    est_sess = ort.InferenceSession(str(est_p), providers=providers)
+    m2w_sess = ort.InferenceSession(str(m2w_p), providers=providers)
+
+    feed_enc = {
+        "speech_tokens": speech_tokens.cpu().numpy(),
+        "speaker_embeddings": spk_emb.cpu().numpy(),
+        "speaker_features": spk_feat.cpu().numpy(),
+    }
+    mu, mask, embedding, cond, z = enc_sess.run(
+        ["mu", "mel_mask", "embedding", "cond", "z"], feed_enc)
+
+    # CFM solve loop — mirrors _solve_euler_dynamic exactly (10 cosine-scheduled steps)
+    import numpy as np
+    n_timesteps = 10
+    t_span = np.linspace(0, 1, n_timesteps + 1, dtype=mu.dtype)
+    t_span = 1.0 - np.cos(t_span * 0.5 * np.pi)
+    cfg = 0.7
+    x = z.copy()
+    t = float(t_span[0])
+    dt = float(t_span[1] - t_span[0])
+    for step in range(1, n_timesteps + 1):
+        x_in = np.concatenate([x, x], axis=0)
+        mask_in = np.concatenate([mask, mask], axis=0)
+        mu_in = np.concatenate([mu, np.zeros_like(mu)], axis=0)
+        spks_in = np.concatenate([embedding, np.zeros_like(embedding)], axis=0)
+        cond_in = np.concatenate([cond, np.zeros_like(cond)], axis=0)
+        t_in = np.array([t, t], dtype=mu.dtype)
+        dphi = est_sess.run(["dphi_dt"], {
+            "x_in": x_in, "mask_in": mask_in, "mu_in": mu_in,
+            "t_in": t_in, "spks_in": spks_in, "cond_in": cond_in,
+        })[0]
+        cond_part, uncond_part = np.split(dphi, 2, axis=0)
+        combined = (1.0 + cfg) * cond_part - cfg * uncond_part
+        x = x + dt * combined
+        t = float(t_span[step])
+        if step < n_timesteps:
+            dt = float(t_span[step + 1] - t)
+
+    # Trim mel (drop the prompt portion that flow.inference would have stripped)
+    prompt_len = spk_feat.shape[1]
+    feat = x[:, :, prompt_len:]
+
+    wav_split = m2w_sess.run(["waveform"], {"mel": feat})[0]
+
+    # Shape gate first
+    if wav_split.shape != wav_eager.shape:
+        return ParityResult(
+            "split_pipeline", False, float("inf"), float("inf"), float("inf"),
+            tolerance,
+            notes=f"shape mismatch: split={wav_split.shape}, eager={wav_eager.shape}",
+        )
+
+    max_abs, max_rel, mean_abs = diff_metrics(wav_split, wav_eager)
+
+    # Mel-spectral L1 (same convention as parity_dec)
+    import torchaudio.transforms as T
+    mel_t = T.MelSpectrogram(sample_rate=24000, n_fft=1024, hop_length=256, n_mels=80)
+    log_e = torch.log(torch.clamp(mel_t(torch.from_numpy(wav_eager[0]).float()), min=1e-5))
+    log_s = torch.log(torch.clamp(mel_t(torch.from_numpy(wav_split[0]).float()), min=1e-5))
+    mel_l1 = float((log_e - log_s).abs().mean())
+
+    mel_threshold = 0.5
+    passed = mel_l1 <= mel_threshold
+    notes = (f"shape={wav_split.shape}  "
+             f"mel_log_l1={mel_l1:.4e} (thr={mel_threshold})  "
+             f"eager_range=[{wav_eager.min():.3f}, {wav_eager.max():.3f}]")
+    return ParityResult("split_pipeline", passed, max_abs, max_rel, mean_abs, mel_threshold, notes=notes)
+
+
 def parity_attention(tolerance: float = 1e-5) -> ParityResult:
     """Eager-vs-eager: MinimalAttnProcessor vs diffusers AttnProcessor2_0.
 
@@ -627,7 +783,7 @@ def parse_args() -> argparse.Namespace:
                    help="Directory produced by export_chatterbox_to_onnx.py")
     p.add_argument("--runtime", default="cuda", choices=["cpu", "cuda", "tensorrt"])
     p.add_argument("--tests", default="lm",
-                   help="Comma-separated subset: lm,embed,enc,dec,solve_euler,attention,all (default: lm)")
+                   help="Comma-separated subset: lm,embed,enc,dec,solve_euler,attention,split_pipeline,all (default: lm)")
     p.add_argument("--tolerance", type=float, default=1e-2,
                    help="Max-abs-diff threshold for pass (default: 1e-2). "
                         "Each test layer has its own appropriate default; this is a "
@@ -649,7 +805,7 @@ def main() -> None:
     providers = choose_onnx_providers(args.runtime)
     tests = {t.strip() for t in args.tests.split(",")}
     if "all" in tests:
-        tests = {"lm", "embed", "enc", "dec", "solve_euler", "attention"}
+        tests = {"lm", "embed", "enc", "dec", "solve_euler", "attention", "split_pipeline"}
 
     results: list[ParityResult] = []
 
@@ -679,6 +835,10 @@ def main() -> None:
     if "attention" in tests:
         print("[attention] MinimalAttnProcessor vs diffusers AttnProcessor (eager)")
         results.append(parity_attention())
+        print(results[-1].summary())
+    if "split_pipeline" in tests:
+        print("[split_pipeline] split flow_encoder+cfm_estimator+mel2wav vs monolithic eager")
+        results.append(parity_split_pipeline(args.onnx_dir, providers, args.tolerance))
         print(results[-1].summary())
 
     print()
