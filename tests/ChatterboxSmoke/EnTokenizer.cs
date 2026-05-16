@@ -28,6 +28,7 @@
 // sentence. Only the encode path is implemented; decode is unused by the
 // smoke test orchestration.
 
+using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 
@@ -45,6 +46,7 @@ internal sealed class EnTokenizer
     // tolerate upstream renumbering (originally 255 / 0 in chatterbox).
     public long StartTextToken { get; }    // [START]
     public long StopTextToken { get; }     // [STOP]
+    public long UnkToken { get; }          // [UNK] — emitted for chars not in the BPE base alphabet
 
     private readonly Dictionary<string, long> _vocab;
     private readonly Dictionary<(string, string), int> _mergeRank;  // pair → rank (lower = higher priority)
@@ -93,8 +95,11 @@ internal sealed class EnTokenizer
             throw new InvalidOperationException("tokenizer.json vocab is missing [START]");
         if (!_vocab.TryGetValue("[STOP]", out var stopId))
             throw new InvalidOperationException("tokenizer.json vocab is missing [STOP]");
+        if (!_vocab.TryGetValue("[UNK]", out var unkId))
+            throw new InvalidOperationException("tokenizer.json vocab is missing [UNK]");
         StartTextToken = startId;
         StopTextToken = stopId;
+        UnkToken = unkId;
 
         AssertNoBoundarySpanningMerges();
     }
@@ -182,16 +187,50 @@ internal sealed class EnTokenizer
     }
 
     /// <summary>
-    /// Standard BPE: start from single-character tokens, repeatedly merge the
-    /// adjacent pair with the lowest rank in `_mergeRank` until no in-vocab
-    /// pair remains, then map tokens to IDs.
+    /// Decompose the run into characters, emitting [UNK] for any char that
+    /// isn't a single-token entry in the vocab (chars outside chatterbox's
+    /// BPE base alphabet — e.g. emoji, ideographic scripts). UNK acts as a
+    /// barrier: BPE merges run independently on each contiguous run of known
+    /// chars between the UNKs. Verified equivalent to upstream HF tokenizers
+    /// behavior on adjacent-unknown and surrounded-unknown cases.
     /// </summary>
     private void BpeEncodeRun(ReadOnlySpan<char> run, List<long> outIds)
     {
-        // Initial token decomposition: one token per character (as a string).
-        var tokens = new List<string>(run.Length);
-        foreach (var ch in run) tokens.Add(ch.ToString());
+        // Iterate by Rune (Unicode code point), not char. Surrogate-pair
+        // chars like emoji (e.g. U+1F600 = '😀') are 2 UTF-16 chars but 1
+        // codepoint; HF's Python tokenizer iterates codepoints and emits one
+        // [UNK] per emoji. A naïve `foreach (var ch in run)` would emit
+        // two UNKs per emoji and silently disagree with upstream.
+        var known = new List<string>();
+        // EnumerateRunes accepts ReadOnlySpan<char> directly.
+        foreach (Rune rune in run.EnumerateRunes())
+        {
+            var s = rune.ToString();
+            if (_vocab.ContainsKey(s))
+            {
+                known.Add(s);
+            }
+            else
+            {
+                // Flush the accumulated known run through BPE, then emit a
+                // single [UNK] for this unknown codepoint. HF emits one UNK
+                // per codepoint (not collapsed across adjacent unknowns).
+                FlushBpeRun(known, outIds);
+                known.Clear();
+                outIds.Add(UnkToken);
+            }
+        }
+        FlushBpeRun(known, outIds);
+    }
 
+    /// <summary>
+    /// Standard BPE on a list of in-vocab single-char tokens: repeatedly
+    /// merge the adjacent pair with the lowest rank in `_mergeRank` until no
+    /// pair has a rank, then map final tokens to IDs.
+    /// </summary>
+    private void FlushBpeRun(List<string> tokens, List<long> outIds)
+    {
+        if (tokens.Count == 0) return;
         while (tokens.Count >= 2)
         {
             int bestRank = int.MaxValue;
@@ -228,22 +267,7 @@ internal sealed class EnTokenizer
         }
 
         foreach (var t in tokens)
-        {
-            if (!_vocab.TryGetValue(t, out var id))
-            {
-                // TODO([UNK] fallback): upstream HF tokenizers emit [UNK]
-                // (id 1) for chars not in the BPE base alphabet — typically
-                // anything beyond ASCII letters, digits, basic punctuation
-                // (emoji, smart quotes, non-Latin scripts). Throwing here is
-                // safer for the smoke test (loud failure beats silent wrong
-                // output) but needs to become a soft [UNK] before we use this
-                // tokenizer for arbitrary user input.
-                throw new InvalidOperationException(
-                    $"BPE produced token \"{t}\" not in vocab — likely an unknown character. "
-                    + "Upstream EnTokenizer would emit [UNK] here; not implemented.");
-            }
-            outIds.Add(id);
-        }
+            outIds.Add(_vocab[t]);  // safe: every token here came from a known single-char or a successful merge
     }
 
     /// <summary>
