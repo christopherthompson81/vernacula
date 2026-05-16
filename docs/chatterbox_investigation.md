@@ -939,3 +939,105 @@ mel-spectral envelope drift (mel_log_l1 ~0.78). That's a quality
 issue inside HiFi-GAN mel2wav export, not a shape issue. Defer to
 E5+ unless it turns out to bite intelligibility — current listen
 tests are intelligible.
+
+## Run 11 — 2026-05-16 — The "envelope drift" was rand_noise apples-vs-oranges
+
+**Question:** dec parity has been reporting `mel_log_l1 = 0.78` for
+several runs, presumed to be HiFi-GAN mel2wav export drift. Is it
+really vocoder export drift, or something else?
+
+**Method:** capture both wavs, then bisect.
+
+1. Capture `wav_eager` and `wav_onnx` from identical
+   `(speech_tokens, spk_emb, spk_feat)` inputs.
+2. Cross-correlate to detect time-shift. Result: per-chunk lags
+   varied wildly (+346, -1203, -480, -680, ...), and full-length
+   "best lag" was nonsense (560ms — shifting by it made mel L1
+   *worse*). The waveforms have **similar amplitude envelope but
+   different content per chunk** — classic phase-incoherence pattern.
+3. Per-window RMS ratio in non-silent regions: **0.99 ± 0.19**.
+   Amplitude is fine; the issue is fine-structure phase / time.
+4. Verify ONNX itself is deterministic between runs: two consecutive
+   `sess.run()` calls differ by `max_abs = 1.5e-5` (floating-point
+   noise floor). So drift is reproducible, not stochastic.
+5. Built a diagnostic export with two outputs `(mel, waveform)` so we
+   can compare the flow.inference output (mel after CFM solve)
+   independently from the mel2wav stage.
+6. Result: **mel itself drifts**. `max_abs = 3.33`, `mean_abs = 0.42`
+   between `mel_eager` and `mel_onnx`. So the bug is in `flow.inference`,
+   not (or not only) mel2wav.
+
+**The "aha" moment:**
+
+`solve_euler` parity is bit-identical eager-vs-eager (per
+`parity_solve_euler`), but mel still drifts. What can drift inside
+`flow.inference` without solve_euler drifting? **The input to
+solve_euler.** Specifically:
+
+```python
+# CausalConditionalCFM.__init__:
+self.rand_noise = torch.randn([1, 80, 50 * 300])  # plain attribute, not register_buffer
+```
+
+`rand_noise` is the initial `z` for the CFM ODE. It's set with
+`torch.randn(...)` at every `__init__` call and is **not registered as
+a buffer**, so it doesn't appear in the state_dict. Every
+`ChatterboxTTS.from_pretrained()` gets a different random init.
+
+The ONNX export bakes whatever `rand_noise` was present at trace time.
+The parity test loads a fresh model with a *different* `rand_noise`.
+The CFM solves start from different `z` → produce different mels → the
+"envelope drift" was an apples-vs-oranges comparison the whole time.
+
+**Verification:** force `rand_noise = zeros` in both export and eager,
+then compare mels. Result: `max_abs = 1.05e-5`. The export is
+mathematically faithful at float32 precision. The 0.78 drift was 100%
+artifactual.
+
+**The fix** (`_export_patches.py`):
+
+Add seeded-deterministic `rand_noise` to
+`patched_cond_decoder_for_export`. Every export now bakes the same
+canonical noise (seeded with `CFM_RAND_NOISE_SEED = 0xC4F`), and every
+parity test applies the same context manager so the comparison is
+honest. `parity_solve_euler` also pre-seeds `rand_noise` before
+running the upstream side, since the context manager applies only to
+the patched side.
+
+```python
+def _seeded_rand_noise_like(t):
+    g = torch.Generator(device="cpu").manual_seed(CFM_RAND_NOISE_SEED)
+    return torch.randn(t.shape, dtype=t.dtype, generator=g).to(t.device)
+
+# In patched_cond_decoder_for_export:
+saved["flow.decoder.rand_noise"] = flow.decoder.rand_noise
+flow.decoder.rand_noise = _seeded_rand_noise_like(flow.decoder.rand_noise)
+# (restored on exit alongside the other patches)
+```
+
+**Tradeoff considered and accepted:** every shipped ONNX has the same
+canonical CFM noise pattern. CFM is trained to map any noise sample to
+a valid mel, so this has negligible perceptual cost. The win is
+reproducible artifacts (same model + same code → same `.onnx` hash)
+and honest parity tests.
+
+**Results:**
+
+| Test | Before | After |
+|---|---|---|
+| `dec` `mel_log_l1` | 0.78 | **0.0102** (76× improvement) |
+| `dec` `cosine_sim` | 0.19 | **0.9994** |
+| `dec` waveform `max_abs` | 1.59e-1 | **1.71e-2** |
+| `solve_euler` `max_abs` | 0 | **0** (still bit-identical after pre-seeding both sides) |
+| Full suite | 4/5 pass (dec FAIL) | **5/5 pass** |
+
+**General lesson:** When the parity test reports a "drift," ask
+whether you're comparing the same thing. A plain attribute set via
+`torch.randn(...)` at `__init__` is a silent source of confounding
+randomness — it's not in the state_dict, not in the `.onnx`'s public
+contract, but it changes the model's output on every load. The fix
+isn't to find a real bug in the export; it's to pin the confounding
+state to a deterministic value.
+
+The previous "deferred to E5+" item on this drift is closed. The export
+is faithful.

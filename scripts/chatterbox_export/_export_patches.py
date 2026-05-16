@@ -633,6 +633,21 @@ def _cfm_forward_dynamic(self, mu, mask, n_timesteps, temperature=1.0, spks=None
     return self.solve_euler(z, t_span=t_span, mu=mu, mask=mask, spks=spks, cond=cond), None
 
 
+# Canonical seed for the CFM rand_noise. Used in both ONNX export and
+# parity tests so the two are bit-comparable. Chosen arbitrarily; the
+# exact value doesn't matter, only that it's stable across runs.
+CFM_RAND_NOISE_SEED = 0xC4F
+
+
+def _seeded_rand_noise_like(t: "torch.Tensor") -> "torch.Tensor":
+    """Deterministic rand_noise: same shape and dtype as upstream's
+    `torch.randn([1, 80, 15000])`, but seeded so every call returns the
+    same tensor. CPU generator on purpose — keeps the value independent
+    of the device the model happens to live on."""
+    g = torch.Generator(device="cpu").manual_seed(CFM_RAND_NOISE_SEED)
+    return torch.randn(t.shape, dtype=t.dtype, generator=g).to(t.device)
+
+
 @contextmanager
 def patched_cond_decoder_for_export(s3gen, istft_module):
     """Patch upstream s3gen.flow + mel2wav for ONNX export.
@@ -643,6 +658,15 @@ def patched_cond_decoder_for_export(s3gen, istft_module):
       reusing the supplied `istft_module` (our scatter_add ISTFT).
     - Replaces ConditionalDecoder.forward (the CFM estimator) with a
       symbolic-broadcast version that avoids einops.repeat's T-baking.
+    - Pins `flow.decoder.rand_noise` to a deterministic seeded value.
+      Upstream sets `self.rand_noise = torch.randn(...)` as a plain
+      attribute (not a registered buffer) in `CausalConditionalCFM.__init__`,
+      so every `ChatterboxTTS.from_pretrained()` call gets a different
+      random init. Without pinning, the rand_noise baked into the ONNX
+      at export time differs from the rand_noise present at parity-test
+      time, making `parity_dec` an apples-to-oranges comparison (and
+      previously masquerading as "0.78 mel envelope drift"). See
+      docs/chatterbox_investigation.md Run 11.
     """
     flow = s3gen.flow
     mel2wav = s3gen.mel2wav
@@ -652,6 +676,7 @@ def patched_cond_decoder_for_export(s3gen, istft_module):
         "flow.inference": flow.inference,
         "flow.decoder.forward": flow.decoder.forward,
         "flow.decoder.solve_euler": flow.decoder.solve_euler,
+        "flow.decoder.rand_noise": flow.decoder.rand_noise,
         "mel2wav.inference": mel2wav.inference,
         "mel2wav._stft": mel2wav._stft,
         "mel2wav._istft": mel2wav._istft,
@@ -666,6 +691,7 @@ def patched_cond_decoder_for_export(s3gen, istft_module):
     flow.inference = types.MethodType(_flow_inference_dynamic, flow)
     flow.decoder.forward = types.MethodType(_cfm_forward_dynamic, flow.decoder)
     flow.decoder.solve_euler = types.MethodType(_solve_euler_dynamic, flow.decoder)
+    flow.decoder.rand_noise = _seeded_rand_noise_like(flow.decoder.rand_noise)
     mel2wav.inference = types.MethodType(
         _strip_inference_mode(mel2wav.inference.__func__), mel2wav
     )
@@ -682,6 +708,7 @@ def patched_cond_decoder_for_export(s3gen, istft_module):
         flow.inference = saved["flow.inference"]
         flow.decoder.forward = saved["flow.decoder.forward"]
         flow.decoder.solve_euler = saved["flow.decoder.solve_euler"]
+        flow.decoder.rand_noise = saved["flow.decoder.rand_noise"]
         mel2wav.inference = saved["mel2wav.inference"]
         mel2wav._stft = saved["mel2wav._stft"]
         mel2wav._istft = saved["mel2wav._istft"]

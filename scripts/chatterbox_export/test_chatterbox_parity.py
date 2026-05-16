@@ -512,10 +512,19 @@ def parity_solve_euler(tolerance: float = 1e-5) -> ParityResult:
     from chatterbox.tts import ChatterboxTTS
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     import _chatterbox_internals as ci
-    from _export_patches import patched_cond_decoder_for_export
+    from _export_patches import patched_cond_decoder_for_export, _seeded_rand_noise_like
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     model = ChatterboxTTS.from_pretrained(device=device)
+
+    # Pin rand_noise to the SAME deterministic seed on both sides. Without
+    # this, upstream uses the model-instance's random init while the
+    # patched run uses the context-manager's seeded value — different z
+    # entering solve_euler → different mels (it's not a math drift,
+    # just the rand_noise confounder from docs/.../Run 11).
+    model.s3gen.flow.decoder.rand_noise = _seeded_rand_noise_like(
+        model.s3gen.flow.decoder.rand_noise
+    )
 
     # Realistic-shaped dummy inputs. T = 1010 is the natural mel-frame
     # count for a 505-token speech sequence (2x upsample); picking a
