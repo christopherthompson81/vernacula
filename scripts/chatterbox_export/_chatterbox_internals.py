@@ -1,44 +1,46 @@
 #!/usr/bin/env python3
-"""Chatterbox export internals — vendored from VladOS95-cyber's MIT-licensed
-reference and adapted for Vernacula's export pipeline.
+"""Chatterbox export wrappers.
 
-Source: https://github.com/VladOS95-cyber/onnx_conversion_scripts/tree/main/chatterbox
-        (file `chatterbox_to_onnx_conversion_script.py`, fetched May 2026)
-License: MIT — see upstream repo for full text.
+Originally vendored from VladOS95-cyber's MIT-licensed conversion
+script (https://github.com/VladOS95-cyber/onnx_conversion_scripts/tree/main/chatterbox).
+The ~600 lines of vendored S3Tokenizer / FSMN / FSQ / AudioEncoderV2 model
+code are gone — replaced by direct use of upstream `chatterbox.s3gen.tokenizer`
+plus four scoped patches in `_export_patches.py` that are mathematically
+verified equivalent (parity test passes bit-perfect; see Run 6 in
+`docs/chatterbox_investigation.md`).
 
-This is the v0 starting point per `chatterbox.scratch.md` Stage 0. Each
-nn.Module here is either:
+What remains here is the *orchestration* — wrappers around upstream
+chatterbox submodules that present an ONNX-export-friendly interface:
 
-  (a) an export-time wrapper (`PrepareConditionalsModel`, `InputsEmbeds`,
-      `ConditionalDecoder`, `SafeDenseLayer`, `ISTFT`) that re-implements
-      Chatterbox's forward pass in an ONNX-friendly way; or
+  * `SafeDenseLayer` — kept as a STUB only; the original substitution
+    drifted speaker_embeddings by 93% per parity (Run 5). The export
+    script raises if anyone tries to apply it.
+  * `PrepareConditionalsModel` — speech encoder + S3 tokenizer + cond
+    prep pipeline, returns the four outputs the speech_encoder.onnx
+    graph emits. `self.s3` is a direct reference to upstream
+    `chatterbox.s3gen.tokenizer` (no vendoring).
+  * `InputsEmbeds` — flat-tensor dispatch over text / speech /
+    exaggeration tokens via bool masks (export-friendly).
+  * `ISTFT` + `make_pad_mask` + `mask_to_bias` — vocoder helpers used
+    by `ConditionalDecoder`. ISTFT uses scatter_add for window_sumsquare
+    (Run 3 fix #12); not yet replaceable with upstream.
+  * `ConditionalDecoder` — orchestrates `chatterbox.s3gen.flow` +
+    `mel2wav` for speech-tokens → waveform. Several upstream-trace
+    workarounds inline.
 
-  (b) a vendored re-declaration of a Chatterbox internal class
-      (`S3Tokenizer` and its FSMN/FSQ/AudioEncoder dependency chain)
-      needed to construct (a). Vlad re-declared these to swap out
-      training-time ops (e.g. BatchNorm1d → LayerNorm via SafeDenseLayer)
-      that don't survive torch.onnx.export.
+Notes:
 
-Items flagged for E2 validation / E5 cleanup:
-
-  * `SafeDenseLayer` substitution is asserted-safe at inference time by
-    Vlad ("we can safely do that because it does not affect inference as
-    we do not need matching training dynamics"). E2 parity must verify
-    this numerically — not trusted on author's word.
-  * The global `torch.Tensor.item = lambda x: x` monkeypatch in Vlad's
-    script is INTENTIONALLY OMITTED here. It is load-bearing during
-    `torch.onnx.export` tracing (some Chatterbox internals call `.item()`
-    and the no-op makes the value traceable). If the export raises on a
-    `.item()` call, apply the patch via an explicit context manager
-    around the export() call, not as a global mutation.
-  * `EXAGGERATION_TOKEN = 6563` — verified against upstream constants in
-    `chatterbox.models.t3.t3` (E1 inspection, 2026-05-15).
+  * The global `torch.Tensor.item = lambda x: x` monkeypatch from Vlad's
+    script is INTENTIONALLY OMITTED. If the export raises on a `.item()`
+    call, apply the patch via the scoped context manager in
+    `export_chatterbox_to_onnx.py::item_no_op_patch` rather than as a
+    global mutation.
+  * `EXAGGERATION_TOKEN = 6563` verified against upstream constants
+    (`chatterbox.models.t3.t3`).
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Optional, Tuple
-import math
 
 import torch
 import torch.nn as nn
@@ -47,13 +49,9 @@ import torch.nn.functional as F
 import torchaudio as ta
 from torchaudio.compliance.kaldi import get_mel_banks
 
-from s3tokenizer.model import Conv1d, LayerNorm, Linear, MultiHeadAttention
-from s3tokenizer.utils import mask_to_bias as _s3tok_mask_to_bias  # noqa: F401  - kept to mirror Vlad's surface
-
 import numpy as np
 import librosa
 from librosa.filters import mel as librosa_mel_fn
-from tqdm import tqdm  # noqa: F401  - imported by some vendored loops
 # Sampling rate of the inputs to S3TokenizerV2
 S3GEN_SR = 24000
 S3_SR = 16_000
@@ -79,547 +77,6 @@ CFM_PARAMS = {
     "reg_loss_type": "l1"
 }
 ISTFT_PARAMS = {"n_fft": 16, "hop_len": 4}
-
-# override certain torch functions
-
-
-@dataclass
-class ModelConfig:
-    n_mels: int = 128
-    n_audio_ctx: int = 1500
-    n_audio_state: int = 1280
-    n_audio_head: int = 20
-    n_audio_layer: int = 6
-    n_codebook_size: int = 3**8
-
-    use_sdpa: bool = False
-
-def make_non_pad_mask(lengths: torch.Tensor, max_len: int = 0) -> torch.Tensor:
-    """Make mask tensor containing indices of non-padded part.
-
-    The sequences in a batch may have different lengths. To enable
-    batch computing, padding is need to make all sequence in same
-    size. To avoid the padding part pass value to context dependent
-    block such as attention or convolution , this padding part is
-    masked.
-
-    1 for non-padded part and 0 for padded part.
-
-    Parameters
-    ----------
-        lengths (torch.Tensor): Batch of lengths (B,).
-
-    Returns:
-    -------
-        torch.Tensor: Mask tensor containing indices of padded part (B, max_T).
-
-    Examples:
-        >>> import torch
-        >>> import s3tokenizer
-        >>> lengths = torch.tensor([5, 3, 2])
-        >>> masks = s3tokenizer.make_non_pad_mask(lengths)
-        masks = [[1, 1, 1, 1, 1],
-                 [1, 1, 1, 0, 0],
-                 [1, 1, 0, 0, 0]]
-    """
-    batch_size = lengths.size(0)
-    # max_len = max_len if max_len > 0 else lengths.max()
-    max_len_2 = lengths.max()
-    seq_range = torch.arange(0,
-                             max_len_2,
-                             dtype=torch.int64,
-                             device=lengths.device)
-    seq_range_expand = seq_range.unsqueeze(0).expand(batch_size, max_len_2)
-    seq_length_expand = lengths.unsqueeze(-1)
-    return seq_range_expand < seq_length_expand
-
-
-def precompute_freqs_cis(dim: int,
-                         end: int,
-                         theta: float = 10000.0,
-                         scaling=None):
-    freqs = 1.0 / (theta**(torch.arange(0, dim, 2)[:(dim // 2)].float() / dim))
-    t = torch.arange(end, device=freqs.device)  # type: ignore
-    if scaling is not None:
-        t = t * scaling
-    freqs = torch.outer(t, freqs).float()  # type: ignore
-    
-    cos = freqs.cos()
-    sin = freqs.sin()
-    
-    cos = torch.cat((cos, cos), dim=-1)
-    sin = torch.cat((sin, sin), dim=-1)
-    return cos, sin
-
-
-def apply_rotary_emb(
-    xq: torch.Tensor,
-    xk: torch.Tensor,
-    cos: torch.Tensor,
-    sin: torch.Tensor,
-) -> Tuple[torch.Tensor, torch.Tensor]:
-    cos = cos.unsqueeze(0).unsqueeze(2)
-    sin = sin.unsqueeze(0).unsqueeze(2)
-
-    D = xq.shape[-1]
-    half_l, half_r = xq[:, :, :, :D // 2], xq[:, :, :, D // 2:]
-    xq_r = torch.cat((-half_r, half_l), dim=-1)
-
-    D = xk.shape[-1]
-
-    half_l, half_r = xk[:, :, :, :D // 2], xk[:, :, :, D // 2:]
-    xk_r = torch.cat((-half_r, half_l), dim=-1)
-
-    return xq * cos + xq_r * sin, xk * cos + xk_r * sin
-
-
-def reshape_for_broadcast(freqs_cis: torch.Tensor, x: torch.Tensor):
-    ndim = x.ndim
-    assert 0 <= 1 < ndim
-    assert freqs_cis.shape == (x.shape[1], x.shape[-1])
-    shape = [
-        d if i == 1 or i == ndim - 1 else 1 for i, d in enumerate(x.shape)
-    ]
-    return freqs_cis.view(*shape)
-
-
-class FSQCodebook(nn.Module):
-
-    def __init__(self, dim: int, level: int = 3):
-        super().__init__()
-        self.project_down = nn.Linear(dim, 8)
-        self.level = level
-        self.embed = None
-
-    @torch.no_grad()  # was @torch.inference_mode() — breaks ONNX tracing
-    def preprocess(self, x: torch.Tensor) -> torch.Tensor:
-        # x = rearrange(x, "... d -> (...) d")
-        x = x.reshape(-1, x.shape[-1])
-        return x
-
-    @torch.no_grad()  # was @torch.inference_mode() — breaks ONNX tracing
-    def encode(self, x: torch.Tensor) -> torch.Tensor:
-        x_shape = x.shape
-        # pre-process
-        x = self.preprocess(x)
-        # quantize
-        h = self.project_down(x).float()
-        h = h.tanh()
-        h = h * 0.9990000128746033
-        h = h.round() + 1
-        # h = ((self.level - 1) * h).round()  # range [-k, k]
-        powers = torch.pow(
-            self.level,
-            torch.arange(2**self.level, device=x.device, dtype=h.dtype))
-        mu = torch.sum(h * powers.unsqueeze(0), dim=-1)
-        ind = mu.reshape(x_shape[0], x_shape[1])
-        return ind
-
-    @torch.no_grad()  # was @torch.inference_mode() — breaks ONNX tracing
-    def decode(self, embed_ind: torch.Tensor) -> torch.Tensor:
-        raise NotImplementedError(
-            'There is no official up project component provided')
-
-
-class FSQVectorQuantization(nn.Module):
-    """Vector quantization implementation (inference-only).
-    Args:
-        dim (int): Dimension
-        codebook_size (int): Codebook size
-    """
-
-    def __init__(
-        self,
-        dim: int,
-        codebook_size: int,
-    ):
-        super().__init__()
-        assert 3**8 == codebook_size
-        self._codebook = FSQCodebook(dim=dim, level=3)
-        self.codebook_size = codebook_size
-
-    @property
-    def codebook(self):
-        return self._codebook.embed
-
-    @torch.no_grad()  # was @torch.inference_mode() — breaks ONNX tracing
-    def encode(self, x: torch.Tensor) -> torch.Tensor:
-        return self._codebook.encode(x)
-
-    @torch.no_grad()  # was @torch.inference_mode() — breaks ONNX tracing
-    def decode(self, embed_ind: torch.Tensor) -> torch.Tensor:
-        quantize = self._codebook.decode(embed_ind)
-        # quantize = rearrange(quantize, "b n d -> b d n")
-        quantize = quantize.permute(0, 2, 1)
-        return quantize
-
-
-class FSMNMultiHeadAttention(MultiHeadAttention):
-
-    def __init__(
-        self,
-        n_state: int,
-        n_head: int,
-        kernel_size: int = 31,
-        use_sdpa: bool = False,
-    ):
-        super().__init__(n_state, n_head)
-
-        self.fsmn_block = nn.Conv1d(n_state,
-                                          n_state,
-                                          kernel_size,
-                                          stride=1,
-                                          padding=0,
-                                          groups=n_state,
-                                          bias=False)
-        self.left_padding = (kernel_size - 1) // 2
-        self.right_padding = kernel_size - 1 - self.left_padding
-        self.pad_fn = nn.ConstantPad1d(
-            (self.left_padding, self.right_padding), 0.0)
-
-        self.use_sdpa = use_sdpa
-
-    def forward_fsmn(self,
-                     inputs: torch.Tensor,
-                     mask: Optional[torch.Tensor] = None):
-        b, t, _, _ = inputs.size()
-        inputs = inputs.view(b, t, -1)
-        if mask is not None and mask.size(2) > 0:  # time2 > 0
-            inputs = inputs * mask
-        x = inputs.transpose(1, 2)
-        x = self.pad_fn(x)
-        x = self.fsmn_block(x)
-        x = x.transpose(1, 2)
-        x += inputs
-        return x * mask
-
-    def qkv_attention(self,
-                      q: torch.Tensor,
-                      k: torch.Tensor,
-                      v: torch.Tensor,
-                      mask: Optional[torch.Tensor] = None,
-                      mask_pad: Optional[torch.Tensor] = None,
-                      cos: Optional[torch.Tensor] = None,
-                      sin: Optional[torch.Tensor] = None):
-        _, _, D = q.shape
-        scale = (D // self.n_head)**-0.25
-        q = q.view(*q.shape[:2], self.n_head, -1)
-        k = k.view(*k.shape[:2], self.n_head, -1)
-        v = v.view(*v.shape[:2], self.n_head, -1)
-
-        if cos is not None and sin is not None:
-            q, k = apply_rotary_emb(q, k, cos=cos, sin=sin)
-
-        fsm_memory = self.forward_fsmn(v, mask_pad)
-
-        q = q.permute(0, 2, 1, 3) * scale
-        v = v.permute(0, 2, 1, 3)
-
-        if not self.use_sdpa:
-            k = k.permute(0, 2, 3, 1) * scale
-            qk = q @ k  # (B, n_head, T, T)
-            if mask is not None:
-                qk = qk + mask
-            qk = qk.float()
-            w = F.softmax(qk, dim=-1).to(q.dtype)
-            return (w @ v).permute(
-                0, 2, 1, 3).flatten(start_dim=2), qk.detach(), fsm_memory
-        else:
-            k = k.permute(0, 2, 1, 3) * scale
-            assert mask is not None
-            output = F.scaled_dot_product_attention(
-                q,
-                k,
-                v,
-                attn_mask=mask,
-                dropout_p=0.,
-                scale=1.,
-            )
-            output = (output.transpose(1,
-                                       2).contiguous().view(q.size(0), -1, D)
-                      )  # (batch, time1, d_model)
-            return output, None, fsm_memory
-
-    def forward(self,
-                x: torch.Tensor,
-                mask: Optional[torch.Tensor] = None,
-                mask_pad: Optional[torch.Tensor] = None,
-                cos: Optional[torch.Tensor] = None,
-                sin: Optional[torch.Tensor] = None):
-
-        q = self.query(x)
-        k = self.key(x)
-        v = self.value(x)
-
-        wv, qk, fsm_memory = self.qkv_attention(q, k, v, mask, mask_pad,
-                                                cos, sin)
-        return self.out(wv) + fsm_memory, qk
-
-
-class ResidualAttentionBlock(nn.Module):
-
-    def __init__(
-        self,
-        n_state: int,
-        n_head: int,
-        kernel_size: int = 31,
-        use_sdpa: bool = False,
-    ):
-        super().__init__()
-
-        self.attn = FSMNMultiHeadAttention(n_state,
-                                           n_head,
-                                           kernel_size,
-                                           use_sdpa=use_sdpa)
-        self.attn_ln = LayerNorm(n_state, eps=1e-6)
-
-        n_mlp = n_state * 4
-
-        self.mlp = nn.Sequential(Linear(n_state, n_mlp), nn.GELU(),
-                                       Linear(n_mlp, n_state))
-        self.mlp_ln = LayerNorm(n_state)
-
-    def forward(
-        self,
-        x: torch.Tensor,
-        mask: Optional[torch.Tensor] = None,
-        mask_pad: Optional[torch.Tensor] = None,
-        cos: Optional[torch.Tensor] = None,
-        sin: Optional[torch.Tensor] = None,
-    ):
-        x = x + self.attn(
-            self.attn_ln(x), mask=mask, mask_pad=mask_pad,
-            cos=cos, sin=sin)[0]
-
-        x = x + self.mlp(self.mlp_ln(x))
-        return x
-
-
-class AudioEncoderV2(nn.Module):
-
-    def __init__(
-        self,
-        n_mels: int,
-        n_state: int,
-        n_head: int,
-        n_layer: int,
-        stride: int,
-        use_sdpa: bool,
-    ):
-        super().__init__()
-        self.stride = stride
-
-        self.conv1 = Conv1d(n_mels,
-                            n_state,
-                            kernel_size=3,
-                            stride=stride,
-                            padding=1)
-        self.conv2 = Conv1d(n_state,
-                            n_state,
-                            kernel_size=3,
-                            stride=2,
-                            padding=1)
-        cos, sin = precompute_freqs_cis(64, 1024 * 2)
-        self.register_buffer("cos", cos)
-        self.register_buffer("sin", sin)
-
-        self.blocks = nn.ModuleList([
-            ResidualAttentionBlock(n_state, n_head, use_sdpa=use_sdpa)
-            for _ in range(n_layer)
-        ])
-
-    def forward(self, x: torch.Tensor,
-                x_len: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        x : torch.Tensor, shape = (batch_size, n_mels, T)
-            the mel spectrogram of the audio
-        x_len: torch.Tensor, shape = (batch_size,)
-            length of each audio in x
-        """
-        mask = make_non_pad_mask(x_len).unsqueeze(1)
-        x = F.gelu(self.conv1(x * mask))
-        x_len = (x_len + 2 - 1 * (3 - 1) - 1) // self.stride + 1
-        mask = make_non_pad_mask(x_len).unsqueeze(1)
-        x = F.gelu(self.conv2(x * mask))
-        x_len = (x_len + 2 - 1 * (3 - 1) - 1) // 2 + 1
-        mask = make_non_pad_mask(x_len).unsqueeze(1)
-        x = x.permute(0, 2, 1)  # (B, T // 2, n_state)
-        # NOTE: .contiguous() is essential for dynamo export!
-        x = x.contiguous()
-
-        
-        cos = self.cos[:x.size(1)].to(x.device)
-        sin = self.sin[:x.size(1)].to(x.device)
-
-        mask_pad = mask.transpose(1, 2)
-        mask = mask_to_bias(mask, x.dtype).unsqueeze(1)
-
-        for block in self.blocks:
-            x = block(x, mask, mask_pad, cos, sin)
-
-        return x, x_len
-
-
-class S3TokenizerV2(nn.Module):
-    """S3 tokenizer v2 implementation (inference-only).
-    Args:
-        config (ModelConfig): Config
-    """
-
-    def __init__(self):
-        super().__init__()
-        # self.name = name  # Store model name for token_rate determination
-        self.config = ModelConfig()
-        self.encoder = AudioEncoderV2(
-            self.config.n_mels,
-            self.config.n_audio_state,
-            self.config.n_audio_head,
-            self.config.n_audio_layer,
-            2,
-            self.config.use_sdpa,
-        )
-        self.quantizer = FSQVectorQuantization(
-            self.config.n_audio_state,
-            self.config.n_codebook_size,
-        )
-
-    def forward(self, mel: torch.Tensor,
-                mel_len: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        return self.quantize(mel, mel_len)
-
-    @torch.no_grad()  # was @torch.inference_mode() — breaks ONNX tracing
-    def quantize(self, mel: torch.Tensor,
-                 mel_len: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        Quantize mel spectrogram to tokens, with automatic long audio handling.
-
-        Args:
-            mel: mel spectrogram tensor, shape (batch_size, n_mels, T)
-            mel_len: mel length tensor, shape (batch_size,)
-
-        Returns:
-            code: quantized tokens, shape (batch_size, T')
-            code_len: token length, shape (batch_size,)
-        """
-        # Check if any audio in the batch exceeds 30 seconds
-        # Assuming 16kHz sample rate and hop_length=160, 30s = 30*16000/160 = 3000 frames
-        # max_frames = 3000
-
-        # Check which samples are long audio
-        # assert (mel_len <= max_frames).all()
-
-        # All short audio - use original method
-        hidden, code_len = self.encoder(mel, mel_len)
-        code = self.quantizer.encode(hidden).long()
-        return code, code_len
-
-    @property
-    def device(self):
-        return next(self.parameters()).device
-
-    def freeze(self):
-        for _, param in self.named_parameters():
-            param.requires_grad = False
-
-
-class S3Tokenizer(S3TokenizerV2):
-    """
-    s3tokenizer.S3TokenizerV2 with the following changes:
-    - a more integrated `forward`
-    - compute `log_mel_spectrogram` using `_mel_filters` and `window` in `register_buffers`
-    """
-
-    ignore_state_dict_missing = ("_mel_filters", "window")
-
-    def __init__(
-        self,
-        config: ModelConfig = ModelConfig()
-    ):
-        super().__init__()
-
-        self.n_fft = 400
-        _mel_filters = librosa.filters.mel(
-            sr=S3_SR,
-            n_fft=self.n_fft,
-            n_mels=config.n_mels
-        )
-        self.register_buffer(
-            "_mel_filters",
-            torch.FloatTensor(_mel_filters),
-        )
-
-        self.register_buffer(
-            "window",
-            torch.hann_window(self.n_fft),
-        )
-
-    @torch.no_grad()
-    def forward(
-        self,
-        wavs: torch.Tensor,
-        max_len,
-    ) -> torch.Tensor:
-        """
-        NOTE: mel-spec has a hop size of 160 points (100 frame/sec).
-
-        Args
-        ----
-        - `wavs`: 16 kHz speech audio
-        """
-        mels = self.log_mel_spectrogram(wavs)  # [B, F, T]
-        if max_len is not None:
-            mels = mels[..., :max_len * 4]
-        mel_lens = torch.full((mels.shape[0],), mels.shape[-1], dtype=torch.int32, device=self.device)
-
-        speech_tokens, _ = self.quantize(mels, mel_lens)
-        return speech_tokens
-
-    def log_mel_spectrogram(
-        self,
-        audio: torch.Tensor,
-        padding: int = 0,
-    ):
-        """
-        Compute the log-Mel spectrogram of
-
-        Parameters
-        ----------
-        audio: torch.Tensor, shape = (*)
-            The path to audio or either a NumPy array or Tensor containing the
-            audio waveform in 16 kHz
-
-        padding: int
-            Number of zero samples to pad to the right
-
-        Returns
-        -------
-        torch.Tensor, shape = (128, n_frames)
-            A Tensor that contains the Mel spectrogram
-        """
-
-        if audio.dim() == 1:
-            audio = audio.unsqueeze(0)
-
-        audio = audio.to(self.device)
-        if padding > 0:
-            audio = F.pad(audio, (0, padding))
-        stft = torch.stft(
-            audio, self.n_fft, S3_HOP,
-            window=self.window.to(self.device),
-            return_complex=False
-        )
-        # remove Nyquist bin
-        stft = stft[..., :-1, :]
-        # compute magnitude squared
-        magnitudes = stft[..., 0]**2 + stft[..., 1]**2
-
-        mel_spec = self._mel_filters.to(self.device) @ magnitudes
-
-        log_spec = torch.clamp(mel_spec, min=1e-10).log10()
-        log_spec = torch.maximum(log_spec, log_spec.max() - 8.0)
-        log_spec = (log_spec + 4.0) / 4.0
-        return log_spec
-
 
 class SafeDenseLayer(torch.nn.Module):
     def __init__(self, in_channels, out_channels, bias=False):
@@ -647,8 +104,14 @@ class PrepareConditionalsModel(torch.nn.Module):
         super().__init__()
 
         # TODO: Move loading elsewhere
-        self.s3 = S3Tokenizer()
-        self.s3.load_state_dict(chatterbox.s3gen.tokenizer.state_dict(), strict=False)
+        # Use upstream chatterbox.s3gen.tokenizer directly. The vendored
+        # S3Tokenizer chain (verified mathematically identical via
+        # parity test, see Run 6 in docs/chatterbox_investigation.md)
+        # was replaced by four scoped patches in `_export_patches.py`
+        # (`patched_s3tokenizer_for_export` + `patched_rotary_for_export`).
+        # Active during the speech_encoder ONNX export only — eager
+        # PyTorch usage is unaffected.
+        self.s3 = chatterbox.s3gen.tokenizer
 
         self.speaker_encoder = chatterbox.s3gen.speaker_encoder
         self.flow = chatterbox.s3gen.flow
@@ -907,14 +370,17 @@ class PrepareConditionalsModel(torch.nn.Module):
         feature = feature - feature.mean(dim=0, keepdim=True)
         speaker_embeddings = self.speaker_encoder(feature.unsqueeze(0))
 
-        t3_cond_prompt_tokens = self.s3(ref_wav_16[..., :ENC_COND_LEN], max_len=self.speech_cond_prompt_len)
+        # Upstream chatterbox.s3gen.tokenizer returns (tokens, lens);
+        # Vlad's vendored S3Tokenizer returned just tokens. Take [0]
+        # to drop the lens — they're not consumed downstream.
+        t3_cond_prompt_tokens = self.s3(ref_wav_16[..., :ENC_COND_LEN], max_len=self.speech_cond_prompt_len)[0]
 
         resampled_wav_16 = self.resampler(ref_wav_24) # resample uncropped audio
 
         # NOTE: For some reason, we do two passes of the s3 tokenizer
         # TODO: Try reduce this?
         # Tokenize 16khz reference
-        prompt_token = self.s3(resampled_wav_16, max_len=None)
+        prompt_token = self.s3(resampled_wav_16, max_len=None)[0]
 
         cond_prompt_speech_emb = self.speech_emb(t3_cond_prompt_tokens) + \
                      self.speech_pos_emb(t3_cond_prompt_tokens)

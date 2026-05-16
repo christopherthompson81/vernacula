@@ -176,18 +176,71 @@ def _convert_freqs_cis_buffers(root_module):
     return saved
 
 
+def _audio_encoder_v2_forward_real_freqs(self, x, x_len):
+    """Replacement for `s3tokenizer.model_v2.AudioEncoderV2.forward`.
+
+    Upstream calls `torch.view_as_real(freqs_cis)` inline (line 344).
+    Even with our converted real-format buffer, that op fails ONNX
+    export ("view_as_real is only supported for complex tensors").
+    The cos/sin computed from view_as_real are then **never used**
+    downstream — they look like leftover refactoring debris. The
+    actual rotary application happens inside MultiHeadAttention via
+    `apply_rotary_emb(q, k, freqs_cis=freqs_cis)`, which we patch
+    separately.
+
+    This replacement is byte-for-byte identical to upstream EXCEPT
+    that it omits the dead view_as_real / cos / sin block.
+    """
+    T = x.shape[-1]
+    from s3tokenizer.model_v2 import make_non_pad_mask, mask_to_bias
+    mask = make_non_pad_mask(x_len, T).unsqueeze(1)
+    x = torch.nn.functional.gelu(self.conv1(x * mask))
+    x_len = (x_len + 2 - 1 * (3 - 1) - 1) // self.stride + 1
+    x_slen = (T + 2 - 1 * (3 - 1) - 1) // self.stride + 1
+    mask = make_non_pad_mask(x_len, x_slen).unsqueeze(1)
+    x = torch.nn.functional.gelu(self.conv2(x * mask))
+    x_len = (x_len + 2 - 1 * (3 - 1) - 1) // 2 + 1
+    x_slen = (x_slen + 2 - 1 * (3 - 1) - 1) // self.stride + 1
+    mask = make_non_pad_mask(x_len, x_slen).unsqueeze(1)
+    x = x.permute(0, 2, 1)  # (B, T // 2, n_state)
+    freqs_cis = self.freqs_cis.to(x.device)  # already real-format (T, D, 2)
+    mask_pad = mask.transpose(1, 2)
+    mask = mask_to_bias(mask, x.dtype)
+
+    for block in self.blocks:
+        x = block(x, mask.unsqueeze(1), mask_pad, freqs_cis[:x.size(1)])
+
+    return x, x_len
+
+
 @contextmanager
 def patched_rotary_for_export(root_module):
     """Patch rotary embeddings under the given root module for ONNX export.
 
-    1. Walk root_module to find every submodule with a complex `freqs_cis`
-       attribute; replace with real-format (T, D, 2).
-    2. Monkey-patch s3tokenizer.model_v2.apply_rotary_emb to read the
-       real format. Restore on exit.
+    Three-part patch:
+
+    1. Walk root_module to find every submodule with a complex
+       `freqs_cis` attribute; replace with real-format (T, D, 2).
+    2. Monkey-patch `s3tokenizer.model_v2.apply_rotary_emb` (the
+       function called by MultiHeadAttention) to read the real format.
+    3. Monkey-patch `AudioEncoderV2.forward` to skip its inline
+       `torch.view_as_real(freqs_cis)` call — that's dead code anyway,
+       the cos/sin it computes are never consumed.
+
+    All three are restored on context exit.
     """
     import s3tokenizer.model_v2 as _m2
+    from s3tokenizer.model_v2 import AudioEncoderV2
+
     original_apply = _m2.apply_rotary_emb
     saved_freqs = _convert_freqs_cis_buffers(root_module)
+
+    saved_aev2_forward = {}
+    for m in root_module.modules():
+        if isinstance(m, AudioEncoderV2):
+            saved_aev2_forward[m] = m.forward
+            m.forward = types.MethodType(_audio_encoder_v2_forward_real_freqs, m)
+
     _m2.apply_rotary_emb = _apply_rotary_emb_real
     try:
         yield root_module
@@ -195,6 +248,8 @@ def patched_rotary_for_export(root_module):
         _m2.apply_rotary_emb = original_apply
         for module, original in saved_freqs.items():
             module.freqs_cis = original
+        for module, original in saved_aev2_forward.items():
+            module.forward = original
 
 
 # ── chatterbox.models.s3gen.xvector.DenseLayer.forward ────────────────

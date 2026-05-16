@@ -240,7 +240,11 @@ def export_speech_encoder(prepare_conditionals_mod, audio_values, out_path: Path
     (verified via probe_dense_shape.py).
     """
     import torch
-    from _export_patches import patched_dense_layer_for_export
+    from _export_patches import (
+        patched_dense_layer_for_export,
+        patched_s3tokenizer_for_export,
+        patched_rotary_for_export,
+    )
     print(f"  exporting speech_encoder.onnx (opset {opset}) ...")
     t0 = time.perf_counter()
     orig_device = next(prepare_conditionals_mod.parameters()).device
@@ -248,9 +252,12 @@ def export_speech_encoder(prepare_conditionals_mod, audio_values, out_path: Path
     audio_values_cpu = audio_values.cpu()
     prev_default = torch.get_default_device() if hasattr(torch, "get_default_device") else None
     torch.set_default_device("cpu")
+    s3_tokenizer = chatterbox_model.s3gen.tokenizer
     try:
         with item_no_op_patch(item_patch), \
-             patched_dense_layer_for_export(chatterbox_model.s3gen.speaker_encoder):
+             patched_dense_layer_for_export(chatterbox_model.s3gen.speaker_encoder), \
+             patched_s3tokenizer_for_export(s3_tokenizer), \
+             patched_rotary_for_export(s3_tokenizer):
             torch.onnx.export(
                 prepare_conditionals_mod,
                 (audio_values_cpu,),

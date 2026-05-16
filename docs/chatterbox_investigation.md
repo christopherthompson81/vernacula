@@ -484,4 +484,90 @@ real test.
   WIP `_export_patches.py` work has the seeds. Decision can wait
   until cond decoder parity is in.
 
-## Run 6 — pending — Conditional decoder parity
+## Run 6 — 2026-05-15 — De-vendor the S3Tokenizer chain (~600 LOC dropped)
+
+**Question:** Can we replace the vendored S3Tokenizer / FSMN / FSQ /
+AudioEncoderV2 model code in `_chatterbox_internals.py` with direct
+use of upstream `chatterbox.s3gen.tokenizer` plus targeted ONNX-export
+patches, without sacrificing parity?
+
+**Approach:** Four scoped monkey-patches in `_export_patches.py` that
+cover the four upstream ops which don't symbolic-convert to ONNX:
+
+| # | Patched | Reason | Replacement |
+|---|---|---|---|
+| 1 | `S3Tokenizer.log_mel_spectrogram` | `torch.stft(return_complex=True)` — ONNX has no complex scalar type | Use `return_complex=False`, manual `real² + imag²` magnitude |
+| 2 | `S3Tokenizer.forward` | `pad_sequence` over Python list — ONNX has no aten::pad_sequence | Operate on `(B, N)` tensor directly, batch through |
+| 3 | `s3tokenizer.model_v2.apply_rotary_emb` + `freqs_cis` buffers | `torch.polar` / `view_as_real` — complex tensors not supported | Convert buffers to real `(T, D, 2)` at patch time; replacement function reads real layout |
+| 4 | `AudioEncoderV2.forward` | Inline duplicate `view_as_real(freqs_cis)` (cos/sin computed but never used downstream — dead code) | Skip the dead block; pass real-format buffer through |
+
+**Verification protocol:**
+
+1. Standalone three-way parity (`/tmp/parity_s3tok.py`):
+   - A: upstream UNPATCHED eager
+   - B: upstream PATCHED eager (all 4 patches active)
+   - C: patched upstream ONNX-exported, run via ORT
+
+   All three produced **bit-identical** speech tokens
+   `[5533, 4036, 3927, 4254, 4011, 4008, 4251, 4000, ...]` for the
+   same fixed-seed audio input. A == B == C exactly. The patches are
+   mathematically equivalent transformations, not approximations.
+
+2. End-to-end parity (`test_chatterbox_parity.py --tests lm,embed,enc`):
+   - `lm` PASS — argmax tokens agree, 2.5e-3 SDPA noise (unchanged)
+   - `embed` PASS — bit-perfect (unchanged)
+   - `enc[onnx-vs-upstream]` PASS — speaker_embeddings cosine sim
+     0.999999 vs upstream eager (3.4e-3 max-abs, mean 1.0e-3).
+     **Identical to pre-deletion** — the swap is transparent.
+
+**Code dropped:** ~493 lines from `_chatterbox_internals.py`
+(1521 → 1028 lines):
+
+- `ModelConfig` (dataclass)
+- helpers: `make_non_pad_mask`, `precompute_freqs_cis`, `apply_rotary_emb`,
+  `reshape_for_broadcast`
+- `FSQCodebook`, `FSQVectorQuantization`
+- `FSMNMultiHeadAttention` (~100 lines)
+- `ResidualAttentionBlock`
+- `AudioEncoderV2` (~65 lines)
+- `S3TokenizerV2`, `S3Tokenizer` (~157 lines combined)
+- Imports that only the dropped classes used
+  (`MultiHeadAttention`, `Conv1d`, etc. from `s3tokenizer.model`)
+
+**Code added:** ~80 lines of patches in `_export_patches.py` (was
+inert WIP; now active).
+
+**Net:** -413 lines of vendored model code, replaced by parity-validated
+patches. The remaining `_chatterbox_internals.py` is *only* orchestration:
+`PrepareConditionalsModel`, `InputsEmbeds`, `ISTFT`, `ConditionalDecoder`,
+`SafeDenseLayer` (stub), `make_pad_mask`, `mask_to_bias`. None of these
+re-implement upstream model code; they assemble upstream pieces in an
+ONNX-friendly way.
+
+**Three-attempt journey to make the patches work:**
+
+The `_DenseLayerExportShim` story (Run 5) was actually a preview of
+what this run validated at scale — Vlad's vendoring was overkill in
+multiple dimensions. For the S3Tokenizer chain specifically, the four
+upstream issues are exactly the ops we'd expect to fail (complex
+tensors and Python-list operations), and each is a one-liner workaround
+relative to the 100-line module that wraps it. Vendoring the entire
+class hierarchy was a sledgehammer approach.
+
+**What's still vendored:**
+
+- `ISTFT` (~106 lines) — used by `ConditionalDecoder`. Has the
+  scatter_add `window_sumsquare` (Run 3 fix #12) which was OUR fix,
+  not Vlad's. Could potentially be replaced with `torch.istft` + a
+  patch, but lower-priority.
+- `PrepareConditionalsModel`, `InputsEmbeds`, `ConditionalDecoder` —
+  these are export-friendly orchestration of upstream submodules,
+  not vendored model code. They stay.
+
+**Still ahead:** cond decoder parity test (spectral distance) — the
+last graph to validate. Then the project moves into E5: artifact
+finalization (export-report.json schema lock, README updates, optional
+fp16 path) and cleanup (drop the SafeDenseLayer stub entirely, remove
+the `--with-item-patch` flag if no E5 work needs it, etc.).
+
+## Run 7 — pending — Conditional decoder parity
