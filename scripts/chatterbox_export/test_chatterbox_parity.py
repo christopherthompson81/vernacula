@@ -27,6 +27,12 @@ Test layers, smallest blast radius first:
   * `dec`    — conditional_decoder.onnx vs upstream chatterbox.s3gen
                 flow + mel2wav. Compare waveforms via spectral distance
                 (bit-equality is unrealistic for a vocoder).
+  * `solve_euler` — eager-vs-eager regression guard for the CFM solver
+                rewrite that landed in Run 10. Expect bit-identity
+                (max_abs = 0); regressions here mean the cat-only
+                rewrite has drifted from upstream's broadcast-assign
+                semantics. Doesn't touch ONNX, so runs without a
+                cond_decoder.onnx artifact.
 
 Each test reports max-abs-diff, max-rel-diff, mean-abs-diff and a
 pass/fail verdict against a configurable tolerance.
@@ -486,13 +492,71 @@ def parity_dec(onnx_dir: Path, providers: list[str], tolerance: float = 1e-2) ->
     return ParityResult("dec", passed, max_abs, max_rel, mean_abs, mel_threshold, notes=notes)
 
 
+def parity_solve_euler(tolerance: float = 1e-5) -> ParityResult:
+    """Eager-vs-eager: our patched solve_euler + cfm.forward vs upstream.
+
+    The dynamic-shape rewrite (docs/chatterbox_investigation.md Run 10)
+    replaced upstream's
+        x_in = zeros([2, 80, x.size(2)]); x_in[:] = x
+    pattern with
+        x_in = torch.cat([x, x], dim=0)
+    to avoid baking T into the trace's Reshape+Expand chain. The rewrite
+    should be mathematically identical to upstream — cat-of-same-shape
+    and broadcast-assign produce the same `[2, 80, T]` tensor.
+
+    This test confirms that equivalence: same mu/mask/spks, same RNG,
+    once with upstream's solve_euler and once with our patched version,
+    expect bit-identical mel output. No ONNX involved — pure eager.
+    """
+    import torch
+    from chatterbox.tts import ChatterboxTTS
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import _chatterbox_internals as ci
+    from _export_patches import patched_cond_decoder_for_export
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    model = ChatterboxTTS.from_pretrained(device=device)
+
+    # Realistic-shaped dummy inputs. T = 1010 is the natural mel-frame
+    # count for a 505-token speech sequence (2x upsample); picking a
+    # non-trace-time value would also work since both code paths are
+    # eager-symbolic.
+    B, T, n_feats = 1, 1010, 80
+    torch.manual_seed(0)
+    mu = torch.randn(B, n_feats, T, device=device)
+    mask = torch.ones(B, 1, T, device=device)
+    spk_dim = model.s3gen.flow.spk_embed_affine_layer.out_features
+    spks = torch.randn(B, spk_dim, device=device)
+
+    def run(model):
+        with torch.no_grad():
+            mel, _ = model.s3gen.flow.decoder(
+                mu=mu, mask=mask, spks=spks, cond=torch.zeros_like(mu),
+                n_timesteps=10,
+            )
+        return mel.cpu().numpy()
+
+    mel_upstream = run(model)
+    with patched_cond_decoder_for_export(model.s3gen, ci.istft):
+        mel_patched = run(model)
+
+    max_abs, max_rel, mean_abs = diff_metrics(mel_patched, mel_upstream)
+    passed = max_abs <= tolerance
+    notes = (
+        f"shape={mel_upstream.shape}  "
+        f"range=[{mel_upstream.min():.3f}, {mel_upstream.max():.3f}]  "
+        f"(eager-vs-eager: bit-identity is the expected outcome)"
+    )
+    return ParityResult("solve_euler", passed, max_abs, max_rel, mean_abs, tolerance, notes=notes)
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--onnx-dir", type=Path, required=True,
                    help="Directory produced by export_chatterbox_to_onnx.py")
     p.add_argument("--runtime", default="cuda", choices=["cpu", "cuda", "tensorrt"])
     p.add_argument("--tests", default="lm",
-                   help="Comma-separated subset: lm,embed,enc,dec,all (default: lm)")
+                   help="Comma-separated subset: lm,embed,enc,dec,solve_euler,all (default: lm)")
     p.add_argument("--tolerance", type=float, default=1e-2,
                    help="Max-abs-diff threshold for pass (default: 1e-2). "
                         "Each test layer has its own appropriate default; this is a "
@@ -514,7 +578,7 @@ def main() -> None:
     providers = choose_onnx_providers(args.runtime)
     tests = {t.strip() for t in args.tests.split(",")}
     if "all" in tests:
-        tests = {"lm", "embed", "enc", "dec"}
+        tests = {"lm", "embed", "enc", "dec", "solve_euler"}
 
     results: list[ParityResult] = []
 
@@ -536,6 +600,10 @@ def main() -> None:
     if "dec" in tests:
         print("[dec] conditional_decoder.onnx waveform vs upstream eager")
         results.append(parity_dec(args.onnx_dir, providers, args.tolerance))
+        print(results[-1].summary())
+    if "solve_euler" in tests:
+        print("[solve_euler] patched cat-only solve_euler vs upstream (eager)")
+        results.append(parity_solve_euler())
         print(results[-1].summary())
 
     print()
