@@ -475,6 +475,24 @@ def patched_sinegen_deterministic(mel2wav):
 # with `h.shape[1]` (a SymInt during trace), and `narrow` slicing
 # that keeps the start index symbolic.
 
+# NOTE on dynamic-shape limits:
+# The cond decoder uses `diffusers.models.attention_processor.Attention`
+# (HuggingFace diffusers library) for its mid_blocks / up_blocks /
+# down_blocks attention. We patched solve_euler + flow.inference's
+# mask construction, which fixed several baked time-dim values, but
+# additional shape-baking happens inside diffusers' Attention (and
+# possibly elsewhere). Patching diffusers' attention has too large a
+# surface area (multiple attention processors: SDPA, xformers,
+# default; many code paths each).
+#
+# Pragmatic resolution: cond decoder ONNX is *trace-shape-only* for
+# now — pad input to a fixed length at runtime (the C# orchestrator
+# can pad speech_tokens to a max chunk length, decode, trim audio).
+# A future fix could use `torch.onnx.dynamo_export` (PyTorch 2.x's
+# newer ONNX path) which is designed for dynamic shapes — left as
+# E5+ work.
+
+
 def _solve_euler_dynamic(self, x, t_span, mu, mask, spks, cond):
     """Replacement for CausalConditionalCFM.solve_euler.
 
@@ -617,6 +635,9 @@ def patched_cond_decoder_for_export(s3gen, istft_module):
         _strip_inference_mode(flow.decoder.forward.__func__), flow.decoder
     )
     flow.decoder.solve_euler = types.MethodType(_solve_euler_dynamic, flow.decoder)
+    # NOTE: cond decoder estimator uses diffusers Attention internally,
+    # which has its own shape-baking. Not patched here — see module
+    # docstring above _solve_euler_dynamic for the deferred-work note.
     mel2wav.inference = types.MethodType(
         _strip_inference_mode(mel2wav.inference.__func__), mel2wav
     )

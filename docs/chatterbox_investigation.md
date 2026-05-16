@@ -668,4 +668,82 @@ audio quality polish is an E5 follow-up.
 - `make_pad_mask`, `mask_to_bias` — small upstream-equivalent helpers,
   could be imported from `s3tokenizer.utils`
 
-## Run 8 — pending — E5 polish (audit, fp16, dec parity drift hunt)
+## Run 8 — 2026-05-15 — Dynamic-shape hunt; cond decoder is trace-shape-only
+
+**Question:** Can we make `conditional_decoder.onnx` accept arbitrary
+`speech_tokens` length, not just the trace-time value?
+
+**Why this matters:** The MVP scope is "continuous reading of long
+texts" — chunked synthesis with variable per-chunk audio. Without
+dynamic length, the cond decoder ONNX is unusable for real input.
+Discovered when the listen-test failed with a shape-mismatch
+(`LeftShape: {1,456,512}, RightShape: {1,378,1}`) on the very first
+real-voice export.
+
+**The chain of baked dimensions, each fix unlocking the next:**
+
+| # | Where | What was baked | Fix |
+|---|---|---|---|
+| 1 | `CausalConditionalCFM.solve_euler` | `torch.zeros([2, 80, x.size(2)])` — `x.size(2)` collapses to int | `_solve_euler_dynamic`: replace with `torch.cat([zeros_like(x), zeros_like(x)])` (preserves SymInt time dim) |
+| 2 | `MaskedDiffWithXvec.inference` mask via `make_pad_mask(token_len)` | `lengths.max()` collapses to int → arange end → mask shape | `_flow_inference_dynamic`: all-True mask via `torch.ones_like(token[:, :, :1])` |
+| 3 | flow.inference's conds tensor and feat slice | `prompt_feat.shape[1]` and `h.shape[1] - prompt_feat.shape[1]` Python ints in `torch.zeros(...)` and slicing | Use `narrow` with shape-derived lengths and `zeros_like(h.narrow(...))` |
+| 4 | `/decoder/Reshape_9` baked to `[80, 756]` | Inside upstream cond decoder estimator's diffusers `Attention` | **NOT FIXED** — see below |
+
+**Where the patching stopped:**
+
+- The cond decoder estimator uses
+  `diffusers.models.attention_processor.Attention` (HuggingFace
+  diffusers library), not chatterbox's own attention. Discovered after
+  patching `chatterbox.s3gen.matcha.text_encoder.MultiHeadAttention`
+  and finding the patch never fired.
+- Diffusers' `Attention` has a large surface (multiple processors:
+  SDPA, xformers, default; many code paths each, all with their own
+  shape arithmetic). Patching it cleanly is not a one-function fix.
+- Each round of patching has been "find baked dim → narrow it down to
+  one method → patch → re-export → discover next baked dim". The chain
+  goes deep into a third-party library now. Patching may take many
+  more iterations and might never be fully solved without rewriting
+  the diffusers integration.
+
+**Eager parity verified for the patches we did land:** patched
+`flow.inference` and `solve_euler` produce bit-identical outputs to
+upstream eager (max_abs = 0).
+
+**Pragmatic resolution for the MVP:**
+
+The cond decoder ONNX is **trace-shape-only** for now. Two acceptable
+ways to ship around this:
+
+1. **C# orchestrator pads `speech_tokens` to the trace-time length**
+   before calling the cond decoder, then trims output to the actual
+   audio duration. Wastes ~10–20% compute on average but is a one-
+   liner on the consumer side. Recommended for MVP.
+
+2. **Re-export with the longest expected per-chunk length** (e.g., the
+   max possible 256 LM steps × token_mel_ratio + reference clip).
+   Always pad to that length at runtime. Slightly nicer but commits
+   us to one specific max.
+
+**For the longer-term fix** (E5+):
+
+- Try `torch.onnx.dynamo_export` (PyTorch 2.x's newer ONNX path,
+  which is designed for dynamic shapes). Could trade this set of
+  problems for a different set.
+- Or re-implement the cond decoder estimator as our own thin module
+  that doesn't use diffusers — costly but gives us full control.
+- Or ship as-is with the pad-to-trace-length pattern and revisit
+  if/when it bites in production use.
+
+**Code state:**
+
+- `_export_patches.py`: 3 dynamic-shape patches landed
+  (`_solve_euler_dynamic`, `_flow_inference_dynamic`,
+  `patched_sinegen_deterministic` — the last is a probe, not active by
+  default). Plus all the prior cond decoder patches
+  (`_stft`/`_istft`/strip-inference-mode).
+- `_chatterbox_internals.py`: unchanged from Run 7.
+- Cond decoder ONNX exports cleanly, runs at the trace-time length
+  (378 tokens for the VCTK reference voice) and produces audio of the
+  expected shape with the expected dynamic range.
+
+## Run 9 — pending — Pick MVP path: pad-to-trace-length on C# side, or revisit later
