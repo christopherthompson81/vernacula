@@ -16,22 +16,35 @@
 //         tokenizer.json's merges list (lower rank = higher priority).
 //      c. Map final tokens to vocab IDs.
 //
+// Pre-tokenizer skip: tokenizer.json specifies `pre_tokenizer.type =
+// "Whitespace"` (HF's regex split on `\w+|[^\w\s]+`). This implementation
+// intentionally skips that step. It's load-bearing safe ONLY because none
+// of chatterbox's 265 BPE merges span a word/punct character-class
+// boundary — checked at construction time via AssertNoBoundarySpanningMerges.
+// If a future tokenizer.json adds such a merge, that assertion fails loudly
+// and forces re-evaluation; we don't silently corrupt the output.
+//
 // Verified equivalent to the upstream EnTokenizer on the canonical Ezreal
-// sentence (see EnTokenizerSelfTest). Only the encode path is implemented;
-// decode is unused by the smoke test orchestration.
+// sentence. Only the encode path is implemented; decode is unused by the
+// smoke test orchestration.
 
 using System.Text.Json;
+using System.Text.RegularExpressions;
 
 namespace Vernacula.ChatterboxSmoke;
 
 internal sealed class EnTokenizer
 {
-    // Special tokens that wrap the BPE-encoded text in the full LM input.
-    // Match scripts/chatterbox_export/_common.py + listen_test.py's INPUT_IDS layout.
-    public const long StartTextToken = 255;       // [START] in vocab
-    public const long StopTextToken = 0;          // [STOP] in vocab
+    // LM-vocab IDs that wrap the BPE-encoded text in the full LM input.
+    // These live in the LM's vocabulary (>6000), outside the text-tokenizer
+    // vocab — hardcoded because they're not in tokenizer.json.
     public const long ExaggerationToken = 6563;   // _common.py::EXAGGERATION_TOKEN
     public const long StartSpeechToken = 6561;    // _common.py::START_SPEECH_TOKEN
+
+    // Text-vocab special tokens — derived from vocab in the ctor so they
+    // tolerate upstream renumbering (originally 255 / 0 in chatterbox).
+    public long StartTextToken { get; }    // [START]
+    public long StopTextToken { get; }     // [STOP]
 
     private readonly Dictionary<string, long> _vocab;
     private readonly Dictionary<(string, string), int> _mergeRank;  // pair → rank (lower = higher priority)
@@ -73,6 +86,45 @@ internal sealed class EnTokenizer
             }
         }
         _addedTokensByLongestFirst = added.OrderByDescending(t => t.text.Length).ToList();
+
+        // Derive text-vocab special token IDs from the loaded vocab so we
+        // automatically pick up any upstream renumbering.
+        if (!_vocab.TryGetValue("[START]", out var startId))
+            throw new InvalidOperationException("tokenizer.json vocab is missing [START]");
+        if (!_vocab.TryGetValue("[STOP]", out var stopId))
+            throw new InvalidOperationException("tokenizer.json vocab is missing [STOP]");
+        StartTextToken = startId;
+        StopTextToken = stopId;
+
+        AssertNoBoundarySpanningMerges();
+    }
+
+    /// <summary>
+    /// Pre-tokenizer-skip safety check. HF's Whitespace pre-tokenizer splits
+    /// input on the regex `\w+|[^\w\s]+`, so a merge like `i ,` (word + punct)
+    /// could only fire in HF if input had no whitespace between them — but the
+    /// pre-tokenizer prevents that. We skip the pre-tokenizer entirely (Encode
+    /// only splits on added-token spans), so we'd silently apply such a merge
+    /// when HF wouldn't. Chatterbox's 265 merges happen to never span a word/
+    /// punct boundary, so the skip is currently safe. Fail loudly if that
+    /// invariant ever breaks (new model rev, different tokenizer.json).
+    /// </summary>
+    private void AssertNoBoundarySpanningMerges()
+    {
+        var specials = _addedTokensByLongestFirst.Select(t => t.text).ToHashSet();
+        var wordOnly = new Regex(@"^\w+$");
+        var punctOnly = new Regex(@"^[^\w\s]+$");
+        foreach (var ((a, b), _) in _mergeRank)
+        {
+            if (specials.Contains(a) || specials.Contains(b)) continue;
+            bool aWord = wordOnly.IsMatch(a), aPunct = punctOnly.IsMatch(a);
+            bool bWord = wordOnly.IsMatch(b), bPunct = punctOnly.IsMatch(b);
+            if ((aWord && bPunct) || (aPunct && bWord))
+                throw new InvalidOperationException(
+                    $"BPE merge {{\"{a}\" \"{b}\"}} spans a word/punct boundary. "
+                    + "Skipping HF's Whitespace pre-tokenizer would diverge from upstream "
+                    + "here; re-add the pre-tokenizer before using this tokenizer.json.");
+        }
     }
 
     /// <summary>
@@ -178,9 +230,18 @@ internal sealed class EnTokenizer
         foreach (var t in tokens)
         {
             if (!_vocab.TryGetValue(t, out var id))
+            {
+                // TODO([UNK] fallback): upstream HF tokenizers emit [UNK]
+                // (id 1) for chars not in the BPE base alphabet — typically
+                // anything beyond ASCII letters, digits, basic punctuation
+                // (emoji, smart quotes, non-Latin scripts). Throwing here is
+                // safer for the smoke test (loud failure beats silent wrong
+                // output) but needs to become a soft [UNK] before we use this
+                // tokenizer for arbitrary user input.
                 throw new InvalidOperationException(
                     $"BPE produced token \"{t}\" not in vocab — likely an unknown character. "
                     + "Upstream EnTokenizer would emit [UNK] here; not implemented.");
+            }
             outIds.Add(id);
         }
     }
