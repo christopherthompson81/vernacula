@@ -111,6 +111,21 @@ Flags:
 - Forced alignment. The eventual app needs word-level timestamps for
   highlighting; that's a separate pass via the ASR aligner.
 
+## Cross-implementation parity: voice-prompt resampling
+
+C# uses NAudio's `WdlResamplingSampleProvider` to convert audio to 24 kHz;
+Python's `listen_test.py` uses `librosa.load(..., sr=24000)` which goes
+through librosa's kaiser_best resampler. The two resamplers produce
+*different* 24 kHz samples from the same 16 kHz input, which yields
+different speaker embeddings → different LM token sequences (without
+changing perceived audio quality).
+
+For reproducibility / cross-implementation regression testing, pre-resample
+the voice prompt to 24 kHz once (any standard tool — librosa, ffmpeg, sox)
+and feed the 24 kHz file to both pipelines. They'll then agree to within
+ORT cross-version drift (1 token for the Ezreal sentence in our testing;
+your inputs may vary). See issue #53 for the full investigation.
+
 ## Next steps (in `chatterbox.scratch.md` order)
 
 1. Text tokenizer port (so we can pass `--text "any sentence"`).
