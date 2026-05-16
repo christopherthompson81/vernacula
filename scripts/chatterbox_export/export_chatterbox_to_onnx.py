@@ -25,7 +25,6 @@ import hashlib
 import os
 import sys
 import time
-from contextlib import contextmanager
 from pathlib import Path
 
 from _common import (
@@ -87,25 +86,7 @@ def parse_args() -> argparse.Namespace:
                         "(fine for smoke tests, not for parity).")
     p.add_argument("--no-onnxslim", action="store_true",
                    help="Skip the onnxslim + external-data pass after export")
-    p.add_argument("--with-item-patch", action="store_true",
-                   help="Apply Vlad's `torch.Tensor.item = lambda x: x` monkeypatch around "
-                        "torch.onnx.export. Off by default; turn on if tracing fails on .item() calls.")
     return p.parse_args()
-
-
-@contextmanager
-def item_no_op_patch(enabled: bool):
-    """Context manager for Vlad's `.item()` no-op trick. Scoped, not global."""
-    import torch
-    if not enabled:
-        yield
-        return
-    original = torch.Tensor.item
-    torch.Tensor.item = lambda self: self  # type: ignore[method-assign]
-    try:
-        yield
-    finally:
-        torch.Tensor.item = original  # type: ignore[method-assign]
 
 
 def stage_environment() -> dict:
@@ -203,31 +184,30 @@ def apply_safe_dense_patch(chatterbox_model, SafeDenseLayer):
 
 
 def export_embed_tokens(embed_tokens_mod, input_ids, position_ids, exaggeration,
-                        out_path: Path, opset: int, item_patch: bool):
+                        out_path: Path, opset: int):
     import torch
     print(f"  exporting embed_tokens.onnx (opset {opset}) ...")
     t0 = time.perf_counter()
-    with item_no_op_patch(item_patch):
-        torch.onnx.export(
-            embed_tokens_mod,
-            (input_ids, position_ids, exaggeration),
-            str(out_path),
-            export_params=True,
-            opset_version=opset,
-            input_names=["input_ids", "position_ids", "exaggeration"],
-            output_names=["inputs_embeds"],
-            dynamic_axes={
-                "input_ids": {0: "batch_size", 1: "sequence_length"},
-                "position_ids": {0: "batch_size", 1: "sequence_length"},
-                "inputs_embeds": {0: "batch_size", 1: "sequence_length"},
-                "exaggeration": {0: "batch_size"},
-            },
-        )
+    torch.onnx.export(
+        embed_tokens_mod,
+        (input_ids, position_ids, exaggeration),
+        str(out_path),
+        export_params=True,
+        opset_version=opset,
+        input_names=["input_ids", "position_ids", "exaggeration"],
+        output_names=["inputs_embeds"],
+        dynamic_axes={
+            "input_ids": {0: "batch_size", 1: "sequence_length"},
+            "position_ids": {0: "batch_size", 1: "sequence_length"},
+            "inputs_embeds": {0: "batch_size", 1: "sequence_length"},
+            "exaggeration": {0: "batch_size"},
+        },
+    )
     print(f"    done ({time.perf_counter() - t0:.1f}s)  {out_path.stat().st_size / 1e6:.2f} MB")
 
 
 def export_speech_encoder(prepare_conditionals_mod, audio_values, out_path: Path,
-                          opset: int, item_patch: bool, chatterbox_model):
+                          opset: int, chatterbox_model):
     """Export the speech encoder on CPU.
 
     On CUDA, `torch.jit.trace` hits the same kind of spurious
@@ -258,8 +238,7 @@ def export_speech_encoder(prepare_conditionals_mod, audio_values, out_path: Path
     torch.set_default_device("cpu")
     s3_tokenizer = chatterbox_model.s3gen.tokenizer
     try:
-        with item_no_op_patch(item_patch), \
-             patched_dense_layer_for_export(chatterbox_model.s3gen.speaker_encoder), \
+        with patched_dense_layer_for_export(chatterbox_model.s3gen.speaker_encoder), \
              patched_s3tokenizer_for_export(s3_tokenizer), \
              patched_rotary_for_export(s3_tokenizer):
             torch.onnx.export(
@@ -286,7 +265,7 @@ def export_speech_encoder(prepare_conditionals_mod, audio_values, out_path: Path
 
 
 def export_conditional_decoder(cond_decoder_mod, speech_tokens, speaker_embeddings,
-                               speaker_features, out_path: Path, opset: int, item_patch: bool,
+                               speaker_features, out_path: Path, opset: int,
                                chatterbox_model):
     """Export the conditional decoder.
 
@@ -319,8 +298,7 @@ def export_conditional_decoder(cond_decoder_mod, speech_tokens, speaker_embeddin
     prev_default = torch.get_default_device() if hasattr(torch, "get_default_device") else None
     torch.set_default_device("cpu")
     try:
-        with item_no_op_patch(item_patch), \
-             patched_cond_decoder_for_export(chatterbox_model.s3gen, ci.istft), \
+        with patched_cond_decoder_for_export(chatterbox_model.s3gen, ci.istft), \
              patched_sinegen_deterministic(chatterbox_model.s3gen.mel2wav):
             torch.onnx.export(
                 cond_decoder_mod,
@@ -397,7 +375,7 @@ def build_lm_wrapper(chatterbox_model, device):
     return LMWithSpeechHead(chatterbox_model.t3.tfmr, chatterbox_model.t3.speech_head).eval().to(device)
 
 
-def export_language_model(lm_mod, out_path: Path, opset: int, device, dtype, item_patch: bool):
+def export_language_model(lm_mod, out_path: Path, opset: int, device, dtype):
     """Export the Llama-with-speech-head graph with KV-cache I/O.
 
     Uses small dummy shapes for the trace (batch=1, seq=4, past=0). The
@@ -432,17 +410,16 @@ def export_language_model(lm_mod, out_path: Path, opset: int, device, dtype, ite
     for name in kv_output_names(LLM_NUM_LAYERS):
         dynamic_axes[name] = {0: "batch_size", 2: "total_sequence_length"}
 
-    with item_no_op_patch(item_patch):
-        torch.onnx.export(
-            lm_mod,
-            (inputs_embeds, attention_mask, *past_kv_flat),
-            str(out_path),
-            export_params=True,
-            opset_version=opset,
-            input_names=input_names,
-            output_names=output_names,
-            dynamic_axes=dynamic_axes,
-        )
+    torch.onnx.export(
+        lm_mod,
+        (inputs_embeds, attention_mask, *past_kv_flat),
+        str(out_path),
+        export_params=True,
+        opset_version=opset,
+        input_names=input_names,
+        output_names=output_names,
+        dynamic_axes=dynamic_axes,
+    )
     print(f"    done ({time.perf_counter() - t0:.1f}s)  {out_path.stat().st_size / 1e6:.2f} MB")
 
 
@@ -558,7 +535,7 @@ def main() -> None:
         export_embed_tokens(
             embed_tokens, input_ids, position_ids, exaggeration,
             args.output_dir / "embed_tokens.onnx",
-            opset=args.opset_embed_tokens, item_patch=args.with_item_patch,
+            opset=args.opset_embed_tokens,
         )
         graphs_exported.append("embed_tokens.onnx")
 
@@ -566,7 +543,7 @@ def main() -> None:
         export_speech_encoder(
             prepare_conditionals, audio_values,
             args.output_dir / "speech_encoder.onnx",
-            opset=args.opset_speech_encoder, item_patch=args.with_item_patch,
+            opset=args.opset_speech_encoder,
             chatterbox_model=chatterbox_model,
         )
         graphs_exported.append("speech_encoder.onnx")
@@ -580,7 +557,6 @@ def main() -> None:
         export_language_model(
             lm_mod, args.output_dir / "language_model.onnx",
             opset=args.opset_language_model, device=device, dtype=torch.float32,
-            item_patch=args.with_item_patch,
         )
         graphs_exported.append("language_model.onnx")
         del lm_mod  # release the wrapper; tfmr/speech_head are still owned by chatterbox_model
@@ -630,7 +606,7 @@ def main() -> None:
         export_conditional_decoder(
             cond_decoder, speech_tokens, speaker_embeddings, speaker_features,
             args.output_dir / "conditional_decoder.onnx",
-            opset=args.opset_conditional_decoder, item_patch=args.with_item_patch,
+            opset=args.opset_conditional_decoder,
             chatterbox_model=chatterbox_model,
         )
         graphs_exported.append("conditional_decoder.onnx")

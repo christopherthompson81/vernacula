@@ -104,7 +104,6 @@ class PrepareConditionalsModel(torch.nn.Module):
     def __init__(self, chatterbox):
         super().__init__()
 
-        # TODO: Move loading elsewhere
         # Use upstream chatterbox.s3gen.tokenizer directly. The vendored
         # S3Tokenizer chain (verified mathematically identical via
         # parity test, see Run 6 in docs/chatterbox_investigation.md)
@@ -357,15 +356,8 @@ class PrepareConditionalsModel(torch.nn.Module):
         ref_wav_24 = audio_values[..., :DEC_COND_LEN]
         speaker_features = self.mel_spectrogram(ref_wav_24).transpose(1, 2)
 
-        # Resample to 16kHz
-        ref_wav_16 = self.resampler(audio_values) # resample uncropped audio
-
-        # Speech cond prompt tokens
-        # TODO START REMOVE
-        # -- AT EXPORT, WE MUST SWAP THIS WITH self.resampler(audio_values)
-        # ref_wav_16 = librosa.resample(audio_values.cpu().numpy(), orig_sr=S3GEN_SR, target_sr=S3_SR)
-        # ref_wav_16 = torch.from_numpy(ref_wav_16).to(audio_values.device)
-        # TODO END REMOVE
+        # Resample to 16kHz (ta.Resample, not librosa — ONNX-traceable)
+        ref_wav_16 = self.resampler(audio_values)
 
         feature = self.extract_feature(ref_wav_16, num_mel_bins=80) # == Kaldi.fbank(ref_wav_16, num_mel_bins=80)
         feature = feature - feature.mean(dim=0, keepdim=True)
@@ -378,9 +370,11 @@ class PrepareConditionalsModel(torch.nn.Module):
 
         resampled_wav_16 = self.resampler(ref_wav_24) # resample uncropped audio
 
-        # NOTE: For some reason, we do two passes of the s3 tokenizer
-        # TODO: Try reduce this?
-        # Tokenize 16khz reference
+        # Two passes of the s3 tokenizer: the first (above) gets capped
+        # to `speech_cond_prompt_len` for the t3 conditioning embedding;
+        # the second runs uncapped to feed prompt_token into the cond
+        # decoder. Carried over from upstream's split — not an obvious
+        # win to consolidate.
         prompt_token = self.s3(resampled_wav_16, max_len=None)[0]
 
         cond_prompt_speech_emb = self.speech_emb(t3_cond_prompt_tokens) + \
