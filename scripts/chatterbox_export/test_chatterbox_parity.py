@@ -559,50 +559,24 @@ def parity_solve_euler(tolerance: float = 1e-5) -> ParityResult:
     return ParityResult("solve_euler", passed, max_abs, max_rel, mean_abs, tolerance, notes=notes)
 
 
-def parity_split_pipeline(
-    onnx_dir: Path,
-    providers: list[str],
-    tolerance: float = 1e-2,
-) -> ParityResult:
-    """End-to-end parity for the split cond decoder (Phase 1).
+def _build_speech_tokens_eager(device: str):
+    """Reproduce the speech_tokens stream the cond decoder consumes, via
+    upstream eager LM rollout on a seeded synthetic voice prompt + the
+    canonical Ezreal sentence. Shared by parity_split_pipeline and
+    parity_loop_merged so the two tests stay in sync if seeding, the
+    rep-penalty, or the token contract ever change.
 
-    Orchestrates flow_encoder.onnx + cfm_estimator.onnx + mel2wav.onnx
-    in Python — the exact pattern the C# code will use. Compares the
-    final waveform against the patched-eager monolithic
-    `ConditionalDecoder` pipeline. Differences should be at the
-    float-precision level (max_abs < 1e-3) because the split is a pure
-    refactor: same math, just spread across three graphs with the CFM
-    loop in Python instead of unrolled inside the ONNX trace.
-
-    Test PASSES if all three graphs are present and ONNX output matches
-    eager within `tolerance`. SKIPS if the split artifacts aren't there
-    (caller forgot --split-cond-decoder).
+    Returns: (chatterbox_model, speech_tokens, spk_emb, spk_feat).
+    Caller owns moving any further modules (istft, etc.) to `device`.
     """
     import torch
-    import onnxruntime as ort
     from chatterbox.tts import ChatterboxTTS
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     import _chatterbox_internals as ci
-    from _export_patches import patched_cond_decoder_for_export, patched_sinegen_deterministic
 
-    enc_p = onnx_dir / "flow_encoder.onnx"
-    est_p = onnx_dir / "cfm_estimator.onnx"
-    m2w_p = onnx_dir / "mel2wav.onnx"
-    if not (enc_p.exists() and est_p.exists() and m2w_p.exists()):
-        return ParityResult(
-            "split_pipeline", False, float("inf"), float("inf"), float("inf"),
-            tolerance,
-            notes=f"missing split artifacts in {onnx_dir} (re-export with --split-cond-decoder)",
-        )
-
-    # Same seed/audio/tokens setup as parity_dec so the comparison is
-    # apples-to-apples with the rest of the suite.
-    device = "cuda" if torch.cuda.is_available() else "cpu"
     chatterbox_model = ChatterboxTTS.from_pretrained(device=device)
     prep = ci.PrepareConditionalsModel(chatterbox_model).eval().to(device)
     et = ci.InputsEmbeds(chatterbox_model).eval().to(device)
-    cd_eager = ci.ConditionalDecoder(chatterbox_model).eval().to(device)
-    ci.istft.to(device)
 
     torch.manual_seed(0)
     audio = torch.randn(1, 312_936, device=device)
@@ -639,6 +613,50 @@ def parity_split_pipeline(
             inputs_embeds = et(nt, p, ex)
         speech_tokens = torch.cat([prompt_token, gt[:, 1:-1]], dim=1)
 
+    return chatterbox_model, speech_tokens, spk_emb, spk_feat
+
+
+def parity_split_pipeline(
+    onnx_dir: Path,
+    providers: list[str],
+    tolerance: float = 1e-2,
+) -> ParityResult:
+    """End-to-end parity for the split cond decoder (Phase 1).
+
+    Orchestrates flow_encoder.onnx + cfm_estimator.onnx + mel2wav.onnx
+    in Python — the exact pattern the C# code will use. Compares the
+    final waveform against the patched-eager monolithic
+    `ConditionalDecoder` pipeline. Differences should be at the
+    float-precision level (max_abs < 1e-3) because the split is a pure
+    refactor: same math, just spread across three graphs with the CFM
+    loop in Python instead of unrolled inside the ONNX trace.
+
+    Test PASSES if all three graphs are present and ONNX output matches
+    eager within `tolerance`. SKIPS if the split artifacts aren't there
+    (caller forgot --split-cond-decoder).
+    """
+    import torch
+    import onnxruntime as ort
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import _chatterbox_internals as ci
+    from _export_patches import patched_cond_decoder_for_export, patched_sinegen_deterministic
+
+    enc_p = onnx_dir / "flow_encoder.onnx"
+    est_p = onnx_dir / "cfm_estimator.onnx"
+    m2w_p = onnx_dir / "mel2wav.onnx"
+    if not (enc_p.exists() and est_p.exists() and m2w_p.exists()):
+        return ParityResult(
+            "split_pipeline", False, float("inf"), float("inf"), float("inf"),
+            tolerance,
+            notes=f"missing split artifacts in {onnx_dir} (re-export with --split-cond-decoder)",
+        )
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    chatterbox_model, speech_tokens, spk_emb, spk_feat = _build_speech_tokens_eager(device)
+    cd_eager = ci.ConditionalDecoder(chatterbox_model).eval().to(device)
+    ci.istft.to(device)
+
+    with torch.no_grad():
         # Baseline: monolithic patched-eager pipeline
         with patched_cond_decoder_for_export(chatterbox_model.s3gen, ci.istft), \
              patched_sinegen_deterministic(chatterbox_model.s3gen.mel2wav):
@@ -698,7 +716,7 @@ def parity_split_pipeline(
             notes=f"shape mismatch: split={wav_split.shape}, eager={wav_eager.shape}",
         )
 
-    max_abs, max_rel, mean_abs = diff_metrics(wav_split, wav_eager)
+    wav_max_abs, _, wav_mean_abs = diff_metrics(wav_split, wav_eager)
 
     # Mel-spectral L1 (same convention as parity_dec)
     import torchaudio.transforms as T
@@ -707,12 +725,16 @@ def parity_split_pipeline(
     log_s = torch.log(torch.clamp(mel_t(torch.from_numpy(wav_split[0]).float()), min=1e-5))
     mel_l1 = float((log_e - log_s).abs().mean())
 
+    # Put mel_l1 in the max_abs_diff slot so the summary line's
+    # "max_abs=X (tol=Y)" stays units-consistent — wav-max-abs is unstable
+    # under ScatterND CUDA nondeterminism and isn't what we gate on.
     mel_threshold = 0.5
     passed = mel_l1 <= mel_threshold
-    notes = (f"shape={wav_split.shape}  "
-             f"mel_log_l1={mel_l1:.4e} (thr={mel_threshold})  "
+    notes = (f"shape={wav_split.shape}  metric=mel_log_l1  "
+             f"wav_max_abs={wav_max_abs:.4e} wav_mean_abs={wav_mean_abs:.4e}  "
              f"eager_range=[{wav_eager.min():.3f}, {wav_eager.max():.3f}]")
-    return ParityResult("split_pipeline", passed, max_abs, max_rel, mean_abs, mel_threshold, notes=notes)
+    return ParityResult("split_pipeline", passed, mel_l1, float("nan"), mel_l1,
+                        mel_threshold, notes=notes)
 
 
 def parity_loop_merged(
@@ -733,9 +755,6 @@ def parity_loop_merged(
     """
     import torch
     import onnxruntime as ort
-    from chatterbox.tts import ChatterboxTTS
-    sys.path.insert(0, str(Path(__file__).resolve().parent))
-    import _chatterbox_internals as ci
 
     enc_p = onnx_dir / "flow_encoder.onnx"
     est_p = onnx_dir / "cfm_estimator.onnx"
@@ -750,48 +769,8 @@ def parity_loop_merged(
                   f"--split-cond-decoder --merge-cond-decoder)",
         )
 
-    # Build speech_tokens the same way parity_split_pipeline does — share
-    # the upstream setup so a green split test + green merged test means
-    # the merge is a pure refactor of the split orchestration.
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    chatterbox_model = ChatterboxTTS.from_pretrained(device=device)
-    prep = ci.PrepareConditionalsModel(chatterbox_model).eval().to(device)
-    et = ci.InputsEmbeds(chatterbox_model).eval().to(device)
-
-    torch.manual_seed(0)
-    audio = torch.randn(1, 312_936, device=device)
-    ids = torch.tensor([[EXAGGERATION_TOKEN,
-        255, 281, 39, 46, 56, 2, 53, 2, 286, 41, 37, 2, 136, 122,
-        49, 2, 152, 2, 103, 2, 277, 21, 101, 7, 2, 301, 55, 34, 28, 7,
-        2, 53, 2, 296, 18, 18, 115, 2, 51, 2, 33, 245, 2, 17, 190, 2,
-        42, 2, 50, 18, 125, 4, 32, 2, 290, 169, 142, 2, 41, 2, 43, 2,
-        18, 29, 91, 2, 25, 186, 8, 20, 14, 80, 2, 29, 86, 213, 216, 9,
-        0, START_SPEECH_TOKEN, START_SPEECH_TOKEN]],
-        dtype=torch.long, device=device)
-    pos = torch.where(ids >= START_SPEECH_TOKEN, torch.zeros_like(ids),
-                      torch.arange(ids.shape[1], device=device).unsqueeze(0) - 1)
-    ex = torch.tensor([0.5], device=device)
-
-    with torch.no_grad():
-        _, prompt_token, spk_emb, spk_feat = prep(audio_values=audio)
-        text_emb = et(ids, pos, ex)
-        cond_emb_lm, _, _, _ = prep(audio_values=audio)
-        inputs_embeds = torch.cat((cond_emb_lm, text_emb), dim=1)
-        llm = chatterbox_model.t3.tfmr
-        sh = chatterbox_model.t3.speech_head
-        gt = torch.tensor([[START_SPEECH_TOKEN]], dtype=torch.long, device=device)
-        pkv = None
-        for i in range(256):
-            o = llm(inputs_embeds=inputs_embeds, past_key_values=pkv)
-            pkv = o.past_key_values
-            nl = sh(o.last_hidden_state[:, -1, :])
-            nt = torch.argmax(nl, dim=-1).unsqueeze(-1)
-            gt = torch.cat((gt, nt), dim=-1)
-            if (nt.view(-1) == 6562).all():
-                break
-            p = torch.full((ids.shape[0], 1), i + 1, dtype=torch.long, device=device)
-            inputs_embeds = et(nt, p, ex)
-        speech_tokens = torch.cat([prompt_token, gt[:, 1:-1]], dim=1)
+    _, speech_tokens, spk_emb, spk_feat = _build_speech_tokens_eager(device)
 
     feed = {
         "speech_tokens": speech_tokens.cpu().numpy(),
@@ -842,7 +821,7 @@ def parity_loop_merged(
             notes=f"shape mismatch: merged={wav_merged.shape}, split={wav_split.shape}",
         )
 
-    max_abs, max_rel, mean_abs = diff_metrics(wav_merged, wav_split)
+    wav_max_abs, _, wav_mean_abs = diff_metrics(wav_merged, wav_split)
 
     # Same mel-spectral L1 convention as parity_split_pipeline: waveform
     # max-abs is unstable under ScatterND CUDA nondeterminism (the merged
@@ -857,11 +836,11 @@ def parity_loop_merged(
 
     mel_threshold = 0.5
     passed = mel_l1 <= mel_threshold
-    notes = (f"shape={wav_merged.shape}  "
-             f"mel_log_l1={mel_l1:.4e} (thr={mel_threshold})  "
-             f"wav_max_abs={max_abs:.4e} wav_mean_abs={mean_abs:.4e}  "
+    notes = (f"shape={wav_merged.shape}  metric=mel_log_l1  "
+             f"wav_max_abs={wav_max_abs:.4e} wav_mean_abs={wav_mean_abs:.4e}  "
              f"split_range=[{wav_split.min():.3f}, {wav_split.max():.3f}]")
-    return ParityResult("loop_merged", passed, max_abs, max_rel, mean_abs, mel_threshold, notes=notes)
+    return ParityResult("loop_merged", passed, mel_l1, float("nan"), mel_l1,
+                        mel_threshold, notes=notes)
 
 
 def parity_attention(tolerance: float = 1e-5) -> ParityResult:

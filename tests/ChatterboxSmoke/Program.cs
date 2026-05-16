@@ -167,7 +167,10 @@ internal static class Program
             dec = LoadOne("conditional_decoder.onnx");
         }
         totalLoadSw.Stop();
-        int sessionCount = 3 + (mergedAvail ? 1 : (splitAvail ? 3 : 1));
+        // 3 always-loaded (encoder + embed + LM) plus the cond decoder set:
+        // 1 for merged or monolithic, 3 for split.
+        int condDecoderSessions = mergedAvail ? 1 : splitAvail ? 3 : 1;
+        int sessionCount = 3 + condDecoderSessions;
         Console.WriteLine($"Loaded {sessionCount} sessions in {totalLoadSw.ElapsedMilliseconds} ms total  (ep={ep})");
         using var _enc = enc; using var _emb = emb; using var _lm = lm;
         using var _dec = dec; using var _flowEnc = flowEnc; using var _cfmEst = cfmEst;

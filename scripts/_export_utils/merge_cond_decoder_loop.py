@@ -64,6 +64,14 @@ def prefix_graph(graph: GraphProto, prefix: str,
 
     Returns the modified graph and a name-mapping dict so callers can look
     up where outputs ended up.
+
+    Assumption (intentional, not enforced): the `protected` set is meant
+    for the outer graph's contract, not nested subgraphs. Recursion into
+    Loop/If bodies passes the same `protected` down, which is fine for
+    the current inputs (flow_encoder, cfm_estimator, mel2wav have no
+    inner subgraphs that name-collide with their own outer I/O), but
+    would mis-handle a future graph that did. Revisit if that becomes
+    relevant.
     """
     out = GraphProto()
     out.CopyFrom(graph)
@@ -114,12 +122,6 @@ def prefix_graph(graph: GraphProto, prefix: str,
     return out, rename
 
 
-def make_const_initializer(name: str, array: np.ndarray) -> TensorProto:
-    """Create a TensorProto initializer from a numpy array, with a given name."""
-    init = numpy_helper.from_array(array, name=name)
-    return init
-
-
 def make_const_node(output_name: str, array: np.ndarray) -> NodeProto:
     """Create a Constant node that emits the given array as its output."""
     return helper.make_node(
@@ -136,13 +138,14 @@ def make_const_node(output_name: str, array: np.ndarray) -> NodeProto:
 def build_loop_body(
     cfm_graph: GraphProto,
     *,
-    # Outer-scope tensor names the body will reference:
+    # Outer-scope tensor names the body will reference (referenced by name
+    # via outer-scope visibility — the body has no inputs for them):
     mu_in_pair: str,
     mask_in_pair: str,
     spks_in_pair: str,
     cond_in_pair: str,
-    t_span_name: str,
-    dts_name: str,
+    # t_span / dts are referenced by hardcoded literal names ("t_span_const",
+    # "dts_const") that must match what merge() adds to outer_inits.
 ) -> tuple[GraphProto, list[TensorProto]]:
     """Build the Loop body subgraph. Body signature:
        inputs:  iter_num (int64 scalar), cond_in (bool scalar), x_carried (1, 80, T_mel)
@@ -150,10 +153,11 @@ def build_loop_body(
     The cfm_estimator graph is inlined with a "cfm__" prefix.
 
     Returns (body_graph, outer_initializers_to_hoist) — caller adds the
-    second to the outer graph's initializer list. Hoisting keeps the body
-    free of large initializer tables, matching the structure a native ONNX
-    Loop export would produce and dodging the ORT optimization-cache
-    serialization bug (issue #56).
+    second to the outer graph's initializer list. Hoisting matches how a
+    native PyTorch ONNX Loop export emits weights (outer scope, not nested
+    in the body). It does NOT by itself fix the cache round-trip bug
+    (issue #56) — ORT still inserts body-scope constants after optimization;
+    that bug is tracked separately.
     """
     # The cfm_estimator's six inputs become outputs of body-internal ops:
     # x_in     ← Concat([x_carried, x_carried], axis=0)
@@ -218,12 +222,9 @@ def build_loop_body(
     # x_new = x_carried + dt_now * combined
     #
     # CFG/Euler scalars are emitted as Constant NODES rather than
-    # initializers. ORT's serialization of optimized models with Loop
-    # bodies duplicates body-scope initializers into the outer graph
-    # (apparently a hoisting/serialization interaction), which then
-    # fails to reload with "initializer name is not unique". Constant
-    # nodes don't go through the initializer registry — same value,
-    # no name collision on round-trip.
+    # initializers. Avoids a name-uniqueness collision we hit while
+    # debugging issue #56; Constant nodes don't go through the
+    # initializer registry. This change alone does NOT fix issue #56.
     post_nodes = [
         helper.make_node("Split", ["cfm__dphi_dt"], ["cond_part", "uncond_part"],
                          axis=0, num_outputs=2),
@@ -249,9 +250,9 @@ def build_loop_body(
     # constants are added to the OUTER graph's initializer list (see merge()
     # below) and referenced from the body via name. This matches how a
     # native PyTorch ONNX Loop export would emit weights — at outer scope,
-    # not nested in body. Also sidesteps issue #56 (ORT's serialization of
-    # optimized Loop bodies duplicates body-scope initializers into the
-    # outer namespace, breaking round-trip via OptimizedModelFilePath).
+    # not nested in body. This does NOT by itself fix issue #56 (cache
+    # round-trip) — ORT still inserts body-scope constants after
+    # optimization. Tracked separately.
     body_inits: list[TensorProto] = []
 
     # Body inputs (signature): iter_num, cond_in, x_carried.
@@ -279,17 +280,6 @@ def build_loop_body(
     return body, cfm_initializers_to_hoist
 
 
-def _unsqueeze_axes_attr(_name: str, axes: list[int]) -> dict:
-    """Build the `axes` attribute for ONNX Unsqueeze. Opset >= 13 expects
-    axes as a 1-D tensor INPUT, not an attribute — but for cleanliness we
-    use a Constant node + the legacy attribute form via opset_imports
-    handled at model level. Stick with the attribute form for now."""
-    # For opset 13+, axes should be an input. To stay attribute-style,
-    # we'd need opset < 13. Our exports use opset 18 so we have to use
-    # the input form. Build via helper.make_node with a separate Constant.
-    return {}
-
-
 def _make_unsqueeze_with_axes(input_name: str, output_name: str,
                               axes: list[int], const_node_name: str) -> list[NodeProto]:
     """Opset-18 Unsqueeze: axes is a tensor input. Returns 2 nodes
@@ -308,7 +298,7 @@ def _make_unsqueeze_with_axes(input_name: str, output_name: str,
 
 def merge(flow_enc_path: Path, cfm_est_path: Path, mel2wav_path: Path,
           out_path: Path, opset: int = 18) -> None:
-    print(f"Loading sub-graphs ...")
+    print("Loading sub-graphs ...")
     fe_model = onnx.load(str(flow_enc_path))
     ce_model = onnx.load(str(cfm_est_path))
     mw_model = onnx.load(str(mel2wav_path))
@@ -333,12 +323,12 @@ def merge(flow_enc_path: Path, cfm_est_path: Path, mel2wav_path: Path,
     dts = np.diff(t_span).astype(np.float32)
 
     outer_inits: list[TensorProto] = [
-        make_const_initializer("t_span_const", t_span),
-        make_const_initializer("dts_const", dts),
-        make_const_initializer("trip_count_const",
-                               np.array(N_TIMESTEPS, dtype=np.int64)),
-        make_const_initializer("loop_cond_init",
-                               np.array(True, dtype=np.bool_)),
+        numpy_helper.from_array(t_span, name="t_span_const"),
+        numpy_helper.from_array(dts, name="dts_const"),
+        numpy_helper.from_array(np.array(N_TIMESTEPS, dtype=np.int64),
+                                name="trip_count_const"),
+        numpy_helper.from_array(np.array(True, dtype=np.bool_),
+                                name="loop_cond_init"),
     ]
     outer_inits.extend(fe_inlined.initializer)
     outer_inits.extend(mw_inlined.initializer)
@@ -382,8 +372,6 @@ def merge(flow_enc_path: Path, cfm_est_path: Path, mel2wav_path: Path,
         mask_in_pair="mask_in_pair",
         spks_in_pair="spks_in_pair",
         cond_in_pair="cond_in_pair",
-        t_span_name="t_span_const",
-        dts_name="dts_const",
     )
     outer_inits.extend(cfm_initializers_outer)
 
