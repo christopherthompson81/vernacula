@@ -559,13 +559,75 @@ def parity_solve_euler(tolerance: float = 1e-5) -> ParityResult:
     return ParityResult("solve_euler", passed, max_abs, max_rel, mean_abs, tolerance, notes=notes)
 
 
+def parity_attention(tolerance: float = 1e-5) -> ParityResult:
+    """Eager-vs-eager: MinimalAttnProcessor vs diffusers AttnProcessor2_0.
+
+    BasicTransformerBlock.attn1 is the heaviest single source of nodes
+    in cond_decoder.onnx (~400 nodes per block × 48 blocks ≈ 57% of the
+    graph). MinimalAttnProcessor is a drop-in that does only the work
+    our model needs (3D input, self-attn, (B,T,T) bias mask, no
+    residual/rescale/norm pre/post-processing). To be safe to swap in
+    at export time, it must produce bit-identical output to upstream
+    on a realistic block.
+
+    Test: pick a real BasicTransformerBlock from the cond decoder
+    estimator, call it once with the original processor, once with the
+    minimal one, compare. Same mask, same input.
+    """
+    import torch
+    from chatterbox.tts import ChatterboxTTS
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from _export_patches import MinimalAttnProcessor
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    model = ChatterboxTTS.from_pretrained(device=device)
+
+    block = None
+    for n, m in model.s3gen.flow.decoder.estimator.named_modules():
+        if type(m).__name__ == "BasicTransformerBlock":
+            block = m
+            break
+    if block is None:
+        return ParityResult("attention", False, float("inf"), float("inf"),
+                            float("inf"), tolerance, notes="no BasicTransformerBlock found")
+
+    # Synthetic input matching the shapes BasicTransformerBlock sees in
+    # the actual CFM solve loop: B = 2 (CFG-doubled), T = 1010 (mel
+    # frames), C = inner_dim (whatever the first attn1 expects).
+    B, T = 2, 1010
+    inner_dim = block.attn1.to_q.in_features
+    torch.manual_seed(0)
+    hidden = torch.randn(B, T, inner_dim, device=device)
+    attn_mask = torch.zeros(B, T, T, device=device)  # all-zero bias = unmasked
+
+    # Baseline: upstream processor (whatever was on the block)
+    orig_proc = block.attn1.processor
+    with torch.no_grad():
+        out_upstream = block.attn1(hidden, attention_mask=attn_mask).cpu().numpy()
+
+    # Swap to minimal; same input
+    block.attn1.set_processor(MinimalAttnProcessor())
+    with torch.no_grad():
+        out_minimal = block.attn1(hidden, attention_mask=attn_mask).cpu().numpy()
+    block.attn1.set_processor(orig_proc)  # restore
+
+    max_abs, max_rel, mean_abs = diff_metrics(out_minimal, out_upstream)
+    passed = max_abs <= tolerance
+    notes = (
+        f"shape={out_upstream.shape}  "
+        f"upstream_proc={type(orig_proc).__name__}  "
+        f"range=[{out_upstream.min():.3f}, {out_upstream.max():.3f}]"
+    )
+    return ParityResult("attention", passed, max_abs, max_rel, mean_abs, tolerance, notes=notes)
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--onnx-dir", type=Path, required=True,
                    help="Directory produced by export_chatterbox_to_onnx.py")
     p.add_argument("--runtime", default="cuda", choices=["cpu", "cuda", "tensorrt"])
     p.add_argument("--tests", default="lm",
-                   help="Comma-separated subset: lm,embed,enc,dec,solve_euler,all (default: lm)")
+                   help="Comma-separated subset: lm,embed,enc,dec,solve_euler,attention,all (default: lm)")
     p.add_argument("--tolerance", type=float, default=1e-2,
                    help="Max-abs-diff threshold for pass (default: 1e-2). "
                         "Each test layer has its own appropriate default; this is a "
@@ -587,7 +649,7 @@ def main() -> None:
     providers = choose_onnx_providers(args.runtime)
     tests = {t.strip() for t in args.tests.split(",")}
     if "all" in tests:
-        tests = {"lm", "embed", "enc", "dec", "solve_euler"}
+        tests = {"lm", "embed", "enc", "dec", "solve_euler", "attention"}
 
     results: list[ParityResult] = []
 
@@ -613,6 +675,10 @@ def main() -> None:
     if "solve_euler" in tests:
         print("[solve_euler] patched cat-only solve_euler vs upstream (eager)")
         results.append(parity_solve_euler())
+        print(results[-1].summary())
+    if "attention" in tests:
+        print("[attention] MinimalAttnProcessor vs diffusers AttnProcessor (eager)")
+        results.append(parity_attention())
         print(results[-1].summary())
 
     print()
