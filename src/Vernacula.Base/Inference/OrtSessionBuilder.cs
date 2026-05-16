@@ -111,6 +111,14 @@ public static class OrtSessionBuilder
     /// Set <c>VERNACULA_ORT_NO_CACHE=1</c> to bypass the cache entirely
     /// (forces a fresh full-optimization load every time; useful when debugging
     /// graph-level surprises).
+    ///
+    /// If a cache write+read round-trip fails (issue #56 — ORT can't reload
+    /// optimized graphs that contain Loop subgraphs), the failed cache file
+    /// is deleted and a small sentinel <c>{cachePath}.disabled</c> is written
+    /// next to it. Future calls see the sentinel and skip caching entirely
+    /// (no write, no disk churn, no doomed re-load attempt) until the source
+    /// or ORT version changes — which moves the cache key and the sentinel
+    /// path along with it.
     /// </summary>
     public static InferenceSession CreateCachedSession(
         string modelPath,
@@ -137,8 +145,20 @@ public static class OrtSessionBuilder
         bool bypassCache = Environment.GetEnvironmentVariable("VERNACULA_ORT_NO_CACHE") == "1";
         string cachePath = bypassCache ? "" : ComputeCachePath(modelPath, ep, optLevel);
         string cacheDataPath = cachePath + "_data";
+        // Sentinel file written next to the cache when a write/read round-trip
+        // is known to fail for this model (issue #56 — ORT's serialization of
+        // optimized graphs with Loop subgraphs duplicates body-scope
+        // initializers into the outer scope, producing a graph that won't
+        // re-load). When present, we skip caching entirely: no write, no
+        // disk churn (~720 MB per run for the merged Loop graph), no
+        // doomed re-load attempt. The sentinel sits at cachePath+".disabled",
+        // so the same source-mtime+EP+ORT-version hash that keys the cache
+        // also auto-invalidates the sentinel — a source edit or ORT upgrade
+        // will trigger a fresh cache attempt.
+        string cacheDisabledPath = bypassCache ? "" : cachePath + ".disabled";
+        bool cacheDisabledForThisModel = !bypassCache && File.Exists(cacheDisabledPath);
 
-        if (!bypassCache && File.Exists(cachePath))
+        if (!bypassCache && !cacheDisabledForThisModel && File.Exists(cachePath))
         {
             // Cache hit: load pre-optimized graph with optimization DISABLED
             // (the graph is already optimized; re-running passes is wasted work
@@ -152,16 +172,21 @@ public static class OrtSessionBuilder
             }
             catch
             {
-                // Cache file is corrupt or incompatible — fall through to fresh load.
+                // Cache file is corrupt or incompatible — fall through to a
+                // fresh load. Drop the bad file AND write a sentinel so the
+                // next run skips the doomed write+read cycle entirely.
                 hitOpts.Dispose();
                 try { File.Delete(cachePath); } catch { /* best-effort */ }
                 try { File.Delete(cacheDataPath); } catch { /* best-effort */ }
+                try { File.WriteAllText(cacheDisabledPath, ""); } catch { /* best-effort */ }
+                cacheDisabledForThisModel = true;
             }
         }
 
-        // Cache miss (or bypass): load source, optimize, save the result.
+        // Cache miss (or bypass, or this-model-disabled): load source,
+        // optimize, optionally save the result for next time.
         var opts = Create(ep, optLevel, enableProfiling: false, out _);
-        if (!bypassCache)
+        if (!bypassCache && !cacheDisabledForThisModel)
         {
             opts.OptimizedModelFilePath = cachePath;
             // For >2GB graphs, force the optimized weights to an external-data
