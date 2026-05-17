@@ -1,0 +1,125 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:vm="using:Chatterbox.App.ViewModels"
+        x:Class="Chatterbox.App.Views.MainWindow"
+        x:DataType="vm:MainViewModel"
+        mc:Ignorable="d"
+        Width="1100" Height="720" MinWidth="800" MinHeight="500"
+        Title="Chatterbox Reader (MVP)">
+
+    <Grid ColumnDefinitions="*,360" Margin="12">
+
+        <!-- ── Left pane: word-by-word highlight + input ──────────────── -->
+        <Border Grid.Column="0" BorderBrush="#33ffffff" BorderThickness="1"
+                CornerRadius="4" Padding="12" Margin="0,0,12,0">
+            <Grid RowDefinitions="Auto,Auto,*">
+                <TextBlock Grid.Row="0" Text="Source text"
+                           FontWeight="SemiBold" Margin="0,0,0,4" />
+
+                <!-- Input box for typing/pasting markdown. Disabled while
+                     a synthesis is running so the source can't drift mid-flight. -->
+                <TextBox Grid.Row="1" Text="{Binding Text}"
+                         AcceptsReturn="True" TextWrapping="Wrap"
+                         MinHeight="120" MaxHeight="220"
+                         IsEnabled="{Binding !IsBusy}"
+                         Watermark="Paste markdown or text here, or pick a file from the right pane." />
+
+                <!-- Word-highlight pane: shows the aligned words from
+                     the last synthesis, with the current word emphasized.
+                     Empty until Words is populated. -->
+                <ScrollViewer Grid.Row="2" Margin="0,12,0,0">
+                    <ItemsControl ItemsSource="{Binding Words}">
+                        <ItemsControl.ItemsPanel>
+                            <ItemsPanelTemplate>
+                                <WrapPanel Orientation="Horizontal" />
+                            </ItemsPanelTemplate>
+                        </ItemsControl.ItemsPanel>
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate x:DataType="vm:WordItemViewModel">
+                                <!-- Each word's IsCurrent toggles the .current
+                                     class; MainViewModel updates it on every
+                                     50 ms playback tick. The styled selector
+                                     is defined in Window.Styles below. -->
+                                <TextBlock Text="{Binding Text}"
+                                           FontSize="18" Margin="2,2,4,2"
+                                           Classes.current="{Binding IsCurrent}" />
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </ScrollViewer>
+
+                <!-- Falls back to a hint when there are no words yet (pre-synthesis). -->
+            </Grid>
+        </Border>
+
+        <!-- ── Right pane: pickers, synthesize, playback ────────────── -->
+        <StackPanel Grid.Column="1" Spacing="10">
+            <TextBlock Text="Voice (.wav)" FontWeight="SemiBold" />
+            <Grid ColumnDefinitions="*,Auto">
+                <TextBox Text="{Binding VoicePath}" IsReadOnly="True"
+                         Watermark="No voice picked" />
+                <Button Grid.Column="1" Content="Pick…"
+                        Command="{Binding PickVoiceCommand}" Margin="6,0,0,0" />
+            </Grid>
+
+            <TextBlock Text="Chatterbox ONNX bundle" FontWeight="SemiBold" Margin="0,8,0,0" />
+            <Grid ColumnDefinitions="*,Auto">
+                <TextBox Text="{Binding OnnxBundleDir}" IsReadOnly="True"
+                         Watermark="No bundle picked" />
+                <Button Grid.Column="1" Content="Pick…"
+                        Command="{Binding PickOnnxBundleCommand}" Margin="6,0,0,0" />
+            </Grid>
+
+            <TextBlock Text="NFA bundle (optional, enables word highlight)"
+                       FontWeight="SemiBold" Margin="0,8,0,0" />
+            <Grid ColumnDefinitions="*,Auto">
+                <TextBox Text="{Binding NfaBundleDir}" IsReadOnly="True"
+                         Watermark="No NFA bundle picked" />
+                <Button Grid.Column="1" Content="Pick…"
+                        Command="{Binding PickNfaBundleCommand}" Margin="6,0,0,0" />
+            </Grid>
+
+            <TextBlock Text="Text source" FontWeight="SemiBold" Margin="0,12,0,0" />
+            <Button Content="Load text/markdown file…"
+                    Command="{Binding PickTextFileCommand}"
+                    HorizontalAlignment="Stretch" />
+
+            <Separator Margin="0,12,0,0" />
+
+            <Button Content="Synthesize"
+                    Command="{Binding SynthesizeCommand}"
+                    FontWeight="SemiBold"
+                    HorizontalAlignment="Stretch" />
+            <ProgressBar IsIndeterminate="True"
+                         IsVisible="{Binding IsBusy}"
+                         Height="3" Margin="0,4,0,0" />
+
+            <Separator Margin="0,12,0,0" />
+
+            <StackPanel Orientation="Horizontal" Spacing="6">
+                <Button Content="▶ Play" Command="{Binding PlayCommand}"
+                        MinWidth="80" />
+                <Button Content="■ Stop" Command="{Binding StopCommand}"
+                        MinWidth="80" />
+            </StackPanel>
+            <TextBlock Text="{Binding PositionLabel}" Margin="0,4,0,0"
+                       Foreground="#999" />
+
+            <Separator Margin="0,12,0,0" />
+            <TextBlock Text="{Binding StatusMessage}" TextWrapping="Wrap"
+                       Foreground="#bbb" />
+        </StackPanel>
+
+    </Grid>
+
+    <Window.Styles>
+        <!-- Current-word highlight: a stronger weight + accent color. -->
+        <Style Selector="TextBlock.current">
+            <Setter Property="FontWeight" Value="Bold" />
+            <Setter Property="Foreground" Value="#5ad" />
+        </Style>
+    </Window.Styles>
+
+</Window>
