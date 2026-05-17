@@ -21,6 +21,10 @@
       <Private>true</Private>
       <SetConfiguration>EP=Cuda</SetConfiguration>
     </ProjectReference>
+    <ProjectReference Include="..\..\src\Chatterbox.Base\Chatterbox.Base.csproj">
+      <Private>true</Private>
+      <SetConfiguration>EP=Cuda</SetConfiguration>
+    </ProjectReference>
   </ItemGroup>
 
 </Project>

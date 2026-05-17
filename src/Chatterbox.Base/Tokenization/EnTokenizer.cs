@@ -34,9 +34,9 @@ using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 
-namespace Vernacula.ChatterboxSmoke;
+namespace Chatterbox.Base.Tokenization;
 
-internal sealed class EnTokenizer
+public sealed class EnTokenizer
 {
     // LM-vocab IDs that wrap the BPE-encoded text in the full LM input.
     // These live in the LM's vocabulary (>6000), outside the text-tokenizer

@@ -1,0 +1,40 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>Chatterbox.Base</RootNamespace>
+    <AssemblyName>Chatterbox.Base</AssemblyName>
+    <!--
+      EP is passed by consuming projects (Chatterbox.CLI, Chatterbox.Avalonia,
+      and the ChatterboxSmoke test). Mirrors the pattern in Vernacula.Base —
+      PrivateAssets="all" keeps the package out of consumers' output; each
+      consumer brings its own OnnxRuntime variant.
+    -->
+    <EP Condition="'$(EP)' == ''">Cuda</EP>
+  </PropertyGroup>
+
+  <ItemGroup Condition="'$(EP)' == 'Cuda'">
+    <PackageReference Include="Microsoft.ML.OnnxRuntime.Gpu" Version="1.24.4"
+                      PrivateAssets="all" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(EP)' == 'Cpu'">
+    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.24.4"
+                      PrivateAssets="all" />
+  </ItemGroup>
+
+  <!-- NAudio: voice-prompt WAV decode + resample to 24 kHz mono. -->
+  <ItemGroup>
+    <PackageReference Include="NAudio" Version="2.2.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Shared ORT plumbing: OrtSessionBuilder, ExecutionProvider enum, etc. -->
+    <ProjectReference Include="..\Vernacula.Base\Vernacula.Base.csproj">
+      <Private>true</Private>
+      <SetConfiguration>EP=$(EP)</SetConfiguration>
+    </ProjectReference>
+  </ItemGroup>
+
+</Project>
