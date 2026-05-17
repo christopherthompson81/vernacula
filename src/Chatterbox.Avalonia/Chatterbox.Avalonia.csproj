@@ -1,0 +1,53 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>Chatterbox.App</RootNamespace>
+    <AssemblyName>Chatterbox.App</AssemblyName>
+    <!-- Default to CUDA. Other EPs (Cpu, DirectML) are buildable via -p:EP=...
+         and flow through to Chatterbox.Base + Vernacula.Base. -->
+    <EP Condition="'$(EP)' == ''">Cuda</EP>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <AvaloniaUseCompiledBindingsByDefault>true</AvaloniaUseCompiledBindingsByDefault>
+    <NuGetAudit>false</NuGetAudit>
+  </PropertyGroup>
+
+  <!-- Avalonia 11.3 + Fluent theme + Markdown rendering, mirroring
+       Vernacula.Avalonia's stack so a future merge is mechanical. -->
+  <ItemGroup>
+    <PackageReference Include="Avalonia"                    Version="11.3.9" />
+    <PackageReference Include="Avalonia.Desktop"            Version="11.3.9" />
+    <PackageReference Include="Avalonia.Themes.Fluent"      Version="11.3.9" />
+    <PackageReference Include="Avalonia.Fonts.Inter"        Version="11.3.9" />
+    <PackageReference Include="CommunityToolkit.Mvvm"       Version="8.4.0" />
+    <PackageReference Include="Markdown.Avalonia"           Version="11.0.2" />
+    <PackageReference Include="NAudio"                      Version="2.2.1" />
+  </ItemGroup>
+
+  <!-- Both pull OnnxRuntime under PrivateAssets, so we provide the
+       runtime variant explicitly via the EP property — matches the
+       pattern Chatterbox.CLI uses. -->
+  <ItemGroup Condition="'$(EP)' == 'Cuda'">
+    <PackageReference Include="Microsoft.ML.OnnxRuntime.Gpu" Version="1.24.4" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(EP)' == 'Cpu'">
+    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.24.4" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Chatterbox.Base\Chatterbox.Base.csproj">
+      <Private>true</Private>
+      <SetConfiguration>EP=$(EP)</SetConfiguration>
+    </ProjectReference>
+    <ProjectReference Include="..\Vernacula.Base\Vernacula.Base.csproj">
+      <Private>true</Private>
+      <SetConfiguration>EP=$(EP)</SetConfiguration>
+    </ProjectReference>
+  </ItemGroup>
+
+</Project>
