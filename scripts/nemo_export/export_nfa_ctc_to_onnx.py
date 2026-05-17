@@ -10,19 +10,29 @@ Output bundle (mirrors the Parakeet export's file layout where possible):
 
   - nemo128.onnx                — log-mel preprocessor (same op contract
                                   as the Parakeet bundle; reusable
-                                  across CTC and RNNT/TDT exports)
+                                  across CTC and RNNT/TDT exports).
   - ctc-model.onnx[.data]       — encoder + CTC projection in one
-                                  graph. Input: features [B, F, T]
-                                  + features_lens [B] from nemo128.
-                                  Output: log_probs [B, T, V+1] and
-                                  output_lens [B].
+                                  graph. Input: audio_signal [B, 80, T_feat]
+                                  + length [B] from nemo128.
+                                  Output: logprobs [B, T_enc, V+1]
+                                  (single output — T_enc per batch elem
+                                  is ceil(features_lens / encoder_subsampling),
+                                  computed by the C# Viterbi side from
+                                  the metadata this script writes).
   - vocab.txt                   — sentencepiece vocab, one (token, id)
                                   per line, plus the CTC blank token
                                   at id == len(vocab).
+  - tokenizer.model             — sentencepiece model bytes for the
+                                  C# Viterbi to encode reference
+                                  transcripts. vocab.txt alone is
+                                  insufficient (token strings without
+                                  byte→token encoding rules).
   - config.json                 — export metadata + full NeMo cfg dump
-                                  for reference
-  - export-report.json          — concise summary (what got exported,
-                                  what failed, what notes apply)
+                                  for reference.
+  - export-report.json          — concise summary including
+                                  frame_shift_seconds, encoder_subsampling,
+                                  hybrid-switched flag, and any
+                                  failure notes.
 
 Supported source models:
 
@@ -264,9 +274,21 @@ def export_ctc_graph(model: Any, output_dir: Path, opset: int) -> None:
 
     NeMo's `model.export()` for a CTC model writes one ONNX (and possibly
     a sidecar .data) containing the encoder followed by the CTC head's
-    linear projection + log-softmax. Inputs: (features [B, F, T],
-    features_lens [B]). Outputs: (log_probs [B, T, V+1], log_probs_lens [B])
-    — the trailing +1 in vocab dim is the CTC blank.
+    linear projection + log-softmax.
+
+    Verified contract for FastConformer hybrid CTC (NeMo 2.7.1):
+      Inputs:
+        audio_signal — float32 [B, F, T_feat]    (from nemo128.onnx)
+        length       — int64   [B]               (features_lens)
+      Outputs:
+        logprobs     — float32 [B, T_enc, V+1]   (log_softmax over vocab+blank)
+
+    T_enc relates to T_feat by the encoder's subsampling factor (8 for
+    FastConformer). The exported graph emits only logprobs, not a paired
+    logprobs_lens — the C# Viterbi side computes the valid length per
+    batch element as `ceil(features_lens[b] / encoder_subsampling)`,
+    reading encoder_subsampling from the export-report.json metadata
+    this script writes.
 
     The encoder for hybrid models is shared with the RNNT head; switching
     decoding strategy to 'ctc' before export should make NeMo only wire
@@ -433,36 +455,34 @@ def extract_frame_timing(model: Any) -> tuple[float | None, int | None]:
 
 
 def export_tokenizer_model(model: Any, output_dir: Path) -> bool:
-    """Copy the sentencepiece tokenizer model file alongside vocab.txt so
-    the C# Viterbi side can tokenize reference transcripts with the exact
-    same encoding the CTC model was trained on. vocab.txt alone is
-    insufficient — it lists tokens but not the byte→token encoding rules.
+    """Write the sentencepiece tokenizer model bytes as tokenizer.model
+    alongside vocab.txt. The C# Viterbi side needs the same encoder the
+    CTC model was trained on to tokenize reference transcripts — vocab.txt
+    lists tokens but not byte→token encoding rules.
 
-    Returns True if a tokenizer.model file was written."""
+    NeMo's SentencePieceTokenizer constructor takes a model_path but
+    doesn't preserve it on self (just loads into a SentencePieceProcessor
+    and discards). The reliable accessor is the inner SP processor's
+    serialized_model_proto() — returns the bytes that were loaded from
+    disk, identical to the original .model file.
+
+    Returns True if tokenizer.model was written."""
     tokenizer = getattr(model, "tokenizer", None)
     if tokenizer is None:
         return False
-    # NeMo's BPE tokenizer wraps a SentencePieceProcessor at .tokenizer
-    # and exposes the source .model path at one of these attrs depending
-    # on NeMo version.
-    candidates = []
-    for attr in ("tokenizer_model_path", "model_path", "vocab_path"):
-        path = getattr(tokenizer, attr, None)
-        if path:
-            candidates.append(Path(str(path)))
     inner = getattr(tokenizer, "tokenizer", None)
-    if inner is not None:
-        for attr in ("model_file", "model_path"):
-            path = getattr(inner, attr, None)
-            if path:
-                candidates.append(Path(str(path)))
-    for src in candidates:
-        if src.exists() and src.suffix == ".model":
-            dst = output_dir / "tokenizer.model"
-            cleanup_target(dst)
-            shutil.copyfile(str(src), str(dst))
-            return True
-    return False
+    if inner is None or not hasattr(inner, "serialized_model_proto"):
+        return False
+    try:
+        proto_bytes = inner.serialized_model_proto()
+    except Exception:
+        return False
+    if not proto_bytes:
+        return False
+    dst = output_dir / "tokenizer.model"
+    cleanup_target(dst)
+    dst.write_bytes(proto_bytes)
+    return True
 
 
 def write_config(model: Any, omega_conf: Any, output_dir: Path, metadata: ExportMetadata) -> None:

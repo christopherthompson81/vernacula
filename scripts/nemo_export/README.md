@@ -126,11 +126,12 @@ Output bundle:
 
 | File | Purpose |
 |---|---|
-| `nemo128.onnx` | log-mel preprocessor (same shape as Parakeet's; reusable across both bundles — pass `--skip-preprocessor` if you already have it) |
-| `ctc-model.onnx` + `ctc-model.onnx.data` | encoder + CTC projection. In: features `[B, F, T]` + features_lens `[B]`. Out: log_probs `[B, T, V+1]` + log_probs_lens `[B]` (the trailing `+1` is the CTC blank) |
-| `vocab.txt` | sentencepiece vocab, one `token id` per line, plus the CTC blank token at id `len(vocab)` |
+| `nemo128.onnx` | log-mel preprocessor (same shape as Parakeet's; reusable across both bundles — pass `--skip-preprocessor` if you already have it). In: `waveforms [B, samples]` + `waveforms_lens [B]`. Out: `features [B, 80, T_feat]` + `features_lens [B]`. |
+| `ctc-model.onnx` (+ optional `.data` sidecar if weights spill out) | encoder + CTC projection. In: `audio_signal [B, 80, T_feat]` + `length [B]`. **Out: `logprobs [B, T_enc, V+1]`** — single output, log-softmax over vocab+blank. T_enc per batch elem = `ceil(features_lens[b] / encoder_subsampling)`; subsampling factor is in `export-report.json`. |
+| `vocab.txt` | sentencepiece vocab, one `token id` per line, plus the CTC blank token at id `len(vocab)` (so blank_id = V) |
+| `tokenizer.model` | sentencepiece model bytes (the byte→token encoding rules). Required by the C# Viterbi side to tokenize reference transcripts with the same encoding the CTC model was trained on. Extracted via the SP processor's `serialized_model_proto()`. |
 | `config.json` | export metadata + full NeMo `cfg` dump |
-| `export-report.json` | concise summary (what got exported, what failed, hybrid-switched flag) |
+| `export-report.json` | concise summary: hybrid-switched flag, `frame_shift_seconds`, `encoder_subsampling`, `sample_rate`, what got exported, any failure notes. The C# Viterbi reads `frame_shift_seconds * encoder_subsampling` to convert frame indices → wall-clock timestamps. |
 
 The preprocessor export reuses `export_parakeet_nemo_to_onnx.py`'s
 helpers — same NeMo `AudioToMelSpectrogramPreprocessor` underneath, so
