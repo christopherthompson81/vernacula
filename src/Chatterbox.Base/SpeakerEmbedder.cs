@@ -11,6 +11,15 @@ namespace Chatterbox.Base;
 /// disposable because they're plain CPU arrays — ORT's <see cref="Tensor{T}"/>
 /// instances were copied out at <see cref="SpeakerEmbedder.Embed(float[])"/>
 /// time so the calling session can be safely disposed before these are used.
+///
+/// Field types are deliberately heterogeneous: the three tensor fields stay
+/// as <see cref="DenseTensor{T}"/> because their consumers (<see cref="AcousticLM"/>
+/// and <see cref="Vocoder"/>) re-wrap them with <c>NamedOnnxValue.CreateFromTensor</c>
+/// — handing them across as <c>float[]</c>+dims would force the consumer
+/// to reconstruct the tensor. <see cref="AudioTokens"/> is a bare
+/// <c>long[]</c> because <see cref="AcousticLmResult.BuildSpeechTokens"/>
+/// uses it as a plain array. Don't "fix" the inconsistency without
+/// checking the call sites first.
 /// </summary>
 /// <param name="CondEmb">
 /// <c>[1, S_cond, 1024]</c> — speaker conditioning embedding the LM
@@ -43,7 +52,6 @@ public sealed record SpeakerEmbedding(
 public sealed class SpeakerEmbedder : IDisposable
 {
     private readonly InferenceSession _session;
-    private readonly bool _ownsSession;
 
     /// <summary>
     /// Load <c>speech_encoder.onnx</c> from <paramref name="onnxPath"/>
@@ -51,20 +59,7 @@ public sealed class SpeakerEmbedder : IDisposable
     /// when this object is disposed.
     /// </summary>
     public SpeakerEmbedder(string onnxPath, ExecutionProvider ep)
-    {
-        _session = OrtSessionBuilder.CreateCachedSession(onnxPath, ep);
-        _ownsSession = true;
-    }
-
-    /// <summary>
-    /// Wrap a pre-loaded session. Useful when the caller manages a
-    /// session pool or needs to share the session across consumers.
-    /// </summary>
-    public SpeakerEmbedder(InferenceSession session)
-    {
-        _session = session;
-        _ownsSession = false;
-    }
+        => _session = OrtSessionBuilder.CreateCachedSession(onnxPath, ep);
 
     /// <summary>Load + resample the WAV at <paramref name="voicePath"/>, then embed.</summary>
     public SpeakerEmbedding Embed(string voicePath)
@@ -101,8 +96,5 @@ public sealed class SpeakerEmbedder : IDisposable
     private static DenseTensor<T> CopyToDense<T>(Tensor<T> src)
         => new(src.ToArray(), src.Dimensions.ToArray());
 
-    public void Dispose()
-    {
-        if (_ownsSession) _session.Dispose();
-    }
+    public void Dispose() => _session.Dispose();
 }

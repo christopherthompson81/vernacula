@@ -45,27 +45,22 @@ public sealed record AcousticLmResult(IReadOnlyList<long> RawGeneratedTokens, in
 /// between steps via direct OrtValue chaining — adapted from
 /// <c>WhisperTurbo.cs::TranscribeBatch</c>. ~3.5× faster than the basic
 /// path on CUDA; both produce bit-identical token sequences.
+///
+/// Not thread-safe — matches the underlying ORT <see cref="InferenceSession"/>
+/// semantics. Construct one instance per concurrent caller.
 /// </summary>
 public sealed class AcousticLM : IDisposable
 {
     private readonly InferenceSession _lm;
     private readonly InferenceSession _embed;
-    private readonly bool _ownsSessions;
+    private readonly ExecutionProvider _ep;
 
     /// <summary>Load both graphs from disk.</summary>
     public AcousticLM(string embedTokensPath, string languageModelPath, ExecutionProvider ep)
     {
         _embed = OrtSessionBuilder.CreateCachedSession(embedTokensPath, ep);
         _lm = OrtSessionBuilder.CreateCachedSession(languageModelPath, ep);
-        _ownsSessions = true;
-    }
-
-    /// <summary>Wrap pre-loaded sessions. Caller owns disposal.</summary>
-    public AcousticLM(InferenceSession embedTokens, InferenceSession languageModel)
-    {
-        _embed = embedTokens;
-        _lm = languageModel;
-        _ownsSessions = false;
+        _ep = ep;
     }
 
     /// <summary>
@@ -75,7 +70,12 @@ public sealed class AcousticLM : IDisposable
     /// </summary>
     /// <param name="condEmb">The speaker conditioning from <see cref="SpeakerEmbedder"/>.</param>
     /// <param name="textTokenIds">Wrapped LM input ids — see <see cref="Tokenization.EnTokenizer.WrapForLm"/>.</param>
-    /// <param name="useIoBinding">True for the GPU-resident KV-chain path. Default true.</param>
+    /// <param name="useIoBinding">
+    /// Null (default) → auto-detect: IoBinding on CUDA/Auto, basic Run on CPU/DirectML.
+    /// True forces IoBinding; throws if the configured EP is not CUDA/Auto, since the
+    /// IoBinding path hardcodes a CUDA <see cref="OrtMemoryInfo"/>. False forces the
+    /// basic Run path (useful for A/B testing or non-CUDA EPs).
+    /// </param>
     /// <param name="exaggeration">Conditioning scalar passed to embed_tokens; default 0.5.</param>
     /// <param name="maxSteps">Hard cap on rollout length; default 256.</param>
     /// <param name="repetitionPenalty">Divisor applied to positive logits of already-generated tokens; default 1.2.</param>
@@ -83,12 +83,20 @@ public sealed class AcousticLM : IDisposable
     public AcousticLmResult Generate(
         DenseTensor<float> condEmb,
         long[] textTokenIds,
-        bool useIoBinding = true,
+        bool? useIoBinding = null,
         float exaggeration = ChatterboxConstants.DefaultExaggeration,
         int maxSteps = ChatterboxConstants.DefaultMaxLmSteps,
         float repetitionPenalty = ChatterboxConstants.DefaultRepetitionPenalty,
         string? diagDir = null)
     {
+        bool epIsCuda = _ep is ExecutionProvider.Cuda or ExecutionProvider.Auto;
+        bool resolvedIoBinding = useIoBinding ?? epIsCuda;
+        if (resolvedIoBinding && !epIsCuda)
+            throw new InvalidOperationException(
+                $"useIoBinding=true requires a CUDA-capable EP (Cuda or Auto); got {_ep}. " +
+                "Pass useIoBinding=false to use the basic Run path on this EP.");
+
+
         // Build text embeddings + position ids.
         int sText = textTokenIds.Length;
         var positionIds = new long[sText];
@@ -109,7 +117,7 @@ public sealed class AcousticLM : IDisposable
         int sTotal = sCond + sText;
         var inputsEmbeds = ConcatSeq(condEmb, textEmb, ChatterboxConstants.LlmHidden);
 
-        return useIoBinding
+        return resolvedIoBinding
             ? RunLmLoopIoBinding(inputsEmbeds, sTotal, exaggeration, maxSteps, repetitionPenalty, diagDir)
             : RunLmLoopBasic(inputsEmbeds, sTotal, exaggeration, maxSteps, repetitionPenalty, diagDir);
     }
@@ -265,8 +273,6 @@ public sealed class AcousticLM : IDisposable
         {
             int seqLen = step == 0 ? sTotal : 1;
             var embedT = new DenseTensor<float>(inputsEmbeds, [1, seqLen, LlmHidden]);
-            var maskT = new DenseTensor<float>(
-                Array.ConvertAll(attentionMask, x => (float)x), [1, attentionMask.Length]);
 
             var inputs = new List<NamedOnnxValue>(2 + 2 * LlmLayers)
             {
@@ -387,10 +393,7 @@ public sealed class AcousticLM : IDisposable
 
     public void Dispose()
     {
-        if (_ownsSessions)
-        {
-            _lm.Dispose();
-            _embed.Dispose();
-        }
+        _lm.Dispose();
+        _embed.Dispose();
     }
 }

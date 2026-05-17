@@ -25,11 +25,12 @@ public enum VocoderMode
 /// Wraps the cond-decoder side of the pipeline. Auto-detects layout in
 /// the supplied directory at construction; subsequent
 /// <see cref="Synthesize"/> calls dispatch to the appropriate path.
+///
+/// Not thread-safe — matches the underlying ORT <see cref="InferenceSession"/>
+/// semantics. Construct one instance per concurrent caller.
 /// </summary>
 public sealed class Vocoder : IDisposable
 {
-    private readonly bool _ownsSessions;
-
     private readonly InferenceSession? _merged;
     private readonly InferenceSession? _flowEnc;
     private readonly InferenceSession? _cfmEst;
@@ -68,7 +69,6 @@ public sealed class Vocoder : IDisposable
             _mono = OrtSessionBuilder.CreateCachedSession(
                 Path.Combine(onnxDir, "conditional_decoder.onnx"), ep);
         }
-        _ownsSessions = true;
     }
 
     /// <summary>
@@ -207,7 +207,6 @@ public sealed class Vocoder : IDisposable
 
     public void Dispose()
     {
-        if (!_ownsSessions) return;
         _merged?.Dispose();
         _flowEnc?.Dispose();
         _cfmEst?.Dispose();
