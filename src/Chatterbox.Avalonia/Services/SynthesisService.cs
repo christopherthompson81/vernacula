@@ -117,73 +117,85 @@ public sealed class SynthesisService : IDisposable
         var chunkTexts = chunks;  // input order; index aligns with idx
         var allWords = new List<AlignedWord>();
         var sidecarChunks = new List<ChunkRecord>();
-        int sampleOffsetCursor = 0;  // monotonic; updated under _alignmentLock
-        var alignmentLock = new object();
+        int sampleOffsetCursor = 0;
 
-        return await Task.Run(() =>
+        return await Task.Run(async () =>
         {
             cancellationToken.ThrowIfCancellationRequested();
             var spk = _pipeline!.Embedder.Embed(voicePath);
             cancellationToken.ThrowIfCancellationRequested();
 
-            // Per-chunk streaming callback used by ChunkedSynthesizer (it
-            // fires this from the vocoder thread). We compute absolute
-            // offset, run alignment (if available) on this chunk only,
-            // and re-emit upward via onChunkProduced. ChunkedSynthesizer
-            // calls us in input order, so the lock just serializes the
-            // cursor + sidecar list appends.
+            // Alignment is non-trivial CPU/GPU work (~25% of vocoder wall
+            // time on a typical chunk). Running it on the synth thread
+            // would block the next chunk's vocoder pass. Instead we chain
+            // alignment+emit onto a ContinueWith pipeline so the synth
+            // thread can return immediately after stamping the cursor.
+            // ContinueWith preserves input order, so allWords / sidecarChunks
+            // appends are lock-free.
+            Task alignChain = Task.CompletedTask;
+
             void EmitChunk(int idx, float[] wav, ChunkTiming _t)
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 chunkAudios[idx] = wav;
-                IReadOnlyList<AlignedWord> wordsForChunk;
-                double chunkStartSec;
-                lock (alignmentLock)
-                {
-                    chunkStartSec = sampleOffsetCursor / (double)ChatterboxConstants.S3GenSr;
-                    double chunkEndSec = (sampleOffsetCursor + wav.Length) / (double)ChatterboxConstants.S3GenSr;
-                    sampleOffsetCursor += wav.Length;
+                // Cursor stamp is cheap; do it on the synth thread so we
+                // can hand the absolute timing to the alignment task.
+                // ChunkedSynthesizer calls EmitChunk in input order from a
+                // single thread, so no lock needed.
+                double chunkStartSec = sampleOffsetCursor / (double)ChatterboxConstants.S3GenSr;
+                double chunkEndSec = (sampleOffsetCursor + wav.Length) / (double)ChatterboxConstants.S3GenSr;
+                sampleOffsetCursor += wav.Length;
 
-                    if (_aligner is not null)
+                alignChain = alignChain.ContinueWith(
+                    _ => AlignAndEmit(idx, wav, chunkStartSec, chunkEndSec),
+                    cancellationToken,
+                    TaskContinuationOptions.None,
+                    TaskScheduler.Default);
+            }
+
+            void AlignAndEmit(int idx, float[] wav, double chunkStartSec, double chunkEndSec)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                IReadOnlyList<AlignedWord> wordsForChunk;
+                if (_aligner is not null)
+                {
+                    onProgress?.Invoke(new ProgressEvent("aligning", idx + 1, totalChunks));
+                    var wav16k = Vernacula.Base.AudioUtils.AudioTo16000Mono(
+                        wav, ChatterboxConstants.S3GenSr, channels: 1);
+                    var localWords = _aligner.Align(wav16k, chunkTexts[idx], "en");
+                    var absWords = new List<AlignedWord>(localWords.Count);
+                    foreach (var w in localWords)
                     {
-                        onProgress?.Invoke(new ProgressEvent("aligning", idx + 1, totalChunks));
-                        var wav16k = Vernacula.Base.AudioUtils.AudioTo16000Mono(
-                            wav, ChatterboxConstants.S3GenSr, channels: 1);
-                        var localWords = _aligner.Align(wav16k, chunkTexts[idx], "en");
-                        var absWords = new List<AlignedWord>(localWords.Count);
-                        foreach (var w in localWords)
+                        absWords.Add(new AlignedWord
                         {
-                            absWords.Add(new AlignedWord
-                            {
-                                Text = w.Text,
-                                StartSeconds = chunkStartSec + w.StartSeconds,
-                                EndSeconds = chunkStartSec + w.EndSeconds,
-                                ChunkIndex = idx,
-                            });
-                        }
-                        allWords.AddRange(absWords);
-                        sidecarChunks.Add(new ChunkRecord
-                        {
-                            Index = idx,
-                            AudioStartSeconds = chunkStartSec,
-                            AudioEndSeconds = chunkEndSec,
-                            Text = chunkTexts[idx],
-                            WordCount = absWords.Count,
+                            Text = w.Text,
+                            StartSeconds = chunkStartSec + w.StartSeconds,
+                            EndSeconds = chunkStartSec + w.EndSeconds,
+                            ChunkIndex = idx,
                         });
-                        wordsForChunk = absWords;
                     }
-                    else
+                    allWords.AddRange(absWords);
+                    sidecarChunks.Add(new ChunkRecord
                     {
-                        sidecarChunks.Add(new ChunkRecord
-                        {
-                            Index = idx,
-                            AudioStartSeconds = chunkStartSec,
-                            AudioEndSeconds = chunkEndSec,
-                            Text = chunkTexts[idx],
-                            WordCount = 0,
-                        });
-                        wordsForChunk = Array.Empty<AlignedWord>();
-                    }
+                        Index = idx,
+                        AudioStartSeconds = chunkStartSec,
+                        AudioEndSeconds = chunkEndSec,
+                        Text = chunkTexts[idx],
+                        WordCount = absWords.Count,
+                    });
+                    wordsForChunk = absWords;
+                }
+                else
+                {
+                    sidecarChunks.Add(new ChunkRecord
+                    {
+                        Index = idx,
+                        AudioStartSeconds = chunkStartSec,
+                        AudioEndSeconds = chunkEndSec,
+                        Text = chunkTexts[idx],
+                        WordCount = 0,
+                    });
+                    wordsForChunk = Array.Empty<AlignedWord>();
                 }
                 onProgress?.Invoke(new ProgressEvent($"chunk {idx + 1}/{totalChunks} ready", idx + 1, totalChunks));
                 onChunkProduced?.Invoke(new ChunkProducedEvent(
@@ -212,6 +224,11 @@ public sealed class SynthesisService : IDisposable
                 var synth = new ChunkedSynthesizer(_pipeline);
                 synth.Synthesize(spk, tokensPerChunk, chunkProduced: EmitChunk);
             }
+
+            // Drain the alignment chain before we build the sidecar — the
+            // last chunk's alignment is still in flight after Synthesize
+            // returns.
+            await alignChain.ConfigureAwait(false);
             cancellationToken.ThrowIfCancellationRequested();
 
             // Concatenate all chunks in input order + write the final WAV.
@@ -228,10 +245,9 @@ public sealed class SynthesisService : IDisposable
             using (var writer = new WaveFileWriter(outWavPath, fmt))
                 writer.WriteSamples(allSamples, 0, allSamples.Length);
 
-            // Sidecar order: ChunkedSynthesizer's callback fires in input
-            // order, but we appended sidecarChunks under a lock — sorting
-            // by index makes the order explicit + future-proof against a
-            // reordering callback policy.
+            // The ContinueWith alignment chain runs in input order so
+            // sidecarChunks should already be sorted; the explicit sort
+            // is a future-proof against a reordering callback policy.
             sidecarChunks.Sort((a, b) => a.Index.CompareTo(b.Index));
 
             var sidecar = new AlignmentSidecar

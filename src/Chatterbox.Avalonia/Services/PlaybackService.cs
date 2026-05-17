@@ -103,8 +103,11 @@ public sealed class PlaybackService : IDisposable
     }
 
     /// <summary>Append a chunk of float32 mono samples (Chatterbox's
-    /// native format). Safe to call from any thread. Returns when the
-    /// bytes are queued, not when they've played.</summary>
+    /// native format). Returns when the bytes are queued, not when
+    /// they've played. Call from the UI thread — <c>_totalEstimatedSec</c>
+    /// is read on the dispatcher timer tick and not synchronized, and
+    /// the ffplay-stdin write isn't serialized against concurrent
+    /// callers either.</summary>
     public void AppendSamples(float[] samples)
     {
         if (samples.Length == 0) return;

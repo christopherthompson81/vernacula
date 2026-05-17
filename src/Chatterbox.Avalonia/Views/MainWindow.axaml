@@ -34,7 +34,7 @@
                      and a Markdown.Avalonia rendering of the raw input.
                      Word-highlight only fires in the words view; the
                      markdown view doesn't carry source-position mapping
-                     (that's deferred to a follow-up — see PR #72). -->
+                     (deferred — needs a follow-up issue). -->
                 <Panel Grid.Row="2" Margin="0,12,0,0">
                     <ScrollViewer IsVisible="{Binding !RenderMarkdown}">
                         <ItemsControl ItemsSource="{Binding Words}">
@@ -67,12 +67,17 @@
 
         <!-- ── Right pane: pickers, synthesize, playback ────────────── -->
         <StackPanel Grid.Column="1" Spacing="10">
+            <!-- All pickers are disabled during synthesis. Changing the
+                 ONNX or NFA bundle mid-run would dispose the SynthesisService
+                 the running task is still calling into → use-after-dispose.
+                 Gating the buttons is cheaper than deferring invalidation. -->
             <TextBlock Text="Voice (.wav)" FontWeight="SemiBold" />
             <Grid ColumnDefinitions="*,Auto">
                 <TextBox Text="{Binding VoicePath}" IsReadOnly="True"
                          Watermark="No voice picked" />
                 <Button Grid.Column="1" Content="Pick…"
-                        Command="{Binding PickVoiceCommand}" Margin="6,0,0,0" />
+                        Command="{Binding PickVoiceCommand}"
+                        IsEnabled="{Binding !IsBusy}" Margin="6,0,0,0" />
             </Grid>
 
             <TextBlock Text="Chatterbox ONNX bundle" FontWeight="SemiBold" Margin="0,8,0,0" />
@@ -80,7 +85,8 @@
                 <TextBox Text="{Binding OnnxBundleDir}" IsReadOnly="True"
                          Watermark="No bundle picked" />
                 <Button Grid.Column="1" Content="Pick…"
-                        Command="{Binding PickOnnxBundleCommand}" Margin="6,0,0,0" />
+                        Command="{Binding PickOnnxBundleCommand}"
+                        IsEnabled="{Binding !IsBusy}" Margin="6,0,0,0" />
             </Grid>
 
             <TextBlock Text="NFA bundle (optional, enables word highlight)"
@@ -89,12 +95,14 @@
                 <TextBox Text="{Binding NfaBundleDir}" IsReadOnly="True"
                          Watermark="No NFA bundle picked" />
                 <Button Grid.Column="1" Content="Pick…"
-                        Command="{Binding PickNfaBundleCommand}" Margin="6,0,0,0" />
+                        Command="{Binding PickNfaBundleCommand}"
+                        IsEnabled="{Binding !IsBusy}" Margin="6,0,0,0" />
             </Grid>
 
             <TextBlock Text="Text source" FontWeight="SemiBold" Margin="0,12,0,0" />
             <Button Content="Load text/markdown file…"
                     Command="{Binding PickTextFileCommand}"
+                    IsEnabled="{Binding !IsBusy}"
                     HorizontalAlignment="Stretch" />
 
             <Separator Margin="0,12,0,0" />
