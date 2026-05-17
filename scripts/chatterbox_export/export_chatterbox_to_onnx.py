@@ -163,18 +163,36 @@ def assert_model_constants_match_hardcodes(chatterbox_model: "ChatterboxTTS") ->
     cfg = chatterbox_model.t3.tfmr.config
     hp = chatterbox_model.t3.hp
     flow = chatterbox_model.s3gen.flow
+    # Each row: (constant name, our hardcoded value, upstream value,
+    # dotted-path to upstream attr, file where our hardcode lives).
+    # SPEECH_BASE_VOCAB_SIZE + START_SPEECH_TOKEN intentionally both
+    # compare against hp.start_speech_token — they represent different
+    # concepts (vocab boundary vs special token) but are equal-by-
+    # construction in this model. Checking both keeps the per-hardcode
+    # failure attribution if a developer ever sets them inconsistently.
+    _COMMON = "_common.py"
+    _MERGE = "_export_utils/merge_cond_decoder_loop.py"
     checks = [
-        # (name, our hardcode, upstream value, where-upstream-lives, where-our-hardcode-lives)
-        ("LLM_HIDDEN_SIZE",         LLM_HIDDEN_SIZE,         cfg.hidden_size,                  "t3.tfmr.config.hidden_size",         "_common.py"),
-        ("LLM_NUM_LAYERS",          LLM_NUM_LAYERS,          cfg.num_hidden_layers,            "t3.tfmr.config.num_hidden_layers",   "_common.py"),
-        ("LLM_NUM_KV_HEADS",        LLM_NUM_KV_HEADS,        cfg.num_key_value_heads,          "t3.tfmr.config.num_key_value_heads", "_common.py"),
-        ("LLM_NUM_ATTN_HEADS",      LLM_NUM_ATTN_HEADS,      cfg.num_attention_heads,          "t3.tfmr.config.num_attention_heads", "_common.py"),
-        ("LLM_HEAD_DIM",            LLM_HEAD_DIM,            cfg.head_dim,                     "t3.tfmr.config.head_dim",            "_common.py"),
-        ("SPEECH_BASE_VOCAB_SIZE",  SPEECH_BASE_VOCAB_SIZE,  hp.start_speech_token,            "t3.hp.start_speech_token",           "_common.py"),
-        ("START_SPEECH_TOKEN",      START_SPEECH_TOKEN,      hp.start_speech_token,            "t3.hp.start_speech_token",           "_common.py"),
-        ("STOP_SPEECH_TOKEN",       STOP_SPEECH_TOKEN,       hp.stop_speech_token,             "t3.hp.stop_speech_token",            "_common.py"),
-        ("MEL_BINS",                MEL_BINS,                flow.output_size,                 "s3gen.flow.output_size",             "_export_utils/merge_cond_decoder_loop.py"),
-        ("CFG_RATE",                CFG_RATE,                flow.decoder.inference_cfg_rate,  "s3gen.flow.decoder.inference_cfg_rate", "_export_utils/merge_cond_decoder_loop.py"),
+        ("LLM_HIDDEN_SIZE", LLM_HIDDEN_SIZE, cfg.hidden_size,
+            "t3.tfmr.config.hidden_size", _COMMON),
+        ("LLM_NUM_LAYERS", LLM_NUM_LAYERS, cfg.num_hidden_layers,
+            "t3.tfmr.config.num_hidden_layers", _COMMON),
+        ("LLM_NUM_KV_HEADS", LLM_NUM_KV_HEADS, cfg.num_key_value_heads,
+            "t3.tfmr.config.num_key_value_heads", _COMMON),
+        ("LLM_NUM_ATTN_HEADS", LLM_NUM_ATTN_HEADS, cfg.num_attention_heads,
+            "t3.tfmr.config.num_attention_heads", _COMMON),
+        ("LLM_HEAD_DIM", LLM_HEAD_DIM, cfg.head_dim,
+            "t3.tfmr.config.head_dim", _COMMON),
+        ("SPEECH_BASE_VOCAB_SIZE", SPEECH_BASE_VOCAB_SIZE, hp.start_speech_token,
+            "t3.hp.start_speech_token", _COMMON),
+        ("START_SPEECH_TOKEN", START_SPEECH_TOKEN, hp.start_speech_token,
+            "t3.hp.start_speech_token", _COMMON),
+        ("STOP_SPEECH_TOKEN", STOP_SPEECH_TOKEN, hp.stop_speech_token,
+            "t3.hp.stop_speech_token", _COMMON),
+        ("MEL_BINS", MEL_BINS, flow.output_size,
+            "s3gen.flow.output_size", _MERGE),
+        ("CFG_RATE", CFG_RATE, flow.decoder.inference_cfg_rate,
+            "s3gen.flow.decoder.inference_cfg_rate", _MERGE),
     ]
     mismatches = [(n, ours, upstream, where, file_)
                   for n, ours, upstream, where, file_ in checks if ours != upstream]
@@ -701,23 +719,24 @@ def main() -> None:
     # specific snapshot ourselves and load from the local dir.
     #
     # effective_revision: the SHA that actually backed the loaded model.
-    # For the snapshot_download path this is extracted from the cache
-    # path (always a SHA, even when args.revision was a tag/branch); for
-    # the no-revision escape hatch we leave it None since `from_pretrained`
-    # gives us no clean handle on what HEAD it resolved to.
+    # Resolved via the HF API (model_info) rather than the snapshot-cache
+    # filename, so this stays correct if anyone later passes local_dir=
+    # to snapshot_download (the cache-path-ends-in-SHA invariant only
+    # holds for default-layout cache calls). For the no-revision escape
+    # hatch we leave it None since `from_pretrained` gives us no clean
+    # handle on what HEAD it resolved to.
     effective_revision: str | None = None
     if args.revision:
-        from huggingface_hub import snapshot_download
+        from huggingface_hub import HfApi, snapshot_download
         print(f"Snapshot-downloading {args.repo_id}@{args.revision[:12]} ...")
         t0 = time.perf_counter()
+        effective_revision = HfApi().model_info(args.repo_id, revision=args.revision).sha
         snapshot_dir = snapshot_download(
             repo_id=args.repo_id,
             revision=args.revision,
             allow_patterns=["ve.safetensors", "t3_cfg.safetensors", "s3gen.safetensors",
                             "tokenizer.json", "conds.pt"],
         )
-        # snapshot_dir layout: .../models--{org}--{repo}/snapshots/{sha}/
-        effective_revision = Path(snapshot_dir).name
         print(f"  snapshot cached at {snapshot_dir}  ({time.perf_counter() - t0:.1f}s)")
         if effective_revision != args.revision:
             print(f"  requested revision '{args.revision}' resolved to SHA {effective_revision}")
