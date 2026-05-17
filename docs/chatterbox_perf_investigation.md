@@ -392,3 +392,110 @@ would be a regression vs serial-IoBinding. Ship it behind the
 `--lm-batch` flag (opt-in benchmark/measurement only) until IoBinding-
 for-batch lands. The API surface (`GenerateBatch` and
 `BatchedAcousticLmResult`) is the durable contract.
+
+
+## Run 5 — 2026-05-17 20:15 — IoBinding-for-batch: the architecture pays off
+
+Generalized the IoBinding LM-loop path to accept B>1 by parameterizing
+the per-layer KV bindings on the leading batch dim. New
+`RunBatchedLmLoopIoBinding` is a sibling to the single-batch
+`RunLmLoopIoBinding`, sharing the same OrtValue-chaining pattern. The
+public `GenerateBatch` gains `useIoBinding` (auto-detected from
+`_effectiveCuda`, matching `Generate`); it dispatches between the
+basic and IoBinding loop bodies.
+
+Common helpers extracted (`ArgmaxBatchedLastRow`, `AllDone`,
+`EmbedBatch`, `GrowBatchedMask`) so both loop bodies share the
+correctness-critical bits.
+
+### Batch scaling (8 chunks per run, RTX 3090, CUDA, warm cache)
+
+| Config | LM ms/chunk | LM call wall | Chunks-wall | Total wall | Reduction vs serial-IoB |
+|---|---|---|---|---|---|
+| Serial IoBinding (Run 1) | 1284 | n/a | 14.7 s | 19.3 s | (baseline) |
+| Batched IoB **B=2** | 748 | 1670→1444 ms/group | 10.5 s | 14.9 s | **−29%** |
+| Batched IoB **B=4** | 409 | 1783→1494 ms/group | 7.8 s | 12.4 s | **−47%** |
+| Batched IoB **B=8** | 236 | 1894 ms (1 group) | 6.4 s | 10.8 s | **−57%** |
+| Batched IoB **B=16** (16 chunks) | 152 | 2447 ms (1 group) | 11.2 s | 15.7 s | n/a (different N) |
+
+Amortization (one batched LM call vs B× serial calls):
+
+| B | LM ms/chunk | × B | / single (1284) | Effective LM throughput vs serial |
+|---|---|---|---|---|
+| 1 | 1284 | 1284 | 1.00× | 1.0× |
+| 2 | 748 | 1496 | 1.17× | 1.72× |
+| 4 | 409 | 1636 | 1.27× | 3.14× |
+| 8 | 236 | 1888 | 1.47× | 5.44× |
+| 16 | 152 | 2432 | 1.89× | 8.45× |
+
+### Why this is so much better than Run 3's projection
+
+Run 3's probe predicted 31% chunks-wall reduction at B=4. Reality
+delivered **47%**. The probe undershot because it included KV-extract
+overhead in its step timing (basic Run path); with IoBinding keeping
+KV GPU-resident, the per-step amortization is much cleaner.
+
+The Run 4 finding ("batched-basic is slower than serial-IoBinding")
+isn't wrong — it's just the wrong-combination measurement. IoBinding
+and batching are independent multipliers and stack better than either
+alone.
+
+### Vocoder is now the bottleneck
+
+At B≥8 the vocoder dominates the per-chunk wall:
+
+| | LM ms/chunk | Voc ms/chunk |
+|---|---|---|
+| B=4 | 409 | 560 |
+| B=8 | 236 | 559 |
+| B=16 | 152 | 549 |
+
+At B=4 the LM is still 73% of per-chunk time; at B=8 the vocoder is
+70% of per-chunk time; at B=16 the vocoder is 78%.
+
+What this means for the next iteration:
+
+1. **Vocoder batching probe**: does the merged `conditional_decoder_loop.onnx`
+   accept B>1? The export's dynamic_axes for that graph DO declare
+   `batch_size` on inputs/outputs, but we've never exercised it
+   (vocoder is single-batch in `Vocoder.cs`).
+2. **Or vocoder pipelining**: bring back Run 2's LM/Vocoder overlap
+   pattern, applied across batches. Vocoder for batch N runs in
+   parallel with LM for batch N+1.
+
+Either lifts the chunk-wall further. Without one of them, going past
+B=8 doesn't help much in this run (B=8 chunks-wall is 6.4s; B=16 with
+16 chunks is 11.2s — but that's more chunks total, normalized to
+chunks-wall/chunk it's only marginally different: 0.80 s/chunk vs
+0.70 s/chunk).
+
+### Memory floor
+
+KV cache at B=16, step 174, fp32:
+  B × KvHeads × T_kv × HeadDim × 4 bytes × 60 (layers × K+V)
+  = 16 × 16 × 255 × 64 × 4 × 60 = 1.0 GB
+
+Plus 2 GB LM weights. 3090 has 24 GB. Plenty of headroom; could
+explore B=32 or even B=64 to push the LM further before memory bites.
+
+But — and this is the user's framing — pushing batched LM higher at
+fp32 still hits the bandwidth ceiling. fp16 halves both the weight
+read AND the KV cache, allowing both bigger batches and faster
+per-step (the 2.24× amortization at B=4 should drop to ~1.3× and
+chunks-wall should fall to a smaller multiple). The architectural
+work in Run 5 is what fp16 plugs into.
+
+### Net delivered in this iteration
+
+| Run | Lever | Wall reduction vs Run 1 |
+|---|---|---|
+| Run 1 | (serial-IoBinding baseline) | (baseline) |
+| Run 2 | LM/Voc pipelining | −7% (lateral) |
+| Run 3 | (probe only) | (probe only) |
+| Run 4 | Batched basic-Run | NEGATIVE (architectural commit) |
+| **Run 5** | **Batched IoBinding B=4** | **−36% (total wall), −47% (chunks-wall)** |
+| **Run 5** | **Batched IoBinding B=8** | **−44% (total wall), −57% (chunks-wall)** |
+
+Run 5 is the headline. Per the user's framing it's also where the
+fp16 lever will land — the C# shape is in place; the inference
+quality story changes when weights halve.
