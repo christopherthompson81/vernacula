@@ -67,10 +67,14 @@
 
         <!-- ── Right pane: pickers, synthesize, playback ────────────── -->
         <StackPanel Grid.Column="1" Spacing="10">
-            <!-- All pickers are disabled during synthesis. Changing the
-                 ONNX or NFA bundle mid-run would dispose the SynthesisService
+            <!-- Pickers are disabled during synthesis. Changing the
+                 ONNX bundle mid-run would dispose the SynthesisService
                  the running task is still calling into → use-after-dispose.
-                 Gating the buttons is cheaper than deferring invalidation. -->
+                 Gating the buttons is cheaper than deferring invalidation.
+                 (Earlier versions also required a separate NFA bundle for
+                 word-highlight alignment; word timings now come from the
+                 Chatterbox LM's own cross-attention so only the one bundle
+                 is needed — see ChatterboxAttentionAligner.) -->
             <TextBlock Text="Voice (.wav)" FontWeight="SemiBold" />
             <Grid ColumnDefinitions="*,Auto">
                 <TextBox Text="{Binding VoicePath}" IsReadOnly="True"
@@ -86,16 +90,6 @@
                          Watermark="No bundle picked" />
                 <Button Grid.Column="1" Content="Pick…"
                         Command="{Binding PickOnnxBundleCommand}"
-                        IsEnabled="{Binding !IsBusy}" Margin="6,0,0,0" />
-            </Grid>
-
-            <TextBlock Text="NFA bundle (optional, enables word highlight)"
-                       FontWeight="SemiBold" Margin="0,8,0,0" />
-            <Grid ColumnDefinitions="*,Auto">
-                <TextBox Text="{Binding NfaBundleDir}" IsReadOnly="True"
-                         Watermark="No NFA bundle picked" />
-                <Button Grid.Column="1" Content="Pick…"
-                        Command="{Binding PickNfaBundleCommand}"
                         IsEnabled="{Binding !IsBusy}" Margin="6,0,0,0" />
             </Grid>
 
