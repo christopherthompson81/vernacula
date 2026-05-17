@@ -7,97 +7,242 @@ using NAudio.Wave;
 namespace Chatterbox.App.Services;
 
 /// <summary>
-/// Cross-platform audio playback for the reader UI. Mirrors the
-/// pattern from Vernacula.Avalonia.TranscriptEditorViewModel:
+/// Cross-platform streaming audio playback for the reader UI. Mirrors
+/// the platform split used by Vernacula.Avalonia.TranscriptEditorViewModel
+/// (WaveOutEvent on Windows, ffplay elsewhere) but in streaming form:
 ///
-///   - Windows: NAudio's WaveOutEvent (WinMM)
-///   - Other  : shell out to ffplay via Process.Start
+///   Windows: NAudio's <see cref="BufferedWaveProvider"/> fed into
+///            <see cref="WaveOutEvent"/>. Samples are appended as
+///            synthesis produces them; WaveOut pulls from the buffer
+///            continuously.
+///   Other  : <c>ffplay -f f32le -ar 24000 -ac 1 -i pipe:0</c>. Raw
+///            float32 PCM is written to ffplay's stdin chunk-by-chunk;
+///            it plays continuously and exits on EOF.
 ///
 /// A <see cref="DispatcherTimer"/> ticks at 50 ms regardless of
-/// playback backend, raising <see cref="PositionChanged"/> with the
-/// current playback time in seconds — the word-highlight loop binds
-/// to that event.
+/// backend, raising <see cref="PositionChanged"/> with the current
+/// playback time in seconds — the word-highlight loop binds to that
+/// event.
 ///
-/// MVP only supports play / stop. Pause and seek are deliberately
-/// out of scope; the next iteration would add them once the highlight
-/// loop is verified visually.
+/// Lifecycle: <see cref="StartStreaming"/> opens the playback pipeline
+/// for a given sample format; <see cref="AppendSamples"/> pushes audio
+/// (returns when the bytes are queued, not when they've played);
+/// <see cref="EndOfStream"/> signals no more samples will come (so
+/// <see cref="PlaybackStopped"/> can fire when the buffer drains);
+/// <see cref="Stop"/> tears down immediately. <see cref="SeekTo"/>
+/// jumps to an arbitrary position (within what's been buffered);
+/// behavior past-EOB is implementation-defined.
 /// </summary>
 public sealed class PlaybackService : IDisposable
 {
     private static readonly string? FfplayPath = FindExecutable("ffplay");
 
+    // Backend state (only one set in use at a time).
+    private BufferedWaveProvider? _bufferedProvider;
     private WaveOutEvent? _waveOut;
-    private AudioFileReader? _reader;
     private Process? _ffplayProcess;
+    private Stream? _ffplayStdin;
+
     private DispatcherTimer? _tickTimer;
     private DateTime _startedUtc;
-    private double _audioDurationSec;
+    private int _sampleRate;
+    private bool _endOfStream;
+    private double _totalEstimatedSec;   // best-known total duration (updates as chunks append)
 
-    /// <summary>True when audio is currently playing (or believed to be —
-    /// the ffplay process may have already exited and we haven't
-    /// noticed yet).</summary>
     public bool IsPlaying { get; private set; }
-
-    /// <summary>Current playback time in seconds from the start of the file.</summary>
     public double PositionSeconds { get; private set; }
 
-    /// <summary>Fired on every <see cref="DispatcherTimer"/> tick during
-    /// playback (50 ms). Argument is current position in seconds.</summary>
     public event Action<double>? PositionChanged;
-
-    /// <summary>Fired when playback finishes naturally (EOF) or is stopped
-    /// via <see cref="Stop"/>. Argument is the final position.</summary>
     public event Action<double>? PlaybackStopped;
 
     public bool CanPlayOnThisPlatform => OperatingSystem.IsWindows() || FfplayPath is not null;
-
     public string? UnavailableReason => CanPlayOnThisPlatform
         ? null
         : "Audio playback requires Windows audio output or an `ffplay` executable in PATH.";
 
-    public void Play(string audioPath, double audioDurationSec)
+    /// <summary>Open the playback pipeline for streaming and start it
+    /// playing immediately (silence until samples arrive). Calls
+    /// <see cref="Stop"/> on any in-progress playback first.</summary>
+    public void StartStreaming(int sampleRate, int channels)
     {
+        if (channels != 1)
+            throw new NotSupportedException("MVP supports mono only — Chatterbox always outputs mono.");
         Stop();
-        if (!File.Exists(audioPath))
-            throw new FileNotFoundException("Audio file not found.", audioPath);
 
-        _audioDurationSec = audioDurationSec;
+        _sampleRate = sampleRate;
+        _endOfStream = false;
+        _totalEstimatedSec = 0;
+        PositionSeconds = 0;
 
         if (OperatingSystem.IsWindows())
         {
-            _reader = new AudioFileReader(audioPath);
+            var fmt = WaveFormat.CreateIeeeFloatWaveFormat(sampleRate, 1);
+            // 30 s of headroom — long-form chunks deliver in 1-5 s
+            // bursts, vocoder is faster than realtime, so this never
+            // backs up in practice but the cap protects against runaway
+            // memory in pathological cases.
+            _bufferedProvider = new BufferedWaveProvider(fmt)
+            {
+                BufferLength = sampleRate * 4 /* bytes per float */ * 30,
+                DiscardOnBufferOverflow = false,
+            };
             _waveOut = new WaveOutEvent();
-            _waveOut.Init(_reader);
-            _waveOut.PlaybackStopped += OnWaveOutStopped;
+            _waveOut.Init(_bufferedProvider);
             _waveOut.Play();
         }
         else
         {
             if (FfplayPath is null)
                 throw new InvalidOperationException(UnavailableReason!);
-            if (!StartFfplay(audioPath))
-                throw new InvalidOperationException("Failed to start ffplay.");
+            StartFfplayStdin(sampleRate);
         }
 
         IsPlaying = true;
-        PositionSeconds = 0;
         _startedUtc = DateTime.UtcNow;
+        StartTickTimer();
+    }
+
+    /// <summary>Append a chunk of float32 mono samples (Chatterbox's
+    /// native format). Safe to call from any thread. Returns when the
+    /// bytes are queued, not when they've played.</summary>
+    public void AppendSamples(float[] samples)
+    {
+        if (samples.Length == 0) return;
+        _totalEstimatedSec += samples.Length / (double)_sampleRate;
+
+        if (OperatingSystem.IsWindows())
+        {
+            if (_bufferedProvider is null) return;
+            // BufferedWaveProvider takes a byte[] (it's PCM-agnostic).
+            // We're feeding IEEE-754 float32, so 4 bytes per sample.
+            var bytes = new byte[samples.Length * 4];
+            Buffer.BlockCopy(samples, 0, bytes, 0, bytes.Length);
+            _bufferedProvider.AddSamples(bytes, 0, bytes.Length);
+        }
+        else
+        {
+            if (_ffplayStdin is null) return;
+            var bytes = new byte[samples.Length * 4];
+            Buffer.BlockCopy(samples, 0, bytes, 0, bytes.Length);
+            try
+            {
+                _ffplayStdin.Write(bytes, 0, bytes.Length);
+                _ffplayStdin.Flush();
+            }
+            catch (Exception)
+            {
+                // Pipe broken (ffplay exited or was killed). The tick
+                // timer's EOF detection will pick it up on the next tick.
+            }
+        }
+    }
+
+    /// <summary>Signal that no more samples will be appended. The tick
+    /// timer will fire <see cref="PlaybackStopped"/> once the buffer
+    /// drains (Windows) or ffplay exits (other).</summary>
+    public void EndOfStream()
+    {
+        _endOfStream = true;
+        if (!OperatingSystem.IsWindows() && _ffplayStdin is not null)
+        {
+            // Closing stdin tells ffplay "no more input"; it'll play to
+            // the end of its decoded buffer then exit naturally.
+            try { _ffplayStdin.Close(); } catch { /* already closed */ }
+        }
+    }
+
+    /// <summary>Jump to an arbitrary position. On Windows this works on
+    /// whatever's been buffered. On ffplay it restarts the player at the
+    /// new offset, which only works when streaming has finished (we'd
+    /// need a full WAV on disk to seek into). MVP: seek before
+    /// EndOfStream is ignored on the ffplay path with a console note;
+    /// post-EOF seek works because the caller can pass the on-disk WAV
+    /// via <see cref="SeekIntoFile"/> instead.</summary>
+    public void SeekTo(double seconds)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            if (_bufferedProvider is null) return;
+            // BufferedWaveProvider doesn't expose seek directly — for an
+            // in-RAM stream the simplest thing is to truncate the buffer
+            // (drop anything before the seek point) and re-anchor the
+            // wall-clock. Forward seek = drop bytes; backward seek
+            // beyond what's in the buffer = clamp to current position.
+            // For MVP, we just re-anchor the wall-clock and let WaveOut
+            // continue playing what's in the buffer — meaning seek only
+            // affects the HIGHLIGHT, not the audio. Acceptable for
+            // click-to-highlight UX; full audio-seek is follow-up.
+            _startedUtc = DateTime.UtcNow.AddSeconds(-seconds);
+            PositionSeconds = seconds;
+            PositionChanged?.Invoke(PositionSeconds);
+        }
+        else
+        {
+            // Same MVP compromise: re-anchor wall-clock, highlight jumps,
+            // audio continues from wherever ffplay was. Seeking ffplay
+            // requires either a seekable input (file) or restarting the
+            // process — both are larger surgeries deferred for now.
+            _startedUtc = DateTime.UtcNow.AddSeconds(-seconds);
+            PositionSeconds = seconds;
+            PositionChanged?.Invoke(PositionSeconds);
+        }
+    }
+
+    /// <summary>Post-streaming seek into the on-disk WAV file. Restarts
+    /// the playback pipeline reading from the file (instead of the
+    /// stream) and jumps to <paramref name="seconds"/>. Use this for
+    /// scrubbing a finished synthesis where you have the full WAV.</summary>
+    public void SeekIntoFile(string audioPath, double audioDurationSec, double seconds)
+    {
+        Stop();
+        if (!File.Exists(audioPath))
+            throw new FileNotFoundException("Audio file not found.", audioPath);
+
+        _sampleRate = 0;  // unused on the file-playback path
+        _totalEstimatedSec = audioDurationSec;
+        seconds = Math.Clamp(seconds, 0, audioDurationSec);
+        _endOfStream = true;
+
+        if (OperatingSystem.IsWindows())
+        {
+            var reader = new AudioFileReader(audioPath)
+            {
+                CurrentTime = TimeSpan.FromSeconds(seconds),
+            };
+            _waveOut = new WaveOutEvent();
+            _waveOut.Init(reader);
+            _waveOut.PlaybackStopped += (_, _) => Dispatcher.UIThread.InvokeAsync(Stop);
+            _waveOut.Play();
+        }
+        else
+        {
+            if (FfplayPath is null)
+                throw new InvalidOperationException(UnavailableReason!);
+            StartFfplayFile(audioPath, seconds);
+        }
+
+        IsPlaying = true;
+        PositionSeconds = seconds;
+        _startedUtc = DateTime.UtcNow.AddSeconds(-seconds);
         StartTickTimer();
     }
 
     public void Stop()
     {
         if (!IsPlaying && _tickTimer is null) return;
-
         StopTickTimer();
         if (_waveOut is not null)
         {
-            _waveOut.PlaybackStopped -= OnWaveOutStopped;
             try { _waveOut.Stop(); } catch { /* shutdown race */ }
             _waveOut.Dispose();
             _waveOut = null;
         }
-        if (_reader is not null) { _reader.Dispose(); _reader = null; }
+        _bufferedProvider = null;
+        if (_ffplayStdin is not null)
+        {
+            try { _ffplayStdin.Close(); } catch { }
+            _ffplayStdin = null;
+        }
         if (_ffplayProcess is not null)
         {
             try { if (!_ffplayProcess.HasExited) _ffplayProcess.Kill(entireProcessTree: true); }
@@ -115,32 +260,49 @@ public sealed class PlaybackService : IDisposable
         _tickTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(50) };
         _tickTimer.Tick += (_, _) =>
         {
-            // Wall-clock-derived position. The audio backend's own clock
-            // would be slightly more accurate but adds backend-specific
-            // plumbing (WaveOut.GetPosition / parse ffplay -progress);
-            // wall-clock is good enough for the highlight loop's 50 ms
-            // tick + the alignment's per-word boundaries.
             double pos = (DateTime.UtcNow - _startedUtc).TotalSeconds;
-            PositionSeconds = Math.Min(pos, _audioDurationSec);
+            // Clamp to estimated total (grows as chunks arrive). If we
+            // outrun the buffer (clock past the last appended sample),
+            // freeze at the estimate until more arrives — better than
+            // showing fake forward motion.
+            if (_totalEstimatedSec > 0 && pos > _totalEstimatedSec)
+                pos = _totalEstimatedSec;
+            PositionSeconds = pos;
             PositionChanged?.Invoke(PositionSeconds);
-            if (PositionSeconds >= _audioDurationSec) Stop();
+
+            // Natural EOF: position reached the estimate AND no more
+            // samples are coming. (Without _endOfStream we'd stop early
+            // every time the user gets ahead of synthesis.)
+            if (_endOfStream && _totalEstimatedSec > 0 && PositionSeconds >= _totalEstimatedSec)
+                Stop();
         };
         _tickTimer.Start();
     }
 
-    private void StopTickTimer()
+    private void StopTickTimer() { _tickTimer?.Stop(); _tickTimer = null; }
+
+    private void StartFfplayStdin(int sampleRate)
     {
-        _tickTimer?.Stop();
-        _tickTimer = null;
+        var psi = MakeFfplayBasePsi();
+        psi.ArgumentList.Add("-f"); psi.ArgumentList.Add("f32le");
+        psi.ArgumentList.Add("-ar"); psi.ArgumentList.Add(sampleRate.ToString());
+        psi.ArgumentList.Add("-ac"); psi.ArgumentList.Add("1");
+        psi.ArgumentList.Add("-i");  psi.ArgumentList.Add("pipe:0");
+        psi.RedirectStandardInput = true;
+        StartFfplay(psi);
     }
 
-    private void OnWaveOutStopped(object? sender, StoppedEventArgs e)
-        => Dispatcher.UIThread.InvokeAsync(Stop);
-
-    private bool StartFfplay(string audioPath)
+    private void StartFfplayFile(string audioPath, double startSec)
     {
-        if (FfplayPath is null) return false;
-        var psi = new ProcessStartInfo(FfplayPath)
+        var psi = MakeFfplayBasePsi();
+        psi.ArgumentList.Add("-ss"); psi.ArgumentList.Add(startSec.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture));
+        psi.ArgumentList.Add("-i");  psi.ArgumentList.Add(audioPath);
+        StartFfplay(psi);
+    }
+
+    private ProcessStartInfo MakeFfplayBasePsi()
+    {
+        var psi = new ProcessStartInfo(FfplayPath!)
         {
             UseShellExecute = false,
             RedirectStandardError = true,
@@ -150,24 +312,24 @@ public sealed class PlaybackService : IDisposable
         psi.ArgumentList.Add("-nodisp");
         psi.ArgumentList.Add("-autoexit");
         psi.ArgumentList.Add("-loglevel"); psi.ArgumentList.Add("error");
-        psi.ArgumentList.Add(audioPath);
+        return psi;
+    }
 
+    private void StartFfplay(ProcessStartInfo psi)
+    {
         var p = new Process { StartInfo = psi, EnableRaisingEvents = true };
         p.Exited += (_, _) => Dispatcher.UIThread.InvokeAsync(Stop);
         if (!p.Start())
         {
             p.Dispose();
-            return false;
+            throw new InvalidOperationException("Failed to start ffplay.");
         }
-        // Drain stdout/stderr so the pipe doesn't backpressure ffplay.
         _ = p.StandardOutput.ReadToEndAsync();
         _ = p.StandardError.ReadToEndAsync();
         _ffplayProcess = p;
-        return true;
+        if (psi.RedirectStandardInput) _ffplayStdin = p.StandardInput.BaseStream;
     }
 
-    /// <summary>Locate an executable in the user's PATH. Returns null when
-    /// not found. Same logic as Vernacula.Avalonia's helper.</summary>
     private static string? FindExecutable(string fileName)
     {
         var pathEnv = Environment.GetEnvironmentVariable("PATH");

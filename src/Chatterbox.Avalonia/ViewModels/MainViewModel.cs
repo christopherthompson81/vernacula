@@ -9,32 +9,136 @@ using Avalonia.Platform.Storage;
 using Avalonia.Threading;
 using Chatterbox.App.Models;
 using Chatterbox.App.Services;
+using Chatterbox.Base;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 
 namespace Chatterbox.App.ViewModels;
 
 /// <summary>
-/// Single VM for the reader MVP. State lives here:
-/// pickers (voice / Chatterbox bundle / NFA bundle), text, last
-/// synthesis result, playback position, current highlighted word
-/// index into <see cref="Words"/>. Bindings are compiled at AXAML
-/// load (csproj's AvaloniaUseCompiledBindingsByDefault=true).
+/// Reader VM. Holds picker state, persists it across runs via
+/// <see cref="SettingsService"/>, drives streaming synthesis +
+/// playback (chunks start playing as soon as the first one is ready),
+/// and toggles between the flat word-by-word view and a Markdown
+/// rendering of the source.
 /// </summary>
 public sealed partial class MainViewModel : ObservableObject, IDisposable
 {
-    // Pickers — paths the user fills in via file/folder dialogs.
-    [ObservableProperty] private string _voicePath = "";
-    [ObservableProperty] private string _onnxBundleDir = "";
+    // Pickers. NotifyCanExecuteChangedFor is what re-queries the
+    // SynthesizeCommand's CanExecute when the picker fills.
+    [ObservableProperty]
+    [NotifyCanExecuteChangedFor(nameof(SynthesizeCommand))]
+    private string _voicePath = "";
+
+    [ObservableProperty]
+    [NotifyCanExecuteChangedFor(nameof(SynthesizeCommand))]
+    private string _onnxBundleDir = "";
+
+    // NFA bundle is OPTIONAL — synthesis runs without it (just no word
+    // highlight). Doesn't gate Synthesize, so no notify here.
     [ObservableProperty] private string _nfaBundleDir = "";
 
-    // Bundle-path changes invalidate the cached SynthesisService so the
-    // next Synthesize click rebuilds against the new paths. Without this,
-    // the lazy `_synthService ??= new SynthesisService(...)` would silently
-    // keep using the FIRST bundle pair the user picked, even after they
-    // changed pickers.
-    partial void OnOnnxBundleDirChanged(string value) => InvalidateSynthService();
-    partial void OnNfaBundleDirChanged(string value) => InvalidateSynthService();
+    // Text input — either typed/pasted in the UI or loaded from a .md file.
+    [ObservableProperty]
+    [NotifyCanExecuteChangedFor(nameof(SynthesizeCommand))]
+    private string _text = "";
+
+    // Markdown vs plain word-grid rendering of the source pane. Persisted
+    // across runs.
+    [ObservableProperty] private bool _renderMarkdown;
+
+    // Status line below the synthesize button.
+    [ObservableProperty] private string _statusMessage = "Ready.";
+
+    // Active while synthesis is running. Disables most controls.
+    [ObservableProperty]
+    [NotifyCanExecuteChangedFor(nameof(SynthesizeCommand))]
+    [NotifyCanExecuteChangedFor(nameof(PlayCommand))]
+    private bool _isBusy;
+
+    // True after a synthesis finishes successfully. Enables replay.
+    [ObservableProperty]
+    [NotifyCanExecuteChangedFor(nameof(PlayCommand))]
+    private bool _hasSynthesizedAudio;
+
+    // Aligned words from the running/last synthesis. Streamed in as
+    // chunks complete.
+    public ObservableCollection<WordItemViewModel> Words { get; } = new();
+
+    // -1 = nothing currently highlighted.
+    private int _currentWordIndex = -1;
+
+    [ObservableProperty] private string _positionLabel = "0.00 / 0.00 s";
+
+    private AlignmentSidecar? _lastAlignment;
+    private string? _lastAudioPath;
+    private SynthesisService? _synthService;
+    private readonly PlaybackService _playback = new();
+    private readonly SettingsService _settings = new();
+    private CancellationTokenSource? _synthCts;
+
+    // Gates the autosave during the initial settings load so we don't
+    // write N times as each property hydrates.
+    private bool _loadingSettings;
+
+    public MainViewModel()
+    {
+        _playback.PositionChanged += OnPlaybackPositionChanged;
+        _playback.PlaybackStopped += _ =>
+        {
+            if (_currentWordIndex >= 0 && _currentWordIndex < Words.Count)
+                Words[_currentWordIndex].IsCurrent = false;
+            _currentWordIndex = -1;
+            // Don't overwrite synthesis-in-progress status with "stopped".
+            if (!IsBusy) StatusMessage = "Playback stopped.";
+        };
+
+        LoadSettings();
+
+        if (!_playback.CanPlayOnThisPlatform)
+            StatusMessage = _playback.UnavailableReason!;
+    }
+
+    // ── Settings persistence ─────────────────────────────────────────
+
+    private void LoadSettings()
+    {
+        _loadingSettings = true;
+        try
+        {
+            _settings.Load();
+            VoicePath = _settings.Current.VoicePath;
+            OnnxBundleDir = _settings.Current.OnnxBundleDir;
+            NfaBundleDir = _settings.Current.NfaBundleDir;
+            RenderMarkdown = _settings.Current.RenderMarkdown;
+        }
+        finally { _loadingSettings = false; }
+    }
+
+    private void PersistSettings()
+    {
+        if (_loadingSettings) return;
+        _settings.Current.VoicePath = VoicePath;
+        _settings.Current.OnnxBundleDir = OnnxBundleDir;
+        _settings.Current.NfaBundleDir = NfaBundleDir;
+        _settings.Current.RenderMarkdown = RenderMarkdown;
+        _settings.Save();
+    }
+
+    // Generated [ObservableProperty] partials let us hook each setter
+    // for the autosave + (for bundle paths) cached-service invalidation.
+    partial void OnVoicePathChanged(string value) => PersistSettings();
+    partial void OnOnnxBundleDirChanged(string value)
+    {
+        InvalidateSynthService();
+        PersistSettings();
+    }
+    partial void OnNfaBundleDirChanged(string value)
+    {
+        InvalidateSynthService();
+        PersistSettings();
+    }
+    partial void OnRenderMarkdownChanged(bool value) => PersistSettings();
 
     private void InvalidateSynthService()
     {
@@ -43,60 +147,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         stale?.Dispose();
     }
 
-    // Text input — either typed/pasted in the UI or loaded from a .md file.
-    [ObservableProperty] private string _text = "";
-
-    // Status line below the synthesize button.
-    [ObservableProperty] private string _statusMessage = "Ready.";
-
-    // True while a synthesis task is running. Disables most UI controls.
-    [ObservableProperty]
-    [NotifyCanExecuteChangedFor(nameof(SynthesizeCommand))]
-    [NotifyCanExecuteChangedFor(nameof(PlayCommand))]
-    private bool _isBusy;
-
-    // True after a successful synthesis — enables Play and the highlight loop.
-    [ObservableProperty]
-    [NotifyCanExecuteChangedFor(nameof(PlayCommand))]
-    private bool _hasSynthesizedAudio;
-
-    // The aligned words from the last synthesis as per-item VMs so the
-    // AXAML can class-trigger the highlight on IsCurrent without a
-    // multi-binding converter.
-    public ObservableCollection<WordItemViewModel> Words { get; } = new();
-
-    // Index into Words[] of the word currently being spoken (or -1 when
-    // not playing or before the first word). Internal — UI doesn't bind
-    // to this directly, the per-word IsCurrent does the work.
-    private int _currentWordIndex = -1;
-
-    // Read-only audio position label for the UI footer.
-    [ObservableProperty] private string _positionLabel = "0.00 / 0.00 s";
-
-    private AlignmentSidecar? _lastAlignment;
-    private SynthesisService? _synthService;
-    private readonly PlaybackService _playback = new();
-    private CancellationTokenSource? _synthCts;
-
-    public MainViewModel()
-    {
-        // PlaybackService raises both events from its DispatcherTimer,
-        // which is already on the UI thread — no Dispatcher.Post wrapping
-        // needed. (An earlier draft posted defensively; the reviewer of
-        // PR #74 caught that we were paying 20 dispatcher-frame round-trips
-        // per second for no benefit.)
-        _playback.PositionChanged += OnPlaybackPositionChanged;
-        _playback.PlaybackStopped += _ =>
-        {
-            if (_currentWordIndex >= 0 && _currentWordIndex < Words.Count)
-                Words[_currentWordIndex].IsCurrent = false;
-            _currentWordIndex = -1;
-            StatusMessage = "Playback stopped.";
-        };
-
-        if (!_playback.CanPlayOnThisPlatform)
-            StatusMessage = _playback.UnavailableReason!;
-    }
+    // ── Pickers ──────────────────────────────────────────────────────
 
     [RelayCommand]
     private async Task PickVoiceAsync()
@@ -131,41 +182,77 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         catch (Exception ex) { StatusMessage = $"Read failed: {ex.Message}"; }
     }
 
+    // ── Synthesis (streaming) ────────────────────────────────────────
+
     [RelayCommand(CanExecute = nameof(CanSynthesize))]
     private async Task SynthesizeAsync()
     {
         IsBusy = true;
         StatusMessage = _synthService is null ? "Loading models (one-time)..." : "Synthesizing...";
+        // Stop any in-progress playback from a prior run; clear the
+        // highlight + word list so the new synthesis streams in fresh.
+        _playback.Stop();
         Words.Clear();
         _currentWordIndex = -1;
         HasSynthesizedAudio = false;
+        _lastAlignment = null;
+        _lastAudioPath = null;
         _synthCts?.Dispose();
         _synthCts = new CancellationTokenSource();
         var token = _synthCts.Token;
 
         try
         {
-            // Lazy-construct the synthesis service so the heavy ORT
-            // session loads happen on the first synthesize click rather
-            // than at startup (faster cold UI).
             _synthService ??= new SynthesisService(
                 OnnxBundleDir,
                 nfaBundleDir: string.IsNullOrWhiteSpace(NfaBundleDir) ? null : NfaBundleDir);
 
             string outWav = Path.Combine(Path.GetTempPath(),
                 $"chatterbox_app_{DateTime.UtcNow:yyyyMMddHHmmss}.wav");
+            bool streamingStarted = false;
 
-            var result = await Task.Run(
-                () => _synthService.Synthesize(VoicePath, Text, outWav, token),
-                token);
+            var result = await _synthService.SynthesizeStreamingAsync(
+                VoicePath, Text, outWav,
+                onChunkProduced: ev => Dispatcher.UIThread.Post(() =>
+                {
+                    // First chunk arrives → open the playback pipeline and
+                    // start streaming. Audio plays as soon as bytes are
+                    // appended; the wall-clock tick begins from now.
+                    if (!streamingStarted)
+                    {
+                        try
+                        {
+                            _playback.StartStreaming(ChatterboxConstants.S3GenSr, channels: 1);
+                            streamingStarted = true;
+                        }
+                        catch (Exception ex)
+                        {
+                            StatusMessage = $"Playback open failed: {ex.Message}";
+                            return;
+                        }
+                    }
+                    _playback.AppendSamples(ev.Audio24k);
+                    int baseIdx = Words.Count;
+                    int wi = baseIdx;
+                    foreach (var w in ev.Words)
+                        Words.Add(new WordItemViewModel(w, wi++, SeekToWord));
+                }),
+                onProgress: p => Dispatcher.UIThread.Post(() =>
+                {
+                    StatusMessage = p.ChunkIndex is int idx && p.TotalChunks is int total
+                        ? $"{p.Phase} ({idx}/{total})"
+                        : p.Phase;
+                }),
+                cancellationToken: token);
 
             _lastAlignment = result.Alignment;
+            _lastAudioPath = result.AudioPath;
             HasSynthesizedAudio = true;
-            int idx = 0;
-            foreach (var w in result.Alignment.Words)
-                Words.Add(new WordItemViewModel(w, idx++));
-            StatusMessage = $"Synthesized {result.Alignment.AudioDurationSeconds:F2}s, "
-                + $"{result.Alignment.Words.Count} words. Ready to play.";
+            // Tell the playback service no more samples are coming so it
+            // can fire PlaybackStopped naturally when the buffer drains.
+            if (streamingStarted) _playback.EndOfStream();
+            StatusMessage = $"Done. {result.Alignment.AudioDurationSeconds:F2}s audio, "
+                + $"{result.Alignment.Words.Count} words.";
         }
         catch (OperationCanceledException)
         {
@@ -187,13 +274,17 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         && !string.IsNullOrWhiteSpace(OnnxBundleDir)
         && !string.IsNullOrWhiteSpace(Text);
 
+    // ── Playback ─────────────────────────────────────────────────────
+
     [RelayCommand(CanExecute = nameof(CanPlay))]
     private void Play()
     {
-        if (_lastAlignment is null) return;
+        // Replay path: synthesis is done, audio is on disk. Use
+        // SeekIntoFile(0) to play the saved WAV from the beginning.
+        if (_lastAudioPath is null || _lastAlignment is null) return;
         try
         {
-            _playback.Play(_lastAlignment.AudioPath, _lastAlignment.AudioDurationSeconds);
+            _playback.SeekIntoFile(_lastAudioPath, _lastAlignment.AudioDurationSeconds, 0);
             StatusMessage = "Playing.";
         }
         catch (Exception ex) { StatusMessage = $"Play failed: {ex.Message}"; }
@@ -204,15 +295,33 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     [RelayCommand]
     private void Stop() => _playback.Stop();
 
+    // Click-to-seek wiring. Each WordItemViewModel calls this back via a
+    // delegate set at construction (avoids per-word command boilerplate +
+    // keeps the VM list as a pure data collection).
+    private void SeekToWord(WordItemViewModel word)
+    {
+        // After synthesis completes we have an on-disk WAV and can do a
+        // real audio seek. Mid-synthesis we can only re-anchor the
+        // highlight clock (audio is being buffered as we go and seeking
+        // into a streaming buffer would be a much bigger surgery).
+        if (HasSynthesizedAudio && _lastAudioPath is not null && _lastAlignment is not null)
+        {
+            try
+            {
+                _playback.SeekIntoFile(_lastAudioPath, _lastAlignment.AudioDurationSeconds,
+                    word.StartSeconds);
+                StatusMessage = $"Seek → {word.StartSeconds:F2}s.";
+            }
+            catch (Exception ex) { StatusMessage = $"Seek failed: {ex.Message}"; }
+        }
+        else
+        {
+            _playback.SeekTo(word.StartSeconds);
+        }
+    }
+
     private void OnPlaybackPositionChanged(double posSec)
     {
-        // Already on the UI thread (PlaybackService's DispatcherTimer
-        // fires here). Binary-search the words list for the word whose
-        // interval contains posSec; Words is sorted by StartSeconds per
-        // the sidecar contract. A linear scan from the current index
-        // forward would also work (amortized O(N) over a playback);
-        // binary search is just as cheap and handles backwards seeks
-        // when scrubbing lands.
         int idx = FindWordAt(posSec);
         if (idx != _currentWordIndex)
         {
@@ -227,25 +336,18 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     private int FindWordAt(double posSec)
     {
-        // Standard binary search over Words[i].StartSeconds. Returns the
-        // last word whose StartSeconds <= posSec, or -1 when posSec is
-        // before the first word. The "current word" is whatever started
-        // most recently; we don't gate on EndSeconds so brief inter-word
-        // gaps still show the trailing word highlighted (no flicker).
         if (Words.Count == 0) return -1;
         int lo = 0, hi = Words.Count - 1, best = -1;
         while (lo <= hi)
         {
             int mid = (lo + hi) >>> 1;
-            if (Words[mid].StartSeconds <= posSec)
-            {
-                best = mid;
-                lo = mid + 1;
-            }
-            else { hi = mid - 1; }
+            if (Words[mid].StartSeconds <= posSec) { best = mid; lo = mid + 1; }
+            else hi = mid - 1;
         }
         return best;
     }
+
+    // ── Picker plumbing ──────────────────────────────────────────────
 
     private static async Task<string?> PickFileAsync(string title, FilePickerFileType filter)
     {
