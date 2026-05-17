@@ -114,11 +114,11 @@ public static class OrtSessionBuilder
     ///
     /// If a cache write+read round-trip fails (issue #56 — ORT can't reload
     /// optimized graphs that contain Loop subgraphs), the failed cache file
-    /// is deleted and a small sentinel <c>{cachePath}.disabled</c> is written
-    /// next to it. Future calls see the sentinel and skip caching entirely
-    /// (no write, no disk churn, no doomed re-load attempt) until the source
-    /// or ORT version changes — which moves the cache key and the sentinel
-    /// path along with it.
+    /// is deleted and a small sentinel <c>{cachePath}.cache-disabled</c> is
+    /// written next to it. Future calls see the sentinel and skip caching
+    /// entirely (no write, no disk churn, no doomed re-load attempt) until
+    /// the source or ORT version changes — which moves the cache key and
+    /// the sentinel path along with it.
     /// </summary>
     public static InferenceSession CreateCachedSession(
         string modelPath,
@@ -151,12 +151,22 @@ public static class OrtSessionBuilder
         // initializers into the outer scope, producing a graph that won't
         // re-load). When present, we skip caching entirely: no write, no
         // disk churn (~720 MB per run for the merged Loop graph), no
-        // doomed re-load attempt. The sentinel sits at cachePath+".disabled",
-        // so the same source-mtime+EP+ORT-version hash that keys the cache
-        // also auto-invalidates the sentinel — a source edit or ORT upgrade
-        // will trigger a fresh cache attempt.
-        string cacheDisabledPath = bypassCache ? "" : cachePath + ".disabled";
+        // doomed re-load attempt. The sentinel sits at
+        // cachePath+".cache-disabled", so the same source-mtime+EP+ORT-version
+        // hash that keys the cache also auto-invalidates the sentinel — a
+        // source edit or ORT upgrade will trigger a fresh cache attempt.
+        string cacheDisabledPath = bypassCache ? "" : cachePath + ".cache-disabled";
         bool cacheDisabledForThisModel = !bypassCache && File.Exists(cacheDisabledPath);
+
+        if (cacheDisabledForThisModel)
+        {
+            // Defensive cleanup: if a previous catch-block's File.Delete
+            // silently failed (file locked, EACCES, etc.) we'd be leaking
+            // ~720 MB per affected model. Retry the deletes now that we know
+            // the cache is permanently disabled for this key.
+            try { if (File.Exists(cachePath)) File.Delete(cachePath); } catch { /* best-effort */ }
+            try { if (File.Exists(cacheDataPath)) File.Delete(cacheDataPath); } catch { /* best-effort */ }
+        }
 
         if (!bypassCache && !cacheDisabledForThisModel && File.Exists(cachePath))
         {
@@ -175,6 +185,12 @@ public static class OrtSessionBuilder
                 // Cache file is corrupt or incompatible — fall through to a
                 // fresh load. Drop the bad file AND write a sentinel so the
                 // next run skips the doomed write+read cycle entirely.
+                // One-time log so the silent transition is visible (every
+                // subsequent run still prints cache=miss; only this catch
+                // marks the point caching was turned off for this key).
+                Console.WriteLine(
+                    $"[cache-disabled] {Path.GetFileName(cachePath)}: " +
+                    "ORT round-trip failed, disabling cache for this model (see issue #56).");
                 hitOpts.Dispose();
                 try { File.Delete(cachePath); } catch { /* best-effort */ }
                 try { File.Delete(cacheDataPath); } catch { /* best-effort */ }
