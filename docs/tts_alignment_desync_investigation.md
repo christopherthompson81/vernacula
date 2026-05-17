@@ -70,3 +70,50 @@ The fix order should be:
 3. Optional: fancy-quote normalization at markdown extraction (cheap; eliminates the small UNK count entirely).
 
 `<unk>` text-normalization (issue #75) is still worth doing for non-spoken-language input like dates and equations, but it is **not** the cause of the current desync.
+
+## Run 2 — 2026-05-17 — Chatterbox internal cross-attention as a replacement for NFA
+
+### Discovery: Chatterbox already does this internally
+
+While digging through chatterbox source (`chatterbox/models/t3/inference/alignment_stream_analyzer.py`), found that Resemble AI already extracts cross-attention alignment for their *own* hallucination-prevention logic. They identified three (layer, head) pairs that carry alignment signal:
+
+```python
+LLAMA_ALIGNED_HEADS = [(12, 15), (13, 11), (9, 2)]
+```
+
+Mechanism: set `tfmr.config.output_attentions = True` (HF auto-falls-back from SDPA to eager attention so the matrix becomes available), then register a forward hook on each of those three self-attention layers and capture the attention weights tensor. Mean across the three head slices gives a single (T_speech, T_kv) alignment matrix. Resemble uses this for `false_start` / `long_tail` / `repetition` detection and to force early EOS when the rollout goes off-rails — meaning they trust it enough to gate safety logic on it.
+
+For us this means **phase 1 collapses from "discover alignment-bearing heads via heatmap mosaic" to "verify Resemble's pre-selected heads work on our inputs."**
+
+### Phase 1 spike: `scripts/chatterbox_attention_spike/extract_alignment.py`
+
+Standalone Python script (uses `.venv-chatterbox-export`). Loads `ChatterboxTTS.from_pretrained`, attaches forward hooks to the three aligned layers, synthesizes one chunk, captures per-step attention, builds the full alignment matrix, saves as `.npy` + heatmap `.png`.
+
+Ran on three torture-test chunks. All three show clean monotonic-diagonal alignment with no off-diagonal hallucinations:
+
+**Run 1a — date chunk (`"May 25, 2026"`, 96 LM steps, 3.8 s audio)** — `docs/attn_spike_heatmaps/run1_date.png`. Diagonal stripe from (speech row ~50, kv col ~35) down to (~145, ~48). Text-token range cols ~35-48; conditioning prefix (cols 0-35) receives no attention from speech generation.
+
+**Run 1b — long prose chunk (201 chars, 432 LM steps, 17.2 s audio)** — `docs/attn_spike_heatmaps/run1_long_prose.png`. Beautifully clean diagonal from (row ~170, col ~40) to (~595, ~170). 425 decode steps tracking ~130 text positions in strict monotonic order. Thin 1-2 pixel stripe with no off-diagonal blobs.
+
+**Run 1c — multi-decimal numeric chunk (`"CRM 7.6.1.3 reads:"`, 107 LM steps, 4.2 s audio)** — `docs/attn_spike_heatmaps/run1_numeric.png`. Critical test: this is the chunk that produced the worst NFA garbage (`CRM | <unk>.<unk>.<unk>.<unk> | reads<unk>`). Cross-attention shows clean monotonic diagonal from (row ~55, col ~33) to (~150, ~50). The digits get their own attention positions just like any other text token — **the LM model knows exactly where it is in the input regardless of token category.** The vocab/training problems that hobble NFA simply don't apply here, because we're reading the LM's own self-knowledge, not a separate ASR model's interpretation of the audio.
+
+### Implications
+
+- The technique works. Resolution ~40 ms per speech step (~25 Hz), more than enough for word-level highlight.
+- No NFA-style vocab/training limitations: anywhere the model produced audio, the alignment knows what text caused it.
+- No vocab pre-export work needed; we can use the existing Chatterbox checkpoint.
+- The cost at runtime: forcing `output_attentions=True` on the model config switches all 30 layers from SDPA to eager attention. That's a measurable slowdown for full-model inference. For phase 2 we'll want to either (a) only compute attention for the 3 needed layers, or (b) re-export an alignment-specific ONNX graph that outputs just those layers' attention.
+
+### Phase 2 plan (C# side)
+
+1. **Modify `scripts/chatterbox_export/export_chatterbox_to_onnx.py`** to add an optional alignment-output mode for `language_model.onnx`. Either:
+   - Add three attention output tensors (one per aligned layer) to the existing graph. Quadratic-in-seq-length per layer; for 1024 max LM steps × 16 heads × fp16, that's ~40 MB per layer per pass. Manageable.
+   - OR ship a sidecar graph (`language_model_with_attn.onnx`) used only when alignment is requested. Cleaner separation but larger total bundle size.
+2. **C# side: extend `AcousticLM`** to optionally collect attention per layer per rollout step. Build the (T_speech, T_kv) matrix incrementally during the generate loop, slice the text-token cols at the end.
+3. **Replace `NemoNfaAligner` in `SynthesisService`** with a `ChatterboxAttentionAligner` that runs after synthesis and converts the attention matrix → word timings via:
+   - For each speech step row, argmax → text-token position
+   - Group adjacent speech steps that share the same text-token argmax → that's the text-token's audio span
+   - Map text tokens back to original input words via the BPE token-to-word boundary tracking
+4. **Drop the NFA bundle entirely** from the reader app's required setup. Optional: keep it as a fallback for non-Chatterbox audio inputs in the future.
+
+Open follow-up: text-normalization (issue #75) — still worth doing for spoken quality even though it no longer matters for alignment, since the LM still mispronounces things like `"7.6.1.3"` as `"seven point sixty one point three"`.
