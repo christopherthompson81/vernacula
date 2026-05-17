@@ -82,18 +82,26 @@ public sealed class ChunkedSynthesizer
     /// mode). At groupSize&gt;1 all chunks must share the same prompt
     /// length (MVP — same constraint as <see cref="AcousticLM.GenerateBatch"/>).
     /// </param>
+    /// <param name="chunkProduced">Optional per-chunk callback fired
+    /// from the vocoder thread as each chunk completes — passed
+    /// (chunkIndex, waveform, ChunkTiming). Use it to stream audio to a
+    /// player while the rest of the synthesis is still running. Fires
+    /// in input order; the callback runs synchronously, so don't block
+    /// on it (queue the waveform to an external buffer and return).</param>
     public ChunkSynthesisResult Synthesize(
         SpeakerEmbedding speaker,
         IReadOnlyList<long[]> textTokenIdsPerChunk,
         bool? useIoBinding = null,
         float exaggeration = ChatterboxConstants.DefaultExaggeration,
         int maxSteps = ChatterboxConstants.DefaultMaxLmSteps,
-        int groupSize = 1)
+        int groupSize = 1,
+        Action<int, float[], ChunkTiming>? chunkProduced = null)
     {
         if (groupSize < 1)
             throw new ArgumentException("groupSize must be >= 1.", nameof(groupSize));
         if (groupSize > 1)
-            return SynthesizeInGroups(speaker, textTokenIdsPerChunk, groupSize, useIoBinding, exaggeration, maxSteps);
+            return SynthesizeInGroups(speaker, textTokenIdsPerChunk, groupSize,
+                useIoBinding, exaggeration, maxSteps, chunkProduced);
 
         int n = textTokenIdsPerChunk.Count;
         if (n == 0)
@@ -164,7 +172,9 @@ public sealed class ChunkedSynthesizer
                     speechTokens, speaker.SpeakerEmbeddings, speaker.SpeakerFeatures);
                 sw.Stop();
                 waveforms[idx] = wav;
-                timings[idx] = new ChunkTiming(idx, lmMs, lmSteps, sw.ElapsedMilliseconds, wav.Length);
+                var timing = new ChunkTiming(idx, lmMs, lmSteps, sw.ElapsedMilliseconds, wav.Length);
+                timings[idx] = timing;
+                chunkProduced?.Invoke(idx, wav, timing);
             }
         }
         catch
@@ -194,7 +204,8 @@ public sealed class ChunkedSynthesizer
         int groupSize,
         bool? useIoBinding,
         float exaggeration,
-        int maxSteps)
+        int maxSteps,
+        Action<int, float[], ChunkTiming>? chunkProduced)
     {
         int n = textTokenIdsPerChunk.Count;
         if (n == 0)
@@ -276,8 +287,10 @@ public sealed class ChunkedSynthesizer
                     // shares (group wall / B). This lets the summary compute
                     // "per-chunk LM" and "per-chunk voc" symmetrically with
                     // the serial path.
-                    timings[idx] = new ChunkTiming(
+                    var timing = new ChunkTiming(
                         idx, lmMs / B, lmSteps[b], vocMs / B, groupWavs[b].Length);
+                    timings[idx] = timing;
+                    chunkProduced?.Invoke(idx, groupWavs[b], timing);
                 }
             }
         }

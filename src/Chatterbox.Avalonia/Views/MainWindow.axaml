@@ -3,65 +3,81 @@
         xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         xmlns:vm="using:Chatterbox.App.ViewModels"
+        xmlns:md="clr-namespace:Markdown.Avalonia;assembly=Markdown.Avalonia"
         x:Class="Chatterbox.App.Views.MainWindow"
         x:DataType="vm:MainViewModel"
         mc:Ignorable="d"
         Width="1100" Height="720" MinWidth="800" MinHeight="500"
-        Title="Chatterbox Reader (MVP)">
+        Title="Chatterbox Reader">
 
     <Grid ColumnDefinitions="*,360" Margin="12">
 
-        <!-- ── Left pane: word-by-word highlight + input ──────────────── -->
+        <!-- ── Left pane: input + source view (toggleable) ────────────── -->
         <Border Grid.Column="0" BorderBrush="#33ffffff" BorderThickness="1"
                 CornerRadius="4" Padding="12" Margin="0,0,12,0">
             <Grid RowDefinitions="Auto,Auto,*">
-                <TextBlock Grid.Row="0" Text="Source text"
-                           FontWeight="SemiBold" Margin="0,0,0,4" />
+                <Grid Grid.Row="0" ColumnDefinitions="*,Auto" Margin="0,0,0,4">
+                    <TextBlock Text="Source text" FontWeight="SemiBold" VerticalAlignment="Center" />
+                    <CheckBox Grid.Column="1" Content="Render markdown"
+                              IsChecked="{Binding RenderMarkdown}"
+                              VerticalAlignment="Center" />
+                </Grid>
 
-                <!-- Input box for typing/pasting markdown. Disabled while
-                     a synthesis is running so the source can't drift mid-flight. -->
                 <TextBox Grid.Row="1" Text="{Binding Text}"
                          AcceptsReturn="True" TextWrapping="Wrap"
                          MinHeight="120" MaxHeight="220"
                          IsEnabled="{Binding !IsBusy}"
                          Watermark="Paste markdown or text here, or pick a file from the right pane." />
 
-                <!-- Word-highlight pane: shows the aligned words from
-                     the last synthesis, with the current word emphasized.
-                     Empty until Words is populated. -->
-                <ScrollViewer Grid.Row="2" Margin="0,12,0,0">
-                    <ItemsControl ItemsSource="{Binding Words}">
-                        <ItemsControl.ItemsPanel>
-                            <ItemsPanelTemplate>
-                                <WrapPanel Orientation="Horizontal" />
-                            </ItemsPanelTemplate>
-                        </ItemsControl.ItemsPanel>
-                        <ItemsControl.ItemTemplate>
-                            <DataTemplate x:DataType="vm:WordItemViewModel">
-                                <!-- Each word's IsCurrent toggles the .current
-                                     class; MainViewModel updates it on every
-                                     50 ms playback tick. The styled selector
-                                     is defined in Window.Styles below. -->
-                                <TextBlock Text="{Binding Text}"
-                                           FontSize="18" Margin="2,2,4,2"
-                                           Classes.current="{Binding IsCurrent}" />
-                            </DataTemplate>
-                        </ItemsControl.ItemTemplate>
-                    </ItemsControl>
-                </ScrollViewer>
-
-                <!-- Falls back to a hint when there are no words yet (pre-synthesis). -->
+                <!-- Source view: switches between the word-by-word highlight
+                     grid (for click-to-seek + reading along with playback)
+                     and a Markdown.Avalonia rendering of the raw input.
+                     Word-highlight only fires in the words view; the
+                     markdown view doesn't carry source-position mapping
+                     (deferred — needs a follow-up issue). -->
+                <Panel Grid.Row="2" Margin="0,12,0,0">
+                    <ScrollViewer IsVisible="{Binding !RenderMarkdown}">
+                        <ItemsControl ItemsSource="{Binding Words}">
+                            <ItemsControl.ItemsPanel>
+                                <ItemsPanelTemplate>
+                                    <WrapPanel Orientation="Horizontal" />
+                                </ItemsPanelTemplate>
+                            </ItemsControl.ItemsPanel>
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate x:DataType="vm:WordItemViewModel">
+                                    <!-- Each word is a borderless Button so it
+                                         participates in the click → SeekToWord
+                                         pipeline (the click handler on a bare
+                                         TextBlock requires a behavior; a styled
+                                         Button is simpler). The .current class
+                                         toggles via IsCurrent for the highlight. -->
+                                    <Button Command="{Binding ClickCommand}"
+                                            Content="{Binding Text}"
+                                            Classes="word"
+                                            Classes.current="{Binding IsCurrent}" />
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </ScrollViewer>
+                    <md:MarkdownScrollViewer IsVisible="{Binding RenderMarkdown}"
+                                             Markdown="{Binding Text}" />
+                </Panel>
             </Grid>
         </Border>
 
         <!-- ── Right pane: pickers, synthesize, playback ────────────── -->
         <StackPanel Grid.Column="1" Spacing="10">
+            <!-- All pickers are disabled during synthesis. Changing the
+                 ONNX or NFA bundle mid-run would dispose the SynthesisService
+                 the running task is still calling into → use-after-dispose.
+                 Gating the buttons is cheaper than deferring invalidation. -->
             <TextBlock Text="Voice (.wav)" FontWeight="SemiBold" />
             <Grid ColumnDefinitions="*,Auto">
                 <TextBox Text="{Binding VoicePath}" IsReadOnly="True"
                          Watermark="No voice picked" />
                 <Button Grid.Column="1" Content="Pick…"
-                        Command="{Binding PickVoiceCommand}" Margin="6,0,0,0" />
+                        Command="{Binding PickVoiceCommand}"
+                        IsEnabled="{Binding !IsBusy}" Margin="6,0,0,0" />
             </Grid>
 
             <TextBlock Text="Chatterbox ONNX bundle" FontWeight="SemiBold" Margin="0,8,0,0" />
@@ -69,7 +85,8 @@
                 <TextBox Text="{Binding OnnxBundleDir}" IsReadOnly="True"
                          Watermark="No bundle picked" />
                 <Button Grid.Column="1" Content="Pick…"
-                        Command="{Binding PickOnnxBundleCommand}" Margin="6,0,0,0" />
+                        Command="{Binding PickOnnxBundleCommand}"
+                        IsEnabled="{Binding !IsBusy}" Margin="6,0,0,0" />
             </Grid>
 
             <TextBlock Text="NFA bundle (optional, enables word highlight)"
@@ -78,29 +95,56 @@
                 <TextBox Text="{Binding NfaBundleDir}" IsReadOnly="True"
                          Watermark="No NFA bundle picked" />
                 <Button Grid.Column="1" Content="Pick…"
-                        Command="{Binding PickNfaBundleCommand}" Margin="6,0,0,0" />
+                        Command="{Binding PickNfaBundleCommand}"
+                        IsEnabled="{Binding !IsBusy}" Margin="6,0,0,0" />
             </Grid>
 
             <TextBlock Text="Text source" FontWeight="SemiBold" Margin="0,12,0,0" />
             <Button Content="Load text/markdown file…"
                     Command="{Binding PickTextFileCommand}"
+                    IsEnabled="{Binding !IsBusy}"
                     HorizontalAlignment="Stretch" />
 
             <Separator Margin="0,12,0,0" />
 
-            <Button Content="Synthesize"
-                    Command="{Binding SynthesizeCommand}"
-                    FontWeight="SemiBold"
-                    HorizontalAlignment="Stretch" />
-            <ProgressBar IsIndeterminate="True"
-                         IsVisible="{Binding IsBusy}"
-                         Height="3" Margin="0,4,0,0" />
-
-            <Separator Margin="0,12,0,0" />
-
+            <!-- ── Synthesis ─────────────────────────────────────── -->
+            <TextBlock Text="Synthesis" FontWeight="SemiBold"
+                       Margin="0,4,0,2" />
             <StackPanel Orientation="Horizontal" Spacing="6">
-                <Button Content="▶ Play" Command="{Binding PlayCommand}"
+                <Button Content="Synthesize"
+                        Command="{Binding SynthesizeCommand}"
+                        FontWeight="SemiBold" MinWidth="110" />
+                <!-- Cancel only enabled mid-run. Cancellation takes effect
+                     after the current chunk (the LM rollout is not
+                     interruptible); any chunks completed before cancel
+                     are saved as a partial WAV that Play can use. -->
+                <Button Content="Cancel"
+                        Command="{Binding CancelSynthesisCommand}"
                         MinWidth="80" />
+            </StackPanel>
+            <!-- Determinate once TotalChunks > 0 (set by the "chunked into
+                 N paragraphs" progress event); indeterminate during the
+                 model-load + chunking prefix. -->
+            <ProgressBar IsVisible="{Binding IsBusy}"
+                         IsIndeterminate="{Binding !TotalChunks}"
+                         Minimum="0"
+                         Maximum="{Binding TotalChunks}"
+                         Value="{Binding ChunksDone}"
+                         ShowProgressText="True"
+                         ProgressTextFormat="{}{0:0} / {3:0} chunks"
+                         Height="14" Margin="0,4,0,0" />
+
+            <Separator Margin="0,12,0,0" />
+
+            <!-- ── Playback ──────────────────────────────────────── -->
+            <TextBlock Text="Playback" FontWeight="SemiBold"
+                       Margin="0,4,0,2" />
+            <StackPanel Orientation="Horizontal" Spacing="6">
+                <!-- Single toggle: label changes between ▶ Play /
+                     ⏸ Pause / ▶ Resume based on PlaybackService state. -->
+                <Button Content="{Binding PlayPauseLabel}"
+                        Command="{Binding PlayPauseCommand}"
+                        MinWidth="100" />
                 <Button Content="■ Stop" Command="{Binding StopCommand}"
                         MinWidth="80" />
             </StackPanel>
@@ -115,8 +159,22 @@
     </Grid>
 
     <Window.Styles>
-        <!-- Current-word highlight: a stronger weight + accent color. -->
-        <Style Selector="TextBlock.current">
+        <!-- Word buttons: borderless, transparent, click-to-seek. The
+             .current class is the highlight applied while the audio is
+             on that word. -->
+        <Style Selector="Button.word">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderBrush" Value="Transparent" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Padding" Value="2,2" />
+            <Setter Property="Margin" Value="0,0,2,0" />
+            <Setter Property="FontSize" Value="18" />
+            <Setter Property="Cursor" Value="Hand" />
+        </Style>
+        <Style Selector="Button.word:pointerover /template/ ContentPresenter">
+            <Setter Property="Background" Value="#22ffffff" />
+        </Style>
+        <Style Selector="Button.word.current">
             <Setter Property="FontWeight" Value="Bold" />
             <Setter Property="Foreground" Value="#5ad" />
         </Style>
