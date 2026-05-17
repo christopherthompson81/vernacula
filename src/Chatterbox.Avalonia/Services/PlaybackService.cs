@@ -42,6 +42,11 @@ public sealed class PlaybackService : IDisposable
     // Backend state (only one set in use at a time).
     private BufferedWaveProvider? _bufferedProvider;
     private WaveOutEvent? _waveOut;
+    // Held alongside _waveOut on the file-playback path so we can dispose
+    // it in Stop(). WaveOutEvent.Dispose() does NOT dispose the WaveStream
+    // it was given via Init — without holding our own ref, every Play
+    // would leak an open file handle (Windows keeps the WAV locked too).
+    private AudioFileReader? _fileReader;
     private Process? _ffplayProcess;
     private Stream? _ffplayStdin;
 
@@ -395,12 +400,12 @@ public sealed class PlaybackService : IDisposable
 
         if (OperatingSystem.IsWindows())
         {
-            var reader = new AudioFileReader(audioPath)
+            _fileReader = new AudioFileReader(audioPath)
             {
                 CurrentTime = TimeSpan.FromSeconds(seconds),
             };
             _waveOut = new WaveOutEvent();
-            _waveOut.Init(reader);
+            _waveOut.Init(_fileReader);
             _waveOut.PlaybackStopped += (_, _) => Dispatcher.UIThread.InvokeAsync(Stop);
             _waveOut.Play();
         }
@@ -439,6 +444,11 @@ public sealed class PlaybackService : IDisposable
             try { _waveOut.Stop(); } catch { /* shutdown race */ }
             _waveOut.Dispose();
             _waveOut = null;
+        }
+        if (_fileReader is not null)
+        {
+            _fileReader.Dispose();
+            _fileReader = null;
         }
         if (_ffplayProcess is not null)
         {

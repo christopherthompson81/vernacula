@@ -267,8 +267,10 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
                 OnnxBundleDir,
                 nfaBundleDir: string.IsNullOrWhiteSpace(NfaBundleDir) ? null : NfaBundleDir);
 
+            // ms precision avoids collisions when the user re-Synthesizes
+            // (or clicks Play, below) twice in the same second.
             string outWav = Path.Combine(Path.GetTempPath(),
-                $"chatterbox_app_{DateTime.UtcNow:yyyyMMddHHmmss}.wav");
+                $"chatterbox_app_{DateTime.UtcNow:yyyyMMddHHmmss_fff}.wav");
             bool streamingStarted = false;
 
             var result = await _synthService.SynthesizeStreamingAsync(
@@ -447,7 +449,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         if (snapshot is not null)
         {
             var outWav = Path.Combine(Path.GetTempPath(),
-                $"chatterbox_app_{DateTime.UtcNow:yyyyMMddHHmmss}_play.wav");
+                $"chatterbox_app_{DateTime.UtcNow:yyyyMMddHHmmss_fff}_play.wav");
             try
             {
                 SynthesisService.WriteWavFromChunks(outWav, snapshot, ChatterboxConstants.S3GenSr);
