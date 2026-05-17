@@ -106,9 +106,6 @@ public static class ChatterboxAttentionAligner
         }
 
         // Aggregate per input word: min/max row that argmaxed to it.
-        // Words with no row entries get zero-duration timings inserted
-        // between their neighbours' spans (so the consumer always has
-        // one entry per input word, even for short/skipped words).
         var perWord = new (int firstRow, int lastRow)[words.Count];
         for (int w = 0; w < perWord.Length; w++) perWord[w] = (-1, -1);
         for (int r = 0; r < speechRows; r++)
@@ -119,36 +116,64 @@ public static class ChatterboxAttentionAligner
             else perWord[w] = (perWord[w].firstRow, r);
         }
 
-        // Emit one WordTiming per input word. For words that argmax'd
-        // somewhere: timing = (firstRow, lastRow + 1). For un-seen
-        // words: interpolate between the nearest seen neighbours,
-        // preserving input-order monotonicity.
+        // Emit one WordTiming per input word. For runs of consecutive
+        // un-seen words, distribute them EVENLY across the gap between
+        // the surrounding seen neighbours. The earlier collapse-to-a-
+        // single-point behaviour caused the user-visible "highlight
+        // stuck at chunk start" symptom: when N consecutive missing
+        // words all shared the same [prev_end, next_start] range, the
+        // dispatcher's FindWordAt (last word with Start <= pos) put
+        // the highlight on the LAST missing word for the entire gap.
+        // Distributing them evenly keeps the highlight advancing in
+        // step with audio time across the gap.
+        double chunkDur = (double)totalAudioSamples / sampleRate;
         var result = new List<WordTiming>(words.Count);
-        for (int w = 0; w < words.Count; w++)
+        int idx = 0;
+        while (idx < words.Count)
         {
-            double startSec, endSec;
-            if (perWord[w].firstRow >= 0)
+            if (perWord[idx].firstRow >= 0)
             {
-                startSec = perWord[w].firstRow * secondsPerStep;
-                endSec = (perWord[w].lastRow + 1) * secondsPerStep;
+                double s = perWord[idx].firstRow * secondsPerStep;
+                double e = (perWord[idx].lastRow + 1) * secondsPerStep;
+                result.Add(new WordTiming(words[idx].Text, s, e));
+                idx++;
+                continue;
             }
-            else
+
+            // Find the extent of the consecutive un-seen run.
+            int runStart = idx;
+            while (idx < words.Count && perWord[idx].firstRow < 0) idx++;
+            int runLen = idx - runStart;
+
+            // Gap boundaries:
+            //   prevEnd = end of the seen word before runStart (or 0
+            //             at chunk start)
+            //   nextStart = start of the seen word at/after the run
+            //               (or chunkDur at chunk end)
+            // Both end up reasonable defaults so single-row chunks
+            // (entire word list un-seen) get evenly spread across the
+            // whole chunk.
+            double prevEnd = 0;
+            for (int u = runStart - 1; u >= 0; u--)
             {
-                // Find previous seen word's end and next seen word's
-                // start; place this word in the gap. If no prior word
-                // is seen, pin to the next's start; if no next, pin to
-                // prior's end. As a final fallback, mid-audio.
-                double prevEnd = -1, nextStart = -1;
-                for (int u = w - 1; u >= 0; u--)
-                    if (perWord[u].lastRow >= 0) { prevEnd = (perWord[u].lastRow + 1) * secondsPerStep; break; }
-                for (int u = w + 1; u < words.Count; u++)
-                    if (perWord[u].firstRow >= 0) { nextStart = perWord[u].firstRow * secondsPerStep; break; }
-                if (prevEnd >= 0 && nextStart >= 0) { startSec = prevEnd; endSec = nextStart; }
-                else if (prevEnd >= 0) { startSec = prevEnd; endSec = prevEnd; }
-                else if (nextStart >= 0) { startSec = nextStart; endSec = nextStart; }
-                else { startSec = 0; endSec = 0; }
+                if (perWord[u].lastRow >= 0)
+                {
+                    prevEnd = (perWord[u].lastRow + 1) * secondsPerStep;
+                    break;
+                }
             }
-            result.Add(new WordTiming(words[w].Text, startSec, endSec));
+            double nextStart = chunkDur;
+            if (idx < words.Count && perWord[idx].firstRow >= 0)
+                nextStart = perWord[idx].firstRow * secondsPerStep;
+
+            // Even slice per word in the run.
+            double sliceWidth = Math.Max(0.0, nextStart - prevEnd) / runLen;
+            for (int j = 0; j < runLen; j++)
+            {
+                double s = prevEnd + j * sliceWidth;
+                double e = prevEnd + (j + 1) * sliceWidth;
+                result.Add(new WordTiming(words[runStart + j].Text, s, e));
+            }
         }
         return result;
     }

@@ -126,6 +126,7 @@ public sealed class SynthesisService : IDisposable
             var allWords = new List<AlignedWord>();
             int sampleOffsetCursor = 0;
 
+            const int maxLmSteps = 1024;
             for (int idx = 0; idx < totalChunks; idx++)
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -134,7 +135,24 @@ public sealed class SynthesisService : IDisposable
                 string chunkText = chunks[idx];
                 var tokenIds = tokenizer.WrapForLm(chunkText);
                 var lmResult = pipeline.Lm.Generate(
-                    spk.CondEmb, tokenIds, maxSteps: 1024, captureAlignment: true);
+                    spk.CondEmb, tokenIds, maxSteps: maxLmSteps, captureAlignment: true);
+
+                // Truncation check: if the LM hit maxSteps without
+                // emitting StopSpeechToken, the chunk's audio is shorter
+                // than the text demands. The alignment matrix will only
+                // cover the spoken prefix; the aligner's interpolation
+                // will spread the un-spoken trailing words across a tiny
+                // window at the end. Surface this so the user can see
+                // which chunk got cut.
+                bool truncated = lmResult.Steps >= maxLmSteps
+                    && lmResult.RawGeneratedTokens[^1] != ChatterboxConstants.StopSpeechToken;
+                if (truncated)
+                {
+                    onProgress?.Invoke(new ProgressEvent(
+                        $"⚠ chunk {idx + 1}/{totalChunks} hit LM step cap — audio may be truncated",
+                        idx + 1, totalChunks));
+                }
+
                 var speechTokens = lmResult.BuildSpeechTokens(spk.AudioTokens);
                 var wav = pipeline.Vocoder.Synthesize(
                     speechTokens, spk.SpeakerEmbeddings, spk.SpeakerFeatures);
