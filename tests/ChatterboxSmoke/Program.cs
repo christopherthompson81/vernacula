@@ -15,6 +15,8 @@
 
 using System.Diagnostics;
 using Chatterbox.Base;
+using Microsoft.ML.OnnxRuntime;
+using Microsoft.ML.OnnxRuntime.Tensors;
 using Chatterbox.Base.AudioIo;
 using Chatterbox.Base.Tokenization;
 using NAudio.Wave;
@@ -52,6 +54,7 @@ internal static class Program
         string? tokenizerJson = null;
         int benchChunks = 1;
         bool pipelined = false;
+        int benchBatchedLm = 0;  // 0 = disabled; >0 = run probe with B=this
         for (int i = 0; i < args.Length; i++)
         {
             switch (args[i])
@@ -84,6 +87,20 @@ internal static class Program
                     // a serial single-chunk call.
                     pipelined = true;
                     break;
+                case "--bench-batched-lm":
+                    // Probe whether the LM ONNX accepts B>1 inputs at all
+                    // (its dynamic_axes say yes; this confirms ORT actually
+                    // honors it). Bypasses voice/tokenizer/vocoder — loads
+                    // only embed_tokens + language_model, runs a B-batch
+                    // prefill + a handful of step iterations, reports
+                    // per-step ms. Use to compute the amortization factor
+                    // vs serial B=1: lower than 1.0 means batching wins.
+                    if (!int.TryParse(args[++i], out benchBatchedLm) || benchBatchedLm < 1)
+                    {
+                        Console.Error.WriteLine("--bench-batched-lm expects a positive integer batch size.");
+                        return 2;
+                    }
+                    break;
                 default:
                     Console.Error.WriteLine($"Unknown arg: {args[i]}");
                     return 2;
@@ -101,10 +118,13 @@ internal static class Program
                     + "Use --no-io-binding for full past_kv diag artifacts.");
             }
         }
-        if (onnxDir is null || voicePath is null || outPath is null)
+        // --bench-batched-lm skips voice + vocoder; only needs --onnx-dir.
+        // Other modes need --voice. --out always has a default.
+        if (onnxDir is null || (voicePath is null && benchBatchedLm == 0))
         {
             Console.Error.WriteLine(
-                "Usage: --onnx-dir <dir> --voice <wav> [--out <wav>] [--ep cpu|cuda]");
+                "Usage: --onnx-dir <dir> --voice <wav> [--out <wav>] [--ep cpu|cuda]\n"
+                + "   or: --onnx-dir <dir> --bench-batched-lm <B>");
             return 2;
         }
         if (ep is not ("cpu" or "cuda"))
@@ -113,12 +133,18 @@ internal static class Program
             return 2;
         }
 
-        voicePath = ExpandHome(voicePath);
-        outPath = ExpandHome(outPath);
+        if (voicePath is not null) voicePath = ExpandHome(voicePath);
+        outPath = ExpandHome(outPath ?? "/tmp/chatterbox_out_cs.wav");
 
         var totalSw = Stopwatch.StartNew();
         var sw = new Stopwatch();
         var epEnum = ep == "cuda" ? ExecutionProvider.Auto : ExecutionProvider.Cpu;
+
+        // ── Probe mode: --bench-batched-lm ────────────────────────────────
+        if (benchBatchedLm > 0)
+        {
+            return RunBatchedLmProbe(onnxDir, epEnum, benchBatchedLm);
+        }
 
         // ── Resolve tokenizer (needed only if --text was given) ───────────
         EnTokenizer? tokenizer = null;
@@ -172,8 +198,10 @@ internal static class Program
         Console.WriteLine($"Loaded sessions in {totalLoadSw.ElapsedMilliseconds} ms total  (requested={ep}, effective={effectiveEp})");
 
         // ── Speaker embedding ──────────────────────────────────────────────
+        // voicePath is non-null here: the only path that allows it to be
+        // null is benchBatchedLm > 0, which returned above.
         sw.Restart();
-        var audio = VoicePromptLoader.Load(voicePath);
+        var audio = VoicePromptLoader.Load(voicePath!);
         sw.Stop();
         Console.WriteLine($"Loaded voice {voicePath}: {audio.Length} samples "
             + $"({audio.Length / (float)ChatterboxConstants.S3GenSr:F2}s)  [{sw.ElapsedMilliseconds} ms]");
@@ -318,4 +346,156 @@ internal static class Program
         => path.StartsWith("~/")
             ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), path[2..])
             : path;
+
+    /// <summary>
+    /// Bypasses voice/tokenizer/vocoder; loads only embed_tokens + language_model,
+    /// runs a single prefill at batch=B plus a handful of autoregressive step
+    /// iterations, reports per-step ms. Used to answer:
+    ///   1. Does ORT actually honor the LM ONNX's B>1 dynamic_axes? (yes/no)
+    ///   2. What is the amortization factor — wall(B=N) / wall(B=1)?
+    ///      Lower than 1.0 means batching wins; close to N means we're
+    ///      memory-bandwidth-bound and batching adds little.
+    ///
+    /// Same prompt is replicated across the B dimension to keep the prefill
+    /// length identical per batch element. Real per-element variable-length
+    /// prefill is a Stage-2-implementation concern, not a probe concern.
+    /// </summary>
+    private static int RunBatchedLmProbe(string onnxDir, ExecutionProvider ep, int batchSize)
+    {
+        const int StepIterations = 10;  // average across this many step calls
+
+        Console.WriteLine($"Batched-LM probe: B={batchSize}, ep={ep}");
+        var loadSw = Stopwatch.StartNew();
+        using var embed = OrtSessionBuilder.CreateCachedSession(
+            Path.Combine(onnxDir, "embed_tokens.onnx"), ep);
+        using var lm = OrtSessionBuilder.CreateCachedSession(
+            Path.Combine(onnxDir, "language_model.onnx"), ep);
+        loadSw.Stop();
+        Console.WriteLine($"  loaded embed_tokens + language_model in {loadSw.ElapsedMilliseconds} ms");
+
+        // Build B-batched input. Replicate FallbackInputIds (the Ezreal sentence
+        // wrapped with [EXAGGERATION, ..., START_SPEECH, START_SPEECH]) across B.
+        int sText = FallbackInputIds.Length;
+        var idsB = new long[batchSize * sText];
+        var posB = new long[batchSize * sText];
+        for (int b = 0; b < batchSize; b++)
+        {
+            Array.Copy(FallbackInputIds, 0, idsB, b * sText, sText);
+            for (int i = 0; i < sText; i++)
+                posB[b * sText + i] = FallbackInputIds[i] >= ChatterboxConstants.StartSpeechToken ? 0 : i - 1;
+        }
+        var exagB = new float[batchSize];
+        Array.Fill(exagB, ChatterboxConstants.DefaultExaggeration);
+
+        // embed_tokens at B, S (dynamic axes support it).
+        var embSw = Stopwatch.StartNew();
+        using var embOut = embed.Run(new[]
+        {
+            NamedOnnxValue.CreateFromTensor("input_ids", new DenseTensor<long>(idsB, new[] { batchSize, sText })),
+            NamedOnnxValue.CreateFromTensor("position_ids", new DenseTensor<long>(posB, new[] { batchSize, sText })),
+            NamedOnnxValue.CreateFromTensor("exaggeration", new DenseTensor<float>(exagB, new[] { batchSize })),
+        });
+        var textEmb = embOut.First().AsTensor<float>();
+        embSw.Stop();
+        Console.WriteLine($"  embed_tokens B={batchSize}: {embSw.ElapsedMilliseconds} ms  text_emb shape={DimsOf(textEmb.Dimensions)}");
+
+        // inputs_embeds = text_emb directly (no cond_emb prepend; this probe
+        // doesn't care about parity, only kernel timing). Shape: [B, S, 1024].
+        var inputsEmbeds = textEmb.ToArray();
+        int sTotal = sText;
+        int hidden = ChatterboxConstants.LlmHidden;
+
+        // ── Prefill ─────────────────────────────────────────────────────
+        var attentionMask = new long[batchSize * sTotal];
+        Array.Fill(attentionMask, 1);
+        var pastKv = new float[ChatterboxConstants.LlmLayers * 2][];
+        var pastKvShape = new int[] { batchSize, ChatterboxConstants.LlmKvHeads, 0, ChatterboxConstants.LlmHeadDim };
+        for (int k = 0; k < pastKv.Length; k++) pastKv[k] = [];
+
+        var prefillSw = Stopwatch.StartNew();
+        var prefillOut = RunLmOnce(lm, inputsEmbeds, batchSize, sTotal, attentionMask, pastKv, pastKvShape);
+        prefillSw.Stop();
+        var prefillList = prefillOut.ToList();
+        int vocab = prefillList[0].AsTensor<float>().Dimensions[2];
+        for (int layer = 0; layer < ChatterboxConstants.LlmLayers; layer++)
+        {
+            pastKv[2 * layer] = prefillList[1 + 2 * layer].AsTensor<float>().ToArray();
+            pastKv[2 * layer + 1] = prefillList[1 + 2 * layer + 1].AsTensor<float>().ToArray();
+        }
+        pastKvShape = prefillList[1].AsTensor<float>().Dimensions.ToArray();
+        prefillOut.Dispose();
+        Console.WriteLine($"  prefill B={batchSize} S={sTotal}: {prefillSw.ElapsedMilliseconds} ms  vocab={vocab}  past_kv per-layer shape={DimsOf(pastKvShape)}");
+
+        // ── StepIterations autoregressive steps (random input embeds, B,1,1024) ──
+        var stepMs = new long[StepIterations];
+        for (int step = 0; step < StepIterations; step++)
+        {
+            var stepEmbeds = new float[batchSize * 1 * hidden];
+            // Use deterministic dummy data; this probe measures cost, not output correctness.
+            for (int j = 0; j < stepEmbeds.Length; j++) stepEmbeds[j] = (j % 17) / 17.0f;
+
+            attentionMask = GrowBatchedMask(attentionMask, batchSize, 1);
+            var stepSw = Stopwatch.StartNew();
+            var stepOut = RunLmOnce(lm, stepEmbeds, batchSize, 1, attentionMask, pastKv, pastKvShape);
+            stepSw.Stop();
+            stepMs[step] = stepSw.ElapsedMilliseconds;
+
+            var stepList = stepOut.ToList();
+            for (int layer = 0; layer < ChatterboxConstants.LlmLayers; layer++)
+            {
+                pastKv[2 * layer] = stepList[1 + 2 * layer].AsTensor<float>().ToArray();
+                pastKv[2 * layer + 1] = stepList[1 + 2 * layer + 1].AsTensor<float>().ToArray();
+            }
+            pastKvShape = stepList[1].AsTensor<float>().Dimensions.ToArray();
+            stepOut.Dispose();
+        }
+
+        long stepSum = 0;
+        foreach (var ms in stepMs) stepSum += ms;
+        double stepAvgPerCall = stepSum / (double)StepIterations;
+        double stepAvgPerBatchElem = stepAvgPerCall / batchSize;
+        Console.WriteLine($"  step iter avg: {stepAvgPerCall:F1} ms/call  ({stepAvgPerBatchElem:F1} ms/batch-elem  → B={batchSize} amortization)");
+        return 0;
+    }
+
+    private static IDisposableReadOnlyCollection<DisposableNamedOnnxValue> RunLmOnce(
+        InferenceSession lm, float[] inputsEmbeds, int batch, int seqLen,
+        long[] attentionMask, float[][] pastKv, int[] pastKvShape)
+    {
+        const int LlmHidden = ChatterboxConstants.LlmHidden;
+        const int LlmLayers = ChatterboxConstants.LlmLayers;
+        var embedT = new DenseTensor<float>(inputsEmbeds, new[] { batch, seqLen, LlmHidden });
+        var maskT = new DenseTensor<long>(attentionMask, new[] { batch, attentionMask.Length / batch });
+        var inputs = new List<NamedOnnxValue>(2 + 2 * LlmLayers)
+        {
+            NamedOnnxValue.CreateFromTensor("inputs_embeds", embedT),
+            NamedOnnxValue.CreateFromTensor("attention_mask", maskT),
+        };
+        for (int layer = 0; layer < LlmLayers; layer++)
+        {
+            inputs.Add(NamedOnnxValue.CreateFromTensor(
+                $"past_key_values.{layer}.key", new DenseTensor<float>(pastKv[2 * layer], pastKvShape)));
+            inputs.Add(NamedOnnxValue.CreateFromTensor(
+                $"past_key_values.{layer}.value", new DenseTensor<float>(pastKv[2 * layer + 1], pastKvShape)));
+        }
+        return lm.Run(inputs);
+    }
+
+    private static long[] GrowBatchedMask(long[] mask, int batch, int growBy)
+    {
+        int oldPerB = mask.Length / batch;
+        int newPerB = oldPerB + growBy;
+        var grown = new long[batch * newPerB];
+        for (int b = 0; b < batch; b++)
+        {
+            Array.Copy(mask, b * oldPerB, grown, b * newPerB, oldPerB);
+            for (int i = oldPerB; i < newPerB; i++) grown[b * newPerB + i] = 1;
+        }
+        return grown;
+    }
+
+    private static string DimsOf(IReadOnlyList<int> dims)
+        => "(" + string.Join(", ", dims) + ")";
+    private static string DimsOf(System.ReadOnlySpan<int> dims)
+        => "(" + string.Join(", ", dims.ToArray()) + ")";
 }

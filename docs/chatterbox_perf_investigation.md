@@ -190,3 +190,87 @@ Other angle worth a one-day probe before Stage 2: explicit
 to `RunWithBinding`; the LM and vocoder on different priority streams
 might let CUDA's scheduler interleave them less destructively. Cheap
 to try.
+
+
+## Run 3 — 2026-05-17 19:30 — Batched-LM feasibility probe
+
+Goal: confirm the LM ONNX honors B>1 at runtime (its `dynamic_axes`
+in `export_chatterbox_to_onnx.py:625-633` declare `batch_size` on
+every input/output, but we've never exercised it), then measure the
+amortization factor `wall(B=N) / wall(B=1)` — anything below N means
+batching wins.
+
+New `--bench-batched-lm B` flag in `ChatterboxSmoke` bypasses voice +
+vocoder; loads only `embed_tokens + language_model`, replicates the
+same prompt across the B dimension (Ezreal sentence, S=82), runs
+prefill + 10 autoregressive steps, reports per-step ms.
+
+```
+=== B=1 ===  step iter avg: 14.0 ms/call  (14.0 ms/batch-elem)
+=== B=2 ===  step iter avg: 21.8 ms/call  (10.9 ms/batch-elem)
+=== B=4 ===  step iter avg: 31.3 ms/call  ( 7.8 ms/batch-elem)
+```
+
+Prefill (S=82) numbers:
+
+| B | wall | per-batch-elem |
+|---|---|---|
+| 1 | 31 ms | 31 ms |
+| 2 | 43 ms | 21.5 ms |
+| 4 | 69 ms | 17.3 ms |
+
+### Amortization
+
+Amortization factor = `wall(B=N) / wall(B=1)`. Theoretical perfect = 1.0
+(infinite parallelism); theoretical worst = N (no amortization).
+
+| Stage | wall ratio | % of theoretical wall savings captured |
+|---|---|---|
+| Prefill B=2 | 1.39× | 61% |
+| Step iter B=2 | 1.56× | 44% |
+| Prefill B=4 | 2.22× | 59% |
+| Step iter B=4 | 2.24× | 59% |
+
+We're capturing 44–61% of the theoretical batching wall savings. The
+gap is exactly the bandwidth-bound story: at fp32, each step reads
+the full 2 GB of LM weights through PCIe regardless of how many batch
+elements share them. Batching amortizes kernel launch overhead but
+not the weight read.
+
+### Implication for long-form throughput
+
+Currently (serial B=1): per chunk = LM 1.25 s + vocoder 0.55 s = 1.80 s.
+With B=4 batched LM (assuming the per-step ratio holds at full
+rollout): LM 1.25 × 2.24/4 = 0.70 s per chunk, vocoder still 0.55 s
+serial (or also batched). 4-chunk wall:
+
+| | Serial today | B=4 batched LM | Reduction |
+|---|---|---|---|
+| LM | 4 × 1.25 = 5.00 s | 1 × 2.80 s | 44% |
+| Vocoder | 4 × 0.55 = 2.20 s | 4 × 0.55 = 2.20 s (unchanged) | 0% |
+| Total | 7.20 s | 5.00 s | **31%** |
+
+**31% wall reduction projected** at fp32 — vs the ~7% pipelining
+yielded. The gap to "theoretical perfect batching" (which would give
+~58%) is bandwidth, not compute.
+
+### And this is the lever fp16 unlocks
+
+The amortization factor is bandwidth-ceiling-limited. Halving the LM
+weight size with fp16 quantization (Stage 3 in the original analysis)
+halves the bandwidth ceiling — at which point the B=4 amortization
+should drop from 2.24× toward something like 1.3–1.5×, putting
+batched throughput into the 2–3× per-chunk territory.
+
+So the batched-LM work today is architectural: build the C# plumbing
++ orchestration so fp16 lands into a ready-shaped infrastructure
+later. The fp32 throughput win is real (31%) but not the headline —
+the headline is the structure.
+
+### Next step in this PR series
+
+Implement `AcousticLM.GenerateBatch` (same-length inputs MVP, run to
+shared max_steps; per-element early stop is Phase 2). Then a Run 4
+that measures full end-to-end batched rollout, including the
+realistic STOP_SPEECH-driven variable length per element (which will
+cost some efficiency vs the probe's uniform-length steady state).
