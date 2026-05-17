@@ -231,12 +231,6 @@ if (verbose)
 // pipeline.Tokenizer is non-null here: we resolved `tokenizerPath` above
 // and would have exited 1 if no tokenizer.json was findable, so the
 // pipeline's auto-locate fallback never fires.
-var tokenIds = pipeline.Tokenizer!.WrapForLm(textToSpeak);
-if (verbose)
-{
-    var preview = textToSpeak.Length > 60 ? textToSpeak[..60] + "..." : textToSpeak;
-    Console.WriteLine($"Tokenized \"{preview.Replace("\n", " ")}\" → {tokenIds.Length} tokens");
-}
 
 var synthSw = Stopwatch.StartNew();
 var spk = pipeline.Embedder.Embed(voicePath);
@@ -248,12 +242,19 @@ if (verbose) Console.WriteLine(
 // ParagraphChunker returns >1 chunks only when input is long enough AND has
 // paragraph breaks (\n\n). Short or single-paragraph inputs collapse to a
 // single chunk; we use the existing one-shot path to avoid orchestration
-// overhead for those.
+// overhead for those. Tokenization happens per-path (whole text once vs per
+// chunk) so we don't waste a tokenize-everything pass on the chunked path.
 var chunks = ParagraphChunker.Chunk(textToSpeak);
 float[] samples;
 if (chunks.Count <= 1)
 {
     // One-shot path (existing behavior).
+    var tokenIds = pipeline.Tokenizer!.WrapForLm(textToSpeak);
+    if (verbose)
+    {
+        var preview = textToSpeak.Length > 60 ? textToSpeak[..60] + "..." : textToSpeak;
+        Console.WriteLine($"Tokenized \"{preview.Replace("\n", " ")}\" → {tokenIds.Length} tokens");
+    }
     var lmResult = pipeline.Lm.Generate(spk.CondEmb, tokenIds,
         useIoBinding: useIoBinding,
         exaggeration: exaggeration,

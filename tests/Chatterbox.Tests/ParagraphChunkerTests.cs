@@ -78,6 +78,29 @@ public class ParagraphChunkerTests
         foreach (var c in chunks)
             Assert.True(c.Length <= 600 || !c.Contains(". "),
                 $"chunk over 600 chars and containing splittable sentence boundary: '{c[..Math.Min(80, c.Length)]}...'");
+        // Loss-free invariant: joining the chunks with " " reconstructs the
+        // input (PackSentences only does .Trim() per sentence and rejoins
+        // with " ", so an input that was itself " "-joined round-trips).
+        Assert.Equal(sentences, string.Join(" ", chunks));
+    }
+
+    // ── Line-ending handling ──────────────────────────────────────────
+
+    [Fact]
+    public void CRLF_paragraph_breaks_are_recognized()
+    {
+        // Windows-line-ended input via --text or a CRLF-saved file should
+        // chunk the same as Unix line endings. Regression test for the
+        // ParagraphSplit regex.
+        var p1 = "First paragraph. " + new string('a', 200);
+        var p2 = "Second paragraph. " + new string('b', 200);
+        var unix = $"{p1}\n\n{p2}";
+        var crlf = $"{p1}\r\n\r\n{p2}";
+        var unixChunks = ParagraphChunker.Chunk(unix);
+        var crlfChunks = ParagraphChunker.Chunk(crlf);
+        Assert.Equal(2, unixChunks.Count);
+        Assert.Equal(2, crlfChunks.Count);
+        Assert.Equal(unixChunks, crlfChunks);
     }
 
     [Fact]

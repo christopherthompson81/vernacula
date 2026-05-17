@@ -36,9 +36,12 @@ public static class ParagraphChunker
     /// </summary>
     public const int MinCharsForChunking = 200;
 
-    // \n followed by optional whitespace + \n, repeated. Catches both
-    // \n\n and \n  \n (extractor only emits \n\n, but defensive).
-    private static readonly Regex ParagraphSplit = new(@"\n[ \t]*\n+", RegexOptions.Compiled);
+    // \r?\n followed by optional whitespace + \r?\n, repeated. Handles
+    // both Unix (\n\n) and Windows (\r\n\r\n) line endings.
+    // MarkdownTextExtractor only emits \n\n, but --text and other input
+    // sources can carry CRLF — the chunker shouldn't silently fail on
+    // Windows-line-ended input.
+    private static readonly Regex ParagraphSplit = new(@"\r?\n[ \t\r]*\n+", RegexOptions.Compiled);
 
     // Sentence-end split for the over-long-paragraph fallback. Looks for
     // .!? followed by whitespace; conservative (won't split on
