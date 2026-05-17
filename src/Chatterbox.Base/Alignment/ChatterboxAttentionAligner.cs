@@ -88,103 +88,124 @@ public static class ChatterboxAttentionAligner
         var words = SplitIntoWords(sourceText);
         if (words.Count == 0) return Array.Empty<WordTiming>();
 
-        // For each speech row, compute the word index it lands on (or -1
-        // if argmax falls in a wrapper column / on a SPACE token / on
-        // BPE that doesn't fall in any word's char range).
-        var rowWord = new int[speechRows];
-        for (int r = 0; r < speechRows; r++)
+        // ── Build per-word attention scores per row ────────────────────
+        // For each BPE token, find its containing input word (or -1 if
+        // it's a SPACE / falls in a gap). Then per row, sum the
+        // alignment weights of all BPE cols belonging to each word.
+        // wordAttn[r, w] = total attention from speech row r to input word w.
+        int[] bpeToWord = new int[bpeLen];
+        for (int i = 0; i < bpeLen; i++)
         {
-            if (r == 0) { rowWord[r] = -1; continue; }  // sentinel predictor; skip
-            int argCol = ArgmaxRow(alignment.Row(r));
-            int bpeIdx = argCol - bpeColStart;
-            if (bpeIdx < 0 || bpeIdx >= bpeLen) { rowWord[r] = -1; continue; }
-            var span = bpeWithSpans[bpeIdx];
-            // Midpoint of the BPE token's source span — robust to BPE
-            // pieces that straddle word boundaries (rare in this vocab).
-            int srcChar = (span.SourceStart + span.SourceEnd) / 2;
-            rowWord[r] = FindWordContaining(words, srcChar);
+            int srcChar = (bpeWithSpans[i].SourceStart + bpeWithSpans[i].SourceEnd) / 2;
+            bpeToWord[i] = FindWordContaining(words, srcChar);
         }
 
-        // Aggregate per input word: min/max row that argmaxed to it.
-        var perWord = new (int firstRow, int lastRow)[words.Count];
-        for (int w = 0; w < perWord.Length; w++) perWord[w] = (-1, -1);
-        for (int r = 0; r < speechRows; r++)
+        int W = words.Count;
+        int R = speechRows;
+        // Flat row-major access for cache friendliness.
+        var wordAttn = new float[R * W];
+        for (int r = 1; r < R; r++)  // skip sentinel row 0
         {
-            int w = rowWord[r];
-            if (w < 0) continue;
-            if (perWord[w].firstRow < 0) perWord[w] = (r, r);
-            else perWord[w] = (perWord[w].firstRow, r);
-        }
-
-        // Emit one WordTiming per input word. For runs of consecutive
-        // un-seen words, distribute them EVENLY across the gap between
-        // the surrounding seen neighbours. The earlier collapse-to-a-
-        // single-point behaviour caused the user-visible "highlight
-        // stuck at chunk start" symptom: when N consecutive missing
-        // words all shared the same [prev_end, next_start] range, the
-        // dispatcher's FindWordAt (last word with Start <= pos) put
-        // the highlight on the LAST missing word for the entire gap.
-        // Distributing them evenly keeps the highlight advancing in
-        // step with audio time across the gap.
-        double chunkDur = (double)totalAudioSamples / sampleRate;
-        var result = new List<WordTiming>(words.Count);
-        int idx = 0;
-        while (idx < words.Count)
-        {
-            if (perWord[idx].firstRow >= 0)
+            var row = alignment.Row(r);
+            for (int c = bpeColStart; c < bpeColEnd; c++)
             {
-                double s = perWord[idx].firstRow * secondsPerStep;
-                double e = (perWord[idx].lastRow + 1) * secondsPerStep;
-                result.Add(new WordTiming(words[idx].Text, s, e));
-                idx++;
-                continue;
+                int w = bpeToWord[c - bpeColStart];
+                if (w < 0) continue;
+                wordAttn[r * W + w] += row[c];
             }
+        }
 
-            // Find the extent of the consecutive un-seen run.
-            int runStart = idx;
-            while (idx < words.Count && perWord[idx].firstRow < 0) idx++;
-            int runLen = idx - runStart;
-
-            // Gap boundaries:
-            //   prevEnd = end of the seen word before runStart (or 0
-            //             at chunk start)
-            //   nextStart = start of the seen word at/after the run
-            //               (or chunkDur at chunk end)
-            // Both end up reasonable defaults so single-row chunks
-            // (entire word list un-seen) get evenly spread across the
-            // whole chunk.
-            double prevEnd = 0;
-            for (int u = runStart - 1; u >= 0; u--)
+        // ── Viterbi-style monotonic forced alignment ──────────────────
+        // Find the monotonic non-decreasing row→word assignment that
+        // maximizes total wordAttn. Solves the argmax-noise problem
+        // (per-row argmax can spike forward to anticipate the next
+        // word, putting that word's StartSeconds too early → "highlight
+        // ahead of audio, audio catches up" symptom) by enforcing
+        // global monotonicity rather than trusting any single row.
+        //
+        // State: dp[r, w] = max total score reaching row r at word w.
+        // Transition: dp[r, w] = max(dp[r-1, w], dp[r-1, w-1]) + wordAttn[r, w]
+        //   "stay on word w"     "advance to w from w-1"
+        // Boundary: dp[1, 0] = wordAttn[1, 0]; dp[1, w>0] = -inf
+        //   (row 1 is the first audible speech token; it must start at word 0)
+        //
+        // Every word ends up with at least one row in the assignment
+        // (you can't skip words in a monotonic +0/+1 walk), so the
+        // separate interpolation phase is no longer needed.
+        const float NEG = float.MinValue / 2f;
+        var dp = new float[R * W];
+        var advance = new bool[R * W];  // true = arrived via "advance from w-1"
+        for (int i = 0; i < dp.Length; i++) dp[i] = NEG;
+        dp[1 * W + 0] = wordAttn[1 * W + 0];
+        for (int r = 2; r < R; r++)
+        {
+            int rowBase = r * W;
+            int prevBase = (r - 1) * W;
+            for (int w = 0; w < W; w++)
             {
-                if (perWord[u].lastRow >= 0)
+                float stayScore = dp[prevBase + w];
+                float advanceScore = w > 0 ? dp[prevBase + w - 1] : NEG;
+                if (stayScore >= advanceScore)
                 {
-                    prevEnd = (perWord[u].lastRow + 1) * secondsPerStep;
-                    break;
+                    dp[rowBase + w] = stayScore + wordAttn[rowBase + w];
+                    advance[rowBase + w] = false;
+                }
+                else
+                {
+                    dp[rowBase + w] = advanceScore + wordAttn[rowBase + w];
+                    advance[rowBase + w] = true;
                 }
             }
-            double nextStart = chunkDur;
-            if (idx < words.Count && perWord[idx].firstRow >= 0)
-                nextStart = perWord[idx].firstRow * secondsPerStep;
+        }
 
-            // Even slice per word in the run.
-            double sliceWidth = Math.Max(0.0, nextStart - prevEnd) / runLen;
-            for (int j = 0; j < runLen; j++)
+        // Backtrack from the best end-state. Pin the end to the LAST
+        // word — typical chunks end exactly there, and forcing it
+        // prevents the DP from "leaving" the last few words unassigned
+        // when the model briefly drifts back to earlier text mid-rollout.
+        int currR = R - 1;
+        int currW = W - 1;
+        var assignment = new int[R];
+        assignment[0] = -1;  // sentinel
+        while (currR >= 1)
+        {
+            assignment[currR] = currW;
+            if (currR > 1 && advance[currR * W + currW]) currW--;
+            currR--;
+        }
+
+        // ── Per-word row ranges → WordTiming entries ──────────────────
+        var firstRow = new int[W];
+        var lastRow = new int[W];
+        for (int w = 0; w < W; w++) { firstRow[w] = -1; lastRow[w] = -1; }
+        for (int r = 1; r < R; r++)
+        {
+            int w = assignment[r];
+            if (firstRow[w] < 0) firstRow[w] = r;
+            lastRow[w] = r;
+        }
+
+        var result = new List<WordTiming>(W);
+        for (int w = 0; w < W; w++)
+        {
+            // Every word has at least one row because the DP must
+            // monotonically walk through all of them. Empty case
+            // shouldn't happen but guard anyway.
+            double s, e;
+            if (firstRow[w] >= 0)
             {
-                double s = prevEnd + j * sliceWidth;
-                double e = prevEnd + (j + 1) * sliceWidth;
-                result.Add(new WordTiming(words[runStart + j].Text, s, e));
+                s = firstRow[w] * secondsPerStep;
+                e = (lastRow[w] + 1) * secondsPerStep;
             }
+            else
+            {
+                // Theoretical: a word the DP couldn't visit. Pin to
+                // chunk end as a zero-duration entry so the consumer
+                // still has a 1:1 list.
+                s = e = (double)totalAudioSamples / sampleRate;
+            }
+            result.Add(new WordTiming(words[w].Text, s, e));
         }
         return result;
-    }
-
-    private static int ArgmaxRow(ReadOnlySpan<float> row)
-    {
-        int best = 0;
-        float bv = row[0];
-        for (int c = 1; c < row.Length; c++)
-            if (row[c] > bv) { bv = row[c]; best = c; }
-        return best;
     }
 
     private sealed record SourceWord(string Text, int CharStart, int CharEnd);
