@@ -40,6 +40,21 @@
   <ItemGroup>
     <PackageReference Include="NAudio"            Version="2.2.1" />
     <PackageReference Include="MathNet.Numerics"  Version="5.0.0" />
+    <!-- Note: NemoNfaAligner uses an in-house SimpleSpTokenizer (greedy LPM
+         over vocab.txt). Microsoft.ML.Tokenizers 2.0.0's
+         SentencePieceTokenizer.Create throws IndexOutOfRangeException on
+         the NeMo FastConformer's unigram-SP proto — the loader's
+         SentencePieceUnigramModel..ctor assumes BOS/EOS pieces the NeMo
+         model doesn't define. Drop in a real SP unigram loader (when
+         either ML.Tokenizers fixes the bug or a usable third-party lib
+         appears) by swapping SimpleSpTokenizer for it; tokenizer.model
+         is preserved in the export bundle for exactly that drop-in. -->
+  </ItemGroup>
+
+  <!-- Vernacula.Tests exercises internal helpers (e.g. NemoNfaAligner.GroupTokensIntoWords)
+       that are deliberately not part of the public API. -->
+  <ItemGroup>
+    <InternalsVisibleTo Include="Vernacula.Tests" />
   </ItemGroup>
 
 </Project>

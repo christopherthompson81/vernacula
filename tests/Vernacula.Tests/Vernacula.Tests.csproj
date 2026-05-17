@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+    <!-- CPU-only test host. Same convention as tests/Chatterbox.Tests:
+         override the Vernacula.Base EP to Cpu so the test process doesn't
+         need CUDA at runtime. CtcForcedAlignment is pure-CPU. -->
+    <Platforms>x64</Platforms>
+    <RootNamespace>Vernacula.Tests</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />
+    <PackageReference Include="xunit.v3" Version="1.0.0" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.0.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Vernacula.Base\Vernacula.Base.csproj">
+      <Private>true</Private>
+      <SetConfiguration>EP=Cpu</SetConfiguration>
+    </ProjectReference>
+  </ItemGroup>
+
+</Project>
