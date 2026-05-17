@@ -31,7 +31,6 @@ public sealed class PlaybackService : IDisposable
     private Process? _ffplayProcess;
     private DispatcherTimer? _tickTimer;
     private DateTime _startedUtc;
-    private string? _audioPath;
     private double _audioDurationSec;
 
     /// <summary>True when audio is currently playing (or believed to be —
@@ -62,7 +61,6 @@ public sealed class PlaybackService : IDisposable
         if (!File.Exists(audioPath))
             throw new FileNotFoundException("Audio file not found.", audioPath);
 
-        _audioPath = audioPath;
         _audioDurationSec = audioDurationSec;
 
         if (OperatingSystem.IsWindows())

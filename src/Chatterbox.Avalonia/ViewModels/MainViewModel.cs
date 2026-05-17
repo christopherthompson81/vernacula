@@ -28,6 +28,21 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     [ObservableProperty] private string _onnxBundleDir = "";
     [ObservableProperty] private string _nfaBundleDir = "";
 
+    // Bundle-path changes invalidate the cached SynthesisService so the
+    // next Synthesize click rebuilds against the new paths. Without this,
+    // the lazy `_synthService ??= new SynthesisService(...)` would silently
+    // keep using the FIRST bundle pair the user picked, even after they
+    // changed pickers.
+    partial void OnOnnxBundleDirChanged(string value) => InvalidateSynthService();
+    partial void OnNfaBundleDirChanged(string value) => InvalidateSynthService();
+
+    private void InvalidateSynthService()
+    {
+        var stale = _synthService;
+        _synthService = null;
+        stale?.Dispose();
+    }
+
     // Text input — either typed/pasted in the UI or loaded from a .md file.
     [ObservableProperty] private string _text = "";
 
@@ -65,14 +80,19 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     public MainViewModel()
     {
+        // PlaybackService raises both events from its DispatcherTimer,
+        // which is already on the UI thread — no Dispatcher.Post wrapping
+        // needed. (An earlier draft posted defensively; the reviewer of
+        // PR #74 caught that we were paying 20 dispatcher-frame round-trips
+        // per second for no benefit.)
         _playback.PositionChanged += OnPlaybackPositionChanged;
-        _playback.PlaybackStopped += _ => Dispatcher.UIThread.Post(() =>
+        _playback.PlaybackStopped += _ =>
         {
             if (_currentWordIndex >= 0 && _currentWordIndex < Words.Count)
                 Words[_currentWordIndex].IsCurrent = false;
             _currentWordIndex = -1;
             StatusMessage = "Playback stopped.";
-        });
+        };
 
         if (!_playback.CanPlayOnThisPlatform)
             StatusMessage = _playback.UnavailableReason!;
@@ -185,25 +205,25 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private void Stop() => _playback.Stop();
 
     private void OnPlaybackPositionChanged(double posSec)
-        => Dispatcher.UIThread.Post(() =>
+    {
+        // Already on the UI thread (PlaybackService's DispatcherTimer
+        // fires here). Binary-search the words list for the word whose
+        // interval contains posSec; Words is sorted by StartSeconds per
+        // the sidecar contract. A linear scan from the current index
+        // forward would also work (amortized O(N) over a playback);
+        // binary search is just as cheap and handles backwards seeks
+        // when scrubbing lands.
+        int idx = FindWordAt(posSec);
+        if (idx != _currentWordIndex)
         {
-            // Binary-search the words list for the word whose interval
-            // contains posSec. Words are sorted by StartSeconds per the
-            // sidecar contract, so a linear scan from the current index
-            // forward would also work (amortized O(N) over a playback) —
-            // binary search is just as cheap and handles backwards seeks
-            // when scrubbing lands.
-            int idx = FindWordAt(posSec);
-            if (idx != _currentWordIndex)
-            {
-                if (_currentWordIndex >= 0 && _currentWordIndex < Words.Count)
-                    Words[_currentWordIndex].IsCurrent = false;
-                _currentWordIndex = idx;
-                if (idx >= 0 && idx < Words.Count) Words[idx].IsCurrent = true;
-            }
-            double dur = _lastAlignment?.AudioDurationSeconds ?? 0;
-            PositionLabel = $"{posSec:F2} / {dur:F2} s";
-        });
+            if (_currentWordIndex >= 0 && _currentWordIndex < Words.Count)
+                Words[_currentWordIndex].IsCurrent = false;
+            _currentWordIndex = idx;
+            if (idx >= 0 && idx < Words.Count) Words[idx].IsCurrent = true;
+        }
+        double dur = _lastAlignment?.AudioDurationSeconds ?? 0;
+        PositionLabel = $"{posSec:F2} / {dur:F2} s";
+    }
 
     private int FindWordAt(double posSec)
     {

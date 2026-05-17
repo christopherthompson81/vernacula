@@ -62,6 +62,12 @@ public sealed class SynthesisService : IDisposable
     /// and (when an NFA bundle is configured) produce per-word audio
     /// timings. Runs on whatever thread you call it from — the UI
     /// should call this via Task.Run to keep the dispatcher responsive.
+    ///
+    /// <paramref name="cancellationToken"/> is checked at chunk boundaries
+    /// and after the synthesis call. The underlying LM rollout
+    /// (<c>pipeline.Lm.Generate</c>) is uninterruptible once started —
+    /// a cancel during the ~30 s single-chunk rollout will take effect
+    /// only after that chunk completes.
     /// </summary>
     public SynthesisResult Synthesize(
         string voicePath,
@@ -72,13 +78,16 @@ public sealed class SynthesisService : IDisposable
         EnsureLoaded();
         cancellationToken.ThrowIfCancellationRequested();
 
-        // Markdown-extract when text looks like markdown (loose heuristic:
-        // any of the common block markers). For the MVP this lets users
-        // paste markdown directly into the UI's text box; richer file-vs-
-        // string handling can come later.
-        var preparedText = LooksLikeMarkdown(text)
-            ? MarkdownTextExtractor.Extract(text).Text
-            : text;
+        // Always route the input through MarkdownTextExtractor. For plain
+        // prose the extractor is near-identity (paragraphs preserved). For
+        // markdown it strips heading markers / list bullets / link URLs /
+        // code blocks etc., none of which speak well. The CLI is fine
+        // dispatching on file extension (.md → extract, else pass-through)
+        // because it knows the source; the UI's text box doesn't carry an
+        // extension hint, and "always extract" is the safer default —
+        // false negatives from a heuristic would let raw URL text leak
+        // into the TTS stream.
+        var preparedText = MarkdownTextExtractor.Extract(text).Text;
         if (string.IsNullOrWhiteSpace(preparedText))
             throw new InvalidOperationException("Text is empty after markdown extraction.");
 
@@ -177,10 +186,6 @@ public sealed class SynthesisService : IDisposable
                 _aligner = new NemoNfaAligner(_nfaBundleDir, _ep);
         }
     }
-
-    private static bool LooksLikeMarkdown(string text)
-        => text.Contains("\n#") || text.Contains("\n- ") || text.Contains("\n* ")
-           || text.Contains("\n```") || text.StartsWith("#") || text.StartsWith("- ");
 
     public void Dispose()
     {

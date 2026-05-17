@@ -40,12 +40,13 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- Matches Vernacula.Avalonia.csproj's ProjectReference style:
+         no Private attribute (defaults to true). EP property flows
+         through to base projects via SetConfiguration. -->
     <ProjectReference Include="..\Chatterbox.Base\Chatterbox.Base.csproj">
-      <Private>true</Private>
       <SetConfiguration>EP=$(EP)</SetConfiguration>
     </ProjectReference>
     <ProjectReference Include="..\Vernacula.Base\Vernacula.Base.csproj">
-      <Private>true</Private>
       <SetConfiguration>EP=$(EP)</SetConfiguration>
     </ProjectReference>
   </ItemGroup>
