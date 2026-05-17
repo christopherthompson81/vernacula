@@ -1208,3 +1208,229 @@ substantially larger projects than Runs 1-9 were.
 - `/tmp/cb_fp16io*.wav` — audio outputs (parity confirmed)
 - `quantize_lm.py --no-keep-io-types` — produces the true-fp16 graph
 - `AcousticLM._lmFp16` + 6 helpers — dtype-aware IoBinding, ready for any future fp16/bf16 LM variant without further C# changes
+
+## Run 10 — 2026-05-16 23:30 — Path B: merged-batched vocoder
+
+Following the Run 6 sidebar — the merged `conditional_decoder_loop.onnx`
+graph baked CFG-doubling at trace time and rejects B>1. PR #66 worked
+around this by falling back to the split-graph orchestration at B>1
+(measured Run 6c at +3-5% wall when LM was batched; net 8-chunk wall
+went from 6.4 s → 6.1 s). Useful but small.
+
+The merged graph's real advantage over split is the GPU-side CFM Loop
+— 10 CFM iterations stay on the device; split round-trips through
+host between every iter. Path B rewrites the merge script so the
+merged graph accepts B>1, then we get the GPU-side Loop *with*
+batching. Projected from Run 6c: per-chunk voc could drop from
+~514 ms (split B=8) to ~150-200 ms (merged-batched B=8).
+
+### What's hardcoded for B=1 in the current merge script
+
+After reading `scripts/_export_utils/merge_cond_decoder_loop.py`:
+
+| Site | Spec | Status at B>1 |
+|---|---|---|
+| outer CFG-doubling for mu / spks / cond | `Concat([x, ZerosLike(x)], axis=0)` via `Shape`+`ConstantOfShape` | already dynamic ✓ |
+| outer mask CFG-doubling | `Concat([mel_mask, mel_mask], axis=0)` | already dynamic ✓ |
+| body `cfm__x_in` | `Concat([x_carried, x_carried], axis=0)` | already dynamic ✓ |
+| **body `cfm__t_in`** | `Concat([t_now_1d, t_now_1d], axis=0)` → fixed `(2,)` | **broken — needs `(2B,)`** |
+| **body input shape decl** | `x_carried: [1, MEL_BINS, "T_mel"]` | **broken — needs `["batch_size", MEL_BINS, "T_mel"]`** |
+| **body output shape decl** | `x_new: [1, MEL_BINS, "T_mel"]` | **broken — same** |
+| **z (Loop v_initial)** | flow_encoder emits `z` at fixed `[1, M, T]` due to the pinned-rand_noise patch (Run 6c sidebar) | **broken — need Expand(z, mu_shape) before Loop** |
+
+Three real fixes. The rest of the merge script already handles B>1
+correctly because the original author used `Shape`+`ConstantOfShape`
+instead of literal-2 leading dims (which is good defensive ONNX
+authoring that's now paying off).
+
+### Plan
+
+1. Patch `merge_cond_decoder_loop.py`: t_in via `Tile`, body shape
+   decls dynamic, z replication via `Expand(z, mu_shape)`.
+2. Re-export `conditional_decoder_loop.onnx`.
+3. Re-run `--bench-batched-voc B=4` probe to confirm B>1 acceptance.
+4. Update `Vocoder.SynthesizeBatch` so it prefers the merged graph
+   when it accepts B>1 (detect via session metadata or just try; the
+   split-graph fallback stays as a safety net for older bundles).
+5. Bench `--pipelined --lm-batch 4` vs Run 7c's 7.1 s headline.
+
+### Implementation
+
+Three fixes to `merge_cond_decoder_loop.py`:
+
+1. **`cfm__t_in` dynamic sizing**. Old code: `Concat([t_now_1d, t_now_1d])`
+   producing fixed `(2,)`. New code: read `B` from `Shape(x_carried)[0]`,
+   compute `[2B]`, `Tile(t_now_1d, [2B])` → shape `(2B,)`. At B=1
+   produces the same `(2,)` as before (parity preserved).
+2. **Body input/output shape decls**. `[1, MEL_BINS, "T_mel"]` →
+   `["batch_size", MEL_BINS, "T_mel"]` on `x_carried` and `x_new`.
+3. **`z` replication outside the Loop**. `flow_encoder.onnx` emits z
+   at fixed `[1, MelBins, T_mel]` (pinned-rand_noise patch, Run 6c).
+   Added `Expand(z, mu_shape)` so the Loop's `v_initial` matches B.
+   At B=1, Expand is a no-op identity.
+
+The outer graph's CFG-doubling (mu, mask, spks, cond) already used
+`Shape`+`ConstantOfShape` for dynamic zeros — no changes needed
+there. Run 6's author had already done that piece defensively.
+
+Plus a `metadata_props["supports_batched"] = "true"` flag on the
+exported model so `Vocoder.cs` can detect Path B graphs vs older
+fixed-B bundles.
+
+C# side, `Vocoder` constructor reads the metadata. When
+`_mergedSupportsBatched`:
+- Don't load the split graphs (saves ~1.1 GB VRAM, the whole point
+  of Path B in Run 6c sidebar).
+- `SynthesizeBatch` routes to a new `RunMergedBatched` that packs all
+  B chunks into one merged-graph `.Run`.
+
+Older bundles without the metadata flag still work: they fall
+through to the split-graph orchestration as before.
+
+### Parity (B=1, new vs old merged graph, seeded random inputs)
+
+```
+max abs diff: 3.39e-05
+mean abs diff: 4.57e-08
+old shape=(1, 144000)   new shape=(1, 144000)
+```
+
+Within ORT non-determinism floor. End-to-end Chatterbox synthesis
+through the new graph at B=1 produces 174 LM steps, 6.92 s audio —
+bit-equivalent to Run 1's baseline.
+
+### Perf (8 chunks, RTX 3090, CUDA, with `--io-binding`)
+
+| Config | chunks-wall | voc/chunk |
+|---|---|---|
+| Run 7c: split-batched, pipelined groups (B=4) | 7.1 s | ~540 ms (first), 503 (steady) |
+| **Run 10: merged-batched, pipelined groups (B=4)** | **7.0 s** | **~557 ms (first), 497 (steady)** |
+| Run 10: merged-batched, lm-batch=4 + voc-batch=4 (no pipelining) | 7.4 s | 524 (first), 498 (steady) |
+| Standalone vocoder probe B=4 (no LM contention) | n/a | **553 ms/batch-elem** |
+
+Marginal 1% wall reduction (7.1 → 7.0 s). The dramatic Path B
+projection in Run 6c ("voc/chunk ~150-200 ms at B=8") didn't
+materialize: the batched CFM kernel costs scale almost linearly
+with B at both split and merged paths, so per-batch-elem voc time
+stays at ~500 ms regardless of which graph we use.
+
+### Why the per-call advantage didn't translate
+
+The standalone Python probe (no .NET, no IoBinding) showed
+merged-batched B=4 at 1775 ms = ~444 ms/elem vs split-batched
+~540 ms/elem — a real 18% kernel-level win. But in the end-to-end
+.NET pipeline:
+
+- ORT inserted 3 outer + 57 body Memcpy nodes on the CUDA EP. The
+  warning text explicitly notes "may have negative impact on
+  performance (including unable to run CUDA graph)". The body's
+  per-iter Memcpys cost ~50-100 ms each — close to the per-CFM-iter
+  budget itself.
+- Under pipelined-groups, the wall is `max(LM-share, voc-share)`
+  per group plus an LM-only first group and a voc-only tail.
+  Vocoder isn't on the critical path most of the time; saving
+  ~40 ms of voc-per-chunk hides behind the LM contention spike
+  (`LM-share` inflates from 421 → 821 ms in group 2 due to SM
+  contention with concurrent voc).
+
+So the bottleneck moved from "vocoder graph cost" (where Path B
+would help) to "LM SM contention" (where it doesn't).
+
+### What we actually got
+
+| Benefit | Measured | Value |
+|---|---|---|
+| Wall reduction | −1% (7.1 → 7.0 s) | Marginal |
+| VRAM savings | −1.1 GB (split graphs no longer loaded when merged is batched-capable) | Real on 24 GB cards |
+| Code path simplification | `Vocoder.SynthesizeBatch` is single-path for capable bundles; orchestration in ONNX, not C# | Real |
+| Backward compatibility | Old bundles without metadata fall through to split orchestration | Preserved |
+
+Net assessment: Path B is **worth landing** for the VRAM saving and
+architectural simplification, even though the wall-perf win is
+small on this hardware. On a memory-constrained box (or future
+quantized-LM bundles where the LM also wants more VRAM headroom),
+the 1.1 GB matters more.
+
+### Where else could the merged-batched advantage land?
+
+Two scenarios where the per-call advantage would translate:
+
+1. **No pipelining contention**: a single-stream invocation
+   (`--lm-batch 4` without `--pipelined`) sees voc-share 524 ms
+   merged vs 540 ms split (first call, no contention) — a tighter
+   3% win. With more aggressive batching (B=8+), the absolute saving
+   grows linearly but stays in single-digit percent.
+
+2. **Beefier GPU (H100, RTX 4090)** where SM contention isn't the
+   bottleneck. The kernel-level 18% merged-vs-split advantage from
+   the Python probe should show up as actual wall reduction when the
+   LM and vocoder can truly run in parallel without contention.
+
+Neither is testable on the 3090 directly. The Path B graph and
+metadata flag are in place if/when that hardware shows up.
+
+### Run 10 sidebar — Memcpy elimination, dead-end investigation
+
+Followed up on the "57 body Memcpys block CUDA Graph capture" angle
+from the Run 10 conclusion. **Conclusion: dead-end. CUDA Graph
+cannot run on this merged graph at all, regardless of Memcpys.**
+
+What we tried:
+
+1. **`session.disable_cpu_ep_fallback=1`**. With CPU EP removed,
+   session load failed: "This session contains graph nodes that are
+   assigned to the default CPU EP, but fallback to CPU EP has been
+   explicitly disabled by the user." Some ops (notably `mel2wav__/STFT`)
+   have no CUDA kernel at all — the fallback isn't just heuristic,
+   it's mandatory.
+
+2. **`onnxslim` re-pass on the merged graph**. Outer 1681 → 1677
+   nodes, body 3015 → 3007 nodes. Per-call timing unchanged (B=4
+   stays at ~2000 ms). The 57 body Memcpys aren't redundant —
+   they're real data shuffles for shape-derived computations.
+
+3. **ORT-transformers `optimize_model(model_type=...)` attention
+   fusion** on `cfm_estimator.onnx`. Tried `unet`, `mmdit`, `clip`,
+   `vae`, `sam2`, `conformer`, `bart`. The U-net pattern reduced
+   2988 → 2557 nodes (`LayerNormalization` fused to
+   `SkipLayerNormalization`), but the shape-pattern op count
+   (Shape/Gather/Unsqueeze/Slice/Sqrt/Div/Cast) was unchanged at
+   643 across every variant, and **no `Attention` / `MultiHeadAttention`
+   nodes were produced**. cfm_estimator's attention is a custom
+   conv-like layout that none of ORT's fusion targets recognize.
+
+4. **`enable_cuda_graph=1` provider option**, the actual reason
+   CUDA Graph was on the table. Session refused to load:
+
+   ```
+   This session cannot use the graph capture feature as requested
+   by the user as the model has control flow nodes which can't be
+   supported by CUDAExecutionProvider
+   ```
+
+   The merged graph's `Loop` op is the blocker, not the Memcpys.
+   The earlier "including unable to run CUDA graph" Memcpy warning
+   was a red herring for this graph — CUDA Graph wasn't on the
+   table regardless.
+
+### What this means
+
+The projected upside from eliminating the Memcpys (~50-100 ms/call
+from CUDA Graph capture) was based on a misread of the warning.
+With CUDA Graph fundamentally unavailable on a Loop-bearing
+session, the Memcpy elimination would yield only the per-call
+launch overhead saving — microseconds, not milliseconds.
+
+To make Memcpy elimination actually pay off on this graph, we'd
+need EITHER:
+
+- Manually rewrite cfm_estimator's attention export to match an
+  ORT-fusion pattern (real upstream change to the export pipeline,
+  multi-day work).
+- Unroll the CFM Loop into 10 sequential function calls (lose the
+  GPU-side Loop, gain CUDA Graph eligibility — but lose the very
+  thing that makes the merged graph faster than split).
+
+Neither has a payoff that justifies the work for this branch. Path B
+ships as documented: ~1% wall win, ~1.1 GB VRAM savings, simpler
+single-vocoder-path architecture.
