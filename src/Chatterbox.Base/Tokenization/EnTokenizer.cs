@@ -202,6 +202,31 @@ public sealed class EnTokenizer
     }
 
     /// <summary>
+    /// Diagnostic: turn a token-id sequence back into a human-readable
+    /// string. Lookups go through the loaded vocab; unknown ids render
+    /// as <c>&lt;id:N&gt;</c>. NOT a round-trip with <see cref="Encode"/>:
+    /// the BPE merge sequence is lossy without the original boundaries.
+    /// Use this for unk-position inspection, not for real decoding.
+    /// </summary>
+    public string DiagnosticDecode(IEnumerable<long> ids)
+    {
+        // Build the reverse vocab lazily on first call. The forward
+        // vocab is keyed by string; we just invert.
+        var rev = new Dictionary<long, string>(_vocab.Count);
+        foreach (var (s, id) in _vocab)
+            rev[id] = s;
+        var sb = new StringBuilder();
+        foreach (var id in ids)
+        {
+            if (rev.TryGetValue(id, out var s))
+                sb.Append(s);
+            else
+                sb.Append("<id:").Append(id).Append('>');
+        }
+        return sb.ToString().Replace("[SPACE]", " ");
+    }
+
+    /// <summary>
     /// Decompose the run into Unicode codepoints (Rune-iterated, not
     /// char-iterated), emitting [UNK] for any codepoint that isn't a
     /// single-token entry in the vocab (codepoints outside chatterbox's
