@@ -297,18 +297,21 @@ public sealed class Vocoder : IDisposable
     /// shared speaker_embeddings, one shared speaker_features. Returns
     /// B waveforms in input order.
     ///
-    /// Always uses the SPLIT 3-graph path even when
-    /// <see cref="Mode"/> == <see cref="VocoderMode.Merged"/>, because
-    /// the merged conditional_decoder_loop.onnx baked CFG-doubling at
-    /// trace time and rejects B>1 (cfm_body Concat expects dim 2). The
-    /// split <c>cfm_estimator.onnx</c> accepts B>2 (CFG-doubled batch)
-    /// cleanly — see <c>docs/chatterbox_perf_investigation.md</c>
-    /// Run 6a for the probe data.
+    /// Dispatches on the loaded bundle's capabilities:
+    ///   - merged graph carrying <c>supports_batched=true</c> metadata
+    ///     (Path B / Run 10) → single merged-graph call at B&gt;1 via
+    ///     <see cref="RunMergedBatched"/>; split graphs aren't loaded
+    ///     and ~1.1 GB VRAM is saved.
+    ///   - older merged graph (no metadata flag) + split graphs present
+    ///     → C# orchestrated CFM solve loop on the split 3-graph path.
+    /// See <c>docs/chatterbox_perf_investigation.md</c> Run 6/10 for
+    /// the rationale + perf numbers.
     ///
-    /// Throws if <see cref="SupportsBatched"/> is false (no split
-    /// artifacts in the model directory). Caller's recourse: re-export
-    /// with <c>--split-cond-decoder</c> (or <c>--merge-cond-decoder</c>
-    /// which implies it).
+    /// Throws if <see cref="SupportsBatched"/> is false (neither route
+    /// available). Caller's recourse: re-merge with
+    /// <c>scripts/_export_utils/merge_cond_decoder_loop.py</c> for the
+    /// Path B graph, or re-export with <c>--split-cond-decoder</c> to
+    /// get the split fallback.
     ///
     /// MVP constraint: all <paramref name="speechTokensPerChunk"/>
     /// entries must have the same length. Phase 2 will accept ragged
@@ -321,9 +324,10 @@ public sealed class Vocoder : IDisposable
     {
         if (!SupportsBatched)
             throw new InvalidOperationException(
-                "Batched vocoder synthesis requires the split cond-decoder graphs "
-                + "(flow_encoder, cfm_estimator, mel2wav) which were not found in "
-                + "the model directory. Re-export with --split-cond-decoder.");
+                "Batched vocoder synthesis requires either a Path B merged graph "
+                + "(conditional_decoder_loop.onnx exported via merge_cond_decoder_loop.py "
+                + "with supports_batched=true metadata) OR the split 3-graph set "
+                + "(flow_encoder, cfm_estimator, mel2wav). Neither was found.");
 
         int B = speechTokensPerChunk.Count;
         if (B == 0) return Array.Empty<float[]>();
