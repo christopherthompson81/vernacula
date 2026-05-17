@@ -55,6 +55,8 @@ internal static class Program
         int benchChunks = 1;
         bool pipelined = false;
         int benchBatchedLm = 0;  // 0 = disabled; >0 = run probe with B=this
+        int benchBatchedVoc = 0; // 0 = disabled; >0 = run vocoder-only probe at B=this
+        int vocBatch = 1;        // --voc-batch B: group bench-chunks vocoder calls similarly to --lm-batch
         int lmBatch = 1;  // --lm-batch B: group benchChunks into batched LM calls of size B
         for (int i = 0; i < args.Length; i++)
         {
@@ -113,6 +115,25 @@ internal static class Program
                         return 2;
                     }
                     break;
+                case "--bench-batched-voc":
+                    // Sister probe to --bench-batched-lm: does the merged
+                    // conditional_decoder_loop.onnx (or split / monolithic
+                    // fallback) accept B>1? Replicates one speaker+tokens
+                    // input across the B dimension, runs one Synthesize at
+                    // batch B, reports wall + per-batch-elem ms.
+                    if (!int.TryParse(args[++i], out benchBatchedVoc) || benchBatchedVoc < 1)
+                    {
+                        Console.Error.WriteLine("--bench-batched-voc expects a positive integer batch size.");
+                        return 2;
+                    }
+                    break;
+                case "--voc-batch":
+                    if (!int.TryParse(args[++i], out vocBatch) || vocBatch < 1)
+                    {
+                        Console.Error.WriteLine("--voc-batch expects a positive integer.");
+                        return 2;
+                    }
+                    break;
                 default:
                     Console.Error.WriteLine($"Unknown arg: {args[i]}");
                     return 2;
@@ -130,13 +151,15 @@ internal static class Program
                     + "Use --no-io-binding for full past_kv diag artifacts.");
             }
         }
-        // --bench-batched-lm skips voice + vocoder; only needs --onnx-dir.
+        // --bench-batched-{lm,voc} both skip voice loading; only need --onnx-dir.
         // Other modes need --voice. --out always has a default.
-        if (onnxDir is null || (voicePath is null && benchBatchedLm == 0))
+        bool isProbe = benchBatchedLm > 0 || benchBatchedVoc > 0;
+        if (onnxDir is null || (voicePath is null && !isProbe))
         {
             Console.Error.WriteLine(
                 "Usage: --onnx-dir <dir> --voice <wav> [--out <wav>] [--ep cpu|cuda]\n"
-                + "   or: --onnx-dir <dir> --bench-batched-lm <B>");
+                + "   or: --onnx-dir <dir> --bench-batched-lm <B>\n"
+                + "   or: --onnx-dir <dir> --bench-batched-voc <B>");
             return 2;
         }
         if (ep is not ("cpu" or "cuda"))
@@ -152,10 +175,14 @@ internal static class Program
         var sw = new Stopwatch();
         var epEnum = ep == "cuda" ? ExecutionProvider.Auto : ExecutionProvider.Cpu;
 
-        // ── Probe mode: --bench-batched-lm ────────────────────────────────
+        // ── Probe mode: --bench-batched-lm / --bench-batched-voc ────────────
         if (benchBatchedLm > 0)
         {
             return RunBatchedLmProbe(onnxDir, epEnum, benchBatchedLm);
+        }
+        if (benchBatchedVoc > 0)
+        {
+            return RunBatchedVocProbe(onnxDir, epEnum, benchBatchedVoc);
         }
 
         // ── Resolve tokenizer (needed only if --text was given) ───────────
@@ -271,24 +298,53 @@ internal static class Program
                 var batched = lm.GenerateBatch(condEmbs, tokensPerB);
                 batchLmSw.Stop();
 
+                // Build speech_tokens per element ahead of vocoder dispatch.
+                var speechTokensPerB = new long[B][];
+                for (int b = 0; b < B; b++)
+                    speechTokensPerB[b] = batched.PerChunkResults[b].BuildSpeechTokens(spk.AudioTokens);
+
+                // Vocoder dispatch: batched if vocBatch > 1, serial otherwise.
+                long batchVocMs = 0;
+                float[][] batchSamples;
+                if (vocBatch > 1)
+                {
+                    // MVP requires same-length speech_tokens; the test driver
+                    // replicates the same chunk so this holds. Real long-form
+                    // would need ragged-input support (Phase 2).
+                    var vocSw = Stopwatch.StartNew();
+                    batchSamples = vocoder.SynthesizeBatch(
+                        speechTokensPerB, spk.SpeakerEmbeddings, spk.SpeakerFeatures);
+                    vocSw.Stop();
+                    batchVocMs = vocSw.ElapsedMilliseconds;
+                }
+                else
+                {
+                    batchSamples = new float[B][];
+                    for (int b = 0; b < B; b++)
+                    {
+                        sw.Restart();
+                        batchSamples[b] = vocoder.Synthesize(
+                            speechTokensPerB[b], spk.SpeakerEmbeddings, spk.SpeakerFeatures);
+                        sw.Stop();
+                        chunkVocMs[produced + b] = sw.ElapsedMilliseconds;
+                    }
+                }
+
                 for (int b = 0; b < B; b++)
                 {
                     var lmResult = batched.PerChunkResults[b];
-                    var speechTokens = lmResult.BuildSpeechTokens(spk.AudioTokens);
-                    sw.Restart();
-                    var samples = vocoder.Synthesize(speechTokens, spk.SpeakerEmbeddings, spk.SpeakerFeatures);
-                    sw.Stop();
                     int globalIdx = produced + b;
                     chunkLmMs[globalIdx] = batchLmSw.ElapsedMilliseconds / B;  // amortized share
-                    chunkVocMs[globalIdx] = sw.ElapsedMilliseconds;
+                    if (vocBatch > 1) chunkVocMs[globalIdx] = batchVocMs / B;  // amortized share
                     chunkSteps[globalIdx] = lmResult.Steps;
-                    lastSamples = samples;
+                    lastSamples = batchSamples[b];
                     Console.WriteLine($"  chunk {globalIdx + 1}/{benchChunks} [batch {(produced / lmBatch) + 1}, elem {b + 1}/{B}]: "
                         + $"LM-share {chunkLmMs[globalIdx]} ms, "
-                        + $"voc {chunkVocMs[globalIdx]} ms, "
-                        + $"audio {samples.Length / (float)ChatterboxConstants.S3GenSr:F2}s");
+                        + $"voc{(vocBatch > 1 ? "-share" : "")} {chunkVocMs[globalIdx]} ms, "
+                        + $"audio {batchSamples[b].Length / (float)ChatterboxConstants.S3GenSr:F2}s");
                 }
-                Console.WriteLine($"    batch LM call: {batchLmSw.ElapsedMilliseconds} ms total for B={B}");
+                Console.WriteLine($"    batch LM call: {batchLmSw.ElapsedMilliseconds} ms total for B={B}"
+                    + (vocBatch > 1 ? $"; batch voc call: {batchVocMs} ms total for B={B}" : ""));
                 produced += B;
             }
             batchWallSw.Stop();
@@ -385,7 +441,8 @@ internal static class Program
             double chunksTotalSec = (pipelined || lmBatch > 1)
                 ? pipelinedChunkWallMs / 1000.0
                 : (lmSum + vocSum) / 1000.0;
-            string mode = lmBatch > 1 ? $"lm-batch={lmBatch}"
+            string mode = lmBatch > 1
+                ? (vocBatch > 1 ? $"lm-batch={lmBatch}+voc-batch={vocBatch}" : $"lm-batch={lmBatch}")
                 : pipelined ? "pipelined"
                 : "serial";
             Console.WriteLine($"Bench: {benchChunks} chunks ({mode}), "
@@ -558,4 +615,213 @@ internal static class Program
         => "(" + string.Join(", ", dims) + ")";
     private static string DimsOf(System.ReadOnlySpan<int> dims)
         => "(" + string.Join(", ", dims.ToArray()) + ")";
+
+    /// <summary>
+    /// Sister to <see cref="RunBatchedLmProbe"/> — confirms whether the
+    /// merged conditional_decoder_loop.onnx (or split / monolithic
+    /// fallback) honors B>1 inputs. Uses random data at the right
+    /// shapes (we don't care about output quality here, only whether
+    /// the graph accepts the batched call and how the wall time scales).
+    ///
+    /// ALSO probes the split flow_encoder + cfm_estimator + mel2wav
+    /// graphs at the same B, since the merged graph has CFG-doubling
+    /// baked in (axis-0 trace at 2) which blocks B>1 there.
+    /// </summary>
+    private static int RunBatchedVocProbe(string onnxDir, ExecutionProvider ep, int batchSize)
+    {
+        // Reuse Vocoder's auto-detect to pick the layout we'd actually
+        // ship, then call its underlying merged session directly with a
+        // B-shaped input. The probe needs direct ORT access because
+        // Vocoder.Synthesize hardcodes batch=1 today (the SynthesizeBatch
+        // method is the thing we're motivating with this probe).
+        string mergedPath = Path.Combine(onnxDir, "conditional_decoder_loop.onnx");
+        if (!File.Exists(mergedPath))
+        {
+            Console.Error.WriteLine($"--bench-batched-voc requires the merged conditional_decoder_loop.onnx in --onnx-dir; not found at {mergedPath}");
+            return 1;
+        }
+
+        Console.WriteLine($"Batched-voc probe: B={batchSize}, ep={ep}");
+        var loadSw = Stopwatch.StartNew();
+        using var session = OrtSessionBuilder.CreateCachedSession(mergedPath, ep);
+        loadSw.Stop();
+        Console.WriteLine($"  loaded conditional_decoder_loop.onnx in {loadSw.ElapsedMilliseconds} ms");
+
+        // Synthetic inputs at the canonical shapes Vocoder.Synthesize uses.
+        // speech_tokens: [B, T_tok] of int64 in [0, SPEECH_VOCAB_SIZE);
+        //                we pick T_tok = 423 to match the Ezreal-sentence
+        //                speech_tokens length the bench produces (250
+        //                from voice + 173 from LM).
+        // speaker_embeddings: [B, 192] of float
+        // speaker_features:   [B, 500, 80] of float
+        const int TTok = 423;
+        const int SpeakerDim = 192;
+        const int PromptLen = ChatterboxConstants.PromptLen;
+        const int MelBins = ChatterboxConstants.MelBins;
+
+        var rng = new Random(0);
+        var speechTokensB = new long[batchSize * TTok];
+        for (int i = 0; i < speechTokensB.Length; i++)
+            speechTokensB[i] = rng.Next(0, 6561);  // SPEECH_BASE_VOCAB_SIZE
+        var spkEmbB = new float[batchSize * SpeakerDim];
+        for (int i = 0; i < spkEmbB.Length; i++) spkEmbB[i] = (float)(rng.NextDouble() * 2 - 1);
+        var spkFeatB = new float[batchSize * PromptLen * MelBins];
+        for (int i = 0; i < spkFeatB.Length; i++) spkFeatB[i] = (float)(rng.NextDouble() * 2 - 1);
+
+        var runSw = Stopwatch.StartNew();
+        try
+        {
+            using var output = session.Run(new[]
+            {
+                NamedOnnxValue.CreateFromTensor("speech_tokens",
+                    new DenseTensor<long>(speechTokensB, new[] { batchSize, TTok })),
+                NamedOnnxValue.CreateFromTensor("speaker_embeddings",
+                    new DenseTensor<float>(spkEmbB, new[] { batchSize, SpeakerDim })),
+                NamedOnnxValue.CreateFromTensor("speaker_features",
+                    new DenseTensor<float>(spkFeatB, new[] { batchSize, PromptLen, MelBins })),
+            });
+            runSw.Stop();
+            var wavTensor = output.First().AsTensor<float>();
+            int outBatch = wavTensor.Dimensions[0];
+            int outSamples = wavTensor.Dimensions[1];
+            double msPerElem = runSw.ElapsedMilliseconds / (double)batchSize;
+            Console.WriteLine($"  vocoder B={batchSize}: {runSw.ElapsedMilliseconds} ms wall  ({msPerElem:F1} ms/batch-elem  → output shape ({outBatch},{outSamples}))");
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            runSw.Stop();
+            Console.Error.WriteLine($"  vocoder B={batchSize} FAILED after {runSw.ElapsedMilliseconds} ms: {ex.GetType().Name}: {ex.Message.Split('\n')[0]}");
+            // Fall through to the split-graph probe — that's where the
+            // hope is, since the merged graph baked the CFG-doubling
+            // hardcoded at trace time.
+        }
+
+        // ── Split-graph probe (flow_encoder + cfm_estimator + mel2wav) ──
+        return ProbeSplitVocoderAtBatch(onnxDir, ep, batchSize, speechTokensB, spkEmbB, spkFeatB,
+            TTok, SpeakerDim, PromptLen, MelBins);
+    }
+
+    private static int ProbeSplitVocoderAtBatch(string onnxDir, ExecutionProvider ep, int batchSize,
+        long[] speechTokensB, float[] spkEmbB, float[] spkFeatB,
+        int TTok, int SpeakerDim, int PromptLen, int MelBins)
+    {
+        string flowPath = Path.Combine(onnxDir, "flow_encoder.onnx");
+        string cfmPath = Path.Combine(onnxDir, "cfm_estimator.onnx");
+        string m2wPath = Path.Combine(onnxDir, "mel2wav.onnx");
+        if (!File.Exists(flowPath) || !File.Exists(cfmPath) || !File.Exists(m2wPath))
+        {
+            Console.Error.WriteLine($"  split vocoder graphs not in {onnxDir}; can't fall back to split probe.");
+            return 1;
+        }
+        Console.WriteLine($"  Probing split graphs at B={batchSize} ...");
+        using var flow = OrtSessionBuilder.CreateCachedSession(flowPath, ep);
+        using var cfm = OrtSessionBuilder.CreateCachedSession(cfmPath, ep);
+        using var m2w = OrtSessionBuilder.CreateCachedSession(m2wPath, ep);
+
+        // flow_encoder at B>1
+        var flowSw = Stopwatch.StartNew();
+        IDisposableReadOnlyCollection<DisposableNamedOnnxValue>? flowOut = null;
+        try
+        {
+            flowOut = flow.Run(new[]
+            {
+                NamedOnnxValue.CreateFromTensor("speech_tokens",
+                    new DenseTensor<long>(speechTokensB, new[] { batchSize, TTok })),
+                NamedOnnxValue.CreateFromTensor("speaker_embeddings",
+                    new DenseTensor<float>(spkEmbB, new[] { batchSize, SpeakerDim })),
+                NamedOnnxValue.CreateFromTensor("speaker_features",
+                    new DenseTensor<float>(spkFeatB, new[] { batchSize, PromptLen, MelBins })),
+            });
+            flowSw.Stop();
+            var muT = flowOut.ToList()[0].AsTensor<float>();
+            Console.WriteLine($"  flow_encoder B={batchSize}: {flowSw.ElapsedMilliseconds} ms  mu={DimsOf(muT.Dimensions)}");
+        }
+        catch (Exception ex)
+        {
+            flowSw.Stop();
+            Console.Error.WriteLine($"  flow_encoder B={batchSize} FAILED after {flowSw.ElapsedMilliseconds} ms: {ex.Message.Split('\n')[0]}");
+            return 1;
+        }
+
+        // cfm_estimator at B>2 (CFG-doubled): replicate flow outputs ×2 along batch
+        var encList = flowOut!.ToList();
+        var muArr = encList[0].AsTensor<float>().ToArray();
+        var maskArr = encList[1].AsTensor<float>().ToArray();
+        var embedArr = encList[2].AsTensor<float>().ToArray();
+        var condArr = encList[3].AsTensor<float>().ToArray();
+        var zArr = encList[4].AsTensor<float>().ToArray();
+        int tMel = encList[0].AsTensor<float>().Dimensions[2];
+
+        // CFG-doubled to [2*B, ...] per the C# split-vocoder convention.
+        int cfgB = 2 * batchSize;
+        var muIn = new float[cfgB * MelBins * tMel];
+        Array.Copy(muArr, 0, muIn, 0, muArr.Length);
+        // second half stays zeros (uncond)
+        var maskIn = new float[cfgB * 1 * tMel];
+        Array.Copy(maskArr, 0, maskIn, 0, maskArr.Length);
+        Array.Copy(maskArr, 0, maskIn, maskArr.Length, maskArr.Length);
+        var xIn = new float[cfgB * MelBins * tMel];
+        Array.Copy(zArr, 0, xIn, 0, zArr.Length);
+        Array.Copy(zArr, 0, xIn, zArr.Length, zArr.Length);
+        var spksIn = new float[cfgB * MelBins];
+        Array.Copy(embedArr, 0, spksIn, 0, embedArr.Length);
+        var condIn = new float[cfgB * MelBins * tMel];
+        Array.Copy(condArr, 0, condIn, 0, condArr.Length);
+        var tIn = new float[cfgB];
+        Array.Fill(tIn, 0.0f);
+
+        var cfmSw = Stopwatch.StartNew();
+        try
+        {
+            using var cfmOut = cfm.Run(new[]
+            {
+                NamedOnnxValue.CreateFromTensor("x_in",    new DenseTensor<float>(xIn,    new[] { cfgB, MelBins, tMel })),
+                NamedOnnxValue.CreateFromTensor("mask_in", new DenseTensor<float>(maskIn, new[] { cfgB, 1, tMel })),
+                NamedOnnxValue.CreateFromTensor("mu_in",   new DenseTensor<float>(muIn,   new[] { cfgB, MelBins, tMel })),
+                NamedOnnxValue.CreateFromTensor("t_in",    new DenseTensor<float>(tIn,    new[] { cfgB })),
+                NamedOnnxValue.CreateFromTensor("spks_in", new DenseTensor<float>(spksIn, new[] { cfgB, MelBins })),
+                NamedOnnxValue.CreateFromTensor("cond_in", new DenseTensor<float>(condIn, new[] { cfgB, MelBins, tMel })),
+            });
+            cfmSw.Stop();
+            var dphi = cfmOut.First().AsTensor<float>();
+            Console.WriteLine($"  cfm_estimator B={cfgB} (CFG-doubled): {cfmSw.ElapsedMilliseconds} ms  dphi={DimsOf(dphi.Dimensions)}");
+        }
+        catch (Exception ex)
+        {
+            cfmSw.Stop();
+            Console.Error.WriteLine($"  cfm_estimator B={cfgB} FAILED after {cfmSw.ElapsedMilliseconds} ms: {ex.Message.Split('\n')[0]}");
+            flowOut.Dispose();
+            return 1;
+        }
+
+        // mel2wav at B>1 — needs a mel of shape [B, 80, T_mel_trimmed]
+        int tTrim = tMel - PromptLen;
+        var melB = new float[batchSize * MelBins * tTrim];
+        // (random values; we only care about timing + crash-free)
+        var rng = new Random(0);
+        for (int i = 0; i < melB.Length; i++) melB[i] = (float)(rng.NextDouble() * 2 - 1);
+        var m2wSw = Stopwatch.StartNew();
+        try
+        {
+            using var m2wOut = m2w.Run(new[]
+            {
+                NamedOnnxValue.CreateFromTensor("mel",
+                    new DenseTensor<float>(melB, new[] { batchSize, MelBins, tTrim })),
+            });
+            m2wSw.Stop();
+            var wav = m2wOut.First().AsTensor<float>();
+            Console.WriteLine($"  mel2wav B={batchSize}: {m2wSw.ElapsedMilliseconds} ms  wav={DimsOf(wav.Dimensions)}");
+        }
+        catch (Exception ex)
+        {
+            m2wSw.Stop();
+            Console.Error.WriteLine($"  mel2wav B={batchSize} FAILED after {m2wSw.ElapsedMilliseconds} ms: {ex.Message.Split('\n')[0]}");
+            flowOut.Dispose();
+            return 1;
+        }
+
+        flowOut.Dispose();
+        return 0;
+    }
 }

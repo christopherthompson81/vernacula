@@ -499,3 +499,130 @@ work in Run 5 is what fp16 plugs into.
 Run 5 is the headline. Per the user's framing it's also where the
 fp16 lever will land — the C# shape is in place; the inference
 quality story changes when weights halve.
+
+
+## Run 6 — 2026-05-17 21:30 — Vocoder batching: split-graph fallback
+
+After Run 5 made vocoder the new bottleneck, probe whether the
+merged `conditional_decoder_loop.onnx` accepts B>1.
+
+### Run 6a — Probe results
+
+```
+Merged conditional_decoder_loop.onnx:
+  B=1: 843 ms  (works, single-Run on GPU-side Loop)
+  B=2: FAIL  cfm__/estimator/Concat_2: dim 4 vs expected 2
+  B=4: FAIL  ...dim 8 vs expected 2
+  B=8: FAIL  ...dim 16 vs expected 2
+
+Split graphs (flow_encoder + cfm_estimator + mel2wav):
+  flow_encoder B=2: 24 ms
+  flow_encoder B=4: 38 ms
+  cfm_estimator B=4 (CFG-doubled=8): 173 ms (single step; full CFM = 10 steps)
+  mel2wav B=2: 318 ms
+  mel2wav B=4: 436 ms
+```
+
+The merged graph baked CFG-doubling at trace time — the inner Loop
+body's Concat ops have hardcoded dim 2 from the trace. The split
+graphs accept B>1 cleanly because their `dynamic_axes` were never
+collapsed by a trace-time fold.
+
+**Two paths forward** (decided to go with A; B is a future cleanup):
+
+- **Path A (no export changes)**: use split-graph orchestration in C#
+  for B>1 vocoder. Trade GPU-side Loop efficiency for C#-orchestrated
+  B>1 batching.
+- **Path B (real export refinement)**: rewrite
+  `scripts/_export_utils/merge_cond_decoder_loop.py` to make
+  CFG-doubling dynamic on input batch. Maybe a day's work +
+  parity re-verification. Unlocks single-Run batched-merged vocoder.
+
+### Run 6b — `Vocoder.SynthesizeBatch`
+
+New method always uses the split orchestration path (B>1 requires
+split graphs anyway). Constructor change: when `Mode == Merged`,
+also load split graphs if present so `SynthesizeBatch` has them.
+Added `Vocoder.SupportsBatched` property to surface the capability.
+
+VRAM cost (answering the question explicitly): loading both merged
+and split graphs doubles the cond-decoder weight residency. On disk:
+~576 MB merged + ~500-600 MB split = ~1.1 GB additional. The 3090
+with 24 GB has headroom; a 12 GB card with the 2 GB LM resident
+would be tighter. If it bites, gate the split-load on a
+`loadSplitForBatch` constructor flag.
+
+One real bug surfaced: `flow_encoder.onnx`'s `z` output stays at
+`[1, MelBins, T_mel]` even when input batch is B>1. The pinned
+`rand_noise` patch we added in Run 11 of
+`docs/chatterbox_investigation.md` for parity reproducibility made
+`z` look graph-constant to ORT. Fix in `SynthesizeBatch`: detect
+B=1 output and replicate B times in C#. Per-batch-element noise is
+intentionally identical (same seed); if we ever want per-element
+noise variation, that's a separate export-patch change.
+
+### Run 6c — End-to-end batched LM + batched vocoder
+
+```
+=== --bench-chunks 8 --lm-batch 4 --voc-batch 4 ===
+Bench: 8 chunks (lm-batch=4+voc-batch=4), LM avg 425 ms,
+  voc avg 541 ms, per-chunk-sum-avg 966 ms,
+  chunks-wall 7.7s [total wall 13.4s]
+
+=== --bench-chunks 8 --lm-batch 8 --voc-batch 8 ===
+Bench: 8 chunks (lm-batch=8+voc-batch=8), LM avg 242 ms,
+  voc avg 514 ms, per-chunk-sum-avg 756 ms,
+  chunks-wall 6.1s [total wall 11.8s]
+```
+
+Headline comparison:
+
+| Config | LM ms/chunk | Voc ms/chunk | Chunks-wall | vs serial baseline |
+|---|---|---|---|---|
+| Serial IoBinding (Run 1) | 1284 | 557 (merged) | 14.7 s | (baseline) |
+| Run 5: lm-batch=4 | 409 | 560 (merged) | 7.8 s | −47% |
+| Run 5: lm-batch=8 | 236 | 559 (merged) | 6.4 s | −57% |
+| Run 6c: lm-batch=4 + voc-batch=4 | 425 | 541 (split) | 7.7 s | −48% |
+| Run 6c: lm-batch=8 + voc-batch=8 | 242 | 514 (split) | 6.1 s | −59% |
+
+Vocoder batching saves **3-5% additional wall** when LM is already
+batched. Less than hoped — the C#-orchestrated CFM solve adds 10
+host-roundtrips per chunk (one per CFM step) that the merged
+graph's GPU-side Loop avoided. So the per-chunk voc-share goes
+from 557 (merged, no contention) → 514 (split B=8) = 8% reduction,
+not the 30-40% the per-call probe suggested at face value.
+
+### What this tells us about Path B (export refinement)
+
+Path B isn't a free 3× win — even the split-graph batching at B=8
+amortizes only modestly. The MERGED graph's superiority is the
+GPU-side CFM Loop, not the batch dimension. Path B would let us
+keep that GPU-side Loop while ALSO supporting B>1 — the combination
+is what would actually pay off. Estimated win for Path B at B=8:
+voc/chunk would be ~150-200 ms (rough projection from "what if
+GPU-side Loop's amortization at B=8 looked like the merged graph's
+B=1 timing × (B=8 amortization factor of ~1.5)").
+
+So Path B is worth doing eventually, but not urgent. Logging it as
+a follow-up issue.
+
+### Architectural state at end of Run 6
+
+The C# pipeline now supports B>1 end-to-end. Both `AcousticLM` and
+`Vocoder` have `*Batch` methods with consistent same-length-MVP
+constraints. ChatterboxSmoke exposes `--lm-batch` and `--voc-batch`
+flags. fp16 quantization (when it arrives) plugs into this surface
+without further architectural changes.
+
+Cumulative wins:
+
+| Run | What | Chunks-wall (8) | vs Run 1 |
+|---|---|---|---|
+| Run 1 | Serial baseline | 14.7 s | (baseline) |
+| Run 5 | + Batched IoBinding LM (B=8) | 6.4 s | −57% |
+| Run 6 | + Batched split vocoder (B=8) | 6.1 s | −59% |
+
+Run 7 (vocoder pipelining: LM(group N+1) overlapped with voc(N)) is
+the next iteration target. The contention story should be friendlier
+now than in Run 2 — at lm-batch=8 the LM is small enough (242 ms)
+that overlapping the 514 ms voc shouldn't starve it.
