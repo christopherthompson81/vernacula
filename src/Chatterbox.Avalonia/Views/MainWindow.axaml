@@ -140,8 +140,11 @@
             <TextBlock Text="Playback" FontWeight="SemiBold"
                        Margin="0,4,0,2" />
             <StackPanel Orientation="Horizontal" Spacing="6">
-                <Button Content="▶ Play" Command="{Binding PlayCommand}"
-                        MinWidth="80" />
+                <!-- Single toggle: label changes between ▶ Play /
+                     ⏸ Pause / ▶ Resume based on PlaybackService state. -->
+                <Button Content="{Binding PlayPauseLabel}"
+                        Command="{Binding PlayPauseCommand}"
+                        MinWidth="100" />
                 <Button Content="■ Stop" Command="{Binding StopCommand}"
                         MinWidth="80" />
             </StackPanel>

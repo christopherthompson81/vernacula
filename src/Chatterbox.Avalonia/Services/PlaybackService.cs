@@ -73,7 +73,21 @@ public sealed class PlaybackService : IDisposable
             IsPlayingChanged?.Invoke(value);
         }
     }
+
+    private bool _isPaused;
+    public bool IsPaused
+    {
+        get => _isPaused;
+        private set
+        {
+            if (_isPaused == value) return;
+            _isPaused = value;
+            IsPausedChanged?.Invoke(value);
+        }
+    }
+
     public double PositionSeconds { get; private set; }
+    private DateTime _pausedAt;
 
     /// <summary>Running best-known total duration of the audio that's
     /// been queued. Grows as chunks append during streaming; matches the
@@ -96,6 +110,10 @@ public sealed class PlaybackService : IDisposable
     /// <summary>Fired when <see cref="IsPlaying"/> transitions. Lets the
     /// UI re-query the Stop/Play CanExecute predicates.</summary>
     public event Action<bool>? IsPlayingChanged;
+
+    /// <summary>Fired when <see cref="IsPaused"/> transitions. Lets the
+    /// UI swap the Play/Pause/Resume button label.</summary>
+    public event Action<bool>? IsPausedChanged;
 
     public bool CanPlayOnThisPlatform => OperatingSystem.IsWindows() || FfplayPath is not null;
     public string? UnavailableReason => CanPlayOnThisPlatform
@@ -251,6 +269,77 @@ public sealed class PlaybackService : IDisposable
         }
     }
 
+    /// <summary>Suspend audio output without tearing down the backend.
+    /// On Windows uses <see cref="WaveOutEvent.Pause"/>; on Linux sends
+    /// SIGSTOP to the ffplay process so the kernel freezes it. The
+    /// internal audio buffer and writer task stay alive — Resume picks
+    /// up exactly where Pause left off. Wall-clock position is frozen
+    /// via _pausedAt; Resume shifts _startedUtc forward by the pause
+    /// duration so the highlight doesn't jump ahead.</summary>
+    public void Pause()
+    {
+        if (!IsPlaying || IsPaused) return;
+        if (OperatingSystem.IsWindows())
+        {
+            try { _waveOut?.Pause(); } catch { /* device race */ }
+        }
+        else if (_ffplayProcess is not null)
+        {
+            SendSignalToProcess(_ffplayProcess, "STOP");
+        }
+        _pausedAt = DateTime.UtcNow;
+        StopTickTimer();
+        // Order matters: clear IsPlaying BEFORE setting IsPaused so any
+        // subscriber that re-queries derived state sees both in a
+        // consistent (paused, not-playing) configuration.
+        IsPlaying = false;
+        IsPaused = true;
+    }
+
+    /// <summary>Resume playback from <see cref="Pause"/>. Shifts the
+    /// wall-clock anchor forward by the pause duration so position
+    /// resumes where it stopped, restarts the tick timer, and unfreezes
+    /// the audio backend.</summary>
+    public void Resume()
+    {
+        if (!IsPaused) return;
+        var pauseDuration = DateTime.UtcNow - _pausedAt;
+        _startedUtc = _startedUtc.Add(pauseDuration);
+        if (OperatingSystem.IsWindows())
+        {
+            try { _waveOut?.Play(); } catch { /* device race */ }
+        }
+        else if (_ffplayProcess is not null)
+        {
+            SendSignalToProcess(_ffplayProcess, "CONT");
+        }
+        IsPaused = false;
+        IsPlaying = true;
+        StartTickTimer();
+    }
+
+    /// <summary>Best-effort POSIX signal via the kill(1) utility. Used
+    /// for SIGSTOP/SIGCONT to pause/resume ffplay. Shelling out (rather
+    /// than P/Invoke libc) avoids hard-coding signal numbers, which
+    /// differ between Linux and macOS.</summary>
+    private static void SendSignalToProcess(Process proc, string sig)
+    {
+        if (proc.HasExited) return;
+        try
+        {
+            using var p = Process.Start(new ProcessStartInfo("kill")
+            {
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                ArgumentList = { "-s", sig, proc.Id.ToString() },
+            });
+            p?.WaitForExit(500);
+        }
+        catch { /* best effort — pause/resume isn't worth crashing over */ }
+    }
+
     /// <summary>Jump to an arbitrary position. On Windows this works on
     /// whatever's been buffered. On ffplay it restarts the player at the
     /// new offset, which only works when streaming has finished (we'd
@@ -330,28 +419,26 @@ public sealed class PlaybackService : IDisposable
 
     public void Stop()
     {
-        if (!IsPlaying && _tickTimer is null) return;
+        // Allow Stop after Pause too — without IsPaused in this check
+        // we'd early-return because the timer was stopped by Pause and
+        // IsPlaying is false during pause.
+        if (!IsPlaying && !IsPaused && _waveOut is null && _ffplayProcess is null) return;
         StopTickTimer();
-        // Complete the channel first so the writer task exits cleanly
-        // instead of being killed mid-Write.
-        _audioChannel?.Writer.TryComplete();
-        _audioChannel = null;
-        // Don't wait for _writerTask here — Stop is sync and the writer
-        // might be blocked in a Windows AddSamples or a Linux pipe Write
-        // that hasn't unblocked yet. It'll exit on its own once the
-        // backend below is torn down.
-        _writerTask = null;
+
+        // ORDER MATTERS for immediate-stop UX. Audio backends are torn
+        // down FIRST so output goes silent right now. The channel +
+        // writer-task cleanup happens after — those don't produce
+        // sound, just internal state.
+        //
+        // Old order closed ffplay stdin before kill, which let ffplay
+        // drain its internal decoded-PCM buffer (sometimes seconds) on
+        // -autoexit before the kill landed. Killing first prevents
+        // that drain.
         if (_waveOut is not null)
         {
             try { _waveOut.Stop(); } catch { /* shutdown race */ }
             _waveOut.Dispose();
             _waveOut = null;
-        }
-        _bufferedProvider = null;
-        if (_ffplayStdin is not null)
-        {
-            try { _ffplayStdin.Close(); } catch { }
-            _ffplayStdin = null;
         }
         if (_ffplayProcess is not null)
         {
@@ -360,7 +447,20 @@ public sealed class PlaybackService : IDisposable
             _ffplayProcess.Dispose();
             _ffplayProcess = null;
         }
+        if (_ffplayStdin is not null)
+        {
+            try { _ffplayStdin.Close(); } catch { }
+            _ffplayStdin = null;
+        }
+        // Channel cleanup last; writer task will hit a broken pipe /
+        // disposed buffer and exit its loop on its own.
+        _audioChannel?.Writer.TryComplete();
+        _audioChannel = null;
+        _writerTask = null;
+        _bufferedProvider = null;
+
         var finalPos = PositionSeconds;
+        IsPaused = false;
         IsPlaying = false;
         PlaybackStopped?.Invoke(finalPos);
     }

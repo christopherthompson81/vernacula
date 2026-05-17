@@ -50,14 +50,12 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     // Status line below the synthesize button.
     [ObservableProperty] private string _statusMessage = "Ready.";
 
-    // Active while synthesis is running. Disables most controls.
-    // Note: gates SynthesizeCommand (don't allow re-start mid-run),
-    // PlayCommand (no replay while still generating), and the new
-    // CancelSynthesisCommand (only enabled when there's something to
-    // cancel). Stop is independent — it operates on playback only.
+    // Active while synthesis is running. Gates SynthesizeCommand
+    // (don't allow re-start mid-run) and CancelSynthesisCommand (only
+    // enabled while there's a synth to cancel). PlayPause and Stop are
+    // intentionally independent — mid-synth replay is allowed.
     [ObservableProperty]
     [NotifyCanExecuteChangedFor(nameof(SynthesizeCommand))]
-    [NotifyCanExecuteChangedFor(nameof(PlayCommand))]
     [NotifyCanExecuteChangedFor(nameof(CancelSynthesisCommand))]
     private bool _isBusy;
 
@@ -66,7 +64,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     // Set on the first chunk-produced event; reset when a new
     // Synthesize starts.
     [ObservableProperty]
-    [NotifyCanExecuteChangedFor(nameof(PlayCommand))]
+    [NotifyCanExecuteChangedFor(nameof(PlayPauseCommand))]
     private bool _hasSynthesizedAudio;
 
     // Accumulators that persist across Play/Stop clicks during a synth
@@ -78,14 +76,28 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private readonly object _receivedLock = new();
     private int _writtenChunks;
 
-    // Mirrors PlaybackService.IsPlaying so the AXAML CanExecute can
-    // re-query. PlaybackService raises IsPlayingChanged; the handler
-    // updates this field. Gates Play (can't start when already playing)
-    // and Stop (nothing to stop when not playing).
+    // Mirrors PlaybackService.IsPlaying ("audio currently coming out").
+    // False both when stopped and when paused. PlayPauseLabel /
+    // CanStop derive from this + IsPausedBack.
     [ObservableProperty]
-    [NotifyCanExecuteChangedFor(nameof(PlayCommand))]
+    [NotifyCanExecuteChangedFor(nameof(PlayPauseCommand))]
     [NotifyCanExecuteChangedFor(nameof(StopCommand))]
+    [NotifyPropertyChangedFor(nameof(PlayPauseLabel))]
     private bool _isPlayingBack;
+
+    // Mirrors PlaybackService.IsPaused. Distinct from !IsPlayingBack:
+    // a paused session keeps its backend alive (so Resume is cheap and
+    // doesn't restart from the beginning) whereas a stopped one is
+    // fully torn down.
+    [ObservableProperty]
+    [NotifyCanExecuteChangedFor(nameof(PlayPauseCommand))]
+    [NotifyCanExecuteChangedFor(nameof(StopCommand))]
+    [NotifyPropertyChangedFor(nameof(PlayPauseLabel))]
+    private bool _isPausedBack;
+
+    public string PlayPauseLabel => IsPausedBack ? "▶ Resume"
+        : IsPlayingBack ? "⏸ Pause"
+        : "▶ Play";
 
     // Chunk progress drives the determinate progress bar. ChunksDone is
     // bound to ProgressBar.Value; TotalChunks to .Maximum. Both zero
@@ -125,6 +137,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             if (!IsBusy) StatusMessage = "Playback stopped.";
         };
         _playback.IsPlayingChanged += playing => Dispatcher.UIThread.Post(() => IsPlayingBack = playing);
+        _playback.IsPausedChanged += paused => Dispatcher.UIThread.Post(() => IsPausedBack = paused);
         // Refresh the position label whenever the total grows — without
         // this it would only update on tick-timer ticks, so after Stop
         // (which kills the timer) any chunks still landing would update
@@ -383,13 +396,32 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     // ── Playback ─────────────────────────────────────────────────────
 
-    [RelayCommand(CanExecute = nameof(CanPlay))]
-    private void Play()
+    /// <summary>Single play / pause / resume toggle. Behavior depends
+    /// on the current state:
+    /// - Paused  → Resume (cheap, audio backend kept alive)
+    /// - Playing → Pause (suspends WaveOut or sends SIGSTOP to ffplay)
+    /// - Idle    → Play from the beginning of the current WAV (writing
+    ///   a partial WAV from received chunks first if needed)
+    /// </summary>
+    [RelayCommand(CanExecute = nameof(CanPlayPause))]
+    private void PlayPause()
     {
-        // Snapshot the current received-chunks state. If new chunks
-        // landed since the last WAV write (or no WAV exists yet — e.g.
-        // user clicked Stop mid-synth then Play), write a fresh WAV
-        // including everything received so far.
+        if (IsPausedBack)
+        {
+            _playback.Resume();
+            StatusMessage = "Resumed.";
+            return;
+        }
+        if (IsPlayingBack)
+        {
+            _playback.Pause();
+            StatusMessage = "Paused.";
+            return;
+        }
+
+        // Idle — start from beginning. Snapshot the current
+        // received-chunks state; if new chunks landed since the last
+        // WAV write (or no WAV exists yet), write a fresh one.
         List<float[]>? snapshot = null;
         List<AlignedWord>? wordsSnap = null;
         lock (_receivedLock)
@@ -449,11 +481,9 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         catch (Exception ex) { StatusMessage = $"Play failed: {ex.Message}"; }
     }
 
-    // Play is enabled whenever we have at least one chunk AND audio
-    // isn't currently playing. IsBusy is intentionally NOT a gate —
-    // mid-synth Play replays the partial-so-far, which the user feedback
-    // confirmed is the natural mental model after clicking Stop.
-    private bool CanPlay() => HasSynthesizedAudio && !IsPlayingBack
+    // PlayPause is enabled whenever we have at least one chunk. The
+    // command body branches on play/pause/idle state internally.
+    private bool CanPlayPause() => HasSynthesizedAudio
         && _playback.CanPlayOnThisPlatform;
 
     /// <summary>Stops audio playback. Immediate — does NOT cancel any
@@ -463,8 +493,9 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     [RelayCommand(CanExecute = nameof(CanStop))]
     private void Stop() => _playback.Stop();
 
-    // Stop is enabled iff something is actually playing.
-    private bool CanStop() => IsPlayingBack;
+    // Stop is enabled when audio is playing OR paused — both states
+    // have a live backend that needs tearing down.
+    private bool CanStop() => IsPlayingBack || IsPausedBack;
 
     // Click-to-seek wiring. Each WordItemViewModel calls this back via a
     // delegate set at construction (avoids per-word command boilerplate +
