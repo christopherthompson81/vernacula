@@ -51,10 +51,14 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     [ObservableProperty] private string _statusMessage = "Ready.";
 
     // Active while synthesis is running. Disables most controls.
+    // Note: gates SynthesizeCommand (don't allow re-start mid-run),
+    // PlayCommand (no replay while still generating), and the new
+    // CancelSynthesisCommand (only enabled when there's something to
+    // cancel). Stop is independent — it operates on playback only.
     [ObservableProperty]
     [NotifyCanExecuteChangedFor(nameof(SynthesizeCommand))]
     [NotifyCanExecuteChangedFor(nameof(PlayCommand))]
-    [NotifyCanExecuteChangedFor(nameof(StopCommand))]
+    [NotifyCanExecuteChangedFor(nameof(CancelSynthesisCommand))]
     private bool _isBusy;
 
     // True after a synthesis finishes successfully. Enables replay.
@@ -64,7 +68,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     // Mirrors PlaybackService.IsPlaying so the AXAML CanExecute can
     // re-query. PlaybackService raises IsPlayingChanged; the handler
-    // updates this field.
+    // updates this field. Gates Play (can't start when already playing)
+    // and Stop (nothing to stop when not playing).
     [ObservableProperty]
     [NotifyCanExecuteChangedFor(nameof(PlayCommand))]
     [NotifyCanExecuteChangedFor(nameof(StopCommand))]
@@ -221,6 +226,13 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         _lastAudioPath = null;
         ChunksDone = 0;
         TotalChunks = 0;
+        // Accumulators for the partial-on-cancel path. The alignment
+        // chain emits chunks in input order so a List append is correct;
+        // we lock just for the memory barrier between the chain thread
+        // and the catch handler.
+        var receivedAudio = new List<float[]>();
+        var receivedWords = new List<AlignedWord>();
+        var receivedLock = new object();
         _synthCts?.Dispose();
         _synthCts = new CancellationTokenSource();
         var token = _synthCts.Token;
@@ -262,6 +274,13 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
                             StatusMessage = $"Playback failed: {ex.Message}");
                     }
 
+                    // Accumulate for the partial-WAV-on-cancel path.
+                    lock (receivedLock)
+                    {
+                        receivedAudio.Add(ev.Audio24k);
+                        if (ev.Words.Count > 0) receivedWords.AddRange(ev.Words);
+                    }
+
                     // Word adds touch the ObservableCollection → must go
                     // through the dispatcher. Capture ev by local so the
                     // closure doesn't race a subsequent chunk's event.
@@ -300,7 +319,48 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         }
         catch (OperationCanceledException)
         {
-            StatusMessage = "Synthesis cancelled.";
+            // Persist whatever chunks landed so the user can still play
+            // back what was synthesized before they hit Cancel. Without
+            // this, Cancel would discard a long-running partial result.
+            List<float[]> audioSnapshot;
+            List<AlignedWord> wordsSnapshot;
+            lock (receivedLock)
+            {
+                audioSnapshot = new List<float[]>(receivedAudio);
+                wordsSnapshot = new List<AlignedWord>(receivedWords);
+            }
+            string outWavCancelled = Path.Combine(Path.GetTempPath(),
+                $"chatterbox_app_{DateTime.UtcNow:yyyyMMddHHmmss}_partial.wav");
+            if (audioSnapshot.Count > 0)
+            {
+                try
+                {
+                    SynthesisService.WriteWavFromChunks(outWavCancelled, audioSnapshot,
+                        ChatterboxConstants.S3GenSr);
+                    int totalSamples = 0;
+                    foreach (var c in audioSnapshot) totalSamples += c.Length;
+                    double duration = totalSamples / (double)ChatterboxConstants.S3GenSr;
+                    _lastAudioPath = outWavCancelled;
+                    _lastAlignment = new AlignmentSidecar
+                    {
+                        AudioPath = outWavCancelled,
+                        SampleRate = ChatterboxConstants.S3GenSr,
+                        AudioDurationSeconds = duration,
+                        Aligner = string.IsNullOrWhiteSpace(NfaBundleDir) ? "none (partial)" : "nemo_nfa (partial)",
+                        Words = wordsSnapshot,
+                    };
+                    HasSynthesizedAudio = true;
+                    StatusMessage = $"Cancelled — saved {audioSnapshot.Count} chunk(s), {duration:F2}s playable.";
+                }
+                catch (Exception saveEx)
+                {
+                    StatusMessage = $"Cancelled; partial save failed: {saveEx.Message}";
+                }
+            }
+            else
+            {
+                StatusMessage = "Synthesis cancelled.";
+            }
         }
         catch (Exception ex)
         {
@@ -317,6 +377,21 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         && !string.IsNullOrWhiteSpace(VoicePath)
         && !string.IsNullOrWhiteSpace(OnnxBundleDir)
         && !string.IsNullOrWhiteSpace(Text);
+
+    /// <summary>Cancels in-flight synthesis. Cancellation is checked
+    /// at chunk boundaries — the LM rollout for the chunk that's
+    /// currently being generated can't be interrupted, so a click here
+    /// takes effect after the current chunk finishes (a few seconds at
+    /// worst). Any chunks that completed before cancel are written to a
+    /// partial WAV so Play still works.</summary>
+    [RelayCommand(CanExecute = nameof(CanCancelSynthesis))]
+    private void CancelSynthesis()
+    {
+        _synthCts?.Cancel();
+        StatusMessage = "Cancelling — will stop after the current chunk.";
+    }
+
+    private bool CanCancelSynthesis() => IsBusy;
 
     // ── Playback ─────────────────────────────────────────────────────
 
@@ -340,19 +415,15 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private bool CanPlay() => HasSynthesizedAudio && !IsBusy && !IsPlayingBack
         && _playback.CanPlayOnThisPlatform;
 
+    /// <summary>Stops audio playback. Immediate — does NOT cancel any
+    /// in-flight synthesis (use the Cancel button for that). The two
+    /// were combined in an earlier iteration; the user fed back that
+    /// the controls felt muddled, so they're separate now.</summary>
     [RelayCommand(CanExecute = nameof(CanStop))]
-    private void Stop()
-    {
-        // Cancel synthesis too — otherwise the alignment chain keeps
-        // running, words keep landing, and the user thinks "Stop" didn't
-        // actually stop anything.
-        _synthCts?.Cancel();
-        _playback.Stop();
-    }
+    private void Stop() => _playback.Stop();
 
-    // Stop is enabled when there's something TO stop: either an active
-    // synth run or active playback.
-    private bool CanStop() => IsBusy || IsPlayingBack;
+    // Stop is enabled iff something is actually playing.
+    private bool CanStop() => IsPlayingBack;
 
     // Click-to-seek wiring. Each WordItemViewModel calls this back via a
     // delegate set at construction (avoids per-word command boilerplate +

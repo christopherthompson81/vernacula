@@ -263,6 +263,28 @@ public sealed class SynthesisService : IDisposable
         }, cancellationToken).ConfigureAwait(false);
     }
 
+    /// <summary>Concatenate <paramref name="chunks"/> in the given order
+    /// and write a 24 kHz mono float32 WAV. Used to persist a partial
+    /// result when the user cancels mid-synthesis — Chatterbox chunks
+    /// can be concatenated directly because the LM rollout state isn't
+    /// shared across chunks (each chunk is a self-contained synthesis
+    /// against the same conditioning).</summary>
+    public static void WriteWavFromChunks(string outPath, IReadOnlyList<float[]> chunks, int sampleRate)
+    {
+        int total = 0;
+        foreach (var c in chunks) total += c.Length;
+        var all = new float[total];
+        int off = 0;
+        foreach (var c in chunks)
+        {
+            Array.Copy(c, 0, all, off, c.Length);
+            off += c.Length;
+        }
+        var fmt = WaveFormat.CreateIeeeFloatWaveFormat(sampleRate, 1);
+        using var writer = new WaveFileWriter(outPath, fmt);
+        writer.WriteSamples(all, 0, all.Length);
+    }
+
     private void EnsureLoaded()
     {
         if (_pipeline is not null) return;

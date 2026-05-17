@@ -107,14 +107,24 @@
 
             <Separator Margin="0,12,0,0" />
 
-            <Button Content="Synthesize"
-                    Command="{Binding SynthesizeCommand}"
-                    FontWeight="SemiBold"
-                    HorizontalAlignment="Stretch" />
+            <!-- ── Synthesis ─────────────────────────────────────── -->
+            <TextBlock Text="Synthesis" FontWeight="SemiBold"
+                       Margin="0,4,0,2" />
+            <StackPanel Orientation="Horizontal" Spacing="6">
+                <Button Content="Synthesize"
+                        Command="{Binding SynthesizeCommand}"
+                        FontWeight="SemiBold" MinWidth="110" />
+                <!-- Cancel only enabled mid-run. Cancellation takes effect
+                     after the current chunk (the LM rollout is not
+                     interruptible); any chunks completed before cancel
+                     are saved as a partial WAV that Play can use. -->
+                <Button Content="Cancel"
+                        Command="{Binding CancelSynthesisCommand}"
+                        MinWidth="80" />
+            </StackPanel>
             <!-- Determinate once TotalChunks > 0 (set by the "chunked into
                  N paragraphs" progress event); indeterminate during the
-                 model-load + chunking prefix. ShowProgressText surfaces
-                 the "X/N" without needing a separate label. -->
+                 model-load + chunking prefix. -->
             <ProgressBar IsVisible="{Binding IsBusy}"
                          IsIndeterminate="{Binding !TotalChunks}"
                          Minimum="0"
@@ -126,6 +136,9 @@
 
             <Separator Margin="0,12,0,0" />
 
+            <!-- ── Playback ──────────────────────────────────────── -->
+            <TextBlock Text="Playback" FontWeight="SemiBold"
+                       Margin="0,4,0,2" />
             <StackPanel Orientation="Horizontal" Spacing="6">
                 <Button Content="▶ Play" Command="{Binding PlayCommand}"
                         MinWidth="80" />
