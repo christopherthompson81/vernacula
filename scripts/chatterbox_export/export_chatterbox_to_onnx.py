@@ -122,52 +122,74 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
-def assert_model_constants_match_hardcodes(chatterbox_model) -> None:
+def assert_model_constants_match_hardcodes(chatterbox_model: "ChatterboxTTS") -> None:  # noqa: F821
     """Hard-fail if upstream model dimensions or token IDs have diverged
-    from the values hand-copied into <c>_common.py</c>.
+    from the values hand-copied into our export modules.
 
     Several constants — LLM hidden size, layer count, KV heads, head dim,
-    START/STOP speech token IDs — are duplicated as module-level Python
-    constants because the export wrappers (e.g.
-    <c>InputsEmbeds</c>, the LM rollout in parity tests) reference them
-    at module load time before any model instance exists. Duplication
-    means an upstream architecture bump can silently render those copies
-    wrong while the export still completes.
+    speech token IDs, mel bins, CFG rate — are duplicated as module-level
+    Python constants because the export wrappers reference them at module
+    load time before any model instance exists. Duplication means an
+    upstream architecture bump can silently render those copies wrong
+    while the export still completes.
 
-    This check loads <c>_common.py</c>'s copies, reads the same values
-    off the live model's <c>t3.tfmr.config</c> + <c>t3.hp</c>, and raises
-    SystemExit on the first mismatch with a clear remediation message.
+    Currently checked (3 source files):
+      _common.py:                      LLM_{HIDDEN_SIZE,NUM_LAYERS,
+                                       NUM_KV_HEADS,NUM_ATTN_HEADS,HEAD_DIM},
+                                       SPEECH_BASE_VOCAB_SIZE,
+                                       START_SPEECH_TOKEN, STOP_SPEECH_TOKEN
+      _export_utils/merge_cond_decoder_loop.py:  MEL_BINS, CFG_RATE
+
+    NOT currently checked (no clean upstream attribute path identified):
+      S3GEN_SR (24000), EXAGGERATION_TOKEN (== STOP+1 by convention),
+      PROMPT_LEN, N_TIMESTEPS, ISTFT_PARAMS. If these become a drift
+      source in practice, extend the `checks` table below.
+
+    Raises SystemExit on the first mismatch with a clear remediation
+    message naming the file to update.
     """
     from _common import (
         LLM_HIDDEN_SIZE, LLM_NUM_LAYERS, LLM_NUM_KV_HEADS,
         LLM_NUM_ATTN_HEADS, LLM_HEAD_DIM,
+        SPEECH_BASE_VOCAB_SIZE,
         START_SPEECH_TOKEN, STOP_SPEECH_TOKEN,
     )
+    # MEL_BINS + CFG_RATE live in the merge utility (separate package).
+    _export_utils_dir = Path(__file__).resolve().parent.parent
+    if str(_export_utils_dir) not in sys.path:
+        sys.path.insert(0, str(_export_utils_dir))
+    from _export_utils.merge_cond_decoder_loop import MEL_BINS, CFG_RATE
+
     cfg = chatterbox_model.t3.tfmr.config
     hp = chatterbox_model.t3.hp
+    flow = chatterbox_model.s3gen.flow
     checks = [
-        ("LLM_HIDDEN_SIZE",     LLM_HIDDEN_SIZE,     cfg.hidden_size,           "t3.tfmr.config.hidden_size"),
-        ("LLM_NUM_LAYERS",      LLM_NUM_LAYERS,      cfg.num_hidden_layers,     "t3.tfmr.config.num_hidden_layers"),
-        ("LLM_NUM_KV_HEADS",    LLM_NUM_KV_HEADS,    cfg.num_key_value_heads,   "t3.tfmr.config.num_key_value_heads"),
-        ("LLM_NUM_ATTN_HEADS",  LLM_NUM_ATTN_HEADS,  cfg.num_attention_heads,   "t3.tfmr.config.num_attention_heads"),
-        ("LLM_HEAD_DIM",        LLM_HEAD_DIM,        cfg.head_dim,              "t3.tfmr.config.head_dim"),
-        ("START_SPEECH_TOKEN",  START_SPEECH_TOKEN,  hp.start_speech_token,     "t3.hp.start_speech_token"),
-        ("STOP_SPEECH_TOKEN",   STOP_SPEECH_TOKEN,   hp.stop_speech_token,      "t3.hp.stop_speech_token"),
+        # (name, our hardcode, upstream value, where-upstream-lives, where-our-hardcode-lives)
+        ("LLM_HIDDEN_SIZE",         LLM_HIDDEN_SIZE,         cfg.hidden_size,                  "t3.tfmr.config.hidden_size",         "_common.py"),
+        ("LLM_NUM_LAYERS",          LLM_NUM_LAYERS,          cfg.num_hidden_layers,            "t3.tfmr.config.num_hidden_layers",   "_common.py"),
+        ("LLM_NUM_KV_HEADS",        LLM_NUM_KV_HEADS,        cfg.num_key_value_heads,          "t3.tfmr.config.num_key_value_heads", "_common.py"),
+        ("LLM_NUM_ATTN_HEADS",      LLM_NUM_ATTN_HEADS,      cfg.num_attention_heads,          "t3.tfmr.config.num_attention_heads", "_common.py"),
+        ("LLM_HEAD_DIM",            LLM_HEAD_DIM,            cfg.head_dim,                     "t3.tfmr.config.head_dim",            "_common.py"),
+        ("SPEECH_BASE_VOCAB_SIZE",  SPEECH_BASE_VOCAB_SIZE,  hp.start_speech_token,            "t3.hp.start_speech_token",           "_common.py"),
+        ("START_SPEECH_TOKEN",      START_SPEECH_TOKEN,      hp.start_speech_token,            "t3.hp.start_speech_token",           "_common.py"),
+        ("STOP_SPEECH_TOKEN",       STOP_SPEECH_TOKEN,       hp.stop_speech_token,             "t3.hp.stop_speech_token",            "_common.py"),
+        ("MEL_BINS",                MEL_BINS,                flow.output_size,                 "s3gen.flow.output_size",             "_export_utils/merge_cond_decoder_loop.py"),
+        ("CFG_RATE",                CFG_RATE,                flow.decoder.inference_cfg_rate,  "s3gen.flow.decoder.inference_cfg_rate", "_export_utils/merge_cond_decoder_loop.py"),
     ]
-    mismatches = [(n, ours, upstream, where)
-                  for n, ours, upstream, where in checks if ours != upstream]
+    mismatches = [(n, ours, upstream, where, file_)
+                  for n, ours, upstream, where, file_ in checks if ours != upstream]
     if mismatches:
-        lines = ["Upstream model config diverges from _common.py hardcodes:"]
-        for n, ours, upstream, where in mismatches:
-            lines.append(f"  {n}: hardcode={ours}  upstream({where})={upstream}")
+        lines = ["Upstream model config diverges from our export-side hardcodes:"]
+        for n, ours, upstream, where, file_ in mismatches:
+            lines.append(f"  {n}: hardcode={ours}  upstream({where})={upstream}  [defined in {file_}]")
         lines.append("")
         lines.append("Either ResembleAI bumped the model architecture or DEFAULT_REVISION "
-                     "in this script was advanced without re-syncing _common.py. Fix:")
-        lines.append("  1. Update scripts/chatterbox_export/_common.py to match upstream")
+                     "in this script was advanced without re-syncing the hardcodes. Fix:")
+        lines.append("  1. Update each listed file to match upstream")
         lines.append("  2. Re-run the full parity suite (test_chatterbox_parity.py)")
-        lines.append("  3. Commit both together")
+        lines.append("  3. Commit all changes together")
         raise SystemExit("\n".join(lines))
-    print(f"  Validated {len(checks)} model dims/tokens against upstream config.")
+    print(f"  Validated {len(checks)} model dims/tokens/rates against upstream config.")
 
 
 def stage_environment() -> dict:
@@ -677,6 +699,13 @@ def main() -> None:
     # any revision arg (it calls hf_hub_download per file without revision
     # → resolves to current HEAD on every call). To actually pin, fetch a
     # specific snapshot ourselves and load from the local dir.
+    #
+    # effective_revision: the SHA that actually backed the loaded model.
+    # For the snapshot_download path this is extracted from the cache
+    # path (always a SHA, even when args.revision was a tag/branch); for
+    # the no-revision escape hatch we leave it None since `from_pretrained`
+    # gives us no clean handle on what HEAD it resolved to.
+    effective_revision: str | None = None
     if args.revision:
         from huggingface_hub import snapshot_download
         print(f"Snapshot-downloading {args.repo_id}@{args.revision[:12]} ...")
@@ -687,16 +716,19 @@ def main() -> None:
             allow_patterns=["ve.safetensors", "t3_cfg.safetensors", "s3gen.safetensors",
                             "tokenizer.json", "conds.pt"],
         )
+        # snapshot_dir layout: .../models--{org}--{repo}/snapshots/{sha}/
+        effective_revision = Path(snapshot_dir).name
         print(f"  snapshot cached at {snapshot_dir}  ({time.perf_counter() - t0:.1f}s)")
-        print(f"Loading ChatterboxTTS from local snapshot ...")
+        if effective_revision != args.revision:
+            print(f"  requested revision '{args.revision}' resolved to SHA {effective_revision}")
+        print("Loading ChatterboxTTS from local snapshot ...")
         t0 = time.perf_counter()
         chatterbox_model = ChatterboxTTS.from_local(snapshot_dir, device=device)
     else:
-        # Empty revision = explicit "track HEAD" escape hatch. Not
-        # reproducible across runs; should only be used when debugging
-        # against an unreleased upstream change.
-        print(f"WARN: --revision is empty; resolving to current HEAD of {args.repo_id} "
-              "(NOT reproducible). Pass --revision <sha> for byte-stable exports.")
+        # Empty revision = explicit "track HEAD" escape hatch. Caller
+        # already opted out of reproducibility; one-line acknowledgement.
+        print(f"WARN: --revision is empty; tracking HEAD of {args.repo_id}. "
+              "Export will not be reproducible across runs.")
         print(f"Loading ChatterboxTTS from {args.repo_id} (latest) ...")
         t0 = time.perf_counter()
         chatterbox_model = ChatterboxTTS.from_pretrained(device=device)
@@ -930,6 +962,11 @@ def main() -> None:
             "graphs_exported": graphs_exported,
             "artifact_hashes": hashes,
             "environment": env,
+            # `requested_revision` is whatever the CLI received; `effective_revision`
+            # is the SHA actually backing the loaded model (None when --revision was
+            # empty and we fell through to from_pretrained's no-revision path).
+            "requested_revision": args.revision or None,
+            "effective_revision": effective_revision,
             "audio_prompt": str(args.audio_prompt) if args.audio_prompt else None,
             "audio_prompt_samples": int(audio_values.shape[1]),
             "input_ids_length": int(input_ids.shape[1]),
