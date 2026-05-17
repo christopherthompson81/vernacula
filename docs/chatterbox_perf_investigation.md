@@ -906,3 +906,156 @@ Roughly speaking:
 The single biggest remaining lever is fp16. Everything we've built
 in Runs 1-7 plugs into it; the perf iteration is at a natural
 pause point.
+
+## Run 8 — 2026-05-16 22:35 — LM quantization sweep (fp16 / int8-dynamic / int4)
+
+User asked: "sweep through the LM down to int4." Goal: cash in the
+fp16 lever called out at the end of Run 7 (projected 2-4× LM
+throughput), and survey the broader ORT quantization toolbox while
+the rest of the pipeline sits at a natural pause point.
+
+### Strategies tried
+
+| Strategy | Tool | Where it lives in the codebase |
+|---|---|---|
+| fp16 (keep_io_types=True) | `onnxruntime.transformers.float16.convert_float_to_float16` | `scripts/_export_utils/quantize_lm.py --mode fp16` |
+| int8 dynamic (W8A8) | `onnxruntime.quantization.quantize_dynamic` | `--mode int8` |
+| int4 RTN MatMulNBits (W4A16, accuracy_level=4) | `onnxruntime.quantization.matmul_nbits_quantizer.MatMulNBitsQuantizer` | `--mode int4` |
+
+ChatterboxSmoke got a `--lm-path <path>` flag so an alternate
+`language_model.*.onnx` can be loaded without rebuilding the bundle.
+
+Strategies surveyed but not run this round: AWQ / GPTQ (need a small
+calibration set; deferred unless RTN int4 quality fails the listening
+test); static W8A8 with calibration (same — int8 dynamic failed so
+hard that static probably won't fix the kernel-selection issue, which
+turned out to be the real problem).
+
+### Disk footprint
+
+| Variant | language_model.onnx + sidecar | vs fp32 |
+|---|---|---|
+| fp32 (original) | 1.9 GB + 600 MB ≈ 2.5 GB | 1.0× |
+| fp16 | 0.8 MB + 1024 MB ≈ 1.0 GB | 0.4× |
+| int4 | 0.9 MB + 320 MB ≈ 320 MB | 0.13× |
+| int8 | 3.4 MB + 512 MB ≈ 515 MB | 0.21× |
+
+### Parity vs fp32 (single-chunk, --io-binding, Ezreal sentence)
+
+| Variant | step0 argmax | step1 argmax | Total steps | Audio length | Tokens diverge at |
+|---|---|---|---|---|---|
+| fp32 | 1708 | 1736 | 174 | 6.92 s | — (reference) |
+| fp16 | 1708 ✓ | 1736 ✓ | 174 ✓ | 6.92 s ✓ | byte 1017 (~token 127) — drift accumulates but stays in-distribution |
+| int4 | 1708 ✓ | 1736 ✓ | 176 | 7.00 s | very early, but argmax pattern preserved |
+| int8 | 6453 ✗ | 5186 ✗ | 93 (early STOP) | 3.68 s ✗ | step 0 — quality collapse |
+
+int8 dynamic is unusable. The other two preserve the speaker timbre
+and content end-to-end on listening (informal check; subjective).
+
+### Perf (RTX 3090, CUDA, warm ORT bake cache)
+
+Single-chunk (B=1), `--io-binding`, 174-176 LM steps:
+
+| Variant | LM total ms | ms/step | vs fp32 |
+|---|---|---|---|
+| fp32 | 1627 | 9.4 | — |
+| fp16 | 1822 | 10.5 | +12% slower |
+| int4 | 1432 | 8.1 | **−14% (faster)** |
+| int8 | 3009 | 32.4 | +245% (CPU fallback, useless) |
+
+Pipelined 8-chunk (groupSize=1):
+
+| Variant | chunks-wall | vs fp32 |
+|---|---|---|
+| fp32 | 13.6 s | — |
+| int4 | 12.2 s | **−10%** |
+
+Batched 8-chunk (`--lm-batch 4`):
+
+| Variant | chunks-wall | LM ms/chunk | vs fp32 |
+|---|---|---|---|
+| fp32 | 7.7 s | 403 | — |
+| fp16 | 8.1 s | 444 | +5% slower |
+| int4 | 10.5 s | 745 | +36% slower |
+
+### What we learned
+
+**fp16 with `keep_io_types=True` is a slight regression, not a win.**
+
+The conversion adds 251 fp16-target Casts and 61 fp32-target Casts —
+net +122 Cast nodes vs the fp32 graph (4919 → 5041 total). The
+critical-path damage: the LM exposes 30 layers × 2 (key + value) past_kv
+inputs, all declared fp32 by the export contract. With `keep_io_types=True`
+the converter wraps each in an input-side Cast (fp32 → fp16) and an
+output-side Cast (fp16 → fp32). With IoBinding chaining KV across 174
+steps, that's ~120 Casts/step on the hot path. Whatever compute we save
+in the layer body, we spend back at the I/O boundary.
+
+The fix is true fp16 KV cache (`keep_io_types=False` or a custom
+include-set that excludes only `inputs_embeds`/`attention_mask`/`logits`).
+That requires the C# IoBinding code to allocate fp16 zero-tensors
+for the initial empty past_kv inputs and accept fp16 logits/KV out
+— a one-day workstream we deferred.
+
+**int8 dynamic (W8A8) hits a CPU fallback on CUDA EP for this LM.**
+
+3.4× slower at the kernel level, plus quality collapse (step-0
+argmax 6453 vs reference 1708). The combo says ORT isn't fusing the
+QuantizeLinear/MatMulInteger into a tensor-core kernel for our op
+pattern — it's running int8 MatMul on CPU. The quality regression
+is the additional per-tensor activation-scale issue you'd see even
+on the working CUDA path. Static W8A8 wouldn't fix the kernel issue.
+**Mark int8 dynamic dead for this graph.**
+
+**int4 RTN MatMulNBits wins at B=1, loses at B>1.**
+
+The `MatMulNBits` operator has a CUDA kernel optimized for the LLM
+decoding case (B=1, T=1, weight-bound). At that operating point we
+saw 14% per-step speedup. But the kernel doesn't have an efficient
+batched path — `--lm-batch 4` runs 1.85× slower than fp32-B=4
+(745 vs 403 ms/chunk). MatMulNBits dequantizes weights per call;
+batching amortizes weight bandwidth in the fp32 path but the
+dequant cost in the int4 path doesn't share across batch elements.
+
+### Where this leaves long-form synthesis
+
+The Run 7 best (fp32 + `--lm-batch 4` + pipelined groups) is still
+the wall-clock champion at **7.7 s for 8 chunks**:
+
+| Run | Best path | 8-chunk chunks-wall | vs Run 1 |
+|---|---|---|---|
+| Run 1 | Serial IoBinding (fp32, B=1) | 14.7 s | — |
+| Run 5/6 | Batched LM+voc (fp32, B=8) | 6.1 s | −58% |
+| Run 7c | + Pipelined groups (fp32, B=4) | 7.5 s | −49% |
+| **Run 8 int4** | **Pipelined B=1 (int4)** | **12.2 s** | **−17%** |
+| Run 8 fp16 | Pipelined B=4 (fp16) | 8.1 s | −45% |
+| Run 8 int8 | — | — | unusable |
+
+int4 at pipelined B=1 is the best Run 8 result but it's much worse
+than fp32 batched. **None of the off-the-shelf quantization
+strategies improved long-form-batched throughput.**
+
+### Where headroom actually lives, post-sweep
+
+| Lever | Projected win | Notes |
+|---|---|---|
+| True fp16 KV cache (keep_io_types=False + C# fp16 IoBinding) | 30-50% | The natural fp16 win we missed because of boundary Casts. Half-day to a day of C# IoBinding work in AcousticLM. |
+| MatMulNBits with B>1-friendly kernel | unknown | Would need a custom ORT op or upstream PR. Not a 1-week project. |
+| int4 batched via AWQ/GPTQ + custom kernels | uncertain | Real LLM-stack territory; probably not the right cost for this perf budget. |
+| Vocoder Path B (merged-batched) | 3-5% | Still on the deferral list. |
+| Custom attention fusion | 5-10% | 310 Transposes in the body could fuse with a custom kernel. Real work. |
+
+The natural next step (if the user wants to keep pushing) is true
+fp16 KV cache. The natural pause point is honestly here: we've
+covered every off-the-shelf ORT quantization mode for this LM,
+documented the quality + kernel-coverage caveats, and the int4 path
+is at least a B=1-mode win to bank.
+
+### Artifacts on disk (left intact for follow-up runs)
+
+- `/tmp/cb_dyn5/language_model.fp16.onnx{,_data}` — 1.0 GB total
+- `/tmp/cb_dyn5/language_model.int4.onnx{,_data}` — 320 MB total
+- `/tmp/cb_dyn5/language_model.int8.onnx{,.data}` — 515 MB total (unusable; keep for forensics)
+- `/tmp/cb_dyn5/language_model.{fp16,int4,int8}.opt.cuda.*.onnx{,_data}` — baked optimized graphs
+- `/tmp/cb_diag_{fp32,fp16,int4,int8}/cs_tokens.bin` — per-variant token streams for parity diffs
+- `/tmp/cb_{fp32,fp16,int4,int8}_*.wav` — audio outputs (subjective listening check)

@@ -52,6 +52,7 @@ internal static class Program
         bool useIoBinding = true;
         string? text = null;
         string? tokenizerJson = null;
+        string? lmPath = null;  // --lm-path: override path to language_model*.onnx (Run 8 quantization sweep)
         int benchChunks = 1;
         bool pipelined = false;
         int benchBatchedLm = 0;  // 0 = disabled; >0 = run probe with B=this
@@ -71,6 +72,7 @@ internal static class Program
                 case "--no-io-binding":  useIoBinding = false; break;
                 case "--text":           text = args[++i]; break;
                 case "--tokenizer-json": tokenizerJson = args[++i]; break;
+                case "--lm-path":        lmPath = args[++i]; break;
                 case "--bench-chunks":
                     // Loop the post-load synthesis N times. The pipeline
                     // (sessions, voice embedding, tokenization) is set up
@@ -222,9 +224,16 @@ internal static class Program
         var totalLoadSw = Stopwatch.StartNew();
         using var embedder = new SpeakerEmbedder(
             Path.Combine(onnxDir, "speech_encoder.onnx"), epEnum, OnSessionLoad);
+        // --lm-path: when set, load the LM graph from an arbitrary path
+        // (e.g. /tmp/cb_dyn5/language_model.fp16.onnx) instead of the
+        // bundle default. Lets the Run 8 quantization sweep swap LMs
+        // without rebuilding the whole bundle dir.
+        var lmGraphPath = lmPath is not null ? ExpandHome(lmPath) : Path.Combine(onnxDir, "language_model.onnx");
+        if (lmPath is not null)
+            Console.WriteLine($"  [lm-path override] {lmGraphPath}");
         using var lm = new AcousticLM(
             Path.Combine(onnxDir, "embed_tokens.onnx"),
-            Path.Combine(onnxDir, "language_model.onnx"),
+            lmGraphPath,
             epEnum, OnSessionLoad);
         using var vocoder = new Vocoder(onnxDir, epEnum, OnSessionLoad);
         totalLoadSw.Stop();
