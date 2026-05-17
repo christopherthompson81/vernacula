@@ -1368,3 +1368,69 @@ Two scenarios where the per-call advantage would translate:
 
 Neither is testable on the 3090 directly. The Path B graph and
 metadata flag are in place if/when that hardware shows up.
+
+### Run 10 sidebar — Memcpy elimination, dead-end investigation
+
+Followed up on the "57 body Memcpys block CUDA Graph capture" angle
+from the Run 10 conclusion. **Conclusion: dead-end. CUDA Graph
+cannot run on this merged graph at all, regardless of Memcpys.**
+
+What we tried:
+
+1. **`session.disable_cpu_ep_fallback=1`**. With CPU EP removed,
+   session load failed: "This session contains graph nodes that are
+   assigned to the default CPU EP, but fallback to CPU EP has been
+   explicitly disabled by the user." Some ops (notably `mel2wav__/STFT`)
+   have no CUDA kernel at all — the fallback isn't just heuristic,
+   it's mandatory.
+
+2. **`onnxslim` re-pass on the merged graph**. Outer 1681 → 1677
+   nodes, body 3015 → 3007 nodes. Per-call timing unchanged (B=4
+   stays at ~2000 ms). The 57 body Memcpys aren't redundant —
+   they're real data shuffles for shape-derived computations.
+
+3. **ORT-transformers `optimize_model(model_type=...)` attention
+   fusion** on `cfm_estimator.onnx`. Tried `unet`, `mmdit`, `clip`,
+   `vae`, `sam2`, `conformer`, `bart`. The U-net pattern reduced
+   2988 → 2557 nodes (`LayerNormalization` fused to
+   `SkipLayerNormalization`), but the shape-pattern op count
+   (Shape/Gather/Unsqueeze/Slice/Sqrt/Div/Cast) was unchanged at
+   643 across every variant, and **no `Attention` / `MultiHeadAttention`
+   nodes were produced**. cfm_estimator's attention is a custom
+   conv-like layout that none of ORT's fusion targets recognize.
+
+4. **`enable_cuda_graph=1` provider option**, the actual reason
+   CUDA Graph was on the table. Session refused to load:
+
+   ```
+   This session cannot use the graph capture feature as requested
+   by the user as the model has control flow nodes which can't be
+   supported by CUDAExecutionProvider
+   ```
+
+   The merged graph's `Loop` op is the blocker, not the Memcpys.
+   The earlier "including unable to run CUDA graph" Memcpy warning
+   was a red herring for this graph — CUDA Graph wasn't on the
+   table regardless.
+
+### What this means
+
+The projected upside from eliminating the Memcpys (~50-100 ms/call
+from CUDA Graph capture) was based on a misread of the warning.
+With CUDA Graph fundamentally unavailable on a Loop-bearing
+session, the Memcpy elimination would yield only the per-call
+launch overhead saving — microseconds, not milliseconds.
+
+To make Memcpy elimination actually pay off on this graph, we'd
+need EITHER:
+
+- Manually rewrite cfm_estimator's attention export to match an
+  ORT-fusion pattern (real upstream change to the export pipeline,
+  multi-day work).
+- Unroll the CFM Loop into 10 sequential function calls (lose the
+  GPU-side Loop, gain CUDA Graph eligibility — but lose the very
+  thing that makes the merged graph faster than split).
+
+Neither has a payoff that justifies the work for this branch. Path B
+ships as documented: ~1% wall win, ~1.1 GB VRAM savings, simpler
+single-vocoder-path architecture.
