@@ -1,7 +1,6 @@
 using System.Runtime.InteropServices;
 using Microsoft.ML.OnnxRuntime;
 using Microsoft.ML.OnnxRuntime.Tensors;
-using Vernacula.Base.Inference;
 using Vernacula.Base.Models;
 
 namespace Chatterbox.Base;
@@ -67,23 +66,11 @@ public sealed class AcousticLM : IDisposable
     public AcousticLM(string embedTokensPath, string languageModelPath, ExecutionProvider ep,
         SessionLoadObserver? onLoad = null)
     {
-        _embed = LoadOne(embedTokensPath, ep, onLoad, out _);
-        _lm = LoadOne(languageModelPath, ep, onLoad, out var lmUsedCuda);
-        // We gate IoBinding on the LM session's effective EP (it's where
+        _embed = SessionLoader.LoadAndReport(embedTokensPath, ep, onLoad);
+        // Gate IoBinding on the LM session's effective EP (it's where
         // IoBinding actually fires); embed_tokens uses plain Run regardless.
+        _lm = SessionLoader.LoadAndReport(languageModelPath, ep, onLoad, out var lmUsedCuda);
         _effectiveCuda = lmUsedCuda;
-    }
-
-    private static InferenceSession LoadOne(string path, ExecutionProvider ep,
-        SessionLoadObserver? onLoad, out bool usedCuda)
-    {
-        var sw = System.Diagnostics.Stopwatch.StartNew();
-        var s = OrtSessionBuilder.CreateCachedSession(path, ep, out var hit, out usedCuda);
-        sw.Stop();
-        onLoad?.Invoke(new SessionLoadEvent(
-            Path.GetFileName(path), sw.ElapsedMilliseconds, hit, usedCuda,
-            new FileInfo(path).Length));
-        return s;
     }
 
     /// <summary>

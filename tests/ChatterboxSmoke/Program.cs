@@ -120,10 +120,16 @@ internal static class Program
         // `ep=` reports the EFFECTIVE EP per the OrtSessionBuilder usedCuda
         // probe — distinct from the requested EP, so `Auto` falling back
         // from CUDA to DirectML is visible here instead of silently breaking
-        // downstream IoBinding.
-        void OnSessionLoad(SessionLoadEvent e) =>
+        // downstream IoBinding. We also accumulate the per-session EP flags
+        // so the summary line below reports the actual back-end mix rather
+        // than echoing the CLI string.
+        var perSessionUsedCuda = new List<bool>();
+        void OnSessionLoad(SessionLoadEvent e)
+        {
+            perSessionUsedCuda.Add(e.UsedCuda);
             Console.WriteLine($"  {e.FileName}: {e.ElapsedMs} ms  cache={(e.CacheHit ? "HIT" : "miss")}  "
                 + $"ep={(e.UsedCuda ? "cuda" : "cpu/dml")}  src={e.SourceSizeBytes / 1e6:F0} MB");
+        }
 
         var totalLoadSw = Stopwatch.StartNew();
         using var embedder = new SpeakerEmbedder(
@@ -134,8 +140,15 @@ internal static class Program
             epEnum, OnSessionLoad);
         using var vocoder = new Vocoder(onnxDir, epEnum, OnSessionLoad);
         totalLoadSw.Stop();
+        // Effective EP for the summary: "cuda" if every session got CUDA,
+        // "cpu/dml" if none did, "mixed" if the EPs disagreed (shouldn't
+        // happen unless the cache for one graph was built under a
+        // different EP and the user didn't clear it).
+        string effectiveEp = perSessionUsedCuda.All(x => x) ? "cuda"
+            : perSessionUsedCuda.All(x => !x) ? "cpu/dml"
+            : "mixed";
         Console.WriteLine($"  vocoder mode: {vocoder.Mode}");
-        Console.WriteLine($"Loaded sessions in {totalLoadSw.ElapsedMilliseconds} ms total  (ep={ep})");
+        Console.WriteLine($"Loaded sessions in {totalLoadSw.ElapsedMilliseconds} ms total  (requested={ep}, effective={effectiveEp})");
 
         // ── Speaker embedding ──────────────────────────────────────────────
         sw.Restart();

@@ -1,6 +1,5 @@
 using Microsoft.ML.OnnxRuntime;
 using Microsoft.ML.OnnxRuntime.Tensors;
-using Vernacula.Base.Inference;
 using Vernacula.Base.Models;
 
 namespace Chatterbox.Base;
@@ -52,31 +51,20 @@ public sealed class Vocoder : IDisposable
         if (mergedAvail)
         {
             Mode = VocoderMode.Merged;
-            _merged = LoadOne(Path.Combine(onnxDir, "conditional_decoder_loop.onnx"), ep, onLoad);
+            _merged = SessionLoader.LoadAndReport(Path.Combine(onnxDir, "conditional_decoder_loop.onnx"), ep, onLoad);
         }
         else if (splitAvail)
         {
             Mode = VocoderMode.Split;
-            _flowEnc = LoadOne(Path.Combine(onnxDir, "flow_encoder.onnx"), ep, onLoad);
-            _cfmEst = LoadOne(Path.Combine(onnxDir, "cfm_estimator.onnx"), ep, onLoad);
-            _m2w = LoadOne(Path.Combine(onnxDir, "mel2wav.onnx"), ep, onLoad);
+            _flowEnc = SessionLoader.LoadAndReport(Path.Combine(onnxDir, "flow_encoder.onnx"), ep, onLoad);
+            _cfmEst = SessionLoader.LoadAndReport(Path.Combine(onnxDir, "cfm_estimator.onnx"), ep, onLoad);
+            _m2w = SessionLoader.LoadAndReport(Path.Combine(onnxDir, "mel2wav.onnx"), ep, onLoad);
         }
         else
         {
             Mode = VocoderMode.Monolithic;
-            _mono = LoadOne(Path.Combine(onnxDir, "conditional_decoder.onnx"), ep, onLoad);
+            _mono = SessionLoader.LoadAndReport(Path.Combine(onnxDir, "conditional_decoder.onnx"), ep, onLoad);
         }
-    }
-
-    private static InferenceSession LoadOne(string path, ExecutionProvider ep, SessionLoadObserver? onLoad)
-    {
-        var sw = System.Diagnostics.Stopwatch.StartNew();
-        var s = OrtSessionBuilder.CreateCachedSession(path, ep, out var hit, out var usedCuda);
-        sw.Stop();
-        onLoad?.Invoke(new SessionLoadEvent(
-            Path.GetFileName(path), sw.ElapsedMilliseconds, hit, usedCuda,
-            new FileInfo(path).Length));
-        return s;
     }
 
     /// <summary>
