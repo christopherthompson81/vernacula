@@ -50,6 +50,14 @@ add_local_script_path()
 
 
 DEFAULT_REPO_ID = "ResembleAI/chatterbox"
+# Pin to a specific HF commit so re-runs are reproducible — without it,
+# `from_pretrained` resolves to whatever HEAD currently is and an
+# upstream re-upload (new weights, new config, new vocab) silently
+# changes our export. To bump: fetch the new SHA via
+# `curl -s https://huggingface.co/api/models/ResembleAI/chatterbox | jq -r .sha`
+# and re-run the full parity suite — particularly the constant-derive
+# assertions in main() that catch architecture-level drift.
+DEFAULT_REVISION = "ef85ce7bef2f3f1a74d0d837d379d2fcb68203cd"  # 2026-04-22 head
 EXPORT_FILES = [
     "embed_tokens.onnx",
     "speech_encoder.onnx",
@@ -66,7 +74,12 @@ EXPORT_FILES = [
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--repo-id", default=DEFAULT_REPO_ID)
-    p.add_argument("--revision", default=None)
+    p.add_argument("--revision", default=DEFAULT_REVISION,
+                   help=f"HF model revision (commit SHA, tag, or branch). "
+                        f"Default: pinned to {DEFAULT_REVISION[:8]} for reproducibility. "
+                        "Pass an explicit value to track a different revision; passing "
+                        "an empty string falls back to HEAD (NOT recommended for "
+                        "reproducible exports).")
     p.add_argument("--output-dir", type=Path, required=True)
     p.add_argument("--device", default="auto", choices=["auto", "cpu", "cuda"])
     p.add_argument("--dtype", default="float32", choices=["float32", "float16", "bfloat16"])
@@ -107,6 +120,94 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--no-onnxslim", action="store_true",
                    help="Skip the onnxslim + external-data pass after export")
     return p.parse_args()
+
+
+def assert_model_constants_match_hardcodes(chatterbox_model: "ChatterboxTTS") -> None:  # noqa: F821
+    """Hard-fail if upstream model dimensions or token IDs have diverged
+    from the values hand-copied into our export modules.
+
+    Several constants — LLM hidden size, layer count, KV heads, head dim,
+    speech token IDs, mel bins, CFG rate — are duplicated as module-level
+    Python constants because the export wrappers reference them at module
+    load time before any model instance exists. Duplication means an
+    upstream architecture bump can silently render those copies wrong
+    while the export still completes.
+
+    Currently checked (3 source files):
+      _common.py:                      LLM_{HIDDEN_SIZE,NUM_LAYERS,
+                                       NUM_KV_HEADS,NUM_ATTN_HEADS,HEAD_DIM},
+                                       SPEECH_BASE_VOCAB_SIZE,
+                                       START_SPEECH_TOKEN, STOP_SPEECH_TOKEN
+      _export_utils/merge_cond_decoder_loop.py:  MEL_BINS, CFG_RATE
+
+    NOT currently checked (no clean upstream attribute path identified):
+      S3GEN_SR (24000), EXAGGERATION_TOKEN (== STOP+1 by convention),
+      PROMPT_LEN, N_TIMESTEPS, ISTFT_PARAMS. If these become a drift
+      source in practice, extend the `checks` table below.
+
+    Raises SystemExit on the first mismatch with a clear remediation
+    message naming the file to update.
+    """
+    from _common import (
+        LLM_HIDDEN_SIZE, LLM_NUM_LAYERS, LLM_NUM_KV_HEADS,
+        LLM_NUM_ATTN_HEADS, LLM_HEAD_DIM,
+        SPEECH_BASE_VOCAB_SIZE,
+        START_SPEECH_TOKEN, STOP_SPEECH_TOKEN,
+    )
+    # MEL_BINS + CFG_RATE live in the merge utility (separate package).
+    _export_utils_dir = Path(__file__).resolve().parent.parent
+    if str(_export_utils_dir) not in sys.path:
+        sys.path.insert(0, str(_export_utils_dir))
+    from _export_utils.merge_cond_decoder_loop import MEL_BINS, CFG_RATE
+
+    cfg = chatterbox_model.t3.tfmr.config
+    hp = chatterbox_model.t3.hp
+    flow = chatterbox_model.s3gen.flow
+    # Each row: (constant name, our hardcoded value, upstream value,
+    # dotted-path to upstream attr, file where our hardcode lives).
+    # SPEECH_BASE_VOCAB_SIZE + START_SPEECH_TOKEN intentionally both
+    # compare against hp.start_speech_token — they represent different
+    # concepts (vocab boundary vs special token) but are equal-by-
+    # construction in this model. Checking both keeps the per-hardcode
+    # failure attribution if a developer ever sets them inconsistently.
+    _COMMON = "_common.py"
+    _MERGE = "_export_utils/merge_cond_decoder_loop.py"
+    checks = [
+        ("LLM_HIDDEN_SIZE", LLM_HIDDEN_SIZE, cfg.hidden_size,
+            "t3.tfmr.config.hidden_size", _COMMON),
+        ("LLM_NUM_LAYERS", LLM_NUM_LAYERS, cfg.num_hidden_layers,
+            "t3.tfmr.config.num_hidden_layers", _COMMON),
+        ("LLM_NUM_KV_HEADS", LLM_NUM_KV_HEADS, cfg.num_key_value_heads,
+            "t3.tfmr.config.num_key_value_heads", _COMMON),
+        ("LLM_NUM_ATTN_HEADS", LLM_NUM_ATTN_HEADS, cfg.num_attention_heads,
+            "t3.tfmr.config.num_attention_heads", _COMMON),
+        ("LLM_HEAD_DIM", LLM_HEAD_DIM, cfg.head_dim,
+            "t3.tfmr.config.head_dim", _COMMON),
+        ("SPEECH_BASE_VOCAB_SIZE", SPEECH_BASE_VOCAB_SIZE, hp.start_speech_token,
+            "t3.hp.start_speech_token", _COMMON),
+        ("START_SPEECH_TOKEN", START_SPEECH_TOKEN, hp.start_speech_token,
+            "t3.hp.start_speech_token", _COMMON),
+        ("STOP_SPEECH_TOKEN", STOP_SPEECH_TOKEN, hp.stop_speech_token,
+            "t3.hp.stop_speech_token", _COMMON),
+        ("MEL_BINS", MEL_BINS, flow.output_size,
+            "s3gen.flow.output_size", _MERGE),
+        ("CFG_RATE", CFG_RATE, flow.decoder.inference_cfg_rate,
+            "s3gen.flow.decoder.inference_cfg_rate", _MERGE),
+    ]
+    mismatches = [(n, ours, upstream, where, file_)
+                  for n, ours, upstream, where, file_ in checks if ours != upstream]
+    if mismatches:
+        lines = ["Upstream model config diverges from our export-side hardcodes:"]
+        for n, ours, upstream, where, file_ in mismatches:
+            lines.append(f"  {n}: hardcode={ours}  upstream({where})={upstream}  [defined in {file_}]")
+        lines.append("")
+        lines.append("Either ResembleAI bumped the model architecture or DEFAULT_REVISION "
+                     "in this script was advanced without re-syncing the hardcodes. Fix:")
+        lines.append("  1. Update each listed file to match upstream")
+        lines.append("  2. Re-run the full parity suite (test_chatterbox_parity.py)")
+        lines.append("  3. Commit all changes together")
+        raise SystemExit("\n".join(lines))
+    print(f"  Validated {len(checks)} model dims/tokens/rates against upstream config.")
 
 
 def stage_environment() -> dict:
@@ -612,15 +713,58 @@ def main() -> None:
         # exported fp32 graph at session load time via ORT.
         print(f"  WARN: dtype={args.dtype} not yet validated; export proceeds but may fail.")
 
-    print(f"Loading ChatterboxTTS from {args.repo_id} (revision={args.revision or 'latest'}) ...")
-    t0 = time.perf_counter()
-    chatterbox_model = ChatterboxTTS.from_pretrained(device=device)
+    # Revision-pinned load. Upstream ChatterboxTTS.from_pretrained ignores
+    # any revision arg (it calls hf_hub_download per file without revision
+    # → resolves to current HEAD on every call). To actually pin, fetch a
+    # specific snapshot ourselves and load from the local dir.
+    #
+    # effective_revision: the SHA that actually backed the loaded model.
+    # Resolved via the HF API (model_info) rather than the snapshot-cache
+    # filename, so this stays correct if anyone later passes local_dir=
+    # to snapshot_download (the cache-path-ends-in-SHA invariant only
+    # holds for default-layout cache calls). For the no-revision escape
+    # hatch we leave it None since `from_pretrained` gives us no clean
+    # handle on what HEAD it resolved to.
+    effective_revision: str | None = None
+    if args.revision:
+        from huggingface_hub import HfApi, snapshot_download
+        print(f"Snapshot-downloading {args.repo_id}@{args.revision[:12]} ...")
+        t0 = time.perf_counter()
+        effective_revision = HfApi().model_info(args.repo_id, revision=args.revision).sha
+        snapshot_dir = snapshot_download(
+            repo_id=args.repo_id,
+            revision=args.revision,
+            allow_patterns=["ve.safetensors", "t3_cfg.safetensors", "s3gen.safetensors",
+                            "tokenizer.json", "conds.pt"],
+        )
+        print(f"  snapshot cached at {snapshot_dir}  ({time.perf_counter() - t0:.1f}s)")
+        if effective_revision != args.revision:
+            print(f"  requested revision '{args.revision}' resolved to SHA {effective_revision}")
+        print("Loading ChatterboxTTS from local snapshot ...")
+        t0 = time.perf_counter()
+        chatterbox_model = ChatterboxTTS.from_local(snapshot_dir, device=device)
+    else:
+        # Empty revision = explicit "track HEAD" escape hatch. Caller
+        # already opted out of reproducibility; one-line acknowledgement.
+        print(f"WARN: --revision is empty; tracking HEAD of {args.repo_id}. "
+              "Export will not be reproducible across runs.")
+        print(f"Loading ChatterboxTTS from {args.repo_id} (latest) ...")
+        t0 = time.perf_counter()
+        chatterbox_model = ChatterboxTTS.from_pretrained(device=device)
     print(f"  loaded in {time.perf_counter() - t0:.1f}s")
     param_count = (
         sum(p.numel() for p in chatterbox_model.s3gen.parameters())
         + sum(p.numel() for p in chatterbox_model.t3.parameters())
     )
     print(f"  s3gen + t3 parameter count: {param_count:,}")
+
+    # Defend against silent architecture drift. Our _common.py hardcodes
+    # several model dims (LLM layer count, KV heads, head dim, hidden
+    # size, START/STOP_SPEECH token IDs); if upstream bumps the model in
+    # an incompatible way and our SHA pin is also bumped without
+    # updating these, every export silently produces graphs with wrong
+    # KV-cache shapes. Loud failure here surfaces it at export time.
+    assert_model_constants_match_hardcodes(chatterbox_model)
 
     # SafeDenseLayer monkey-patch removed — see apply_safe_dense_patch
     # docstring. Upstream DenseLayer with BatchNorm1d ONNX-exports
@@ -837,6 +981,11 @@ def main() -> None:
             "graphs_exported": graphs_exported,
             "artifact_hashes": hashes,
             "environment": env,
+            # `requested_revision` is whatever the CLI received; `effective_revision`
+            # is the SHA actually backing the loaded model (None when --revision was
+            # empty and we fell through to from_pretrained's no-revision path).
+            "requested_revision": args.revision or None,
+            "effective_revision": effective_revision,
             "audio_prompt": str(args.audio_prompt) if args.audio_prompt else None,
             "audio_prompt_samples": int(audio_values.shape[1]),
             "input_ids_length": int(input_ids.shape[1]),

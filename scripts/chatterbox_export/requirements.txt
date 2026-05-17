@@ -1,3 +1,15 @@
+# NOT byte-pinned. The PyPI version pin (==0.1.5) freezes the dependency
+# resolver to one release, but the underlying wheel bytes could in
+# principle change if Resemble AI re-uploads. The clean fix is a full
+# hash-pinned lockfile (via uv or pip-tools --generate-hashes); pip's
+# --hash flag is all-or-nothing per requirements file — adding it to
+# just one line auto-enables --require-hashes mode for the entire file
+# and breaks `pip install -r`. Bumping requires deliberate work.
+# Tracked in issue #63.
+#
+# Plumbing constraints we still rely on the version pin for:
+# - chatterbox-tts 0.1.7+ bumps to transformers 5.x and breaks the wrapper API
+# - 0.1.4 depends on raw `pkuseg` (needs Python.h to build); 0.1.5 uses spacy-pkuseg
 chatterbox-tts==0.1.5
 transformers==4.46.3
 torch==2.6.0
