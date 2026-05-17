@@ -328,4 +328,175 @@ public sealed class EnTokenizer
         wrapped[^1] = StartSpeechToken;
         return wrapped;
     }
+
+    /// <summary>
+    /// One BPE token with its corresponding char span in the SOURCE text
+    /// (i.e. the original input, NOT the [SPACE]-substituted form). Used
+    /// by the cross-attention aligner to map each LM text-token column
+    /// back to the input characters / words it represents.
+    /// </summary>
+    public sealed record TokenWithSpan(long Id, int SourceStart, int SourceEnd);
+
+    /// <summary>
+    /// BPE-encode like <see cref="Encode"/> but also return per-token
+    /// source-char spans. The emitted ID sequence is identical to
+    /// <see cref="Encode"/>(text) — verified by the equivalence check at
+    /// the bottom of this method.
+    ///
+    /// Span tracking: each emitted token has a half-open
+    /// <c>[SourceStart, SourceEnd)</c> range into the original
+    /// <paramref name="text"/>. Spaces emit one [SPACE] token spanning
+    /// the single space char. BPE-merged tokens span the union of their
+    /// constituent codepoints' chars. UNK tokens span the single
+    /// out-of-vocab codepoint that triggered them.
+    /// </summary>
+    public List<TokenWithSpan> EncodeWithSpans(string text)
+    {
+        var result = new List<TokenWithSpan>(text.Length);
+        long spaceId = _vocab["[SPACE]"];
+        int pos = 0;
+        while (pos < text.Length)
+        {
+            // Literal space → [SPACE] token. Cheaper than going through
+            // the added-token matcher and means EncodeWithSpans doesn't
+            // need the same Replace(" ", "[SPACE]") preamble that Encode
+            // uses (which would shift source positions).
+            if (text[pos] == ' ')
+            {
+                result.Add(new TokenWithSpan(spaceId, pos, pos + 1));
+                pos++;
+                continue;
+            }
+
+            // Added-token match (the literal "[SPACE]", "[START]", "[UH]",
+            // etc.). Same priority order as Encode (longest match first).
+            long? specialId = null;
+            int specialLen = 0;
+            foreach (var (special, id) in _addedTokensByLongestFirst)
+            {
+                if (pos + special.Length <= text.Length
+                    && string.CompareOrdinal(text, pos, special, 0, special.Length) == 0)
+                {
+                    specialId = id;
+                    specialLen = special.Length;
+                    break;
+                }
+            }
+            if (specialId is not null)
+            {
+                result.Add(new TokenWithSpan(specialId.Value, pos, pos + specialLen));
+                pos += specialLen;
+                continue;
+            }
+
+            // Ordinary run: consume up to the next space or added-token boundary.
+            int runStart = pos;
+            while (pos < text.Length && text[pos] != ' ' && !MatchesAddedTokenAt(text, pos))
+                pos++;
+            BpeEncodeRunWithSpans(text.AsSpan(runStart, pos - runStart), runStart, result);
+        }
+
+        // Equivalence assertion: same IDs as Encode. Cheap correctness
+        // guard — if a future EnTokenizer change drifts the two paths,
+        // the aligner would silently produce nonsense.
+        var bareIds = Encode(text);
+        if (bareIds.Length != result.Count)
+            throw new InvalidOperationException(
+                $"EncodeWithSpans drifted from Encode: id-count {result.Count} vs {bareIds.Length}");
+        for (int i = 0; i < bareIds.Length; i++)
+            if (bareIds[i] != result[i].Id)
+                throw new InvalidOperationException(
+                    $"EncodeWithSpans drifted from Encode at index {i}: {result[i].Id} vs {bareIds[i]}");
+
+        return result;
+    }
+
+    private bool MatchesAddedTokenAt(string text, int pos)
+    {
+        foreach (var (special, _) in _addedTokensByLongestFirst)
+        {
+            if (pos + special.Length <= text.Length
+                && string.CompareOrdinal(text, pos, special, 0, special.Length) == 0)
+                return true;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// Span-tracking sibling of <see cref="BpeEncodeRun"/>. Each base
+    /// codepoint enters with a span [pos, pos + utf16Len); merges fuse
+    /// adjacent spans into the union [left.Start, right.End).
+    /// </summary>
+    private void BpeEncodeRunWithSpans(ReadOnlySpan<char> run, int runStart, List<TokenWithSpan> outResult)
+    {
+        var known = new List<string>();
+        var spans = new List<(int Start, int End)>();
+        int localPos = 0;
+        foreach (Rune rune in run.EnumerateRunes())
+        {
+            var s = rune.ToString();
+            int len = s.Length;
+            if (_vocab.ContainsKey(s))
+            {
+                known.Add(s);
+                spans.Add((runStart + localPos, runStart + localPos + len));
+            }
+            else
+            {
+                FlushBpeRunWithSpans(known, spans, outResult);
+                known.Clear();
+                spans.Clear();
+                outResult.Add(new TokenWithSpan(UnkToken, runStart + localPos, runStart + localPos + len));
+            }
+            localPos += len;
+        }
+        FlushBpeRunWithSpans(known, spans, outResult);
+    }
+
+    /// <summary>
+    /// Span-tracking sibling of <see cref="FlushBpeRun"/>. Mirrors the
+    /// merge loop but maintains the per-token spans list in parallel —
+    /// when two tokens merge, their spans concatenate into one.
+    /// </summary>
+    private void FlushBpeRunWithSpans(List<string> tokens, List<(int Start, int End)> spans, List<TokenWithSpan> outResult)
+    {
+        if (tokens.Count == 0) return;
+        while (tokens.Count >= 2)
+        {
+            int bestRank = int.MaxValue;
+            int bestI = -1;
+            for (int i = 0; i < tokens.Count - 1; i++)
+            {
+                if (_mergeRank.TryGetValue((tokens[i], tokens[i + 1]), out int rank) && rank < bestRank)
+                {
+                    bestRank = rank;
+                    bestI = i;
+                }
+            }
+            if (bestI < 0) break;
+            var mergedTokens = new List<string>(tokens.Count - 1);
+            var mergedSpans = new List<(int Start, int End)>(tokens.Count - 1);
+            int j = 0;
+            while (j < tokens.Count)
+            {
+                if (j + 1 < tokens.Count
+                    && _mergeRank.TryGetValue((tokens[j], tokens[j + 1]), out int r) && r == bestRank)
+                {
+                    mergedTokens.Add(tokens[j] + tokens[j + 1]);
+                    mergedSpans.Add((spans[j].Start, spans[j + 1].End));
+                    j += 2;
+                }
+                else
+                {
+                    mergedTokens.Add(tokens[j]);
+                    mergedSpans.Add(spans[j]);
+                    j++;
+                }
+            }
+            tokens = mergedTokens;
+            spans = mergedSpans;
+        }
+        for (int i = 0; i < tokens.Count; i++)
+            outResult.Add(new TokenWithSpan(_vocab[tokens[i]], spans[i].Start, spans[i].End));
+    }
 }

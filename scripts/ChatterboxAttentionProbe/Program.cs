@@ -16,6 +16,7 @@
 //     --out /tmp/cs_attn_probe
 
 using Chatterbox.Base;
+using Chatterbox.Base.Alignment;
 using Vernacula.Base.Models;
 
 string? text = null, voicePath = null, onnxDir = null, outDir = null;
@@ -96,5 +97,19 @@ File.WriteAllBytes(Path.Combine(outDir, "alignment.f32"), binBytes);
 File.WriteAllText(Path.Combine(outDir, "alignment.meta.json"),
     $"{{\n  \"rows\": {rows},\n  \"cols\": {cols},\n  \"steps\": {result.Steps},\n  \"text\": \"{text.Replace("\\", "\\\\").Replace("\"", "\\\"")}\"\n}}\n");
 Console.WriteLine($"[save ] {outDir}/alignment.f32 + alignment.meta.json");
+
+// ── Exercise the aligner end-to-end ────────────────────────────────
+// Synthesize audio so we have a real total-sample count for the
+// per-step-seconds conversion.
+Console.WriteLine("[voc  ] vocoder synthesis (for audio length)...");
+var speechTokens = result.BuildSpeechTokens(spk.AudioTokens);
+var audio = pipeline.Vocoder.Synthesize(speechTokens, spk.SpeakerEmbeddings, spk.SpeakerFeatures);
+Console.WriteLine($"[voc  ] {audio.Length} samples @ {ChatterboxConstants.S3GenSr} Hz = {audio.Length / (double)ChatterboxConstants.S3GenSr:F2} s");
+
+var wordTimings = ChatterboxAttentionAligner.Align(
+    result.Alignment, text, pipeline.Tokenizer, audio.Length, ChatterboxConstants.S3GenSr);
+Console.WriteLine($"[align] aligner produced {wordTimings.Count} word timings:");
+foreach (var w in wordTimings)
+    Console.WriteLine($"  [{w.StartSeconds:F2}-{w.EndSeconds:F2}s]  {w.Text}");
 
 return 0;
