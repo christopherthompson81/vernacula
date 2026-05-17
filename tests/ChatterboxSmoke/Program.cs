@@ -155,6 +155,19 @@ internal static class Program
                     + "Use --no-io-binding for full past_kv diag artifacts.");
             }
         }
+        // --voc-batch is meaningful only under non-pipelined --lm-batch>1.
+        // Under --pipelined the group size is what drives voc batching (the
+        // group is the batching unit); --voc-batch alone with no --lm-batch
+        // falls through to the serial branch and is silently dropped.
+        if (vocBatch > 1 && (pipelined || lmBatch <= 1))
+        {
+            string why = pipelined
+                ? "under --pipelined the group size (--lm-batch) drives voc batching"
+                : "--voc-batch requires --lm-batch>1 — without batched LM there are no groups to batch the voc over";
+            Console.Error.WriteLine($"warning: --voc-batch {vocBatch} ignored: {why}.");
+            vocBatch = 1;
+        }
+
         // --bench-batched-{lm,voc} both skip voice loading; only need --onnx-dir.
         // Other modes need --voice. --out always has a default.
         bool isProbe = benchBatchedLm > 0 || benchBatchedVoc > 0;
@@ -512,6 +525,19 @@ internal static class Program
             Path.Combine(onnxDir, "language_model.onnx"), ep);
         loadSw.Stop();
         Console.WriteLine($"  loaded embed_tokens + language_model in {loadSw.ElapsedMilliseconds} ms");
+
+        // Probe is fp32-hardcoded (DenseTensor<float> for inputs_embeds + past_kv);
+        // an fp16 LM would throw ORT type-mismatch at the first BindInput with
+        // no useful message. Fail clearly instead.
+        if (lm.InputMetadata.TryGetValue("inputs_embeds", out var iemd)
+            && iemd.ElementDataType == TensorElementType.Float16)
+        {
+            Console.Error.WriteLine(
+                "--bench-batched-lm is fp32-hardcoded and the loaded LM expects fp16 inputs. "
+                + "Re-point the bundle's language_model.onnx at an fp32 export, or use the full "
+                + "synthesis path (--bench-chunks) which routes through AcousticLM's dtype-aware binding.");
+            return 2;
+        }
 
         // Build B-batched input. Replicate FallbackInputIds (the Ezreal sentence
         // wrapped with [EXAGGERATION, ..., START_SPEECH, START_SPEECH]) across B.

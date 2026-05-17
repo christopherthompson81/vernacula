@@ -67,6 +67,13 @@ public sealed class AcousticLM : IDisposable
     /// the dtype-aware OrtValue/NamedOnnxValue construction in all four
     /// rollout paths (single+batched × IoBinding+Basic). Run 9 result:
     /// true-fp16 KV cache eliminates the boundary Casts that hurt Run 8a.
+    ///
+    /// Invariant: <c>embed_tokens.onnx</c> is assumed to stay fp32 (only
+    /// the LM is quantized by quantize_lm.py). <see cref="EmbedOne"/> and
+    /// <see cref="EmbedBatch"/> read its output via
+    /// <c>.AsTensor&lt;float&gt;().ToArray()</c>; an fp16 embed graph would
+    /// throw an unhelpful type error there. If we ever quantize embeds too,
+    /// both helpers need the same dtype-aware treatment as the LM.
     /// </summary>
     private readonly bool _lmFp16;
 
@@ -237,14 +244,19 @@ public sealed class AcousticLM : IDisposable
         var textEmbB = embOut.First().AsTensor<float>().ToArray();  // [B, sText, LlmHidden]
 
         // ── Build inputs_embeds[B, sTotal, hidden] = concat(cond_emb[b], text_emb[b]) per row ──
+        // Long-form audiobook case: all B chunks share the same speaker, so
+        // condEmbs[0..B] reference the same tensor (cf. ChunkedSynthesizer.SynthesizeInGroups).
+        // ToArray()-once when so, otherwise per-element.
         int sTotal = sCond + sText;
         var inputsEmbeds = new float[B * sTotal * LlmHidden];
+        bool sharedCondEmb = true;
+        for (int b = 1; b < B; b++)
+            if (!ReferenceEquals(condEmbs[b], condEmbs[0])) { sharedCondEmb = false; break; }
+        float[]? sharedCondArr = sharedCondEmb ? condEmbs[0].ToArray() : null;
         for (int b = 0; b < B; b++)
         {
-            var condArr = condEmbs[b].ToArray();
-            // cond row: copy sCond × hidden floats from condArr to inputsEmbeds[b, 0:sCond, :]
+            var condArr = sharedCondArr ?? condEmbs[b].ToArray();
             Array.Copy(condArr, 0, inputsEmbeds, b * sTotal * LlmHidden, sCond * LlmHidden);
-            // text row: copy sText × hidden floats from textEmbB[b, :, :] to inputsEmbeds[b, sCond:, :]
             Array.Copy(textEmbB, b * sText * LlmHidden,
                        inputsEmbeds, b * sTotal * LlmHidden + sCond * LlmHidden,
                        sText * LlmHidden);
