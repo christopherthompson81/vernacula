@@ -47,10 +47,24 @@ public sealed class PlaybackService : IDisposable
     private DateTime _startedUtc;
     private int _sampleRate;
     private bool _endOfStream;
-    private double _totalEstimatedSec;   // best-known total duration (updates as chunks append)
+
+    // Best-known total duration; grows as chunks append. Read on the
+    // dispatcher tick (UI thread), written by AppendSamples (background
+    // thread). Guarded by _totalLock — torn reads of a double would
+    // briefly clamp PositionSeconds to garbage.
+    private readonly object _totalLock = new();
+    private double _totalEstimatedSec;
 
     public bool IsPlaying { get; private set; }
     public double PositionSeconds { get; private set; }
+
+    /// <summary>Running best-known total duration of the audio that's
+    /// been queued. Grows as chunks append during streaming; matches the
+    /// final audio duration after <see cref="EndOfStream"/>. Thread-safe.</summary>
+    public double TotalEstimatedSeconds
+    {
+        get { lock (_totalLock) return _totalEstimatedSec; }
+    }
 
     public event Action<double>? PositionChanged;
     public event Action<double>? PlaybackStopped;
@@ -71,7 +85,7 @@ public sealed class PlaybackService : IDisposable
 
         _sampleRate = sampleRate;
         _endOfStream = false;
-        _totalEstimatedSec = 0;
+        lock (_totalLock) _totalEstimatedSec = 0;
         PositionSeconds = 0;
 
         if (OperatingSystem.IsWindows())
@@ -104,14 +118,17 @@ public sealed class PlaybackService : IDisposable
 
     /// <summary>Append a chunk of float32 mono samples (Chatterbox's
     /// native format). Returns when the bytes are queued, not when
-    /// they've played. Call from the UI thread — <c>_totalEstimatedSec</c>
-    /// is read on the dispatcher timer tick and not synchronized, and
-    /// the ffplay-stdin write isn't serialized against concurrent
-    /// callers either.</summary>
+    /// they've played. <b>Do NOT call from the UI thread:</b> on the
+    /// ffplay backend, the stdin write blocks under backpressure (ffplay
+    /// only drains as fast as it plays, ~realtime), which would freeze
+    /// the dispatcher for seconds at a time. Call from a background
+    /// thread — the alignment-chain Task in SynthesisService is a
+    /// natural caller. Single-writer expected (the alignment chain is
+    /// serialized); no internal locking guards concurrent writers.</summary>
     public void AppendSamples(float[] samples)
     {
         if (samples.Length == 0) return;
-        _totalEstimatedSec += samples.Length / (double)_sampleRate;
+        lock (_totalLock) _totalEstimatedSec += samples.Length / (double)_sampleRate;
 
         if (OperatingSystem.IsWindows())
         {
@@ -202,7 +219,7 @@ public sealed class PlaybackService : IDisposable
             throw new FileNotFoundException("Audio file not found.", audioPath);
 
         _sampleRate = 0;  // unused on the file-playback path
-        _totalEstimatedSec = audioDurationSec;
+        lock (_totalLock) _totalEstimatedSec = audioDurationSec;
         seconds = Math.Clamp(seconds, 0, audioDurationSec);
         _endOfStream = true;
 
@@ -263,20 +280,20 @@ public sealed class PlaybackService : IDisposable
         _tickTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(50) };
         _tickTimer.Tick += (_, _) =>
         {
+            double total = TotalEstimatedSeconds;
             double pos = (DateTime.UtcNow - _startedUtc).TotalSeconds;
             // Clamp to estimated total (grows as chunks arrive). If we
             // outrun the buffer (clock past the last appended sample),
             // freeze at the estimate until more arrives — better than
             // showing fake forward motion.
-            if (_totalEstimatedSec > 0 && pos > _totalEstimatedSec)
-                pos = _totalEstimatedSec;
+            if (total > 0 && pos > total) pos = total;
             PositionSeconds = pos;
             PositionChanged?.Invoke(PositionSeconds);
 
             // Natural EOF: position reached the estimate AND no more
             // samples are coming. (Without _endOfStream we'd stop early
             // every time the user gets ahead of synthesis.)
-            if (_endOfStream && _totalEstimatedSec > 0 && PositionSeconds >= _totalEstimatedSec)
+            if (_endOfStream && total > 0 && PositionSeconds >= total)
                 Stop();
         };
         _tickTimer.Start();

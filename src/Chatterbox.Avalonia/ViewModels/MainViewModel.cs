@@ -213,30 +213,41 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
             var result = await _synthService.SynthesizeStreamingAsync(
                 VoicePath, Text, outWav,
-                onChunkProduced: ev => Dispatcher.UIThread.Post(() =>
+                onChunkProduced: ev =>
                 {
-                    // First chunk arrives → open the playback pipeline and
-                    // start streaming. Audio plays as soon as bytes are
-                    // appended; the wall-clock tick begins from now.
-                    if (!streamingStarted)
+                    // Audio appending runs HERE — on the alignment-chain
+                    // thread (background), NOT on the dispatcher. On the
+                    // ffplay backend, AppendSamples blocks under pipe
+                    // backpressure (ffplay only drains as fast as it
+                    // plays). If we did this on the UI thread, the
+                    // progress bar would freeze, queued Word adds would
+                    // stack up, and the user would see chunks arrive in
+                    // bursts instead of streaming live.
+                    try
                     {
-                        try
+                        if (!streamingStarted)
                         {
                             _playback.StartStreaming(ChatterboxConstants.S3GenSr, channels: 1);
                             streamingStarted = true;
                         }
-                        catch (Exception ex)
-                        {
-                            StatusMessage = $"Playback open failed: {ex.Message}";
-                            return;
-                        }
+                        _playback.AppendSamples(ev.Audio24k);
                     }
-                    _playback.AppendSamples(ev.Audio24k);
-                    int baseIdx = Words.Count;
-                    int wi = baseIdx;
-                    foreach (var w in ev.Words)
-                        Words.Add(new WordItemViewModel(w, wi++, SeekToWord));
-                }),
+                    catch (Exception ex)
+                    {
+                        Dispatcher.UIThread.Post(() =>
+                            StatusMessage = $"Playback failed: {ex.Message}");
+                    }
+
+                    // Word adds touch the ObservableCollection → must go
+                    // through the dispatcher. Capture ev.Words by local so
+                    // the closure doesn't race a subsequent chunk's event.
+                    var wordsForChunk = ev.Words;
+                    Dispatcher.UIThread.Post(() =>
+                    {
+                        foreach (var w in wordsForChunk)
+                            Words.Add(new WordItemViewModel(w, Words.Count, SeekToWord));
+                    });
+                },
                 onProgress: p => Dispatcher.UIThread.Post(() =>
                 {
                     StatusMessage = p.ChunkIndex is int idx && p.TotalChunks is int total
@@ -330,8 +341,11 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             _currentWordIndex = idx;
             if (idx >= 0 && idx < Words.Count) Words[idx].IsCurrent = true;
         }
-        double dur = _lastAlignment?.AudioDurationSeconds ?? 0;
-        PositionLabel = $"{posSec:F2} / {dur:F2} s";
+        // Use the live playback total — it grows as chunks append during
+        // streaming, and matches _lastAlignment.AudioDurationSeconds once
+        // synthesis finishes. (Reading _lastAlignment alone would show
+        // "/ 0.00 s" for the entire stream.)
+        PositionLabel = $"{posSec:F2} / {_playback.TotalEstimatedSeconds:F2} s";
     }
 
     private int FindWordAt(double posSec)
