@@ -143,11 +143,13 @@ public class MarkdownTextExtractorTests
     }
 
     [Fact]
-    public void Inline_html_is_skipped()
+    public void Inline_html_tags_are_stripped_inner_text_kept()
     {
         var r = MarkdownTextExtractor.Extract("Hello <span>tag</span> world.");
-        // Inline text inside HTML *element* leaks through Markdig as literal —
-        // we only filter the <span> open/close tokens. Locked in to make
+        // Markdig parses this as Literal("Hello ") + HtmlInline("<span>") +
+        // Literal("tag") + HtmlInline("</span>") + Literal(" world."). We
+        // drop the HtmlInline nodes (open/close tokens) but the text nodes
+        // BETWEEN them are ordinary Literals and survive. Locked in to make
         // the behavior explicit; if this becomes a problem we can switch to
         // a stricter HTML stripper.
         Assert.Equal("Hello tag world.", r.Text);

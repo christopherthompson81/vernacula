@@ -11,11 +11,17 @@ namespace Chatterbox.Base.Markdown;
 /// came from. The Source* fields are character offsets into the original
 /// markdown string (the same units the file was read in).
 ///
-/// Synthetic whitespace (paragraph separators, sentence-terminator periods
+/// <para><see cref="OutputLength"/> and <see cref="SourceLength"/> may differ:
+/// inline code's source range covers the backticks (<c>`foo()`</c>, length 7)
+/// while the output omits them (<c>foo()</c>, length 5). Consumers should
+/// not assume the two slices are equal-length, only that the output
+/// substring is a *subsequence* of the source substring.</para>
+///
+/// <para>Synthetic whitespace (paragraph separators, sentence-terminator periods
 /// the extractor appends to headings) does NOT get an entry — those bytes
 /// exist in <see cref="MarkdownExtractionResult.Text"/> but map to nothing
 /// in the source. Word-highlighting downstream walks the ranges in order
-/// and accepts that some output offsets fall in the gaps.
+/// and accepts that some output offsets fall in the gaps.</para>
 /// </summary>
 public sealed record TextRange(int OutputStart, int OutputLength, int SourceStart, int SourceLength);
 
@@ -42,7 +48,11 @@ public sealed record MarkdownExtractionResult(string Text, IReadOnlyList<TextRan
 /// <item>Block quotes — text only, the <c>&gt;</c> markup is dropped.</item>
 /// <item>Inline code / bold / italic / strike — markup stripped, content kept.</item>
 /// <item>Links — emit the link text, drop the URL.</item>
-/// <item>Fenced code blocks, tables, images, HTML, horizontal rules,
+/// <item>Inline HTML — tags (<c>&lt;span&gt;</c>, <c>&lt;/span&gt;</c>) dropped,
+///       but text nodes between tags survive as ordinary literals (Markdig
+///       parses them as <c>LiteralInline</c> not <c>HtmlInline</c>). Block
+///       HTML is filtered at block level.</item>
+/// <item>Fenced code blocks, tables, images, horizontal rules,
 ///       footnotes — <b>skipped entirely.</b></item>
 /// </list>
 ///
@@ -223,12 +233,12 @@ public sealed class MarkdownTextExtractor
                 EmitInlines(emph);
                 break;
 
-            case LineBreakInline lb:
-                // Hard line break → space (soft line breaks usually parse the
-                // same way; both are intra-paragraph whitespace for TTS).
+            case LineBreakInline:
+                // Both hard and soft line breaks → space. TTS doesn't
+                // distinguish; both are intra-paragraph whitespace.
                 // Don't emit if the previous char is already whitespace.
                 if (_sb.Length > 0 && !char.IsWhiteSpace(_sb[^1]))
-                    _sb.Append(lb.IsHard ? ' ' : ' ');
+                    _sb.Append(' ');
                 break;
 
             case HtmlInline:
