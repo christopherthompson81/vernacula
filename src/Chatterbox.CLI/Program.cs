@@ -16,6 +16,7 @@ using System.Globalization;
 using Chatterbox.Base;
 using Chatterbox.Base.Markdown;
 using NAudio.Wave;
+using Vernacula.Base.Alignment;
 using Vernacula.Base.Models;
 
 // ── Argument parsing ──────────────────────────────────────────────────────────
@@ -26,6 +27,8 @@ string? outPath       = null;
 string? text          = null;
 string? textFile      = null;
 string? tokenizerJson = null;
+string? alignmentOut  = null;  // JSON sidecar of per-word audio timings
+string? nfaBundle     = null;  // path to scripts/nemo_export/export_nfa_ctc_to_onnx.py output dir
 string  ep            = "auto";
 bool    verbose       = false;
 bool?   useIoBinding  = null;
@@ -60,6 +63,8 @@ try
             case "--text":           text          = Next("--text", i);           i++; break;
             case "--text-file":      textFile      = Next("--text-file", i);      i++; break;
             case "--tokenizer-json": tokenizerJson = Next("--tokenizer-json", i); i++; break;
+            case "--alignment-out":  alignmentOut  = Next("--alignment-out", i);  i++; break;
+            case "--nfa-bundle":     nfaBundle     = Next("--nfa-bundle", i);     i++; break;
             case "--ep":             ep            = Next("--ep", i).ToLowerInvariant(); i++; break;
             case "--verbose" or "-v": verbose      = true; break;
             case "--io-binding":     useIoBinding  = true; break;
@@ -144,6 +149,24 @@ voicePath = ExpandHome(voicePath);
 outPath   = ExpandHome(outPath ?? "chatterbox_out.wav");
 if (textFile is not null) textFile = ExpandHome(textFile);
 if (tokenizerJson is not null) tokenizerJson = ExpandHome(tokenizerJson);
+if (alignmentOut is not null) alignmentOut = ExpandHome(alignmentOut);
+if (nfaBundle is not null) nfaBundle = ExpandHome(nfaBundle);
+
+// --alignment-out requires --nfa-bundle. The aligner needs the exported
+// CTC ASR bundle; we don't auto-discover it because there's no canonical
+// location and we don't want to silently align with the wrong model.
+if (alignmentOut is not null && nfaBundle is null)
+{
+    Console.Error.WriteLine(
+        "--alignment-out requires --nfa-bundle <dir>. Export via "
+        + "scripts/nemo_export/export_nfa_ctc_to_onnx.py and pass the output dir here.");
+    return 2;
+}
+if (nfaBundle is not null && !Directory.Exists(nfaBundle))
+{
+    Console.Error.WriteLine($"--nfa-bundle not found: {nfaBundle}");
+    return 1;
+}
 
 if (!Directory.Exists(onnxDir))
 {
@@ -245,7 +268,10 @@ if (verbose) Console.WriteLine(
 // overhead for those. Tokenization happens per-path (whole text once vs per
 // chunk) so we don't waste a tokenize-everything pass on the chunked path.
 var chunks = ParagraphChunker.Chunk(textToSpeak);
-float[] samples;
+// Per-chunk audio is preserved past the synthesis step so the alignment
+// pass below can resample + align each chunk independently. Both branches
+// populate chunkAudios[] in input order; the final WAV is concat-of-chunks.
+float[][] chunkAudios;
 if (chunks.Count <= 1)
 {
     // One-shot path (existing behavior).
@@ -263,7 +289,13 @@ if (chunks.Count <= 1)
         $"LM: {lmResult.Steps} steps, generated {lmResult.RawGeneratedTokens.Count - 1} tokens");
 
     var speechTokens = lmResult.BuildSpeechTokens(spk.AudioTokens);
-    samples = pipeline.Vocoder.Synthesize(speechTokens, spk.SpeakerEmbeddings, spk.SpeakerFeatures);
+    var oneShotAudio = pipeline.Vocoder.Synthesize(speechTokens, spk.SpeakerEmbeddings, spk.SpeakerFeatures);
+    // Normalize the one-shot path to the same shape as the chunked path
+    // (single-element chunkAudios + a one-element chunks list). Keeps the
+    // alignment + WAV-write code below path-agnostic. The textToSpeak
+    // whitespace check at the top of this section guarantees the chunker
+    // returns ≥1 entries, so we don't guard chunks.Count == 0 here.
+    chunkAudios = new[] { oneShotAudio };
 }
 else
 {
@@ -296,20 +328,108 @@ else
         }
     }
 
-    // Concatenate per-chunk waveforms in input order. No fades / silence
-    // injection between chunks — paragraph boundaries already cue the TTS
-    // to taper naturally, and the LM's STOP_SPEECH emits a brief trailing
-    // silence per chunk.
-    int totalSamples = result.Waveforms.Sum(w => w.Length);
-    samples = new float[totalSamples];
+    chunkAudios = result.Waveforms.ToArray();
+}
+
+// Concatenate per-chunk waveforms for the WAV write. No fades / silence
+// injection between chunks — paragraph boundaries already cue the TTS
+// to taper naturally, and the LM's STOP_SPEECH emits a brief trailing
+// silence per chunk.
+int totalSamples = chunkAudios.Sum(w => w.Length);
+var samples = new float[totalSamples];
+{
     int off = 0;
-    foreach (var w in result.Waveforms)
+    foreach (var w in chunkAudios)
     {
         Array.Copy(w, 0, samples, off, w.Length);
         off += w.Length;
     }
 }
 synthSw.Stop();
+
+// ── Forced alignment (optional, --alignment-out) ──────────────────────────────
+// Per-chunk: resample 24 kHz → 16 kHz, run NemoNfaAligner against the
+// chunk's reference text, translate chunk-relative timings to absolute
+// playback time via the cumulative chunk-sample offset. JSON sidecar
+// holds a flat words list (sorted by start_seconds) + a chunks summary;
+// flat is what the Avalonia app's binary-search-by-playback-time lookup
+// will need.
+if (alignmentOut is not null)
+{
+    var alignSw = Stopwatch.StartNew();
+    using var aligner = new NemoNfaAligner(nfaBundle!, epEnum);
+    if (verbose)
+        Console.WriteLine($"Aligning {chunks.Count} chunk(s) against {nfaBundle} ...");
+
+    var allWords = new List<object>();
+    var chunkRecords = new List<object>();
+    int sampleOffset = 0;
+    for (int i = 0; i < chunkAudios.Length; i++)
+    {
+        var chunkAudio24k = chunkAudios[i];
+        double chunkStartSec = sampleOffset / (double)ChatterboxConstants.S3GenSr;
+        double chunkEndSec = (sampleOffset + chunkAudio24k.Length) / (double)ChatterboxConstants.S3GenSr;
+        sampleOffset += chunkAudio24k.Length;
+
+        // 24 kHz mono float → 16 kHz mono float via AudioUtils. The cleanup
+        // pass (75 Hz HPF + mains-hum notches) is harmless for TTS audio
+        // and matches what other ASR consumers in Vernacula get.
+        var chunkAudio16k = Vernacula.Base.AudioUtils.AudioTo16000Mono(
+            chunkAudio24k, ChatterboxConstants.S3GenSr, channels: 1);
+        var words = aligner.Align(chunkAudio16k, chunks[i], "en");
+
+        foreach (var w in words)
+        {
+            allWords.Add(new
+            {
+                text = w.Text,
+                start_seconds = chunkStartSec + w.StartSeconds,
+                end_seconds = chunkStartSec + w.EndSeconds,
+                chunk_index = i,
+            });
+        }
+        chunkRecords.Add(new
+        {
+            index = i,
+            audio_start_seconds = chunkStartSec,
+            audio_end_seconds = chunkEndSec,
+            text = chunks[i],
+            word_count = words.Count,
+        });
+        if (verbose)
+            Console.WriteLine($"  chunk {i + 1}/{chunkAudios.Length}: "
+                + $"{chunkAudio24k.Length / (double)ChatterboxConstants.S3GenSr:F2}s audio → "
+                + $"{words.Count} aligned words");
+    }
+    alignSw.Stop();
+
+    var payload = new
+    {
+        audio_path = outPath,
+        sample_rate = ChatterboxConstants.S3GenSr,
+        audio_duration_seconds = totalSamples / (double)ChatterboxConstants.S3GenSr,
+        aligner = "nemo_nfa",
+        nfa_bundle = nfaBundle,
+        chunks = chunkRecords,
+        words = allWords,
+    };
+    // Snake-case schema (start_seconds, chunk_index, ...) is part of the
+    // consumer contract — don't add PropertyNamingPolicy.CamelCase here
+    // unless you also update every downstream parser. Default options
+    // preserve declared anonymous-type member names verbatim.
+    var json = System.Text.Json.JsonSerializer.Serialize(payload,
+        new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
+    // Atomic write: serialize to a sibling .tmp, then rename. A SIGINT
+    // mid-File.WriteAllText would otherwise leave a truncated JSON that
+    // downstream consumers fail to parse.
+    var tmpPath = alignmentOut + ".tmp";
+    File.WriteAllText(tmpPath, json);
+    File.Move(tmpPath, alignmentOut, overwrite: true);
+
+    if (verbose)
+        Console.WriteLine($"Alignment: {alignSw.ElapsedMilliseconds} ms, "
+            + $"{allWords.Count} words → {alignmentOut}");
+}
 
 // ── Write WAV ─────────────────────────────────────────────────────────────────
 
@@ -363,6 +483,12 @@ static void PrintUsage()
                                    directml needs OnnxRuntime.DirectML).
           --tokenizer-json <path>  Path to chatterbox tokenizer.json. Default:
                                    auto-locate from the HF hub cache.
+          --alignment-out <path>   Write a JSON sidecar with per-word audio timings,
+                                   one entry per spoken word with absolute playback
+                                   start/end seconds. Requires --nfa-bundle.
+          --nfa-bundle <dir>       NFA CTC ASR bundle directory exported by
+                                   scripts/nemo_export/export_nfa_ctc_to_onnx.py.
+                                   Required when --alignment-out is set.
           --io-binding /           Force GPU-resident KV-cache chaining for the LM.
           --no-io-binding          Default: auto-detect from the effective EP.
           --exaggeration <float>   Conditioning scalar passed to embed_tokens. Default: 0.5.
