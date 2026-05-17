@@ -70,7 +70,23 @@ public sealed class SimpleSpTokenizer
         _pieceToId = new Dictionary<string, int>(pairs.Count, StringComparer.Ordinal);
         foreach (var (id, piece) in pairs) _pieceToId[piece] = id;
 
-        _unknownId = _pieceToId.TryGetValue(unknownToken, out var unkId) ? unkId : 0;
+        // When the vocab doesn't carry an <unk> entry (atypical for SP
+        // models but possible), we'd otherwise fall back to id 0 — which
+        // is usually a real token like <s> or a printable piece, not an
+        // unknown. Surface this at construction so silent OOV bugs don't
+        // bite at encode time. In-domain English text essentially never
+        // triggers the unknown branch, but the warning helps the next
+        // person hitting it.
+        if (!_pieceToId.TryGetValue(unknownToken, out var unkId))
+        {
+            Console.Error.WriteLine(
+                $"[SimpleSpTokenizer] WARNING: '{unknownToken}' not in {vocabPath}; "
+                + "OOV chars will be emitted as id 0 (which is probably not <unk>). "
+                + "For an in-domain English vocab this rarely matters; verify if your "
+                + "input contains unusual scripts or symbols.");
+            unkId = 0;
+        }
+        _unknownId = unkId;
     }
 
     /// <summary>Encode <paramref name="text"/> to (piece_id, piece_text) pairs.
@@ -106,6 +122,16 @@ public sealed class SimpleSpTokenizer
         // Strategy: build a working buffer that starts with ▁ and contains
         // the word; greedy-match longest prefix against vocab; emit; repeat
         // from the consumed offset.
+        //
+        // Edge case: if the vocab contains ▁ as a standalone piece AND
+        // doesn't contain the fused ▁{first-chars} form for this word, LPM
+        // will emit ▁ alone then restart on the bare word, producing two
+        // tokens where SP-unigram would emit one fused piece. The grouper
+        // downstream handles a leading ▁-only token gracefully (filtered
+        // as empty after the ▁-strip), so the audible alignment is still
+        // correct — just with a phantom zero-duration "word" that gets
+        // dropped. Doesn't matter for in-domain English; flagged here for
+        // anyone reusing this on a non-English or sparser vocab.
         string buf = SpWordBoundary + word.ToString();
         int pos = 0;
         while (pos < buf.Length)
@@ -132,7 +158,11 @@ public sealed class SimpleSpTokenizer
     {
         // Scan from longest possible match down to 1 char. The SP vocab
         // has a maximum piece length (typically <= 16 chars for English),
-        // so this O(maxLen × dict-lookup) per piece is fine.
+        // so this O(maxLen × dict-lookup) per piece is fine. 32 is an
+        // upper bound on the longest piece in NeMo FastConformer English
+        // vocabs we've seen; raise it if a different SP model loads
+        // pieces longer than that (would otherwise silently truncate the
+        // match search and produce sub-optimal tokenization).
         int maxTry = Math.Min(32, text.Length - start);
         for (int len = maxTry; len >= 1; len--)
         {

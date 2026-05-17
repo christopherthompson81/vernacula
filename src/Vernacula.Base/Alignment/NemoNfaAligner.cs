@@ -48,8 +48,9 @@ public sealed class NemoNfaAligner : IForcedAligner
         string ctcPath = Path.Combine(bundleDir, "ctc-model.onnx");
         string tokenizerPath = Path.Combine(bundleDir, "tokenizer.model");
         string reportPath = Path.Combine(bundleDir, "export-report.json");
+        string vocabPath = Path.Combine(bundleDir, "vocab.txt");
 
-        foreach (var p in new[] { preprocPath, ctcPath, tokenizerPath, reportPath })
+        foreach (var p in new[] { preprocPath, ctcPath, tokenizerPath, reportPath, vocabPath })
             if (!File.Exists(p))
                 throw new FileNotFoundException(
                     $"NFA bundle missing required file: {p}. "
@@ -63,7 +64,7 @@ public sealed class NemoNfaAligner : IForcedAligner
         // See SimpleSpTokenizer's class docs for the quality envelope.
         // (tokenizer.model is still in the bundle for a future drop-in when
         // a working unigram-SP loader lands.)
-        _tokenizer = new SimpleSpTokenizer(Path.Combine(bundleDir, "vocab.txt"));
+        _tokenizer = new SimpleSpTokenizer(vocabPath);
         _vocabSize = _tokenizer.VocabSize;
         _blankId = _vocabSize;
 
@@ -72,12 +73,37 @@ public sealed class NemoNfaAligner : IForcedAligner
         // frame_shift_seconds and encoder_subsampling come from the
         // export-report. Combined, they give the seconds-per-encoder-frame
         // factor we use to convert frame indices → audio time.
-        double frameShift = report.GetProperty("frame_shift_seconds").GetDouble();
-        int subsampling = report.GetProperty("encoder_subsampling").GetInt32();
+        // The export script writes both unconditionally, but a buggy /
+        // older bundle could have them null or missing — wrap with a
+        // bundle-explicit error rather than letting JsonElement throw
+        // its less-helpful InvalidOperationException.
+        double frameShift = RequireDouble(report, "frame_shift_seconds", reportPath);
+        int subsampling = RequireInt(report, "encoder_subsampling", reportPath);
         _secondsPerEncoderFrame = frameShift * subsampling;
 
         _expectedSampleRate = report.TryGetProperty("sample_rate", out var srProp)
+            && srProp.ValueKind == JsonValueKind.Number
             ? srProp.GetInt32() : 16000;
+    }
+
+    private static double RequireDouble(JsonElement obj, string name, string reportPath)
+    {
+        if (!obj.TryGetProperty(name, out var p) || p.ValueKind != JsonValueKind.Number)
+            throw new InvalidOperationException(
+                $"{reportPath}: missing or non-numeric '{name}'. Re-export via "
+                + "scripts/nemo_export/export_nfa_ctc_to_onnx.py with a current "
+                + "NeMo version that exposes the field.");
+        return p.GetDouble();
+    }
+
+    private static int RequireInt(JsonElement obj, string name, string reportPath)
+    {
+        if (!obj.TryGetProperty(name, out var p) || p.ValueKind != JsonValueKind.Number)
+            throw new InvalidOperationException(
+                $"{reportPath}: missing or non-numeric '{name}'. Re-export via "
+                + "scripts/nemo_export/export_nfa_ctc_to_onnx.py with a current "
+                + "NeMo version that exposes the field.");
+        return p.GetInt32();
     }
 
     public IReadOnlyList<WordTiming> Align(float[] audio16k, string text, string languageIso)
@@ -183,6 +209,13 @@ public sealed class NemoNfaAligner : IForcedAligner
     /// Run the preprocessor and CTC graph on the audio. Returns the
     /// CTC log-probs as a flat [T_enc * (V+1)] float[], plus T_enc and
     /// V+1 for the Viterbi helper.
+    ///
+    /// TODO(perf): when both sessions are CUDA-backed, chain via IoBinding
+    /// to keep features GPU-resident across the preproc→CTC handoff and
+    /// keep logprobs on-device until the host actually consumes them. At
+    /// typical alignment sizes (~410 KB of logprobs for 8 s, ~3 MB for
+    /// 60 s) the host roundtrip here is dominated by the CTC kernel cost,
+    /// so this is a deferred optimization, not urgent.
     /// </summary>
     private (float[] logProbs, int numEncoderFrames, int vocabPlusBlank) RunPreprocAndCtc(float[] audio16k)
     {
@@ -233,7 +266,7 @@ public sealed class NemoNfaAligner : IForcedAligner
     {
         _preproc.Dispose();
         _ctc.Dispose();
-        // LlamaTokenizer doesn't implement IDisposable — its underlying
-        // SP model is GC-managed.
+        // SimpleSpTokenizer doesn't implement IDisposable — its dictionaries
+        // are GC-managed.
     }
 }

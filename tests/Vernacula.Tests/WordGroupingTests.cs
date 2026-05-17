@@ -117,6 +117,22 @@ public class WordGroupingTests
     }
 
     [Fact]
+    public void Word_boundary_on_first_token_does_not_emit_extra_empty_word()
+    {
+        // Regression: the grouper's `startsWord = first-token || piece.StartsWith(▁)`
+        // would trigger Flush() on an empty buffer at the very first token
+        // when the token starts with ▁ (the common case). Flush's early-return
+        // at "currentPieces.Count == 0" must prevent an extra empty word.
+        var alignments = new[] { TA(0, 0, 2), TA(1, 4, 5) };
+        var strings = new[] { SP + "hello", SP + "world" };
+        var words = NemoNfaAligner.GroupTokensIntoWords(alignments, strings, FrameSec);
+        // Expect exactly 2 words; no leading empty word from the first-token Flush.
+        Assert.Equal(2, words.Count);
+        Assert.Equal("hello", words[0].Text);
+        Assert.Equal("world", words[1].Text);
+    }
+
+    [Fact]
     public void Timings_use_frame_plus_one_convention_for_end()
     {
         // End time = (endFrame + 1) * sec/frame so a single-frame token
