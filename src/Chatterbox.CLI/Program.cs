@@ -14,6 +14,7 @@
 using System.Diagnostics;
 using System.Globalization;
 using Chatterbox.Base;
+using Chatterbox.Base.Markdown;
 using NAudio.Wave;
 using Vernacula.Base.Models;
 
@@ -156,12 +157,34 @@ if (textFile is not null && !File.Exists(textFile))
 }
 
 // ── Read text source ──────────────────────────────────────────────────────────
-// --text-file is currently passed through as plain text. Markdown
-// parsing (Stage 1 step 4) will land in a follow-up so a `.md` source
-// has heading/list/emphasis markers stripped before synthesis. Today,
-// any markdown punctuation appears verbatim in the output.
+// --text-file routed through MarkdownTextExtractor when the file extension
+// is .md or .markdown (case-insensitive) so headings/lists/code/emphasis
+// markup gets stripped before tokenization. --text always treated as plain
+// text — callers passing a string usually want it spoken verbatim. The
+// extractor's behavior matrix and the source-range index (for downstream
+// forced alignment) are documented on the class itself.
 
-string textToSpeak = text ?? File.ReadAllText(textFile!);
+string textToSpeak;
+if (text is not null)
+{
+    textToSpeak = text;
+}
+else
+{
+    var raw = File.ReadAllText(textFile!);
+    var ext = Path.GetExtension(textFile!).ToLowerInvariant();
+    if (ext is ".md" or ".markdown")
+    {
+        var extracted = MarkdownTextExtractor.Extract(raw);
+        if (verbose)
+            Console.WriteLine($"Markdown extracted: {raw.Length} chars → {extracted.Text.Length} chars, {extracted.Ranges.Count} source-range entries");
+        textToSpeak = extracted.Text;
+    }
+    else
+    {
+        textToSpeak = raw;
+    }
+}
 if (string.IsNullOrWhiteSpace(textToSpeak))
 {
     Console.Error.WriteLine("Text is empty (after reading --text-file).");
@@ -260,8 +283,11 @@ static void PrintUsage()
                                     + one of the cond-decoder layouts).
           --voice <wav>            Reference voice clip. Any sample rate / channels.
           --text "..."   OR        Text to synthesize. Mutually exclusive with --text-file.
-          --text-file <path>       Read text from a file. Currently passed through as
-                                   plain text (markdown stripping is a follow-up).
+          --text-file <path>       Read text from a file. Files with .md or .markdown
+                                   extensions are routed through the markdown extractor
+                                   (headings/lists/emphasis/links stripped; code blocks,
+                                   tables, images, HTML dropped entirely). Other extensions
+                                   are passed through as plain text.
 
         Optional:
           --out <wav>              Output WAV path. Default: chatterbox_out.wav

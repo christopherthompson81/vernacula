@@ -29,6 +29,13 @@
     <PackageReference Include="NAudio" Version="2.2.1" />
   </ItemGroup>
 
+  <!-- Markdig: markdown AST for MarkdownTextExtractor. Matches the version
+       Vernacula.Avalonia is already on so two copies don't end up in a
+       composite app (cf. Markdown.Avalonia → Markdig). -->
+  <ItemGroup>
+    <PackageReference Include="Markdig" Version="0.34.0" />
+  </ItemGroup>
+
   <ItemGroup>
     <!-- Shared ORT plumbing: OrtSessionBuilder, ExecutionProvider enum, etc. -->
     <ProjectReference Include="..\Vernacula.Base\Vernacula.Base.csproj">

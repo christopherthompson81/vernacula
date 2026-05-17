@@ -27,4 +27,7 @@
   <Project Path="tests/AsrBackendCoverage/AsrBackendCoverage.csproj">
     <Platform Project="x64" />
   </Project>
+  <Project Path="tests/Chatterbox.Tests/Chatterbox.Tests.csproj">
+    <Platform Project="x64" />
+  </Project>
 </Solution>
