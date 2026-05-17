@@ -12,6 +12,7 @@
 // See README.md for full flag reference.
 
 using System.Diagnostics;
+using System.Globalization;
 using Chatterbox.Base;
 using NAudio.Wave;
 using Vernacula.Base.Models;
@@ -24,48 +25,75 @@ string? outPath       = null;
 string? text          = null;
 string? textFile      = null;
 string? tokenizerJson = null;
-string  ep            = "cuda";
+string  ep            = "auto";
 bool    verbose       = false;
 bool?   useIoBinding  = null;
 float   exaggeration  = ChatterboxConstants.DefaultExaggeration;
 int     maxSteps      = ChatterboxConstants.DefaultMaxLmSteps;
 
-for (int i = 0; i < args.Length; i++)
+// Bounds-checked value reader. Caller passes the flag name so the error
+// mentions which arg was missing its value. Args are parsed via a manual
+// loop because the codebase convention (see Vernacula.CLI) is to avoid
+// the System.CommandLine dependency.
+string Next(string flag, int i)
 {
-    switch (args[i])
+    if (i + 1 >= args.Length)
+        throw new ArgumentException($"{flag} requires a value");
+    return args[i + 1];
+}
+
+try
+{
+    for (int i = 0; i < args.Length; i++)
     {
-        case "--onnx-dir":       onnxDir       = args[++i]; break;
-        case "--voice":          voicePath     = args[++i]; break;
-        case "--out":            outPath       = args[++i]; break;
-        case "--text":           text          = args[++i]; break;
-        case "--text-file":      textFile      = args[++i]; break;
-        case "--tokenizer-json": tokenizerJson = args[++i]; break;
-        case "--ep":             ep            = args[++i].ToLowerInvariant(); break;
-        case "--verbose" or "-v": verbose      = true; break;
-        case "--io-binding":     useIoBinding  = true; break;
-        case "--no-io-binding":  useIoBinding  = false; break;
-        case "--exaggeration":
-            if (!float.TryParse(args[++i], out exaggeration))
-            {
-                Console.Error.WriteLine("--exaggeration expects a float (default 0.5).");
+        switch (args[i])
+        {
+            case "--onnx-dir":       onnxDir       = Next("--onnx-dir", i);       i++; break;
+            case "--voice":          voicePath     = Next("--voice", i);          i++; break;
+            case "--out":            outPath       = Next("--out", i);            i++; break;
+            case "--text":           text          = Next("--text", i);           i++; break;
+            case "--text-file":      textFile      = Next("--text-file", i);      i++; break;
+            case "--tokenizer-json": tokenizerJson = Next("--tokenizer-json", i); i++; break;
+            case "--ep":             ep            = Next("--ep", i).ToLowerInvariant(); i++; break;
+            case "--verbose" or "-v": verbose      = true; break;
+            case "--io-binding":     useIoBinding  = true; break;
+            case "--no-io-binding":  useIoBinding  = false; break;
+            case "--exaggeration":
+                // InvariantCulture: a German-locale machine would otherwise
+                // reject "0.5" and require "0,5" — opposite of what CLI
+                // users will type. Same applies to --max-steps below.
+                if (!float.TryParse(Next("--exaggeration", i),
+                        NumberStyles.Float, CultureInfo.InvariantCulture, out exaggeration))
+                {
+                    Console.Error.WriteLine("--exaggeration expects a float (default 0.5).");
+                    return 2;
+                }
+                i++;
+                break;
+            case "--max-steps":
+                if (!int.TryParse(Next("--max-steps", i),
+                        NumberStyles.Integer, CultureInfo.InvariantCulture, out maxSteps)
+                    || maxSteps < 1)
+                {
+                    Console.Error.WriteLine("--max-steps expects a positive integer (default 256).");
+                    return 2;
+                }
+                i++;
+                break;
+            case "--help" or "-h":
+                PrintUsage();
+                return 0;
+            default:
+                Console.Error.WriteLine($"Unknown arg: {args[i]}");
+                PrintUsage();
                 return 2;
-            }
-            break;
-        case "--max-steps":
-            if (!int.TryParse(args[++i], out maxSteps) || maxSteps < 1)
-            {
-                Console.Error.WriteLine("--max-steps expects a positive integer (default 256).");
-                return 2;
-            }
-            break;
-        case "--help" or "-h":
-            PrintUsage();
-            return 0;
-        default:
-            Console.Error.WriteLine($"Unknown arg: {args[i]}");
-            PrintUsage();
-            return 2;
+        }
     }
+}
+catch (ArgumentException ex)
+{
+    Console.Error.WriteLine(ex.Message);
+    return 2;
 }
 
 // ── Validate ───────────────────────────────────────────────────────────────────
@@ -87,10 +115,22 @@ if (text is not null && textFile is not null)
     Console.Error.WriteLine("--text and --text-file are mutually exclusive.");
     return 2;
 }
-if (ep is not ("cpu" or "cuda"))
+// Map --ep to ExecutionProvider. Distinct from --ep cuda is --ep auto:
+// `cuda` requires the CUDA EP to be available (throws if not); `auto`
+// silently falls back from CUDA to DirectML when CUDA isn't available
+// — the right call on heterogeneous Windows boxes. The csproj also
+// supports DirectML builds (`-p:EP=DirectML`); `--ep directml` makes
+// that wiring reachable at runtime.
+ExecutionProvider epEnum;
+switch (ep)
 {
-    Console.Error.WriteLine($"Unknown EP: {ep}. Choose cpu or cuda.");
-    return 2;
+    case "auto":     epEnum = ExecutionProvider.Auto;     break;
+    case "cuda":     epEnum = ExecutionProvider.Cuda;     break;
+    case "cpu":      epEnum = ExecutionProvider.Cpu;      break;
+    case "directml": epEnum = ExecutionProvider.DirectML; break;
+    default:
+        Console.Error.WriteLine($"Unknown EP: {ep}. Choose cpu, cuda, directml, or auto.");
+        return 2;
 }
 
 onnxDir   = ExpandHome(onnxDir);
@@ -143,7 +183,6 @@ if (tokenizerPath is null)
 // ── Load + synthesize ─────────────────────────────────────────────────────────
 
 var totalSw = Stopwatch.StartNew();
-var epEnum = ep == "cuda" ? ExecutionProvider.Auto : ExecutionProvider.Cpu;
 
 SessionLoadObserver? onLoad = verbose
     ? e => Console.WriteLine(
@@ -152,9 +191,18 @@ SessionLoadObserver? onLoad = verbose
     : null;
 
 if (verbose) Console.WriteLine($"Loading ONNX bundle from {onnxDir} (ep={ep}) ...");
+var loadSw = Stopwatch.StartNew();
 using var pipeline = new ChatterboxPipeline(onnxDir, epEnum, tokenizerPath, onLoad);
-if (verbose) Console.WriteLine($"  vocoder mode: {pipeline.Vocoder.Mode}");
+loadSw.Stop();
+if (verbose)
+{
+    Console.WriteLine($"  vocoder mode: {pipeline.Vocoder.Mode}");
+    Console.WriteLine($"Loaded sessions in {loadSw.ElapsedMilliseconds} ms total  (requested-ep={ep})");
+}
 
+// pipeline.Tokenizer is non-null here: we resolved `tokenizerPath` above
+// and would have exited 1 if no tokenizer.json was findable, so the
+// pipeline's auto-locate fallback never fires.
 var tokenIds = pipeline.Tokenizer!.WrapForLm(textToSpeak);
 if (verbose)
 {
@@ -217,12 +265,21 @@ static void PrintUsage()
 
         Optional:
           --out <wav>              Output WAV path. Default: chatterbox_out.wav
-          --ep cpu | cuda          Execution provider. Default: cuda.
+          --ep <name>              Execution provider, one of:
+                                     auto      — CUDA, fall back to DirectML (default)
+                                     cuda      — CUDA only, fail if unavailable
+                                     directml  — DirectML only, fail if unavailable
+                                     cpu       — CPU only
+                                   The csproj's `-p:EP=...` build flag must include
+                                   the runtime you ask for here (cuda needs OnnxRuntime.Gpu,
+                                   directml needs OnnxRuntime.DirectML).
           --tokenizer-json <path>  Path to chatterbox tokenizer.json. Default:
                                    auto-locate from the HF hub cache.
           --io-binding /           Force GPU-resident KV-cache chaining for the LM.
-          --no-io-binding          Default: auto-detect based on the effective EP.
+          --no-io-binding          Default: auto-detect from the effective EP.
           --exaggeration <float>   Conditioning scalar passed to embed_tokens. Default: 0.5.
+                                   Typical range 0.0 – 1.0; out-of-range values are
+                                   accepted but produce increasingly unusual audio.
           --max-steps <int>        Cap on LM rollout length. Default: 256.
           --verbose / -v           Print per-stage timing and cache info.
           --help / -h              Show this message.

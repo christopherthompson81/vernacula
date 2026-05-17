@@ -38,10 +38,10 @@ Once `dotnet publish -c Release` is run, the binary is named `chatterbox`
 | Flag | Default | Purpose |
 |---|---|---|
 | `--out <wav>` | `chatterbox_out.wav` | Output WAV path. |
-| `--ep cpu \| cuda` | `cuda` | Execution provider. CUDA requires `Microsoft.ML.OnnxRuntime.Gpu`; falls back to CPU at session load if CUDA is unavailable. |
+| `--ep <name>` | `auto` | Execution provider — one of `auto` (CUDA → DirectML fallback), `cuda` (strict), `directml` (strict), or `cpu`. The csproj `-p:EP=...` build flag must include the runtime you ask for at runtime. |
 | `--tokenizer-json <path>` | auto-locate | Path to chatterbox `tokenizer.json`. Auto-located from `~/.cache/huggingface/hub/models--ResembleAI--chatterbox/snapshots/*/`. |
 | `--io-binding` / `--no-io-binding` | auto-detect from effective EP | Force or disable GPU-resident KV-cache chaining for the LM. |
-| `--exaggeration <float>` | `0.5` | Conditioning scalar passed to `embed_tokens`. |
+| `--exaggeration <float>` | `0.5` | Conditioning scalar passed to `embed_tokens`. Typical range 0.0–1.0; out-of-range values are accepted but produce increasingly unusual audio. |
 | `--max-steps <int>` | `256` | Cap on LM rollout length. |
 | `--verbose` / `-v` | off | Per-stage timing, cache state, effective-EP info per session. |
 
@@ -62,12 +62,13 @@ Synthesized 6.92s of audio → /tmp/out.wav (7.0s total, 2.9s synth)
 `--verbose`:
 
 ```
-Loading ONNX bundle from /tmp/cb_dyn5 (ep=cuda) ...
+Loading ONNX bundle from /tmp/cb_dyn5 (ep=auto) ...
   speech_encoder.onnx: 1167 ms  cache=HIT  ep=cuda  src=1 MB
   embed_tokens.onnx: 32 ms  cache=HIT  ep=cuda  src=0 MB
   language_model.onnx: 860 ms  cache=HIT  ep=cuda  src=2048 MB
   conditional_decoder_loop.onnx: 1791 ms  cache=HIT  ep=cuda  src=168 MB
   vocoder mode: Merged
+Loaded sessions in 3850 ms total  (requested-ep=auto)
 Tokenized "Hello world. This is a fresh test sentence." → 14 tokens
 speech_encoder: cond_emb=(1,33,1024)  audio_tokens=(1,250)
 LM: 174 steps, generated 174 tokens
