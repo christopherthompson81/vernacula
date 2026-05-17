@@ -61,10 +61,22 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     [NotifyCanExecuteChangedFor(nameof(CancelSynthesisCommand))]
     private bool _isBusy;
 
-    // True after a synthesis finishes successfully. Enables replay.
+    // True once at least one chunk has been produced. Enables Play
+    // (including mid-synth replay-from-beginning of the partial result).
+    // Set on the first chunk-produced event; reset when a new
+    // Synthesize starts.
     [ObservableProperty]
     [NotifyCanExecuteChangedFor(nameof(PlayCommand))]
     private bool _hasSynthesizedAudio;
+
+    // Accumulators that persist across Play/Stop clicks during a synth
+    // run. _writtenChunks tracks how many chunks were included in the
+    // last WAV write — Play uses it to skip the rewrite when nothing
+    // new has arrived since the last replay.
+    private readonly List<float[]> _receivedAudio = new();
+    private readonly List<AlignedWord> _receivedWords = new();
+    private readonly object _receivedLock = new();
+    private int _writtenChunks;
 
     // Mirrors PlaybackService.IsPlaying so the AXAML CanExecute can
     // re-query. PlaybackService raises IsPlayingChanged; the handler
@@ -226,13 +238,12 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         _lastAudioPath = null;
         ChunksDone = 0;
         TotalChunks = 0;
-        // Accumulators for the partial-on-cancel path. The alignment
-        // chain emits chunks in input order so a List append is correct;
-        // we lock just for the memory barrier between the chain thread
-        // and the catch handler.
-        var receivedAudio = new List<float[]>();
-        var receivedWords = new List<AlignedWord>();
-        var receivedLock = new object();
+        lock (_receivedLock)
+        {
+            _receivedAudio.Clear();
+            _receivedWords.Clear();
+        }
+        _writtenChunks = 0;
         _synthCts?.Dispose();
         _synthCts = new CancellationTokenSource();
         var token = _synthCts.Token;
@@ -274,11 +285,18 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
                             StatusMessage = $"Playback failed: {ex.Message}");
                     }
 
-                    // Accumulate for the partial-WAV-on-cancel path.
-                    lock (receivedLock)
+                    // Accumulate for replay-from-beginning. Play() reads
+                    // these to write a partial WAV on demand.
+                    bool firstChunk;
+                    lock (_receivedLock)
                     {
-                        receivedAudio.Add(ev.Audio24k);
-                        if (ev.Words.Count > 0) receivedWords.AddRange(ev.Words);
+                        firstChunk = _receivedAudio.Count == 0;
+                        _receivedAudio.Add(ev.Audio24k);
+                        if (ev.Words.Count > 0) _receivedWords.AddRange(ev.Words);
+                    }
+                    if (firstChunk)
+                    {
+                        Dispatcher.UIThread.Post(() => HasSynthesizedAudio = true);
                     }
 
                     // Word adds touch the ObservableCollection → must go
@@ -310,7 +328,11 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
             _lastAlignment = result.Alignment;
             _lastAudioPath = result.AudioPath;
-            HasSynthesizedAudio = true;
+            // The service already wrote the WAV with ALL received chunks,
+            // so cache the count to skip the rewrite if Play is clicked
+            // without any new chunks since.
+            lock (_receivedLock) _writtenChunks = _receivedAudio.Count;
+            HasSynthesizedAudio = true;  // idempotent — set on first chunk too
             // Tell the playback service no more samples are coming so it
             // can fire PlaybackStopped naturally when the buffer drains.
             if (streamingStarted) _playback.EndOfStream();
@@ -319,48 +341,14 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         }
         catch (OperationCanceledException)
         {
-            // Persist whatever chunks landed so the user can still play
-            // back what was synthesized before they hit Cancel. Without
-            // this, Cancel would discard a long-running partial result.
-            List<float[]> audioSnapshot;
-            List<AlignedWord> wordsSnapshot;
-            lock (receivedLock)
-            {
-                audioSnapshot = new List<float[]>(receivedAudio);
-                wordsSnapshot = new List<AlignedWord>(receivedWords);
-            }
-            string outWavCancelled = Path.Combine(Path.GetTempPath(),
-                $"chatterbox_app_{DateTime.UtcNow:yyyyMMddHHmmss}_partial.wav");
-            if (audioSnapshot.Count > 0)
-            {
-                try
-                {
-                    SynthesisService.WriteWavFromChunks(outWavCancelled, audioSnapshot,
-                        ChatterboxConstants.S3GenSr);
-                    int totalSamples = 0;
-                    foreach (var c in audioSnapshot) totalSamples += c.Length;
-                    double duration = totalSamples / (double)ChatterboxConstants.S3GenSr;
-                    _lastAudioPath = outWavCancelled;
-                    _lastAlignment = new AlignmentSidecar
-                    {
-                        AudioPath = outWavCancelled,
-                        SampleRate = ChatterboxConstants.S3GenSr,
-                        AudioDurationSeconds = duration,
-                        Aligner = string.IsNullOrWhiteSpace(NfaBundleDir) ? "none (partial)" : "nemo_nfa (partial)",
-                        Words = wordsSnapshot,
-                    };
-                    HasSynthesizedAudio = true;
-                    StatusMessage = $"Cancelled — saved {audioSnapshot.Count} chunk(s), {duration:F2}s playable.";
-                }
-                catch (Exception saveEx)
-                {
-                    StatusMessage = $"Cancelled; partial save failed: {saveEx.Message}";
-                }
-            }
-            else
-            {
-                StatusMessage = "Synthesis cancelled.";
-            }
+            // Play() will write a partial WAV on demand from the
+            // accumulated chunks — no need to write here. Just leave
+            // _lastAudioPath null so Play knows to (re)write.
+            int chunksReceived;
+            lock (_receivedLock) chunksReceived = _receivedAudio.Count;
+            StatusMessage = chunksReceived > 0
+                ? $"Cancelled — {chunksReceived} chunk(s) ready to play."
+                : "Synthesis cancelled.";
         }
         catch (Exception ex)
         {
@@ -398,8 +386,60 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     [RelayCommand(CanExecute = nameof(CanPlay))]
     private void Play()
     {
-        // Replay path: synthesis is done, audio is on disk. Use
-        // SeekIntoFile(0) to play the saved WAV from the beginning.
+        // Snapshot the current received-chunks state. If new chunks
+        // landed since the last WAV write (or no WAV exists yet — e.g.
+        // user clicked Stop mid-synth then Play), write a fresh WAV
+        // including everything received so far.
+        List<float[]>? snapshot = null;
+        List<AlignedWord>? wordsSnap = null;
+        lock (_receivedLock)
+        {
+            if (_receivedAudio.Count == 0) return;
+            bool wavStale = _lastAudioPath is null
+                || !File.Exists(_lastAudioPath)
+                || _writtenChunks != _receivedAudio.Count;
+            if (wavStale)
+            {
+                snapshot = new List<float[]>(_receivedAudio);
+                wordsSnap = new List<AlignedWord>(_receivedWords);
+            }
+        }
+
+        // Stop any in-progress streaming playback so SeekIntoFile gets
+        // a clean backend. If we're mid-synth and the user clicked
+        // Play, subsequent chunks won't auto-play (streamingStarted
+        // stays latched in the synth lambda) — that's intentional, the
+        // user explicitly asked for replay.
+        _playback.Stop();
+
+        if (snapshot is not null)
+        {
+            var outWav = Path.Combine(Path.GetTempPath(),
+                $"chatterbox_app_{DateTime.UtcNow:yyyyMMddHHmmss}_play.wav");
+            try
+            {
+                SynthesisService.WriteWavFromChunks(outWav, snapshot, ChatterboxConstants.S3GenSr);
+                int totalSamples = 0;
+                foreach (var c in snapshot) totalSamples += c.Length;
+                double duration = totalSamples / (double)ChatterboxConstants.S3GenSr;
+                _lastAudioPath = outWav;
+                _lastAlignment = new AlignmentSidecar
+                {
+                    AudioPath = outWav,
+                    SampleRate = ChatterboxConstants.S3GenSr,
+                    AudioDurationSeconds = duration,
+                    Aligner = string.IsNullOrWhiteSpace(NfaBundleDir) ? "none" : "nemo_nfa",
+                    Words = wordsSnap!,
+                };
+                _writtenChunks = snapshot.Count;
+            }
+            catch (Exception ex)
+            {
+                StatusMessage = $"Save for playback failed: {ex.Message}";
+                return;
+            }
+        }
+
         if (_lastAudioPath is null || _lastAlignment is null) return;
         try
         {
@@ -409,10 +449,11 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         catch (Exception ex) { StatusMessage = $"Play failed: {ex.Message}"; }
     }
 
-    // Play is enabled when we have audio AND nothing is currently
-    // playing/synthesizing — i.e. not while a previous Synthesize is
-    // still streaming and not while the existing playback is active.
-    private bool CanPlay() => HasSynthesizedAudio && !IsBusy && !IsPlayingBack
+    // Play is enabled whenever we have at least one chunk AND audio
+    // isn't currently playing. IsBusy is intentionally NOT a gate —
+    // mid-synth Play replays the partial-so-far, which the user feedback
+    // confirmed is the natural mental model after clicking Stop.
+    private bool CanPlay() => HasSynthesizedAudio && !IsPlayingBack
         && _playback.CanPlayOnThisPlatform;
 
     /// <summary>Stops audio playback. Immediate — does NOT cancel any
