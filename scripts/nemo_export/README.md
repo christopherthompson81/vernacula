@@ -138,6 +138,11 @@ the wrapper modes (`wrapper` / `custom` / `dft`) behave identically. The
 script delegates via `from export_parakeet_nemo_to_onnx import
 export_preprocessor`.
 
+**Licensing**: the recommended NVIDIA checkpoints (`stt_en_fastconformer_*`,
+`stt_en_conformer_ctc_*`) are CC-BY-4.0 on HuggingFace. Vernacula doesn't
+redistribute them (users supply their own `.nemo`), but if you publish the
+exported ONNX bundle the attribution requirement carries through.
+
 ## Sortformer Export
 
 ```bash

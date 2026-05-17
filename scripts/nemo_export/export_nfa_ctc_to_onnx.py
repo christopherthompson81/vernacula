@@ -161,6 +161,7 @@ def ensure_output_dir(path: Path, overwrite: bool) -> None:
                 "ctc-model.onnx",
                 "ctc-model.onnx.data",
                 "vocab.txt",
+                "tokenizer.model",
                 "config.json",
                 "export-report.json",
             )
@@ -190,23 +191,43 @@ def replace_if_present(src: Path, dst: Path) -> None:
 
 
 def consolidate_external_data(onnx_path: Path) -> None:
-    """Rewrite the ONNX so all initializers live in <onnx_path>.data.
-    NeMo's default export may scatter weights across multiple data files
-    depending on size; the C# consumer wants a single sidecar."""
+    """Re-save an ONNX model so all external tensors live in a single sidecar file.
+
+    Behavior mirrors export_parakeet_nemo_to_onnx.consolidate_external_data:
+    no-op when already clean (single sidecar), full re-save + stale per-tensor
+    cleanup otherwise. size_threshold=0 so every initializer goes external
+    (matches Parakeet) — keeps the .onnx file small and the .data file the
+    sole weight carrier.
+    """
     import onnx
 
-    model = onnx.load(str(onnx_path), load_external_data=True)
-    data_target = onnx_path.with_suffix(onnx_path.suffix + ".data")
-    cleanup_target(data_target)
+    model = onnx.load(str(onnx_path))
+    locations: set[str] = set()
+    for t in model.graph.initializer:
+        for kv in t.external_data:
+            if kv.key == "location":
+                locations.add(kv.value)
+
+    sidecar_name = onnx_path.name + ".data"
+    already_clean = len(locations) == 0 or (len(locations) == 1 and sidecar_name in locations)
+    if already_clean:
+        return
+
+    print(f"  Consolidating {len(locations)} external data files → {sidecar_name} …")
     onnx.save_model(
         model,
         str(onnx_path),
         save_as_external_data=True,
         all_tensors_to_one_file=True,
-        location=data_target.name,
-        size_threshold=1024,
-        convert_attribute=False,
+        location=sidecar_name,
+        size_threshold=0,
     )
+
+    parent = onnx_path.parent
+    for loc in locations:
+        stale = parent / loc
+        if stale.exists() and stale.name != sidecar_name:
+            stale.unlink()
 
 
 # ── Hybrid-vs-pure CTC handling ─────────────────────────────────────────────
@@ -267,18 +288,16 @@ def export_ctc_graph(model: Any, output_dir: Path, opset: int) -> None:
             output_dir / "ctc-model.onnx.data",
         )
     else:
-        # Split export attempt (hybrid model didn't honor the strategy
-        # switch?). Try to find the encoder file.
-        encoder_src = output_dir / "encoder-nfa_ctc.onnx"
-        if encoder_src.exists():
-            raise RuntimeError(
-                "NeMo emitted a SPLIT export (encoder-nfa_ctc.onnx) instead of a single "
-                "CTC graph. This usually means the hybrid-model CTC switch didn't take. "
-                "Check the model's change_decoding_strategy support, or try a pure-CTC "
-                "checkpoint (e.g. stt_en_fastconformer_ctc_large)."
-            )
+        # NeMo didn't write to the stub path. Most common failure: hybrid
+        # model didn't honor the CTC switch and emitted a SPLIT export
+        # (encoder + decoder_joint). List what actually appeared so the
+        # next person diagnosing this doesn't have to ls the dir.
+        artifacts = sorted(p.name for p in output_dir.glob("*nfa_ctc*"))
         raise RuntimeError(
-            "NeMo export did not produce nfa_ctc.onnx or any recognized split artifact."
+            f"NeMo export did not produce nfa_ctc.onnx. Found instead: {artifacts or '(nothing matching *nfa_ctc*)'}. "
+            "If you see encoder-nfa_ctc.onnx + decoder_joint-nfa_ctc.onnx, the hybrid-model "
+            "CTC switch didn't take — try a pure-CTC checkpoint (e.g. stt_en_fastconformer_ctc_large) "
+            "or report the NeMo version that produced this output."
         )
 
     consolidate_external_data(target)
@@ -305,7 +324,9 @@ def export_preprocessor_via_parakeet(
     AudioToMelSpectrogramPreprocessor."""
     import sys
 
-    sys.path.insert(0, str(Path(__file__).parent))
+    helper_dir = str(Path(__file__).parent)
+    if helper_dir not in sys.path:
+        sys.path.insert(0, helper_dir)
     from export_parakeet_nemo_to_onnx import export_preprocessor  # type: ignore[import-not-found]
 
     export_preprocessor(
@@ -372,8 +393,76 @@ class ExportMetadata:
     device: str
     opset: int
     sample_rate: int | None
+    # The Viterbi DP in the C# follow-up converts frame indices to wall-clock
+    # timestamps as `frame_index * frame_shift_seconds * encoder_subsampling`.
+    # Captured at export time from the live NeMo model so the C# side doesn't
+    # have to re-derive them by probing the preprocessor / encoder ONNX shapes.
+    frame_shift_seconds: float | None
+    encoder_subsampling: int | None
     preprocessor_exported: bool
+    tokenizer_model_exported: bool
     notes: list[str]
+
+
+def extract_frame_timing(model: Any) -> tuple[float | None, int | None]:
+    """Read frame shift (seconds) + encoder subsampling factor from the
+    live NeMo model. Returns (None, None) when either can't be determined —
+    the C# side will warn rather than crash in that case."""
+    frame_shift = None
+    subsampling = None
+    preproc = getattr(model, "preprocessor", None)
+    if preproc is not None:
+        featurizer = getattr(preproc, "featurizer", None)
+        sr = getattr(preproc, "_sample_rate", None)
+        hop = getattr(featurizer, "hop_length", None) if featurizer is not None else None
+        if sr and hop:
+            frame_shift = float(hop) / float(sr)
+    encoder_cfg = getattr(getattr(model, "cfg", None), "encoder", None)
+    if encoder_cfg is not None:
+        # FastConformer / Conformer typically expose subsampling_factor;
+        # sometimes named differently (e.g. "subsampling" or "stride_factor").
+        for attr in ("subsampling_factor", "subsampling", "stride_factor"):
+            val = getattr(encoder_cfg, attr, None)
+            if val is not None:
+                try:
+                    subsampling = int(val)
+                    break
+                except (TypeError, ValueError):
+                    pass
+    return frame_shift, subsampling
+
+
+def export_tokenizer_model(model: Any, output_dir: Path) -> bool:
+    """Copy the sentencepiece tokenizer model file alongside vocab.txt so
+    the C# Viterbi side can tokenize reference transcripts with the exact
+    same encoding the CTC model was trained on. vocab.txt alone is
+    insufficient — it lists tokens but not the byte→token encoding rules.
+
+    Returns True if a tokenizer.model file was written."""
+    tokenizer = getattr(model, "tokenizer", None)
+    if tokenizer is None:
+        return False
+    # NeMo's BPE tokenizer wraps a SentencePieceProcessor at .tokenizer
+    # and exposes the source .model path at one of these attrs depending
+    # on NeMo version.
+    candidates = []
+    for attr in ("tokenizer_model_path", "model_path", "vocab_path"):
+        path = getattr(tokenizer, attr, None)
+        if path:
+            candidates.append(Path(str(path)))
+    inner = getattr(tokenizer, "tokenizer", None)
+    if inner is not None:
+        for attr in ("model_file", "model_path"):
+            path = getattr(inner, attr, None)
+            if path:
+                candidates.append(Path(str(path)))
+    for src in candidates:
+        if src.exists() and src.suffix == ".model":
+            dst = output_dir / "tokenizer.model"
+            cleanup_target(dst)
+            shutil.copyfile(str(src), str(dst))
+            return True
+    return False
 
 
 def write_config(model: Any, omega_conf: Any, output_dir: Path, metadata: ExportMetadata) -> None:
@@ -448,6 +537,23 @@ def main() -> None:
             )
 
     write_vocab(model, output_dir)
+    tokenizer_model_exported = export_tokenizer_model(model, output_dir)
+    if not tokenizer_model_exported:
+        notes.append(
+            "Could not locate the sentencepiece tokenizer .model file inside the loaded "
+            "NeMo model. The C# Viterbi side will need this to tokenize reference "
+            "transcripts with the same encoding the CTC model was trained on — without "
+            "it, only vocab.txt's token strings are available. Check NeMo version / "
+            "tokenizer attrs if this matters for your downstream consumer."
+        )
+
+    frame_shift_seconds, encoder_subsampling = extract_frame_timing(model)
+    if frame_shift_seconds is None or encoder_subsampling is None:
+        notes.append(
+            f"Could not fully determine frame timing (frame_shift={frame_shift_seconds}, "
+            f"subsampling={encoder_subsampling}). The C# Viterbi will need both to convert "
+            "frame indices to wall-clock timestamps."
+        )
 
     cfg_target = getattr(model, "cfg", None)
     metadata = ExportMetadata(
@@ -458,7 +564,10 @@ def main() -> None:
         device=device,
         opset=args.opset,
         sample_rate=int(getattr(getattr(model, "preprocessor", None), "_sample_rate", 0) or 0) or None,
+        frame_shift_seconds=frame_shift_seconds,
+        encoder_subsampling=encoder_subsampling,
         preprocessor_exported=preprocessor_exported,
+        tokenizer_model_exported=tokenizer_model_exported,
         notes=notes,
     )
 
@@ -471,6 +580,7 @@ def main() -> None:
         "ctc-model.onnx.data",
         "nemo128.onnx",
         "vocab.txt",
+        "tokenizer.model",
         "config.json",
         "export-report.json",
     ):

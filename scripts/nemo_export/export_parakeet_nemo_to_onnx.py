@@ -249,6 +249,9 @@ def export_rnnt_pair(model: Any, output_dir: Path, opset: int) -> None:
     consolidate_external_data(output_dir / "decoder_joint-model.onnx")
 
 
+# Also consumed by export_nfa_ctc_to_onnx.py via sys.path import — the NeMo
+# preprocessor is identical for CTC and RNNT/TDT models. Keep this signature
+# stable (or move both to a shared module when a third consumer arrives).
 def export_preprocessor(
     model: Any,
     torch: Any,
