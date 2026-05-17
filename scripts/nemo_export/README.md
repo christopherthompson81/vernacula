@@ -10,6 +10,7 @@ It now covers both models in your pipeline:
 ## Files
 
 - `export_parakeet_nemo_to_onnx.py`: exports Parakeet `.nemo` to the split ONNX package used by Vernacula.
+- `export_nfa_ctc_to_onnx.py`: exports a NeMo CTC ASR `.nemo` (pure CTC or hybrid RNNT+CTC with the CTC head selected) to the ONNX bundle the C# Viterbi forced aligner consumes (issue #36 / Chatterbox Stage 1 #9).
 - `export_sortformer_nemo_to_onnx.py`: exports streaming Sortformer `.nemo` to the same six-input / three-output ONNX contract used by Vernacula's inference code.
 - `export_silero_vad_to_onnx.py`: exports Silero VAD to ONNX.
 - `benchmark_sortformer_rtf.py`: benchmarks Sortformer NeMo-vs-ONNX diarization RTF on CPU or CUDA.
@@ -98,6 +99,50 @@ Batching notes:
 - `nemo128.onnx` currently exports successfully on this toolchain, but in practice still behaves
   like a batch-1 preprocessor export. That means post-diarization encoder batching is available
   today, while full waveform-to-text batching still needs more export work.
+
+## NFA (CTC) Export
+
+NFA — NeMo Forced Aligner — is the algorithm that combines a CTC ASR
+model with a Viterbi DP pass to assign known text to audio frames. This
+script exports the model side; the Viterbi side is a follow-up C# PR
+(issue #36 / Chatterbox Stage 1 #9).
+
+```bash
+python scripts/nemo_export/export_nfa_ctc_to_onnx.py \
+  --nemo ~/models/stt_en_fastconformer_hybrid_large_pc.nemo \
+  --output-dir ~/models/nfa_ctc_onnx \
+  --opset 17
+```
+
+Recommended source checkpoints (any of these work):
+
+- `stt_en_fastconformer_hybrid_large_pc` — NFA's own quickstart default.
+  Hybrid RNNT+CTC; the export script switches decoding strategy to CTC
+  before invoking `model.export()` so only the CTC head ships.
+- `stt_en_fastconformer_ctc_large` — pure CTC, simpler export path.
+- `stt_en_conformer_ctc_large` — older / smaller.
+
+Output bundle:
+
+| File | Purpose |
+|---|---|
+| `nemo128.onnx` | log-mel preprocessor (same shape as Parakeet's; reusable across both bundles — pass `--skip-preprocessor` if you already have it). In: `waveforms [B, samples]` + `waveforms_lens [B]`. Out: `features [B, 80, T_feat]` + `features_lens [B]`. |
+| `ctc-model.onnx` (+ optional `.data` sidecar if weights spill out) | encoder + CTC projection. In: `audio_signal [B, 80, T_feat]` + `length [B]`. **Out: `logprobs [B, T_enc, V+1]`** — single output, log-softmax over vocab+blank. T_enc per batch elem = `ceil(features_lens[b] / encoder_subsampling)`; subsampling factor is in `export-report.json`. |
+| `vocab.txt` | sentencepiece vocab, one `token id` per line, plus the CTC blank token at id `len(vocab)` (so blank_id = V) |
+| `tokenizer.model` | sentencepiece model bytes (the byte→token encoding rules). Required by the C# Viterbi side to tokenize reference transcripts with the same encoding the CTC model was trained on. Extracted via the SP processor's `serialized_model_proto()`. |
+| `config.json` | export metadata + full NeMo `cfg` dump |
+| `export-report.json` | concise summary: hybrid-switched flag, `frame_shift_seconds`, `encoder_subsampling`, `sample_rate`, what got exported, any failure notes. The C# Viterbi reads `frame_shift_seconds * encoder_subsampling` to convert frame indices → wall-clock timestamps. |
+
+The preprocessor export reuses `export_parakeet_nemo_to_onnx.py`'s
+helpers — same NeMo `AudioToMelSpectrogramPreprocessor` underneath, so
+the wrapper modes (`wrapper` / `custom` / `dft`) behave identically. The
+script delegates via `from export_parakeet_nemo_to_onnx import
+export_preprocessor`.
+
+**Licensing**: the recommended NVIDIA checkpoints (`stt_en_fastconformer_*`,
+`stt_en_conformer_ctc_*`) are CC-BY-4.0 on HuggingFace. Vernacula doesn't
+redistribute them (users supply their own `.nemo`), but if you publish the
+exported ONNX bundle the attribution requirement carries through.
 
 ## Sortformer Export
 
