@@ -38,9 +38,20 @@ public sealed class Vocoder : IDisposable
 
     public VocoderMode Mode { get; }
 
+    /// <summary>
+    /// True iff all three split graphs (flow_encoder, cfm_estimator,
+    /// mel2wav) are loaded. Always true in <see cref="VocoderMode.Split"/>;
+    /// also true in <see cref="VocoderMode.Merged"/> when the split
+    /// artifacts are present on disk (so <see cref="SynthesizeBatch"/>
+    /// can fall back to them). False in monolithic mode or when split
+    /// artifacts are missing.
+    /// </summary>
+    public bool SupportsBatched => _flowEnc is not null && _cfmEst is not null && _m2w is not null;
+
     /// <summary>Auto-detect the available cond-decoder layout in <paramref name="onnxDir"/> and load.</summary>
     /// <param name="onLoad">Optional callback fired once per session loaded
-    /// (1× for Merged/Monolithic, 3× for Split).</param>
+    /// (1× for Merged-only or Monolithic; 3× for Split-only; 4× for
+    /// Merged + split fallback available).</param>
     public Vocoder(string onnxDir, ExecutionProvider ep, SessionLoadObserver? onLoad = null)
     {
         bool mergedAvail = File.Exists(Path.Combine(onnxDir, "conditional_decoder_loop.onnx"));
@@ -52,6 +63,17 @@ public sealed class Vocoder : IDisposable
         {
             Mode = VocoderMode.Merged;
             _merged = SessionLoader.LoadAndReport(Path.Combine(onnxDir, "conditional_decoder_loop.onnx"), ep, onLoad);
+            // ALSO load split graphs when present so SynthesizeBatch can
+            // fall back to them: the merged graph baked CFG-doubling at
+            // trace time and rejects B>1 (Run 6a in
+            // docs/chatterbox_perf_investigation.md), but the split
+            // cfm_estimator accepts B>2 (CFG-doubled) cleanly.
+            if (splitAvail)
+            {
+                _flowEnc = SessionLoader.LoadAndReport(Path.Combine(onnxDir, "flow_encoder.onnx"), ep, onLoad);
+                _cfmEst = SessionLoader.LoadAndReport(Path.Combine(onnxDir, "cfm_estimator.onnx"), ep, onLoad);
+                _m2w = SessionLoader.LoadAndReport(Path.Combine(onnxDir, "mel2wav.onnx"), ep, onLoad);
+            }
         }
         else if (splitAvail)
         {
@@ -198,6 +220,229 @@ public sealed class Vocoder : IDisposable
         var r = new float[a.Length + b.Length];
         Array.Copy(a, 0, r, 0, a.Length);
         Array.Copy(b, 0, r, a.Length, b.Length);
+        return r;
+    }
+
+    /// <summary>
+    /// Batched vocoder synthesis. Inputs: B parallel chunks each with
+    /// its own speech_tokens (same length per chunk for the MVP), one
+    /// shared speaker_embeddings, one shared speaker_features. Returns
+    /// B waveforms in input order.
+    ///
+    /// Always uses the SPLIT 3-graph path even when
+    /// <see cref="Mode"/> == <see cref="VocoderMode.Merged"/>, because
+    /// the merged conditional_decoder_loop.onnx baked CFG-doubling at
+    /// trace time and rejects B>1 (cfm_body Concat expects dim 2). The
+    /// split <c>cfm_estimator.onnx</c> accepts B>2 (CFG-doubled batch)
+    /// cleanly — see <c>docs/chatterbox_perf_investigation.md</c>
+    /// Run 6a for the probe data.
+    ///
+    /// Throws if <see cref="SupportsBatched"/> is false (no split
+    /// artifacts in the model directory). Caller's recourse: re-export
+    /// with <c>--split-cond-decoder</c> (or <c>--merge-cond-decoder</c>
+    /// which implies it).
+    ///
+    /// MVP constraint: all <paramref name="speechTokensPerChunk"/>
+    /// entries must have the same length. Phase 2 will accept ragged
+    /// inputs (pad + mask).
+    /// </summary>
+    public float[][] SynthesizeBatch(
+        IReadOnlyList<long[]> speechTokensPerChunk,
+        DenseTensor<float> speakerEmbeddings,
+        DenseTensor<float> speakerFeatures)
+    {
+        if (!SupportsBatched)
+            throw new InvalidOperationException(
+                "Batched vocoder synthesis requires the split cond-decoder graphs "
+                + "(flow_encoder, cfm_estimator, mel2wav) which were not found in "
+                + "the model directory. Re-export with --split-cond-decoder.");
+
+        int B = speechTokensPerChunk.Count;
+        if (B == 0) return Array.Empty<float[]>();
+        if (B == 1)
+        {
+            // Trivial case — defer to the well-tested merged or split path.
+            var wav = Synthesize(speechTokensPerChunk[0], speakerEmbeddings, speakerFeatures);
+            return new[] { wav };
+        }
+
+        int tTok = speechTokensPerChunk[0].Length;
+        for (int b = 0; b < B; b++)
+        {
+            if (speechTokensPerChunk[b].Length != tTok)
+                throw new ArgumentException(
+                    $"All speech_tokens chunks must have the same length (MVP); got {speechTokensPerChunk[b].Length} vs {tTok} at index {b}.");
+        }
+
+        const int MelBins = ChatterboxConstants.MelBins;
+        const int PromptLen = ChatterboxConstants.PromptLen;
+        const int CfmSteps = ChatterboxConstants.CfmSteps;
+        const float CfgRate = ChatterboxConstants.CfgRate;
+
+        // Build B-batched flow_encoder inputs.
+        var speechTokensB = new long[B * tTok];
+        for (int b = 0; b < B; b++)
+            Array.Copy(speechTokensPerChunk[b], 0, speechTokensB, b * tTok, tTok);
+
+        var spkEmbArr = speakerEmbeddings.ToArray();
+        var spkFeatArr = speakerFeatures.ToArray();
+        // Replicate speaker_embeddings and speaker_features across B
+        // (one voice, many chunks).
+        int spkDim = speakerEmbeddings.Dimensions[1];
+        var spkEmbB = new float[B * spkDim];
+        for (int b = 0; b < B; b++) Array.Copy(spkEmbArr, 0, spkEmbB, b * spkDim, spkDim);
+
+        int spkFeatLen = spkFeatArr.Length;
+        var spkFeatB = new float[B * spkFeatLen];
+        for (int b = 0; b < B; b++) Array.Copy(spkFeatArr, 0, spkFeatB, b * spkFeatLen, spkFeatLen);
+
+        // 1) flow_encoder at B
+        using var encOut = _flowEnc!.Run(new[]
+        {
+            NamedOnnxValue.CreateFromTensor("speech_tokens", new DenseTensor<long>(speechTokensB, new[] { B, tTok })),
+            NamedOnnxValue.CreateFromTensor("speaker_embeddings",
+                new DenseTensor<float>(spkEmbB, new[] { B, spkDim })),
+            NamedOnnxValue.CreateFromTensor("speaker_features",
+                new DenseTensor<float>(spkFeatB, speakerFeatures.Dimensions.ToArray() is var d
+                    ? new[] { B, d[1], d[2] } : throw new InvalidOperationException("speaker_features must be rank-3"))),
+        });
+        var encList = encOut.ToList();
+        var muT = encList[0].AsTensor<float>();
+        int tMel = muT.Dimensions[2];
+
+        float[] mu = muT.ToArray();             // [B, MelBins, tMel]
+        float[] mask = encList[1].AsTensor<float>().ToArray();  // [B, 1, tMel]
+        float[] embed = encList[2].AsTensor<float>().ToArray(); // [B, MelBins]
+        float[] cond = encList[3].AsTensor<float>().ToArray();  // [B, MelBins, tMel]
+        float[] xRaw = encList[4].AsTensor<float>().ToArray();  // expected [B, MelBins, tMel]
+        // flow_encoder's `z` output is the CFM initial state. Run 6c
+        // discovered that the export's pinned-rand_noise patch (added in
+        // Run 11 of docs/chatterbox_investigation.md for parity-test
+        // reproducibility) makes z appear constant from the graph's
+        // perspective, so ORT emits it at [1, MelBins, tMel] regardless
+        // of input batch. We detect that case and replicate to
+        // [B, MelBins, tMel] manually. Per-batch-element noise is
+        // intentionally identical here (same initial seed across the
+        // batch); if we ever want per-element noise variation, that's a
+        // separate change to the export-side patch.
+        int perBatchElemSize = MelBins * tMel;
+        float[] x;
+        if (xRaw.Length == perBatchElemSize)
+        {
+            x = new float[B * perBatchElemSize];
+            for (int b = 0; b < B; b++) Array.Copy(xRaw, 0, x, b * perBatchElemSize, perBatchElemSize);
+        }
+        else if (xRaw.Length == B * perBatchElemSize)
+        {
+            x = xRaw;
+        }
+        else
+        {
+            throw new InvalidOperationException(
+                $"flow_encoder.onnx z output had unexpected length {xRaw.Length}; expected {perBatchElemSize} (B=1, will replicate) or {B * perBatchElemSize}.");
+        }
+
+        // 2) CFM solve loop. CFG-doubled along batch → [2*B, ...].
+        var tSpan = new float[CfmSteps + 1];
+        for (int i = 0; i <= CfmSteps; i++)
+        {
+            float linear = i / (float)CfmSteps;
+            tSpan[i] = 1.0f - MathF.Cos(linear * 0.5f * MathF.PI);
+        }
+        float t = tSpan[0];
+        float dt = tSpan[1] - tSpan[0];
+
+        int cfgB = 2 * B;
+        int muSize = MelBins * tMel;          // per-batch-elem
+        int maskSize = tMel;
+        int embedSize = MelBins;
+        int condSize = MelBins * tMel;
+
+        for (int step = 1; step <= CfmSteps; step++)
+        {
+            // Build CFG-doubled inputs: first B rows = cond, next B rows = uncond (zeros for mu/cond/spks).
+            var xIn = ReplicateCfg(x, B, muSize);              // [2B, MelBins, tMel]; both halves = x (mask gets x too in upstream conv)
+            var maskIn = ReplicateCfg(mask, B, maskSize);      // [2B, 1, tMel]; both halves = mask
+            var muIn = CfgZeroSecondHalf(mu, B, muSize);       // [2B, MelBins, tMel]; second half zeros
+            var condIn = CfgZeroSecondHalf(cond, B, condSize); // [2B, MelBins, tMel]; second half zeros
+            var spksIn = CfgZeroSecondHalf(embed, B, embedSize); // [2B, MelBins]; second half zeros
+            var tIn = new float[cfgB];
+            Array.Fill(tIn, t);
+
+            using var estOut = _cfmEst!.Run(new[]
+            {
+                NamedOnnxValue.CreateFromTensor("x_in",    new DenseTensor<float>(xIn,    new[] { cfgB, MelBins, tMel })),
+                NamedOnnxValue.CreateFromTensor("mask_in", new DenseTensor<float>(maskIn, new[] { cfgB, 1, tMel })),
+                NamedOnnxValue.CreateFromTensor("mu_in",   new DenseTensor<float>(muIn,   new[] { cfgB, MelBins, tMel })),
+                NamedOnnxValue.CreateFromTensor("t_in",    new DenseTensor<float>(tIn,    new[] { cfgB })),
+                NamedOnnxValue.CreateFromTensor("spks_in", new DenseTensor<float>(spksIn, new[] { cfgB, MelBins })),
+                NamedOnnxValue.CreateFromTensor("cond_in", new DenseTensor<float>(condIn, new[] { cfgB, MelBins, tMel })),
+            });
+            var dphi = estOut.First().AsTensor<float>().ToArray();  // [2B, MelBins, tMel]
+            int perBatchElem = muSize;
+            float a = 1.0f + CfgRate;
+            // CFG combine + Euler step, per batch element.
+            for (int b = 0; b < B; b++)
+            {
+                int condOff = b * perBatchElem;
+                int uncondOff = (B + b) * perBatchElem;
+                for (int i = 0; i < perBatchElem; i++)
+                {
+                    float c = dphi[condOff + i];
+                    float u = dphi[uncondOff + i];
+                    x[condOff + i] = x[condOff + i] + dt * (a * c - CfgRate * u);
+                }
+            }
+            t = tSpan[step];
+            if (step < CfmSteps) dt = tSpan[step + 1] - t;
+        }
+
+        // 3) Trim mel per batch element: drop first PromptLen frames along last dim.
+        int tTrim = tMel - PromptLen;
+        var feat = new float[B * MelBins * tTrim];
+        for (int b = 0; b < B; b++)
+        {
+            int srcBaseB = b * MelBins * tMel;
+            int dstBaseB = b * MelBins * tTrim;
+            for (int c = 0; c < MelBins; c++)
+            {
+                Array.Copy(x, srcBaseB + c * tMel + PromptLen,
+                           feat, dstBaseB + c * tTrim, tTrim);
+            }
+        }
+
+        // 4) mel2wav at B → [B, num_samples]
+        using var m2wOut = _m2w!.Run(new[]
+        {
+            NamedOnnxValue.CreateFromTensor("mel", new DenseTensor<float>(feat, new[] { B, MelBins, tTrim })),
+        });
+        var wavTensor = m2wOut.First().AsTensor<float>();
+        int numSamples = wavTensor.Dimensions[1];
+        var wavFlat = wavTensor.ToArray();
+        var perChunkWavs = new float[B][];
+        for (int b = 0; b < B; b++)
+        {
+            perChunkWavs[b] = new float[numSamples];
+            Array.Copy(wavFlat, b * numSamples, perChunkWavs[b], 0, numSamples);
+        }
+        return perChunkWavs;
+    }
+
+    /// <summary>Stack `x` (length B*elemSize) on top of itself → 2B rows.</summary>
+    private static float[] ReplicateCfg(float[] x, int B, int elemSize)
+    {
+        var r = new float[2 * B * elemSize];
+        Array.Copy(x, 0, r, 0, B * elemSize);
+        Array.Copy(x, 0, r, B * elemSize, B * elemSize);
+        return r;
+    }
+
+    /// <summary>Stack `x` (length B*elemSize) on top of `B*elemSize` zeros → cond + uncond CFG pair.</summary>
+    private static float[] CfgZeroSecondHalf(float[] x, int B, int elemSize)
+    {
+        var r = new float[2 * B * elemSize];
+        Array.Copy(x, 0, r, 0, B * elemSize);
+        // second half stays default zero
         return r;
     }
 

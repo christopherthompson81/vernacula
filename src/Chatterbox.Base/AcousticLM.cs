@@ -60,6 +60,22 @@ public sealed class AcousticLM : IDisposable
     /// reports false (and won't try the CUDA-only IoBinding path).
     /// </summary>
     private readonly bool _effectiveCuda;
+    /// <summary>
+    /// True when the loaded LM graph expects fp16 <c>inputs_embeds</c> /
+    /// <c>past_key_values.*</c> and emits fp16 <c>logits</c> / <c>present.*</c>.
+    /// Detected from session input metadata at construction time. Drives
+    /// the dtype-aware OrtValue/NamedOnnxValue construction in all four
+    /// rollout paths (single+batched × IoBinding+Basic). Run 9 result:
+    /// true-fp16 KV cache eliminates the boundary Casts that hurt Run 8a.
+    ///
+    /// Invariant: <c>embed_tokens.onnx</c> is assumed to stay fp32 (only
+    /// the LM is quantized by quantize_lm.py). <see cref="EmbedOne"/> and
+    /// <see cref="EmbedBatch"/> read its output via
+    /// <c>.AsTensor&lt;float&gt;().ToArray()</c>; an fp16 embed graph would
+    /// throw an unhelpful type error there. If we ever quantize embeds too,
+    /// both helpers need the same dtype-aware treatment as the LM.
+    /// </summary>
+    private readonly bool _lmFp16;
 
     /// <summary>Load both graphs from disk.</summary>
     /// <param name="onLoad">Optional callback fired once per session (embed_tokens, then language_model).</param>
@@ -71,7 +87,12 @@ public sealed class AcousticLM : IDisposable
         // IoBinding actually fires); embed_tokens uses plain Run regardless.
         _lm = SessionLoader.LoadAndReport(languageModelPath, ep, onLoad, out var lmUsedCuda);
         _effectiveCuda = lmUsedCuda;
+        _lmFp16 = _lm.InputMetadata.TryGetValue("inputs_embeds", out var iemd)
+                  && iemd.ElementDataType == TensorElementType.Float16;
     }
+
+    /// <summary>True when the LM expects fp16 floats (KV cache + inputs_embeds + logits).</summary>
+    public bool LmIsFloat16 => _lmFp16;
 
     /// <summary>
     /// Run the LM autoregressively. Returns generated tokens including the
@@ -136,6 +157,402 @@ public sealed class AcousticLM : IDisposable
     }
 
     /// <summary>
+    /// Result of <see cref="GenerateBatch"/>: per-element rollouts in
+    /// input order, plus the wall-clock steps actually run (the inner
+    /// loop runs until all elements emit STOP or maxSteps is hit, so
+    /// individual elements may have completed earlier).
+    /// </summary>
+    public sealed record BatchedAcousticLmResult(
+        IReadOnlyList<AcousticLmResult> PerChunkResults,
+        int Steps);
+
+    /// <summary>
+    /// Generate B chunks concurrently through a single batched LM
+    /// rollout. Reaps the amortization benefit measured in Run 3 of
+    /// <c>docs/chatterbox_perf_investigation.md</c> — at B=4 on fp32,
+    /// per-batch-element step time drops from 14.0 ms (B=1) to 7.8 ms,
+    /// translating to ~31% wall reduction per chunk in long-form synth.
+    ///
+    /// MVP constraints (Phase 1 — Phase 2 will relax both):
+    ///   - All elements must share the same text-prompt length and
+    ///     the same cond_emb sequence length. Caller pads in advance
+    ///     if needed (chunk the text uniformly to keep this honest).
+    ///   - Inner loop runs until ALL elements have emitted STOP_SPEECH
+    ///     or maxSteps is hit; doesn't shrink the active batch as
+    ///     elements complete early. Elements that finished early
+    ///     waste their slot in subsequent steps. This is the simplest
+    ///     correct implementation; per-element batch shrinking is a
+    ///     follow-up if it bites.
+    ///   - Always uses the basic Run path (no IoBinding) at B&gt;1 until
+    ///     <paramref name="useIoBinding"/> is wired to the batched
+    ///     IoBinding loop. See <c>RunBatchedLmLoopIoBinding</c>.
+    /// </summary>
+    /// <param name="useIoBinding">
+    /// Null (default) → auto-detect from the LM session's effective EP,
+    /// matching <see cref="Generate"/>'s rule (IoBinding when CUDA-backed).
+    /// </param>
+    public BatchedAcousticLmResult GenerateBatch(
+        IReadOnlyList<DenseTensor<float>> condEmbs,
+        IReadOnlyList<long[]> textTokenIdsPerChunk,
+        bool? useIoBinding = null,
+        float exaggeration = ChatterboxConstants.DefaultExaggeration,
+        int maxSteps = ChatterboxConstants.DefaultMaxLmSteps,
+        float repetitionPenalty = ChatterboxConstants.DefaultRepetitionPenalty)
+    {
+        bool resolvedIoBinding = useIoBinding ?? _effectiveCuda;
+        if (resolvedIoBinding && !_effectiveCuda)
+            throw new InvalidOperationException(
+                "GenerateBatch(useIoBinding=true) requires the LM session to be CUDA-backed.");
+
+        // Layer/head dims used only inside the dispatched loop bodies.
+        const int LlmHidden = ChatterboxConstants.LlmHidden;
+
+        int B = condEmbs.Count;
+        if (B == 0 || textTokenIdsPerChunk.Count != B)
+            throw new ArgumentException(
+                $"condEmbs ({B}) and textTokenIdsPerChunk ({textTokenIdsPerChunk.Count}) must be same non-zero length.");
+
+        int sText = textTokenIdsPerChunk[0].Length;
+        int sCond = condEmbs[0].Dimensions[1];
+        for (int b = 0; b < B; b++)
+        {
+            if (textTokenIdsPerChunk[b].Length != sText)
+                throw new ArgumentException(
+                    $"All chunks must have same text-prompt length (MVP); got {textTokenIdsPerChunk[b].Length} vs {sText} at index {b}.");
+            if (condEmbs[b].Dimensions[1] != sCond)
+                throw new ArgumentException(
+                    $"All cond_embs must have same sequence dim (MVP); got {condEmbs[b].Dimensions[1]} vs {sCond} at index {b}.");
+        }
+
+        // ── B-batched text embeddings via a single embed_tokens call ──
+        var idsB = new long[B * sText];
+        var posB = new long[B * sText];
+        for (int b = 0; b < B; b++)
+        {
+            Array.Copy(textTokenIdsPerChunk[b], 0, idsB, b * sText, sText);
+            for (int i = 0; i < sText; i++)
+                posB[b * sText + i] = textTokenIdsPerChunk[b][i] >= ChatterboxConstants.StartSpeechToken ? 0 : i - 1;
+        }
+        var exagB = new float[B];
+        Array.Fill(exagB, exaggeration);
+        using var embOut = _embed.Run(new[]
+        {
+            NamedOnnxValue.CreateFromTensor("input_ids", new DenseTensor<long>(idsB, new[] { B, sText })),
+            NamedOnnxValue.CreateFromTensor("position_ids", new DenseTensor<long>(posB, new[] { B, sText })),
+            NamedOnnxValue.CreateFromTensor("exaggeration", new DenseTensor<float>(exagB, new[] { B })),
+        });
+        var textEmbB = embOut.First().AsTensor<float>().ToArray();  // [B, sText, LlmHidden]
+
+        // ── Build inputs_embeds[B, sTotal, hidden] = concat(cond_emb[b], text_emb[b]) per row ──
+        // Long-form audiobook case: all B chunks share the same speaker, so
+        // condEmbs[0..B] reference the same tensor (cf. ChunkedSynthesizer.SynthesizeInGroups).
+        // ToArray()-once when so, otherwise per-element.
+        int sTotal = sCond + sText;
+        var inputsEmbeds = new float[B * sTotal * LlmHidden];
+        bool sharedCondEmb = true;
+        for (int b = 1; b < B; b++)
+            if (!ReferenceEquals(condEmbs[b], condEmbs[0])) { sharedCondEmb = false; break; }
+        float[]? sharedCondArr = sharedCondEmb ? condEmbs[0].ToArray() : null;
+        for (int b = 0; b < B; b++)
+        {
+            var condArr = sharedCondArr ?? condEmbs[b].ToArray();
+            Array.Copy(condArr, 0, inputsEmbeds, b * sTotal * LlmHidden, sCond * LlmHidden);
+            Array.Copy(textEmbB, b * sText * LlmHidden,
+                       inputsEmbeds, b * sTotal * LlmHidden + sCond * LlmHidden,
+                       sText * LlmHidden);
+        }
+
+        // ── State per element ──
+        var perTokens = new List<long>[B];
+        var doneAt = new int[B];
+        for (int b = 0; b < B; b++)
+        {
+            perTokens[b] = new List<long> { ChatterboxConstants.StartSpeechToken };
+            doneAt[b] = -1;
+        }
+
+        // ── Dispatch to the per-step rollout loop ─────────────────────
+        int actualSteps = resolvedIoBinding
+            ? RunBatchedLmLoopIoBinding(B, sTotal, inputsEmbeds, perTokens, doneAt, maxSteps, repetitionPenalty, exaggeration)
+            : RunBatchedLmLoopBasic(B, sTotal, inputsEmbeds, perTokens, doneAt, maxSteps, repetitionPenalty, exaggeration);
+
+        var perResults = new AcousticLmResult[B];
+        for (int b = 0; b < B; b++)
+            perResults[b] = new AcousticLmResult(perTokens[b], doneAt[b] >= 0 ? doneAt[b] + 1 : actualSteps);
+        return new BatchedAcousticLmResult(perResults, actualSteps);
+    }
+
+    /// <summary>
+    /// Batched LM rollout, basic Run path. Each step re-creates 2 + 60
+    /// NamedOnnxValue inputs (embeds, mask, 30 layers × {key,value}) and
+    /// host-roundtrips all KV outputs via <c>.ToArray()</c>. At full
+    /// 174-step rollout with B=4, this is roughly 3.2× slower than the
+    /// IoBinding sibling — see <c>docs/chatterbox_perf_investigation.md</c>
+    /// Runs 4 and 5 for the side-by-side numbers.
+    ///
+    /// Kept for CPU EP and as the verbatim semantic anchor for the
+    /// IoBinding path's correctness (both paths must produce
+    /// bit-identical token streams; verified via parity probe).
+    /// </summary>
+    private int RunBatchedLmLoopBasic(int B, int sTotal, float[] inputsEmbeds,
+        List<long>[] perTokens, int[] doneAt, int maxSteps,
+        float repetitionPenalty, float exaggeration)
+    {
+        const int LlmLayers = ChatterboxConstants.LlmLayers;
+        const int LlmKvHeads = ChatterboxConstants.LlmKvHeads;
+        const int LlmHeadDim = ChatterboxConstants.LlmHeadDim;
+        const int LlmHidden = ChatterboxConstants.LlmHidden;
+
+        var attentionMask = new long[B * sTotal];
+        Array.Fill(attentionMask, 1);
+        var pastKv = new float[LlmLayers * 2][];
+        var pastKvShape = new int[] { B, LlmKvHeads, 0, LlmHeadDim };
+        for (int k = 0; k < pastKv.Length; k++) pastKv[k] = [];
+
+        int actualSteps = 0;
+        for (int step = 0; step < maxSteps; step++)
+        {
+            actualSteps = step + 1;
+            int seqLen = step == 0 ? sTotal : 1;
+            var attnMaskPerB = attentionMask.Length / B;
+            var maskT = new DenseTensor<long>(attentionMask, new[] { B, attnMaskPerB });
+
+            var inputs = new List<NamedOnnxValue>(2 + 2 * LlmLayers)
+            {
+                MakeEmbedsNamedValue(inputsEmbeds, new[] { B, seqLen, LlmHidden }),
+                NamedOnnxValue.CreateFromTensor("attention_mask", maskT),
+            };
+            for (int layer = 0; layer < LlmLayers; layer++)
+            {
+                inputs.Add(MakePastKvNamedValue($"past_key_values.{layer}.key",
+                    pastKv[2 * layer], pastKvShape));
+                inputs.Add(MakePastKvNamedValue($"past_key_values.{layer}.value",
+                    pastKv[2 * layer + 1], pastKvShape));
+            }
+            using var output = _lm.Run(inputs);
+            var outList = output.ToList();
+            // Logits → fp32 array via dtype-aware reader.
+            var logitsArr = PresentToFloatArray(outList[0]);
+            var logitsDims = PresentDims(outList[0]);
+            int vocab = logitsDims[2];
+            int outSeqLen = logitsDims[1];
+
+            var nextTokensFlat = ArgmaxBatchedLastRow(logitsArr, B, outSeqLen, vocab,
+                perTokens, doneAt, repetitionPenalty, step);
+
+            if (AllDone(doneAt, B)) break;
+
+            inputsEmbeds = EmbedBatch(nextTokensFlat, step + 1, exaggeration);
+            attentionMask = GrowBatchedMask(attentionMask, B, 1);
+            for (int layer = 0; layer < LlmLayers; layer++)
+            {
+                pastKv[2 * layer] = PresentToFloatArray(outList[1 + 2 * layer]);
+                pastKv[2 * layer + 1] = PresentToFloatArray(outList[1 + 2 * layer + 1]);
+            }
+            pastKvShape = PresentDims(outList[1]);
+        }
+        return actualSteps;
+    }
+
+    /// <summary>
+    /// Batched LM rollout, IoBinding path. Keeps the per-layer KV-cache
+    /// outputs GPU-resident between steps via direct <see cref="OrtValue"/>
+    /// chaining instead of host-roundtripping ~250 MB per step (at B=4
+    /// step 174). Same shape contract as the single-batch IoBinding
+    /// path in <see cref="RunLmLoopIoBinding"/>, generalized on the
+    /// leading batch dim.
+    ///
+    /// CUDA-only: hardcodes <c>OrtMemType.Default</c> on
+    /// <c>OrtMemoryInfo("Cuda")</c> for the KV bindings, same as the
+    /// single-batch path. Callers should auto-detect via the
+    /// <c>_effectiveCuda</c> flag on the LM session.
+    /// </summary>
+    private int RunBatchedLmLoopIoBinding(int B, int sTotal, float[] inputsEmbeds,
+        List<long>[] perTokens, int[] doneAt, int maxSteps,
+        float repetitionPenalty, float exaggeration)
+    {
+        const int LlmLayers = ChatterboxConstants.LlmLayers;
+        const int LlmKvHeads = ChatterboxConstants.LlmKvHeads;
+        const int LlmHeadDim = ChatterboxConstants.LlmHeadDim;
+        const int LlmHidden = ChatterboxConstants.LlmHidden;
+
+        using var cudaMemInfo = new OrtMemoryInfo("Cuda", OrtAllocatorType.ArenaAllocator, 0, OrtMemType.Default);
+        using var cpuMemInfo = new OrtMemoryInfo("Cpu", OrtAllocatorType.ArenaAllocator, 0, OrtMemType.Default);
+        using var runOpts = new RunOptions();
+
+        var attentionMask = new long[B * sTotal];
+        Array.Fill(attentionMask, 1);
+
+        // Prefill: empty past_kv shaped [B, KvHeads, 0, HeadDim] (dtype-aware).
+        var emptyPastValues = new List<OrtValue>(LlmLayers * 2);
+        for (int i = 0; i < LlmLayers * 2; i++)
+            emptyPastValues.Add(MakeEmptyPastKvOrtValue(new long[] { B, LlmKvHeads, 0L, LlmHeadDim }));
+
+        IDisposableReadOnlyCollection<OrtValue> prefillOutputs;
+        {
+            using var prefillEmbeds = MakeEmbedsOrtValue(
+                inputsEmbeds, new long[] { B, sTotal, LlmHidden }, out var prefillEmbedsScratch);
+            using var prefillMask = OrtValue.CreateTensorValueFromMemory(
+                attentionMask, new long[] { B, sTotal });
+            using var binding = _lm.CreateIoBinding();
+            binding.BindInput("inputs_embeds", prefillEmbeds);
+            binding.BindInput("attention_mask", prefillMask);
+            for (int layer = 0; layer < LlmLayers; layer++)
+            {
+                binding.BindInput($"past_key_values.{layer}.key", emptyPastValues[2 * layer]);
+                binding.BindInput($"past_key_values.{layer}.value", emptyPastValues[2 * layer + 1]);
+            }
+            binding.BindOutputToDevice("logits", cpuMemInfo);
+            for (int layer = 0; layer < LlmLayers; layer++)
+            {
+                binding.BindOutputToDevice($"present.{layer}.key", cudaMemInfo);
+                binding.BindOutputToDevice($"present.{layer}.value", cudaMemInfo);
+            }
+            _lm.RunWithBinding(runOpts, binding);
+            prefillOutputs = binding.GetOutputValues();
+            GC.KeepAlive(prefillEmbedsScratch);
+        }
+        foreach (var v in emptyPastValues) v.Dispose();
+
+        int vocab = (int)prefillOutputs[0].GetTensorTypeAndShape().Shape[2];
+        int outSeqLenPrefill = (int)prefillOutputs[0].GetTensorTypeAndShape().Shape[1];  // == sTotal
+        // Logits → fp32 array (dtype-aware). CPU-bound, full B*sTotal*vocab slab.
+        var prefillLogitsArr = LogitsToFloatArray(prefillOutputs[0]);
+        var nextTokensFlat = ArgmaxBatchedLastRow(prefillLogitsArr, B, outSeqLenPrefill, vocab,
+            perTokens, doneAt, repetitionPenalty, 0);
+        if (AllDone(doneAt, B))
+        {
+            prefillOutputs.Dispose();
+            return 1;
+        }
+
+        // Step 1+: chain prev KV outputs as next KV inputs.
+        inputsEmbeds = EmbedBatch(nextTokensFlat, 1, exaggeration);
+        attentionMask = GrowBatchedMask(attentionMask, B, 1);
+
+        IDisposableReadOnlyCollection<OrtValue> prevStep = prefillOutputs;
+        int actualSteps = 1;
+        for (int step = 1; step < maxSteps; step++)
+        {
+            using var stepEmbeds = MakeEmbedsOrtValue(
+                inputsEmbeds, new long[] { B, 1L, LlmHidden }, out var stepEmbedsScratch);
+            using var stepMask = OrtValue.CreateTensorValueFromMemory(
+                attentionMask, new long[] { B, attentionMask.Length / B });
+            using var binding = _lm.CreateIoBinding();
+            binding.BindInput("inputs_embeds", stepEmbeds);
+            binding.BindInput("attention_mask", stepMask);
+            for (int layer = 0; layer < LlmLayers; layer++)
+            {
+                binding.BindInput($"past_key_values.{layer}.key", prevStep[1 + 2 * layer]);
+                binding.BindInput($"past_key_values.{layer}.value", prevStep[1 + 2 * layer + 1]);
+            }
+            binding.BindOutputToDevice("logits", cpuMemInfo);
+            for (int layer = 0; layer < LlmLayers; layer++)
+            {
+                binding.BindOutputToDevice($"present.{layer}.key", cudaMemInfo);
+                binding.BindOutputToDevice($"present.{layer}.value", cudaMemInfo);
+            }
+            _lm.RunWithBinding(runOpts, binding);
+            var curStep = binding.GetOutputValues();
+            GC.KeepAlive(stepEmbedsScratch);
+
+            // Safe to dispose prevStep here even though `binding` holds
+            // BindInput references — RunWithBinding has completed and ORT
+            // only reads input OrtValues during the Run call, not after.
+            // Same pattern as RunLmLoopIoBinding.
+            prevStep.Dispose();
+            prevStep = curStep;
+
+            // Step logits are [B, 1, vocab] (fp16 or fp32). LogitsToFloatArray
+            // returns fp32 floats either way for downstream argmax math.
+            var stepLogitsArr = LogitsToFloatArray(curStep[0]);
+            nextTokensFlat = ArgmaxBatchedLastRow(stepLogitsArr, B, 1, vocab,
+                perTokens, doneAt, repetitionPenalty, step);
+            actualSteps = step + 1;
+
+            if (AllDone(doneAt, B)) break;
+
+            inputsEmbeds = EmbedBatch(nextTokensFlat, step + 1, exaggeration);
+            attentionMask = GrowBatchedMask(attentionMask, B, 1);
+        }
+        prevStep.Dispose();
+        return actualSteps;
+    }
+
+    /// <summary>
+    /// Per-element argmax on the last-row logits, applying upstream's
+    /// repetition penalty to already-generated tokens. Mutates
+    /// <paramref name="perTokens"/> (appends each element's next token)
+    /// and <paramref name="doneAt"/> (records the step that element
+    /// emitted STOP_SPEECH, or leaves -1 if not yet done).
+    /// </summary>
+    private static long[] ArgmaxBatchedLastRow(
+        float[] logitsArr, int B, int outSeqLen, int vocab,
+        List<long>[] perTokens, int[] doneAt,
+        float repetitionPenalty, int step)
+    {
+        var nextTokensFlat = new long[B];
+        int lastRowOffsetInLogits = (outSeqLen - 1) * vocab;
+        for (int b = 0; b < B; b++)
+        {
+            int rowStart = b * outSeqLen * vocab + lastRowOffsetInLogits;
+            var rowLogits = new float[vocab];
+            Array.Copy(logitsArr, rowStart, rowLogits, 0, vocab);
+            if (doneAt[b] < 0)
+            {
+                foreach (var t in perTokens[b])
+                    if (rowLogits[t] > 0) rowLogits[t] /= repetitionPenalty;
+            }
+            nextTokensFlat[b] = Argmax(rowLogits);
+            if (doneAt[b] < 0)
+            {
+                perTokens[b].Add(nextTokensFlat[b]);
+                if (nextTokensFlat[b] == ChatterboxConstants.StopSpeechToken) doneAt[b] = step;
+            }
+        }
+        return nextTokensFlat;
+    }
+
+    private static bool AllDone(int[] doneAt, int B)
+    {
+        for (int b = 0; b < B; b++) if (doneAt[b] < 0) return false;
+        return true;
+    }
+
+    /// <summary>Batched single-token embed for the autoregressive loop.</summary>
+    private float[] EmbedBatch(long[] tokensB, int position, float exaggeration)
+    {
+        int B = tokensB.Length;
+        var idsB = new long[B];
+        Array.Copy(tokensB, idsB, B);
+        var posB = new long[B];
+        Array.Fill(posB, position);
+        var exagB = new float[B];
+        Array.Fill(exagB, exaggeration);
+        using var o = _embed.Run(new[]
+        {
+            NamedOnnxValue.CreateFromTensor("input_ids", new DenseTensor<long>(idsB, new[] { B, 1 })),
+            NamedOnnxValue.CreateFromTensor("position_ids", new DenseTensor<long>(posB, new[] { B, 1 })),
+            NamedOnnxValue.CreateFromTensor("exaggeration", new DenseTensor<float>(exagB, new[] { B })),
+        });
+        return o.First().AsTensor<float>().ToArray();
+    }
+
+    /// <summary>Grow each batch element's attention mask by `growBy` trailing 1s.</summary>
+    private static long[] GrowBatchedMask(long[] mask, int batch, int growBy)
+    {
+        int oldPerB = mask.Length / batch;
+        int newPerB = oldPerB + growBy;
+        var grown = new long[batch * newPerB];
+        for (int b = 0; b < batch; b++)
+        {
+            Array.Copy(mask, b * oldPerB, grown, b * newPerB, oldPerB);
+            for (int i = oldPerB; i < newPerB; i++) grown[b * newPerB + i] = 1;
+        }
+        return grown;
+    }
+
+    /// <summary>
     /// LM autoregressive loop, IoBinding path. KV-cache outputs are kept
     /// CUDA-resident between steps via direct OrtValue chaining instead
     /// of host-roundtripping every layer's K/V each step. ~3.5× faster
@@ -159,16 +576,15 @@ public sealed class AcousticLM : IDisposable
         Array.Fill(attentionMask, 1);
         var generateTokens = new List<long> { ChatterboxConstants.StartSpeechToken };
 
-        // Prefill (step 0): empty past_kv.
+        // Prefill (step 0): empty past_kv (fp16 or fp32 depending on LM dtype).
         var emptyPastValues = new List<OrtValue>(LlmLayers * 2);
         for (int i = 0; i < LlmLayers * 2; i++)
-            emptyPastValues.Add(OrtValue.CreateTensorValueFromMemory(
-                Array.Empty<float>(), [1L, LlmKvHeads, 0L, LlmHeadDim]));
+            emptyPastValues.Add(MakeEmptyPastKvOrtValue([1L, LlmKvHeads, 0L, LlmHeadDim]));
 
         IDisposableReadOnlyCollection<OrtValue> prefillOutputs;
         {
-            using var prefillEmbeds = OrtValue.CreateTensorValueFromMemory(
-                inputsEmbeds, [1L, sTotal, LlmHidden]);
+            using var prefillEmbeds = MakeEmbedsOrtValue(
+                inputsEmbeds, [1L, sTotal, LlmHidden], out var prefillEmbedsScratch);
             using var prefillMask = OrtValue.CreateTensorValueFromMemory(
                 attentionMask, [1L, sTotal]);
             using var binding = _lm.CreateIoBinding();
@@ -187,13 +603,16 @@ public sealed class AcousticLM : IDisposable
             }
             _lm.RunWithBinding(runOpts, binding);
             prefillOutputs = binding.GetOutputValues();
+            GC.KeepAlive(prefillEmbedsScratch);
         }
         foreach (var v in emptyPastValues) v.Dispose();
 
         // Read vocab from tensor metadata (robust against future batch>1).
         int vocab = (int)prefillOutputs[0].GetTensorTypeAndShape().Shape[2];
-        var prefillLogitsSpan = prefillOutputs[0].GetTensorDataAsSpan<float>();
-        var lastLogits = prefillLogitsSpan.Slice((sTotal - 1) * vocab, vocab).ToArray();
+        // Logits → float[] via dtype-aware reader. Slice last row for argmax.
+        var prefillLogitsAll = LogitsToFloatArray(prefillOutputs[0]);
+        var lastLogits = new float[vocab];
+        Array.Copy(prefillLogitsAll, (sTotal - 1) * vocab, lastLogits, 0, vocab);
         MaybeDumpStep(diagDir, 0, lastLogits, inputsEmbeds, attentionMask);
         foreach (var t in generateTokens)
             if (lastLogits[t] > 0) lastLogits[t] /= repetitionPenalty;
@@ -212,8 +631,10 @@ public sealed class AcousticLM : IDisposable
         int actualSteps = 1;
         for (int step = 1; step < maxSteps; step++)
         {
-            using var stepEmbeds = OrtValue.CreateTensorValueFromMemory(
-                inputsEmbeds, [1L, 1L, LlmHidden]);
+            // fp16 path: stepEmbedsScratch must stay alive until RunWithBinding
+            // completes (OrtValue holds an unmanaged pointer into it).
+            using var stepEmbeds = MakeEmbedsOrtValue(
+                inputsEmbeds, [1L, 1L, LlmHidden], out var stepEmbedsScratch);
             using var stepMask = OrtValue.CreateTensorValueFromMemory(
                 attentionMask, [1L, attentionMask.Length]);
             using var binding = _lm.CreateIoBinding();
@@ -232,6 +653,12 @@ public sealed class AcousticLM : IDisposable
             }
             _lm.RunWithBinding(runOpts, binding);
             var curStep = binding.GetOutputValues();
+            // Keep the GC honest: scratch buffer must outlive Run. The using
+            // on stepEmbeds disposes after this scope, by which point
+            // stepEmbedsScratch is also unreachable — that's the correct
+            // ordering. The explicit reference here forbids the JIT from
+            // eliding it before RunWithBinding returns.
+            GC.KeepAlive(stepEmbedsScratch);
 
             // Safe to dispose prevStep here even though `binding` (which holds
             // BindInput references to prevStep's OrtValues) is still alive:
@@ -240,8 +667,9 @@ public sealed class AcousticLM : IDisposable
             prevStep.Dispose();
             prevStep = curStep;
 
-            var stepLogitsSpan = curStep[0].GetTensorDataAsSpan<float>();
-            lastLogits = stepLogitsSpan[..vocab].ToArray();
+            // Step logits = [1, 1, vocab]; vocab-length tail is the only row.
+            var stepLogitsAll = LogitsToFloatArray(curStep[0]);
+            lastLogits = stepLogitsAll[..vocab];
             MaybeDumpStep(diagDir, step, lastLogits, inputsEmbeds, attentionMask);
             foreach (var t in generateTokens)
                 if (lastLogits[t] > 0) lastLogits[t] /= repetitionPenalty;
@@ -285,30 +713,27 @@ public sealed class AcousticLM : IDisposable
         for (int step = 0; step < maxSteps; step++)
         {
             int seqLen = step == 0 ? sTotal : 1;
-            var embedT = new DenseTensor<float>(inputsEmbeds, [1, seqLen, LlmHidden]);
 
             var inputs = new List<NamedOnnxValue>(2 + 2 * LlmLayers)
             {
-                NamedOnnxValue.CreateFromTensor("inputs_embeds", embedT),
+                MakeEmbedsNamedValue(inputsEmbeds, [1, seqLen, LlmHidden]),
                 NamedOnnxValue.CreateFromTensor("attention_mask",
                     new DenseTensor<long>(attentionMask.ToArray(), [1, attentionMask.Length])),
             };
             for (int layer = 0; layer < LlmLayers; layer++)
             {
-                inputs.Add(NamedOnnxValue.CreateFromTensor(
-                    $"past_key_values.{layer}.key",
-                    new DenseTensor<float>(pastKv[2 * layer], pastKvShape)));
-                inputs.Add(NamedOnnxValue.CreateFromTensor(
-                    $"past_key_values.{layer}.value",
-                    new DenseTensor<float>(pastKv[2 * layer + 1], pastKvShape)));
+                inputs.Add(MakePastKvNamedValue($"past_key_values.{layer}.key",
+                    pastKv[2 * layer], pastKvShape));
+                inputs.Add(MakePastKvNamedValue($"past_key_values.{layer}.value",
+                    pastKv[2 * layer + 1], pastKvShape));
             }
             using var output = _lm.Run(inputs);
             var outList = output.ToList();
-            var logits = outList[0].AsTensor<float>();
-            int vocab = logits.Dimensions[2];
+            var logitsArr = PresentToFloatArray(outList[0]);
+            var logitsDims = PresentDims(outList[0]);
+            int vocab = logitsDims[2];
             var lastLogits = new float[vocab];
-            int logitsOffset = (logits.Dimensions[1] - 1) * vocab;
-            var logitsArr = logits.ToArray();
+            int logitsOffset = (logitsDims[1] - 1) * vocab;
             Array.Copy(logitsArr, logitsOffset, lastLogits, 0, vocab);
             MaybeDumpStep(diagDir, step, lastLogits, inputsEmbeds, attentionMask, pastKv, pastKvShape);
 
@@ -322,10 +747,10 @@ public sealed class AcousticLM : IDisposable
             attentionMask = Grow(attentionMask, 1);
             for (int layer = 0; layer < LlmLayers; layer++)
             {
-                pastKv[2 * layer] = outList[1 + 2 * layer].AsTensor<float>().ToArray();
-                pastKv[2 * layer + 1] = outList[1 + 2 * layer + 1].AsTensor<float>().ToArray();
+                pastKv[2 * layer] = PresentToFloatArray(outList[1 + 2 * layer]);
+                pastKv[2 * layer + 1] = PresentToFloatArray(outList[1 + 2 * layer + 1]);
             }
-            pastKvShape = outList[1].AsTensor<float>().Dimensions.ToArray();
+            pastKvShape = PresentDims(outList[1]);
             actualSteps = step + 1;
         }
         return new AcousticLmResult(generateTokens, actualSteps);
@@ -403,6 +828,107 @@ public sealed class AcousticLM : IDisposable
                 MemoryMarshal.AsBytes<float>(pastKv[1]).ToArray());
         }
     }
+
+    // ── Float / Float16 helpers for true-fp16 LM (Run 9) ───────────────────
+    // When `_lmFp16` is true the LM expects fp16 inputs_embeds / past_kv and
+    // emits fp16 logits / present.*. embed_tokens still produces fp32, so the
+    // conversion happens at the BindInput/output boundary. attention_mask is
+    // int64 in both worlds (untouched).
+
+    /// <summary>Pack fp16-or-fp32 LM <c>inputs_embeds</c> from a CPU fp32 source.
+    /// Caller must dispose the returned OrtValue AND keep the returned buffer
+    /// alive until <c>RunWithBinding</c> completes (CreateTensorValueFromMemory
+    /// doesn't copy). For fp16 we allocate a fresh Float16[] scratch and
+    /// hand it back via <paramref name="fp16Scratch"/>; for fp32 the caller's
+    /// <paramref name="src"/> buffer is used directly and <paramref name="fp16Scratch"/>
+    /// is null.</summary>
+    private OrtValue MakeEmbedsOrtValue(float[] src, long[] shape, out Float16[]? fp16Scratch)
+    {
+        if (_lmFp16)
+        {
+            var dst = new Float16[src.Length];
+            for (int i = 0; i < src.Length; i++) dst[i] = (Float16)src[i];
+            fp16Scratch = dst;
+            return OrtValue.CreateTensorValueFromMemory(dst, shape);
+        }
+        fp16Scratch = null;
+        return OrtValue.CreateTensorValueFromMemory(src, shape);
+    }
+
+    /// <summary>Make an empty (zero-length sequence dim) past_kv tensor of
+    /// the LM's expected dtype. Used only at prefill — subsequent steps
+    /// chain real OrtValues from prior output.</summary>
+    private OrtValue MakeEmptyPastKvOrtValue(long[] shape)
+        => _lmFp16
+            ? OrtValue.CreateTensorValueFromMemory(Array.Empty<Float16>(), shape)
+            : OrtValue.CreateTensorValueFromMemory(Array.Empty<float>(), shape);
+
+    /// <summary>Read logits (CPU-bound output) as a fresh float[]. Always
+    /// returns fp32 floats for the argmax + repetition-penalty math, even
+    /// when the LM emitted fp16.</summary>
+    private float[] LogitsToFloatArray(OrtValue logits)
+    {
+        if (_lmFp16)
+        {
+            var span = logits.GetTensorDataAsSpan<Float16>();
+            var arr = new float[span.Length];
+            for (int i = 0; i < span.Length; i++) arr[i] = (float)span[i];
+            return arr;
+        }
+        return logits.GetTensorDataAsSpan<float>().ToArray();
+    }
+
+    /// <summary>Build a NamedOnnxValue carrying inputs_embeds at the LM's
+    /// expected dtype. Used by the basic-Run paths (RunLmLoopBasic and
+    /// RunBatchedLmLoopBasic).</summary>
+    private NamedOnnxValue MakeEmbedsNamedValue(float[] src, int[] shape)
+    {
+        if (_lmFp16)
+        {
+            var dst = new Float16[src.Length];
+            for (int i = 0; i < src.Length; i++) dst[i] = (Float16)src[i];
+            return NamedOnnxValue.CreateFromTensor("inputs_embeds",
+                new DenseTensor<Float16>(dst, shape));
+        }
+        return NamedOnnxValue.CreateFromTensor("inputs_embeds",
+            new DenseTensor<float>(src, shape));
+    }
+
+    /// <summary>Build a NamedOnnxValue carrying one past_kv slot at the
+    /// LM's expected dtype, given a fp32 CPU buffer (the basic path's
+    /// internal representation).</summary>
+    private NamedOnnxValue MakePastKvNamedValue(string name, float[] src, int[] shape)
+    {
+        if (_lmFp16)
+        {
+            var dst = new Float16[src.Length];
+            for (int i = 0; i < src.Length; i++) dst[i] = (Float16)src[i];
+            return NamedOnnxValue.CreateFromTensor(name, new DenseTensor<Float16>(dst, shape));
+        }
+        return NamedOnnxValue.CreateFromTensor(name, new DenseTensor<float>(src, shape));
+    }
+
+    /// <summary>Extract a present.* output to a CPU fp32 float[] for the
+    /// basic-Run paths, regardless of fp16/fp32 LM. (IoBinding paths chain
+    /// OrtValues directly and never visit this helper.)</summary>
+    private float[] PresentToFloatArray(DisposableNamedOnnxValue v)
+    {
+        if (_lmFp16)
+        {
+            var t = v.AsTensor<Float16>().ToArray();
+            var arr = new float[t.Length];
+            for (int i = 0; i < t.Length; i++) arr[i] = (float)t[i];
+            return arr;
+        }
+        return v.AsTensor<float>().ToArray();
+    }
+
+    /// <summary>Read the present.* output shape from a basic-Run output
+    /// in a dtype-agnostic way (only the metadata is needed; values are
+    /// already extracted via <see cref="PresentToFloatArray"/>).</summary>
+    private int[] PresentDims(DisposableNamedOnnxValue v)
+        => _lmFp16 ? v.AsTensor<Float16>().Dimensions.ToArray()
+                   : v.AsTensor<float>().Dimensions.ToArray();
 
     public void Dispose()
     {
