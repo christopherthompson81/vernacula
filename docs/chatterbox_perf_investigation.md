@@ -809,3 +809,100 @@ further dedup-style export optimization will move the needle at
 fp32.** fp16 quantization remains the right next lever for the
 weight-bandwidth ceiling; merged-graph batching (Path B from the
 previous sidebar) remains low priority for the same reason.
+
+
+## Run 7 — 2026-05-17 22:00 — Pipelined batched groups
+
+`ChunkedSynthesizer.Synthesize` gains a `groupSize` parameter. When >1,
+dispatches to new `SynthesizeInGroups` (Channel-based producer/consumer
+pattern, same shape as the chunk-at-a-time path from Run 2, but at
+the group level). ChatterboxSmoke's `--pipelined` + `--lm-batch B`
+combination now routes through this path.
+
+### Measurements (all RTX 3090, CUDA, warm cache)
+
+| Config | Chunks | Groups | Chunks-wall | vs non-pipelined equivalent |
+|---|---|---|---|---|
+| **Run 7c** lm-batch=4 + pipelined | 8 | 2 | **7.5 s** | vs Run 6c lm-batch=4+voc-batch=4: 7.7 s (−0.2 s, −3%) |
+| **Run 7a** lm-batch=8 + pipelined | 16 | 2 | **11.6 s** | vs serial-batched extrapolation 12.6 s (−1.0 s, −8%) |
+| **Run 7b** lm-batch=4 + pipelined | 16 | 4 | **14.3 s** | vs serial-batched 16.5 s (−2.2 s, −13%) |
+
+### Why the win is small
+
+Same contention story as Run 2. The chunk timings show it directly —
+for Run 7a (2 groups of B=8):
+
+```
+chunk 1/16 (group 1): LM-share 245 ms, voc-share 540 ms
+chunk 8/16 (group 1): LM-share 245 ms, voc-share 540 ms
+chunk 9/16 (group 2): LM-share 704 ms, voc-share 503 ms  ← +2.9× LM!
+chunk 16/16 (group 2): LM-share 704 ms, voc-share 503 ms
+```
+
+Group 1's batched LM runs alone (no overlap) at 245 ms/chunk. Group
+2's batched LM runs concurrent with group 1's vocoder, slows to
+704 ms/chunk due to shared SM/bandwidth contention. The vocoder
+itself is only slightly affected (540 → 503 ms — actually faster
+since it's running in isolation toward the end).
+
+Decomposed wall for Run 7a:
+- LM1: 245 × 8 = 1960 ms (alone)
+- max(LM2 contended, voc1): max(5632, 4320) = 5632 ms
+- voc2 (alone): 503 × 8 = 4024 ms
+- Total: 11,616 ms ✓ matches measured 11.6 s
+
+The LM2 inflation (1960 → 5632 ms) cancels most of the overlap
+benefit. We save vocoder time but spend it back on slower LM.
+
+### Better at smaller batch sizes
+
+Run 7b (lm-batch=4 → 4 groups) gets a larger % reduction (13%) than
+Run 7a (lm-batch=8 → 2 groups, 8% reduction). More groups means more
+overlap opportunities, even with contention. But the absolute wall
+is worse (14.3 vs 11.6 s) because group=8 has higher batched LM
+throughput per chunk.
+
+### Cumulative perf summary (8 chunks, RTX 3090, CUDA)
+
+| Run | Lever | Chunks-wall | vs Run 1 |
+|---|---|---|---|
+| Run 1 | Serial baseline (IoBinding) | 14.7 s | — |
+| Run 2 | + LM/Vocoder pipelining (B=1) | 13.7 s | −7% |
+| Run 5 | Batched IoBinding LM (B=4) | 7.8 s | −47% |
+| Run 5 | Batched IoBinding LM (B=8) | 6.4 s | −57% |
+| Run 6 | + Batched vocoder (B=4) | 7.7 s | −48% |
+| Run 6 | + Batched vocoder (B=8) | 6.1 s | −59% |
+| **Run 7c** | **+ Pipelined groups (B=4)** | **7.5 s** | **−49%** |
+
+At 16 chunks (more pipelining headroom): Run 7a at 11.6 s vs baseline
+extrapolated 29.4 s = **−60% wall reduction.**
+
+### Architectural state at end of Run 7
+
+C# pipeline now has every fp32 perf lever in place:
+
+- **Serial / one-shot**: `AcousticLM.Generate` + `Vocoder.Synthesize`
+- **Pipelined one-shot**: `ChunkedSynthesizer.Synthesize(groupSize=1)`
+- **Batched**: `AcousticLM.GenerateBatch` + `Vocoder.SynthesizeBatch`
+- **Pipelined batched groups (long-form audiobook target)**:
+  `ChunkedSynthesizer.Synthesize(groupSize=B)`
+
+ChatterboxSmoke exposes all four via `--bench-chunks`, `--pipelined`,
+`--lm-batch`, `--voc-batch`. Future fp16 quantization plugs into
+these surfaces without architectural change.
+
+### Where the headroom is now
+
+Roughly speaking:
+
+| Lever | Remaining headroom (fp32) | Notes |
+|---|---|---|
+| Pipelining contention | 10-20% | Run 2/7 contention is GPU SM + DRAM bandwidth. CUDA stream priority hints might recover some. |
+| Vocoder Path B (merged-batched) | 3-5% | Detailed in Run 6 sidebar. Half-day fix; defer. |
+| Duplicate-node removal | 0% | Per Run 6 sidebar 2 — already done. |
+| fp16 LM quantization | **2-4×** projected | Halves weight bandwidth ceiling. Separate workstream. |
+| Custom attention fusion | 5-10% | 310 Transposes in the body could fuse with a custom kernel. Real work. |
+
+The single biggest remaining lever is fp16. Everything we've built
+in Runs 1-7 plugs into it; the perf iteration is at a natural
+pause point.

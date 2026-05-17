@@ -282,12 +282,40 @@ internal static class Program
         float[]? lastSamples = null;
         long pipelinedChunkWallMs = 0;  // populated when --pipelined; serial branch uses sums below
 
-        if (lmBatch > 1 && benchChunks > 1)
+        if (pipelined && benchChunks > 1)
         {
-            // Batched-LM mode. Group benchChunks into lmBatch-sized groups;
-            // each group: 1 batched GenerateBatch + B serial vocoder calls.
-            // Measures the per-chunk amortization established in Run 3 but
-            // end-to-end (real STOP_SPEECH-driven rollouts, full vocoder).
+            // ChunkedSynthesizer mode. groupSize=lmBatch:
+            //   lmBatch=1: chunk-at-a-time LM/voc pipelining (Run 2)
+            //   lmBatch>1: per-group LM/voc batched + pipelined across
+            //              groups (Run 7). Voc-batch implicitly == lmBatch
+            //              in this mode (group is the batching unit).
+            var synth = new ChunkedSynthesizer(lm, vocoder);
+            var tokensPerChunk = Enumerable.Repeat(inputIds, benchChunks).ToArray();
+            var result = synth.Synthesize(
+                spk, tokensPerChunk,
+                useIoBinding: useIoBinding,
+                groupSize: lmBatch);
+            for (int chunk = 0; chunk < benchChunks; chunk++)
+            {
+                var t = result.ChunkTimings[chunk];
+                chunkLmMs[chunk] = t.LmMs;
+                chunkVocMs[chunk] = t.VocoderMs;
+                chunkSteps[chunk] = t.LmSteps;
+                lastSamples = result.Waveforms[chunk];
+                Console.WriteLine($"  chunk {chunk + 1}/{benchChunks}: "
+                    + $"LM-share {t.LmMs} ms ({t.LmSteps} steps), "
+                    + $"voc-share {t.VocoderMs} ms, "
+                    + $"audio {t.AudioSamples / (float)ChatterboxConstants.S3GenSr:F2}s");
+            }
+            pipelinedChunkWallMs = result.TotalWallMs;
+        }
+        else if (lmBatch > 1 && benchChunks > 1)
+        {
+            // Batched-LM mode (no pipelining). Group benchChunks into
+            // lmBatch-sized groups; each group: 1 batched GenerateBatch
+            // + B serial vocoder calls. Measures the per-chunk amortization
+            // established in Run 3 but end-to-end (real STOP_SPEECH-driven
+            // rollouts, full vocoder).
             var batchWallSw = Stopwatch.StartNew();
             int produced = 0;
             while (produced < benchChunks)
@@ -351,25 +379,6 @@ internal static class Program
             }
             batchWallSw.Stop();
             pipelinedChunkWallMs = batchWallSw.ElapsedMilliseconds;  // reuse for the summary
-        }
-        else if (pipelined && benchChunks > 1)
-        {
-            var synth = new ChunkedSynthesizer(lm, vocoder);
-            var tokensPerChunk = Enumerable.Repeat(inputIds, benchChunks).ToArray();
-            var result = synth.Synthesize(spk, tokensPerChunk, useIoBinding: useIoBinding);
-            for (int chunk = 0; chunk < benchChunks; chunk++)
-            {
-                var t = result.ChunkTimings[chunk];
-                chunkLmMs[chunk] = t.LmMs;
-                chunkVocMs[chunk] = t.VocoderMs;
-                chunkSteps[chunk] = t.LmSteps;
-                lastSamples = result.Waveforms[chunk];
-                Console.WriteLine($"  chunk {chunk + 1}/{benchChunks}: "
-                    + $"LM {t.LmMs} ms ({t.LmSteps} steps), "
-                    + $"voc {t.VocoderMs} ms, "
-                    + $"audio {t.AudioSamples / (float)ChatterboxConstants.S3GenSr:F2}s");
-            }
-            pipelinedChunkWallMs = result.TotalWallMs;
         }
         else
         {
@@ -443,10 +452,13 @@ internal static class Program
             double chunksTotalSec = (pipelined || lmBatch > 1)
                 ? pipelinedChunkWallMs / 1000.0
                 : (lmSum + vocSum) / 1000.0;
-            string mode = lmBatch > 1
-                ? (vocBatch > 1 ? $"lm-batch={lmBatch}+voc-batch={vocBatch}" : $"lm-batch={lmBatch}")
-                : pipelined ? "pipelined"
-                : "serial";
+            string mode;
+            if (pipelined && lmBatch > 1) mode = $"pipelined+group-batch={lmBatch}";
+            else if (pipelined) mode = "pipelined";
+            else if (lmBatch > 1) mode = vocBatch > 1
+                ? $"lm-batch={lmBatch}+voc-batch={vocBatch}"
+                : $"lm-batch={lmBatch}";
+            else mode = "serial";
             Console.WriteLine($"Bench: {benchChunks} chunks ({mode}), "
                 + $"LM avg {lmSum / (double)benchChunks:F0} ms, "
                 + $"voc avg {vocSum / (double)benchChunks:F0} ms, "
