@@ -97,20 +97,28 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--skip-language-model", action="store_true",
                    help="Skip the LM graph (it's the heaviest — ~2 GB fp32)")
     p.add_argument("--skip-conditional-decoder", action="store_true")
-    p.add_argument("--split-cond-decoder", action="store_true",
+    # Defaults flipped to true since PR #67 — the merged-batched
+    # vocoder (Path B / Run 10 of docs/chatterbox_perf_investigation.md)
+    # is the flagship runtime path. A vanilla export now produces the
+    # full bundle (monolithic + split + merged-Loop graphs); the
+    # Vocoder C# class picks the best available at load time. Pass
+    # --no-split-cond-decoder / --no-merge-cond-decoder to get the
+    # smaller pre-perf-work bundle (monolithic only) — useful for
+    # disk-constrained dev or for regenerating an older bundle layout.
+    p.add_argument("--split-cond-decoder", action=argparse.BooleanOptionalAction, default=True,
                    help="Export the cond decoder as three smaller graphs "
                         "(flow_encoder.onnx, cfm_estimator.onnx, mel2wav.onnx) "
-                        "instead of one monolithic conditional_decoder.onnx. "
+                        "in addition to the monolithic conditional_decoder.onnx. "
                         "C# orchestrates the CFM solve loop using the smaller "
-                        "graphs. Cuts the largest graph (cfm_estimator) from "
-                        "70K nodes to ~7K — the 10x CFM unroll lives in C# "
-                        "instead. See docs/chatterbox_investigation.md Run 12.")
-    p.add_argument("--merge-cond-decoder", action="store_true",
+                        "graphs when the merged-loop bundle isn't available. "
+                        "Cuts the largest graph (cfm_estimator) from 70K nodes "
+                        "to ~7K. See docs/chatterbox_investigation.md Run 12.")
+    p.add_argument("--merge-cond-decoder", action=argparse.BooleanOptionalAction, default=True,
                    help="After --split-cond-decoder, stitch the three sub-graphs "
                         "back together into conditional_decoder_loop.onnx — a "
-                        "single ONNX with the CFM solve embedded as a Loop op. "
-                        "Lets the C# pipeline pick a single-Run path while "
-                        "keeping the small-graph optimization wins. Implies "
+                        "single ONNX with the CFM solve embedded as a Loop op, "
+                        "stamped with supports_batched=true metadata so the C# "
+                        "Vocoder picks the merged-batched path. Implies "
                         "--split-cond-decoder. See "
                         "scripts/_export_utils/merge_cond_decoder_loop.py.")
     p.add_argument("--overwrite", action="store_true")
