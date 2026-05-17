@@ -13,6 +13,13 @@
     <Platform Solution="*|x64" Project="x64" />
     <Platform Solution="*|x86" Project="x64" />
   </Project>
+  <Project Path="src/Chatterbox.Base/Chatterbox.Base.csproj">
+    <Platform Solution="*|Any CPU" Project="x64" />
+    <Platform Solution="*|ARM" Project="x64" />
+    <Platform Solution="*|ARM64" Project="x64" />
+    <Platform Solution="*|x64" Project="x64" />
+    <Platform Solution="*|x86" Project="x64" />
+  </Project>
   <Project Path="src/Vernacula.CLI/Vernacula.CLI.csproj">
     <BuildType Solution="Debug|x64" Project="Debug" />
     <BuildType Solution="Release|x64" Project="Release" />

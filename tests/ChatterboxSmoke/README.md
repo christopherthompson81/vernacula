@@ -1,10 +1,13 @@
 # ChatterboxSmoke
 
-C# port of `scripts/chatterbox_export/.../listen_test.py`. Loads the four
-ONNX graphs produced by `export_chatterbox_to_onnx.py` and runs them
-end-to-end to produce a WAV. Proves the ORT-C# orchestration matches the
-PyTorch reference within numerical drift before we factor the pipeline
-into `Chatterbox.Base` / `Chatterbox.CLI` / `Chatterbox.Avalonia`.
+Thin CLI on top of [`src/Chatterbox.Base/`](../../src/Chatterbox.Base/)
+(`SpeakerEmbedder` + `AcousticLM` + `Vocoder` + `ChatterboxPipeline`).
+Loads the four ONNX graphs produced by `export_chatterbox_to_onnx.py`
+and runs them end-to-end to produce a WAV, with per-stage timing prints
+that make this useful for perf+parity checks. Originally a monolithic
+port of `scripts/chatterbox_export/.../listen_test.py`; the orchestration
+moved to `Chatterbox.Base` so `Chatterbox.CLI` and `Chatterbox.Avalonia`
+can build on the same library without copying it.
 
 ## What it does
 
@@ -128,9 +131,17 @@ your inputs may vary). See issue #53 for the full investigation.
 
 ## Next steps (in `chatterbox.scratch.md` order)
 
-1. Text tokenizer port (so we can pass `--text "any sentence"`).
-2. Factor the orchestration into `Chatterbox.Base` as `SpeakerEmbedder` +
-   `AcousticLM` + `Vocoder` classes.
-3. `Chatterbox.CLI` consumes the Base library; `--text-file` for
-   markdown input; chunked synthesis.
-4. `IoBinding` perf pass on the LM step loop.
+Done:
+- ~~Text tokenizer port (`--text "any sentence"`).~~ — PR #52
+- ~~Factor the orchestration into `Chatterbox.Base` as `SpeakerEmbedder` +
+  `AcousticLM` + `Vocoder` classes.~~ — PR #61 (this refactor)
+- ~~`IoBinding` perf pass on the LM step loop.~~
+
+Remaining:
+1. `Chatterbox.CLI` consumes the Base library; `--text-file` for
+   markdown input.
+2. Markdown→speakable-text (parse AST, emit plain text + source-position
+   index for eventual word-highlight UI).
+3. Chunked synthesis / continuous reader (gapless concat at audio layer).
+4. Forced-alignment pass via the ASR aligner for word-level timestamps.
+5. `Chatterbox.Avalonia` desktop app.
