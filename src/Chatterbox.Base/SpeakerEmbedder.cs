@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Chatterbox.Base.AudioIo;
 using Microsoft.ML.OnnxRuntime;
 using Microsoft.ML.OnnxRuntime.Tensors;
@@ -58,8 +59,17 @@ public sealed class SpeakerEmbedder : IDisposable
     /// via the cached-session builder. Disposes the underlying session
     /// when this object is disposed.
     /// </summary>
-    public SpeakerEmbedder(string onnxPath, ExecutionProvider ep)
-        => _session = OrtSessionBuilder.CreateCachedSession(onnxPath, ep);
+    /// <param name="onLoad">Optional callback fired once with timing,
+    /// cache state, and effective-EP info for the loaded session.</param>
+    public SpeakerEmbedder(string onnxPath, ExecutionProvider ep, SessionLoadObserver? onLoad = null)
+    {
+        var sw = Stopwatch.StartNew();
+        _session = OrtSessionBuilder.CreateCachedSession(onnxPath, ep, out var hit, out var usedCuda);
+        sw.Stop();
+        onLoad?.Invoke(new SessionLoadEvent(
+            Path.GetFileName(onnxPath), sw.ElapsedMilliseconds, hit, usedCuda,
+            new FileInfo(onnxPath).Length));
+    }
 
     /// <summary>Load + resample the WAV at <paramref name="voicePath"/>, then embed.</summary>
     public SpeakerEmbedding Embed(string voicePath)

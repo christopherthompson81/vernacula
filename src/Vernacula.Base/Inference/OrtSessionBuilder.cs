@@ -143,7 +143,7 @@ public static class OrtSessionBuilder
         ExecutionProvider ep,
         GraphOptimizationLevel optLevel = GraphOptimizationLevel.ORT_ENABLE_ALL,
         long externalInitializersMinBytes = 1024 * 1024)
-        => CreateCachedSession(modelPath, ep, out _, optLevel, externalInitializersMinBytes);
+        => CreateCachedSession(modelPath, ep, out _, out _, optLevel, externalInitializersMinBytes);
 
     /// <inheritdoc cref="CreateCachedSession(string, ExecutionProvider, GraphOptimizationLevel, long)"/>
     /// <param name="cacheHit">True if a valid pre-optimized file was found and
@@ -155,8 +155,28 @@ public static class OrtSessionBuilder
         out bool cacheHit,
         GraphOptimizationLevel optLevel = GraphOptimizationLevel.ORT_ENABLE_ALL,
         long externalInitializersMinBytes = 1024 * 1024)
+        => CreateCachedSession(modelPath, ep, out cacheHit, out _, optLevel, externalInitializersMinBytes);
+
+    /// <inheritdoc cref="CreateCachedSession(string, ExecutionProvider, GraphOptimizationLevel, long)"/>
+    /// <param name="cacheHit">True if a valid pre-optimized file was found and
+    /// reused; false if a fresh optimization happened (and was written to disk
+    /// for next time).</param>
+    /// <param name="usedCuda">True when the CUDA execution provider was
+    /// successfully appended to the session that actually backs the returned
+    /// <see cref="InferenceSession"/>. False for CPU, DirectML, or when
+    /// <see cref="ExecutionProvider.Auto"/> fell back to DirectML because
+    /// CUDA was unavailable. Callers use this (rather than the *requested*
+    /// EP) to gate CUDA-only paths like IOBinding without re-probing.</param>
+    public static InferenceSession CreateCachedSession(
+        string modelPath,
+        ExecutionProvider ep,
+        out bool cacheHit,
+        out bool usedCuda,
+        GraphOptimizationLevel optLevel = GraphOptimizationLevel.ORT_ENABLE_ALL,
+        long externalInitializersMinBytes = 1024 * 1024)
     {
         cacheHit = false;
+        usedCuda = false;
         if (!File.Exists(modelPath))
             throw new FileNotFoundException($"Model file not found: {modelPath}");
 
@@ -192,11 +212,12 @@ public static class OrtSessionBuilder
             // Cache hit: load pre-optimized graph with optimization DISABLED
             // (the graph is already optimized; re-running passes is wasted work
             // and may hit unsupported-op errors on a fused graph).
-            var hitOpts = Create(ep, GraphOptimizationLevel.ORT_DISABLE_ALL, enableProfiling: false, out _);
+            var hitOpts = Create(ep, GraphOptimizationLevel.ORT_DISABLE_ALL, enableProfiling: false, out var hitUsedCuda);
             try
             {
                 var session = new InferenceSession(activeCachePath, hitOpts);
                 cacheHit = true;
+                usedCuda = hitUsedCuda;
                 return session;
             }
             catch
@@ -234,7 +255,8 @@ public static class OrtSessionBuilder
 
         // Cache miss (or bypass, or this-model-disabled): load source,
         // optimize, optionally save the result for next time.
-        var opts = Create(ep, optLevel, enableProfiling: false, out _);
+        var opts = Create(ep, optLevel, enableProfiling: false, out var freshUsedCuda);
+        usedCuda = freshUsedCuda;
         if (!bypassCache && !cacheDisabled)
         {
             opts.OptimizedModelFilePath = useOrtFormat ? cachePathOrt : cachePathOnnx;

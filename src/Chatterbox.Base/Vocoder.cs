@@ -40,7 +40,9 @@ public sealed class Vocoder : IDisposable
     public VocoderMode Mode { get; }
 
     /// <summary>Auto-detect the available cond-decoder layout in <paramref name="onnxDir"/> and load.</summary>
-    public Vocoder(string onnxDir, ExecutionProvider ep)
+    /// <param name="onLoad">Optional callback fired once per session loaded
+    /// (1× for Merged/Monolithic, 3× for Split).</param>
+    public Vocoder(string onnxDir, ExecutionProvider ep, SessionLoadObserver? onLoad = null)
     {
         bool mergedAvail = File.Exists(Path.Combine(onnxDir, "conditional_decoder_loop.onnx"));
         bool splitAvail = File.Exists(Path.Combine(onnxDir, "flow_encoder.onnx"))
@@ -50,25 +52,31 @@ public sealed class Vocoder : IDisposable
         if (mergedAvail)
         {
             Mode = VocoderMode.Merged;
-            _merged = OrtSessionBuilder.CreateCachedSession(
-                Path.Combine(onnxDir, "conditional_decoder_loop.onnx"), ep);
+            _merged = LoadOne(Path.Combine(onnxDir, "conditional_decoder_loop.onnx"), ep, onLoad);
         }
         else if (splitAvail)
         {
             Mode = VocoderMode.Split;
-            _flowEnc = OrtSessionBuilder.CreateCachedSession(
-                Path.Combine(onnxDir, "flow_encoder.onnx"), ep);
-            _cfmEst = OrtSessionBuilder.CreateCachedSession(
-                Path.Combine(onnxDir, "cfm_estimator.onnx"), ep);
-            _m2w = OrtSessionBuilder.CreateCachedSession(
-                Path.Combine(onnxDir, "mel2wav.onnx"), ep);
+            _flowEnc = LoadOne(Path.Combine(onnxDir, "flow_encoder.onnx"), ep, onLoad);
+            _cfmEst = LoadOne(Path.Combine(onnxDir, "cfm_estimator.onnx"), ep, onLoad);
+            _m2w = LoadOne(Path.Combine(onnxDir, "mel2wav.onnx"), ep, onLoad);
         }
         else
         {
             Mode = VocoderMode.Monolithic;
-            _mono = OrtSessionBuilder.CreateCachedSession(
-                Path.Combine(onnxDir, "conditional_decoder.onnx"), ep);
+            _mono = LoadOne(Path.Combine(onnxDir, "conditional_decoder.onnx"), ep, onLoad);
         }
+    }
+
+    private static InferenceSession LoadOne(string path, ExecutionProvider ep, SessionLoadObserver? onLoad)
+    {
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        var s = OrtSessionBuilder.CreateCachedSession(path, ep, out var hit, out var usedCuda);
+        sw.Stop();
+        onLoad?.Invoke(new SessionLoadEvent(
+            Path.GetFileName(path), sw.ElapsedMilliseconds, hit, usedCuda,
+            new FileInfo(path).Length));
+        return s;
     }
 
     /// <summary>

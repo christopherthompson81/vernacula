@@ -36,14 +36,18 @@ public sealed class ChatterboxPipeline : IDisposable
     /// If neither succeeds, <see cref="Tokenizer"/> is null and only
     /// <see cref="Synthesize(string, long[])"/> (pre-tokenized) will work.
     /// </summary>
-    public ChatterboxPipeline(string onnxDir, ExecutionProvider ep, string? tokenizerJsonPath = null)
+    /// <param name="onLoad">Optional callback fired once per ONNX session
+    /// loaded (5 times for the Merged-vocoder layout, 7 times for Split).
+    /// Use for surfacing per-session timing / cache state to the user.</param>
+    public ChatterboxPipeline(string onnxDir, ExecutionProvider ep,
+        string? tokenizerJsonPath = null, SessionLoadObserver? onLoad = null)
     {
-        Embedder = new SpeakerEmbedder(Path.Combine(onnxDir, "speech_encoder.onnx"), ep);
+        Embedder = new SpeakerEmbedder(Path.Combine(onnxDir, "speech_encoder.onnx"), ep, onLoad);
         Lm = new AcousticLM(
             Path.Combine(onnxDir, "embed_tokens.onnx"),
             Path.Combine(onnxDir, "language_model.onnx"),
-            ep);
-        Vocoder = new Vocoder(onnxDir, ep);
+            ep, onLoad);
+        Vocoder = new Vocoder(onnxDir, ep, onLoad);
 
         var resolvedTok = tokenizerJsonPath ?? LocateCachedTokenizerJson();
         Tokenizer = resolvedTok is not null ? new EnTokenizer(resolvedTok) : null;

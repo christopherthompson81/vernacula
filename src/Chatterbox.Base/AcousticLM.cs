@@ -53,14 +53,37 @@ public sealed class AcousticLM : IDisposable
 {
     private readonly InferenceSession _lm;
     private readonly InferenceSession _embed;
-    private readonly ExecutionProvider _ep;
+    /// <summary>
+    /// Whether the loaded sessions actually got the CUDA EP appended. Derived
+    /// from <see cref="Vernacula.Base.Inference.OrtSessionBuilder.CreateCachedSession"/>'s
+    /// effective-EP report rather than the requested <see cref="ExecutionProvider"/>,
+    /// so an <c>Auto</c> request that silently fell back to DirectML correctly
+    /// reports false (and won't try the CUDA-only IoBinding path).
+    /// </summary>
+    private readonly bool _effectiveCuda;
 
     /// <summary>Load both graphs from disk.</summary>
-    public AcousticLM(string embedTokensPath, string languageModelPath, ExecutionProvider ep)
+    /// <param name="onLoad">Optional callback fired once per session (embed_tokens, then language_model).</param>
+    public AcousticLM(string embedTokensPath, string languageModelPath, ExecutionProvider ep,
+        SessionLoadObserver? onLoad = null)
     {
-        _embed = OrtSessionBuilder.CreateCachedSession(embedTokensPath, ep);
-        _lm = OrtSessionBuilder.CreateCachedSession(languageModelPath, ep);
-        _ep = ep;
+        _embed = LoadOne(embedTokensPath, ep, onLoad, out _);
+        _lm = LoadOne(languageModelPath, ep, onLoad, out var lmUsedCuda);
+        // We gate IoBinding on the LM session's effective EP (it's where
+        // IoBinding actually fires); embed_tokens uses plain Run regardless.
+        _effectiveCuda = lmUsedCuda;
+    }
+
+    private static InferenceSession LoadOne(string path, ExecutionProvider ep,
+        SessionLoadObserver? onLoad, out bool usedCuda)
+    {
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        var s = OrtSessionBuilder.CreateCachedSession(path, ep, out var hit, out usedCuda);
+        sw.Stop();
+        onLoad?.Invoke(new SessionLoadEvent(
+            Path.GetFileName(path), sw.ElapsedMilliseconds, hit, usedCuda,
+            new FileInfo(path).Length));
+        return s;
     }
 
     /// <summary>
@@ -71,10 +94,14 @@ public sealed class AcousticLM : IDisposable
     /// <param name="condEmb">The speaker conditioning from <see cref="SpeakerEmbedder"/>.</param>
     /// <param name="textTokenIds">Wrapped LM input ids — see <see cref="Tokenization.EnTokenizer.WrapForLm"/>.</param>
     /// <param name="useIoBinding">
-    /// Null (default) → auto-detect: IoBinding on CUDA/Auto, basic Run on CPU/DirectML.
-    /// True forces IoBinding; throws if the configured EP is not CUDA/Auto, since the
-    /// IoBinding path hardcodes a CUDA <see cref="OrtMemoryInfo"/>. False forces the
-    /// basic Run path (useful for A/B testing or non-CUDA EPs).
+    /// Null (default) → auto-detect from the EFFECTIVE EP (per
+    /// <see cref="Vernacula.Base.Inference.OrtSessionBuilder.CreateCachedSession"/>'s
+    /// <c>usedCuda</c> report): IoBinding when CUDA actually backs the session,
+    /// basic Run otherwise. This correctly skips IoBinding when
+    /// <see cref="ExecutionProvider.Auto"/> silently fell back to DirectML.
+    /// True forces IoBinding; throws when the LM session is not CUDA-backed,
+    /// since the IoBinding path hardcodes a CUDA <see cref="OrtMemoryInfo"/>.
+    /// False forces the basic Run path (useful for A/B testing or non-CUDA EPs).
     /// </param>
     /// <param name="exaggeration">Conditioning scalar passed to embed_tokens; default 0.5.</param>
     /// <param name="maxSteps">Hard cap on rollout length; default 256.</param>
@@ -89,13 +116,12 @@ public sealed class AcousticLM : IDisposable
         float repetitionPenalty = ChatterboxConstants.DefaultRepetitionPenalty,
         string? diagDir = null)
     {
-        bool epIsCuda = _ep is ExecutionProvider.Cuda or ExecutionProvider.Auto;
-        bool resolvedIoBinding = useIoBinding ?? epIsCuda;
-        if (resolvedIoBinding && !epIsCuda)
+        bool resolvedIoBinding = useIoBinding ?? _effectiveCuda;
+        if (resolvedIoBinding && !_effectiveCuda)
             throw new InvalidOperationException(
-                $"useIoBinding=true requires a CUDA-capable EP (Cuda or Auto); got {_ep}. " +
+                "useIoBinding=true requires the LM session to be CUDA-backed, " +
+                "but it isn't (either the requested EP is CPU/DirectML, or Auto fell back). " +
                 "Pass useIoBinding=false to use the basic Run path on this EP.");
-
 
         // Build text embeddings + position ids.
         int sText = textTokenIds.Length;

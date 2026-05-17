@@ -115,15 +115,24 @@ internal static class Program
         }
 
         // ── Load all sessions via the Base pipeline; print per-graph timing ──
-        Console.WriteLine($"Cond decoder layout:");
+        // Observer prints one line per session loaded (preserves the format
+        // the pre-factor monolith used so perf-tuning logs stay comparable).
+        // `ep=` reports the EFFECTIVE EP per the OrtSessionBuilder usedCuda
+        // probe — distinct from the requested EP, so `Auto` falling back
+        // from CUDA to DirectML is visible here instead of silently breaking
+        // downstream IoBinding.
+        void OnSessionLoad(SessionLoadEvent e) =>
+            Console.WriteLine($"  {e.FileName}: {e.ElapsedMs} ms  cache={(e.CacheHit ? "HIT" : "miss")}  "
+                + $"ep={(e.UsedCuda ? "cuda" : "cpu/dml")}  src={e.SourceSizeBytes / 1e6:F0} MB");
+
         var totalLoadSw = Stopwatch.StartNew();
-        using var embedder = TimedLoad("speech_encoder.onnx", () =>
-            new SpeakerEmbedder(Path.Combine(onnxDir, "speech_encoder.onnx"), epEnum));
+        using var embedder = new SpeakerEmbedder(
+            Path.Combine(onnxDir, "speech_encoder.onnx"), epEnum, OnSessionLoad);
         using var lm = new AcousticLM(
             Path.Combine(onnxDir, "embed_tokens.onnx"),
             Path.Combine(onnxDir, "language_model.onnx"),
-            epEnum);
-        using var vocoder = new Vocoder(onnxDir, epEnum);
+            epEnum, OnSessionLoad);
+        using var vocoder = new Vocoder(onnxDir, epEnum, OnSessionLoad);
         totalLoadSw.Stop();
         Console.WriteLine($"  vocoder mode: {vocoder.Mode}");
         Console.WriteLine($"Loaded sessions in {totalLoadSw.ElapsedMilliseconds} ms total  (ep={ep})");
@@ -194,20 +203,6 @@ internal static class Program
         totalSw.Stop();
         Console.WriteLine($"Wrote {outPath}  [total {totalSw.ElapsedMilliseconds / 1000.0:F1}s]");
         return 0;
-    }
-
-    /// <summary>
-    /// Construct a session-owning thing with a quick timing+disk-size log.
-    /// Only used for the SpeakerEmbedder where we want to surface the
-    /// per-graph load time consistently with the AcousticLM/Vocoder loads.
-    /// </summary>
-    private static T TimedLoad<T>(string name, Func<T> ctor) where T : IDisposable
-    {
-        var sw = Stopwatch.StartNew();
-        var t = ctor();
-        sw.Stop();
-        Console.WriteLine($"  {name}: {sw.ElapsedMilliseconds} ms");
-        return t;
     }
 
     private static string ExpandHome(string path)
