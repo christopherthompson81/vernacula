@@ -30,7 +30,12 @@ string  ep            = "auto";
 bool    verbose       = false;
 bool?   useIoBinding  = null;
 float   exaggeration  = ChatterboxConstants.DefaultExaggeration;
-int     maxSteps      = ChatterboxConstants.DefaultMaxLmSteps;
+// CLI default is intentionally higher than ChatterboxConstants.DefaultMaxLmSteps
+// (256). The constant is the smoke/bench reference; the CLI sees long-form
+// markdown where typical paragraph chunks run 300-500 LM steps and would
+// silently truncate at 256. 1024 is a comfortable cap that natural STOP_SPEECH
+// reaches first on real prose; users can lower it if they want hard limits.
+int     maxSteps      = 1024;
 
 // Bounds-checked value reader. Caller passes the flag name so the error
 // mentions which arg was missing its value. Args are parsed via a manual
@@ -76,7 +81,7 @@ try
                         NumberStyles.Integer, CultureInfo.InvariantCulture, out maxSteps)
                     || maxSteps < 1)
                 {
-                    Console.Error.WriteLine("--max-steps expects a positive integer (default 256).");
+                    Console.Error.WriteLine("--max-steps expects a positive integer (default 1024).");
                     return 2;
                 }
                 i++;
@@ -239,15 +244,70 @@ if (verbose) Console.WriteLine(
     $"speech_encoder: cond_emb=({string.Join(",", spk.CondEmb.Dimensions.ToArray())})  "
     + $"audio_tokens=(1,{spk.AudioTokens.Length})");
 
-var lmResult = pipeline.Lm.Generate(spk.CondEmb, tokenIds,
-    useIoBinding: useIoBinding,
-    exaggeration: exaggeration,
-    maxSteps: maxSteps);
-if (verbose) Console.WriteLine(
-    $"LM: {lmResult.Steps} steps, generated {lmResult.RawGeneratedTokens.Count - 1} tokens");
+// ── Chunking decision ────────────────────────────────────────────────────────
+// ParagraphChunker returns >1 chunks only when input is long enough AND has
+// paragraph breaks (\n\n). Short or single-paragraph inputs collapse to a
+// single chunk; we use the existing one-shot path to avoid orchestration
+// overhead for those.
+var chunks = ParagraphChunker.Chunk(textToSpeak);
+float[] samples;
+if (chunks.Count <= 1)
+{
+    // One-shot path (existing behavior).
+    var lmResult = pipeline.Lm.Generate(spk.CondEmb, tokenIds,
+        useIoBinding: useIoBinding,
+        exaggeration: exaggeration,
+        maxSteps: maxSteps);
+    if (verbose) Console.WriteLine(
+        $"LM: {lmResult.Steps} steps, generated {lmResult.RawGeneratedTokens.Count - 1} tokens");
 
-var speechTokens = lmResult.BuildSpeechTokens(spk.AudioTokens);
-var samples = pipeline.Vocoder.Synthesize(speechTokens, spk.SpeakerEmbeddings, spk.SpeakerFeatures);
+    var speechTokens = lmResult.BuildSpeechTokens(spk.AudioTokens);
+    samples = pipeline.Vocoder.Synthesize(speechTokens, spk.SpeakerEmbeddings, spk.SpeakerFeatures);
+}
+else
+{
+    // Long-form path: ChunkedSynthesizer pipelines LM(N+1) with voc(N) across
+    // chunk boundaries via a Channel<T> producer/consumer. groupSize=1 (no
+    // LM batching) because real paragraphs have different lengths; the
+    // batched mode requires same-length prompts. Pipelining alone still
+    // saves ~7% wall by overlapping vocoder with the next chunk's LM —
+    // see Run 2 in docs/chatterbox_perf_investigation.md.
+    if (verbose)
+        Console.WriteLine($"Chunked into {chunks.Count} paragraphs "
+            + $"(min/max char count: {chunks.Min(c => c.Length)}/{chunks.Max(c => c.Length)})");
+
+    var tokensPerChunk = chunks.Select(c => pipeline.Tokenizer!.WrapForLm(c)).ToArray();
+    var synth = new ChunkedSynthesizer(pipeline);
+    var result = synth.Synthesize(spk, tokensPerChunk,
+        useIoBinding: useIoBinding,
+        exaggeration: exaggeration,
+        maxSteps: maxSteps);
+
+    if (verbose)
+    {
+        for (int i = 0; i < result.ChunkTimings.Count; i++)
+        {
+            var t = result.ChunkTimings[i];
+            Console.WriteLine($"  chunk {i + 1}/{chunks.Count}: "
+                + $"LM {t.LmMs} ms ({t.LmSteps} steps), "
+                + $"voc {t.VocoderMs} ms, "
+                + $"audio {t.AudioSamples / (float)ChatterboxConstants.S3GenSr:F2}s");
+        }
+    }
+
+    // Concatenate per-chunk waveforms in input order. No fades / silence
+    // injection between chunks — paragraph boundaries already cue the TTS
+    // to taper naturally, and the LM's STOP_SPEECH emits a brief trailing
+    // silence per chunk.
+    int totalSamples = result.Waveforms.Sum(w => w.Length);
+    samples = new float[totalSamples];
+    int off = 0;
+    foreach (var w in result.Waveforms)
+    {
+        Array.Copy(w, 0, samples, off, w.Length);
+        off += w.Length;
+    }
+}
 synthSw.Stop();
 
 // ── Write WAV ─────────────────────────────────────────────────────────────────
@@ -260,10 +320,11 @@ using (var writer = new WaveFileWriter(outPath, fmt))
 totalSw.Stop();
 
 float audioSeconds = samples.Length / (float)ChatterboxConstants.S3GenSr;
+string chunkInfo = chunks.Count > 1 ? $", {chunks.Count} chunks" : "";
 Console.WriteLine(
     $"Synthesized {audioSeconds:F2}s of audio → {outPath} "
     + $"({totalSw.ElapsedMilliseconds / 1000.0:F1}s total, "
-    + $"{synthSw.ElapsedMilliseconds / 1000.0:F1}s synth)");
+    + $"{synthSw.ElapsedMilliseconds / 1000.0:F1}s synth{chunkInfo})");
 return 0;
 
 
@@ -306,7 +367,11 @@ static void PrintUsage()
           --exaggeration <float>   Conditioning scalar passed to embed_tokens. Default: 0.5.
                                    Typical range 0.0 – 1.0; out-of-range values are
                                    accepted but produce increasingly unusual audio.
-          --max-steps <int>        Cap on LM rollout length. Default: 256.
+          --max-steps <int>        Cap on LM rollout length. Default: 1024.
+                                   The LM naturally emits STOP_SPEECH at a paragraph's
+                                   end (usually 200-500 steps); this cap is a safety
+                                   net. Long-form markdown chunks need more headroom
+                                   than the smoke-bench default of 256.
           --verbose / -v           Print per-stage timing and cache info.
           --help / -h              Show this message.
         """);
