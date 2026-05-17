@@ -54,12 +54,27 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     [ObservableProperty]
     [NotifyCanExecuteChangedFor(nameof(SynthesizeCommand))]
     [NotifyCanExecuteChangedFor(nameof(PlayCommand))]
+    [NotifyCanExecuteChangedFor(nameof(StopCommand))]
     private bool _isBusy;
 
     // True after a synthesis finishes successfully. Enables replay.
     [ObservableProperty]
     [NotifyCanExecuteChangedFor(nameof(PlayCommand))]
     private bool _hasSynthesizedAudio;
+
+    // Mirrors PlaybackService.IsPlaying so the AXAML CanExecute can
+    // re-query. PlaybackService raises IsPlayingChanged; the handler
+    // updates this field.
+    [ObservableProperty]
+    [NotifyCanExecuteChangedFor(nameof(PlayCommand))]
+    [NotifyCanExecuteChangedFor(nameof(StopCommand))]
+    private bool _isPlayingBack;
+
+    // Chunk progress drives the determinate progress bar. ChunksDone is
+    // bound to ProgressBar.Value; TotalChunks to .Maximum. Both zero
+    // when idle (the bar's IsVisible binding to IsBusy hides it then).
+    [ObservableProperty] private int _chunksDone;
+    [ObservableProperty] private int _totalChunks;
 
     // Aligned words from the running/last synthesis. Streamed in as
     // chunks complete.
@@ -92,6 +107,13 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             // Don't overwrite synthesis-in-progress status with "stopped".
             if (!IsBusy) StatusMessage = "Playback stopped.";
         };
+        _playback.IsPlayingChanged += playing => Dispatcher.UIThread.Post(() => IsPlayingBack = playing);
+        // Refresh the position label whenever the total grows — without
+        // this it would only update on tick-timer ticks, so after Stop
+        // (which kills the timer) any chunks still landing would update
+        // the total internally but the label would stay frozen.
+        _playback.TotalChanged += total => Dispatcher.UIThread.Post(() =>
+            PositionLabel = $"{_playback.PositionSeconds:F2} / {total:F2} s");
 
         LoadSettings();
 
@@ -197,6 +219,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         HasSynthesizedAudio = false;
         _lastAlignment = null;
         _lastAudioPath = null;
+        ChunksDone = 0;
+        TotalChunks = 0;
         _synthCts?.Dispose();
         _synthCts = new CancellationTokenSource();
         var token = _synthCts.Token;
@@ -239,13 +263,17 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
                     }
 
                     // Word adds touch the ObservableCollection → must go
-                    // through the dispatcher. Capture ev.Words by local so
-                    // the closure doesn't race a subsequent chunk's event.
+                    // through the dispatcher. Capture ev by local so the
+                    // closure doesn't race a subsequent chunk's event.
                     var wordsForChunk = ev.Words;
+                    int chunksDone = ev.ChunkIndex + 1;
+                    int totalChunks = ev.TotalChunks;
                     Dispatcher.UIThread.Post(() =>
                     {
                         foreach (var w in wordsForChunk)
                             Words.Add(new WordItemViewModel(w, Words.Count, SeekToWord));
+                        ChunksDone = chunksDone;
+                        TotalChunks = totalChunks;
                     });
                 },
                 onProgress: p => Dispatcher.UIThread.Post(() =>
@@ -253,6 +281,11 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
                     StatusMessage = p.ChunkIndex is int idx && p.TotalChunks is int total
                         ? $"{p.Phase} ({idx}/{total})"
                         : p.Phase;
+                    // Pick up the total at the "chunked into N paragraphs"
+                    // phase so the progress bar can render proportionally
+                    // before any chunk has landed.
+                    if (p.TotalChunks is int t && t > TotalChunks)
+                        TotalChunks = t;
                 }),
                 cancellationToken: token);
 
@@ -301,10 +334,25 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         catch (Exception ex) { StatusMessage = $"Play failed: {ex.Message}"; }
     }
 
-    private bool CanPlay() => HasSynthesizedAudio && !IsBusy && _playback.CanPlayOnThisPlatform;
+    // Play is enabled when we have audio AND nothing is currently
+    // playing/synthesizing — i.e. not while a previous Synthesize is
+    // still streaming and not while the existing playback is active.
+    private bool CanPlay() => HasSynthesizedAudio && !IsBusy && !IsPlayingBack
+        && _playback.CanPlayOnThisPlatform;
 
-    [RelayCommand]
-    private void Stop() => _playback.Stop();
+    [RelayCommand(CanExecute = nameof(CanStop))]
+    private void Stop()
+    {
+        // Cancel synthesis too — otherwise the alignment chain keeps
+        // running, words keep landing, and the user thinks "Stop" didn't
+        // actually stop anything.
+        _synthCts?.Cancel();
+        _playback.Stop();
+    }
+
+    // Stop is enabled when there's something TO stop: either an active
+    // synth run or active playback.
+    private bool CanStop() => IsBusy || IsPlayingBack;
 
     // Click-to-seek wiring. Each WordItemViewModel calls this back via a
     // delegate set at construction (avoids per-word command boilerplate +

@@ -1,6 +1,8 @@
 using System;
 using System.Diagnostics;
 using System.IO;
+using System.Threading.Channels;
+using System.Threading.Tasks;
 using Avalonia.Threading;
 using NAudio.Wave;
 
@@ -43,19 +45,34 @@ public sealed class PlaybackService : IDisposable
     private Process? _ffplayProcess;
     private Stream? _ffplayStdin;
 
+    // Audio is enqueued via AppendSamples and drained by a background
+    // writer task. Without this decoupling, AppendSamples would block
+    // its caller (the alignment chain) under ffplay-stdin or
+    // BufferedWaveProvider backpressure, stalling subsequent chunks
+    // until the audio backend caught up — chunks would land in bursts
+    // instead of streaming.
+    private Channel<float[]>? _audioChannel;
+    private Task? _writerTask;
+
     private DispatcherTimer? _tickTimer;
     private DateTime _startedUtc;
     private int _sampleRate;
     private bool _endOfStream;
 
-    // Best-known total duration; grows as chunks append. Read on the
-    // dispatcher tick (UI thread), written by AppendSamples (background
-    // thread). Guarded by _totalLock — torn reads of a double would
-    // briefly clamp PositionSeconds to garbage.
     private readonly object _totalLock = new();
     private double _totalEstimatedSec;
 
-    public bool IsPlaying { get; private set; }
+    private bool _isPlaying;
+    public bool IsPlaying
+    {
+        get => _isPlaying;
+        private set
+        {
+            if (_isPlaying == value) return;
+            _isPlaying = value;
+            IsPlayingChanged?.Invoke(value);
+        }
+    }
     public double PositionSeconds { get; private set; }
 
     /// <summary>Running best-known total duration of the audio that's
@@ -68,6 +85,17 @@ public sealed class PlaybackService : IDisposable
 
     public event Action<double>? PositionChanged;
     public event Action<double>? PlaybackStopped;
+
+    /// <summary>Fired whenever <see cref="TotalEstimatedSeconds"/>
+    /// changes — i.e. on every <see cref="AppendSamples"/> call and when
+    /// <see cref="SeekIntoFile"/> sets a known total. Lets UI refresh
+    /// the position label even when the tick timer isn't running (e.g.
+    /// after the user clicked Stop while synth is still emitting).</summary>
+    public event Action<double>? TotalChanged;
+
+    /// <summary>Fired when <see cref="IsPlaying"/> transitions. Lets the
+    /// UI re-query the Stop/Play CanExecute predicates.</summary>
+    public event Action<bool>? IsPlayingChanged;
 
     public bool CanPlayOnThisPlatform => OperatingSystem.IsWindows() || FfplayPath is not null;
     public string? UnavailableReason => CanPlayOnThisPlatform
@@ -91,13 +119,12 @@ public sealed class PlaybackService : IDisposable
         if (OperatingSystem.IsWindows())
         {
             var fmt = WaveFormat.CreateIeeeFloatWaveFormat(sampleRate, 1);
-            // 30 s of headroom — long-form chunks deliver in 1-5 s
-            // bursts, vocoder is faster than realtime, so this never
-            // backs up in practice but the cap protects against runaway
-            // memory in pathological cases.
+            // 60 s of headroom — the writer task throttles when the
+            // buffer is more than half-full, so this is the absolute
+            // ceiling rather than the working size.
             _bufferedProvider = new BufferedWaveProvider(fmt)
             {
-                BufferLength = sampleRate * 4 /* bytes per float */ * 30,
+                BufferLength = sampleRate * 4 /* bytes per float */ * 60,
                 DiscardOnBufferOverflow = false,
             };
             _waveOut = new WaveOutEvent();
@@ -111,62 +138,115 @@ public sealed class PlaybackService : IDisposable
             StartFfplayStdin(sampleRate);
         }
 
+        // Unbounded so AppendSamples NEVER blocks its caller — the synth
+        // pipeline must stay free to produce the next chunk while audio
+        // backpressure naturally throttles the writer (not the producer).
+        _audioChannel = Channel.CreateUnbounded<float[]>(new UnboundedChannelOptions
+        {
+            SingleReader = true,
+            SingleWriter = false,
+        });
+        _writerTask = Task.Run(WriteLoop);
+
         IsPlaying = true;
         _startedUtc = DateTime.UtcNow;
         StartTickTimer();
     }
 
-    /// <summary>Append a chunk of float32 mono samples (Chatterbox's
-    /// native format). Returns when the bytes are queued, not when
-    /// they've played. <b>Do NOT call from the UI thread:</b> on the
-    /// ffplay backend, the stdin write blocks under backpressure (ffplay
-    /// only drains as fast as it plays, ~realtime), which would freeze
-    /// the dispatcher for seconds at a time. Call from a background
-    /// thread — the alignment-chain Task in SynthesisService is a
-    /// natural caller. Single-writer expected (the alignment chain is
-    /// serialized); no internal locking guards concurrent writers.</summary>
+    /// <summary>Append a chunk of float32 mono samples. Non-blocking:
+    /// enqueues to an internal channel that a background writer task
+    /// drains into the audio backend. Updating the total here (rather
+    /// than in the writer) keeps <see cref="TotalEstimatedSeconds"/>
+    /// accurate to what's been *produced*, not what's been played.</summary>
     public void AppendSamples(float[] samples)
     {
         if (samples.Length == 0) return;
-        lock (_totalLock) _totalEstimatedSec += samples.Length / (double)_sampleRate;
-
-        if (OperatingSystem.IsWindows())
+        double newTotal;
+        lock (_totalLock)
         {
-            if (_bufferedProvider is null) return;
-            // BufferedWaveProvider takes a byte[] (it's PCM-agnostic).
-            // We're feeding IEEE-754 float32, so 4 bytes per sample.
-            var bytes = new byte[samples.Length * 4];
-            Buffer.BlockCopy(samples, 0, bytes, 0, bytes.Length);
-            _bufferedProvider.AddSamples(bytes, 0, bytes.Length);
+            _totalEstimatedSec += samples.Length / (double)_sampleRate;
+            newTotal = _totalEstimatedSec;
         }
-        else
-        {
-            if (_ffplayStdin is null) return;
-            var bytes = new byte[samples.Length * 4];
-            Buffer.BlockCopy(samples, 0, bytes, 0, bytes.Length);
-            try
-            {
-                _ffplayStdin.Write(bytes, 0, bytes.Length);
-                _ffplayStdin.Flush();
-            }
-            catch (Exception)
-            {
-                // Pipe broken (ffplay exited or was killed). The tick
-                // timer's EOF detection will pick it up on the next tick.
-            }
-        }
+        TotalChanged?.Invoke(newTotal);
+        _audioChannel?.Writer.TryWrite(samples);
     }
 
-    /// <summary>Signal that no more samples will be appended. The tick
-    /// timer will fire <see cref="PlaybackStopped"/> once the buffer
-    /// drains (Windows) or ffplay exits (other).</summary>
+    /// <summary>Background drain loop. Reads from the audio channel and
+    /// writes to whichever backend is active. On Windows it throttles
+    /// against the BufferedWaveProvider so we don't blow the 60 s cap;
+    /// on ffplay the stdin <see cref="Stream.Write"/> blocks naturally
+    /// when the pipe is full (kernel-level backpressure).</summary>
+    private async Task WriteLoop()
+    {
+        var channel = _audioChannel;
+        if (channel is null) return;
+        try
+        {
+            await foreach (var samples in channel.Reader.ReadAllAsync())
+            {
+                var bytes = new byte[samples.Length * 4];
+                Buffer.BlockCopy(samples, 0, bytes, 0, bytes.Length);
+
+                if (OperatingSystem.IsWindows())
+                {
+                    var bp = _bufferedProvider;
+                    if (bp is null) break;
+                    // Throttle when the buffer is over half-full so we
+                    // don't hit the 60 s cap. AddSamples would throw with
+                    // DiscardOnBufferOverflow=false; better to wait.
+                    while (bp.BufferedDuration.TotalSeconds > 30)
+                    {
+                        await Task.Delay(100).ConfigureAwait(false);
+                        if (_bufferedProvider is null) return;
+                    }
+                    try { bp.AddSamples(bytes, 0, bytes.Length); }
+                    catch (InvalidOperationException) { break; /* torn down */ }
+                }
+                else
+                {
+                    var stdin = _ffplayStdin;
+                    if (stdin is null) break;
+                    try
+                    {
+                        stdin.Write(bytes, 0, bytes.Length);
+                        stdin.Flush();
+                    }
+                    catch
+                    {
+                        // Pipe broken (ffplay exited or killed). Exit the
+                        // loop — the tick timer's EOF detection will
+                        // notice and Stop() the rest.
+                        break;
+                    }
+                }
+            }
+        }
+        catch (ChannelClosedException) { /* channel completed by Stop/EndOfStream */ }
+    }
+
+    /// <summary>Signal that no more samples will be appended. Completes
+    /// the audio channel so the writer task drains and exits; the tick
+    /// timer fires <see cref="PlaybackStopped"/> once the buffer empties
+    /// (Windows) or ffplay exits (other).</summary>
     public void EndOfStream()
     {
         _endOfStream = true;
+        _audioChannel?.Writer.TryComplete();
+        // ffplay stdin must be closed AFTER the writer task drains; we
+        // can't close it here or any pending WriteLoop iteration would
+        // hit a broken pipe. The WriteLoop's `await foreach` exits
+        // naturally on channel completion, then EndOfStreamDrain closes
+        // stdin to tell ffplay "play out the buffer and exit".
+        _ = EndOfStreamDrainAsync();
+    }
+
+    private async Task EndOfStreamDrainAsync()
+    {
+        var writer = _writerTask;
+        if (writer is not null)
+            try { await writer.ConfigureAwait(false); } catch { }
         if (!OperatingSystem.IsWindows() && _ffplayStdin is not null)
         {
-            // Closing stdin tells ffplay "no more input"; it'll play to
-            // the end of its decoded buffer then exit naturally.
             try { _ffplayStdin.Close(); } catch { /* already closed */ }
         }
     }
@@ -220,6 +300,7 @@ public sealed class PlaybackService : IDisposable
 
         _sampleRate = 0;  // unused on the file-playback path
         lock (_totalLock) _totalEstimatedSec = audioDurationSec;
+        TotalChanged?.Invoke(audioDurationSec);
         seconds = Math.Clamp(seconds, 0, audioDurationSec);
         _endOfStream = true;
 
@@ -251,6 +332,15 @@ public sealed class PlaybackService : IDisposable
     {
         if (!IsPlaying && _tickTimer is null) return;
         StopTickTimer();
+        // Complete the channel first so the writer task exits cleanly
+        // instead of being killed mid-Write.
+        _audioChannel?.Writer.TryComplete();
+        _audioChannel = null;
+        // Don't wait for _writerTask here — Stop is sync and the writer
+        // might be blocked in a Windows AddSamples or a Linux pipe Write
+        // that hasn't unblocked yet. It'll exit on its own once the
+        // backend below is torn down.
+        _writerTask = null;
         if (_waveOut is not null)
         {
             try { _waveOut.Stop(); } catch { /* shutdown race */ }

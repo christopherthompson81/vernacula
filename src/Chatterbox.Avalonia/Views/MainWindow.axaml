@@ -111,9 +111,18 @@
                     Command="{Binding SynthesizeCommand}"
                     FontWeight="SemiBold"
                     HorizontalAlignment="Stretch" />
-            <ProgressBar IsIndeterminate="True"
-                         IsVisible="{Binding IsBusy}"
-                         Height="3" Margin="0,4,0,0" />
+            <!-- Determinate once TotalChunks > 0 (set by the "chunked into
+                 N paragraphs" progress event); indeterminate during the
+                 model-load + chunking prefix. ShowProgressText surfaces
+                 the "X/N" without needing a separate label. -->
+            <ProgressBar IsVisible="{Binding IsBusy}"
+                         IsIndeterminate="{Binding !TotalChunks}"
+                         Minimum="0"
+                         Maximum="{Binding TotalChunks}"
+                         Value="{Binding ChunksDone}"
+                         ShowProgressText="True"
+                         ProgressTextFormat="{}{0:0} / {3:0} chunks"
+                         Height="14" Margin="0,4,0,0" />
 
             <Separator Margin="0,12,0,0" />
 
