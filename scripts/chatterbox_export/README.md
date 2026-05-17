@@ -24,15 +24,16 @@ revision. Details: Run 1 in the investigation log.
 
 ## Files
 
-- `export_chatterbox_to_onnx.py` — main export entry point. Emits
-  the full flagship bundle by default: `embed_tokens.onnx`,
-  `speech_encoder.onnx`, `language_model.onnx`,
-  `conditional_decoder.onnx` (monolithic), `flow_encoder.onnx` +
-  `cfm_estimator.onnx` + `mel2wav.onnx` (split for C# orchestration),
-  `conditional_decoder_loop.onnx` (merged-Loop, Path B / Run 10 of
-  `docs/chatterbox_perf_investigation.md`), plus `export-report.json`.
-  Pass `--no-split-cond-decoder` / `--no-merge-cond-decoder` to get
-  the smaller pre-perf-work bundle.
+- `export_chatterbox_to_onnx.py` — main export entry point. Default
+  emits the flagship runtime bundle: `embed_tokens.onnx`,
+  `speech_encoder.onnx`, `language_model.onnx`, `flow_encoder.onnx`
+  + `cfm_estimator.onnx` + `mel2wav.onnx` (split for C# orchestration
+  fallback), `conditional_decoder_loop.onnx` (merged-Loop, Path B /
+  Run 10 of `docs/chatterbox_perf_investigation.md` — the C# Vocoder
+  picks this at load time), plus `export-report.json`. Pass
+  `--no-split-cond-decoder --no-merge-cond-decoder` to swap the split +
+  merged graphs for a single `conditional_decoder.onnx` (smaller
+  pre-perf-work bundle; useful on disk-constrained dev).
 - `_chatterbox_internals.py` — thin export wrappers around upstream
   `s3gen` / `t3` modules (`PrepareConditionalsModel`, `InputsEmbeds`,
   `ConditionalDecoder`, `ISTFT`). Most of what used to be vendored
