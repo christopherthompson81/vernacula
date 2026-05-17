@@ -292,11 +292,9 @@ if (chunks.Count <= 1)
     var oneShotAudio = pipeline.Vocoder.Synthesize(speechTokens, spk.SpeakerEmbeddings, spk.SpeakerFeatures);
     // Normalize the one-shot path to the same shape as the chunked path
     // (single-element chunkAudios + a one-element chunks list). Keeps the
-    // alignment + WAV-write code below path-agnostic. If the chunker
-    // returned 0 entries (defensive — shouldn't happen since we already
-    // checked textToSpeak isn't whitespace-only), treat the input as the
-    // single chunk so the alignment metadata still has a text reference.
-    if (chunks.Count == 0) chunks.Add(textToSpeak);
+    // alignment + WAV-write code below path-agnostic. The textToSpeak
+    // whitespace check at the top of this section guarantees the chunker
+    // returns ≥1 entries, so we don't guard chunks.Count == 0 here.
     chunkAudios = new[] { oneShotAudio };
 }
 else
@@ -415,9 +413,18 @@ if (alignmentOut is not null)
         chunks = chunkRecords,
         words = allWords,
     };
+    // Snake-case schema (start_seconds, chunk_index, ...) is part of the
+    // consumer contract — don't add PropertyNamingPolicy.CamelCase here
+    // unless you also update every downstream parser. Default options
+    // preserve declared anonymous-type member names verbatim.
     var json = System.Text.Json.JsonSerializer.Serialize(payload,
         new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
-    File.WriteAllText(alignmentOut, json);
+    // Atomic write: serialize to a sibling .tmp, then rename. A SIGINT
+    // mid-File.WriteAllText would otherwise leave a truncated JSON that
+    // downstream consumers fail to parse.
+    var tmpPath = alignmentOut + ".tmp";
+    File.WriteAllText(tmpPath, json);
+    File.Move(tmpPath, alignmentOut, overwrite: true);
 
     if (verbose)
         Console.WriteLine($"Alignment: {alignSw.ElapsedMilliseconds} ms, "
