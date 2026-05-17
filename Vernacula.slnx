@@ -30,4 +30,7 @@
   <Project Path="tests/Chatterbox.Tests/Chatterbox.Tests.csproj">
     <Platform Project="x64" />
   </Project>
+  <Project Path="tests/Vernacula.Tests/Vernacula.Tests.csproj">
+    <Platform Project="x64" />
+  </Project>
 </Solution>
