@@ -50,6 +50,8 @@ internal static class Program
         bool useIoBinding = true;
         string? text = null;
         string? tokenizerJson = null;
+        int benchChunks = 1;
+        bool pipelined = false;
         for (int i = 0; i < args.Length; i++)
         {
             switch (args[i])
@@ -63,6 +65,25 @@ internal static class Program
                 case "--no-io-binding":  useIoBinding = false; break;
                 case "--text":           text = args[++i]; break;
                 case "--tokenizer-json": tokenizerJson = args[++i]; break;
+                case "--bench-chunks":
+                    // Loop the post-load synthesis N times. The pipeline
+                    // (sessions, voice embedding, tokenization) is set up
+                    // once; each iteration reruns LM + vocoder on the same
+                    // text. Use this to measure per-chunk steady-state cost
+                    // amortized over warmup — drives the long-form perf work.
+                    if (!int.TryParse(args[++i], out benchChunks) || benchChunks < 1)
+                    {
+                        Console.Error.WriteLine("--bench-chunks expects a positive integer.");
+                        return 2;
+                    }
+                    break;
+                case "--pipelined":
+                    // Use ChunkedSynthesizer (LM and Vocoder concurrent on
+                    // separate threads, one chunk apart). Only meaningful
+                    // with --bench-chunks N for N>1; for N=1 collapses to
+                    // a serial single-chunk call.
+                    pipelined = true;
+                    break;
                 default:
                     Console.Error.WriteLine($"Unknown arg: {args[i]}");
                     return 2;
@@ -178,43 +199,118 @@ internal static class Program
                 + "Pass --text \"...\" for arbitrary input.");
         }
 
-        // ── LM rollout ─────────────────────────────────────────────────────
-        var lmSw = Stopwatch.StartNew();
-        var lmResult = lm.Generate(spk.CondEmb, inputIds,
-            useIoBinding: useIoBinding,
-            diagDir: diagDir);
-        lmSw.Stop();
-        Console.WriteLine($"LM ({(useIoBinding ? "io-binding" : "basic")}): {lmResult.Steps} steps, "
-            + $"generated {lmResult.RawGeneratedTokens.Count - 1} tokens "
-            + $"[{lmSw.ElapsedMilliseconds} ms, {lmSw.ElapsedMilliseconds / (double)lmResult.Steps:F1} ms/step]");
+        // ── Synthesis loop ─────────────────────────────────────────────────
+        // benchChunks=1 (default): single-chunk run, writes WAV and prints
+        // per-stage timing as before. benchChunks>1: same chunk N times.
+        // Two execution modes:
+        //   serial (default): LM and vocoder run sequentially per chunk
+        //   --pipelined: ChunkedSynthesizer overlaps LM(N+1) with voc(N)
+        // Drives the long-form perf measurements in
+        // docs/chatterbox_perf_investigation.md.
+        var chunkLmMs = new long[benchChunks];
+        var chunkVocMs = new long[benchChunks];
+        var chunkSteps = new int[benchChunks];
+        float[]? lastSamples = null;
+        long pipelinedChunkWallMs = 0;  // populated when --pipelined; serial branch uses sums below
 
-        if (diagDir is not null)
+        if (pipelined && benchChunks > 1)
         {
-            File.WriteAllBytes(Path.Combine(diagDir, "cs_tokens.bin"),
-                System.Runtime.InteropServices.MemoryMarshal.AsBytes<long>(
-                    lmResult.RawGeneratedTokens.ToArray()).ToArray());
-            Console.WriteLine($"[diag] wrote {diagDir}/cs_tokens.bin ({lmResult.RawGeneratedTokens.Count} tokens)");
+            var synth = new ChunkedSynthesizer(lm, vocoder);
+            var tokensPerChunk = Enumerable.Repeat(inputIds, benchChunks).ToArray();
+            var result = synth.Synthesize(spk, tokensPerChunk, useIoBinding: useIoBinding);
+            for (int chunk = 0; chunk < benchChunks; chunk++)
+            {
+                var t = result.ChunkTimings[chunk];
+                chunkLmMs[chunk] = t.LmMs;
+                chunkVocMs[chunk] = t.VocoderMs;
+                chunkSteps[chunk] = t.LmSteps;
+                lastSamples = result.Waveforms[chunk];
+                Console.WriteLine($"  chunk {chunk + 1}/{benchChunks}: "
+                    + $"LM {t.LmMs} ms ({t.LmSteps} steps), "
+                    + $"voc {t.VocoderMs} ms, "
+                    + $"audio {t.AudioSamples / (float)ChatterboxConstants.S3GenSr:F2}s");
+            }
+            pipelinedChunkWallMs = result.TotalWallMs;
+        }
+        else
+        {
+            for (int chunk = 0; chunk < benchChunks; chunk++)
+            {
+                var lmSw = Stopwatch.StartNew();
+                var lmResult = lm.Generate(spk.CondEmb, inputIds,
+                    useIoBinding: useIoBinding,
+                    diagDir: chunk == 0 ? diagDir : null);  // only diag the first chunk
+                lmSw.Stop();
+                chunkLmMs[chunk] = lmSw.ElapsedMilliseconds;
+                chunkSteps[chunk] = lmResult.Steps;
+
+                if (chunk == 0 && diagDir is not null)
+                {
+                    File.WriteAllBytes(Path.Combine(diagDir, "cs_tokens.bin"),
+                        System.Runtime.InteropServices.MemoryMarshal.AsBytes<long>(
+                            lmResult.RawGeneratedTokens.ToArray()).ToArray());
+                    Console.WriteLine($"[diag] wrote {diagDir}/cs_tokens.bin ({lmResult.RawGeneratedTokens.Count} tokens)");
+                }
+
+                var speechTokens = lmResult.BuildSpeechTokens(spk.AudioTokens);
+                sw.Restart();
+                var samples = vocoder.Synthesize(speechTokens, spk.SpeakerEmbeddings, spk.SpeakerFeatures);
+                sw.Stop();
+                chunkVocMs[chunk] = sw.ElapsedMilliseconds;
+                lastSamples = samples;
+
+                if (benchChunks == 1)
+                {
+                    // Existing single-chunk verbose output.
+                    Console.WriteLine($"LM ({(useIoBinding ? "io-binding" : "basic")}): {lmResult.Steps} steps, "
+                        + $"generated {lmResult.RawGeneratedTokens.Count - 1} tokens "
+                        + $"[{chunkLmMs[chunk]} ms, {chunkLmMs[chunk] / (double)lmResult.Steps:F1} ms/step]");
+                    Console.WriteLine($"speech_tokens: shape=(1, {speechTokens.Length})  "
+                        + $"({spk.AudioTokens.Length} from voice + {speechTokens.Length - spk.AudioTokens.Length} from LM)");
+                    Console.WriteLine($"cond_decoder ({vocoder.Mode}): waveform=(1, {samples.Length}) "
+                        + $"→ {samples.Length / (float)ChatterboxConstants.S3GenSr:F2}s  [{chunkVocMs[chunk]} ms]");
+                }
+                else
+                {
+                    Console.WriteLine($"  chunk {chunk + 1}/{benchChunks}: "
+                        + $"LM {chunkLmMs[chunk]} ms ({chunkSteps[chunk]} steps), "
+                        + $"voc {chunkVocMs[chunk]} ms, "
+                        + $"audio {samples.Length / (float)ChatterboxConstants.S3GenSr:F2}s");
+                }
+            }
         }
 
-        // ── Build speech_tokens + vocoder ──────────────────────────────────
-        var speechTokens = lmResult.BuildSpeechTokens(spk.AudioTokens);
-        Console.WriteLine($"speech_tokens: shape=(1, {speechTokens.Length})  "
-            + $"({spk.AudioTokens.Length} from voice + {speechTokens.Length - spk.AudioTokens.Length} from LM)");
-
-        sw.Restart();
-        var samples = vocoder.Synthesize(speechTokens, spk.SpeakerEmbeddings, spk.SpeakerFeatures);
-        sw.Stop();
-        Console.WriteLine($"cond_decoder ({vocoder.Mode}): waveform=(1, {samples.Length}) "
-            + $"→ {samples.Length / (float)ChatterboxConstants.S3GenSr:F2}s  [{sw.ElapsedMilliseconds} ms]");
-
-        // ── Write WAV ──────────────────────────────────────────────────────
+        // ── Write last chunk's WAV (or only chunk in non-bench mode) ──────
         var fmt = WaveFormat.CreateIeeeFloatWaveFormat(ChatterboxConstants.S3GenSr, 1);
         using (var writer = new WaveFileWriter(outPath, fmt))
         {
-            writer.WriteSamples(samples, 0, samples.Length);
+            writer.WriteSamples(lastSamples!, 0, lastSamples!.Length);
         }
         totalSw.Stop();
-        Console.WriteLine($"Wrote {outPath}  [total {totalSw.ElapsedMilliseconds / 1000.0:F1}s]");
+
+        if (benchChunks > 1)
+        {
+            long lmSum = 0, vocSum = 0;
+            foreach (var v in chunkLmMs) lmSum += v;
+            foreach (var v in chunkVocMs) vocSum += v;
+            // For pipelined mode, "chunks-total" is the actual wall measured
+            // by ChunkedSynthesizer (not the sum, which over-counts because
+            // LM and vocoder overlap). For serial mode, sum and chunks-total
+            // are the same thing.
+            double chunksTotalSec = pipelined
+                ? pipelinedChunkWallMs / 1000.0
+                : (lmSum + vocSum) / 1000.0;
+            Console.WriteLine($"Bench: {benchChunks} chunks ({(pipelined ? "pipelined" : "serial")}), "
+                + $"LM avg {lmSum / (double)benchChunks:F0} ms, "
+                + $"voc avg {vocSum / (double)benchChunks:F0} ms, "
+                + $"per-chunk-sum-avg {(lmSum + vocSum) / (double)benchChunks:F0} ms, "
+                + $"chunks-wall {chunksTotalSec:F1}s "
+                + $"[total wall {totalSw.ElapsedMilliseconds / 1000.0:F1}s]");
+        }
+        else
+        {
+            Console.WriteLine($"Wrote {outPath}  [total {totalSw.ElapsedMilliseconds / 1000.0:F1}s]");
+        }
         return 0;
     }
 
