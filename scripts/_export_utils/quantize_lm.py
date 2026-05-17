@@ -91,6 +91,9 @@ def quantize_int8_dynamic(input_path: Path, output_path: Path) -> None:
     # by default; safer to copy the source into a temp location first.
     from onnxruntime.quantization import QuantType, quantize_dynamic
 
+    print("[int8] WARNING: Run 8b in docs/chatterbox_perf_investigation.md "
+          "found int8 dynamic falls back to CPU on CUDA EP for this LM — "
+          "3.4× slower and quality collapse at step 0. Continuing anyway.")
     print(f"[int8] dynamic-quantizing {input_path} -> {output_path} ...")
     t0 = time.time()
     quantize_dynamic(

@@ -572,7 +572,7 @@ public sealed class AcousticLM : IDisposable
         IDisposableReadOnlyCollection<OrtValue> prefillOutputs;
         {
             using var prefillEmbeds = MakeEmbedsOrtValue(
-                inputsEmbeds, [1L, sTotal, LlmHidden], out _);
+                inputsEmbeds, [1L, sTotal, LlmHidden], out var prefillEmbedsScratch);
             using var prefillMask = OrtValue.CreateTensorValueFromMemory(
                 attentionMask, [1L, sTotal]);
             using var binding = _lm.CreateIoBinding();
@@ -591,6 +591,7 @@ public sealed class AcousticLM : IDisposable
             }
             _lm.RunWithBinding(runOpts, binding);
             prefillOutputs = binding.GetOutputValues();
+            GC.KeepAlive(prefillEmbedsScratch);
         }
         foreach (var v in emptyPastValues) v.Dispose();
 

@@ -116,6 +116,14 @@ public sealed class ChunkedSynthesizer
         var timings = new ChunkTiming[n];
         var totalSw = Stopwatch.StartNew();
 
+        // Cancellation-on-consumer-failure: bound=1 means a vocoder throw
+        // would otherwise leave the LM blocked forever on WriteAsync, and
+        // the post-loop `lmTask.GetAwaiter().GetResult()` would deadlock.
+        // The token unblocks WriteAsync with an OperationCanceledException
+        // which the producer's finally still translates into a normal
+        // channel.Complete().
+        using var cts = new CancellationTokenSource();
+
         // ── Producer: LM ─────────────────────────────────────────────
         var lmTask = Task.Run(() =>
         {
@@ -132,7 +140,7 @@ public sealed class ChunkedSynthesizer
                     sw.Stop();
                     var speechTokens = lm.BuildSpeechTokens(speaker.AudioTokens);
                     // Block if the vocoder hasn't drained the previous one yet.
-                    channel.Writer.WriteAsync((i, speechTokens, sw.ElapsedMilliseconds, lm.Steps))
+                    channel.Writer.WriteAsync((i, speechTokens, sw.ElapsedMilliseconds, lm.Steps), cts.Token)
                                   .AsTask().GetAwaiter().GetResult();
                 }
             }
@@ -146,15 +154,23 @@ public sealed class ChunkedSynthesizer
         // Runs on the current thread. Each iteration may block waiting
         // for the next LM output, but the LM is on another thread, so
         // we're not stalling its work.
-        foreach (var (idx, speechTokens, lmMs, lmSteps) in
-                 channel.Reader.ReadAllAsync().ToBlockingEnumerable())
+        try
         {
-            var sw = Stopwatch.StartNew();
-            var wav = _vocoder.Synthesize(
-                speechTokens, speaker.SpeakerEmbeddings, speaker.SpeakerFeatures);
-            sw.Stop();
-            waveforms[idx] = wav;
-            timings[idx] = new ChunkTiming(idx, lmMs, lmSteps, sw.ElapsedMilliseconds, wav.Length);
+            foreach (var (idx, speechTokens, lmMs, lmSteps) in
+                     channel.Reader.ReadAllAsync().ToBlockingEnumerable())
+            {
+                var sw = Stopwatch.StartNew();
+                var wav = _vocoder.Synthesize(
+                    speechTokens, speaker.SpeakerEmbeddings, speaker.SpeakerFeatures);
+                sw.Stop();
+                waveforms[idx] = wav;
+                timings[idx] = new ChunkTiming(idx, lmMs, lmSteps, sw.ElapsedMilliseconds, wav.Length);
+            }
+        }
+        catch
+        {
+            cts.Cancel();
+            throw;
         }
 
         // Surface any LM exception that the channel.Complete() hid.
@@ -196,6 +212,10 @@ public sealed class ChunkedSynthesizer
         var timings = new ChunkTiming[n];
         var totalSw = Stopwatch.StartNew();
 
+        // See the sibling Synthesize() for the rationale — vocoder throw
+        // would otherwise deadlock the bounded-channel producer.
+        using var cts = new CancellationTokenSource();
+
         var lmTask = Task.Run(() =>
         {
             try
@@ -226,7 +246,7 @@ public sealed class ChunkedSynthesizer
                         speechTokensPerB[b] = batched.PerChunkResults[b].BuildSpeechTokens(speaker.AudioTokens);
                         lmStepsPerB[b] = batched.PerChunkResults[b].Steps;
                     }
-                    channel.Writer.WriteAsync((produced, speechTokensPerB, sw.ElapsedMilliseconds, lmStepsPerB))
+                    channel.Writer.WriteAsync((produced, speechTokensPerB, sw.ElapsedMilliseconds, lmStepsPerB), cts.Token)
                                   .AsTask().GetAwaiter().GetResult();
                     produced += B;
                 }
@@ -237,26 +257,34 @@ public sealed class ChunkedSynthesizer
             }
         });
 
-        foreach (var (groupStartIdx, speechTokensPerB, lmMs, lmSteps) in
-                 channel.Reader.ReadAllAsync().ToBlockingEnumerable())
+        try
         {
-            int B = speechTokensPerB.Length;
-            var sw = Stopwatch.StartNew();
-            var groupWavs = _vocoder.SynthesizeBatch(
-                speechTokensPerB, speaker.SpeakerEmbeddings, speaker.SpeakerFeatures);
-            sw.Stop();
-            long vocMs = sw.ElapsedMilliseconds;
-            for (int b = 0; b < B; b++)
+            foreach (var (groupStartIdx, speechTokensPerB, lmMs, lmSteps) in
+                     channel.Reader.ReadAllAsync().ToBlockingEnumerable())
             {
-                int idx = groupStartIdx + b;
-                waveforms[idx] = groupWavs[b];
-                // Both LM and voc were batched — report the per-batch-elem
-                // shares (group wall / B). This lets the summary compute
-                // "per-chunk LM" and "per-chunk voc" symmetrically with
-                // the serial path.
-                timings[idx] = new ChunkTiming(
-                    idx, lmMs / B, lmSteps[b], vocMs / B, groupWavs[b].Length);
+                int B = speechTokensPerB.Length;
+                var sw = Stopwatch.StartNew();
+                var groupWavs = _vocoder.SynthesizeBatch(
+                    speechTokensPerB, speaker.SpeakerEmbeddings, speaker.SpeakerFeatures);
+                sw.Stop();
+                long vocMs = sw.ElapsedMilliseconds;
+                for (int b = 0; b < B; b++)
+                {
+                    int idx = groupStartIdx + b;
+                    waveforms[idx] = groupWavs[b];
+                    // Both LM and voc were batched — report the per-batch-elem
+                    // shares (group wall / B). This lets the summary compute
+                    // "per-chunk LM" and "per-chunk voc" symmetrically with
+                    // the serial path.
+                    timings[idx] = new ChunkTiming(
+                        idx, lmMs / B, lmSteps[b], vocMs / B, groupWavs[b].Length);
+                }
             }
+        }
+        catch
+        {
+            cts.Cancel();
+            throw;
         }
 
         lmTask.GetAwaiter().GetResult();
