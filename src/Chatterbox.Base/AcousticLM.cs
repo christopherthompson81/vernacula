@@ -136,6 +136,219 @@ public sealed class AcousticLM : IDisposable
     }
 
     /// <summary>
+    /// Result of <see cref="GenerateBatch"/>: per-element rollouts in
+    /// input order, plus the wall-clock steps actually run (the inner
+    /// loop runs until all elements emit STOP or maxSteps is hit, so
+    /// individual elements may have completed earlier).
+    /// </summary>
+    public sealed record BatchedAcousticLmResult(
+        IReadOnlyList<AcousticLmResult> PerChunkResults,
+        int Steps);
+
+    /// <summary>
+    /// Generate B chunks concurrently through a single batched LM
+    /// rollout. Reaps the amortization benefit measured in Run 3 of
+    /// <c>docs/chatterbox_perf_investigation.md</c> — at B=4 on fp32,
+    /// per-batch-element step time drops from 14.0 ms (B=1) to 7.8 ms,
+    /// translating to ~31% wall reduction per chunk in long-form synth.
+    ///
+    /// MVP constraints (Phase 1 — Phase 2 will relax both):
+    ///   - All elements must share the same text-prompt length and
+    ///     the same cond_emb sequence length. Caller pads in advance
+    ///     if needed (chunk the text uniformly to keep this honest).
+    ///   - Inner loop runs until ALL elements have emitted STOP_SPEECH
+    ///     or maxSteps is hit; doesn't shrink the active batch as
+    ///     elements complete early. Elements that finished early
+    ///     waste their slot in subsequent steps. This is the simplest
+    ///     correct implementation; per-element batch shrinking is a
+    ///     follow-up if it bites.
+    ///   - Always uses the basic Run path (no IoBinding). IoBinding
+    ///     for B>1 is a separate perf increment.
+    /// </summary>
+    public BatchedAcousticLmResult GenerateBatch(
+        IReadOnlyList<DenseTensor<float>> condEmbs,
+        IReadOnlyList<long[]> textTokenIdsPerChunk,
+        float exaggeration = ChatterboxConstants.DefaultExaggeration,
+        int maxSteps = ChatterboxConstants.DefaultMaxLmSteps,
+        float repetitionPenalty = ChatterboxConstants.DefaultRepetitionPenalty)
+    {
+        const int LlmLayers = ChatterboxConstants.LlmLayers;
+        const int LlmKvHeads = ChatterboxConstants.LlmKvHeads;
+        const int LlmHeadDim = ChatterboxConstants.LlmHeadDim;
+        const int LlmHidden = ChatterboxConstants.LlmHidden;
+
+        int B = condEmbs.Count;
+        if (B == 0 || textTokenIdsPerChunk.Count != B)
+            throw new ArgumentException(
+                $"condEmbs ({B}) and textTokenIdsPerChunk ({textTokenIdsPerChunk.Count}) must be same non-zero length.");
+
+        int sText = textTokenIdsPerChunk[0].Length;
+        int sCond = condEmbs[0].Dimensions[1];
+        for (int b = 0; b < B; b++)
+        {
+            if (textTokenIdsPerChunk[b].Length != sText)
+                throw new ArgumentException(
+                    $"All chunks must have same text-prompt length (MVP); got {textTokenIdsPerChunk[b].Length} vs {sText} at index {b}.");
+            if (condEmbs[b].Dimensions[1] != sCond)
+                throw new ArgumentException(
+                    $"All cond_embs must have same sequence dim (MVP); got {condEmbs[b].Dimensions[1]} vs {sCond} at index {b}.");
+        }
+
+        // ── B-batched text embeddings via a single embed_tokens call ──
+        var idsB = new long[B * sText];
+        var posB = new long[B * sText];
+        for (int b = 0; b < B; b++)
+        {
+            Array.Copy(textTokenIdsPerChunk[b], 0, idsB, b * sText, sText);
+            for (int i = 0; i < sText; i++)
+                posB[b * sText + i] = textTokenIdsPerChunk[b][i] >= ChatterboxConstants.StartSpeechToken ? 0 : i - 1;
+        }
+        var exagB = new float[B];
+        Array.Fill(exagB, exaggeration);
+        using var embOut = _embed.Run(new[]
+        {
+            NamedOnnxValue.CreateFromTensor("input_ids", new DenseTensor<long>(idsB, new[] { B, sText })),
+            NamedOnnxValue.CreateFromTensor("position_ids", new DenseTensor<long>(posB, new[] { B, sText })),
+            NamedOnnxValue.CreateFromTensor("exaggeration", new DenseTensor<float>(exagB, new[] { B })),
+        });
+        var textEmbB = embOut.First().AsTensor<float>().ToArray();  // [B, sText, LlmHidden]
+
+        // ── Build inputs_embeds[B, sTotal, hidden] = concat(cond_emb[b], text_emb[b]) per row ──
+        int sTotal = sCond + sText;
+        var inputsEmbeds = new float[B * sTotal * LlmHidden];
+        for (int b = 0; b < B; b++)
+        {
+            var condArr = condEmbs[b].ToArray();
+            // cond row: copy sCond × hidden floats from condArr to inputsEmbeds[b, 0:sCond, :]
+            Array.Copy(condArr, 0, inputsEmbeds, b * sTotal * LlmHidden, sCond * LlmHidden);
+            // text row: copy sText × hidden floats from textEmbB[b, :, :] to inputsEmbeds[b, sCond:, :]
+            Array.Copy(textEmbB, b * sText * LlmHidden,
+                       inputsEmbeds, b * sTotal * LlmHidden + sCond * LlmHidden,
+                       sText * LlmHidden);
+        }
+
+        // ── State per element ──
+        var perTokens = new List<long>[B];
+        var doneAt = new int[B];
+        for (int b = 0; b < B; b++)
+        {
+            perTokens[b] = new List<long> { ChatterboxConstants.StartSpeechToken };
+            doneAt[b] = -1;
+        }
+
+        // ── attention_mask + past_kv (batched) ──
+        var attentionMask = new long[B * sTotal];
+        Array.Fill(attentionMask, 1);
+        var pastKv = new float[LlmLayers * 2][];
+        var pastKvShape = new int[] { B, LlmKvHeads, 0, LlmHeadDim };
+        for (int k = 0; k < pastKv.Length; k++) pastKv[k] = [];
+
+        int actualSteps = 0;
+        for (int step = 0; step < maxSteps; step++)
+        {
+            actualSteps = step + 1;
+
+            int seqLen = step == 0 ? sTotal : 1;
+            var embedT = new DenseTensor<float>(inputsEmbeds, new[] { B, seqLen, LlmHidden });
+            var attnMaskPerB = attentionMask.Length / B;
+            var maskT = new DenseTensor<long>(attentionMask, new[] { B, attnMaskPerB });
+
+            var inputs = new List<NamedOnnxValue>(2 + 2 * LlmLayers)
+            {
+                NamedOnnxValue.CreateFromTensor("inputs_embeds", embedT),
+                NamedOnnxValue.CreateFromTensor("attention_mask", maskT),
+            };
+            for (int layer = 0; layer < LlmLayers; layer++)
+            {
+                inputs.Add(NamedOnnxValue.CreateFromTensor(
+                    $"past_key_values.{layer}.key", new DenseTensor<float>(pastKv[2 * layer], pastKvShape)));
+                inputs.Add(NamedOnnxValue.CreateFromTensor(
+                    $"past_key_values.{layer}.value", new DenseTensor<float>(pastKv[2 * layer + 1], pastKvShape)));
+            }
+            using var output = _lm.Run(inputs);
+            var outList = output.ToList();
+            var logits = outList[0].AsTensor<float>();
+            int vocab = logits.Dimensions[2];
+            var logitsArr = logits.ToArray();
+
+            // Per-element argmax on the last row's logits.
+            int outSeqLen = logits.Dimensions[1];
+            int lastRowOffsetInLogits = (outSeqLen - 1) * vocab;
+            var nextTokensFlat = new long[B];
+            for (int b = 0; b < B; b++)
+            {
+                int rowStart = b * outSeqLen * vocab + lastRowOffsetInLogits;
+                var rowLogits = new float[vocab];
+                Array.Copy(logitsArr, rowStart, rowLogits, 0, vocab);
+                if (doneAt[b] < 0)
+                {
+                    foreach (var t in perTokens[b])
+                        if (rowLogits[t] > 0) rowLogits[t] /= repetitionPenalty;
+                }
+                nextTokensFlat[b] = Argmax(rowLogits);
+                if (doneAt[b] < 0)
+                {
+                    perTokens[b].Add(nextTokensFlat[b]);
+                    if (nextTokensFlat[b] == ChatterboxConstants.StopSpeechToken) doneAt[b] = step;
+                }
+            }
+
+            // Check all-done.
+            bool allDone = true;
+            for (int b = 0; b < B; b++) if (doneAt[b] < 0) { allDone = false; break; }
+            if (allDone) break;
+
+            // Embed next tokens (B tokens at position step+1) for the next iteration.
+            inputsEmbeds = EmbedBatch(nextTokensFlat, step + 1, exaggeration);
+            attentionMask = GrowBatchedMask(attentionMask, B, 1);
+            for (int layer = 0; layer < LlmLayers; layer++)
+            {
+                pastKv[2 * layer] = outList[1 + 2 * layer].AsTensor<float>().ToArray();
+                pastKv[2 * layer + 1] = outList[1 + 2 * layer + 1].AsTensor<float>().ToArray();
+            }
+            pastKvShape = outList[1].AsTensor<float>().Dimensions.ToArray();
+        }
+
+        var perResults = new AcousticLmResult[B];
+        for (int b = 0; b < B; b++)
+            perResults[b] = new AcousticLmResult(perTokens[b], doneAt[b] >= 0 ? doneAt[b] + 1 : actualSteps);
+        return new BatchedAcousticLmResult(perResults, actualSteps);
+    }
+
+    /// <summary>Batched single-token embed for the autoregressive loop.</summary>
+    private float[] EmbedBatch(long[] tokensB, int position, float exaggeration)
+    {
+        int B = tokensB.Length;
+        var idsB = new long[B];
+        Array.Copy(tokensB, idsB, B);
+        var posB = new long[B];
+        Array.Fill(posB, position);
+        var exagB = new float[B];
+        Array.Fill(exagB, exaggeration);
+        using var o = _embed.Run(new[]
+        {
+            NamedOnnxValue.CreateFromTensor("input_ids", new DenseTensor<long>(idsB, new[] { B, 1 })),
+            NamedOnnxValue.CreateFromTensor("position_ids", new DenseTensor<long>(posB, new[] { B, 1 })),
+            NamedOnnxValue.CreateFromTensor("exaggeration", new DenseTensor<float>(exagB, new[] { B })),
+        });
+        return o.First().AsTensor<float>().ToArray();
+    }
+
+    /// <summary>Grow each batch element's attention mask by `growBy` trailing 1s.</summary>
+    private static long[] GrowBatchedMask(long[] mask, int batch, int growBy)
+    {
+        int oldPerB = mask.Length / batch;
+        int newPerB = oldPerB + growBy;
+        var grown = new long[batch * newPerB];
+        for (int b = 0; b < batch; b++)
+        {
+            Array.Copy(mask, b * oldPerB, grown, b * newPerB, oldPerB);
+            for (int i = oldPerB; i < newPerB; i++) grown[b * newPerB + i] = 1;
+        }
+        return grown;
+    }
+
+    /// <summary>
     /// LM autoregressive loop, IoBinding path. KV-cache outputs are kept
     /// CUDA-resident between steps via direct OrtValue chaining instead
     /// of host-roundtripping every layer's K/V each step. ~3.5× faster

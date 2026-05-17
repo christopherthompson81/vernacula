@@ -274,3 +274,121 @@ shared max_steps; per-element early stop is Phase 2). Then a Run 4
 that measures full end-to-end batched rollout, including the
 realistic STOP_SPEECH-driven variable length per element (which will
 cost some efficiency vs the probe's uniform-length steady state).
+
+
+## Run 4 — 2026-05-17 19:55 — End-to-end batched LM rollout (8 chunks, B=4)
+
+`AcousticLM.GenerateBatch` (same-length MVP, basic Run path, no
+IoBinding) wired through ChatterboxSmoke as `--lm-batch B`. Runs
+benchChunks chunks in `ceil(benchChunks/B)` groups; each group is one
+`GenerateBatch` plus B serial vocoder calls.
+
+```
+=== --bench-chunks 8 --lm-batch 4 ===
+    batch LM call: 13451 ms total for B=4   (group 1)
+    batch LM call: 12891 ms total for B=4   (group 2)
+Bench: 8 chunks (lm-batch=4), LM avg 3292 ms, voc avg 558 ms,
+  per-chunk-sum-avg 3850 ms, chunks-wall 30.8s [total wall 35.2s]
+```
+
+### Surprise vs Run 3's projection
+
+Run 3 predicted 31% wall reduction at B=4. Reality at B=4 in the full
+rollout is **worse than serial-IoBinding** in absolute terms:
+
+| Config | LM per chunk | Chunks-wall (8) |
+|---|---|---|
+| Serial B=1 + IoBinding (Run 1 baseline) | 1284 ms | 14.7 s |
+| Batched B=4 + basic Run (this Run 4) | 3292 ms ("share") | 30.8 s |
+
+**Batched is 2.4× SLOWER than serial-IoBinding in absolute time.** The
+per-step LM time at B=4 in the full 174-step rollout is ~75 ms vs the
+probe's 7.8 ms/batch-elem — what gives?
+
+### Apples-to-apples: basic Run for both
+
+The IoBinding path keeps KV-cache outputs GPU-resident; the basic Run
+path host-roundtrips them every step. At step 174 the past_kv per layer
+is `[B=4, 16, 255, 64]` × 4 bytes × 60 (30 layers × K+V) = ~250 MB
+**copied out of GPU memory per step**. The probe only ran 10 steps;
+the full rollout amplifies the host-roundtrip cost.
+
+Re-running serial with `--no-io-binding` for the fair comparison:
+
+```
+=== --bench-chunks 8 --no-io-binding ===
+  chunk 1/8: LM 5400 ms (174 steps), voc 715 ms, audio 6.92s
+  ...
+Bench: 8 chunks (serial), LM avg 5219 ms, voc avg 557 ms,
+  per-chunk-sum-avg 5776 ms, chunks-wall 46.2s
+```
+
+Now we can compare like-for-like:
+
+| Mode (basic Run for both) | LM per chunk | Chunks-wall (8) | vs serial |
+|---|---|---|---|
+| Serial B=1 basic | 5219 ms | 46.2 s | (baseline) |
+| Batched B=4 basic | 3292 ms ("share") | 30.8 s | **−33%** |
+
+The 33% wall reduction matches Run 3's projection. Batching works
+exactly as the probe said it would. Just not at IoBinding's absolute
+level.
+
+### The real ceiling: IoBinding × batching, both
+
+The two perf wins are independent and stack:
+
+- IoBinding (Run 1 vs basic): 5219 → 1284 ms/chunk = **4.1× LM speedup**
+- Batching (basic B=1 vs B=4): 5219 → 3292 ms/chunk = **1.6× LM speedup**
+
+Combined ceiling (assuming the per-step amortization factor of 2.24×
+from Run 3 holds when KV stays GPU-resident):
+  Serial IoBinding 1284 ms/chunk
+  → Batched IoBinding B=4: 1284 × (2.24/4) ≈ 720 ms/chunk
+  → ~44% LM reduction per chunk vs serial-IoBinding
+  → ~30-35% wall reduction (vocoder share stays constant)
+
+That's the architectural ceiling at fp32. Real IoBinding-for-batch
+work is non-trivial:
+
+- `RunLmLoopIoBinding` hardcodes shape `[1, KvHeads, T_kv, HeadDim]`
+  for the per-layer KV bindings. Needs parameterization on B.
+- Per-element argmax extracts a row from `[B, S, vocab]` GPU memory;
+  cheaper if we move argmax to GPU (separate op) or accept one
+  `[B, vocab]` last-row CPU copy per step.
+- Empty initial KV tensors `[B, KvHeads, 0, HeadDim]` need batch-
+  aware allocation.
+
+None of these are blocking; just plumbing work.
+
+### What's shipping in this PR
+
+The `GenerateBatch` MVP itself — even at basic-Run cost — is the
+**architectural commit**:
+
+- `AcousticLM.GenerateBatch(condEmbs, textTokenIdsPerChunk, ...)`
+  returns `BatchedAcousticLmResult` (per-element results + actual
+  steps run).
+- Same-length input constraint (Phase 1); STOP_SPEECH triggers
+  per-element done tracking but the inner loop still steps in
+  lockstep until ALL done or maxSteps. Per-element batch shrinking
+  is a follow-up.
+- Basic Run path, no IoBinding (Phase 1).
+
+The fp32 throughput is lateral vs serial-IoBinding (slower, in fact),
+but the C# shape is now in place for two compounding wins to land
+into:
+
+1. IoBinding-for-batch (estimated 30-35% wall reduction at fp32)
+2. fp16 LM quantization (halves bandwidth ceiling — combined with
+   batched IoBinding, expected 50-60% wall reduction territory)
+
+Neither of these requires re-touching `AcousticLM`'s public surface.
+
+### Honest framing
+
+Pure throughput today: shipping the batched path WITHOUT IoBinding
+would be a regression vs serial-IoBinding. Ship it behind the
+`--lm-batch` flag (opt-in benchmark/measurement only) until IoBinding-
+for-batch lands. The API surface (`GenerateBatch` and
+`BatchedAcousticLmResult`) is the durable contract.
