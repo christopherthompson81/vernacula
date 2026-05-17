@@ -75,7 +75,10 @@ public static class ChatterboxAttentionAligner
                 + $"(WrapForLm({bpeLen} bpe + 5 wrappers)). Was the alignment captured for this exact text?");
 
         int speechRows = alignment.NumSpeechRows;
-        if (speechRows == 0) return Array.Empty<WordTiming>();
+        // Need at least 2 rows: row 0 is the sentinel predictor (always
+        // skipped), so DP works on rows [1..R). One-row or zero-row
+        // alignments can't produce meaningful word timings.
+        if (speechRows < 2) return Array.Empty<WordTiming>();
 
         double secondsPerStep = (double)totalAudioSamples / sampleRate / speechRows;
 
@@ -158,12 +161,24 @@ public static class ChatterboxAttentionAligner
             }
         }
 
-        // Backtrack from the best end-state. Pin the end to the LAST
-        // word — typical chunks end exactly there, and forcing it
-        // prevents the DP from "leaving" the last few words unassigned
-        // when the model briefly drifts back to earlier text mid-rollout.
+        // Backtrack from the highest-scoring REACHABLE end state at the
+        // last row. Pinning to W-1 (the last word) is the common case
+        // — typical chunks naturally end on the last word — but if the
+        // LM emitted fewer audible rows than there are input words
+        // (pathological short rollout on long text), dp[R-1, W-1] is
+        // NEG (unreachable) and pinning would walk back through
+        // uninitialized `advance` flags, corrupting every row's
+        // assignment. Finding the actual best end-word handles both
+        // cases without a branch: when W ≤ R-1, the DP can fill
+        // through to W-1 with positive score; otherwise it caps out
+        // somewhere earlier and we accept that the trailing
+        // un-reached words fall to the chunk-end zero-duration
+        // fallback below.
         int currR = R - 1;
-        int currW = W - 1;
+        int currW = 0;
+        int endRowBase = currR * W;
+        for (int w = 1; w < W; w++)
+            if (dp[endRowBase + w] > dp[endRowBase + currW]) currW = w;
         var assignment = new int[R];
         assignment[0] = -1;  // sentinel
         while (currR >= 1)
