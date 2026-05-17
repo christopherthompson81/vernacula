@@ -553,6 +553,15 @@ def export_mel2wav(m2w_mod, mel, out_path: Path, opset: int, chatterbox_model):
     )
 
 
+# (layer, head) pairs that carry text→speech alignment signal in the LM.
+# Source: chatterbox.models.t3.inference.alignment_stream_analyzer
+# (Resemble AI uses these for hallucination detection internally).
+# Exporting the attention weights for these three layers gives the C#
+# side a free word-timing source — see the cross-attention spike under
+# scripts/chatterbox_attention_spike for validation.
+LLAMA_ALIGNED_LAYERS = [9, 12, 13]
+
+
 def build_lm_wrapper(chatterbox_model, device):
     """Wrap chatterbox.t3.tfmr + .speech_head into a single nn.Module
     that exposes the HF KV-cache I/O schema.
@@ -567,10 +576,22 @@ def build_lm_wrapper(chatterbox_model, device):
       - logits: (B, S, SPEECH_HEAD_OUTPUT_DIM=8194)
       - present.{N}.key, present.{N}.value  for N in 0..29
             each: (B, 16, past_kv_len + S, 64)
+      - attentions.{N} for N in LLAMA_ALIGNED_LAYERS (9, 12, 13)
+            each: (B, LLM_NUM_HEADS, S, S_total)
+            Mean of these three (sliced per-step at the text-token cols)
+            gives a clean (T_speech, T_text) alignment matrix.
 
-    Schema matches the published `onnx-community/chatterbox-ONNX`
-    `language_model.onnx` so consumers (and our own C# orchestrator)
-    can swap our export for theirs.
+    Schema is a superset of the published `onnx-community/chatterbox-ONNX`
+    `language_model.onnx`: existing consumers see the same logits +
+    present.* outputs in the same positions, the attention outputs are
+    appended at the end and ignored by consumers that don't bind them.
+
+    Note: `output_attentions=True` forces HF to fall back from the
+    fused SDPA kernel to manual attention computation in EVERY layer
+    (not just the three we care about — HF doesn't expose per-layer
+    granularity for this flag). The slowdown is ~25-30% in our spike;
+    accepted because (a) we want the alignment, (b) the alternative is
+    a separate alignment ONNX which doubles the bundle size.
     """
     import torch.nn as nn
 
@@ -595,6 +616,7 @@ def build_lm_wrapper(chatterbox_model, device):
                 attention_mask=attention_mask,
                 past_key_values=past_kv,
                 use_cache=True,
+                output_attentions=True,
             )
             logits = self.speech_head(out.last_hidden_state)
             # Flatten present_key_values to a positional output tuple.
@@ -602,7 +624,12 @@ def build_lm_wrapper(chatterbox_model, device):
             for layer_kv in out.past_key_values:
                 present_flat.append(layer_kv[0])
                 present_flat.append(layer_kv[1])
-            return (logits, *present_flat)
+            # Pick out just the alignment-bearing layers' attention.
+            # out.attentions is a tuple of len LLM_NUM_LAYERS; we
+            # slice the three indices we care about and emit them as
+            # tail outputs so existing graph consumers are unaffected.
+            attn_outputs = [out.attentions[i] for i in LLAMA_ALIGNED_LAYERS]
+            return (logits, *present_flat, *attn_outputs)
 
     return LMWithSpeechHead(chatterbox_model.t3.tfmr, chatterbox_model.t3.speech_head).eval().to(device)
 
@@ -629,8 +656,9 @@ def export_language_model(lm_mod, out_path: Path, opset: int, device, dtype):
         past_kv_flat.append(torch.zeros(B, LLM_NUM_KV_HEADS, past_len, LLM_HEAD_DIM, device=device, dtype=dtype))
         past_kv_flat.append(torch.zeros(B, LLM_NUM_KV_HEADS, past_len, LLM_HEAD_DIM, device=device, dtype=dtype))
 
+    attn_output_names = [f"attentions.{i}" for i in LLAMA_ALIGNED_LAYERS]
     input_names = ["inputs_embeds", "attention_mask"] + kv_input_names(LLM_NUM_LAYERS)
-    output_names = ["logits"] + kv_output_names(LLM_NUM_LAYERS)
+    output_names = ["logits"] + kv_output_names(LLM_NUM_LAYERS) + attn_output_names
 
     dynamic_axes = {
         "inputs_embeds": {0: "batch_size", 1: "sequence_length"},
@@ -641,6 +669,10 @@ def export_language_model(lm_mod, out_path: Path, opset: int, device, dtype):
         dynamic_axes[name] = {0: "batch_size", 2: "past_sequence_length"}
     for name in kv_output_names(LLM_NUM_LAYERS):
         dynamic_axes[name] = {0: "batch_size", 2: "total_sequence_length"}
+    # Each attention tensor: (B, H, S, S_total). S = current input length
+    # (prefill: full text; decode steps: 1). S_total = past_kv + S.
+    for name in attn_output_names:
+        dynamic_axes[name] = {0: "batch_size", 2: "sequence_length", 3: "total_sequence_length"}
 
     torch.onnx.export(
         lm_mod,

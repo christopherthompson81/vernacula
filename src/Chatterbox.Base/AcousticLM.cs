@@ -9,8 +9,15 @@ namespace Chatterbox.Base;
 /// Result of an LM rollout: the generated speech tokens (excluding the
 /// leading START_SPEECH and trailing STOP_SPEECH that the LM uses as
 /// loop sentinels) plus a step count for timing-aware callers.
+/// When the caller passes <c>captureAlignment: true</c> to
+/// <see cref="AcousticLM.Generate"/>, <see cref="Alignment"/> is
+/// populated with the (speech_step, text_token) attention matrix
+/// extracted from the alignment-bearing decoder layers.
 /// </summary>
-public sealed record AcousticLmResult(IReadOnlyList<long> RawGeneratedTokens, int Steps)
+public sealed record AcousticLmResult(
+    IReadOnlyList<long> RawGeneratedTokens,
+    int Steps,
+    AcousticLmAlignment? Alignment = null)
 {
     /// <summary>
     /// Strip the LM sentinels (leading START_SPEECH, trailing STOP_SPEECH
@@ -30,6 +37,64 @@ public sealed record AcousticLmResult(IReadOnlyList<long> RawGeneratedTokens, in
             speechTokens[audioTokens.Length + i] = RawGeneratedTokens[genStart + i];
         return speechTokens;
     }
+}
+
+/// <summary>
+/// (NumSpeechRows × NumTextCols) row-major attention matrix from the LM's
+/// alignment-bearing decoder layers. Each row corresponds to one LM
+/// forward pass's "last-query" attention into the text-token range
+/// (i.e. what text token the model attended to when generating that
+/// speech token), mean-averaged across the three (layer, head) pairs
+/// listed in <see cref="ChatterboxConstants.AlignmentLayerIndices"/> +
+/// <see cref="ChatterboxConstants.AlignmentHeadIndices"/>.
+///
+/// Row 0 corresponds to the LM's prediction of the first generated
+/// speech token (START_SPEECH sentinel); subsequent rows align with
+/// the rest of <see cref="AcousticLmResult.RawGeneratedTokens"/>. The
+/// alignment for the START sentinel is informational (it usually
+/// attends to the conditioning prefix); callers typically drop it
+/// alongside the sentinel when mapping to audio time.
+///
+/// Cols index the text tokens (BPE-encoded form, post WrapForLm —
+/// includes the [EXAGGERATION, START, ...text..., STOP, START_SPEECH,
+/// START_SPEECH] wrapper). The caller is responsible for mapping
+/// columns back to the original input text via the tokenizer's
+/// known token-to-text boundaries.
+/// </summary>
+public sealed class AcousticLmAlignment
+{
+    private readonly List<float[]> _rows = new();
+
+    public int NumSpeechRows => _rows.Count;
+    public int NumTextCols { get; }
+
+    internal AcousticLmAlignment(int numTextCols) { NumTextCols = numTextCols; }
+
+    /// <summary>Append the per-step row (length must equal NumTextCols).</summary>
+    internal void AppendRow(float[] row)
+    {
+        if (row.Length != NumTextCols)
+            throw new ArgumentException(
+                $"Row length {row.Length} doesn't match NumTextCols {NumTextCols}.");
+        _rows.Add(row);
+    }
+
+    /// <summary>
+    /// Returns the alignment as a flat row-major float[] of length
+    /// NumSpeechRows × NumTextCols. Allocates fresh on each call;
+    /// cache the result in callers if accessed repeatedly.
+    /// </summary>
+    public float[] ToFlatRowMajor()
+    {
+        var data = new float[_rows.Count * NumTextCols];
+        for (int r = 0; r < _rows.Count; r++)
+            Array.Copy(_rows[r], 0, data, r * NumTextCols, NumTextCols);
+        return data;
+    }
+
+    /// <summary>Row accessor. Returned span aliases internal storage —
+    /// do not mutate.</summary>
+    public ReadOnlySpan<float> Row(int speechStep) => _rows[speechStep];
 }
 
 /// <summary>
@@ -122,7 +187,8 @@ public sealed class AcousticLM : IDisposable
         float exaggeration = ChatterboxConstants.DefaultExaggeration,
         int maxSteps = ChatterboxConstants.DefaultMaxLmSteps,
         float repetitionPenalty = ChatterboxConstants.DefaultRepetitionPenalty,
-        string? diagDir = null)
+        string? diagDir = null,
+        bool captureAlignment = false)
     {
         bool resolvedIoBinding = useIoBinding ?? _effectiveCuda;
         if (resolvedIoBinding && !_effectiveCuda)
@@ -151,9 +217,15 @@ public sealed class AcousticLM : IDisposable
         int sTotal = sCond + sText;
         var inputsEmbeds = ConcatSeq(condEmb, textEmb, ChatterboxConstants.LlmHidden);
 
+        // The alignment matrix's text-col axis covers all text tokens
+        // (sCond..sCond+sText). The caller knows sCond from condEmb;
+        // we record sText here for downstream slicing convenience.
+        var alignment = captureAlignment ? new AcousticLmAlignment(sText) : null;
+        int textColStart = sCond;
+        int textColEnd = sCond + sText;
         return resolvedIoBinding
-            ? RunLmLoopIoBinding(inputsEmbeds, sTotal, exaggeration, maxSteps, repetitionPenalty, diagDir)
-            : RunLmLoopBasic(inputsEmbeds, sTotal, exaggeration, maxSteps, repetitionPenalty, diagDir);
+            ? RunLmLoopIoBinding(inputsEmbeds, sTotal, exaggeration, maxSteps, repetitionPenalty, diagDir, alignment, textColStart, textColEnd)
+            : RunLmLoopBasic(inputsEmbeds, sTotal, exaggeration, maxSteps, repetitionPenalty, diagDir, alignment, textColStart, textColEnd);
     }
 
     /// <summary>
@@ -561,7 +633,8 @@ public sealed class AcousticLM : IDisposable
     /// </summary>
     private AcousticLmResult RunLmLoopIoBinding(
         float[] inputsEmbeds, int sTotal, float exaggeration,
-        int maxSteps, float repetitionPenalty, string? diagDir)
+        int maxSteps, float repetitionPenalty, string? diagDir,
+        AcousticLmAlignment? alignment, int textColStart, int textColEnd)
     {
         const int LlmLayers = ChatterboxConstants.LlmLayers;
         const int LlmKvHeads = ChatterboxConstants.LlmKvHeads;
@@ -601,6 +674,17 @@ public sealed class AcousticLM : IDisposable
                 binding.BindOutputToDevice($"present.{layer}.key", cudaMemInfo);
                 binding.BindOutputToDevice($"present.{layer}.value", cudaMemInfo);
             }
+            // Attention outputs go to CPU — we read them right after Run
+            // to slice into the alignment buffer. (Skipping the bind when
+            // alignment is null would save a per-step GPU→CPU transfer,
+            // but the graph still emits these tensors either way; ORT
+            // just allocates default-EP storage if unbound. Binding to
+            // CPU is the cheapest path when we DO want them.)
+            if (alignment is not null)
+            {
+                foreach (int layer in ChatterboxConstants.AlignmentLayerIndices)
+                    binding.BindOutputToDevice($"attentions.{layer}", cpuMemInfo);
+            }
             _lm.RunWithBinding(runOpts, binding);
             prefillOutputs = binding.GetOutputValues();
             GC.KeepAlive(prefillEmbedsScratch);
@@ -614,6 +698,11 @@ public sealed class AcousticLM : IDisposable
         var lastLogits = new float[vocab];
         Array.Copy(prefillLogitsAll, (sTotal - 1) * vocab, lastLogits, 0, vocab);
         MaybeDumpStep(diagDir, 0, lastLogits, inputsEmbeds, attentionMask);
+        // Prefill alignment row: last-query attention from each aligned
+        // layer, sliced to text cols, mean across the three layers.
+        if (alignment is not null)
+            AppendAlignmentRowFromOrtValues(alignment, prefillOutputs,
+                attnOutputBase: 1 + 2 * LlmLayers, textColStart, textColEnd);
         foreach (var t in generateTokens)
             if (lastLogits[t] > 0) lastLogits[t] /= repetitionPenalty;
         long nextToken = Argmax(lastLogits);
@@ -621,7 +710,7 @@ public sealed class AcousticLM : IDisposable
         if (nextToken == ChatterboxConstants.StopSpeechToken)
         {
             prefillOutputs.Dispose();
-            return new AcousticLmResult(generateTokens, 1);
+            return new AcousticLmResult(generateTokens, 1, alignment);
         }
 
         inputsEmbeds = EmbedOne(nextToken, 1, exaggeration);
@@ -651,6 +740,11 @@ public sealed class AcousticLM : IDisposable
                 binding.BindOutputToDevice($"present.{layer}.key", cudaMemInfo);
                 binding.BindOutputToDevice($"present.{layer}.value", cudaMemInfo);
             }
+            if (alignment is not null)
+            {
+                foreach (int layer in ChatterboxConstants.AlignmentLayerIndices)
+                    binding.BindOutputToDevice($"attentions.{layer}", cpuMemInfo);
+            }
             _lm.RunWithBinding(runOpts, binding);
             var curStep = binding.GetOutputValues();
             // Keep the GC honest: scratch buffer must outlive Run. The using
@@ -671,6 +765,9 @@ public sealed class AcousticLM : IDisposable
             var stepLogitsAll = LogitsToFloatArray(curStep[0]);
             lastLogits = stepLogitsAll[..vocab];
             MaybeDumpStep(diagDir, step, lastLogits, inputsEmbeds, attentionMask);
+            if (alignment is not null)
+                AppendAlignmentRowFromOrtValues(alignment, curStep,
+                    attnOutputBase: 1 + 2 * LlmLayers, textColStart, textColEnd);
             foreach (var t in generateTokens)
                 if (lastLogits[t] > 0) lastLogits[t] /= repetitionPenalty;
             nextToken = Argmax(lastLogits);
@@ -682,7 +779,40 @@ public sealed class AcousticLM : IDisposable
             actualSteps = step + 1;
         }
         prevStep.Dispose();
-        return new AcousticLmResult(generateTokens, actualSteps);
+        return new AcousticLmResult(generateTokens, actualSteps, alignment);
+    }
+
+    /// <summary>
+    /// IoBinding-path sibling of <see cref="AppendAlignmentRow"/>. Reads
+    /// the three attention output tensors as fp32 spans, picks the
+    /// per-layer alignment head, slices the text-token cols, and
+    /// mean-averages into a single row appended to the alignment buffer.
+    /// </summary>
+    private static void AppendAlignmentRowFromOrtValues(
+        AcousticLmAlignment alignment,
+        IDisposableReadOnlyCollection<OrtValue> outputs,
+        int attnOutputBase, int textColStart, int textColEnd)
+    {
+        int textLen = textColEnd - textColStart;
+        var meanRow = new float[textLen];
+        int numLayers = ChatterboxConstants.AlignmentLayerIndices.Length;
+        for (int li = 0; li < numLayers; li++)
+        {
+            var ov = outputs[attnOutputBase + li];
+            var shape = ov.GetTensorTypeAndShape().Shape;
+            int H = (int)shape[1];   // num heads
+            int sQ = (int)shape[2];  // current input length
+            int sKv = (int)shape[3]; // total cached + current
+            int head = ChatterboxConstants.AlignmentHeadIndices[li];
+            // Flat index of [0, head, sQ-1, textColStart..)
+            int rowBase = ((0 * H + head) * sQ + (sQ - 1)) * sKv + textColStart;
+            var span = ov.GetTensorDataAsSpan<float>();
+            for (int c = 0; c < textLen; c++)
+                meanRow[c] += span[rowBase + c];
+        }
+        float invN = 1.0f / numLayers;
+        for (int c = 0; c < textLen; c++) meanRow[c] *= invN;
+        alignment.AppendRow(meanRow);
     }
 
     /// <summary>
@@ -695,7 +825,8 @@ public sealed class AcousticLM : IDisposable
     /// </summary>
     private AcousticLmResult RunLmLoopBasic(
         float[] inputsEmbeds, int sTotal, float exaggeration,
-        int maxSteps, float repetitionPenalty, string? diagDir)
+        int maxSteps, float repetitionPenalty, string? diagDir,
+        AcousticLmAlignment? alignment, int textColStart, int textColEnd)
     {
         const int LlmLayers = ChatterboxConstants.LlmLayers;
         const int LlmKvHeads = ChatterboxConstants.LlmKvHeads;
@@ -737,6 +868,15 @@ public sealed class AcousticLM : IDisposable
             Array.Copy(logitsArr, logitsOffset, lastLogits, 0, vocab);
             MaybeDumpStep(diagDir, step, lastLogits, inputsEmbeds, attentionMask, pastKv, pastKvShape);
 
+            // Capture per-step alignment if requested. Attention outputs
+            // are at indices [1 + 2*LlmLayers .. +3) — the three layers
+            // listed in ChatterboxConstants.AlignmentLayerIndices.
+            if (alignment is not null)
+            {
+                int attnBase = 1 + 2 * LlmLayers;
+                AppendAlignmentRow(alignment, outList, attnBase, textColStart, textColEnd);
+            }
+
             foreach (var t in generateTokens)
                 if (lastLogits[t] > 0) lastLogits[t] /= repetitionPenalty;
             long nextToken = Argmax(lastLogits);
@@ -753,7 +893,40 @@ public sealed class AcousticLM : IDisposable
             pastKvShape = PresentDims(outList[1]);
             actualSteps = step + 1;
         }
-        return new AcousticLmResult(generateTokens, actualSteps);
+        return new AcousticLmResult(generateTokens, actualSteps, alignment);
+    }
+
+    /// <summary>
+    /// Pull the last-query row from each of the three attention outputs
+    /// (basic-Run path), pick the alignment head per layer, mean across
+    /// layers, slice text-token cols, and append to the alignment buffer.
+    /// Called per LM step.
+    /// </summary>
+    private static void AppendAlignmentRow(
+        AcousticLmAlignment alignment, List<DisposableNamedOnnxValue> outList,
+        int attnOutputBase, int textColStart, int textColEnd)
+    {
+        int textLen = textColEnd - textColStart;
+        var meanRow = new float[textLen];
+        int numLayers = ChatterboxConstants.AlignmentLayerIndices.Length;
+        for (int li = 0; li < numLayers; li++)
+        {
+            var attnTensor = outList[attnOutputBase + li].AsTensor<float>();
+            int H = attnTensor.Dimensions[1];   // num heads
+            int sQ = attnTensor.Dimensions[2];  // current input length
+            int sKv = attnTensor.Dimensions[3]; // total cached + current
+            int head = ChatterboxConstants.AlignmentHeadIndices[li];
+            // Flat index of [0, head, sQ-1, textColStart..textColEnd) row.
+            int rowBase = ((0 * H + head) * sQ + (sQ - 1)) * sKv + textColStart;
+            // .ToArray() materializes once; cheap relative to the rest
+            // (~64 KB for a max-size attention output).
+            var flat = attnTensor.ToArray();
+            for (int c = 0; c < textLen; c++)
+                meanRow[c] += flat[rowBase + c];
+        }
+        float invN = 1.0f / numLayers;
+        for (int c = 0; c < textLen; c++) meanRow[c] *= invN;
+        alignment.AppendRow(meanRow);
     }
 
     /// <summary>Run embed_tokens.onnx for a single token at the given position. CPU output.</summary>

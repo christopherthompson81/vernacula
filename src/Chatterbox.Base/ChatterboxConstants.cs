@@ -29,4 +29,19 @@ public static class ChatterboxConstants
     public const float DefaultExaggeration = 0.5f;     // listen_test.py default
     public const float DefaultRepetitionPenalty = 1.2f;  // listen_test.py LM-loop rep-penalty divisor
     public const int DefaultMaxLmSteps = 256;          // listen_test.py LM-loop max_new_tokens
+
+    // Cross-attention alignment: Resemble AI's AlignmentStreamAnalyzer
+    // (chatterbox/models/t3/inference/alignment_stream_analyzer.py)
+    // identifies these three (layer, head) pairs as carrying clean
+    // text→speech alignment signal. The LM ONNX export emits the
+    // attention tensors for these layers as additional outputs named
+    // `attentions.{layer}`; the C# AcousticLM picks the head index
+    // listed here, mean-averages across the three, and exposes the
+    // result as a (speech_step, text_token) alignment matrix.
+    //
+    // Index pairs must stay in sync with LLAMA_ALIGNED_LAYERS in
+    // scripts/chatterbox_export/export_chatterbox_to_onnx.py — order
+    // is significant (Layers[i] pairs with Heads[i]).
+    public static readonly int[] AlignmentLayerIndices = [9, 12, 13];
+    public static readonly int[] AlignmentHeadIndices = [2, 15, 11];
 }

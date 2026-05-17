@@ -59,6 +59,8 @@ public sealed class ReaderSettings
 {
     public string VoicePath { get; set; } = "";
     public string OnnxBundleDir { get; set; } = "";
-    public string NfaBundleDir { get; set; } = "";
     public bool RenderMarkdown { get; set; } = false;
+    // (Older settings.json files may contain a NfaBundleDir field —
+    // System.Text.Json silently ignores unknown JSON properties, so the
+    // old field is dropped harmlessly on load. New saves omit it.)
 }

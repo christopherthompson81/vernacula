@@ -34,10 +34,6 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     [NotifyCanExecuteChangedFor(nameof(SynthesizeCommand))]
     private string _onnxBundleDir = "";
 
-    // NFA bundle is OPTIONAL — synthesis runs without it (just no word
-    // highlight). Doesn't gate Synthesize, so no notify here.
-    [ObservableProperty] private string _nfaBundleDir = "";
-
     // Text input — either typed/pasted in the UI or loaded from a .md file.
     [ObservableProperty]
     [NotifyCanExecuteChangedFor(nameof(SynthesizeCommand))]
@@ -161,7 +157,6 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             _settings.Load();
             VoicePath = _settings.Current.VoicePath;
             OnnxBundleDir = _settings.Current.OnnxBundleDir;
-            NfaBundleDir = _settings.Current.NfaBundleDir;
             RenderMarkdown = _settings.Current.RenderMarkdown;
         }
         finally { _loadingSettings = false; }
@@ -172,20 +167,15 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         if (_loadingSettings) return;
         _settings.Current.VoicePath = VoicePath;
         _settings.Current.OnnxBundleDir = OnnxBundleDir;
-        _settings.Current.NfaBundleDir = NfaBundleDir;
         _settings.Current.RenderMarkdown = RenderMarkdown;
         _settings.Save();
     }
 
     // Generated [ObservableProperty] partials let us hook each setter
-    // for the autosave + (for bundle paths) cached-service invalidation.
+    // for the autosave + (for the ONNX bundle path) cached-service
+    // invalidation.
     partial void OnVoicePathChanged(string value) => PersistSettings();
     partial void OnOnnxBundleDirChanged(string value)
-    {
-        InvalidateSynthService();
-        PersistSettings();
-    }
-    partial void OnNfaBundleDirChanged(string value)
     {
         InvalidateSynthService();
         PersistSettings();
@@ -214,14 +204,6 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     {
         var path = await PickFolderAsync("Pick the Chatterbox ONNX bundle directory");
         if (path is not null) OnnxBundleDir = path;
-    }
-
-    [RelayCommand]
-    private async Task PickNfaBundleAsync()
-    {
-        var path = await PickFolderAsync(
-            "Pick the NFA ONNX bundle directory (optional — without it, no word highlights)");
-        if (path is not null) NfaBundleDir = path;
     }
 
     [RelayCommand]
@@ -263,9 +245,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
         try
         {
-            _synthService ??= new SynthesisService(
-                OnnxBundleDir,
-                nfaBundleDir: string.IsNullOrWhiteSpace(NfaBundleDir) ? null : NfaBundleDir);
+            _synthService ??= new SynthesisService(OnnxBundleDir);
 
             // ms precision avoids collisions when the user re-Synthesizes
             // (or clicks Play, below) twice in the same second.
@@ -462,7 +442,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
                     AudioPath = outWav,
                     SampleRate = ChatterboxConstants.S3GenSr,
                     AudioDurationSeconds = duration,
-                    Aligner = string.IsNullOrWhiteSpace(NfaBundleDir) ? "none" : "nemo_nfa",
+                    Aligner = "chatterbox_attention",
                     Words = wordsSnap!,
                 };
                 _writtenChunks = snapshot.Count;
