@@ -39,14 +39,23 @@ public sealed class Vocoder : IDisposable
     public VocoderMode Mode { get; }
 
     /// <summary>
-    /// True iff all three split graphs (flow_encoder, cfm_estimator,
-    /// mel2wav) are loaded. Always true in <see cref="VocoderMode.Split"/>;
-    /// also true in <see cref="VocoderMode.Merged"/> when the split
-    /// artifacts are present on disk (so <see cref="SynthesizeBatch"/>
-    /// can fall back to them). False in monolithic mode or when split
-    /// artifacts are missing.
+    /// True when <see cref="SynthesizeBatch"/> has a working path at B&gt;1
+    /// — either the merged graph carries the Path B (Run 10) metadata flag
+    /// <c>supports_batched=true</c>, or all three split graphs are loaded
+    /// as a fallback. False in monolithic mode or when neither route is
+    /// available.
     /// </summary>
-    public bool SupportsBatched => _flowEnc is not null && _cfmEst is not null && _m2w is not null;
+    public bool SupportsBatched => _mergedSupportsBatched
+                                || (_flowEnc is not null && _cfmEst is not null && _m2w is not null);
+
+    /// <summary>
+    /// True when the loaded merged graph was exported with Path B fixes
+    /// (Run 10) and accepts B&gt;1 via dynamic CFG-doubling. Detected from
+    /// the model's <c>supports_batched</c> metadata prop. Older bundles
+    /// without this prop fall through to the split-graph path in
+    /// <see cref="SynthesizeBatch"/>.
+    /// </summary>
+    private readonly bool _mergedSupportsBatched;
 
     /// <summary>Auto-detect the available cond-decoder layout in <paramref name="onnxDir"/> and load.</summary>
     /// <param name="onLoad">Optional callback fired once per session loaded
@@ -63,12 +72,18 @@ public sealed class Vocoder : IDisposable
         {
             Mode = VocoderMode.Merged;
             _merged = SessionLoader.LoadAndReport(Path.Combine(onnxDir, "conditional_decoder_loop.onnx"), ep, onLoad);
-            // ALSO load split graphs when present so SynthesizeBatch can
-            // fall back to them: the merged graph baked CFG-doubling at
-            // trace time and rejects B>1 (Run 6a in
-            // docs/chatterbox_perf_investigation.md), but the split
-            // cfm_estimator accepts B>2 (CFG-doubled) cleanly.
-            if (splitAvail)
+            // Run 10 / Path B: merge_cond_decoder_loop.py now stamps a
+            // `supports_batched=true` metadata prop when the graph supports
+            // B>1. Older bundles don't carry it and fall back to split.
+            _mergedSupportsBatched =
+                _merged.ModelMetadata.CustomMetadataMap.TryGetValue("supports_batched", out var sb)
+                && string.Equals(sb, "true", StringComparison.OrdinalIgnoreCase);
+            // Load split graphs as a fallback for B>1 when the merged graph
+            // doesn't support it. Skipping when merged is already
+            // batched-capable saves the ~1.1 GB VRAM the split graphs cost
+            // (per Run 6c sidebar) — that was the whole reason Path B was
+            // worth doing.
+            if (splitAvail && !_mergedSupportsBatched)
             {
                 _flowEnc = SessionLoader.LoadAndReport(Path.Combine(onnxDir, "flow_encoder.onnx"), ep, onLoad);
                 _cfmEst = SessionLoader.LoadAndReport(Path.Combine(onnxDir, "cfm_estimator.onnx"), ep, onLoad);
@@ -114,6 +129,59 @@ public sealed class Vocoder : IDisposable
             NamedOnnxValue.CreateFromTensor("speaker_features", spkFeatT),
         ]);
         return loopOut.First().AsTensor<float>().ToArray();
+    }
+
+    /// <summary>
+    /// Run 10 / Path B: one merged-graph call at B>1. The graph's outer
+    /// CFG-doubling, body t_in Tile, and Loop's v_initial Expand were
+    /// rewritten in <c>merge_cond_decoder_loop.py</c> to scale with B,
+    /// so a single .Run produces B waveforms in input order. Avoids the
+    /// host-roundtrip per CFM iter that bottlenecks the split path.
+    /// </summary>
+    private float[][] RunMergedBatched(
+        IReadOnlyList<long[]> speechTokensPerChunk,
+        DenseTensor<float> speakerEmbeddings,
+        DenseTensor<float> speakerFeatures,
+        int B, int tTok)
+    {
+        // Pack speech_tokens [B, tTok].
+        var speechTokensB = new long[B * tTok];
+        for (int b = 0; b < B; b++)
+            Array.Copy(speechTokensPerChunk[b], 0, speechTokensB, b * tTok, tTok);
+
+        // Replicate speaker_embeddings + speaker_features across B (one voice).
+        var spkEmbArr = speakerEmbeddings.ToArray();
+        int spkDim = speakerEmbeddings.Dimensions[1];
+        var spkEmbB = new float[B * spkDim];
+        for (int b = 0; b < B; b++) Array.Copy(spkEmbArr, 0, spkEmbB, b * spkDim, spkDim);
+
+        var spkFeatArr = speakerFeatures.ToArray();
+        int spkFeatLen = spkFeatArr.Length;
+        var spkFeatB = new float[B * spkFeatLen];
+        for (int b = 0; b < B; b++) Array.Copy(spkFeatArr, 0, spkFeatB, b * spkFeatLen, spkFeatLen);
+
+        var spkFeatDims = speakerFeatures.Dimensions.ToArray();
+
+        using var loopOut = _merged!.Run(new[]
+        {
+            NamedOnnxValue.CreateFromTensor("speech_tokens",
+                new DenseTensor<long>(speechTokensB, new[] { B, tTok })),
+            NamedOnnxValue.CreateFromTensor("speaker_embeddings",
+                new DenseTensor<float>(spkEmbB, new[] { B, spkDim })),
+            NamedOnnxValue.CreateFromTensor("speaker_features",
+                new DenseTensor<float>(spkFeatB, new[] { B, spkFeatDims[1], spkFeatDims[2] })),
+        });
+        var wavTensor = loopOut.First().AsTensor<float>();
+        var wavDims = wavTensor.Dimensions.ToArray();
+        int nSamples = wavDims[1];
+        var wavFlat = wavTensor.ToArray();
+        var perChunk = new float[B][];
+        for (int b = 0; b < B; b++)
+        {
+            perChunk[b] = new float[nSamples];
+            Array.Copy(wavFlat, b * nSamples, perChunk[b], 0, nSamples);
+        }
+        return perChunk;
     }
 
     private float[] RunMonolithic(DenseTensor<long> speechTokT, DenseTensor<float> spkEmbT, DenseTensor<float> spkFeatT)
@@ -273,6 +341,14 @@ public sealed class Vocoder : IDisposable
                 throw new ArgumentException(
                     $"All speech_tokens chunks must have the same length (MVP); got {speechTokensPerChunk[b].Length} vs {tTok} at index {b}.");
         }
+
+        // Run 10: merged-graph batched path keeps the CFM solve on-device
+        // for all B chunks at once (no host roundtrip per CFM iter, which
+        // is what kept split-batched at ~514 ms/chunk in Run 6c). Routed
+        // here when the merged graph carries the supports_batched=true
+        // metadata flag stamped by merge_cond_decoder_loop.py.
+        if (_mergedSupportsBatched)
+            return RunMergedBatched(speechTokensPerChunk, speakerEmbeddings, speakerFeatures, B, tTok);
 
         const int MelBins = ChatterboxConstants.MelBins;
         const int PromptLen = ChatterboxConstants.PromptLen;

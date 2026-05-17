@@ -202,10 +202,24 @@ def build_loop_body(
     # Opset 13+ Unsqueeze: axes as a 1-D tensor input. Build via Constant + Unsqueeze.
     pre_nodes.extend(_make_unsqueeze_with_axes(
         "t_now", "t_now_1d", axes=[0], const_node_name="t_now_1d_axes"))
+    # Compute dynamic 2*B from x_carried's leading dim so cfm__t_in is (2B,)
+    # at B>1 (cfm_estimator wants one t per CFG-doubled row). At B=1 this
+    # produces (2,) — same as the prior Concat-by-2 — preserving B=1 parity.
     pre_nodes.extend([
-        # t_now_1d is (1,); concat with itself to get (2,) for cfm__t_in.
-        helper.make_node("Concat", ["t_now_1d", "t_now_1d"], ["cfm__t_in"], axis=0),
-        # x_in = Concat([x_carried, x_carried], axis=0) → (2, 80, T_mel)
+        helper.make_node("Shape", ["x_carried"], ["x_carried_shape"]),
+        # x_b_dim is a length-1 1-D tensor = [B].
+        make_const_node("two_b_starts", np.array([0], dtype=np.int64)),
+        make_const_node("two_b_ends",   np.array([1], dtype=np.int64)),
+        make_const_node("two_b_axes",   np.array([0], dtype=np.int64)),
+        helper.make_node("Slice",
+                         ["x_carried_shape", "two_b_starts", "two_b_ends", "two_b_axes"],
+                         ["x_b_dim"]),
+        make_const_node("two_const", np.array([2], dtype=np.int64)),
+        # two_b is [2B] as a length-1 1-D tensor — Tile's repeats spec.
+        helper.make_node("Mul", ["x_b_dim", "two_const"], ["two_b"]),
+        # cfm__t_in = Tile(t_now_1d, [2B]) → shape (2B,).
+        helper.make_node("Tile", ["t_now_1d", "two_b"], ["cfm__t_in"]),
+        # x_in = Concat([x_carried, x_carried], axis=0) → [2B, 80, T_mel]
         helper.make_node("Concat", ["x_carried", "x_carried"], ["cfm__x_in"], axis=0),
         # Wire outer-scope inputs directly via Identity (keeps the graph
         # explicit; ORT will optimize away).
@@ -257,16 +271,20 @@ def build_loop_body(
 
     # Body inputs (signature): iter_num, cond_in, x_carried.
     # Body outputs: cond_out, x_new.
+    # Leading dim is dynamic "batch_size" — Run 10 makes the whole graph
+    # B>1-capable. cfm__t_in is dynamically sized to (2B,) via Tile in
+    # pre_nodes; everything else (x_in, mu_in_pair, etc.) was already
+    # constructed via axis-0 Concat that scales with B.
     body_inputs = [
         helper.make_tensor_value_info("iter_num", TensorProto.INT64, []),
         helper.make_tensor_value_info("cond_in", TensorProto.BOOL, []),
         helper.make_tensor_value_info("x_carried", TensorProto.FLOAT,
-                                       [1, MEL_BINS, "T_mel"]),
+                                       ["batch_size", MEL_BINS, "T_mel"]),
     ]
     body_outputs = [
         helper.make_tensor_value_info("cond_out", TensorProto.BOOL, []),
         helper.make_tensor_value_info("x_new", TensorProto.FLOAT,
-                                       [1, MEL_BINS, "T_mel"]),
+                                       ["batch_size", MEL_BINS, "T_mel"]),
     ]
     body = helper.make_graph(
         body_nodes, "cfm_loop_body",
@@ -375,10 +393,21 @@ def merge(flow_enc_path: Path, cfm_est_path: Path, mel2wav_path: Path,
     )
     outer_inits.extend(cfm_initializers_outer)
 
-    # Loop op: trip=10, cond=True, v_initial=[z], outputs x_final.
+    # flow_encoder's `z` output stays at [1, MelBins, T_mel] regardless of
+    # the input batch B — the export's pinned-rand_noise patch (Run 11 of
+    # docs/chatterbox_investigation.md, for parity-test reproducibility)
+    # makes the graph treat z as effectively constant. At B>1 the body
+    # needs x_carried at [B, MelBins, T_mel], so we Expand z to mu's shape
+    # before feeding it as the Loop's v_initial. At B=1 Expand([1,...], [1,...])
+    # is a no-op pass-through, preserving prior parity.
+    pre_loop_nodes.append(
+        helper.make_node("Expand", ["z", "mu_shape"], ["z_b"]),
+    )
+
+    # Loop op: trip=10, cond=True, v_initial=[z_b], outputs x_final.
     loop_node = helper.make_node(
         "Loop",
-        inputs=["trip_count_const", "loop_cond_init", "z"],
+        inputs=["trip_count_const", "loop_cond_init", "z_b"],
         outputs=["x_final"],
         body=body,
     )
@@ -424,6 +453,12 @@ def merge(flow_enc_path: Path, cfm_est_path: Path, mel2wav_path: Path,
         opset_imports=[helper.make_opsetid("", opset)],
         producer_name="vernacula.merge_cond_decoder_loop",
     )
+    # Signal to Vocoder.cs that this graph accepts B>1 (Path B / Run 10).
+    # Older bundles without this metadata get routed to the split-graph
+    # fallback in SynthesizeBatch instead.
+    meta = model.metadata_props.add()
+    meta.key = "supports_batched"
+    meta.value = "true"
     # Pin IR version to match the input sub-graphs (IR 8 ships from
     # torch.onnx.export on opset 18). onnx 1.18 otherwise defaults to IR
     # 13, which ORT < 1.24 can't load.
