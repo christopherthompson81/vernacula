@@ -40,7 +40,7 @@ import time
 from pathlib import Path
 
 
-def quantize_fp16(input_path: Path, output_path: Path) -> None:
+def quantize_fp16(input_path: Path, output_path: Path, keep_io_types: bool = True) -> None:
     # keep_io_types=True leaves graph inputs/outputs as fp32; ORT inserts
     # Cast nodes at the boundary so the C# binding doesn't need to change.
     # disable_shape_infer=True bypasses a known crash on graphs with
@@ -56,11 +56,11 @@ def quantize_fp16(input_path: Path, output_path: Path) -> None:
 
     print(f"[fp16] loading {input_path} (with external data) ...")
     model = onnx.load(str(input_path), load_external_data=True)
-    print("[fp16] converting fp32 → fp16 (keep_io_types=True) ...")
+    print(f"[fp16] converting fp32 → fp16 (keep_io_types={keep_io_types}) ...")
     t0 = time.time()
     model_fp16 = convert_float_to_float16(
         model,
-        keep_io_types=True,
+        keep_io_types=keep_io_types,
         disable_shape_infer=True,
     )
     print(f"[fp16] convert done in {time.time() - t0:.1f}s; saving ...")
@@ -154,6 +154,12 @@ def main() -> int:
     ap.add_argument("--output", required=True, type=Path, help="Destination quantized .onnx")
     ap.add_argument("--mode", required=True, choices=["fp16", "int8", "int4"])
     ap.add_argument("--block-size", type=int, default=32, help="int4 RTN block size (default 32)")
+    ap.add_argument(
+        "--no-keep-io-types",
+        action="store_true",
+        help="[fp16 only] Convert I/O tensors to fp16 too (true fp16, no boundary Casts). "
+             "Caller must feed fp16 inputs and decode fp16 outputs.",
+    )
     args = ap.parse_args()
 
     if not args.input.exists():
@@ -167,7 +173,7 @@ def main() -> int:
         sidecar.unlink()
 
     if args.mode == "fp16":
-        quantize_fp16(args.input, args.output)
+        quantize_fp16(args.input, args.output, keep_io_types=not args.no_keep_io_types)
     elif args.mode == "int8":
         quantize_int8_dynamic(args.input, args.output)
     elif args.mode == "int4":

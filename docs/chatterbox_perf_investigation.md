@@ -1059,3 +1059,152 @@ is at least a B=1-mode win to bank.
 - `/tmp/cb_dyn5/language_model.{fp16,int4,int8}.opt.cuda.*.onnx{,_data}` — baked optimized graphs
 - `/tmp/cb_diag_{fp32,fp16,int4,int8}/cs_tokens.bin` — per-variant token streams for parity diffs
 - `/tmp/cb_{fp32,fp16,int4,int8}_*.wav` — audio outputs (subjective listening check)
+
+## Run 9 — 2026-05-16 22:48 — True-fp16 KV cache (boundary-Cast hypothesis test)
+
+Run 8a left a clean hypothesis: fp16's slight regression came from
+boundary Casts on the 60 past_kv ports (30 layers × {key, value} ×
+{in, out}). The fix was supposed to be true-fp16 I/O — drop
+`keep_io_types`, allocate fp16 zero-tensors in C# IoBinding, let
+the KV cache live as fp16 end-to-end. Projected: 30-50% LM
+throughput win across all batch sizes.
+
+### What we built
+
+**Quantization side**: `quantize_lm.py` gained `--no-keep-io-types`
+producing `language_model.fp16io.onnx` with fp16 `inputs_embeds`,
+`past_key_values.*`, `present.*`, and `logits` (attention_mask
+stays int64).
+
+**C# side**: `AcousticLM` became dtype-aware:
+
+- New `_lmFp16` field detected at construction from
+  `_lm.InputMetadata["inputs_embeds"].ElementDataType`.
+- Six new helpers: `MakeEmbedsOrtValue`, `MakeEmptyPastKvOrtValue`,
+  `LogitsToFloatArray`, `MakeEmbedsNamedValue`,
+  `MakePastKvNamedValue`, `PresentToFloatArray`/`PresentDims`.
+- All four rollout loops (B=1 / B>1 × IoBinding / basic) thread the
+  fp16 dtype through inputs_embeds + past_kv binding and the logits
+  readback. Scratch arrays kept alive past `RunWithBinding` via
+  explicit `GC.KeepAlive`.
+- Pattern adapted from `VibeVoiceAsr.cs::_kvCacheIsFloat32`, which
+  already handles the same fp16/fp32-KV switch for its decoder.
+
+### Parity (single-chunk, --io-binding)
+
+fp32 baseline vs true-fp16 LM:
+
+| Metric | fp32 | fp16io |
+|---|---|---|
+| step0 argmax (pre-penalty) | 1708 | 1708 ✓ |
+| step1 argmax (pre-penalty) | 1736 | 1736 ✓ |
+| step0 first 10 logits | (reference) | bit-identical to Run 8a fp16 row, fp32 within 1 ULP |
+| Total LM steps | 174 | 174 ✓ |
+| Audio output length | 6.92 s | 6.92 s ✓ |
+
+Identical to Run 8a's parity story — the dtype-aware C# binding
+produces the same tokens as the keep_io_types=True version, just
+without the boundary Casts. **The architecture is correct.**
+
+### Perf (RTX 3090, CUDA, warm ORT bake)
+
+| Path | fp32 | fp16io | Δ |
+|---|---|---|---|
+| Single-chunk B=1 | 1491 ms (8.6 ms/step) | 1713 ms (9.8 ms/step) | **+15% slower** |
+| Pipelined B=1 (8 chunks) | 13.6 s wall | 13.9 s wall | +2% slower |
+| Batched B=4 (8 chunks) | 7.7 s wall, 403 ms LM/chunk | 7.9 s wall, 427 ms LM/chunk | +6% slower |
+
+**Same 5-15% regression we saw in Run 8a, despite the boundary
+Casts being gone.** The hypothesis that boundary Casts were the
+problem was wrong.
+
+### What actually happened
+
+I diffed the ORT-baked optimized graphs side-by-side. The fp32 and
+fp16io graphs after ORT's CUDA optimization are **structurally
+identical**:
+
+```
+fp32-opt:    2260 nodes, 272 MatMul, 35 Cast (all to fp16), 61 SimplifiedLayerNormalization, ...
+fp16io-opt:  2260 nodes, 272 MatMul, 35 Cast (all to fp16), 61 SimplifiedLayerNormalization, ...
+```
+
+ORT applied the same fusions to both. The 35 fp16-target Casts in
+**both** graphs say ORT is internally casting fp32 intermediates
+to fp16 in 35 places — meaning even the "fp32" baseline does a fair
+amount of fp16 compute. The MatMul kernels selected at this dim
+(B=1 T=1, 1024 hidden, 64 head_dim) appear not to use Tensor
+Cores at all — they're running cuBLAS SGEMM in fp32 in both cases,
+just with different load patterns.
+
+The slight regression in fp16io is the cost of:
+- C# fp32→fp16 conversion on inputs_embeds (1024 floats/step)
+- Cast nodes ORT inserts at fp16 input → fp32 compute boundary
+- fp16 logits readback then host fp32 conversion (8194 floats/step)
+
+None of these are big individually, but together they slightly
+outweigh whatever bandwidth advantage true-fp16 KV gives.
+
+### Why ORT isn't picking fp16 Tensor Core kernels here
+
+Best guess (haven't verified with verbose kernel logs):
+- LLM hidden 1024 / head_dim 64 may be below cuBLAS's heuristic
+  threshold for switching to wmma/mma kernels
+- B=1 single-token decode is memory-bound; the kernel choice would
+  benefit from fp16 weights but not fp16 activations
+- ORT's SimplifiedLayerNormalization fusion may force fp32 LN
+  internals (the 35 fp16-target Casts)
+
+The "30-50%" projection was wishful — based on what fp16 *should*
+deliver on Ampere for transformer LMs at scale, not what ORT
+actually delivers on a 30-layer / 1024-hidden Llama-style backbone
+at B=1.
+
+### Where this leaves the perf
+
+Same place Run 7c left it. The best long-form path is still:
+
+```
+fp32 + lm-batch=4 + pipelined groups → 7.5-7.7 s for 8 chunks (−49%)
+```
+
+| Run | Best 8-chunk wall | vs Run 1 |
+|---|---|---|
+| Run 1 | 14.7 s | — |
+| Run 7c | 7.5 s | −49% |
+| Run 8 int4 (pipelined B=1) | 12.2 s | −17% |
+| Run 9 fp16io (batched B=4) | 7.9 s | −46% |
+
+**Net Run 9: zero perf win, architecturally cleaner code.** The C#
+fp16/fp32 dtype-aware machinery is in place — if any future LM
+variant comes with a kernel set that *does* benefit from fp16, we
+just point `--lm-path` at it and the dtype-aware binding handles
+the rest.
+
+### Where the remaining levers actually are
+
+The quantization sweep + fp16 IoBinding work covers ORT-native
+quantization for this LM. Things on the table that haven't been
+tried:
+
+| Lever | Hypothesis | Cost | Risk of finding zero again |
+|---|---|---|---|
+| BFloat16 KV cache | bf16 has fp32 range so fewer LN-internals Casts; some ORT kernels are bf16-only-tuned | Same as Run 9 (just regenerate the model + rerun) | Medium — same kernel-selection ceiling may apply |
+| ORT TransformerOptimizer's `optimize_by_fusion` with `model_type=gpt2` | Forces explicit MultiHeadAttention / Attention fusion nodes that ORT *does* have fp16 kernels for | Half-day; needs to verify the Llama-derived export matches the gpt2 patterns | Medium — Chatterbox isn't exact gpt2 |
+| Onnxruntime-genai conversion | Different runtime that builds attention as a single op; known-fast fp16 kernels | Day+; involves swapping ORT for ORT-GenAI in C# binding | Low if it works at all; high if Chatterbox export doesn't fit GenAI's contract |
+| Vocoder fp16 + Path B (merged-batched) | Vocoder is currently 50%+ of long-form wall in some configs; same fp16 + Run-6 deferred work | Day+ | Medium |
+| Custom MultiHeadAttention CUDA kernel | The 310 Transposes in the merged body could fuse with a real attention kernel | Week+ | Low payoff probability without dedicated profiling |
+
+The clearest signal: **off-the-shelf ORT quantization has been
+exhausted for this graph on this hardware.** Further LM perf needs
+either a different runtime (GenAI), a different graph (re-export
+with fused-attention op type hints), or custom kernel work — all
+substantially larger projects than Runs 1-9 were.
+
+### Artifacts
+
+- `/tmp/cb_dyn5/language_model.fp16io.onnx{,_data}` — 1.0 GB true-fp16 LM
+- `/tmp/cb_diag_fp16io/cs_tokens.bin` — token stream for parity diff
+- `/tmp/cb_fp16io*.wav` — audio outputs (parity confirmed)
+- `quantize_lm.py --no-keep-io-types` — produces the true-fp16 graph
+- `AcousticLM._lmFp16` + 6 helpers — dtype-aware IoBinding, ready for any future fp16/bf16 LM variant without further C# changes
