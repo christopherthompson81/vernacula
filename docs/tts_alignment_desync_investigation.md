@@ -14,9 +14,9 @@ Probe pipeline on a real torture-test input:
    - ASR transcript (what the LM "said")
 5. Re-run the NFA aligner against each text version; whichever produces correct word timings tells us where the upstream fix needs to go.
 
-Test input: `/home/chris/Downloads/2026-05-XX_PER_Response_short.md` — short government-correspondence-style markdown with dates / numbers / abbreviations (specifics not committed; reference only).
+Test input: a user-supplied markdown document of the formal-correspondence variety — long-form prose with dates, multi-decimal section references, formal abbreviations, parenthetical acronyms, proper nouns, semicolons, and curly quotes. Lives outside the repo; the document itself is not committed. Findings reference *categories* of content (e.g. "date chunk", "numeric reference") rather than specific text.
 
-## Run 1 — 2026-05-17 — probe across all 19 chunks of the torture-test markdown
+## Run 1 — 2026-05-17 — probe across all 19 chunks of the torture-test document
 
 Command:
 ```
@@ -48,12 +48,12 @@ This is the desync the user is seeing.
 
 #### Finding 2 (secondary): Chatterbox occasionally rewords or drops content
 
-Examples from the ASR transcript:
-- Input chunk 7: starts "The CRA's response must address all the relevant issues raised by the claimant and explain why the CRA agrees or disagrees. It is not sufficient for the RTA to simply state that…" → ASR heard "…explain why **the additional information did not change the decision as a result**…". The LM either hallucinated or substituted text the input didn't contain.
-- Chunk 9 input "Issues." → ASR "Use and". Single-word chunks are surprisingly fragile.
-- "Programs" → "Program's", "Larocque" → "LeRoque" (proper-noun pronunciation drift, partly ASR error).
-- "(SR&ED)" rendered as "SR and ED" — that's correct TTS behaviour for `&`, not a bug.
-- "CRM 7.6.1.3" → "CRM 7.61.3" — multi-decimal numerics get squished by both TTS and ASR.
+Categories of mismatch observed on the ASR side (specific text omitted; described abstractly):
+- One ~260-token chunk had a mid-sentence substitution: the LM produced wording that wasn't in the input, then re-anchored on later input text. Hallucination, not just paraphrase.
+- One single-word chunk (a short noun + period, ~5 tokens) was completely misspoken — ASR heard a different two-word phrase entirely. Single-word chunks appear surprisingly fragile.
+- Proper-noun pronunciation drift: an uncommon surname syllabified slightly differently from the spelling, a plural noun rendered with a possessive inflection. Partly ASR error too.
+- Parenthetical acronym expansion: an abbreviation written as `(XYZ)` rendered as "X Y and Z" — correct TTS behaviour for `&` in the original spelling, not a bug.
+- Multi-decimal section references (e.g. `N.M.O.P` form): both TTS and ASR squish them into fewer syllables than the punctuation implies.
 
 These are smaller-magnitude issues; the truncation in Finding 1 is the load-bearing one.
 
@@ -89,13 +89,13 @@ For us this means **phase 1 collapses from "discover alignment-bearing heads via
 
 Standalone Python script (uses `.venv-chatterbox-export`). Loads `ChatterboxTTS.from_pretrained`, attaches forward hooks to the three aligned layers, synthesizes one chunk, captures per-step attention, builds the full alignment matrix, saves as `.npy` + heatmap `.png`.
 
-Ran on three torture-test chunks. All three show clean monotonic-diagonal alignment with no off-diagonal hallucinations:
+Ran on three test chunks (categories below; actual content not committed). All three show clean monotonic-diagonal alignment with no off-diagonal hallucinations:
 
-**Run 1a — date chunk (`"May 25, 2026"`, 96 LM steps, 3.8 s audio)** — `docs/attn_spike_heatmaps/run1_date.png`. Diagonal stripe from (speech row ~50, kv col ~35) down to (~145, ~48). Text-token range cols ~35-48; conditioning prefix (cols 0-35) receives no attention from speech generation.
+**Run 1a — short date string (12 chars, 96 LM steps, 3.8 s audio)** — `docs/attn_spike_heatmaps/run1_date.png`. Diagonal stripe from (speech row ~50, kv col ~35) down to (~145, ~48). Text-token range cols ~35-48; conditioning prefix (cols 0-35) receives no attention from speech generation.
 
-**Run 1b — long prose chunk (201 chars, 432 LM steps, 17.2 s audio)** — `docs/attn_spike_heatmaps/run1_long_prose.png`. Beautifully clean diagonal from (row ~170, col ~40) to (~595, ~170). 425 decode steps tracking ~130 text positions in strict monotonic order. Thin 1-2 pixel stripe with no off-diagonal blobs.
+**Run 1b — long formal-prose paragraph (~200 chars, 432 LM steps, 17.2 s audio)** — `docs/attn_spike_heatmaps/run1_long_prose.png`. Beautifully clean diagonal from (row ~170, col ~40) to (~595, ~170). 425 decode steps tracking ~130 text positions in strict monotonic order. Thin 1-2 pixel stripe with no off-diagonal blobs.
 
-**Run 1c — multi-decimal numeric chunk (`"CRM 7.6.1.3 reads:"`, 107 LM steps, 4.2 s audio)** — `docs/attn_spike_heatmaps/run1_numeric.png`. Critical test: this is the chunk that produced the worst NFA garbage (`CRM | <unk>.<unk>.<unk>.<unk> | reads<unk>`). Cross-attention shows clean monotonic diagonal from (row ~55, col ~33) to (~150, ~50). The digits get their own attention positions just like any other text token — **the LM model knows exactly where it is in the input regardless of token category.** The vocab/training problems that hobble NFA simply don't apply here, because we're reading the LM's own self-knowledge, not a separate ASR model's interpretation of the audio.
+**Run 1c — multi-decimal numeric section reference (~18 chars, 107 LM steps, 4.2 s audio)** — `docs/attn_spike_heatmaps/run1_numeric.png`. Critical test: this is the same chunk-shape that produced the worst NFA garbage (every digit + period in the multi-decimal becomes its own `<unk>` token in the NFA-aligner output). Cross-attention shows clean monotonic diagonal from (row ~55, col ~33) to (~150, ~50). The digits get their own attention positions just like any other text token — **the LM model knows exactly where it is in the input regardless of token category.** The vocab/training problems that hobble NFA simply don't apply here, because we're reading the LM's own self-knowledge, not a separate ASR model's interpretation of the audio.
 
 ### Implications
 
@@ -116,4 +116,4 @@ Ran on three torture-test chunks. All three show clean monotonic-diagonal alignm
    - Map text tokens back to original input words via the BPE token-to-word boundary tracking
 4. **Drop the NFA bundle entirely** from the reader app's required setup. Optional: keep it as a fallback for non-Chatterbox audio inputs in the future.
 
-Open follow-up: text-normalization (issue #75) — still worth doing for spoken quality even though it no longer matters for alignment, since the LM still mispronounces things like `"7.6.1.3"` as `"seven point sixty one point three"`.
+Open follow-up: text-normalization (issue #75) — still worth doing for spoken quality even though it no longer matters for alignment, since the LM still mispronounces multi-decimal section references and similar numeric forms.

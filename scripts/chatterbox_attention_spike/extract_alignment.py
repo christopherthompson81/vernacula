@@ -23,7 +23,7 @@ Output:
 
 Usage:
   python extract_alignment.py \\
-    --text "May 25, 2026. The quick brown fox..." \\
+    --text "Hello world. This is a test of the alignment." \\
     --voice /path/to/voice.wav \\
     --out /tmp/spike_chunk_1
 
@@ -180,13 +180,20 @@ def main():
         print("[warn ] matplotlib not available; skipping PNG heatmap")
         return
 
-    fig, ax = plt.subplots(figsize=(min(20, alignment_full.shape[1] * 0.04 + 4),
-                                     min(20, alignment_full.shape[0] * 0.02 + 4)))
+    fig, ax = plt.subplots(figsize=(
+        min(20, alignment_full.shape[1] * 0.04 + 4),
+        min(20, alignment_full.shape[0] * 0.02 + 4),
+    ))
     im = ax.imshow(alignment_full, aspect="auto", origin="upper", cmap="magma")
     ax.set_xlabel("KV position (conditioning + text + speech tokens)")
     ax.set_ylabel("Speech token (output row)")
-    ax.set_title(f"Chatterbox cross-attention, mean of layers {[l for l, _ in LLAMA_ALIGNED_HEADS]}\n"
-                 f"heads {[h for _, h in LLAMA_ALIGNED_HEADS]} — {alignment_full.shape[0]} steps × {alignment_full.shape[1]} kv")
+    layers = [layer for layer, _ in LLAMA_ALIGNED_HEADS]
+    heads = [head for _, head in LLAMA_ALIGNED_HEADS]
+    ax.set_title(
+        f"Chatterbox cross-attention, mean of layers {layers}\n"
+        f"heads {heads} — {alignment_full.shape[0]} steps "
+        f"× {alignment_full.shape[1]} kv"
+    )
     fig.colorbar(im, ax=ax, shrink=0.7)
     plt.tight_layout()
     png_path = out_dir / "alignment_full.png"
