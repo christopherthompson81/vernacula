@@ -1,4 +1,15 @@
-chatterbox-tts==0.1.5
+# Byte-pinned to the PyPI build for chatterbox-tts 0.1.5. Plain version
+# pin isn't enough — chatterbox-tts is research code released by Resemble
+# AI without GitHub release tags matching PyPI uploads, and any
+# `pip install -U` resolves to whatever is current. The --hash form
+# locks pip to the exact wheel we audited the export patches against.
+# When bumping, fetch the new hash from
+# https://pypi.org/pypi/chatterbox-tts/<version>/json and re-run the
+# full parity suite (docs/chatterbox_investigation.md captures the
+# patch contract — Run 11 onwards).
+chatterbox-tts==0.1.5 \
+    --hash=sha256:43391e2cd37d20fa0e3788546bda9041069e5c9aab028e4821e2328f1174e473 \
+    --hash=sha256:084fcf00c96070332a4e517edc56cd730501673bd1658d9772a315419a91b8a0
 transformers==4.46.3
 torch==2.6.0
 torchaudio==2.6.0
