@@ -626,3 +626,186 @@ Run 7 (vocoder pipelining: LM(group N+1) overlapped with voc(N)) is
 the next iteration target. The contention story should be friendlier
 now than in Run 2 — at lm-batch=8 the LM is small enough (242 ms)
 that overlapping the 514 ms voc shouldn't starve it.
+
+
+## Run 6 sidebar — Vocoder export investigation
+
+Question (from the user, mid-Run-7): is Path B (rewriting the merge
+script to support batched-merged) worth doing? Or is there no real
+headroom to recover even if we fix it?
+
+### What's hardcoded in the merge script
+
+`scripts/_export_utils/merge_cond_decoder_loop.py` was written
+assuming B=1 input. Three places hardcode the CFG-doubling shape:
+
+1. **Body input/output shape**: lines 260-269 declare
+   `x_carried [1, MEL_BINS, "T_mel"]` and `x_new [1, MEL_BINS, "T_mel"]`.
+   For batched, these need `["batch_size", MEL_BINS, "T_mel"]`.
+
+2. **t_in construction inside the body**: line 207 does
+   `Concat([t_now_1d, t_now_1d], axis=0)` producing shape `(2,)`.
+   At B>1 input, cfm_estimator expects `t_in` shape `(2*B,)` to
+   match the CFG-doubled batch. The Concat needs to become a
+   `Tile(t_now_1d, [2*B])` where 2*B is computed dynamically from
+   the runtime x_carried shape:
+   ```
+   shape = Shape(x_carried)                # (3,) int64
+   batch = Slice(shape, [0], [1], [0])     # (1,) = [B]
+   two_b = Mul(batch, [2])                 # (1,) = [2*B]
+   t_in  = Tile(t_now_1d, two_b)           # (2*B,)
+   ```
+
+3. **x_in CFG-double**: line 209 `Concat([x_carried, x_carried], axis=0)`
+   correctly produces (2*B, ...) at any B (axis-0 concat scales) — no
+   change needed.
+
+The outer-scope CFG-doublers (lines 344-376) for mu/cond/spks/mask
+all use `ConstantOfShape(Shape(mu))` etc. which IS already dynamic
+on B — no change needed there.
+
+**Net change for Path B**: 4 nodes need replacement (the 2 fixed
+`[1, ...]` shape declarations + the t_in Tile-with-dynamic-2B). Half a
+day plus parity re-verification.
+
+### Headroom estimate
+
+What would batched-merged actually deliver vs batched-split?
+
+| | Measured | Source |
+|---|---|---|
+| Merged B=1 per chunk | 843 ms | Run 6a probe |
+| Split B=4 per chunk | 551 ms | Run 6a probe (38+1730+436)/4 |
+| Split B=8 per chunk | 514 ms | Run 6c measured |
+| **Hypothetical merged B=4** | **~500 ms** | flow 38 + 10 CFM in GPU Loop ~1500 + m2w 436 / 4 |
+| **Hypothetical merged B=8** | **~480 ms** | similar arithmetic at B=8 |
+
+The savings vs split come from removing the 10 host-roundtrips
+(allocating CFG-doubled arrays in C# per CFM step). Each roundtrip
+is maybe 1-3 ms of C# allocation + ORT call setup. For B=8: 10 × ~3
+ms = ~30 ms saved per chunk-group, spread across 8 chunks = ~4 ms/chunk.
+
+**Headroom for Path B at fp32**: roughly **5-8% of vocoder time**, or
+**~3-5% of total wall time** at our current best configuration
+(Run 6c: 6.1 s for 8 chunks at lm-batch=8 + voc-batch=8).
+
+In absolute terms: maybe shave 200-300 ms off the 6.1 s wall. Real
+but small.
+
+### Why the headroom is small at fp32
+
+The vocoder is dominated by the actual CFM compute (8 attention
+blocks × 10 Euler steps), not the orchestration overhead. The
+"10 host-roundtrips" overhead the split path adds is small relative
+to the per-step kernel time. Whether the Loop runs on GPU or C#
+orchestrates it, the same 10 cfm_estimator computations happen.
+
+### When Path B would matter more
+
+- **fp16 quantization**: vocoder weights halve, per-step CFM time
+  drops. The 30 ms of orchestration overhead becomes proportionally
+  bigger. Maybe 10-15% headroom recovery at that point.
+- **Streaming-within-chunk**: a merged-batched graph keeps the CFM
+  solve as one Run, which is a cleaner unit for streaming
+  pre-emption / interruption (the C#-orchestrated split path needs
+  to interleave per-step checks).
+- **Code surface reduction**: SynthesizeBatch is ~150 LOC of CFG
+  orchestration in C# that Path B would let us delete in favor of
+  one ORT Run call.
+
+### Decision
+
+**Don't do Path B now.** Estimated 3-5% wall reduction at fp32 doesn't
+justify the merge-script surgery + parity re-verification. The user
+called this correctly — there's some headroom but not much, and
+fp16 is the lever that would make it meaningful.
+
+Logged as a follow-up in [issue TODO] alongside the fp16 quantization
+work; the two should land together since the latter unlocks the
+former's payoff.
+
+### What this means for Run 7
+
+Vocoder pipelining (Run 7, in progress) is still worth doing — it's
+orthogonal to merged-vs-split and gives parallelism across groups.
+The contention story from Run 2 is friendlier now (LM at lm-batch=8
+is only 242 ms; voc is 514 ms — voc dominates, so overlapping with
+LM is mostly free for the LM's perspective).
+
+
+## Run 6 sidebar 2 — Duplicate-node hunt (user-prompted)
+
+Question (from the user): is the export still carrying redundant
+nodes we haven't eliminated? The Phase 1 70K→7K cfm_estimator win
+came from killing the 10× CFM unroll — are there leftover patterns?
+
+### Value-duplicate initializers
+
+Hashed every initializer in the merged graph and grouped by
+(shape, dtype, raw-data-hash):
+
+```
+Total initializers:     1545
+Unique value-hashes:    1521
+Value-duplicate groups: 15
+Total waste:            220 bytes (in 575 MB of initializer data)
+```
+
+Every duplicate is a tiny shape-arithmetic constant (shape `(1,)` or
+`()`, used in trace-time Shape→Gather chains). **0% headroom** here.
+
+### onnxslim pass on the merged graph
+
+Noticed the merged graph never gets the slim treatment — the export
+runs `slim_and_externalize` BEFORE the merge step. Ran onnxslim
+manually on the produced merged graph:
+
+```
+Outer nodes: 1680 → 1676  (−4)
+Body nodes:  3008 → 3004  (−4)
+File size:   548 MB → 548 MB
+```
+
+**−8 nodes out of 4688** (the 4 Identity nodes the merge script adds
+at the body boundary plus 4 in outer scope, probably). Negligible
+perf impact; not worth wiring an extra slim pass into the export.
+
+### Node-count audit by graph
+
+| Graph | Nodes | Notes |
+|---|---|---|
+| cfm_estimator standalone | 2988 | per-step, post-Phase-1 |
+| Merged body | 3008 | cfm_estimator + 20 boundary ops |
+| Merged outer | 1680 | flow_encoder (863) + mel2wav (802) + 15 outer-CFG ops |
+| flow_encoder | 863 | dynamic-shape post-Run-10 |
+| mel2wav | 802 | scatter_add ISTFT (Run 3 fix) |
+
+The merge script added ~35 nodes total to the union of the three
+slimmed sub-graphs. That's a clean stitch.
+
+### Op-type top-5 in the merged body
+
+```
+MatMul:               448  (attention + FFN; load-bearing)
+Add:                  421
+Mul:                  323
+Transpose:            310  (attention head reshapes; could in principle be fused)
+Reshape:              226
+```
+
+The 310 Transposes are the only "huh" — that's a lot. They're mostly
+attention-block head-dim reshapes baked in by upstream's
+`AttnProcessor → MinimalAttnProcessor` swap and the diffusers
+`BasicTransformerBlock` layout. Fusing them would require a custom
+attention kernel (TensorRT, ORT custom op) — significant work for
+probably <5% gain on attention compute. Not the next lever.
+
+### Conclusion
+
+The export pipeline already eliminated the heavy redundancy. What
+remains is essentially compute-bound (matmul + attention) and
+memory-bandwidth-bound (weight reads), not redundant work. **No
+further dedup-style export optimization will move the needle at
+fp32.** fp16 quantization remains the right next lever for the
+weight-bandwidth ceiling; merged-graph batching (Path B from the
+previous sidebar) remains low priority for the same reason.

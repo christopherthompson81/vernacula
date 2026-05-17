@@ -75,13 +75,26 @@ public sealed class ChunkedSynthesizer
     /// Forwarded to <see cref="AcousticLM.Generate"/>; null = auto-detect
     /// from the LM session's effective EP.
     /// </param>
+    /// <param name="groupSize">
+    /// Chunks per batched LM/vocoder call. 1 (default) = chunk-at-a-time
+    /// with LM/voc per-chunk overlap (the Run 2 mode). >1 = batched-LM
+    /// + batched-voc per group, with pipelining across groups (the Run 7
+    /// mode). At groupSize&gt;1 all chunks must share the same prompt
+    /// length (MVP — same constraint as <see cref="AcousticLM.GenerateBatch"/>).
+    /// </param>
     public ChunkSynthesisResult Synthesize(
         SpeakerEmbedding speaker,
         IReadOnlyList<long[]> textTokenIdsPerChunk,
         bool? useIoBinding = null,
         float exaggeration = ChatterboxConstants.DefaultExaggeration,
-        int maxSteps = ChatterboxConstants.DefaultMaxLmSteps)
+        int maxSteps = ChatterboxConstants.DefaultMaxLmSteps,
+        int groupSize = 1)
     {
+        if (groupSize < 1)
+            throw new ArgumentException("groupSize must be >= 1.", nameof(groupSize));
+        if (groupSize > 1)
+            return SynthesizeInGroups(speaker, textTokenIdsPerChunk, groupSize, useIoBinding, exaggeration, maxSteps);
+
         int n = textTokenIdsPerChunk.Count;
         if (n == 0)
             return new ChunkSynthesisResult(Array.Empty<float[]>(), Array.Empty<ChunkTiming>(), 0);
@@ -148,6 +161,106 @@ public sealed class ChunkedSynthesizer
         lmTask.GetAwaiter().GetResult();
         totalSw.Stop();
 
+        return new ChunkSynthesisResult(waveforms, timings, totalSw.ElapsedMilliseconds);
+    }
+
+    /// <summary>
+    /// Run 7 pipelined-batched path. Producer LM-batches chunks in groups
+    /// of <paramref name="groupSize"/> via <see cref="AcousticLM.GenerateBatch"/>;
+    /// consumer voc-batches via <see cref="Vocoder.SynthesizeBatch"/>.
+    /// Channel between them carries per-group bundles, so vocoder for
+    /// group N runs concurrent with LM for group N+1. Critical path is
+    /// max(LM, voc) per group plus a vocoder tail.
+    /// </summary>
+    private ChunkSynthesisResult SynthesizeInGroups(
+        SpeakerEmbedding speaker,
+        IReadOnlyList<long[]> textTokenIdsPerChunk,
+        int groupSize,
+        bool? useIoBinding,
+        float exaggeration,
+        int maxSteps)
+    {
+        int n = textTokenIdsPerChunk.Count;
+        if (n == 0)
+            return new ChunkSynthesisResult(Array.Empty<float[]>(), Array.Empty<ChunkTiming>(), 0);
+
+        var channel = Channel.CreateBounded<(int groupStartIdx, long[][] speechTokensPerB, long lmMs, int[] lmSteps)>(
+            new BoundedChannelOptions(1)
+            {
+                FullMode = BoundedChannelFullMode.Wait,
+                SingleReader = true,
+                SingleWriter = true,
+            });
+
+        var waveforms = new float[n][];
+        var timings = new ChunkTiming[n];
+        var totalSw = Stopwatch.StartNew();
+
+        var lmTask = Task.Run(() =>
+        {
+            try
+            {
+                int produced = 0;
+                while (produced < n)
+                {
+                    int B = Math.Min(groupSize, n - produced);
+                    var condEmbs = new Microsoft.ML.OnnxRuntime.Tensors.DenseTensor<float>[B];
+                    var tokensPerB = new long[B][];
+                    for (int b = 0; b < B; b++)
+                    {
+                        condEmbs[b] = speaker.CondEmb;
+                        tokensPerB[b] = textTokenIdsPerChunk[produced + b];
+                    }
+                    var sw = Stopwatch.StartNew();
+                    var batched = _lm.GenerateBatch(
+                        condEmbs, tokensPerB,
+                        useIoBinding: useIoBinding,
+                        exaggeration: exaggeration,
+                        maxSteps: maxSteps);
+                    sw.Stop();
+
+                    var speechTokensPerB = new long[B][];
+                    var lmStepsPerB = new int[B];
+                    for (int b = 0; b < B; b++)
+                    {
+                        speechTokensPerB[b] = batched.PerChunkResults[b].BuildSpeechTokens(speaker.AudioTokens);
+                        lmStepsPerB[b] = batched.PerChunkResults[b].Steps;
+                    }
+                    channel.Writer.WriteAsync((produced, speechTokensPerB, sw.ElapsedMilliseconds, lmStepsPerB))
+                                  .AsTask().GetAwaiter().GetResult();
+                    produced += B;
+                }
+            }
+            finally
+            {
+                channel.Writer.Complete();
+            }
+        });
+
+        foreach (var (groupStartIdx, speechTokensPerB, lmMs, lmSteps) in
+                 channel.Reader.ReadAllAsync().ToBlockingEnumerable())
+        {
+            int B = speechTokensPerB.Length;
+            var sw = Stopwatch.StartNew();
+            var groupWavs = _vocoder.SynthesizeBatch(
+                speechTokensPerB, speaker.SpeakerEmbeddings, speaker.SpeakerFeatures);
+            sw.Stop();
+            long vocMs = sw.ElapsedMilliseconds;
+            for (int b = 0; b < B; b++)
+            {
+                int idx = groupStartIdx + b;
+                waveforms[idx] = groupWavs[b];
+                // Both LM and voc were batched — report the per-batch-elem
+                // shares (group wall / B). This lets the summary compute
+                // "per-chunk LM" and "per-chunk voc" symmetrically with
+                // the serial path.
+                timings[idx] = new ChunkTiming(
+                    idx, lmMs / B, lmSteps[b], vocMs / B, groupWavs[b].Length);
+            }
+        }
+
+        lmTask.GetAwaiter().GetResult();
+        totalSw.Stop();
         return new ChunkSynthesisResult(waveforms, timings, totalSw.ElapsedMilliseconds);
     }
 }

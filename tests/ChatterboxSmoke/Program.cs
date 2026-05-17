@@ -87,7 +87,9 @@ internal static class Program
                     // Use ChunkedSynthesizer (LM and Vocoder concurrent on
                     // separate threads, one chunk apart). Only meaningful
                     // with --bench-chunks N for N>1; for N=1 collapses to
-                    // a serial single-chunk call.
+                    // a serial single-chunk call. When --lm-batch B is
+                    // also set, the pipelining happens at the group level
+                    // (batched LM(N+1) overlapped with batched voc(N)).
                     pipelined = true;
                     break;
                 case "--lm-batch":
