@@ -1,0 +1,47 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>false</AllowUnsafeBlocks>
+    <Platforms>x64</Platforms>
+    <RootNamespace>Chatterbox.CLI</RootNamespace>
+    <AssemblyName>chatterbox</AssemblyName>
+
+    <!--
+      Select execution provider at build time, matching Vernacula.CLI:
+        dotnet build -c Release -p:EP=Cuda       (default)
+        dotnet build -c Release -p:EP=DirectML
+        dotnet build -c Release -p:EP=Cpu
+    -->
+    <EP Condition="'$(EP)' == ''">Cuda</EP>
+    <DefineConstants Condition="'$(EP)' == 'DirectML'">$(DefineConstants);DIRECTML</DefineConstants>
+    <DefineConstants Condition="'$(EP)' == 'Cpu'">$(DefineConstants);CPU</DefineConstants>
+  </PropertyGroup>
+
+  <ItemGroup Condition="'$(EP)' == 'Cuda'">
+    <PackageReference Include="Microsoft.ML.OnnxRuntime.Gpu" Version="1.24.4" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(EP)' == 'DirectML'">
+    <PackageReference Include="Microsoft.ML.OnnxRuntime.DirectML" Version="1.21.1" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(EP)' == 'Cpu'">
+    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.24.4" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="NAudio" Version="2.2.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Chatterbox.Base\Chatterbox.Base.csproj">
+      <SetConfiguration>EP=$(EP)</SetConfiguration>
+    </ProjectReference>
+    <ProjectReference Include="..\Vernacula.Base\Vernacula.Base.csproj">
+      <SetConfiguration>EP=$(EP)</SetConfiguration>
+    </ProjectReference>
+  </ItemGroup>
+
+</Project>

@@ -12,6 +12,9 @@
   <Project Path="src/Chatterbox.Base/Chatterbox.Base.csproj">
     <Platform Project="x64" />
   </Project>
+  <Project Path="src/Chatterbox.CLI/Chatterbox.CLI.csproj">
+    <Platform Project="x64" />
+  </Project>
   <Project Path="src/Vernacula.CLI/Vernacula.CLI.csproj">
     <Platform Project="x64" />
   </Project>
