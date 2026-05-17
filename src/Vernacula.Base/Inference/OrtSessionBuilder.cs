@@ -98,27 +98,45 @@ public static class OrtSessionBuilder
     /// Create an <see cref="InferenceSession"/> backed by a disk-cached
     /// post-optimization graph. First call loads <paramref name="modelPath"/>,
     /// runs graph optimization at <paramref name="optLevel"/>, and writes the
-    /// optimized graph next to the source as <c>{stem}.opt.{ep}.{ortver}.onnx</c>
-    /// (with a <c>.opt_data</c> sidecar for tensors above
-    /// <paramref name="externalInitializersMinBytes"/>). Subsequent calls find
-    /// the cached file, skip optimization (<c>ORT_DISABLE_ALL</c>), and load
-    /// directly — typically 5–10× faster for large graphs.
+    /// optimized graph next to the source. Subsequent calls find the cached
+    /// file, skip optimization (<c>ORT_DISABLE_ALL</c>), and load directly —
+    /// typically 5–10× faster for large graphs.
     ///
-    /// Cache key embeds EP, ORT version, and source-file mtime+size, so source
-    /// changes or ORT upgrades automatically invalidate. Stale optimized files
-    /// are NOT auto-cleaned — callers can `rm <stem>.opt.*` to reset.
+    /// <b>Layered cache format.</b> Three states per cache key, advanced by
+    /// observed round-trip behavior:
+    /// <list type="number">
+    ///   <item><description><b>.onnx</b> (primary). Fast: ORT can lazy-load
+    ///     weights from a <c>_data</c> external-initializer sidecar. Works
+    ///     for almost every graph.</description></item>
+    ///   <item><description><b>.ort</b> (fallback, marked by a
+    ///     <c>.use-ort</c> hint file). Used when the <c>.onnx</c> writer
+    ///     mishandles the graph — currently any graph containing a Loop
+    ///     subgraph (issue #56 — the <c>.onnx</c> serializer duplicates
+    ///     body-scope initializers into the outer scope). The <c>.ort</c>
+    ///     binary writer encodes subgraphs faithfully and round-trips at
+    ///     every opt level, but embeds all initializers inline so loads
+    ///     are slower for large graphs. Only used when needed.</description></item>
+    ///   <item><description><b>No cache</b> (last resort, marked by a
+    ///     <c>.cache-disabled</c> sentinel). Used when even <c>.ort</c>
+    ///     can't round-trip. Stops the broken write→fail→delete cycle.
+    ///     Has not been observed in practice but the path exists as
+    ///     defense-in-depth.</description></item>
+    /// </list>
+    ///
+    /// Convergence costs one extra cache miss per state transition: a
+    /// Loop-bearing graph takes 2 runs to reach a steady-state cache hit
+    /// (run 1: write .onnx → run 2: .onnx reload fails, escalate to .ort
+    /// hint, write .ort in the same call → run 3+: .ort cache HIT).
+    /// Most graphs stay on the .onnx path forever.
+    ///
+    /// Cache key (in the path stem) embeds EP, ORT version, and source-file
+    /// mtime+size, so source changes or ORT upgrades automatically invalidate
+    /// everything including hints and sentinels. Stale files are NOT
+    /// auto-cleaned — callers can `rm &lt;stem&gt;.opt.*` to reset.
     ///
     /// Set <c>VERNACULA_ORT_NO_CACHE=1</c> to bypass the cache entirely
     /// (forces a fresh full-optimization load every time; useful when debugging
     /// graph-level surprises).
-    ///
-    /// If a cache write+read round-trip fails (issue #56 — ORT can't reload
-    /// optimized graphs that contain Loop subgraphs), the failed cache file
-    /// is deleted and a small sentinel <c>{cachePath}.cache-disabled</c> is
-    /// written next to it. Future calls see the sentinel and skip caching
-    /// entirely (no write, no disk churn, no doomed re-load attempt) until
-    /// the source or ORT version changes — which moves the cache key and
-    /// the sentinel path along with it.
     /// </summary>
     public static InferenceSession CreateCachedSession(
         string modelPath,
@@ -143,32 +161,33 @@ public static class OrtSessionBuilder
             throw new FileNotFoundException($"Model file not found: {modelPath}");
 
         bool bypassCache = Environment.GetEnvironmentVariable("VERNACULA_ORT_NO_CACHE") == "1";
-        string cachePath = bypassCache ? "" : ComputeCachePath(modelPath, ep, optLevel);
-        string cacheDataPath = cachePath + "_data";
-        // Sentinel file written next to the cache when a write/read round-trip
-        // is known to fail for this model (issue #56 — ORT's serialization of
-        // optimized graphs with Loop subgraphs duplicates body-scope
-        // initializers into the outer scope, producing a graph that won't
-        // re-load). When present, we skip caching entirely: no write, no
-        // disk churn (~720 MB per run for the merged Loop graph), no
-        // doomed re-load attempt. The sentinel sits at
-        // cachePath+".cache-disabled", so the same source-mtime+EP+ORT-version
-        // hash that keys the cache also auto-invalidates the sentinel — a
-        // source edit or ORT upgrade will trigger a fresh cache attempt.
-        string cacheDisabledPath = bypassCache ? "" : cachePath + ".cache-disabled";
-        bool cacheDisabledForThisModel = !bypassCache && File.Exists(cacheDisabledPath);
+        string cacheBase = bypassCache ? "" : ComputeCacheBasePath(modelPath, ep, optLevel);
+        // All cache-key-derived paths. The five files form a small state
+        // machine; the per-key disposition is encoded by which marker
+        // (if any) exists alongside the actual cache file(s).
+        string cachePathOnnx = cacheBase + ".onnx";   // primary cache (with _data sidecar)
+        string cacheDataPath = cachePathOnnx + "_data";
+        string cachePathOrt = cacheBase + ".ort";     // fallback for Loop-bearing graphs
+        string useOrtHintPath = cacheBase + ".use-ort";       // ".onnx round-trip failed, escalate to .ort"
+        string cacheDisabledPath = cacheBase + ".cache-disabled"; // "both formats failed, skip caching"
 
-        if (cacheDisabledForThisModel)
+        bool cacheDisabled = !bypassCache && File.Exists(cacheDisabledPath);
+        bool useOrtFormat = !bypassCache && !cacheDisabled && File.Exists(useOrtHintPath);
+
+        if (cacheDisabled)
         {
             // Defensive cleanup: if a previous catch-block's File.Delete
             // silently failed (file locked, EACCES, etc.) we'd be leaking
-            // ~720 MB per affected model. Retry the deletes now that we know
-            // the cache is permanently disabled for this key.
-            try { if (File.Exists(cachePath)) File.Delete(cachePath); } catch { /* best-effort */ }
+            // hundreds of MB per affected model. Retry the deletes now that
+            // we know the cache is permanently disabled for this key.
+            try { if (File.Exists(cachePathOnnx)) File.Delete(cachePathOnnx); } catch { /* best-effort */ }
             try { if (File.Exists(cacheDataPath)) File.Delete(cacheDataPath); } catch { /* best-effort */ }
+            try { if (File.Exists(cachePathOrt))  File.Delete(cachePathOrt);  } catch { /* best-effort */ }
         }
 
-        if (!bypassCache && !cacheDisabledForThisModel && File.Exists(cachePath))
+        string activeCachePath = useOrtFormat ? cachePathOrt : cachePathOnnx;
+
+        if (!bypassCache && !cacheDisabled && File.Exists(activeCachePath))
         {
             // Cache hit: load pre-optimized graph with optimization DISABLED
             // (the graph is already optimized; re-running passes is wasted work
@@ -176,48 +195,72 @@ public static class OrtSessionBuilder
             var hitOpts = Create(ep, GraphOptimizationLevel.ORT_DISABLE_ALL, enableProfiling: false, out _);
             try
             {
-                var session = new InferenceSession(cachePath, hitOpts);
+                var session = new InferenceSession(activeCachePath, hitOpts);
                 cacheHit = true;
                 return session;
             }
             catch
             {
-                // Cache file is corrupt or incompatible — fall through to a
-                // fresh load. Drop the bad file AND write a sentinel so the
-                // next run skips the doomed write+read cycle entirely.
-                // One-time log so the silent transition is visible (every
-                // subsequent run still prints cache=miss; only this catch
-                // marks the point caching was turned off for this key).
-                Console.WriteLine(
-                    $"[cache-disabled] {Path.GetFileName(cachePath)}: " +
-                    "ORT round-trip failed, disabling cache for this model (see issue #56).");
                 hitOpts.Dispose();
-                try { File.Delete(cachePath); } catch { /* best-effort */ }
-                try { File.Delete(cacheDataPath); } catch { /* best-effort */ }
-                try { File.WriteAllText(cacheDisabledPath, ""); } catch { /* best-effort */ }
-                cacheDisabledForThisModel = true;
+                if (useOrtFormat)
+                {
+                    // .ort fallback also can't round-trip. Disable caching
+                    // for this key entirely. Logged once (not per-load) so
+                    // the silent transition is visible.
+                    Console.WriteLine(
+                        $"[cache-disabled] {Path.GetFileName(cachePathOrt)}: " +
+                        ".ort fallback ALSO failed to round-trip; disabling cache for this model (see issue #56).");
+                    try { File.Delete(cachePathOrt); } catch { /* best-effort */ }
+                    try { File.WriteAllText(cacheDisabledPath, ""); } catch { /* best-effort */ }
+                    cacheDisabled = true;
+                }
+                else
+                {
+                    // .onnx round-trip failed; escalate to .ort fallback.
+                    // useOrtFormat=true makes the fall-through cache-write
+                    // path emit .ort this run — so by the end of *this* call
+                    // the .ort file is on disk, and the very next call sees
+                    // a cache HIT instead of having to repeat the cycle.
+                    Console.WriteLine(
+                        $"[cache-format] {Path.GetFileName(cachePathOnnx)}: " +
+                        ".onnx round-trip failed (likely a Loop-subgraph graph); switching to .ort for this model (see issue #56).");
+                    try { File.Delete(cachePathOnnx); } catch { /* best-effort */ }
+                    try { File.Delete(cacheDataPath); } catch { /* best-effort */ }
+                    try { File.WriteAllText(useOrtHintPath, ""); } catch { /* best-effort */ }
+                    useOrtFormat = true;
+                }
             }
         }
 
         // Cache miss (or bypass, or this-model-disabled): load source,
         // optimize, optionally save the result for next time.
         var opts = Create(ep, optLevel, enableProfiling: false, out _);
-        if (!bypassCache && !cacheDisabledForThisModel)
+        if (!bypassCache && !cacheDisabled)
         {
-            opts.OptimizedModelFilePath = cachePath;
-            // For >2GB graphs, force the optimized weights to an external-data
-            // sidecar; otherwise the serializer hits protobuf's 2GB limit.
-            opts.AddSessionConfigEntry(
-                "session.optimized_model_external_initializers_file_name",
-                Path.GetFileName(cacheDataPath));
-            opts.AddSessionConfigEntry(
-                "session.optimized_model_external_initializers_min_size_in_bytes",
-                externalInitializersMinBytes.ToString());
+            opts.OptimizedModelFilePath = useOrtFormat ? cachePathOrt : cachePathOnnx;
+            if (useOrtFormat)
+            {
+                // .ort embeds all initializers inline; no _data sidecar.
+                opts.AddSessionConfigEntry("session.save_model_format", "ORT");
+            }
+            else
+            {
+                // For >2GB graphs, force the optimized weights to an external-data
+                // sidecar; otherwise the serializer hits protobuf's 2GB limit.
+                opts.AddSessionConfigEntry(
+                    "session.optimized_model_external_initializers_file_name",
+                    Path.GetFileName(cacheDataPath));
+                opts.AddSessionConfigEntry(
+                    "session.optimized_model_external_initializers_min_size_in_bytes",
+                    externalInitializersMinBytes.ToString());
+            }
         }
         return new InferenceSession(modelPath, opts);
     }
 
-    private static string ComputeCachePath(
+    // Returns the cache-key path STEM (no extension). Caller appends
+    // ".onnx" / ".ort" / ".use-ort" / ".cache-disabled" as needed.
+    private static string ComputeCacheBasePath(
         string modelPath, ExecutionProvider ep, GraphOptimizationLevel optLevel)
     {
         var fi = new FileInfo(modelPath);
@@ -236,6 +279,6 @@ public static class OrtSessionBuilder
         var hashHex = Convert.ToHexString(hash).ToLowerInvariant();
         var dir = fi.DirectoryName ?? ".";
         var stem = Path.GetFileNameWithoutExtension(modelPath);
-        return Path.Combine(dir, $"{stem}.opt.{epTag}.{hashHex}.onnx");
+        return Path.Combine(dir, $"{stem}.opt.{epTag}.{hashHex}");
     }
 }
