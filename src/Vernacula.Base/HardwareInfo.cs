@@ -142,12 +142,7 @@ public static class HardwareInfo
     public static bool IsCudaToolkitInstalled()
     {
         if (OperatingSystem.IsWindows())
-        {
-            // Search recursively: CUDA 13 relocated the Windows runtime DLLs out of
-            // <CUDA_PATH>\bin into a bin\x64 subfolder, so a flat glob on bin\ misses them.
-            return GetWindowsCudaSearchRoots()
-                .Any(dir => AnyFileMatches(dir, "cudart64_*.dll"));
-        }
+            return _windowsCudaScan.Value.HasCudart;
 
         if (OperatingSystem.IsLinux())
         {
@@ -191,14 +186,7 @@ public static class HardwareInfo
     public static bool IsCudnnInstalled()
     {
         if (OperatingSystem.IsWindows())
-        {
-            // cuDNN 9 installs to its own tree (C:\Program Files\NVIDIA\CUDNN\vX.Y\bin\<cuda>\),
-            // not into the CUDA Toolkit bin and not on PATH by default — so search recursively
-            // across both the Toolkit and the standalone cuDNN install roots.
-            return GetWindowsCudaSearchRoots()
-                .Any(dir => AnyFileMatches(dir, "cudnn64_*.dll")
-                         || AnyFileMatches(dir, "cudnn_*.dll"));
-        }
+            return _windowsCudaScan.Value.HasCudnn;
 
         if (OperatingSystem.IsLinux())
         {
@@ -392,35 +380,81 @@ public static class HardwareInfo
     }
 
     /// <summary>
-    /// Windows: the concrete directories that actually contain a CUDA or cuDNN runtime DLL.
-    /// Unlike <see cref="GetWindowsCudaSearchRoots"/> (search roots to scan recursively),
-    /// these are the leaf directories to register with AddDllDirectory so an MSIX-packaged
-    /// onnxruntime can locate cudart / cudnn at load time.
+    /// Windows: the concrete directories that actually contain a CUDA or cuDNN runtime DLL
+    /// (cudart, cublas, cufft, nvrtc, cudnn, …). Unlike <see cref="GetWindowsCudaSearchRoots"/>
+    /// (roots to scan), these are the leaf directories to register with AddDllDirectory so an
+    /// MSIX-packaged onnxruntime can locate the CUDA EP's dependencies at load time.
     /// </summary>
-    public static IReadOnlyCollection<string> GetWindowsCudaDllDirectories()
+    public static IReadOnlyCollection<string> GetWindowsCudaDllDirectories() =>
+        _windowsCudaScan.Value.DllDirectories;
+
+    /// <summary>
+    /// Result of a single recursive scan of the Windows CUDA/cuDNN search roots:
+    /// whether the Toolkit runtime (cudart) and cuDNN are present, and the leaf
+    /// directories holding the runtime DLLs the CUDA execution provider needs.
+    /// </summary>
+    private sealed record WindowsCudaScan(
+        bool HasCudart,
+        bool HasCudnn,
+        IReadOnlyCollection<string> DllDirectories);
+
+    // Toolkit / cuDNN presence is fixed for the lifetime of the process (installs don't
+    // appear or vanish mid-run), and CanProbeCudaExecutionProvider fans this query out
+    // across every ONNX model-init site — so the recursive scan is done once and cached,
+    // mirroring _bf16Cache below. A newly-installed CUDA is picked up on next launch.
+    private static readonly Lazy<WindowsCudaScan> _windowsCudaScan = new(ScanWindowsCuda);
+
+    private static WindowsCudaScan ScanWindowsCuda()
     {
-        var result = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var dllDirs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         if (!OperatingSystem.IsWindows())
-            return result;
+            return new WindowsCudaScan(false, false, dllDirs);
+
+        // Bounded recursion: the DLLs sit at most ~2 levels below a search root
+        // (Toolkit bin\x64, cuDNN bin\<cuda>\). Capping depth + ignoring inaccessible
+        // and reparse-point dirs keeps an over-broad PATH root (e.g. one whose name merely
+        // contains "cuda") from triggering an unbounded walk or aborting on a single
+        // permission error mid-enumeration.
+        var options = new EnumerationOptions
+        {
+            RecurseSubdirectories = true,
+            MaxRecursionDepth     = 3,
+            IgnoreInaccessible    = true,
+            AttributesToSkip      = FileAttributes.ReparsePoint
+                                  | FileAttributes.Hidden
+                                  | FileAttributes.System,
+        };
+
+        bool hasCudart = false, hasCudnn = false;
 
         foreach (var root in GetWindowsCudaSearchRoots())
         {
-            foreach (var pattern in new[] { "cudart64_*.dll", "cudnn64_*.dll", "cudnn_*.dll" })
+            try
             {
-                try
+                foreach (var file in Directory.EnumerateFiles(root, "*.dll", options))
                 {
-                    foreach (var file in Directory.EnumerateFiles(root, pattern, SearchOption.AllDirectories))
+                    var name = Path.GetFileName(file);
+                    bool isCudart = name.StartsWith("cudart64_", StringComparison.OrdinalIgnoreCase);
+                    bool isCudnn  = name.StartsWith("cudnn",     StringComparison.OrdinalIgnoreCase);
+                    bool isCudaDep = isCudart || isCudnn
+                        || name.StartsWith("cublas", StringComparison.OrdinalIgnoreCase)
+                        || name.StartsWith("cufft",  StringComparison.OrdinalIgnoreCase)
+                        || name.StartsWith("nvrtc",  StringComparison.OrdinalIgnoreCase);
+
+                    if (isCudart) hasCudart = true;
+                    if (isCudnn)  hasCudnn  = true;
+                    if (isCudaDep)
                     {
                         var dir = Path.GetDirectoryName(file);
                         if (!string.IsNullOrEmpty(dir))
-                            result.Add(dir);
+                            dllDirs.Add(dir);
                     }
                 }
-                catch { }
             }
+            catch { }
         }
 
-        return result;
+        return new WindowsCudaScan(hasCudart, hasCudnn, dllDirs);
     }
 
     private static IEnumerable<string> SafeGetDirectories(string parent, string pattern)
@@ -432,17 +466,6 @@ public static class HardwareInfo
                 : Array.Empty<string>();
         }
         catch { return Array.Empty<string>(); }
-    }
-
-    /// <summary>True if <paramref name="dir"/> or any subdirectory contains a file matching <paramref name="pattern"/>.</summary>
-    private static bool AnyFileMatches(string dir, string pattern)
-    {
-        try
-        {
-            return Directory.Exists(dir)
-                && Directory.EnumerateFiles(dir, pattern, SearchOption.AllDirectories).Any();
-        }
-        catch { return false; }
     }
 
     private static bool HasFile(string dir, string pattern)
