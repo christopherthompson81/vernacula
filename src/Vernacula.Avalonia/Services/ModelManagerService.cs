@@ -524,8 +524,10 @@ internal class ModelManagerService
 
     /// <summary>
     /// MSIX packaged apps use a restricted DLL search that excludes the system PATH.
-    /// Explicitly register CUDA Toolkit directories so onnxruntime_providers_cuda.dll
-    /// can find cudart, cublas, cudnn, etc. at runtime.
+    /// Explicitly register the directories that actually hold cudart, cublas, cudnn, etc.
+    /// so onnxruntime_providers_cuda.dll can find them at runtime. Resolution lives in
+    /// <see cref="HardwareInfo.GetWindowsCudaDllDirectories"/>, which also handles the
+    /// CUDA 13 bin\x64 relocation and the standalone cuDNN 9 install tree.
     /// </summary>
     internal static void AddCudaToSearchPath()
     {
@@ -534,25 +536,8 @@ internal class ModelManagerService
             return;
         }
 
-        var dirs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
-        // CUDA Toolkit installer sets CUDA_PATH (e.g. C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.8)
-        string? cudaPath = Environment.GetEnvironmentVariable("CUDA_PATH");
-        if (!string.IsNullOrEmpty(cudaPath))
-            dirs.Add(Path.Combine(cudaPath, "bin"));
-
-        // Also scan PATH for any CUDA/cuDNN entries (handles cuDNN installed separately)
-        string? path = Environment.GetEnvironmentVariable("PATH");
-        if (path != null)
-            foreach (var entry in path.Split(';'))
-                if (!string.IsNullOrWhiteSpace(entry) &&
-                    (entry.Contains("CUDA",  StringComparison.OrdinalIgnoreCase) ||
-                     entry.Contains("cuDNN", StringComparison.OrdinalIgnoreCase)))
-                    dirs.Add(entry.Trim());
-
-        foreach (var dir in dirs)
-            if (Directory.Exists(dir))
-                AddDllDirectory(dir);
+        foreach (var dir in HardwareInfo.GetWindowsCudaDllDirectories())
+            AddDllDirectory(dir);
     }
 
     public (bool Available, string Message) CheckCuda()
