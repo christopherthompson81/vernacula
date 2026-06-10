@@ -363,3 +363,38 @@ End-to-end: "Hello, this is a Kokoro speech test." → `həlˈO, ðɪs ɪz ə k�
 punctuation) → tokenize (KokoroVocab) → ONNX (Kokoro) → 24 kHz audio, via `KokoroTts.Speak`.
 Remaining is non-core: playback/UI surface, and the performance phase (fp16/int8; the
 log-spectral harness is the acceptance gate).
+
+## Run 14 — 2026-06-09 23:45 — Performance phase
+
+Built `tests/KokoroPerf` (latency / RTF harness, both EPs; reusable as the quantization gate).
+Hardware: RTX 3090, CUDA 12.6, ORT 1.24, fp32 `kokoro.onnx`. RTF = audio_s / inference_s.
+
+| case | phonemes | audio_s | CPU med_ms | CPU RTF | CUDA med_ms | CUDA RTF |
+|---|---|---|---|---|---|---|
+| short | 11 | 1.52 | 329 | 4.6× | 19 | **80.5×** |
+| medium | 48 | 3.23 | 733 | 4.4× | 44 | **73.6×** |
+| long | 149 | 9.30 | 2296 | 4.1× | 190 | **48.9×** |
+
+Session load: ~700 ms CPU / ~1.15 s CUDA (one-time). First CUDA call ~400 ms (kernel JIT /
+cudnn autotune) → a warmup synth is worth doing so the first user-facing call isn't slow.
+
+**CUDA correctness:** CPU vs CUDA produce **identical durations** (length match across all
+cases) and log-spectral L1 0.11–0.20 — within the model's own nondeterminism band and well
+under the 0.37 the user judged "basically identical." The `ScatterND reduction=='none'
+duplicate-indices` warning is benign here: identical lengths prove the length-regulator indices
+aren't duplicated in practice.
+
+**On the user's checklist:**
+- *Produce output quickly* ✅ — 49–80× real-time on CUDA, 4× on CPU (CPU is a viable fallback).
+- *CUDA testing* ✅ — works and is correct.
+- *IO handled (no CPU/GPU transfers)* — **not needed.** Kokoro is a single `Run`: inputs are
+  tiny (ids+ref_s+speed < 2 KB) and the output download is < 1 MB (~0.1 ms at PCIe speeds) vs
+  ~190 ms compute. IoBinding pays off for iterative graphs (cf. the Vocoder CFM loop), not a
+  one-shot graph. Skipped deliberately.
+- *Batching* — **not warranted.** 49–80× single-stream RTF already covers real-time and bulk;
+  the exported graph is batch=1 (dynamic-batch export hits the Run-2 attention guard). Revisit
+  only if a bulk-offline throughput need appears.
+
+**Conclusion:** performance is a non-issue at fp32 — CUDA is 50–80× real-time and correct, CPU
+is a 4× fallback. fp16/int8 quantization is now optional (latency, not a bottleneck; could
+still cut the 325 MB model / VRAM), gated by the log-spectral harness if pursued.
