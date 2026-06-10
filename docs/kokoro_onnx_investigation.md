@@ -173,3 +173,56 @@ framing was wrong). Open follow-ups for later phases: fp16/int8 quantization, th
 I/O contract, and (optional, low priority) a faithful real-valued STFT reimplementation if we
 ever want to close the residual complex-vs-real gap — but the listening test says we don't need
 to.
+
+## Run 7 — 2026-06-09 19:25
+
+Command: `.venv/bin/python parity_sweep.py`
+Question: does parity hold beyond one utterance — across voices (ref_s vectors) and token
+lengths, including the long-input edge?
+
+Finding: **24/24 cells PASS.** 8 English voices (American/British × f/m) × 3 lengths
+(short 13 tok / medium ~50 / long ~187). Output length matched **exactly** in every cell.
+log-spectral L1 ranged 0.088–0.194 (worst: bm_george long), all under the 0.25 threshold and
+all well under one-frame-jitter (~0.77). Mild trend: L1 creeps up with length (STFT-framing /
+pred_dur accumulation) and British male voices sit highest — but none near threshold.
+
+Implication: the export generalizes across the style-vector space and length; no voice-pack
+indexing bug, no length-dependent divergence. Parity phase is done. `parity_sweep.py` is the
+reusable gate (will double as the acceptance test for each quantization level in phase 3).
+
+## Run 8 — 2026-06-09 19:40
+
+Prompted by "we have espeak installed for G2P." The G2P frontend is OUTSIDE the ONNX graph
+(we export `forward_with_tokens`), so the C# phase must reproduce phonemization. Question:
+can espeak-ng alone drive the C# frontend, or is misaki's lexicon required?
+
+How Kokoro wires English G2P (`KPipeline.__init__`):
+```
+fallback = espeak.EspeakFallback(british=lang_code=='b')
+self.g2p  = en.G2P(british=..., fallback=fallback, unk='')   # lexicon PRIMARY, espeak OOV-only
+```
+Non-English langs use `EspeakG2P(language=…)` — **pure espeak**.
+
+Measured English divergence (token ids via km.vocab, 114 tokens):
+
+| Path | vs reference | notes |
+|---|---|---|
+| Raw `EspeakG2P('en-us')` | **~72% token match** | espeak length marks `ː`, rhotic `ɚ`/flap `ɾ`, secondary stress, dialect vowels |
+| misaki `EspeakFallback` (normalized espeak) | near-exact | `over` exact; `seashore`/`configuration` off by 1 stress/`ɹ` mark |
+| Full `en.G2P` (lexicon + fallback) | exact (the reference) | requires shipping misaki's English lexicon |
+
+All espeak symbols (`ː ɚ ɾ`) ARE in Kokoro's vocab → raw espeak yields *valid* input, just
+pronounced differently. Residual EspeakFallback gaps (e.g. `dog` `ɔ`→`ɑ`) are genuine
+dialect/lexicon choices espeak can't reproduce, not notation.
+
+Implication — three C# frontend tiers, fidelity vs effort:
+1. **Raw espeak-ng** — simplest (just bindings), but ~28% of tokens differ → audibly different
+   (vowel length/quality, stress) though still legitimate pronunciations.
+2. **espeak-ng + ported misaki normalization** — port EspeakFallback's deterministic string
+   rules (`ː` strip, `ɚ`→`əɹ`, etc.) to C#. Closes most of the gap; residual is dialect vowels.
+3. **Full parity** — also ship misaki's English lexicon + lookup/stress logic. Exact match,
+   most work.
+
+This is a product decision (how close to reference must C# TTS sound) that materially changes
+the C# phase scope. Non-English support, if ever wanted, is pure-espeak and thus "free-ish"
+under tiers 1–2. Decision pending from user before starting C#.
