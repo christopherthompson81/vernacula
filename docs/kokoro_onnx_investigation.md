@@ -508,3 +508,36 @@ lower due to fixed per-call + phonemization overhead). Known refinement: an over
 sentence is split mid-sentence on a word boundary → a brief prosody seam; could prefer clause
 (comma) boundaries. The CLI `--backend kokoro --onnx-dir <model> --data-dir <espeak data> --voice
 <name> --text-file <md> --out <wav>` is now the headless long-form test path.
+
+## Run 19 — 2026-06-10 — Batching experiment (model surgery)
+
+Goal: batch multiple chunks in one ONNX Run for higher throughput. Wrote a batched forward
+(`scripts/kokoro_export/batched_forward.py`) and validated per-item vs sequential (log-spectral).
+
+**The surgery works — for equal-frame items.** Required: (a) pass real per-item `input_lengths`
+→ masks (the model already threads `text_mask`/`attention_mask`); (b) **pack the bare prosody
+`predictor.lstm`** (bidirectional, no mask — its backward pass leaked padding into shorter items'
+tokens, corrupting `pred_dur`); (c) vectorized duration-expansion length regulator (cumsum/arange
+instead of `repeat_interleave`); (d) drop the `.squeeze()`. Result: two **identical** items
+batched → both log-spec 0.12 vs sequential. ✓
+
+**Blocker: AdaIN over the frame axis pollutes on length mismatch.** A *variable*-length batch
+corrupts the shorter (right-padded) item **throughout** (log-spec 0.83–1.3, not a boundary
+effect). Diagnosis: Kokoro's predictor `F0Ntrain` and the iSTFTNet decoder use AdaIN (instance
+norm over time); the padding frames pollute the per-item mean/variance. Confirmed it's not the
+LSTMs (packing `F0Ntrain.shared` made it *worse*, 0.84→1.0) and not a cliff (replicating the last
+real frame into the padding made it worse still, →1.3). The equal-length control (identical items,
+no padding) is clean, so the surgery is correct — padding is the sole cause.
+
+**Why bucketing doesn't save it:** the pollution is at the **frame** level, and frame counts vary
+continuously — two items with the *same token count* still produce different `pred_dur` sums, so
+they'd need frame-level padding and pollute. There's no cheap bucketing key.
+
+**Verdict: not worth pursuing.** Correct variable-length batching would require masking the AdaIN
+statistics in *every* norm of the predictor F0/N blocks and the whole iSTFTNet decoder — i.e.
+re-architecting the vocoder's normalization — plus a hard ONNX export (masked instance-norm,
+pack_padded, and the dynamo attention guard from Run 2). The upside is unproven: PyTorch CUDA is
+broken in this venv (cuDNN version mismatch), so the GPU batching speedup couldn't be measured.
+Against an already-27×-real-time baseline that streams far ahead of playback, the ROI is poor.
+`batched_forward.py` is kept as the record (it correctly batches equal-frame items). If more speed
+is ever wanted, fp16 quantization (Run 14's deferred phase 3) is the far better lever.
