@@ -33,6 +33,11 @@ string  ep            = "auto";
 bool    verbose       = false;
 bool?   useIoBinding  = null;
 float   exaggeration  = ChatterboxConstants.DefaultExaggeration;
+// Kokoro backend (--backend kokoro): --voice is a voice name (af_heart), --onnx-dir is
+// the kokoro model dir (kokoro.onnx + voices/), --data-dir is the espeak-ng-portable data/.
+string  backend       = "chatterbox";
+string? dataDir       = null;
+float   speed         = 1.0f;
 // CLI default is intentionally higher than ChatterboxConstants.DefaultMaxLmSteps
 // (256). The constant is the smoke/bench reference; the CLI sees long-form
 // markdown where typical paragraph chunks run 300-500 LM steps and would
@@ -66,6 +71,13 @@ try
             case "--alignment-out":  alignmentOut  = Next("--alignment-out", i);  i++; break;
             case "--nfa-bundle":     nfaBundle     = Next("--nfa-bundle", i);     i++; break;
             case "--ep":             ep            = Next("--ep", i).ToLowerInvariant(); i++; break;
+            case "--backend":        backend       = Next("--backend", i).ToLowerInvariant(); i++; break;
+            case "--data-dir":       dataDir       = Next("--data-dir", i);       i++; break;
+            case "--speed":
+                if (!float.TryParse(Next("--speed", i), System.Globalization.NumberStyles.Float,
+                        System.Globalization.CultureInfo.InvariantCulture, out speed))
+                { Console.Error.WriteLine("--speed expects a float (default 1.0)."); return 2; }
+                i++; break;
             case "--verbose" or "-v": verbose      = true; break;
             case "--io-binding":     useIoBinding  = true; break;
             case "--no-io-binding":  useIoBinding  = false; break;
@@ -173,6 +185,72 @@ if (!Directory.Exists(onnxDir))
     Console.Error.WriteLine($"--onnx-dir not found: {onnxDir}");
     return 1;
 }
+
+// ── Kokoro backend (separate, self-contained synthesis path) ────────────────────
+if (backend == "kokoro")
+{
+    if (dataDir is null)
+    {
+        Console.Error.WriteLine("--backend kokoro requires --data-dir <espeak-ng-portable data/ dir>.");
+        return 2;
+    }
+    dataDir = ExpandHome(dataDir);
+    if (!Directory.Exists(dataDir)) { Console.Error.WriteLine($"--data-dir not found: {dataDir}"); return 1; }
+    if (textFile is not null && !File.Exists(textFile)) { Console.Error.WriteLine($"--text-file not found: {textFile}"); return 1; }
+
+    string kText;
+    if (text is not null) kText = text;
+    else
+    {
+        var raw = File.ReadAllText(textFile!);
+        var ext = Path.GetExtension(textFile!).ToLowerInvariant();
+        kText = ext is ".md" or ".markdown" ? MarkdownTextExtractor.Extract(raw).Text : raw;
+    }
+    if (string.IsNullOrWhiteSpace(kText)) { Console.Error.WriteLine("Text is empty."); return 1; }
+
+    bool british = voicePath.StartsWith("bf_", StringComparison.Ordinal)
+                || voicePath.StartsWith("bm_", StringComparison.Ordinal);
+
+    Console.WriteLine($"Kokoro: model={onnxDir}  voice={voicePath}  speed={speed}  ep={ep}");
+    var kLoadSw = Stopwatch.StartNew();
+    using var kTts = new KokoroTts(onnxDir, dataDir, epEnum);
+    kTts.Speak("Warm up.", voicePath, speed, british);   // pay model load + first-call JIT here
+    kLoadSw.Stop();
+    Console.WriteLine($"load + warmup: {kLoadSw.ElapsedMilliseconds} ms");
+
+    var kChunks = kTts.ChunkForSynthesis(kText, british);
+    Console.WriteLine($"chunked into {kChunks.Count} piece(s)  (extracted {kText.Length} chars)");
+
+    var kAudios = new List<float[]>(kChunks.Count);
+    var kSw = Stopwatch.StartNew();
+    double totalAudioSec = 0;
+    for (int ci = 0; ci < kChunks.Count; ci++)
+    {
+        var t0 = kSw.Elapsed.TotalMilliseconds;
+        int toks = kTts.CountTokens(kChunks[ci], british);
+        var audio = kTts.Speak(kChunks[ci], voicePath, speed, british);
+        var ms = kSw.Elapsed.TotalMilliseconds - t0;
+        var aSec = audio.Length / 24000.0;
+        totalAudioSec += aSec;
+        kAudios.Add(audio);
+        Console.WriteLine($"  chunk {ci + 1}/{kChunks.Count}: tokens={toks,3}  audio={aSec,6:F2}s  "
+            + $"{ms,7:F0} ms  rtf={(ms > 0 ? aSec / (ms / 1000.0) : 0),5:F1}x");
+    }
+    kSw.Stop();
+
+    int kTotal = kAudios.Sum(a => a.Length);
+    var kSamples = new float[kTotal];
+    int kOff = 0;
+    foreach (var a in kAudios) { Array.Copy(a, 0, kSamples, kOff, a.Length); kOff += a.Length; }
+    var kFmt = WaveFormat.CreateIeeeFloatWaveFormat(24_000, 1);
+    using (var kWriter = new WaveFileWriter(outPath, kFmt)) kWriter.WriteSamples(kSamples, 0, kSamples.Length);
+
+    var synthSec = kSw.Elapsed.TotalSeconds;
+    Console.WriteLine($"DONE: {totalAudioSec:F1}s audio synthesized in {synthSec:F1}s "
+        + $"({(synthSec > 0 ? totalAudioSec / synthSec : 0):F1}x real-time) → {outPath}");
+    return 0;
+}
+
 if (!File.Exists(voicePath))
 {
     Console.Error.WriteLine($"--voice not found: {voicePath}");

@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.RegularExpressions;
+using Chatterbox.Base.Markdown;
 using Vernacula.Base.Models;
 using Vernacula.Phonemizer;
 using Vernacula.Phonemizer.Data;
@@ -128,6 +129,93 @@ public sealed class KokoroTts : IDisposable
                     total * w / sourceWords.Length, total * (w + 1) / sourceWords.Length));
         }
         return new KokoroSpeech(o.Audio, words);
+    }
+
+    // Kokoro's BERT context_length is 512 tokens (incl. 2 pad); a chunk over that fails
+    // the graph's position-embedding Expand. Pack to a conservative budget, then verify
+    // each piece against the hard limit and resplit if the packing approximation slipped.
+    private const int PackBudgetTokens = 460;   // target inner tokens when packing
+    private const int HardInnerLimit = 508;     // never exceed 510 (= 512 - 2 pad); margin of 2
+
+    private static readonly Regex SentenceSplitRe = new(@"(?<=[.!?])\s+", RegexOptions.Compiled);
+
+    /// <summary>
+    /// Split <paramref name="text"/> into synthesis chunks that each stay within Kokoro's
+    /// 512-token context window. Paragraph/char chunking first (<see cref="ParagraphChunker"/>),
+    /// then any chunk still over the token budget is sub-split on sentence — and, if a single
+    /// sentence is still too long, word — boundaries. All splits are at whitespace, so the
+    /// concatenated word sequence is unchanged (alignment stays 1:1 with the source text).
+    /// </summary>
+    public IReadOnlyList<string> ChunkForSynthesis(string text, bool british = false)
+    {
+        var pieces = new List<string>();
+        foreach (var chunk in ParagraphChunker.Chunk(text))
+            SplitToTokenBudget(chunk, british, pieces);
+        return pieces;
+    }
+
+    /// <summary>Inner phoneme-token count (excludes the 2 pad tokens) for <paramref name="text"/>.</summary>
+    public int CountTokens(string text, bool british = false)
+        => System.Math.Max(0, KokoroVocab.Encode(ToPhonemes(text, british)).Length - 2);
+
+    private void SplitToTokenBudget(string chunk, bool british, List<string> output)
+    {
+        if (CountTokens(chunk, british) <= HardInnerLimit) { output.Add(chunk); return; }
+        // Pack whole sentences up to the budget; a single over-budget sentence goes to
+        // word-level packing. Account for the inter-piece space token (+1) so the running
+        // count tracks the real combined count, not the sum of isolated counts.
+        var buf = new StringBuilder();
+        var bufTokens = 0;
+        void Flush() { if (buf.Length > 0) { EmitVerified(buf.ToString(), british, output); buf.Clear(); bufTokens = 0; } }
+
+        foreach (var raw in SentenceSplitRe.Split(chunk))
+        {
+            var s = raw.Trim();
+            if (s.Length == 0) continue;
+            var st = CountTokens(s, british);
+            if (st > PackBudgetTokens) { Flush(); SplitWordsToBudget(s, british, output); continue; }
+            var cost = st + (buf.Length > 0 ? 1 : 0);
+            if (bufTokens > 0 && bufTokens + cost > PackBudgetTokens) { Flush(); cost = st; }
+            if (buf.Length > 0) buf.Append(' ');
+            buf.Append(s);
+            bufTokens += cost;
+        }
+        Flush();
+    }
+
+    private void SplitWordsToBudget(string sentence, bool british, List<string> output)
+    {
+        var buf = new StringBuilder();
+        var bufTokens = 0;
+        foreach (var w in sentence.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries))
+        {
+            // +1 for the space token that joins this word to the buffer (the chunk's real
+            // token count includes one space per inter-word gap — the bug this fixes).
+            var cost = CountTokens(w, british) + (buf.Length > 0 ? 1 : 0);
+            if (bufTokens > 0 && bufTokens + cost > PackBudgetTokens)
+            {
+                EmitVerified(buf.ToString(), british, output);
+                buf.Clear();
+                bufTokens = 0;
+                cost = CountTokens(w, british);
+            }
+            if (buf.Length > 0) buf.Append(' ');
+            buf.Append(w);
+            bufTokens += cost;
+        }
+        if (buf.Length > 0) EmitVerified(buf.ToString(), british, output);
+    }
+
+    // Safety net: emit a piece, but if the packing approximation under-counted and the
+    // piece's real token count exceeds the hard limit, halve it on word boundaries.
+    private void EmitVerified(string piece, bool british, List<string> output)
+    {
+        if (CountTokens(piece, british) <= HardInnerLimit) { output.Add(piece); return; }
+        var words = piece.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+        if (words.Length <= 1) { output.Add(piece); return; }  // can't split further
+        var mid = words.Length / 2;
+        EmitVerified(string.Join(' ', words[..mid]), british, output);
+        EmitVerified(string.Join(' ', words[mid..]), british, output);
     }
 
     /// <summary>

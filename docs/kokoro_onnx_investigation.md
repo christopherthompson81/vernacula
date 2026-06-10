@@ -482,3 +482,29 @@ inline **bold**/*italic*/`code`/links, while keeping per-word highlighting.
 Verified by clean build (Debug+Release; Avalonia compiles XAML), extractor + 1:1 unit tests, and
 no runtime binding errors when the app launched. Visual layout left for the user to confirm
 in-app (GUI screenshot automation was unreliable in this environment).
+
+## Run 18 — 2026-06-10 — Long-form: token-overflow chunking (CLI debug)
+
+App symptom: long-form synthesis incomplete + "not as fast as expected". CLI repro (new
+`--backend kokoro` path in Chatterbox.CLI) gave the real error:
+`Expand '/bert/embeddings/Expand_1': LeftShape {1,512}, RightShape {1,547}` — a chunk of 547
+tokens hit Kokoro's 512 context window, the graph threw, and synthesis aborted partway (the
+"incomplete"; the "slow" was the crash, not throughput).
+
+Root cause: `ParagraphChunker` splits by **characters** (≤600, tuned for Chatterbox's LM), not
+Kokoro tokens. A 560-char single-sentence paragraph = 545 tokens > 510.
+
+Fix: `KokoroTts.ChunkForSynthesis` — paragraph/char chunk first, then sub-split any over-budget
+chunk on sentence → (if needed) word boundaries, all at whitespace so the aligned-word stream
+stays 1:1. **Subtle bug found while fixing:** the first word-packer summed *isolated* per-word
+token counts, which omit the inter-word **space tokens** (~1 per gap) — so a 90-word paragraph
+under-counted by ~90 and never crossed the budget. Fixed by costing +1 per joining space, a
+conservative pack budget (460), and an `EmitVerified` safety net that hard-splits any piece whose
+*actual* token count still exceeds 508. `KokoroSynthesisService` now uses `ChunkForSynthesis`.
+
+Verified via CLI on a 1.4 KB markdown doc: the 545-token paragraph splits to 433 + 111; all 8
+chunks synthesize; **86.2 s audio in 3.4 s = 25.5× real-time** (per-chunk 11–34× — short chunks
+lower due to fixed per-call + phonemization overhead). Known refinement: an over-512-token single
+sentence is split mid-sentence on a word boundary → a brief prosody seam; could prefer clause
+(comma) boundaries. The CLI `--backend kokoro --onnx-dir <model> --data-dir <espeak data> --voice
+<name> --text-file <md> --out <wav>` is now the headless long-form test path.

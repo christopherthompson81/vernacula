@@ -59,7 +59,9 @@ public sealed class KokoroSynthesisService : ITtsBackend
         if (string.IsNullOrWhiteSpace(preparedText))
             throw new InvalidOperationException("Text is empty after markdown extraction.");
 
-        var chunks = ParagraphChunker.Chunk(preparedText);
+        // Token-aware chunking: keep every chunk within Kokoro's 512-token context window
+        // (char-based ParagraphChunker alone can overflow it → the graph throws on a long chunk).
+        var chunks = _tts!.ChunkForSynthesis(preparedText, british);
         int totalChunks = chunks.Count;
         onProgress?.Invoke(new ProgressEvent($"chunked into {totalChunks} paragraphs"));
 
