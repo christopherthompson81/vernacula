@@ -17,6 +17,10 @@ public static class KokoroVocab
     /// <summary>Padding/boundary token id; the input sequence is [Pad, …ids…, Pad].</summary>
     public const long Pad = 0;
 
+    /// <summary>Word-separator token id (' '). Word boundaries in the token stream are
+    /// runs delimited by this and <see cref="Pad"/>; used for word-level alignment.</summary>
+    public const long Space = 16;
+
     private static readonly IReadOnlyDictionary<char, long> Map = new Dictionary<char, long>
     {
         [';'] = 1,

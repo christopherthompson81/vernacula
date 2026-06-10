@@ -36,6 +36,9 @@ class KokoroONNX(torch.nn.Module):
 
     Output:
         audio     : FloatTensor [num_samples] — 24 kHz waveform
+        pred_dur  : LongTensor  [tokens]      — per-input-token predicted duration
+                    (frames). Used downstream for word-level alignment: word time =
+                    cumulative pred_dur × (len(audio) / sum(pred_dur)) / sample_rate.
     """
 
     def __init__(self, kmodel: "KModel"):
@@ -43,9 +46,8 @@ class KokoroONNX(torch.nn.Module):
         self.kmodel = kmodel
 
     def forward(self, input_ids, ref_s, speed):
-        # forward_with_tokens returns (audio, pred_dur); we only export audio.
-        audio, _ = self.kmodel.forward_with_tokens(input_ids, ref_s, speed)
-        return audio
+        audio, pred_dur = self.kmodel.forward_with_tokens(input_ids, ref_s, speed)
+        return audio, pred_dur
 
 
 # ---------------------------------------------------------------------------
@@ -139,7 +141,7 @@ def export(out_dir: Path, opset: int, repo_id: str, dynamo: bool) -> Path:
             (input_ids, ref_s, speed),
             str(onnx_path),
             input_names=["input_ids", "ref_s", "speed"],
-            output_names=["audio"],
+            output_names=["audio", "pred_dur"],
             dynamic_shapes={
                 "input_ids": {1: tokens},
                 "ref_s": None,
@@ -154,10 +156,11 @@ def export(out_dir: Path, opset: int, repo_id: str, dynamo: bool) -> Path:
             (input_ids, ref_s, speed),
             str(onnx_path),
             input_names=["input_ids", "ref_s", "speed"],
-            output_names=["audio"],
+            output_names=["audio", "pred_dur"],
             dynamic_axes={
                 "input_ids": {1: "tokens"},
                 "audio": {0: "samples"},
+                "pred_dur": {0: "tokens"},
             },
             opset_version=opset,
             do_constant_folding=True,
@@ -187,7 +190,7 @@ def validate(onnx_path: Path, repo_id: str, max_logspec_l1: float = 0.25) -> boo
     input_ids, ref_s, speed = capture_real_inputs(kmodel, repo_id)
 
     with torch.no_grad():
-        ref_audio = wrapper(input_ids, ref_s, speed).squeeze().cpu().numpy()
+        ref_audio = wrapper(input_ids, ref_s, speed)[0].squeeze().cpu().numpy()
 
     print("[validate] running onnxruntime…")
     sess = ort.InferenceSession(str(onnx_path), providers=["CPUExecutionProvider"])

@@ -34,6 +34,38 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     [NotifyCanExecuteChangedFor(nameof(SynthesizeCommand))]
     private string _onnxBundleDir = "";
 
+    // ── TTS backend selection ────────────────────────────────────────
+    // Which engine synthesizes. Switching invalidates the cached backend
+    // and flips which config controls are relevant (IsChatterbox/IsKokoro).
+    [ObservableProperty]
+    [NotifyCanExecuteChangedFor(nameof(SynthesizeCommand))]
+    [NotifyPropertyChangedFor(nameof(IsChatterbox))]
+    [NotifyPropertyChangedFor(nameof(IsKokoro))]
+    private TtsBackendKind _selectedBackend;
+
+    public bool IsChatterbox => SelectedBackend == TtsBackendKind.Chatterbox;
+    public bool IsKokoro => SelectedBackend == TtsBackendKind.Kokoro;
+    public IReadOnlyList<TtsBackendKind> Backends { get; } =
+        new[] { TtsBackendKind.Chatterbox, TtsBackendKind.Kokoro };
+
+    // Kokoro config: model dir (kokoro.onnx + voices/), phonemizer data dir,
+    // named voice, and speed. Voices are discovered from the model dir.
+    [ObservableProperty]
+    [NotifyCanExecuteChangedFor(nameof(SynthesizeCommand))]
+    private string _kokoroModelDir = "";
+
+    [ObservableProperty]
+    [NotifyCanExecuteChangedFor(nameof(SynthesizeCommand))]
+    private string _kokoroDataDir = "";
+
+    [ObservableProperty]
+    [NotifyCanExecuteChangedFor(nameof(SynthesizeCommand))]
+    private string _kokoroVoice = "";
+
+    [ObservableProperty] private float _kokoroSpeed = 1.0f;
+
+    public ObservableCollection<string> KokoroVoices { get; } = new();
+
     // Text input — either typed/pasted in the UI or loaded from a .md file.
     [ObservableProperty]
     [NotifyCanExecuteChangedFor(nameof(SynthesizeCommand))]
@@ -112,7 +144,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     private AlignmentSidecar? _lastAlignment;
     private string? _lastAudioPath;
-    private SynthesisService? _synthService;
+    private ITtsBackend? _synthService;
     private readonly PlaybackService _playback = new();
     private readonly SettingsService _settings = new();
     private CancellationTokenSource? _synthCts;
@@ -158,6 +190,14 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             VoicePath = _settings.Current.VoicePath;
             OnnxBundleDir = _settings.Current.OnnxBundleDir;
             RenderMarkdown = _settings.Current.RenderMarkdown;
+            SelectedBackend = Enum.TryParse<TtsBackendKind>(_settings.Current.TtsBackend, out var b)
+                ? b : TtsBackendKind.Chatterbox;
+            KokoroModelDir = _settings.Current.KokoroModelDir;
+            KokoroDataDir = string.IsNullOrWhiteSpace(_settings.Current.KokoroDataDir)
+                ? (ResolveDefaultKokoroDataDir() ?? "") : _settings.Current.KokoroDataDir;
+            KokoroVoice = _settings.Current.KokoroVoice;
+            KokoroSpeed = _settings.Current.KokoroSpeed > 0 ? _settings.Current.KokoroSpeed : 1.0f;
+            RefreshKokoroVoices();
         }
         finally { _loadingSettings = false; }
     }
@@ -168,12 +208,16 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         _settings.Current.VoicePath = VoicePath;
         _settings.Current.OnnxBundleDir = OnnxBundleDir;
         _settings.Current.RenderMarkdown = RenderMarkdown;
+        _settings.Current.TtsBackend = SelectedBackend.ToString();
+        _settings.Current.KokoroModelDir = KokoroModelDir;
+        _settings.Current.KokoroDataDir = KokoroDataDir;
+        _settings.Current.KokoroVoice = KokoroVoice;
+        _settings.Current.KokoroSpeed = KokoroSpeed;
         _settings.Save();
     }
 
     // Generated [ObservableProperty] partials let us hook each setter
-    // for the autosave + (for the ONNX bundle path) cached-service
-    // invalidation.
+    // for the autosave + (for model dirs) cached-service invalidation.
     partial void OnVoicePathChanged(string value) => PersistSettings();
     partial void OnOnnxBundleDirChanged(string value)
     {
@@ -181,6 +225,52 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         PersistSettings();
     }
     partial void OnRenderMarkdownChanged(bool value) => PersistSettings();
+    partial void OnSelectedBackendChanged(TtsBackendKind value)
+    {
+        InvalidateSynthService();
+        PersistSettings();
+    }
+    partial void OnKokoroModelDirChanged(string value)
+    {
+        InvalidateSynthService();
+        RefreshKokoroVoices();
+        PersistSettings();
+    }
+    partial void OnKokoroDataDirChanged(string value)
+    {
+        InvalidateSynthService();
+        PersistSettings();
+    }
+    partial void OnKokoroVoiceChanged(string value) => PersistSettings();
+    partial void OnKokoroSpeedChanged(float value) => PersistSettings();
+
+    // Discover Kokoro voices by scanning <modelDir>/voices/*.bin (produced by
+    // scripts/kokoro_export/export_voices.py). Keeps the current selection if
+    // it's still present; otherwise defaults to the first voice found.
+    private void RefreshKokoroVoices()
+    {
+        KokoroVoices.Clear();
+        var dir = Path.Combine(KokoroModelDir ?? "", "voices");
+        if (!Directory.Exists(dir)) return;
+        foreach (var f in Directory.EnumerateFiles(dir, "*.bin").OrderBy(p => p))
+            KokoroVoices.Add(Path.GetFileNameWithoutExtension(f));
+        if (KokoroVoices.Count > 0 && !KokoroVoices.Contains(KokoroVoice))
+            KokoroVoice = KokoroVoices[0];
+    }
+
+    // Best-effort default for the phonemizer data dir: walk up from the app
+    // base dir looking for the espeak-ng-portable submodule's data/ tree.
+    private static string? ResolveDefaultKokoroDataDir()
+    {
+        var dir = AppContext.BaseDirectory;
+        for (var i = 0; i < 8 && dir is not null; i++)
+        {
+            var candidate = Path.Combine(dir, "external", "espeak-ng-portable", "data");
+            if (Directory.Exists(candidate)) return candidate;
+            dir = Path.GetDirectoryName(dir.TrimEnd(Path.DirectorySeparatorChar));
+        }
+        return null;
+    }
 
     private void InvalidateSynthService()
     {
@@ -204,6 +294,20 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     {
         var path = await PickFolderAsync("Pick the Chatterbox ONNX bundle directory");
         if (path is not null) OnnxBundleDir = path;
+    }
+
+    [RelayCommand]
+    private async Task PickKokoroModelDirAsync()
+    {
+        var path = await PickFolderAsync("Pick the Kokoro model directory (kokoro.onnx + voices/)");
+        if (path is not null) KokoroModelDir = path;
+    }
+
+    [RelayCommand]
+    private async Task PickKokoroDataDirAsync()
+    {
+        var path = await PickFolderAsync("Pick the espeak-ng-portable data/ directory");
+        if (path is not null) KokoroDataDir = path;
     }
 
     [RelayCommand]
@@ -245,7 +349,11 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
         try
         {
-            _synthService ??= new SynthesisService(OnnxBundleDir);
+            _synthService ??= SelectedBackend switch
+            {
+                TtsBackendKind.Kokoro => new KokoroSynthesisService(KokoroModelDir, KokoroDataDir),
+                _ => new SynthesisService(OnnxBundleDir),
+            };
 
             // ms precision avoids collisions when the user re-Synthesizes
             // (or clicks Play, below) twice in the same second.
@@ -253,8 +361,12 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
                 $"chatterbox_app_{DateTime.UtcNow:yyyyMMddHHmmss_fff}.wav");
             bool streamingStarted = false;
 
+            var request = SelectedBackend == TtsBackendKind.Kokoro
+                ? new TtsRequest(Text, outWav, KokoroVoice, KokoroSpeed)
+                : new TtsRequest(Text, outWav, VoicePath);
+
             var result = await _synthService.SynthesizeStreamingAsync(
-                VoicePath, Text, outWav,
+                request,
                 onChunkProduced: ev =>
                 {
                     // Audio appending runs HERE — on the alignment-chain
@@ -269,7 +381,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
                     {
                         if (!streamingStarted)
                         {
-                            _playback.StartStreaming(ChatterboxConstants.S3GenSr, channels: 1);
+                            _playback.StartStreaming(_synthService!.SampleRate, channels: 1);
                             streamingStarted = true;
                         }
                         _playback.AppendSamples(ev.Audio24k);
@@ -356,10 +468,19 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     }
 
     private bool CanSynthesize()
-        => !IsBusy
-        && !string.IsNullOrWhiteSpace(VoicePath)
-        && !string.IsNullOrWhiteSpace(OnnxBundleDir)
-        && !string.IsNullOrWhiteSpace(Text);
+    {
+        if (IsBusy || string.IsNullOrWhiteSpace(Text)) return false;
+        return SelectedBackend switch
+        {
+            TtsBackendKind.Kokoro =>
+                !string.IsNullOrWhiteSpace(KokoroModelDir)
+                && !string.IsNullOrWhiteSpace(KokoroDataDir)
+                && !string.IsNullOrWhiteSpace(KokoroVoice),
+            _ =>
+                !string.IsNullOrWhiteSpace(VoicePath)
+                && !string.IsNullOrWhiteSpace(OnnxBundleDir),
+        };
+    }
 
     /// <summary>Cancels in-flight synthesis. Cancellation is checked
     /// at chunk boundaries — the LM rollout for the chunk that's

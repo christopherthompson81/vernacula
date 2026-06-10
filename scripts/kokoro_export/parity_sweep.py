@@ -73,7 +73,7 @@ def main(argv=None):
                 continue
 
             with torch.no_grad():
-                ref = wrapper(ids, ref_s, speed).squeeze().cpu().numpy()
+                ref = wrapper(ids, ref_s, speed)[0].squeeze().cpu().numpy()
             onx = sess.run(["audio"], {
                 "input_ids": ids.numpy(), "ref_s": ref_s.numpy(), "speed": speed.numpy(),
             })[0].squeeze()

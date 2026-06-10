@@ -6,6 +6,14 @@ using Vernacula.Base.Models;
 namespace Chatterbox.Base;
 
 /// <summary>
+/// One Kokoro forward pass: 24 kHz audio, the per-input-token predicted durations
+/// (<paramref name="PredDur"/>, duration units), and the encoded token ids
+/// (<paramref name="InputIds"/>, including the bracketing pad tokens). PredDur and
+/// InputIds are index-aligned and together let callers recover word timings.
+/// </summary>
+public sealed record KokoroOutput(float[] Audio, long[] PredDur, long[] InputIds);
+
+/// <summary>
 /// hexgrad/Kokoro-82M TTS inference over the Vernacula-exported
 /// <c>kokoro.onnx</c> graph (StyleTTS2 / iSTFTNet, 24 kHz mono).
 ///
@@ -47,9 +55,18 @@ public sealed class Kokoro : IDisposable
     /// <paramref name="speed"/> is the speech-rate multiplier (1.0 = natural).
     /// </summary>
     public float[] Synthesize(string phonemes, string voice, float speed = 1.0f)
+        => SynthesizeWithDurations(phonemes, voice, speed).Audio;
+
+    /// <summary>
+    /// Synthesize and also return the per-input-token predicted durations and the
+    /// encoded token ids — needed for word-level alignment (see <see cref="KokoroTts"/>).
+    /// <see cref="KokoroOutput.PredDur"/> is in duration units; one audio frame is
+    /// <c>Audio.Length / Σ PredDur</c> samples (exactly 600 at 24 kHz).
+    /// </summary>
+    public KokoroOutput SynthesizeWithDurations(string phonemes, string voice, float speed = 1.0f)
     {
         if (string.IsNullOrEmpty(phonemes))
-            return [];
+            return new KokoroOutput([], [], []);
 
         var inputIds = KokoroVocab.Encode(phonemes);
         // ref_s is indexed by phoneme-STRING length (KPipeline: pack[len(ps)-1]),
@@ -67,7 +84,10 @@ public sealed class Kokoro : IDisposable
             NamedOnnxValue.CreateFromTensor("ref_s", refT),
             NamedOnnxValue.CreateFromTensor("speed", speedT),
         ]);
-        return outputs.First().AsTensor<float>().ToArray();
+        var byName = outputs.ToDictionary(v => v.Name, v => v);
+        var audio = byName["audio"].AsTensor<float>().ToArray();
+        var predDur = byName["pred_dur"].AsTensor<long>().ToArray();
+        return new KokoroOutput(audio, predDur, inputIds);
     }
 
     private static int CountRunes(string s)

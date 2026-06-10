@@ -75,23 +75,67 @@
                  word-highlight alignment; word timings now come from the
                  Chatterbox LM's own cross-attention so only the one bundle
                  is needed — see ChatterboxAttentionAligner.) -->
-            <TextBlock Text="Voice (.wav)" FontWeight="SemiBold" />
-            <Grid ColumnDefinitions="*,Auto">
-                <TextBox Text="{Binding VoicePath}" IsReadOnly="True"
-                         Watermark="No voice picked" />
-                <Button Grid.Column="1" Content="Pick…"
-                        Command="{Binding PickVoiceCommand}"
-                        IsEnabled="{Binding !IsBusy}" Margin="6,0,0,0" />
-            </Grid>
+            <!-- TTS backend picker. Switching flips the config panels below. -->
+            <TextBlock Text="TTS backend" FontWeight="SemiBold" />
+            <ComboBox ItemsSource="{Binding Backends}"
+                      SelectedItem="{Binding SelectedBackend}"
+                      IsEnabled="{Binding !IsBusy}"
+                      HorizontalAlignment="Stretch" />
 
-            <TextBlock Text="Chatterbox ONNX bundle" FontWeight="SemiBold" Margin="0,8,0,0" />
-            <Grid ColumnDefinitions="*,Auto">
-                <TextBox Text="{Binding OnnxBundleDir}" IsReadOnly="True"
-                         Watermark="No bundle picked" />
-                <Button Grid.Column="1" Content="Pick…"
-                        Command="{Binding PickOnnxBundleCommand}"
-                        IsEnabled="{Binding !IsBusy}" Margin="6,0,0,0" />
-            </Grid>
+            <!-- ── Chatterbox config ─────────────────────────────── -->
+            <StackPanel Spacing="10" IsVisible="{Binding IsChatterbox}">
+                <TextBlock Text="Voice (.wav)" FontWeight="SemiBold" Margin="0,8,0,0" />
+                <Grid ColumnDefinitions="*,Auto">
+                    <TextBox Text="{Binding VoicePath}" IsReadOnly="True"
+                             Watermark="No voice picked" />
+                    <Button Grid.Column="1" Content="Pick…"
+                            Command="{Binding PickVoiceCommand}"
+                            IsEnabled="{Binding !IsBusy}" Margin="6,0,0,0" />
+                </Grid>
+
+                <TextBlock Text="Chatterbox ONNX bundle" FontWeight="SemiBold" Margin="0,8,0,0" />
+                <Grid ColumnDefinitions="*,Auto">
+                    <TextBox Text="{Binding OnnxBundleDir}" IsReadOnly="True"
+                             Watermark="No bundle picked" />
+                    <Button Grid.Column="1" Content="Pick…"
+                            Command="{Binding PickOnnxBundleCommand}"
+                            IsEnabled="{Binding !IsBusy}" Margin="6,0,0,0" />
+                </Grid>
+            </StackPanel>
+
+            <!-- ── Kokoro config ─────────────────────────────────── -->
+            <StackPanel Spacing="10" IsVisible="{Binding IsKokoro}">
+                <TextBlock Text="Kokoro model dir (kokoro.onnx + voices/)"
+                           FontWeight="SemiBold" Margin="0,8,0,0" />
+                <Grid ColumnDefinitions="*,Auto">
+                    <TextBox Text="{Binding KokoroModelDir}" IsReadOnly="True"
+                             Watermark="No model dir picked" />
+                    <Button Grid.Column="1" Content="Pick…"
+                            Command="{Binding PickKokoroModelDirCommand}"
+                            IsEnabled="{Binding !IsBusy}" Margin="6,0,0,0" />
+                </Grid>
+
+                <TextBlock Text="Phonemizer data dir (espeak-ng-portable/data)"
+                           FontWeight="SemiBold" Margin="0,8,0,0" />
+                <Grid ColumnDefinitions="*,Auto">
+                    <TextBox Text="{Binding KokoroDataDir}" IsReadOnly="True"
+                             Watermark="No data dir picked" />
+                    <Button Grid.Column="1" Content="Pick…"
+                            Command="{Binding PickKokoroDataDirCommand}"
+                            IsEnabled="{Binding !IsBusy}" Margin="6,0,0,0" />
+                </Grid>
+
+                <TextBlock Text="Voice" FontWeight="SemiBold" Margin="0,8,0,0" />
+                <ComboBox ItemsSource="{Binding KokoroVoices}"
+                          SelectedItem="{Binding KokoroVoice}"
+                          IsEnabled="{Binding !IsBusy}"
+                          HorizontalAlignment="Stretch" />
+
+                <TextBlock Text="{Binding KokoroSpeed, StringFormat='Speed: {0:F2}×'}"
+                           FontWeight="SemiBold" Margin="0,8,0,0" />
+                <Slider Minimum="0.5" Maximum="2.0" Value="{Binding KokoroSpeed}"
+                        IsEnabled="{Binding !IsBusy}" TickFrequency="0.1" />
+            </StackPanel>
 
             <TextBlock Text="Text source" FontWeight="SemiBold" Margin="0,12,0,0" />
             <Button Content="Load text/markdown file…"

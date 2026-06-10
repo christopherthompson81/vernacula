@@ -60,6 +60,14 @@ public sealed class ReaderSettings
     public string VoicePath { get; set; } = "";
     public string OnnxBundleDir { get; set; } = "";
     public bool RenderMarkdown { get; set; } = false;
+
+    // TTS backend selection + Kokoro config. TtsBackend stores the
+    // TtsBackendKind enum name ("Chatterbox" / "Kokoro").
+    public string TtsBackend { get; set; } = "Chatterbox";
+    public string KokoroModelDir { get; set; } = "";
+    public string KokoroDataDir { get; set; } = "";
+    public string KokoroVoice { get; set; } = "";
+    public float KokoroSpeed { get; set; } = 1.0f;
     // (Older settings.json files may contain a NfaBundleDir field —
     // System.Text.Json silently ignores unknown JSON properties, so the
     // old field is dropped harmlessly on load. New saves omit it.)

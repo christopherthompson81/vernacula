@@ -398,3 +398,37 @@ aren't duplicated in practice.
 **Conclusion:** performance is a non-issue at fp32 — CUDA is 50–80× real-time and correct, CPU
 is a 4× fallback. fp16/int8 quantization is now optional (latency, not a bottleneck; could
 still cut the 325 MB model / VRAM), gated by the log-spectral harness if pursued.
+
+## Run 15 — 2026-06-10 — Kokoro word alignment (UI backend selector)
+
+To give the Kokoro UI backend karaoke word-highlighting (like Chatterbox), re-exported
+`kokoro.onnx` with `pred_dur` as a second output (`output_names=["audio","pred_dur"]`,
+`pred_dur` dynamic on `tokens`). Audio output unchanged → validation still PASS (log-spec 0.13).
+
+`pred_dur` is `[tokens]` int64, one per input id (incl. the 2 pad tokens). **Frames→samples is
+exactly 600**: `len(audio) = sum(pred_dur) × 600` (67800 = 113 × 600), i.e. 25 ms per duration
+unit @ 24 kHz. C# computes the ratio per-utterance as `audio.Length / Σpred_dur` (exact).
+
+**Word boundaries come free from the token stream** (no phonemizer change): a word = a maximal
+run of tokens that are neither space (id 16) nor pad (id 0); punctuation (`,` `.` …) stays inside
+the preceding word's run so its pause is attributed there. Verified
+`həlˈO, ðɪs ɪz ə kəkˈɔɹO spˈiʧ tˈɛst.` → 7 runs ↔ 7 whitespace-split source words. Per-run
+cumulative `pred_dur × 600 / 24000` gives word start/end seconds; leading pad = pre-roll silence.
+
+Verified `SpeakAligned("Hello, this is a Kokoro speech test.")` → 7 words, monotonic, "Hello,"
+starts at 0.350 s (= 14-unit leading pad), comma/period pauses on the right words, coverage to
+2.775/2.800 s.
+
+**UI integration (Chatterbox.Avalonia).** Added a TTS-backend selector. Backend abstraction
+`ITtsBackend` + shared streaming records in `Services/TtsStreaming.cs`; `SynthesisService`
+(Chatterbox) and new `KokoroSynthesisService` both implement it (chunk via `ParagraphChunker`,
+emit `ChunkProducedEvent` with `AlignedWord`s — Kokoro's from `SpeakAligned`). ViewModel gains
+`SelectedBackend` + Kokoro model/data dir + voice + speed (voices auto-discovered from
+`<modelDir>/voices/*.bin`; en-gb inferred from `bf_`/`bm_`). View shows a backend ComboBox with
+backend-specific config panels. Settings persist the new fields. Built clean (CPU + CUDA); app
+launches and the Kokoro panel renders correctly (backend picker, populated voice list, speed
+slider, panel switching). Word highlighting reuses the existing Chatterbox `AlignedWord` consumer
+unchanged, so Kokoro highlights identically.
+
+NB: the re-exported `kokoro.onnx` now has 2 outputs — `Kokoro.SynthesizeWithDurations` requires
+the new graph (re-run `export_kokoro.py` if using an older single-output model).

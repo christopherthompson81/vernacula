@@ -7,6 +7,12 @@ using Vernacula.Phonemizer.Types;
 
 namespace Chatterbox.Base;
 
+/// <summary>One aligned word: its source text and [start, end) seconds in the audio.</summary>
+public sealed record KokoroWord(string Text, double StartSec, double EndSec);
+
+/// <summary>Result of <see cref="KokoroTts.SpeakAligned"/>: audio plus per-word timings.</summary>
+public sealed record KokoroSpeech(float[] Audio, IReadOnlyList<KokoroWord> Words);
+
 /// <summary>
 /// End-to-end Kokoro-82M text-to-speech: text → phonemes → audio. Composes the
 /// pure-C# espeak-ng port (<see cref="Phonemize"/>), the Kokoro render format
@@ -47,6 +53,61 @@ public sealed class KokoroTts : IDisposable
     /// </summary>
     public float[] Speak(string text, string voice, float speed = 1.0f, bool british = false)
         => _kokoro.Synthesize(ToPhonemes(text, british), voice, speed);
+
+    /// <summary>
+    /// Synthesize <paramref name="text"/> and return the audio plus per-word timings
+    /// for karaoke-style highlighting. Word boundaries are recovered from the phoneme
+    /// token stream (runs of tokens between space/pad tokens) and timed from the model's
+    /// per-token predicted durations; words are labelled by the whitespace-split source
+    /// text. On a count mismatch (e.g. number expansion like "$3.14") timings fall back
+    /// to an even split across the utterance.
+    /// </summary>
+    public KokoroSpeech SpeakAligned(string text, string voice, float speed = 1.0f, bool british = false)
+    {
+        var phonemes = ToPhonemes(text, british);
+        var o = _kokoro.SynthesizeWithDurations(phonemes, voice, speed);
+        if (o.Audio.Length == 0)
+            return new KokoroSpeech([], []);
+
+        long durSum = 0;
+        foreach (var d in o.PredDur) durSum += d;
+        double secPerDur = durSum > 0 ? o.Audio.Length / (double)durSum / Kokoro.SampleRate : 0;
+
+        // Cumulative seconds at the start of each token (cum[k] = Σ dur[0..k-1]).
+        var cum = new double[o.PredDur.Length + 1];
+        for (var k = 0; k < o.PredDur.Length; k++)
+            cum[k + 1] = cum[k] + o.PredDur[k] * secPerDur;
+
+        // Word runs: maximal spans of tokens that are neither space nor pad.
+        var runs = new List<(double Start, double End)>();
+        var i = 0;
+        while (i < o.InputIds.Length)
+        {
+            var id = o.InputIds[i];
+            if (id == KokoroVocab.Space || id == KokoroVocab.Pad) { i++; continue; }
+            var first = i;
+            while (i < o.InputIds.Length && o.InputIds[i] != KokoroVocab.Space && o.InputIds[i] != KokoroVocab.Pad)
+                i++;
+            runs.Add((cum[first], cum[i]));   // i is one past the run's last token
+        }
+
+        var sourceWords = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+        var words = new List<KokoroWord>(sourceWords.Length);
+        if (runs.Count == sourceWords.Length)
+        {
+            for (var w = 0; w < sourceWords.Length; w++)
+                words.Add(new KokoroWord(sourceWords[w], runs[w].Start, runs[w].End));
+        }
+        else
+        {
+            // Fallback: even split of total audio duration across the source words.
+            var total = o.Audio.Length / (double)Kokoro.SampleRate;
+            for (var w = 0; w < sourceWords.Length; w++)
+                words.Add(new KokoroWord(sourceWords[w],
+                    total * w / sourceWords.Length, total * (w + 1) / sourceWords.Length));
+        }
+        return new KokoroSpeech(o.Audio, words);
+    }
 
     /// <summary>
     /// Text → Kokoro-alphabet phoneme string, without running the vocoder. Useful

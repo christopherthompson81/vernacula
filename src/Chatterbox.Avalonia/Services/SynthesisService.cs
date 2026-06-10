@@ -25,7 +25,7 @@ namespace Chatterbox.App.Services;
 /// subsequent invocations — the pipeline load is the big sticky cost
 /// (~5-10 s), and rebuilding it per click would make the UI feel slow.
 /// </summary>
-public sealed class SynthesisService : IDisposable
+public sealed class SynthesisService : ITtsBackend
 {
     private readonly string _onnxBundleDir;
     private readonly string? _tokenizerJsonPath;
@@ -44,32 +44,14 @@ public sealed class SynthesisService : IDisposable
         _ep = ep;
     }
 
-    public sealed record SynthesisResult(string AudioPath, AlignmentSidecar Alignment);
-
-    /// <summary>Per-chunk streaming event payload.</summary>
-    /// <param name="ChunkIndex">0-based index in input order.</param>
-    /// <param name="TotalChunks">Total chunks the synthesis will produce.</param>
-    /// <param name="Audio24k">Raw float32 mono samples at 24 kHz (Chatterbox's native rate).</param>
-    /// <param name="ChunkText">The reference text for this chunk (post-markdown-extraction).</param>
-    /// <param name="AudioStartSeconds">Absolute start in the concatenated audio timeline.</param>
-    /// <param name="Words">Per-word alignments with absolute timings.</param>
-    public sealed record ChunkProducedEvent(
-        int ChunkIndex,
-        int TotalChunks,
-        float[] Audio24k,
-        string ChunkText,
-        double AudioStartSeconds,
-        IReadOnlyList<AlignedWord> Words);
-
-    /// <summary>Status-line events for the UI. Phase is a free-form short string
-    /// like "loading models", "synthesizing chunk 3/8".</summary>
-    public sealed record ProgressEvent(string Phase, int? ChunkIndex = null, int? TotalChunks = null);
+    public int SampleRate => ChatterboxConstants.S3GenSr;
 
     /// <summary>
-    /// Synthesize text in <paramref name="voicePath"/>'s voice and stream
-    /// chunks back via <paramref name="onChunkProduced"/> as each one
-    /// completes. Returns the final concatenated WAV path + full
-    /// alignment sidecar once everything is done.
+    /// Synthesize <paramref name="request"/>.Text in the voice WAV at
+    /// <paramref name="request"/>.Voice and stream chunks back via
+    /// <paramref name="onChunkProduced"/> as each one completes. Returns the final
+    /// concatenated WAV path + full alignment sidecar once everything is done.
+    /// (Chatterbox ignores <c>request.Speed</c>.)
     ///
     /// Per-chunk flow: LM.Generate(captureAlignment: true) produces both
     /// the speech tokens and the cross-attention matrix in one rollout.
@@ -82,13 +64,14 @@ public sealed class SynthesisService : IDisposable
     /// effect after the current chunk completes.
     /// </summary>
     public async Task<SynthesisResult> SynthesizeStreamingAsync(
-        string voicePath,
-        string text,
-        string outWavPath,
+        TtsRequest request,
         Action<ChunkProducedEvent>? onChunkProduced = null,
         Action<ProgressEvent>? onProgress = null,
         CancellationToken cancellationToken = default)
     {
+        var voicePath = request.Voice;
+        var text = request.Text;
+        var outWavPath = request.OutWavPath;
         onProgress?.Invoke(new ProgressEvent("loading models"));
         // EnsureLoaded is sync + heavy; offload to the threadpool so the
         // UI dispatcher doesn't stall on the first call (~5-10 s).
