@@ -335,3 +335,31 @@ End-to-end verified on CPU: "Hello, this is a Kokoro speech test." → phonemes
 clause boundaries currently carry no pause → slightly rushed pacing vs reference. Candidate
 fixes: map the phonemizer's clause newline to a Kokoro pause token, and/or preserve sentence
 punctuation through to `Encode`. Deferred pending the listening check; intelligibility is fine.
+
+## Run 13 — 2026-06-09 23:20
+
+User confirmed the missing pause should be there. Characterized the phonemizer's punctuation
+handling empirically (no ORT needed):
+
+| source | phonemizer output |
+|---|---|
+| `Hello, this is a test.` | `həlˈO\nðɪs ɪz ə tˈɛst` (comma→\n, final . dropped) |
+| `Wait. Stop! Why?` | `wˈAt\nstˈɑp\nwˈI` (. ! both →\n, final ? dropped) |
+| `It cost $3.14 today.` | one clause — the `3.14` dot makes NO break (normalized to words) |
+| `Dr. Smith arrived; we left.` | `…\n…\n…` (Dr. and ; both →\n) |
+
+So every clause mark collapses to `\n` (type lost) and the final mark is dropped. Fix in
+`KokoroTts.ToPhonemes`: correlate the source text's clause punctuation — regex
+`[,;:!?…—] | (?<![0-9])\.(?![0-9])`, the digit-guard excludes decimals so the count stays
+aligned — with the `\n` breaks, re-inserting the i-th source mark at the i-th break and the
+trailing position. Added `KokoroVocab.Contains`.
+
+Verified reconstruction on all cases: `həlˈO, ðɪs ɪz ə tˈɛst.`, `wˈAt. stˈɑp! wˈI?`,
+`…tədˈA.` (3.14 intact), `dˈɑktəɹ. smˈɪθ əɹɹˈIvd; wi lˈɛft.`, `wˈʌn, tˈu, θɹˈi, fˈɔɹ.`.
+End-to-end: "Hello, this is a Kokoro speech test." → `həlˈO, ðɪs ɪz ə kəkˈɔɹO spˈiʧ tˈɛst.`
+(matches misaki bar the benign `ə`/`ɐ` for "a"), audio 2.8 s vs 2.6 s — pause restored.
+
+**C# Kokoro TTS path is feature-complete:** text → phonemes (espeak port + KokoroFormat +
+punctuation) → tokenize (KokoroVocab) → ONNX (Kokoro) → 24 kHz audio, via `KokoroTts.Speak`.
+Remaining is non-core: playback/UI surface, and the performance phase (fp16/int8; the
+log-spectral harness is the acceptance gate).
