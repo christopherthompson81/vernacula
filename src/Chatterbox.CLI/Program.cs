@@ -220,6 +220,9 @@ if (backend == "kokoro")
 
     var kChunks = kTts.ChunkForSynthesis(kText, british);
     Console.WriteLine($"chunked into {kChunks.Count} piece(s)  (extracted {kText.Length} chars)");
+    if (verbose)
+        for (int dci = 0; dci < kChunks.Count; dci++)
+            Console.WriteLine($"    [chunk {dci}] tokens={kTts.CountTokens(kChunks[dci], british)} :: …{kChunks[dci][System.Math.Max(0, kChunks[dci].Length - 35)..]}  |  {kChunks[dci][..System.Math.Min(35, kChunks[dci].Length)]}…");
 
     var kAudios = new List<float[]>(kChunks.Count);
     var kSw = Stopwatch.StartNew();

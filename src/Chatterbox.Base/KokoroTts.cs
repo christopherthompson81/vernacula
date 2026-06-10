@@ -138,6 +138,9 @@ public sealed class KokoroTts : IDisposable
     private const int HardInnerLimit = 508;     // never exceed 510 (= 512 - 2 pad); margin of 2
 
     private static readonly Regex SentenceSplitRe = new(@"(?<=[.!?])\s+", RegexOptions.Compiled);
+    // Clause boundaries for over-long sentences — split after , ; : — (keeping the mark with
+    // the preceding clause so the seam lands on a Kokoro pause token at a natural place).
+    private static readonly Regex ClauseSplitRe = new(@"(?<=[,;:—])\s+", RegexOptions.Compiled);
 
     /// <summary>
     /// Split <paramref name="text"/> into synthesis chunks that each stay within Kokoro's
@@ -161,19 +164,41 @@ public sealed class KokoroTts : IDisposable
     private void SplitToTokenBudget(string chunk, bool british, List<string> output)
     {
         if (CountTokens(chunk, british) <= HardInnerLimit) { output.Add(chunk); return; }
-        // Pack whole sentences up to the budget; a single over-budget sentence goes to
-        // word-level packing. Account for the inter-piece space token (+1) so the running
-        // count tracks the real combined count, not the sum of isolated counts.
+        // Sentence-level packing; an over-budget sentence descends to clause level.
+        PackToBudget(SentenceSplitRe.Split(chunk), british, output, SplitClausesToBudget);
+    }
+
+    // Over-budget sentence → split on clause boundaries (commas etc.) so the seam falls at a
+    // natural pause; a single over-budget clause descends to word level.
+    private void SplitClausesToBudget(string sentence, bool british, List<string> output)
+        => PackToBudget(ClauseSplitRe.Split(sentence), british, output, SplitWordsToBudget);
+
+    // Last resort — pack individual words (no further fallback; a lone giant word, which
+    // shouldn't occur, is accepted by EmitVerified).
+    private void SplitWordsToBudget(string clause, bool british, List<string> output)
+        => PackToBudget(clause.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries),
+            british, output, overBudget: null);
+
+    /// <summary>
+    /// Greedily pack <paramref name="segments"/> into pieces of ≤ <see cref="PackBudgetTokens"/>
+    /// inner tokens. The cost of joining a segment includes the inter-segment space token (+1) —
+    /// the chunk's real token count has one space per gap, which a naive sum of isolated counts
+    /// misses. A segment that alone exceeds the budget is handed to <paramref name="overBudget"/>
+    /// (the next finer split); every emitted piece passes through <see cref="EmitVerified"/>.
+    /// </summary>
+    private void PackToBudget(IEnumerable<string> segments, bool british, List<string> output,
+        Action<string, bool, List<string>>? overBudget)
+    {
         var buf = new StringBuilder();
         var bufTokens = 0;
         void Flush() { if (buf.Length > 0) { EmitVerified(buf.ToString(), british, output); buf.Clear(); bufTokens = 0; } }
 
-        foreach (var raw in SentenceSplitRe.Split(chunk))
+        foreach (var raw in segments)
         {
             var s = raw.Trim();
             if (s.Length == 0) continue;
             var st = CountTokens(s, british);
-            if (st > PackBudgetTokens) { Flush(); SplitWordsToBudget(s, british, output); continue; }
+            if (st > PackBudgetTokens && overBudget is not null) { Flush(); overBudget(s, british, output); continue; }
             var cost = st + (buf.Length > 0 ? 1 : 0);
             if (bufTokens > 0 && bufTokens + cost > PackBudgetTokens) { Flush(); cost = st; }
             if (buf.Length > 0) buf.Append(' ');
@@ -181,29 +206,6 @@ public sealed class KokoroTts : IDisposable
             bufTokens += cost;
         }
         Flush();
-    }
-
-    private void SplitWordsToBudget(string sentence, bool british, List<string> output)
-    {
-        var buf = new StringBuilder();
-        var bufTokens = 0;
-        foreach (var w in sentence.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries))
-        {
-            // +1 for the space token that joins this word to the buffer (the chunk's real
-            // token count includes one space per inter-word gap — the bug this fixes).
-            var cost = CountTokens(w, british) + (buf.Length > 0 ? 1 : 0);
-            if (bufTokens > 0 && bufTokens + cost > PackBudgetTokens)
-            {
-                EmitVerified(buf.ToString(), british, output);
-                buf.Clear();
-                bufTokens = 0;
-                cost = CountTokens(w, british);
-            }
-            if (buf.Length > 0) buf.Append(' ');
-            buf.Append(w);
-            bufTokens += cost;
-        }
-        if (buf.Length > 0) EmitVerified(buf.ToString(), british, output);
     }
 
     // Safety net: emit a piece, but if the packing approximation under-counted and the
