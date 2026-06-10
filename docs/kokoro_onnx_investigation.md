@@ -456,3 +456,29 @@ groups sharing a word merge into one displayed grapheme spanning their combined 
 even-split fallback is gone. Verified: `$3.14[0.85–2.27]` spans its full spoken expansion,
 `2024.[5.27–6.92]`, `test@example.com[0.90–2.05]`, `ASAP.[2.13–3.28]` — every grapheme maps to
 its true audio span while displaying the original source text.
+
+## Run 17 — 2026-06-10 — Markdown-structured karaoke display
+
+User: the karaoke pane wasn't a faithful markdown rendering (uniform size, no line breaks) and
+unpronounceable/symbol source words had stopped appearing. Redesigned the display to look like
+rendered markdown (heading sizes, paragraph breaks, list bullets, blockquote indent) with
+inline **bold**/*italic*/`code`/links, while keeping per-word highlighting.
+
+- **`MarkdownTextExtractor`**: now emits `BlockSpan(Kind, Level, OutputStart, OutputLength)` per
+  text block and an `InlineStyle` flag on each `TextRange` (Bold/Italic/Code/Link) — additive;
+  existing `.Text`/`.Ranges` consumers unaffected. Verified blocks + styles on a sample doc.
+- **Dropped-word fix** (`KokoroTts.SpeakAligned`): iterate source words 0..N-1, emitting one
+  `KokoroWord` per source word (zero-length for unpronounceables) → 1:1 with the whitespace
+  split, restoring symbols/unpronounceables and keeping the index-zip exact.
+- **Display**: `MainViewModel.BuildDisplayStructure` runs the extractor on `Text`, splits the
+  extracted text into words with offsets, looks up each word's block (BlockSpan) + inline style
+  (TextRange), and builds `DisplayBlocks` (`BlockItemViewModel` → `WordItemViewModel`). Words
+  render up front (un-timed, StartSeconds = +∞ so they're never the highlight target); the
+  stream attaches real timing to `Words[index]` (both backends emit 1:1 aligned words in order,
+  so index-zip holds). Live preview rebuilds on text change. The XAML is now a nested
+  ItemsControl (blocks → wrapping word buttons) with heading/bold/italic/code/link/quote styles;
+  `.current` highlight composes on top.
+
+Verified by clean build (Debug+Release; Avalonia compiles XAML), extractor + 1:1 unit tests, and
+no runtime binding errors when the app launched. Visual layout left for the user to confirm
+in-app (GUI screenshot automation was unreliable in this environment).

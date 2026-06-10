@@ -97,19 +97,26 @@ public sealed class KokoroTts : IDisposable
 
         if (runs.Count == groupSourceWords.Count && sourceWords.Length > 0)
         {
-            // Merge consecutive groups that share a source word into one displayed word,
-            // spanning their combined [start, end].
-            var g = 0;
-            while (g < runs.Count)
+            // Collect each source word's group span. A word's groups are contiguous and in
+            // time order, so first start / last end gives its [start, end].
+            var hasRun = new bool[sourceWords.Length];
+            var starts = new double[sourceWords.Length];
+            var ends = new double[sourceWords.Length];
+            for (var g = 0; g < runs.Count; g++)
             {
                 var src = groupSourceWords[g];
-                var start = runs[g].Start;
-                var end = runs[g].End;
-                while (g + 1 < runs.Count && groupSourceWords[g + 1] == src) { g++; end = runs[g].End; }
-                g++;
-                if (src >= 0 && src < sourceWords.Length)
-                    words.Add(new KokoroWord(sourceWords[src], start, end));
-                // src == -1 (backfill left a gap) → skip; its tiny duration folds into the gap.
+                if (src < 0 || src >= sourceWords.Length) continue;
+                if (!hasRun[src]) { starts[src] = runs[g].Start; hasRun[src] = true; }
+                ends[src] = runs[g].End;
+            }
+            // Emit one word per source word — including unpronounceable words that produced
+            // no groups (zero-length marker at the running cursor), so the display shows every
+            // word and the index stays 1:1 with the source-text whitespace split.
+            var cursor = 0.0;
+            for (var w = 0; w < sourceWords.Length; w++)
+            {
+                if (hasRun[w]) { words.Add(new KokoroWord(sourceWords[w], starts[w], ends[w])); cursor = ends[w]; }
+                else words.Add(new KokoroWord(sourceWords[w], cursor, cursor));
             }
         }
         else

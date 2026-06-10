@@ -10,6 +10,7 @@ using Avalonia.Threading;
 using Chatterbox.App.Models;
 using Chatterbox.App.Services;
 using Chatterbox.Base;
+using Chatterbox.Base.Markdown;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 
@@ -133,9 +134,17 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     [ObservableProperty] private int _chunksDone;
     [ObservableProperty] private int _totalChunks;
 
-    // Aligned words from the running/last synthesis. Streamed in as
-    // chunks complete.
+    // Flat, in-order word list — the same WordItemViewModel objects that live in
+    // DisplayBlocks. Built up front from the markdown so every word renders
+    // immediately; timing is attached as alignment streams in. Used by the
+    // highlight machinery (FindWordAt indexes this by StartSeconds).
     public ObservableCollection<WordItemViewModel> Words { get; } = new();
+
+    // The structured (markdown-styled) karaoke view: blocks of words.
+    public ObservableCollection<BlockItemViewModel> DisplayBlocks { get; } = new();
+
+    // How many streamed alignment words have had their timing attached so far.
+    private int _streamWordCursor;
 
     // -1 = nothing currently highlighted.
     private int _currentWordIndex = -1;
@@ -225,6 +234,12 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         PersistSettings();
     }
     partial void OnRenderMarkdownChanged(bool value) => PersistSettings();
+    // Live structured preview: rebuild the karaoke blocks as the source text changes
+    // (skip during synthesis — the stream is filling the words and the box is disabled).
+    partial void OnTextChanged(string value)
+    {
+        if (!IsBusy) { BuildDisplayStructure(value); _streamWordCursor = 0; }
+    }
     partial void OnSelectedBackendChanged(TtsBackendKind value)
     {
         InvalidateSynthService();
@@ -328,9 +343,12 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         IsBusy = true;
         StatusMessage = _synthService is null ? "Loading models (one-time)..." : "Synthesizing...";
         // Stop any in-progress playback from a prior run; clear the
-        // highlight + word list so the new synthesis streams in fresh.
+        // highlight + word list, then rebuild the full structured display from
+        // the markdown so every word renders immediately (timing fills in as
+        // chunks stream).
         _playback.Stop();
-        Words.Clear();
+        BuildDisplayStructure(Text);
+        _streamWordCursor = 0;
         _currentWordIndex = -1;
         HasSynthesizedAudio = false;
         _lastAlignment = null;
@@ -406,16 +424,25 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
                         Dispatcher.UIThread.Post(() => HasSynthesizedAudio = true);
                     }
 
-                    // Word adds touch the ObservableCollection → must go
-                    // through the dispatcher. Capture ev by local so the
-                    // closure doesn't race a subsequent chunk's event.
+                    // Attach timing to the pre-built words by running index (the
+                    // streamed words are 1:1 in order with the display words).
+                    // Touches WordItemViewModel state → dispatcher. Capture ev by
+                    // local so the closure doesn't race a subsequent chunk's event.
                     var wordsForChunk = ev.Words;
                     int chunksDone = ev.ChunkIndex + 1;
                     int totalChunks = ev.TotalChunks;
                     Dispatcher.UIThread.Post(() =>
                     {
                         foreach (var w in wordsForChunk)
-                            Words.Add(new WordItemViewModel(w, Words.Count, SeekToWord));
+                        {
+                            if (_streamWordCursor < Words.Count)
+                            {
+                                var vm = Words[_streamWordCursor];
+                                vm.StartSeconds = w.StartSeconds;
+                                vm.EndSeconds = w.EndSeconds;
+                            }
+                            _streamWordCursor++;
+                        }
                         ChunksDone = chunksDone;
                         TotalChunks = totalChunks;
                     });
@@ -600,11 +627,91 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     // have a live backend that needs tearing down.
     private bool CanStop() => IsPlayingBack || IsPausedBack;
 
+    // ── Structured display ───────────────────────────────────────────
+
+    /// <summary>
+    /// Rebuild <see cref="DisplayBlocks"/> + the flat <see cref="Words"/> from the markdown
+    /// so the whole document renders immediately (structured, every word visible) before any
+    /// audio. Words start un-timed (StartSeconds = +∞ so they're never the highlight target);
+    /// the streaming handler attaches real timing by index. The word sequence here matches the
+    /// backend's aligned-word sequence 1:1 (both come from MarkdownTextExtractor.Extract(Text)
+    /// split on whitespace), which is what lets timing attach by running index.
+    /// </summary>
+    private void BuildDisplayStructure(string text)
+    {
+        DisplayBlocks.Clear();
+        Words.Clear();
+        var extract = MarkdownTextExtractor.Extract(text ?? "");
+        var et = extract.Text;
+        var blocks = extract.Blocks;
+        var ranges = extract.Ranges;
+
+        BlockItemViewModel? current = null;
+        int currentBlockIdx = -2;
+        int i = 0;
+        while (i < et.Length)
+        {
+            while (i < et.Length && char.IsWhiteSpace(et[i])) i++;
+            if (i >= et.Length) break;
+            int start = i;
+            while (i < et.Length && !char.IsWhiteSpace(et[i])) i++;
+
+            int bi = FindBlockIndex(blocks, start);
+            var kind = bi >= 0 ? blocks[bi].Kind : BlockKind.Paragraph;
+            var level = bi >= 0 ? blocks[bi].Level : 0;
+            var style = FindStyle(ranges, start);
+
+            if (current is null || bi != currentBlockIdx)
+            {
+                current = new BlockItemViewModel(kind, level);
+                DisplayBlocks.Add(current);
+                currentBlockIdx = bi;
+            }
+
+            var w = new WordItemViewModel(et.Substring(start, i - start), Words.Count, kind, level, style, SeekToWord)
+            {
+                StartSeconds = double.MaxValue,
+            };
+            current.Words.Add(w);
+            Words.Add(w);
+        }
+    }
+
+    /// <summary>Index of the block whose output span contains <paramref name="offset"/>, or -1.</summary>
+    private static int FindBlockIndex(IReadOnlyList<BlockSpan> blocks, int offset)
+    {
+        int lo = 0, hi = blocks.Count - 1, best = -1;
+        while (lo <= hi)
+        {
+            int mid = (lo + hi) >>> 1;
+            if (blocks[mid].OutputStart <= offset) { best = mid; lo = mid + 1; }
+            else hi = mid - 1;
+        }
+        return best >= 0 && offset < blocks[best].OutputStart + blocks[best].OutputLength ? best : -1;
+    }
+
+    /// <summary>Inline style of the range containing <paramref name="offset"/>, or None.</summary>
+    private static InlineStyle FindStyle(IReadOnlyList<TextRange> ranges, int offset)
+    {
+        int lo = 0, hi = ranges.Count - 1, best = -1;
+        while (lo <= hi)
+        {
+            int mid = (lo + hi) >>> 1;
+            if (ranges[mid].OutputStart <= offset) { best = mid; lo = mid + 1; }
+            else hi = mid - 1;
+        }
+        return best >= 0 && offset < ranges[best].OutputStart + ranges[best].OutputLength
+            ? ranges[best].Style : InlineStyle.None;
+    }
+
     // Click-to-seek wiring. Each WordItemViewModel calls this back via a
     // delegate set at construction (avoids per-word command boilerplate +
     // keeps the VM list as a pure data collection).
     private void SeekToWord(WordItemViewModel word)
     {
+        // Un-timed word (alignment hasn't reached it yet) — nothing to seek to.
+        if (word.StartSeconds is double.MaxValue or <= 0 && word.EndSeconds == 0) return;
+
         // After synthesis completes we have an on-disk WAV and can do a
         // real audio seek. Mid-synthesis we can only re-anchor the
         // highlight clock (audio is being buffered as we go and seeking

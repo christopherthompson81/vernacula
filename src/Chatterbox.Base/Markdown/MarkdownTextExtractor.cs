@@ -23,7 +23,35 @@ namespace Chatterbox.Base.Markdown;
 /// in the source. Word-highlighting downstream walks the ranges in order
 /// and accepts that some output offsets fall in the gaps.</para>
 /// </summary>
-public sealed record TextRange(int OutputStart, int OutputLength, int SourceStart, int SourceLength);
+/// <summary>Inline formatting carried on a <see cref="TextRange"/> for structured display.</summary>
+[Flags]
+public enum InlineStyle
+{
+    None = 0,
+    Bold = 1,
+    Italic = 2,
+    Code = 4,
+    Link = 8,
+}
+
+/// <summary>Block kind of a <see cref="BlockSpan"/>.</summary>
+public enum BlockKind
+{
+    Paragraph,
+    Heading,
+    ListItem,
+    Quote,
+}
+
+public sealed record TextRange(int OutputStart, int OutputLength, int SourceStart, int SourceLength,
+    InlineStyle Style = InlineStyle.None);
+
+/// <summary>
+/// One text-bearing block's span in the output text, for structured rendering.
+/// <paramref name="Level"/> is the heading level for <see cref="BlockKind.Heading"/>, else 0.
+/// Spans are in output order and non-overlapping; block separators fall in the gaps.
+/// </summary>
+public sealed record BlockSpan(BlockKind Kind, int Level, int OutputStart, int OutputLength);
 
 /// <summary>
 /// Output of <see cref="MarkdownTextExtractor.Extract"/>: the speakable
@@ -31,7 +59,8 @@ public sealed record TextRange(int OutputStart, int OutputLength, int SourceStar
 /// OutputStart and non-overlapping; gaps correspond to synthetic
 /// whitespace the extractor inserted.
 /// </summary>
-public sealed record MarkdownExtractionResult(string Text, IReadOnlyList<TextRange> Ranges);
+public sealed record MarkdownExtractionResult(string Text, IReadOnlyList<TextRange> Ranges,
+    IReadOnlyList<BlockSpan> Blocks);
 
 /// <summary>
 /// Markdown → speakable plain text, preserving a source-range index for
@@ -66,6 +95,11 @@ public sealed class MarkdownTextExtractor
 {
     private readonly StringBuilder _sb = new();
     private readonly List<TextRange> _ranges = new();
+    private readonly List<BlockSpan> _blocks = new();
+    // Current inline style while walking inlines, and the enclosing block context
+    // (a paragraph inside a list item / quote takes that kind, not Paragraph).
+    private InlineStyle _style = InlineStyle.None;
+    private BlockKind _contextKind = BlockKind.Paragraph;
 
     // Pipeline is shared across extractions — Markdig pipelines are
     // thread-safe to call concurrently per their docs. Built with the
@@ -95,7 +129,7 @@ public sealed class MarkdownTextExtractor
         }
         // Trim trailing whitespace the block-separator logic may have appended.
         while (_sb.Length > 0 && char.IsWhiteSpace(_sb[^1])) _sb.Length--;
-        return new MarkdownExtractionResult(_sb.ToString(), _ranges);
+        return new MarkdownExtractionResult(_sb.ToString(), _ranges, _blocks);
     }
 
     // Returns true if the block actually produced any output (so callers
@@ -109,16 +143,23 @@ public sealed class MarkdownTextExtractor
                 int beforeHeading = _sb.Length;
                 EmitInlines(heading.Inline);
                 AppendTerminalPeriod(beforeHeading);
+                if (_sb.Length > beforeHeading)
+                    _blocks.Add(new BlockSpan(BlockKind.Heading, heading.Level, beforeHeading, _sb.Length - beforeHeading));
                 return _sb.Length > beforeHeading;
 
             case ParagraphBlock para:
                 EmitBlockSeparator(first);
                 int beforePara = _sb.Length;
                 EmitInlines(para.Inline);
+                if (_sb.Length > beforePara)
+                    _blocks.Add(new BlockSpan(_contextKind, 0, beforePara, _sb.Length - beforePara));
                 return _sb.Length > beforePara;
 
             case QuoteBlock quote:
-                // Block quote: walk children with the same separator rules.
+                // Block quote: walk children with the same separator rules; child
+                // paragraphs are tagged Quote via the context kind.
+                var savedQuoteCtx = _contextKind;
+                _contextKind = BlockKind.Quote;
                 bool emittedAny = false;
                 bool innerFirst = first;
                 foreach (var child in quote)
@@ -129,19 +170,22 @@ public sealed class MarkdownTextExtractor
                         innerFirst = false;
                     }
                 }
+                _contextKind = savedQuoteCtx;
                 if (emittedAny) first = false;
                 return emittedAny;
 
             case ListBlock list:
                 EmitBlockSeparator(first);
                 int beforeList = _sb.Length;
+                var savedListCtx = _contextKind;
+                _contextKind = BlockKind.ListItem;
                 foreach (var item in list)
                 {
                     if (item is not ListItemBlock listItem) continue;
                     int beforeItem = _sb.Length;
                     // Each item: walk its children blocks (typically a single
-                    // ParagraphBlock). Use a newline-only separator between
-                    // items so the TTS gets a short pause, not the longer
+                    // ParagraphBlock, tagged ListItem). Use a newline-only separator
+                    // between items so the TTS gets a short pause, not the longer
                     // paragraph break.
                     bool itemFirst = true;
                     foreach (var child in listItem)
@@ -153,6 +197,7 @@ public sealed class MarkdownTextExtractor
                     // trailing whitespace at the document level).
                     if (_sb.Length > beforeItem) _sb.Append('\n');
                 }
+                _contextKind = savedListCtx;
                 return _sb.Length > beforeList;
 
             // Skipped block kinds: fenced code, tables, HTML, thematic break,
@@ -201,7 +246,7 @@ public sealed class MarkdownTextExtractor
                 int srcLen = slice.End - slice.Start + 1;
                 int outStart = _sb.Length;
                 _sb.Append(slice.AsSpan());
-                _ranges.Add(new TextRange(outStart, srcLen, srcStart, srcLen));
+                _ranges.Add(new TextRange(outStart, srcLen, srcStart, srcLen, _style));
                 break;
 
             case CodeInline code:
@@ -215,12 +260,15 @@ public sealed class MarkdownTextExtractor
                 // full delim range — close-enough for forced alignment
                 // which works at word granularity.
                 _ranges.Add(new TextRange(codeOutStart, code.Content.Length,
-                    code.Span.Start, code.Span.End - code.Span.Start + 1));
+                    code.Span.Start, code.Span.End - code.Span.Start + 1, _style | InlineStyle.Code));
                 break;
 
             case LinkInline link when !link.IsImage:
                 // [text](url) → emit just the text, drop the URL.
+                var savedLinkStyle = _style;
+                _style |= InlineStyle.Link;
                 EmitInlines(link);
+                _style = savedLinkStyle;
                 break;
 
             // Image is a LinkInline with IsImage=true; skip entirely (no alt
@@ -229,8 +277,15 @@ public sealed class MarkdownTextExtractor
                 break;
 
             case EmphasisInline emph:
-                // *italic* / **bold** / ~~strike~~ → markup stripped, walk children.
+                // *italic* / **bold** / ~~strike~~ → markup stripped, walk children;
+                // track bold/italic for display ('*'/'_' delimiters; '~' strike → no style).
+                var add = emph.DelimiterChar is '*' or '_'
+                    ? (emph.DelimiterCount >= 2 ? InlineStyle.Bold : InlineStyle.Italic)
+                    : InlineStyle.None;
+                var savedEmphStyle = _style;
+                _style |= add;
                 EmitInlines(emph);
+                _style = savedEmphStyle;
                 break;
 
             case LineBreakInline:

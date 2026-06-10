@@ -36,25 +36,54 @@
                      markdown view doesn't carry source-position mapping
                      (deferred — needs a follow-up issue). -->
                 <Panel Grid.Row="2" Margin="0,12,0,0">
+                    <!-- Structured karaoke view: markdown blocks (headings, paragraphs,
+                         list items, quotes) each rendered as a wrapping flow of word
+                         buttons. Per-word font size/weight/style come from the word VM;
+                         block kind drives bullets / quote indent / spacing. -->
                     <ScrollViewer IsVisible="{Binding !RenderMarkdown}">
-                        <ItemsControl ItemsSource="{Binding Words}">
+                        <ItemsControl ItemsSource="{Binding DisplayBlocks}">
                             <ItemsControl.ItemsPanel>
                                 <ItemsPanelTemplate>
-                                    <WrapPanel Orientation="Horizontal" />
+                                    <StackPanel Orientation="Vertical" />
                                 </ItemsPanelTemplate>
                             </ItemsControl.ItemsPanel>
                             <ItemsControl.ItemTemplate>
-                                <DataTemplate x:DataType="vm:WordItemViewModel">
-                                    <!-- Each word is a borderless Button so it
-                                         participates in the click → SeekToWord
-                                         pipeline (the click handler on a bare
-                                         TextBlock requires a behavior; a styled
-                                         Button is simpler). The .current class
-                                         toggles via IsCurrent for the highlight. -->
-                                    <Button Command="{Binding ClickCommand}"
-                                            Content="{Binding Text}"
-                                            Classes="word"
-                                            Classes.current="{Binding IsCurrent}" />
+                                <DataTemplate x:DataType="vm:BlockItemViewModel">
+                                    <Border Classes.heading="{Binding IsHeading}"
+                                            Classes.quote="{Binding IsQuote}"
+                                            Classes.listitem="{Binding IsListItem}"
+                                            Classes.paragraph="{Binding IsParagraph}">
+                                        <Grid ColumnDefinitions="Auto,*">
+                                            <TextBlock Grid.Column="0" Text="•"
+                                                       IsVisible="{Binding IsListItem}"
+                                                       FontSize="18" Margin="2,2,8,0"
+                                                       VerticalAlignment="Top" Opacity="0.6" />
+                                            <ItemsControl Grid.Column="1" ItemsSource="{Binding Words}">
+                                                <ItemsControl.ItemsPanel>
+                                                    <ItemsPanelTemplate>
+                                                        <WrapPanel Orientation="Horizontal" />
+                                                    </ItemsPanelTemplate>
+                                                </ItemsControl.ItemsPanel>
+                                                <ItemsControl.ItemTemplate>
+                                                    <DataTemplate x:DataType="vm:WordItemViewModel">
+                                                        <!-- Borderless Button → click-to-seek.
+                                                             Font props come from the word VM
+                                                             (heading size, bold/italic); the
+                                                             code/link/current classes layer on. -->
+                                                        <Button Command="{Binding ClickCommand}"
+                                                                Content="{Binding Text}"
+                                                                Classes="word"
+                                                                FontSize="{Binding FontSize}"
+                                                                FontWeight="{Binding FontWeight}"
+                                                                FontStyle="{Binding FontStyle}"
+                                                                Classes.code="{Binding IsCode}"
+                                                                Classes.link="{Binding IsLink}"
+                                                                Classes.current="{Binding IsCurrent}" />
+                                                    </DataTemplate>
+                                                </ItemsControl.ItemTemplate>
+                                            </ItemsControl>
+                                        </Grid>
+                                    </Border>
                                 </DataTemplate>
                             </ItemsControl.ItemTemplate>
                         </ItemsControl>
@@ -204,17 +233,52 @@
             <Setter Property="Background" Value="Transparent" />
             <Setter Property="BorderBrush" Value="Transparent" />
             <Setter Property="BorderThickness" Value="0" />
-            <Setter Property="Padding" Value="2,2" />
+            <Setter Property="Padding" Value="2,1" />
             <Setter Property="Margin" Value="0,0,2,0" />
-            <Setter Property="FontSize" Value="18" />
+            <Setter Property="MinHeight" Value="0" />
+            <Setter Property="VerticalAlignment" Value="Center" />
             <Setter Property="Cursor" Value="Hand" />
         </Style>
         <Style Selector="Button.word:pointerover /template/ ContentPresenter">
             <Setter Property="Background" Value="#22ffffff" />
         </Style>
+        <!-- Highlight (current spoken word). Foreground isn't bound per-word, so this
+             overrides regardless of heading/bold weight. -->
+        <Style Selector="Button.word.current /template/ ContentPresenter">
+            <Setter Property="Background" Value="#3355aadd" />
+        </Style>
         <Style Selector="Button.word.current">
-            <Setter Property="FontWeight" Value="Bold" />
-            <Setter Property="Foreground" Value="#5ad" />
+            <Setter Property="Foreground" Value="#aef" />
+        </Style>
+        <!-- Inline code: monospace + subtle chip. -->
+        <Style Selector="Button.word.code">
+            <Setter Property="FontFamily" Value="Cascadia Code,Consolas,Menlo,monospace" />
+        </Style>
+        <Style Selector="Button.word.code /template/ ContentPresenter">
+            <Setter Property="Background" Value="#1affffff" />
+        </Style>
+        <!-- Links: accent + underline. -->
+        <Style Selector="Button.word.link">
+            <Setter Property="Foreground" Value="#6cf" />
+            <Setter Property="TextBlock.TextDecorations" Value="Underline" />
+        </Style>
+
+        <!-- Block containers: spacing (line breaks), quote indent. -->
+        <Style Selector="Border.heading">
+            <Setter Property="Margin" Value="0,14,0,2" />
+        </Style>
+        <Style Selector="Border.paragraph">
+            <Setter Property="Margin" Value="0,4,0,4" />
+        </Style>
+        <Style Selector="Border.listitem">
+            <Setter Property="Margin" Value="0,1,0,1" />
+        </Style>
+        <Style Selector="Border.quote">
+            <Setter Property="Margin" Value="0,6,0,6" />
+            <Setter Property="Padding" Value="10,2,0,2" />
+            <Setter Property="BorderThickness" Value="3,0,0,0" />
+            <Setter Property="BorderBrush" Value="#445" />
+            <Setter Property="Opacity" Value="0.85" />
         </Style>
     </Window.Styles>
 
