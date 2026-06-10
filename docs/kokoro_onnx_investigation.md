@@ -259,3 +259,26 @@ acceptable for a dictation tool's playback per the tier-2 decision.
 
 Next: C# phase. Ground it in how the existing ONNX models are wired in the Vernacula .NET
 solution (`src/`, `Vernacula.slnx`) before writing the Kokoro TTS path + the espeak normalizer.
+
+## Run 10 — 2026-06-09 21:00
+
+C# G2P: the espeak side is already a pure-C# reimplementation in a separate repo,
+`~/Programming/espeak-ng-portable/csharp` (`Vernacula.Phonemizer`, golden-tested against the
+TS engine). It renders **tieless** IPA (`aɪ`, keeps `ː`, uses `ɚ ɾ ɹ ɐ`). Per the user's
+steer, Kokoro is modelled as a **render format** over those IPA phonemes, not a bolt-on
+normalizer: added `PhonemeFormat { Ipa, Kokoro }` + `KokoroFormat.Render(ipa, british)` in
+`src/Vernacula.Phonemizer/KokoroFormat.cs`. It ports misaki's `EspeakFallback.__call__`
+deterministic map, adapted from misaki's tied diphthongs (`a^ɪ`) to this engine's tieless
+forms, dropping misaki's tie-dependent syllabic rule in favour of the U+0329 handling this
+engine emits, and adding the `ᵻ→ɪ` gap fix from Run 9.
+
+Verified: C# `KokoroFormat.Render(Phonemize.Run(w))` vs Python `EspeakFallback(w)` over a
+34-word list → **30/34 exact**. All 4 diffs benign: `remember` is the intentional `ᵻ→ɪ` fix
+(C# better — `ᵻ` is out-of-vocab in Python); `example/little/people` are `əl` vs `ᵊl`
+(this engine renders the syllabic schwa explicitly, no U+0329 to convert — both valid Kokoro
+phonemes). Project builds clean. (espeak-ng-portable repo, file uncommitted — different repo.)
+
+Remaining C# work for a full Kokoro path: `Kokoro.cs` ONNX wrapper in Chatterbox.Base
+(mirrors Vocoder.cs), voice-pack loading + `ref_s` indexing, and phoneme→token-id via the
+114-entry vocab. The render-format frontend (this run) is the piece that was specced as risky;
+it's done and validated.
