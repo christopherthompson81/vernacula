@@ -313,3 +313,25 @@ three inputs are provably identical, any residual is ORT execution variance, not
 Remaining: wire text→phonemes (the `Vernacula.Phonemizer` repo is separate — needs a project/
 package reference decision) into a one-call pipeline, and the playback/UI surface. The core
 inference + tokenization + voices are done.
+
+## Run 12 — 2026-06-09 22:55
+
+Wired the G2P frontend end-to-end (user chose **git submodule** for the integration mechanism):
+- Added `external/espeak-ng-portable` as a submodule (carries the pure-C# espeak port,
+  `KokoroFormat`, and the runtime `data/` language files). `.gitmodules` URL points at the
+  canonical GitHub remote; pin is currently a local-only commit (the `KokoroFormat` branch isn't
+  pushed yet — push/merge it for fresh clones to resolve).
+- ProjectReference Chatterbox.Base → Vernacula.Phonemizer.
+- `KokoroTts.cs`: `Speak(text, voice, speed, british)` and `ToPhonemes(text)` compose
+  `Phonemize.Run` → `KokoroFormat.Render` → `Kokoro.Synthesize`. Constructor takes the
+  phonemizer `data/` dir.
+
+End-to-end verified on CPU: "Hello, this is a Kokoro speech test." → phonemes
+`həlˈO` / `ðɪs ɪz ə kəkˈɔɹO spˈiʧ tˈɛst` → 2.6 s audio. Builds clean.
+
+**Known refinement (prosody):** the C# `Phonemize.Run` orchestrator splits clauses with a
+**newline** and drops `,`/`.` punctuation, whereas misaki keeps punctuation as phoneme tokens
+(ids 1–15) that Kokoro uses for pauses. `KokoroVocab.Encode` silently drops the newline, so
+clause boundaries currently carry no pause → slightly rushed pacing vs reference. Candidate
+fixes: map the phonemizer's clause newline to a Kokoro pause token, and/or preserve sentence
+punctuation through to `Encode`. Deferred pending the listening check; intelligibility is fine.
