@@ -226,3 +226,36 @@ Implication — three C# frontend tiers, fidelity vs effort:
 This is a product decision (how close to reference must C# TTS sound) that materially changes
 the C# phase scope. Non-English support, if ever wanted, is pure-espeak and thus "free-ish"
 under tiers 1–2. Decision pending from user before starting C#.
+
+## Run 9 — 2026-06-09 19:55
+
+Decision: **user chose tier 2 (espeak + ported normalizer).** This run nails down the spec
+and the honest parity numbers so the C# port is mechanical.
+
+**Normalizer spec** = `misaki.espeak.EspeakFallback.__call__` (fully deterministic):
+1. espeak-ng `en-us`/`en-gb`, flags `preserve_punctuation=True, with_stress=True, tie='^'`.
+2. Apply `E2M` map (sorted longest-key-first): diphthong ties `a^ɪ→I a^ʊ→W e^ɪ→A o^ʊ→O
+   ɔ^ɪ→Y d^ʒ→ʤ t^ʃ→ʧ`, `ɚ→əɹ`, `r→ɹ`, `x→k ç→k`, `ɐ→ə`, `ɬ→l`, syllabic-n forms, strip `̃`.
+3. `re.sub(r'(\S)̩', 'ᵊ\1')` then strip U+0329 (syllabic consonants).
+4. US branch: `o^ʊ→O`, `ɜːɹ→ɜɹ`, `ɜː→ɜɹ`, `ɪə→iə`, **strip `ː`**; then `o→ɔ`; then `ɾ→T`, `ʔ→t`;
+   strip `^`. (GB branch differs: `e^ə→ɛː`, `iə→ɪə`, `ə^ʊ→Q`, keeps `ː`.)
+
+All output symbols are in Kokoro's 114-token vocab. The only external dep is espeak-ng with
+`tie='^'` IPA output.
+
+**Honest tier-2 parity (vs lexicon reference), token ids via km.vocab:**
+
+| Corpus | exact-word | token parity | character |
+|---|---|---|---|
+| Running prose (freq-weighted, 80 words) | 78.8% | **92.1%** | matches "~90%+" claim |
+| Flat lexicon sample (400 words, names/rare-heavy) | 33.0% | 70.8% | worst case |
+
+Dominant divergences on common text: (a) **secondary-stress marks** the lexicon adds but
+espeak omits (`tˈuzdˌA` vs `tˈuzdA`) — not recoverable from espeak, perceptually minor; (b)
+schwa color (`ə` vs espeak `ᵻ`). **Normalizer gap found:** espeak emits `ᵻ` (U+1D7B) which
+`E2M` does NOT map → it's out-of-vocab and gets dropped; the C# port should add `ᵻ→ɪ` (or `ə`).
+Proper nouns/rare words are the real weakness (33% exact) — names will sometimes mispronounce;
+acceptable for a dictation tool's playback per the tier-2 decision.
+
+Next: C# phase. Ground it in how the existing ONNX models are wired in the Vernacula .NET
+solution (`src/`, `Vernacula.slnx`) before writing the Kokoro TTS path + the espeak normalizer.
