@@ -6,6 +6,12 @@
 #   pip install kokoro misaki
 #
 torch>=2.2
+# Pin cuDNN to match the system (apt) libcudnn9 so torch's bundled cuDNN can't mismatch it.
+# torch 2.12+cu130 bundles cuDNN 9.20, but this box has system cuDNN 9.23.0.39 (used by the
+# C# onnxruntime path too); the loader mixes main/sub-libs across the two → CUDNN_STATUS_
+# SUBLIBRARY_VERSION_MISMATCH on conv. Matching the version makes the mix harmless. If the
+# system libcudnn9 is upgraded, bump this to match (dpkg -l | grep libcudnn9).
+nvidia-cudnn-cu13==9.23.0.39
 onnx>=1.17
 onnxruntime>=1.16
 numpy<2.0

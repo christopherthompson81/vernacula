@@ -32,8 +32,10 @@ def capture(km, repo_id, text, voice):
 
 
 @torch.no_grad()
-def batched_forward(km, input_ids, ref_s, input_lengths, speed=1.0):
-    """input_ids [B, T] (0-padded), ref_s [B, 256], input_lengths [B] real token counts."""
+def batched_forward(km, input_ids, ref_s, input_lengths, speed=1.0, force_max_frames=None):
+    """input_ids [B, T] (0-padded), ref_s [B, 256], input_lengths [B] real token counts.
+    force_max_frames: test hook to pad the frame axis beyond the batch's real max (simulates
+    bucketed padding) — measures AdaIN pollution vs padding ratio."""
     B, T = input_ids.shape
     dev = km.device
     # text mask: True where padding (matches the model's convention).
@@ -56,7 +58,7 @@ def batched_forward(km, input_ids, ref_s, input_lengths, speed=1.0):
 
     # Vectorized duration expansion → [B, T, max_frames] one-hot alignment.
     frames_per_item = pred_dur.sum(dim=1)                       # [B]
-    max_frames = int(frames_per_item.max().item())
+    max_frames = force_max_frames or int(frames_per_item.max().item())
     cum = pred_dur.cumsum(dim=1)                                # [B, T] end positions
     start = cum - pred_dur                                      # [B, T] start positions
     fidx = torch.arange(max_frames, device=dev)                # [max_frames]
