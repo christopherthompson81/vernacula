@@ -282,3 +282,34 @@ Remaining C# work for a full Kokoro path: `Kokoro.cs` ONNX wrapper in Chatterbox
 (mirrors Vocoder.cs), voice-pack loading + `ref_s` indexing, and phoneme→token-id via the
 114-entry vocab. The render-format frontend (this run) is the piece that was specced as risky;
 it's done and validated.
+
+## Run 11 — 2026-06-09 22:30
+
+Built the C# Kokoro inference path in `src/Chatterbox.Base/`:
+- `KokoroVocab.cs` — the 114-entry phoneme→id map (generated from `KModel.vocab`), `Encode()`
+  produces `[Pad, …ids…, Pad]`, unknown codepoints dropped (matches KModel).
+- `Kokoro.cs` — loads `kokoro.onnx`, lazy-loads voice packs, `Synthesize(phonemes, voice, speed)`.
+  `ref_s = voicePack[len(phonemes)-1]` (rune count, matching KPipeline's `pack[len(ps)-1]`).
+- `scripts/kokoro_export/export_voices.py` — dumps each voice `.pt` `[510,1,256]` to flat
+  `<name>.bin` (`510×256` f32) for the C# loader. 28 English voices exported.
+
+**Correction to Run 9:** `ᵻ` (U+1D7B) IS in the Kokoro vocab (id 177) — misaki feeds it to the
+model as a valid token. The Run-9 "gap fix" `ᵻ→ɪ` was therefore a *divergence*, not a fix, and
+was removed from `KokoroFormat.cs`. (The Run 8/9 parity *numbers* were unaffected — they used the
+real vocab where `ᵻ` maps to 177, not dropped — only the verbal claim was wrong.)
+
+**Parity verification (C# vs Python ONNX, same phonemes + voice af_heart):**
+- input_ids: **byte-identical** (38 ids); rune count 36 = Python `len(ps)` → same `ref_s` row 35.
+- exported voice row 35 vs `pack[35]`: **max|Δ| = 0.0**.
+- audio: length identical (67800); waveform max|Δ| 0.072, corr 0.997, log-spectral L1 0.13.
+
+The waveform difference is NOT a bug: **the kokoro.onnx graph is non-deterministic on CPU ORT** —
+two consecutive Python runs with identical inputs differ by max|Δ| 0.070 (parallel FP-reduction
+order in the conv/STFT). The C#↔Python difference (0.072) is within that self-noise floor, and
+log-spec 0.13 is well under the 0.37 the user already judged "basically identical." Since all
+three inputs are provably identical, any residual is ORT execution variance, not the C# code.
+**C# Kokoro inference path verified.** Builds clean (Chatterbox.Base, CPU + default EP).
+
+Remaining: wire text→phonemes (the `Vernacula.Phonemizer` repo is separate — needs a project/
+package reference decision) into a one-call pipeline, and the playback/UI surface. The core
+inference + tokenization + voices are done.
