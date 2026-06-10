@@ -432,3 +432,27 @@ unchanged, so Kokoro highlights identically.
 
 NB: the re-exported `kokoro.onnx` now has 2 outputs — `Kokoro.SynthesizeWithDurations` requires
 the new graph (re-run `export_kokoro.py` if using an older single-output model).
+
+## Run 16 — 2026-06-10 — Alignment precision (spell-out fix)
+
+User reported word-highlight drift ("sometimes ahead, sometimes behind"). Root-caused it to
+**spell-out expansions**: the phonemizer's normalizer expands written tokens (`$3.14` → "three
+dollars and fourteen cents" = 5 phoneme groups, `2024` → 4, `Dr.` → "doctor", emails/acronyms),
+so one grapheme becomes several space-separated groups. The old `SpeakAligned` joined groups to
+words *positionally*, so any expansion broke the 1:1 count and the whole sentence fell back to
+**even spacing** → every word mistimed. Demonstrated: clean prose timed irregularly (correct);
+`"It cost $3.14 … 2024."` timed at a flat 0.77 s/word (the fallback firing).
+
+Fix (chosen over a C#-only heuristic because spell-outs are context-sensitive): thread a
+**source-word index through the phonemizer** (espeak-ng-portable @ 93188a0). `InitialTokens`
+stamps each token's `text.Split` index; it propagates through the normalize splice helpers
+(`MapPlainText`/`RewriteInTokens` + a backfill safety net), `Atom`/`ContextualToken`, and the
+`ClauseToken` emit sites; `AssembleClauseIpa` reads it back per output group. New
+`Phonemize.RunWithSourceWords` returns IPA + one source-word index per group. Additive metadata
+only — **all 158,662 golden parity tests pass** (IPA byte-identical).
+
+`KokoroTts.SpeakAligned` now uses that map: each phoneme group → its source word; consecutive
+groups sharing a word merge into one displayed grapheme spanning their combined duration. The
+even-split fallback is gone. Verified: `$3.14[0.85–2.27]` spans its full spoken expansion,
+`2024.[5.27–6.92]`, `test@example.com[0.90–2.05]`, `ASAP.[2.13–3.28]` — every grapheme maps to
+its true audio span while displaying the original source text.

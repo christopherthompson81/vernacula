@@ -55,16 +55,16 @@ public sealed class KokoroTts : IDisposable
         => _kokoro.Synthesize(ToPhonemes(text, british), voice, speed);
 
     /// <summary>
-    /// Synthesize <paramref name="text"/> and return the audio plus per-word timings
-    /// for karaoke-style highlighting. Word boundaries are recovered from the phoneme
-    /// token stream (runs of tokens between space/pad tokens) and timed from the model's
-    /// per-token predicted durations; words are labelled by the whitespace-split source
-    /// text. On a count mismatch (e.g. number expansion like "$3.14") timings fall back
-    /// to an even split across the utterance.
+    /// Synthesize <paramref name="text"/> and return the audio plus per-word timings for
+    /// karaoke-style highlighting. Each phoneme group (run of tokens between space/pad tokens)
+    /// is mapped to its source word via the phonemizer's source-word map, so spell-out
+    /// expansions (e.g. "$3.14" → "three dollars and fourteen cents", five groups) all
+    /// collapse onto the one written word with the union of their durations. Per-group
+    /// predicted durations give exact start/end times.
     /// </summary>
     public KokoroSpeech SpeakAligned(string text, string voice, float speed = 1.0f, bool british = false)
     {
-        var phonemes = ToPhonemes(text, british);
+        var (phonemes, groupSourceWords) = ToPhonemesWithSourceMap(text, british);
         var o = _kokoro.SynthesizeWithDurations(phonemes, voice, speed);
         if (o.Audio.Length == 0)
             return new KokoroSpeech([], []);
@@ -78,7 +78,8 @@ public sealed class KokoroTts : IDisposable
         for (var k = 0; k < o.PredDur.Length; k++)
             cum[k + 1] = cum[k] + o.PredDur[k] * secPerDur;
 
-        // Word runs: maximal spans of tokens that are neither space nor pad.
+        // Phoneme groups: maximal token spans between space/pad tokens. Group g aligns to
+        // groupSourceWords[g] (1:1 — Render/punctuation re-injection preserve group order/count).
         var runs = new List<(double Start, double End)>();
         var i = 0;
         while (i < o.InputIds.Length)
@@ -88,19 +89,32 @@ public sealed class KokoroTts : IDisposable
             var first = i;
             while (i < o.InputIds.Length && o.InputIds[i] != KokoroVocab.Space && o.InputIds[i] != KokoroVocab.Pad)
                 i++;
-            runs.Add((cum[first], cum[i]));   // i is one past the run's last token
+            runs.Add((cum[first], cum[i]));
         }
 
         var sourceWords = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
         var words = new List<KokoroWord>(sourceWords.Length);
-        if (runs.Count == sourceWords.Length)
+
+        if (runs.Count == groupSourceWords.Count && sourceWords.Length > 0)
         {
-            for (var w = 0; w < sourceWords.Length; w++)
-                words.Add(new KokoroWord(sourceWords[w], runs[w].Start, runs[w].End));
+            // Merge consecutive groups that share a source word into one displayed word,
+            // spanning their combined [start, end].
+            var g = 0;
+            while (g < runs.Count)
+            {
+                var src = groupSourceWords[g];
+                var start = runs[g].Start;
+                var end = runs[g].End;
+                while (g + 1 < runs.Count && groupSourceWords[g + 1] == src) { g++; end = runs[g].End; }
+                g++;
+                if (src >= 0 && src < sourceWords.Length)
+                    words.Add(new KokoroWord(sourceWords[src], start, end));
+                // src == -1 (backfill left a gap) → skip; its tiny duration folds into the gap.
+            }
         }
         else
         {
-            // Fallback: even split of total audio duration across the source words.
+            // Defensive fallback: even split (should not happen with the source map intact).
             var total = o.Audio.Length / (double)Kokoro.SampleRate;
             for (var w = 0; w < sourceWords.Length; w++)
                 words.Add(new KokoroWord(sourceWords[w],
@@ -114,11 +128,17 @@ public sealed class KokoroTts : IDisposable
     /// for inspection, caching, or feeding <see cref="Kokoro.Synthesize"/> directly.
     /// </summary>
     public string ToPhonemes(string text, bool british = false)
+        => ToPhonemesWithSourceMap(text, british).Phonemes;
+
+    // Phonemize + render + punctuation re-injection, also returning one source-word index
+    // per output phoneme group. Render (per-char) and ReinjectPunctuation (clause join)
+    // preserve group order and count, so the map stays 1:1 with the final token runs.
+    private (string Phonemes, IReadOnlyList<int> GroupSourceWords) ToPhonemesWithSourceMap(string text, bool british)
     {
         var lang = british ? (_enGb ??= LanguageLoader.Load("en-gb", Path.Combine(_dataDir, "en-gb"))) : _enUs;
-        var ipa = Phonemize.Run(text, lang);
+        var (ipa, groupSourceWords) = Phonemize.RunWithSourceWords(text, lang);
         var kok = KokoroFormat.Render(ipa, british);
-        return ReinjectPunctuation(kok, text);
+        return (ReinjectPunctuation(kok, text), groupSourceWords);
     }
 
     // The phonemizer collapses every clause/sentence punctuation mark to a single
