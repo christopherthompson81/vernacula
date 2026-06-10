@@ -42,6 +42,12 @@
       <Private>true</Private>
       <SetConfiguration>EP=$(EP)</SetConfiguration>
     </ProjectReference>
+    <!-- Kokoro G2P frontend: pure-C# espeak-ng port + KokoroFormat render target.
+         Vendored as a git submodule under external/ (data/ language files ship
+         with it). Used by KokoroTts to turn text into Kokoro phonemes. -->
+    <ProjectReference Include="..\..\external\espeak-ng-portable\csharp\src\Vernacula.Phonemizer\Vernacula.Phonemizer.csproj">
+      <Private>true</Private>
+    </ProjectReference>
   </ItemGroup>
 
 </Project>
