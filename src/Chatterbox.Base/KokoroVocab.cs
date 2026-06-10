@@ -138,6 +138,9 @@ public static class KokoroVocab
     /// <summary>Number of phoneme entries (excludes the pad token).</summary>
     public static int Count => Map.Count;
 
+    /// <summary>True if <paramref name="ch"/> is a known Kokoro phoneme token.</summary>
+    public static bool Contains(char ch) => Map.ContainsKey(ch);
+
     /// <summary>
     /// Tokenize a Kokoro-alphabet phoneme string into the padded id sequence
     /// the ONNX graph expects: <c>[Pad, …ids…, Pad]</c>. Unknown codepoints are

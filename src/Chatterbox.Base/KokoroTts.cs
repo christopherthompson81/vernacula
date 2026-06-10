@@ -1,3 +1,5 @@
+using System.Text;
+using System.Text.RegularExpressions;
 using Vernacula.Base.Models;
 using Vernacula.Phonemizer;
 using Vernacula.Phonemizer.Data;
@@ -54,7 +56,37 @@ public sealed class KokoroTts : IDisposable
     {
         var lang = british ? (_enGb ??= LanguageLoader.Load("en-gb", Path.Combine(_dataDir, "en-gb"))) : _enUs;
         var ipa = Phonemize.Run(text, lang);
-        return KokoroFormat.Render(ipa, british);
+        var kok = KokoroFormat.Render(ipa, british);
+        return ReinjectPunctuation(kok, text);
+    }
+
+    // The phonemizer collapses every clause/sentence punctuation mark to a single
+    // '\n' and drops the final one — but Kokoro's vocab carries punctuation tokens
+    // (',' '.' ';' …) that drive its prosodic pauses. Re-inject them by correlating
+    // the source text's clause punctuation (in order) with the '\n' breaks: the i-th
+    // break and the trailing position get the i-th source mark. Number-internal dots
+    // (e.g. "3.14", normalized to words upstream) produce no break and are excluded
+    // so the alignment holds. Defaults to a comma if a mark is somehow missing.
+    private static readonly Regex ClausePunctRe = new(@"[,;:!?…—]|(?<![0-9])\.(?![0-9])", RegexOptions.Compiled);
+
+    private static string ReinjectPunctuation(string kokoro, string sourceText)
+    {
+        var clauses = kokoro.Split('\n');
+        if (clauses.Length == 1 && !ClausePunctRe.IsMatch(sourceText))
+            return kokoro;
+
+        var marks = ClausePunctRe.Matches(sourceText);
+        var sb = new StringBuilder(kokoro.Length + clauses.Length);
+        for (var i = 0; i < clauses.Length; i++)
+        {
+            sb.Append(clauses[i]);
+            var mark = i < marks.Count ? marks[i].Value : (i < clauses.Length - 1 ? "," : "");
+            if (mark.Length == 1 && KokoroVocab.Contains(mark[0]))
+                sb.Append(mark);
+            if (i < clauses.Length - 1)
+                sb.Append(' ');
+        }
+        return sb.ToString();
     }
 
     public void Dispose() => _kokoro.Dispose();
