@@ -1,0 +1,14 @@
+# Requirements for Kokoro-82M ONNX export and validation
+#
+# Use Python 3.10–3.12.
+#
+# kokoro provides the model + KModel/KPipeline; misaki is the G2P frontend.
+#   pip install kokoro misaki
+#
+torch>=2.2
+onnx>=1.17
+onnxruntime>=1.16
+numpy<2.0
+soundfile>=0.12
+kokoro>=0.9
+misaki>=0.9

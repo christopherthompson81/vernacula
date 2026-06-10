@@ -1,0 +1,7 @@
+# Export artifacts and environment — never commit
+external/
+external_*/
+samples/
+.venv*/
+*.onnx
+*.wav
