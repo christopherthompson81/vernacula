@@ -18,6 +18,9 @@
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />
     <PackageReference Include="xunit.v3" Version="1.0.0" />
     <PackageReference Include="xunit.runner.visualstudio" Version="3.0.0" />
+    <!-- CPU ORT for the (opt-in) OmniVoice graph-parity integration test. Chatterbox.Base
+         marks its own ORT package PrivateAssets=all, so consumers bring their own. -->
+    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.24.4" />
   </ItemGroup>
 
   <ItemGroup>
