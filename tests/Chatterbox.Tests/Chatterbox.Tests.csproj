@@ -27,4 +27,10 @@
     </ProjectReference>
   </ItemGroup>
 
+  <ItemGroup>
+    <None Include="..\fixtures\omnivoice_tokenizer_fixtures.json"
+          Link="fixtures\omnivoice_tokenizer_fixtures.json"
+          CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
 </Project>

@@ -1,0 +1,453 @@
+{
+  "model": "/mnt/data/models/omnivoice/k2-fsa-OmniVoice",
+  "tokenizer_default_adds_specials": false,
+  "probe": {
+    "text": "Hello",
+    "add_special_true": [
+      9707
+    ],
+    "add_special_false": [
+      9707
+    ]
+  },
+  "cases": [
+    {
+      "text": "Hello, this is a test of the OmniVoice O N N X export pipeline.",
+      "add_special_tokens": false,
+      "ids": [
+        9707,
+        11,
+        419,
+        374,
+        264,
+        1273,
+        315,
+        279,
+        85225,
+        51167,
+        506,
+        451,
+        451,
+        1599,
+        7485,
+        15301,
+        13
+      ]
+    },
+    {
+      "text": "Hello world",
+      "add_special_tokens": false,
+      "ids": [
+        9707,
+        1879
+      ]
+    },
+    {
+      "text": "  leading and   multiple   spaces  ",
+      "add_special_tokens": false,
+      "ids": [
+        220,
+        6388,
+        323,
+        256,
+        5248,
+        256,
+        12621,
+        256
+      ]
+    },
+    {
+      "text": "don't can't I've we'll they're it's",
+      "add_special_tokens": false,
+      "ids": [
+        15007,
+        944,
+        646,
+        944,
+        358,
+        3003,
+        582,
+        3278,
+        807,
+        2299,
+        432,
+        594
+      ]
+    },
+    {
+      "text": "Line one\nline two\ttabbed",
+      "add_special_tokens": false,
+      "ids": [
+        2460,
+        825,
+        198,
+        1056,
+        1378,
+        58149,
+        2721
+      ]
+    },
+    {
+      "text": "Numbers: 1234567890 and 3.14159 and -42",
+      "add_special_tokens": false,
+      "ids": [
+        27237,
+        25,
+        220,
+        16,
+        17,
+        18,
+        19,
+        20,
+        21,
+        22,
+        23,
+        24,
+        15,
+        323,
+        220,
+        18,
+        13,
+        16,
+        19,
+        16,
+        20,
+        24,
+        323,
+        481,
+        19,
+        17
+      ]
+    },
+    {
+      "text": "Punctuation!!! ??? ... ,,, ;;; (parens) [brackets] {braces}",
+      "add_special_tokens": false,
+      "ids": [
+        47,
+        72299,
+        12069,
+        51317,
+        2503,
+        1154,
+        10631,
+        2587,
+        6768,
+        320,
+        3380,
+        4412,
+        8,
+        508,
+        1323,
+        18382,
+        60,
+        314,
+        1323,
+        2434,
+        92
+      ]
+    },
+    {
+      "text": "你好，世界。这是一个测试。",
+      "add_special_tokens": false,
+      "ids": [
+        108386,
+        3837,
+        99489,
+        1773,
+        105464,
+        81705,
+        1773
+      ]
+    },
+    {
+      "text": "Mixed 中文 and English 123 text",
+      "add_special_tokens": false,
+      "ids": [
+        86433,
+        72858,
+        16744,
+        323,
+        6364,
+        220,
+        16,
+        17,
+        18,
+        1467
+      ]
+    },
+    {
+      "text": "Café naïve résumé Zürich",
+      "add_special_tokens": false,
+      "ids": [
+        34,
+        2577,
+        963,
+        94880,
+        586,
+        9333,
+        1242,
+        963,
+        1863,
+        5186,
+        713
+      ]
+    },
+    {
+      "text": "emoji 😀 and 🎉 test",
+      "add_special_tokens": false,
+      "ids": [
+        37523,
+        90316,
+        323,
+        11162,
+        236,
+        231,
+        1273
+      ]
+    },
+    {
+      "text": "日本語のテスト",
+      "add_special_tokens": false,
+      "ids": [
+        101059,
+        102819,
+        15767,
+        140592
+      ]
+    },
+    {
+      "text": "한국어 테스트입니다",
+      "add_special_tokens": false,
+      "ids": [
+        23573,
+        124785,
+        31079,
+        10764,
+        72509,
+        53189,
+        78952
+      ]
+    },
+    {
+      "text": "Здравствуй мир",
+      "add_special_tokens": false,
+      "ids": [
+        35451,
+        6949,
+        26988,
+        20200,
+        82580,
+        137144
+      ]
+    },
+    {
+      "text": "ALLCAPS and lowercase MiXeD",
+      "add_special_tokens": false,
+      "ids": [
+        3919,
+        31400,
+        50,
+        323,
+        42047,
+        20740,
+        55,
+        68,
+        35
+      ]
+    },
+    {
+      "text": "trailing space ",
+      "add_special_tokens": false,
+      "ids": [
+        376,
+        14277,
+        3550,
+        220
+      ]
+    },
+    {
+      "text": " leading space",
+      "add_special_tokens": false,
+      "ids": [
+        6388,
+        3550
+      ]
+    },
+    {
+      "text": "",
+      "add_special_tokens": false,
+      "ids": []
+    },
+    {
+      "text": "a",
+      "add_special_tokens": false,
+      "ids": [
+        64
+      ]
+    },
+    {
+      "text": " ",
+      "add_special_tokens": false,
+      "ids": [
+        220
+      ]
+    },
+    {
+      "text": "<|denoise|>",
+      "add_special_tokens": false,
+      "ids": [
+        151669
+      ]
+    },
+    {
+      "text": "<|lang_start|>en<|lang_end|>",
+      "add_special_tokens": false,
+      "ids": [
+        151670,
+        268,
+        151671
+      ]
+    },
+    {
+      "text": "<|instruct_start|>None<|instruct_end|>",
+      "add_special_tokens": false,
+      "ids": [
+        151672,
+        4064,
+        151673
+      ]
+    },
+    {
+      "text": "<|denoise|><|lang_start|>en<|lang_end|><|instruct_start|>female, american accent<|instruct_end|>",
+      "add_special_tokens": false,
+      "ids": [
+        151669,
+        151670,
+        268,
+        151671,
+        151672,
+        42634,
+        11,
+        38442,
+        29100,
+        151673
+      ]
+    },
+    {
+      "text": "<|text_start|>Hello there.<|text_end|>",
+      "add_special_tokens": false,
+      "ids": [
+        151674,
+        9707,
+        1052,
+        13,
+        151675
+      ]
+    },
+    {
+      "text": "<|endoftext|><|im_start|><|im_end|>",
+      "add_special_tokens": false,
+      "ids": [
+        151643,
+        151644,
+        151645
+      ]
+    },
+    {
+      "text": "Hello [laughter] world",
+      "add_special_tokens": false,
+      "ids": [
+        9707,
+        508,
+        51783,
+        60,
+        1879
+      ]
+    },
+    {
+      "text": "Really? [surprise-ah] amazing [sigh]",
+      "add_special_tokens": false,
+      "ids": [
+        48785,
+        30,
+        508,
+        19784,
+        9671,
+        12,
+        1466,
+        60,
+        7897,
+        508,
+        82,
+        1090,
+        60
+      ]
+    },
+    {
+      "text": "[laughter]",
+      "add_special_tokens": false,
+      "ids": [
+        58,
+        51783,
+        60
+      ]
+    },
+    {
+      "text": "no tags here",
+      "add_special_tokens": false,
+      "ids": [
+        2152,
+        9492,
+        1588
+      ]
+    }
+  ],
+  "nonverbal_tag_cases": [
+    {
+      "text": "Hello [laughter] world",
+      "ids": [
+        9707,
+        220,
+        58,
+        51783,
+        60,
+        1879
+      ]
+    },
+    {
+      "text": "Really? [surprise-ah] amazing [sigh]",
+      "ids": [
+        48785,
+        30,
+        220,
+        11880,
+        324,
+        9671,
+        12,
+        1466,
+        60,
+        7897,
+        220,
+        11880,
+        1090,
+        60
+      ]
+    },
+    {
+      "text": "[laughter]",
+      "ids": [
+        58,
+        51783,
+        60
+      ]
+    },
+    {
+      "text": "no tags here",
+      "ids": [
+        2152,
+        9492,
+        1588
+      ]
+    }
+  ]
+}
