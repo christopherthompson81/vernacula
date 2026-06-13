@@ -27,6 +27,11 @@ public sealed class OmniVoiceTts : IDisposable
     private readonly Qwen3Tokenizer _tok;
     private readonly OmniVoiceTextPrep _prep;
 
+    /// <summary>Diagnostic timing from the most recent <see cref="RunDiffusion"/> call:
+    /// total time inside the ONNX transformer vs. total host-side scoring/bookkeeping (ms).</summary>
+    public double LastTransformerMs { get; private set; }
+    public double LastHostMs { get; private set; }
+
     public OmniVoiceTts(string onnxDir, string tokenizerJsonPath, ExecutionProvider ep,
                         SessionLoadObserver? onLoad = null)
     {
@@ -76,29 +81,26 @@ public sealed class OmniVoiceTts : IDisposable
         int condLen = cond.Total, T = cond.TargetLen;
         int targetStart = condLen - T;  // = textLen + refLen
 
-        // CFG batch [2,8,condLen]: row 0 = cond (full), row 1 = uncond (target region only,
-        // rest masked). Everything starts at the mask id.
-        var ids = new long[2 * C * condLen];
-        Array.Fill(ids, MaskId);
+        // Classifier-free guidance needs two forwards per step: the conditional pass over the
+        // full sequence, and the unconditional pass over ONLY the target tokens. Upstream
+        // batches them as [2,8,condLen] by padding the uncond row to condLen with block-diagonal
+        // attention — but that pad is discarded, so we instead run two B=1 passes at their
+        // natural lengths (condLen and T), saving the wasted uncond compute.
+        using var condLoop = _graphs.CreateTransformerLoop(1, condLen);
+        using var uncondLoop = _graphs.CreateTransformerLoop(1, T);
+
+        // Conditional: fixed style/text/ref prefix + the (evolving) target tokens; full attention.
+        Array.Fill(condLoop.Ids, (long)MaskId);
         for (int cb = 0; cb < C; cb++)
             for (int p = 0; p < condLen; p++)
-                ids[(0 * C + cb) * condLen + p] = cond.InputIds[cb, p];
-        // uncond row: target region (all mask) at [0,T); the rest stays mask -> already filled.
+                condLoop.Ids[cb * condLen + p] = cond.InputIds[cb, p];
+        for (int i = 0; i < condLen; i++) condLoop.AudioMask[i] = cond.AudioMask[i];
+        Array.Fill(condLoop.Attn, true);
 
-        var amask = new bool[2 * condLen];
-        for (int p = 0; p < condLen; p++) amask[p] = cond.AudioMask[p];            // cond
-        for (int t = 0; t < T; t++) amask[condLen + t] = cond.AudioMask[targetStart + t]; // uncond (all true)
-
-        var attn = new bool[2 * condLen * condLen];
-        for (int p = 0; p < condLen; p++)
-            for (int q = 0; q < condLen; q++)
-                attn[p * condLen + q] = true;                                       // cond: full
-        int uBase = condLen * condLen;
-        for (int p = 0; p < T; p++)
-            for (int q = 0; q < T; q++)
-                attn[uBase + p * condLen + q] = true;                               // uncond: [:T,:T]
-        for (int p = T; p < condLen; p++)
-            attn[uBase + p * condLen + p] = true;                                   // uncond pad: diagonal
+        // Unconditional: just the target tokens (all mask initially); all audio; full attention.
+        Array.Fill(uncondLoop.Ids, (long)MaskId);
+        Array.Fill(uncondLoop.AudioMask, true);
+        Array.Fill(uncondLoop.Attn, true);
 
         var tokens = new long[C, T];
         for (int cb = 0; cb < C; cb++) for (int t = 0; t < T; t++) tokens[cb, t] = MaskId;
@@ -109,47 +111,59 @@ public sealed class OmniVoiceTts : IDisposable
         var pred = new long[C, T];
         var score = new double[C, T];
 
+        var swTf = new System.Diagnostics.Stopwatch();
+        var swHost = new System.Diagnostics.Stopwatch();
+        LastTransformerMs = 0; LastHostMs = 0;
+
         for (int step = 0; step < cfg.NumStep; step++)
         {
-            float[] logits = _graphs.RunTransformer(ids, amask, attn, 2, condLen); // [2,8,condLen,V]
+            swTf.Restart();
+            float[] cLogits = condLoop.Run();   // [1,8,condLen,V]
+            float[] uLogits = uncondLoop.Run(); // [1,8,T,V]
+            swTf.Stop(); LastTransformerMs += swTf.Elapsed.TotalMilliseconds;
+            swHost.Restart();
 
-            for (int cb = 0; cb < C; cb++)
-                for (int t = 0; t < T; t++)
-                {
-                    int condPos = targetStart + t;
-                    int cOff = ((0 * C + cb) * condLen + condPos) * V;
-                    int uOff = ((1 * C + cb) * condLen + t) * V;
-                    var (tok, conf) = ScoreCfg(logits, cOff, uOff, cfg.GuidanceScale);
-                    pred[cb, t] = tok;
-                    double s = conf - cb * cfg.LayerPenaltyFactor;
-                    if (tokens[cb, t] != MaskId) s = double.NegativeInfinity; // already committed
-                    score[cb, t] = s;
-                }
+            // Per-(codebook,position) CFG scoring is the host hot path (each does 3 softmaxes
+            // over the 1025-way vocab). Positions are independent -> parallelise across them.
+            float guidance = cfg.GuidanceScale, penalty = cfg.LayerPenaltyFactor;
+            Parallel.For(0, C * T, idx =>
+            {
+                int cb = idx / T, t = idx % T;
+                int cOff = (cb * condLen + (targetStart + t)) * V;
+                int uOff = (cb * T + t) * V;
+                var (tok, conf) = ScoreCfg(cLogits, cOff, uLogits, uOff, guidance);
+                pred[cb, t] = tok;
+                score[cb, t] = tokens[cb, t] != MaskId
+                    ? double.NegativeInfinity            // already committed
+                    : conf - cb * penalty;
+            });
 
             int k = schedule[step];
             if (k <= 0) continue;
             foreach (var (cb, t) in TopK(score, T, k))
                 tokens[cb, t] = pred[cb, t];
 
-            // Write the full token field back into both CFG rows for the next step.
+            // Write the full token field back into both passes for the next step.
             for (int cb = 0; cb < C; cb++)
                 for (int t = 0; t < T; t++)
                 {
-                    ids[(0 * C + cb) * condLen + (targetStart + t)] = tokens[cb, t];
-                    ids[(1 * C + cb) * condLen + t] = tokens[cb, t];
+                    condLoop.Ids[cb * condLen + (targetStart + t)] = tokens[cb, t];
+                    uncondLoop.Ids[cb * T + t] = tokens[cb, t];
                 }
+            swHost.Stop(); LastHostMs += swHost.Elapsed.TotalMilliseconds;
         }
         return tokens;
     }
 
     /// <summary>Classifier-free-guidance token + confidence for one (codebook, position).
     /// Mirrors _predict_tokens_with_scoring in the greedy (class_temperature=0) branch.</summary>
-    private static (long token, double confidence) ScoreCfg(float[] logits, int cOff, int uOff, float guidance)
+    private static (long token, double confidence) ScoreCfg(
+        float[] cLogits, int cOff, float[] uLogits, int uOff, float guidance)
     {
         Span<double> cl = stackalloc double[V];
         Span<double> ul = stackalloc double[V];
-        LogSoftmax(logits, cOff, cl);
-        LogSoftmax(logits, uOff, ul);
+        LogSoftmax(cLogits, cOff, cl);
+        LogSoftmax(uLogits, uOff, ul);
 
         // combined = log_softmax(cl + guidance*(cl - ul)); = log_softmax((1+g)*cl - g*ul)
         Span<double> comb = stackalloc double[V];

@@ -100,6 +100,70 @@ public sealed class OmniVoice : IDisposable
         return outputs.First(v => v.Name == "audio_values").AsTensor<float>().ToArray();
     }
 
+    /// <summary>
+    /// Create a reusable IO-bound runner for the diffusion loop. The transformer is invoked
+    /// num_step times at a fixed sequence length, so we bind one set of pinned input/output
+    /// buffers once and only mutate their contents per step — avoiding a 12.7 MB managed
+    /// logits allocation and tensor rebuild on every step.
+    /// </summary>
+    public TransformerLoop CreateTransformerLoop(int batch, int seq) => new(_transformer, batch, seq);
+
+    public sealed class TransformerLoop : IDisposable
+    {
+        private readonly InferenceSession _s;
+        private readonly OrtIoBinding _io;
+        private readonly RunOptions _run = new();
+        private readonly OrtValue _idsV, _amV, _atV, _logV;
+        public int Batch { get; }
+        public int Seq { get; }
+
+        /// <summary>Mutable input buffers: input_ids [B,8,S], audio_mask [B,S], attention_mask
+        /// [B,1,S,S] (all flat). Mutate in place between <see cref="Run"/> calls.</summary>
+        public long[] Ids { get; }
+        public bool[] AudioMask { get; }
+        public bool[] Attn { get; }
+        /// <summary>Output logits buffer [B,8,S,1025] flat, overwritten by each Run.</summary>
+        public float[] Logits { get; }
+
+        public TransformerLoop(InferenceSession s, int batch, int seq)
+        {
+            _s = s; Batch = batch; Seq = seq;
+            Ids = new long[batch * NumCodebooks * seq];
+            AudioMask = new bool[batch * seq];
+            Attn = new bool[batch * seq * seq];
+            Logits = new float[(long)batch * NumCodebooks * seq * AudioVocabSize];
+
+            var cpu = OrtMemoryInfo.DefaultInstance;
+            _idsV = OrtValue.CreateTensorValueFromMemory<long>(cpu, Ids,
+                new long[] { batch, NumCodebooks, seq });
+            _amV = OrtValue.CreateTensorValueFromMemory<bool>(cpu, AudioMask,
+                new long[] { batch, seq });
+            _atV = OrtValue.CreateTensorValueFromMemory<bool>(cpu, Attn,
+                new long[] { batch, 1, seq, seq });
+            _logV = OrtValue.CreateTensorValueFromMemory<float>(cpu, Logits,
+                new long[] { batch, NumCodebooks, seq, AudioVocabSize });
+
+            _io = _s.CreateIoBinding();
+            _io.BindInput("input_ids", _idsV);
+            _io.BindInput("audio_mask", _amV);
+            _io.BindInput("attention_mask", _atV);
+            _io.BindOutput("logits", _logV);
+        }
+
+        /// <summary>Run one step; <see cref="Logits"/> holds the result afterwards.</summary>
+        public float[] Run()
+        {
+            _s.RunWithBinding(_run, _io);
+            return Logits;
+        }
+
+        public void Dispose()
+        {
+            _io.Dispose(); _run.Dispose();
+            _idsV.Dispose(); _amV.Dispose(); _atV.Dispose(); _logV.Dispose();
+        }
+    }
+
     /// <summary>Raw codec encode for parity tests: wav [1,1,samples] -> codes flat [1,8,Tc].</summary>
     public long[] EncodeRaw(float[] wav, out int tc)
     {

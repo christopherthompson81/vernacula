@@ -96,7 +96,8 @@ internal static class Program
         sw.Restart();
         var tokens = tts.GenerateTokens(text, target, refText, refCodes, lang, instruct,
             new OmniVoiceTts.GenConfig(NumStep: numStep));
-        Console.WriteLine($"diffusion ({numStep} steps): {sw.ElapsedMilliseconds} ms");
+        Console.WriteLine($"diffusion ({numStep} steps): {sw.ElapsedMilliseconds} ms "
+            + $"[transformer {tts.LastTransformerMs:f0} ms, host {tts.LastHostMs:f0} ms]");
 
         float[] audio = tts.DecodeTokens(tokens);
         Normalize(audio, 0.95f);

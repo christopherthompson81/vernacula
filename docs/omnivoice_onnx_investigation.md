@@ -199,6 +199,24 @@ enables tight parity. All in `src/Chatterbox.Base/` + `tests/Chatterbox.Tests` +
 Remaining: formal `Chatterbox.CLI --backend omnivoice` flag; CUDA/TF32 perf + fp16/int8;
 Avalonia `ITtsBackend` UI backend; sampled (non-greedy) mode.
 
+### Phase 2 perf — diffusion-loop optimization (smoke harness, RTX 3090)
+
+Measurement-driven, via `tests/OmniVoiceSmoke` (added per-phase timers: transformer GPU vs
+host scoring). Baseline CPU 16-step diffusion was 14.2 s; CUDA is ~18× (793 ms / 16 steps).
+Optimized the CUDA path at 32 steps (3.08 s of audio):
+
+| change | total | transformer | host | notes |
+|---|---|---|---|---|
+| CUDA baseline | 1803 ms | 1066 | 705 | host scoring single-threaded |
+| + parallel scoring | 1090 ms | 976 | 95 | `Parallel.For` over (codebook,pos); CFG softmaxes are independent |
+| + IO binding | 1002 ms | 882 | 98 | `OrtIoBinding` reuses pinned input/output buffers — no 12.7 MB logits alloc/step |
+| + uncond-split | 880 ms | 762 | 100 | run cond (S=194) and uncond (T=74) as two B=1 passes instead of one [2,S] batch padded to S; the uncond pad was discarded anyway |
+
+**2.05×** end-to-end on the loop; host scoring 705→100 ms. Correctness preserved (all 6
+heavy parity tests still green; loop token field unchanged). Next lever is fp16 on the
+transformer (the dominant 762 ms is conditional-pass GPU compute) — deferred to the quant
+phase. A possible micro-win: run the cond/uncond passes concurrently (independent per step).
+
 ---
 
 ## Run 7 — 2026-06-13, length sweep closes the shape-branch question (#2/#3)
