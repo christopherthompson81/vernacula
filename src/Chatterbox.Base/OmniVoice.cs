@@ -38,9 +38,10 @@ public sealed class OmniVoice : IDisposable
     private readonly InferenceSession _encoder;
     private readonly InferenceSession _decoder;
 
-    public OmniVoice(string onnxDir, ExecutionProvider ep, SessionLoadObserver? onLoad = null)
+    public OmniVoice(string onnxDir, ExecutionProvider ep, SessionLoadObserver? onLoad = null,
+                     string? transformerFile = null)
     {
-        _transformer = SessionLoader.LoadAndReport(Path.Combine(onnxDir, TransformerFile), ep, onLoad);
+        _transformer = SessionLoader.LoadAndReport(Path.Combine(onnxDir, transformerFile ?? TransformerFile), ep, onLoad);
         _encoder = SessionLoader.LoadAndReport(Path.Combine(onnxDir, EncoderFile), ep, onLoad);
         _decoder = SessionLoader.LoadAndReport(Path.Combine(onnxDir, DecoderFile), ep, onLoad);
     }

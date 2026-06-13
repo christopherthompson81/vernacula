@@ -215,8 +215,26 @@ Optimized the CUDA path at 32 steps (3.08 s of audio):
 
 **2.54×** end-to-end on the loop (1803→709 ms); host scoring 705→~110 ms. Correctness
 preserved (all 6 heavy parity tests green across repeated runs; loop token field unchanged).
-Next lever is fp16 on the transformer (the dominant ~568 ms is GPU compute) — deferred to the
-quant phase.
+
+### fp16 transformer — tried, not adopted (negative result)
+
+Quantized the transformer to fp16 via `scripts/_export_utils/quantize_lm.py --mode fp16`
+(keep_io_types=True, so the C# binding is unchanged; 2.45 GB → 1.2 GB). Added a
+`transformerFile` override to `OmniVoice`/`OmniVoiceTts` + a `--transformer` smoke flag to
+load it. Findings on the RTX 3090, 32 steps:
+
+- **No speed gain**: transformer 569 ms vs 571 ms fp32. At seq ~194 / batch 1 the loop is
+  launch/latency-bound, not compute-bound, so halving FLOPs doesn't move wall-clock; the
+  keep_io_types Cast nodes add a little host overhead.
+- **Quality perfect**: fp16-vs-fp32 output log-spectral-L1 = 0.0000 (greedy token field
+  identical). So fp16 carries no quality risk here.
+- **Memory halved** (2.45→1.2 GB) — the only real benefit, relevant to mobile (#151), not
+  desktop latency.
+
+Conclusion: keep the loader override as infrastructure but don't default to fp16. Because the
+path is latency-bound, **int8 likewise wouldn't speed up the 3090** — its value would be
+mobile size, where quality risk applies; not pursued now. The real latency lever would be
+fewer diffusion steps (a quality/speed user knob) or batching multiple utterances.
 
 ---
 

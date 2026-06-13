@@ -37,6 +37,7 @@ internal static class Program
         string ep = "cpu";
         int numStep = 16;
         int? durationTokens = null;
+        string? transformerFile = null;  // e.g. omnivoice_transformer_fp16.onnx
 
         for (int i = 0; i < args.Length - 1; i++)
         {
@@ -53,6 +54,7 @@ internal static class Program
                 case "--ep": ep = args[++i]; break;
                 case "--num-step": numStep = int.Parse(args[++i]); break;
                 case "--target-tokens": durationTokens = int.Parse(args[++i]); break;
+                case "--transformer": transformerFile = args[++i]; break;
             }
         }
 
@@ -76,7 +78,8 @@ internal static class Program
         var sw = Stopwatch.StartNew();
         Console.WriteLine($"Loading OmniVoice ({ep}) ...");
         using var tts = new OmniVoiceTts(onnxDir, tokenizerJson, epEnum,
-            e => Console.WriteLine($"  loaded {e.FileName} in {e.ElapsedMs} ms (cuda={e.UsedCuda})"));
+            e => Console.WriteLine($"  loaded {e.FileName} in {e.ElapsedMs} ms (cuda={e.UsedCuda})"),
+            transformerFile);
         Console.WriteLine($"loaded in {sw.ElapsedMilliseconds} ms");
 
         long[,]? refCodes = null;
