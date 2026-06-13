@@ -35,17 +35,35 @@ def main() -> None:
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
 
-    manifest = {}
+    manifest = {"arrays": {}}
     for name, dt in ARRAYS.items():
         if name not in cap:
             continue
         arr = cap[name]
         np.ascontiguousarray(arr.astype(np.dtype(dt))).tofile(out / f"{name}.bin")
-        manifest[name] = {"shape": list(arr.shape), "dtype": dt}
+        manifest["arrays"][name] = {"shape": list(arr.shape), "dtype": dt}
 
-    (out / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
-    print(f"Wrote {len(manifest)} arrays -> {out}")
-    for k, v in manifest.items():
+    # Generation params from reference_meta.txt, with the language resolved to its id (as
+    # _prepare_inference_inputs sees it) so the C# loop test can rebuild the exact cond.
+    meta_path = Path(args.capture).parent / "reference_meta.txt"
+    if meta_path.exists():
+        meta = dict(
+            line.split("=", 1)
+            for line in meta_path.read_text().splitlines() if "=" in line
+        )
+        from omnivoice.models.omnivoice import _resolve_language
+        manifest["params"] = {
+            "text": meta.get("text", ""),
+            "ref_text": meta.get("ref_text", ""),
+            "language": meta.get("language", "None"),
+            "lang_resolved": _resolve_language(meta.get("language")) or "",
+            "num_step": int(meta.get("num_step", "16")),
+            "guidance_scale": float(meta.get("guidance_scale", "2.0")),
+        }
+
+    (out / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n")
+    print(f"Wrote {len(manifest['arrays'])} arrays -> {out}")
+    for k, v in manifest["arrays"].items():
         print(f"  {k:20s} {v['dtype']} {v['shape']}")
 
 

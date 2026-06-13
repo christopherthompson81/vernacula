@@ -49,7 +49,7 @@ public class OmniVoiceGraphParityTests
         if (!File.Exists(manifestPath)) return null;
         using var doc = JsonDocument.Parse(File.ReadAllText(manifestPath));
         var shapes = new Dictionary<string, int[]>();
-        foreach (var p in doc.RootElement.EnumerateObject())
+        foreach (var p in doc.RootElement.GetProperty("arrays").EnumerateObject())
             shapes[p.Name] = p.Value.GetProperty("shape").EnumerateArray().Select(x => x.GetInt32()).ToArray();
         return new Fixtures(dir, shapes);
     }
