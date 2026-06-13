@@ -171,6 +171,36 @@ Remaining (future phases): CUDA/TF32 perf + fp16/int8; C# host-loop port.
 
 ---
 
+## Phase 2 — 2026-06-13, C# runtime port (CLI-first, greedy)
+
+Ported the host pipeline to C# so OmniVoice runs in Vernacula like Kokoro/Chatterbox.
+Greedy regime (position/class temperature = 0) — deterministic, validated to sound good,
+enables tight parity. All in `src/Chatterbox.Base/` + `tests/Chatterbox.Tests` +
+`tests/OmniVoiceSmoke`. Each stage validated against Python before the next.
+
+- **A — Qwen3Tokenizer** (`Tokenization/Qwen3Tokenizer.cs`): byte-level BPE encoder. No
+  runtime Qwen text-encoder existed in the repo (all decode-only / offline-baked), so it was
+  built by composing the GPT-2 byte table, the EnTokenizer merge loop, and Qwen3Asr's
+  tokenizer.json loader, plus the Qwen split regex + NFC + special/nonverbal handling.
+  Exact match vs the Python tokenizer on 34 fixtures.
+- **B — OmniVoice.cs** graph wrappers (transformer / codec encode / decode) via
+  OrtSessionBuilder. Per-graph parity vs the Phase-1 capture on CPU/fp32: encoder exact,
+  decoder waveform max-abs < 1e-2, transformer argmax-agreement > 0.9999.
+- **C — OmniVoiceDuration.cs + OmniVoiceTextPrep.cs**: ported RuleDurationEstimator
+  (script-weight table + short-text boost) and _combine_text/_prepare_inference_inputs.
+  Duration estimate exact (1e-4); cond row0 + audio_mask exact for no-ref configs.
+- **D — OmniVoiceTts.cs** greedy diffusion loop (CFG batch, shifted-timestep schedule,
+  guidance log-prob mix, layer penalty, top-k unmask, scatter). Cond built from text exactly
+  equals the captured step-0 cond; token field matches the PyTorch capture > 98% (the gap is
+  ONNX-vs-PyTorch drift through the loop).
+- **E — OmniVoiceSmoke** end-to-end console → WAV. Listen-confirmed intelligible cloned
+  speech, quality on par with the Python reference. ~14 s / 16 steps on CPU (fp32 path).
+
+Remaining: formal `Chatterbox.CLI --backend omnivoice` flag; CUDA/TF32 perf + fp16/int8;
+Avalonia `ITtsBackend` UI backend; sampled (non-greedy) mode.
+
+---
+
 ## Run 7 — 2026-06-13, length sweep closes the shape-branch question (#2/#3)
 
 **Question:** do the codec graphs' frozen data-dependent branches (Run 2 — esp. the encoder's
