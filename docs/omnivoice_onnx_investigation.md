@@ -216,25 +216,45 @@ Optimized the CUDA path at 32 steps (3.08 s of audio):
 **2.54×** end-to-end on the loop (1803→709 ms); host scoring 705→~110 ms. Correctness
 preserved (all 6 heavy parity tests green across repeated runs; loop token field unchanged).
 
-### fp16 transformer — tried, not adopted (negative result)
+### What the bottleneck actually is (CUDA-graph + fp16 probe)
 
-Quantized the transformer to fp16 via `scripts/_export_utils/quantize_lm.py --mode fp16`
-(keep_io_types=True, so the C# binding is unchanged; 2.45 GB → 1.2 GB). Added a
-`transformerFile` override to `OmniVoice`/`OmniVoiceTts` + a `--transformer` smoke flag to
-load it. Findings on the RTX 3090, 32 steps:
+Probed with `probe_cuda_graph.py` (device-IO, single forward) to find the real limiter:
 
-- **No speed gain**: transformer 569 ms vs 571 ms fp32. At seq ~194 / batch 1 the loop is
-  launch/latency-bound, not compute-bound, so halving FLOPs doesn't move wall-clock; the
-  keep_io_types Cast nodes add a little host overhead.
-- **Quality perfect**: fp16-vs-fp32 output log-spectral-L1 = 0.0000 (greedy token field
-  identical). So fp16 carries no quality risk here.
-- **Memory halved** (2.45→1.2 GB) — the only real benefit, relevant to mobile (#151), not
-  desktop latency.
+- **CUDA graph capture works** (ORT tolerates the shape-massaging CPU nodes) but is only
+  **~4% faster** (25.3 vs 26.5 ms/forward). So the loop is **NOT launch-bound**, and the CPU
+  shape-fallback nodes are not the wall.
+- **fp16 ≈ 2× per forward** on pure GPU compute (13.65 vs 26.47 ms, device-IO, no host
+  download). The transformer is **memory-bandwidth bound** — dominated by streaming the
+  0.6 B weights from VRAM each forward — so halving weight bytes ~halves time.
 
-Conclusion: keep the loader override as infrastructure but don't default to fp16. Because the
-path is latency-bound, **int8 likewise wouldn't speed up the 3090** — its value would be
-mobile size, where quality risk applies; not pursued now. The real latency lever would be
-fewer diffusion steps (a quality/speed user knob) or batching multiple utterances.
+This redirects the dynamo question: since the limiter is weight memory traffic (not kernel
+launches or CPU-fallback shape ops), neither CUDA graphs nor a dynamo re-export's attention
+fusion would help much — they target launch/compute, not weight bandwidth. **fp16 is the
+right lever; CUDA graphs and dynamo are not pursued.**
+
+### fp16 transformer — ADOPT (corrects an earlier mis-measurement)
+
+Quantized via `scripts/_export_utils/quantize_lm.py --mode fp16` (keep_io_types=True so the
+C# binding is unchanged; 2.45 GB → 1.2 GB). `transformerFile` override on `OmniVoice`/
+`OmniVoiceTts` + `--transformer` smoke flag load it. Stable C# numbers (RTX 3090, 32 steps,
+warm cache; an initial run had read 569 ms — cold-run variance):
+
+| | transformer | total |
+|---|---|---|
+| fp32 | ~570 ms | ~697 ms |
+| fp16 | ~470 ms | ~610 ms |
+
+- **~18% transformer / ~13% end-to-end win.** (Less than the device-IO 2× because the C#
+  loop also spends ~110 ms host scoring + the logits download, and the cond/uncond split
+  already trimmed fp32.)
+- **Quality identical**: fp16-vs-fp32 output log-spectral-L1 = 0.0000 (greedy token field
+  unchanged). No quality risk at fp16.
+- **Memory halved** (2.45→1.2 GB), also helping the mobile angle (#151).
+
+Conclusion: adopt fp16 for the CUDA path (CPU path stays fp32 for parity). int8 would cut
+memory further for mobile but risks quality and — being weight-bandwidth, not compute,
+limited at int8's typical W8A8 — its speed benefit on the 3090 is uncertain; deferred.
+Combined with the loop work: original 1803 ms → ~610 ms (~3×).
 
 ---
 
