@@ -167,5 +167,24 @@ attempt found 0 to delete and orphaned the loose files). After the fix, `onnx/` 
 references exactly one external location; parity re-run (cpu) still **PASS** loading purely
 from the consolidated sidecar. **Follow-up #1 done.**
 
-Remaining (future phases): CUDA/TF32 perf + fp16/int8; C# host-loop port; optional wider
-length sweep to fully close #2.
+Remaining (future phases): CUDA/TF32 perf + fp16/int8; C# host-loop port.
+
+---
+
+## Run 7 — 2026-06-13, length sweep closes the shape-branch question (#2/#3)
+
+**Question:** do the codec graphs' frozen data-dependent branches (Run 2 — esp. the encoder's
+semantic÷320 vs acoustic÷960 stream-alignment check) stay correct across input lengths, or
+only at the 2 lengths tested so far?
+
+**Method:** `sweep_lengths.py` — for 30 hop-multiple lengths (k·960, k∈{5..20, 25, 30, 40,
+58, 64, 82, 100, 128, 200, 256, 312, 400, 500, 625}; dense at the low end where alignment is
+most likely to flip), compare ONNX-CPU vs torch-CPU on the SAME device: encoder exact
+code-match, decoder round-trip waveform max-abs. Real inputs are hop-aligned by
+`create_voice_clone_prompt` (it clips `len % hop`), so the hop grid IS the reachable space.
+
+**Finding — PASS across 0.20s..25.00s:** every length gives encoder code-match **1.00000**
+and decoder round-trip max-abs ~1e-6; `codes_T == L/960` exactly throughout. The frozen
+branches generalize over the full practical range. **Shape-branch question closed.**
+
+All phase-1 work done. Remaining: CUDA/TF32 perf + fp16/int8; C# host-loop port.
