@@ -31,8 +31,8 @@
   </ItemGroup>
 
   <ItemGroup>
-    <None Include="..\fixtures\omnivoice_tokenizer_fixtures.json"
-          Link="fixtures\omnivoice_tokenizer_fixtures.json"
+    <None Include="..\fixtures\omnivoice_*.json"
+          Link="fixtures\%(Filename)%(Extension)"
           CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
