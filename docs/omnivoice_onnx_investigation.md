@@ -211,11 +211,12 @@ Optimized the CUDA path at 32 steps (3.08 s of audio):
 | + parallel scoring | 1090 ms | 976 | 95 | `Parallel.For` over (codebook,pos); CFG softmaxes are independent |
 | + IO binding | 1002 ms | 882 | 98 | `OrtIoBinding` reuses pinned input/output buffers — no 12.7 MB logits alloc/step |
 | + uncond-split | 880 ms | 762 | 100 | run cond (S=194) and uncond (T=74) as two B=1 passes instead of one [2,S] batch padded to S; the uncond pad was discarded anyway |
+| + cond/uncond concurrency | 709 ms | 568 | 123 | `Parallel.Invoke` the two independent passes; they overlap on the GPU |
 
-**2.05×** end-to-end on the loop; host scoring 705→100 ms. Correctness preserved (all 6
-heavy parity tests still green; loop token field unchanged). Next lever is fp16 on the
-transformer (the dominant 762 ms is conditional-pass GPU compute) — deferred to the quant
-phase. A possible micro-win: run the cond/uncond passes concurrently (independent per step).
+**2.54×** end-to-end on the loop (1803→709 ms); host scoring 705→~110 ms. Correctness
+preserved (all 6 heavy parity tests green across repeated runs; loop token field unchanged).
+Next lever is fp16 on the transformer (the dominant ~568 ms is GPU compute) — deferred to the
+quant phase.
 
 ---
 

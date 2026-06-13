@@ -118,8 +118,9 @@ public sealed class OmniVoiceTts : IDisposable
         for (int step = 0; step < cfg.NumStep; step++)
         {
             swTf.Restart();
-            float[] cLogits = condLoop.Run();   // [1,8,condLen,V]
-            float[] uLogits = uncondLoop.Run(); // [1,8,T,V]
+            // The cond and uncond passes are independent within a step; launch concurrently.
+            float[] cLogits = condLoop.Logits, uLogits = uncondLoop.Logits;
+            Parallel.Invoke(() => condLoop.Run(), () => uncondLoop.Run());
             swTf.Stop(); LastTransformerMs += swTf.Elapsed.TotalMilliseconds;
             swHost.Restart();
 
