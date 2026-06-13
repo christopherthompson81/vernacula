@@ -1,0 +1,31 @@
+# Requirements for k2-fsa/OmniVoice ONNX export and validation (Phase 1: fp32 + parity).
+#
+# Use Python 3.10-3.12. Create a dedicated venv: .venv-omnivoice-export
+#
+# transformers>=5.12 is REQUIRED: it ships HiggsAudioV2TokenizerModel (the audio
+# codec used as OmniVoice's audio_tokenizer). The repo-wide / kokoro venv pins 5.10.2,
+# which predates it.
+transformers>=5.12
+tokenizers
+huggingface_hub
+accelerate
+safetensors
+
+# torch + cuDNN: mirror the proven kokoro_export combo on this box (RTX 3090, system
+# libcudnn9 9.23.x). torch 2.12+cu130 bundles cuDNN 9.20; pin nvidia-cudnn-cu13 to the
+# version the system / C# onnxruntime path uses so the loader can't mix main/sub-libs
+# across two cuDNN copies (CUDNN_STATUS_SUBLIBRARY_VERSION_MISMATCH on conv). If the
+# system libcudnn9 is upgraded, bump this (dpkg -l | grep libcudnn9). OmniVoice needs
+# torch>=2.8.0 (its pyproject); 2.12 satisfies that.
+torch>=2.8
+nvidia-cudnn-cu13==9.23.0.39
+
+onnx>=1.17
+onnxruntime-gpu>=1.20
+numpy<2.0
+soundfile>=0.12
+torchaudio
+
+# OmniVoice itself (model class, pipeline, RuleDurationEstimator, text utils). No PyPI
+# release yet -> install from the GitHub repo. Pin a revision once one is chosen.
+#   pip install "git+https://github.com/k2-fsa/OmniVoice.git"
