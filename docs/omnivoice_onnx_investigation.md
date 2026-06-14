@@ -277,17 +277,20 @@ Characterised the binding bug to decide whether IO binding can be reclaimed:
   B). The diffusion loop mutates input_ids every step → every step ran on the stale step-0
   all-mask input → noise.
 
-Two mitigations:
-1. **No upgrade** — re-create + re-bind a fresh input `OrtValue` each step (forces a fresh
-   upload) while keeping the output buffer bound. Probe confirms correct (run3 vs plain(B) =
-   0.000). Reclaims the output-alloc savings (~90 ms/gen) at zero dependency risk.
-2. **Upgrade ORT ≥1.26** repo-wide (16 csproj pins, currently 1.24.4 + DirectML 1.21.1 + macOS
-   1.19.2). Fixes the class of bug generally but affects every model — needs full regression +
-   CUDA/cuDNN re-validation. Disproportionate for OmniVoice's ~90 ms alone; worth it only as a
-   deliberate modernization.
+Mitigation **implemented and measured** — re-create + re-bind a fresh input `OrtValue` each
+step (forces a fresh upload) while keeping the output buffer + constant masks bound
+(`OmniVoice.TransformerRunner`). It is **correct** (CUDA vs CPU 0.0008, no corruption) but
+gives **no speedup**: 1292 ms vs the plain path's 1226 ms (transformer 1158 vs 1095) — the
+per-step OrtValue create + rebind overhead offsets the output-buffer reuse. So the "~90 ms IO
+saving" cited earlier was itself a broken-path artifact: on the correct path, **IO binding
+buys OmniVoice nothing.** Reverted; the loop stays on plain `RunTransformer` (correct,
+simplest, as-fast). The probes (`probe_io_binding.py`, `tests/OmniVoiceIoProbe`) are kept as
+the record of why.
 
-Current code uses the plain `RunTransformer` (no binding) — correct and simple; the ~90 ms
-(~7% at 32 steps) is left on the table pending a decision on (1) vs (2).
+The only path that *would* change this is a repo-wide **ORT ≥1.26** bump (16 csproj pins, +
+DirectML 1.21.1 / macOS 1.19.2), where Python showed the staleness is gone — but that fixes a
+bug we no longer hit, for no OmniVoice speedup, so it's only worth doing as a deliberate
+whole-repo modernization (benefits every model, removes the footgun), with full regression.
 
 ---
 
