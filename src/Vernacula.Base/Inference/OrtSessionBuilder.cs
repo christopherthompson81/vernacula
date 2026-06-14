@@ -35,7 +35,8 @@ public static class OrtSessionBuilder
         ExecutionProvider ep,
         GraphOptimizationLevel optLevel,
         bool enableProfiling,
-        out bool usedCuda)
+        out bool usedCuda,
+        bool disableTf32 = false)
     {
         var opts = new SessionOptions { GraphOptimizationLevel = optLevel };
         if (enableProfiling)
@@ -57,7 +58,7 @@ public static class OrtSessionBuilder
                 {
                     try
                     {
-                        opts.AppendExecutionProvider_CUDA(0);
+                        AppendCuda(opts, disableTf32);
                         usedCuda = true;
                     }
                     catch { }
@@ -68,7 +69,7 @@ public static class OrtSessionBuilder
             case ExecutionProvider.Cuda:
                 try
                 {
-                    opts.AppendExecutionProvider_CUDA(0);
+                    AppendCuda(opts, disableTf32);
                     usedCuda = true;
                 }
                 catch (Exception ex)
@@ -92,6 +93,23 @@ public static class OrtSessionBuilder
         }
 
         return opts;
+    }
+
+    // Append the CUDA EP, optionally forcing full-fp32 matmul (use_tf32=0). TF32's ~1e-2
+    // error is fine for one-shot models but COMPOUNDS catastrophically through OmniVoice's
+    // iterative diffusion loop (audible noise) — see docs/omnivoice_onnx_investigation.md.
+    private static void AppendCuda(SessionOptions opts, bool disableTf32)
+    {
+        if (!disableTf32)
+        {
+            opts.AppendExecutionProvider_CUDA(0);
+            return;
+        }
+        using var cuda = new OrtCUDAProviderOptions();
+        cuda.UpdateOptions(new Dictionary<string, string> { ["device_id"] = "0", ["use_tf32"] = "0" });
+        if (Environment.GetEnvironmentVariable("VERNACULA_ORT_VERBOSE") == "1")
+            Console.Error.WriteLine($"[OrtSessionBuilder] CUDA use_tf32=0 -> {cuda.GetOptions()}");
+        opts.AppendExecutionProvider_CUDA(cuda);
     }
 
     /// <summary>
@@ -173,7 +191,8 @@ public static class OrtSessionBuilder
         out bool cacheHit,
         out bool usedCuda,
         GraphOptimizationLevel optLevel = GraphOptimizationLevel.ORT_ENABLE_ALL,
-        long externalInitializersMinBytes = 1024 * 1024)
+        long externalInitializersMinBytes = 1024 * 1024,
+        bool disableTf32 = false)
     {
         cacheHit = false;
         usedCuda = false;
@@ -212,7 +231,7 @@ public static class OrtSessionBuilder
             // Cache hit: load pre-optimized graph with optimization DISABLED
             // (the graph is already optimized; re-running passes is wasted work
             // and may hit unsupported-op errors on a fused graph).
-            var hitOpts = Create(ep, GraphOptimizationLevel.ORT_DISABLE_ALL, enableProfiling: false, out var hitUsedCuda);
+            var hitOpts = Create(ep, GraphOptimizationLevel.ORT_DISABLE_ALL, enableProfiling: false, out var hitUsedCuda, disableTf32);
             try
             {
                 var session = new InferenceSession(activeCachePath, hitOpts);
@@ -255,7 +274,7 @@ public static class OrtSessionBuilder
 
         // Cache miss (or bypass, or this-model-disabled): load source,
         // optimize, optionally save the result for next time.
-        var opts = Create(ep, optLevel, enableProfiling: false, out var freshUsedCuda);
+        var opts = Create(ep, optLevel, enableProfiling: false, out var freshUsedCuda, disableTf32);
         usedCuda = freshUsedCuda;
         if (!bypassCache && !cacheDisabled)
         {

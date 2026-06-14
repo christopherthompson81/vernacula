@@ -201,93 +201,67 @@ Avalonia `ITtsBackend` UI backend; sampled (non-greedy) mode.
 
 ### Phase 2 perf — diffusion-loop optimization (smoke harness, RTX 3090)
 
-Measurement-driven, via `tests/OmniVoiceSmoke` (added per-phase timers: transformer GPU vs
-host scoring). Baseline CPU 16-step diffusion was 14.2 s; CUDA is ~18× (793 ms / 16 steps).
-Optimized the CUDA path at 32 steps (3.08 s of audio):
+**⚠️ CORRECTION (see "CUDA correctness" below).** The first round of CUDA perf work was
+measured on a path that produced *audible noise* — it was never quality-checked on CUDA (the
+heavy parity tests run on CPU only, and the listen-confirmed clip was CPU). Two CUDA bugs:
+(1) the `OrtIoBinding` "TransformerLoop" corrupted output, and (2) the diffusion loop is
+precision-sensitive — TF32 *and* fp16 degrade it. So the numbers in the table below
+(1803→709 ms "2.54×", and the "fp16 ADOPT / fp16-scales-with-length / batch-scaling"
+subsections that followed) are **retracted**: they timed a broken pipeline. The corrected
+results are in the "CUDA correctness + real perf" section.
 
-| change | total | transformer | host | notes |
+What *survives* from this round (correct + kept): **parallel host scoring** (`Parallel.For`
+over independent (codebook,pos) CFG softmaxes — host 705→~120 ms) and the **uncond-split**
+(run cond at S and uncond at T as two B=1 passes rather than one [2,S] batch padded to S).
+Removed: the IO binding (bug) and cond/uncond `Parallel.Invoke` concurrency (was only
+"validated" on the broken path).
+
+The probes themselves (`probe_cuda_graph.py`: CUDA-graph ~4%, device-IO single-forward
+timing, batch-scaling) measured raw graph forward time and are still informative about the
+*graph* — but their quality conclusions ("fp16 identical") were wrong, and the headline that
+fp16 is a free lever is false. The bottleneck framing (weight-bandwidth at short seq,
+compute-saturation at long seq → CUDA-graph/dynamo wouldn't help) still holds.
+
+---
+
+## CUDA correctness + real perf — 2026-06-13 (supersedes the retracted block)
+
+**Symptom:** user reported the CUDA CLI output was saw-wave noise; CPU was clean.
+
+**Diagnosis (two independent bugs):**
+1. **IO binding corrupts on CUDA.** The `TransformerLoop` bound CPU-pinned `OrtValue`s as
+   inputs/outputs to a CUDA session. CPU↔CUDA-sequential and CPU↔CUDA-concurrent outputs were
+   *identically* far apart (log-spectral 3.69), ruling out the concurrency race and pointing at
+   the binding. Replacing it with the plain `RunTransformer` (`session.Run`, the path Python
+   uses) removed the corruption. (IO binding had only saved ~90 ms/gen.)
+2. **The diffusion loop is precision-sensitive — but there's a coherence threshold.**
+   Iterative unmasking amplifies matmul error. Measured vs the clean CPU reference
+   (end-to-end log-spectral L1), all user-listened:
+   - CUDA TF32 (default): 1.1 — incoherent NOISE (error large enough to fall off the rails).
+   - CUDA fp16: 0.60 — a *different but valid, good-sounding* rendering (user-confirmed good;
+     the loop lands on a different coherent token field, like a different sample). The earlier
+     "0.0000" was a broken-path artifact (fp16 and fp32 were equally broken, so matched).
+   - **CUDA full fp32 (`use_tf32=0`): 0.0008 — faithful to CPU.**
+
+**Fix:** `OrtSessionBuilder` gained an optional `disableTf32` (threaded through
+`SessionLoader.LoadAndReport`); `OmniVoice` loads all three graphs with `disableTf32:true`
+(appends the CUDA EP with `use_tf32=0`). `use_tf32=0` is honored in onnxruntime 1.24.4 only
+once the IO-binding bug is also removed. RunDiffusion uses plain `RunTransformer`.
+
+**Corrected perf (CUDA, non-bound, TF32 off, 32 steps, ~3 s audio):**
+
+| path | transformer | total | vs CPU | quality |
 |---|---|---|---|---|
-| CUDA baseline | 1803 ms | 1066 | 705 | host scoring single-threaded |
-| + parallel scoring | 1090 ms | 976 | 95 | `Parallel.For` over (codebook,pos); CFG softmaxes are independent |
-| + IO binding | 1002 ms | 882 | 98 | `OrtIoBinding` reuses pinned input/output buffers — no 12.7 MB logits alloc/step |
-| + uncond-split | 880 ms | 762 | 100 | run cond (S=194) and uncond (T=74) as two B=1 passes instead of one [2,S] batch padded to S; the uncond pad was discarded anyway |
-| + cond/uncond concurrency | 709 ms | 568 | 123 | `Parallel.Invoke` the two independent passes; they overlap on the GPU |
+| CPU fp32 | 19594 ms | 19751 ms | reference | clean |
+| **CUDA fp32 (TF32 off)** | 1095 ms | **1226 ms** | 0.0008 | faithful ✓ |
+| CUDA fp16 | 759 ms | 921 ms | 0.60 | different-but-good ✓ |
 
-**2.54×** end-to-end on the loop (1803→709 ms); host scoring 705→~110 ms. Correctness
-preserved (all 6 heavy parity tests green across repeated runs; loop token field unchanged).
-
-### What the bottleneck actually is (CUDA-graph + fp16 probe)
-
-Probed with `probe_cuda_graph.py` (device-IO, single forward) to find the real limiter:
-
-- **CUDA graph capture works** (ORT tolerates the shape-massaging CPU nodes) but is only
-  **~4% faster** (25.3 vs 26.5 ms/forward). So the loop is **NOT launch-bound**, and the CPU
-  shape-fallback nodes are not the wall.
-- **fp16 ≈ 2× per forward** on pure GPU compute (13.65 vs 26.47 ms, device-IO, no host
-  download). The transformer is **memory-bandwidth bound** — dominated by streaming the
-  0.6 B weights from VRAM each forward — so halving weight bytes ~halves time.
-
-This redirects the dynamo question: since the limiter is weight memory traffic (not kernel
-launches or CPU-fallback shape ops), neither CUDA graphs nor a dynamo re-export's attention
-fusion would help much — they target launch/compute, not weight bandwidth. **fp16 is the
-right lever; CUDA graphs and dynamo are not pursued.**
-
-### fp16 transformer — ADOPT (corrects an earlier mis-measurement)
-
-Quantized via `scripts/_export_utils/quantize_lm.py --mode fp16` (keep_io_types=True so the
-C# binding is unchanged; 2.45 GB → 1.2 GB). `transformerFile` override on `OmniVoice`/
-`OmniVoiceTts` + `--transformer` smoke flag load it. Stable C# numbers (RTX 3090, 32 steps,
-warm cache; an initial run had read 569 ms — cold-run variance):
-
-| | transformer | total |
-|---|---|---|
-| fp32 | ~570 ms | ~697 ms |
-| fp16 | ~470 ms | ~610 ms |
-
-- **~18% transformer / ~13% end-to-end win.** (Less than the device-IO 2× because the C#
-  loop also spends ~110 ms host scoring + the logits download, and the cond/uncond split
-  already trimmed fp32.)
-- **Quality identical**: fp16-vs-fp32 output log-spectral-L1 = 0.0000 (greedy token field
-  unchanged). No quality risk at fp16.
-- **Memory halved** (2.45→1.2 GB), also helping the mobile angle (#151).
-
-Conclusion: adopt fp16 for the CUDA path (CPU path stays fp32 for parity). int8 would cut
-memory further for mobile but risks quality and — being weight-bandwidth, not compute,
-limited at int8's typical W8A8 — its speed benefit on the 3090 is uncertain; deferred.
-Combined with the loop work: original 1803 ms → ~610 ms (~3×).
-
-**fp16 benefit scales with output length** (32 steps, CUDA, transformer ms):
-
-| target tokens | ~audio | fp32 | fp16 | fp16 win |
-|---|---|---|---|---|
-| 25 | ~1 s | 432 | 434 | ~0% |
-| 100 | ~4 s | 597 | 466 | 22% |
-| 300 | ~12 s | 1281 | 785 | 39% |
-| 600 | ~24 s | 2415 | 1436 | 41% |
-
-Short clips sit on a fixed per-step floor (~400 ms / 32 forwards — launch + weight-load
-overhead fp16 can't touch); as length grows, sequence-scaling attention/compute dominates and
-fp16 halves it, so the win climbs to ~40% and plateaus (compute-bound). Long-form synthesis is
-exactly where fp16 pays off — and the ~15 s chunking target (T≈375) lands in the sweet spot.
-
-### Batch-scaling headroom — no idle cores in the long regime
-
-Probed transformer per-item time vs batch size (device-IO, fp32) to see if cross-chunk
-batching could exploit idle SMs:
-
-| seq | B=1 | B=8 | throughput headroom |
-|---|---|---|---|
-| 194 (short) | 14.7 ms/item | 10.4 ms/item | ~1.6× (68→111 items/s by B=32) |
-| 512 (long-form) | 33.3 ms/item | 28.2 ms/item | ~1.18× |
-
-So at long sequence the GPU is **already compute-saturated** — batching recovers only ~15%,
-i.e. there are no meaningful idle cores. Headroom exists only at short seq (the batch=1 GEMMs
-underfill the SMs), but that's where latency is already fine (~400 ms floor). Implication:
-cross-chunk batching is **not** worth it for single long-form latency (saturated cores +
-ragged-length padding waste + memory); fp16 (reducing the compute itself) is the long-form
-lever. Batching's real use is multi-request throughput or batching short chunks. This is the
-dual of the fp16-vs-length result: long = compute-saturated → cut compute (fp16), don't try to
-parallelize across busy cores.
+So the default production path is **CUDA full-fp32 (~1.2 s / 32 steps, ~2.5× realtime)**, which
+matches CPU exactly. **fp16 is a usable ~25% speed knob** (`--transformer-file
+omnivoice_transformer_fp16.onnx`) — not bit-faithful (a different valid rendering) but
+listen-confirmed good. int8 likely crosses back toward the TF32 incoherence regime (untested).
+Host scoring stays parallelized; correctness re-verified (CPU parity 6/6 green; CUDA-fp32 vs
+CPU 0.0008; both CUDA fp32 and fp16 user-confirmed good).
 
 ---
 

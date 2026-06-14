@@ -25,10 +25,13 @@ internal static class SessionLoader
     /// CUDA EP was successfully appended to the session backing the
     /// returned <see cref="InferenceSession"/>.</param>
     public static InferenceSession LoadAndReport(
-        string path, ExecutionProvider ep, SessionLoadObserver? onLoad, out bool usedCuda)
+        string path, ExecutionProvider ep, SessionLoadObserver? onLoad, out bool usedCuda,
+        bool disableTf32 = false)
     {
         var sw = Stopwatch.StartNew();
-        var session = OrtSessionBuilder.CreateCachedSession(path, ep, out var hit, out usedCuda);
+        var session = OrtSessionBuilder.CreateCachedSession(
+            path, ep, out var hit, out usedCuda,
+            GraphOptimizationLevel.ORT_ENABLE_ALL, 1024 * 1024, disableTf32);
         sw.Stop();
         onLoad?.Invoke(new SessionLoadEvent(
             Path.GetFileName(path), sw.ElapsedMilliseconds, hit, usedCuda,
@@ -41,6 +44,6 @@ internal static class SessionLoader
     /// (i.e. classes that don't dispatch on CUDA-only paths like IoBinding).
     /// </summary>
     public static InferenceSession LoadAndReport(
-        string path, ExecutionProvider ep, SessionLoadObserver? onLoad)
-        => LoadAndReport(path, ep, onLoad, out _);
+        string path, ExecutionProvider ep, SessionLoadObserver? onLoad, bool disableTf32 = false)
+        => LoadAndReport(path, ep, onLoad, out _, disableTf32);
 }

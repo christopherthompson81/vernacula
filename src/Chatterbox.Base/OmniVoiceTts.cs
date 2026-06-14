@@ -86,21 +86,26 @@ public sealed class OmniVoiceTts : IDisposable
         // batches them as [2,8,condLen] by padding the uncond row to condLen with block-diagonal
         // attention — but that pad is discarded, so we instead run two B=1 passes at their
         // natural lengths (condLen and T), saving the wasted uncond compute.
-        using var condLoop = _graphs.CreateTransformerLoop(1, condLen);
-        using var uncondLoop = _graphs.CreateTransformerLoop(1, T);
-
-        // Conditional: fixed style/text/ref prefix + the (evolving) target tokens; full attention.
-        Array.Fill(condLoop.Ids, (long)MaskId);
+        // Two B=1 passes per step: conditional over the full sequence, unconditional over only
+        // the target tokens. We use the plain (non-IO-bound) RunTransformer: binding CPU-pinned
+        // OrtValues to a CUDA session produced corrupt output, and IO binding only saved ~90 ms
+        // anyway. See docs/omnivoice_onnx_investigation.md.
+        var condIds = new long[C * condLen];
+        Array.Fill(condIds, (long)MaskId);
         for (int cb = 0; cb < C; cb++)
             for (int p = 0; p < condLen; p++)
-                condLoop.Ids[cb * condLen + p] = cond.InputIds[cb, p];
-        for (int i = 0; i < condLen; i++) condLoop.AudioMask[i] = cond.AudioMask[i];
-        Array.Fill(condLoop.Attn, true);
+                condIds[cb * condLen + p] = cond.InputIds[cb, p];
+        var condAmask = new bool[condLen];
+        for (int i = 0; i < condLen; i++) condAmask[i] = cond.AudioMask[i];
+        var condAttn = new bool[condLen * condLen];
+        Array.Fill(condAttn, true);
 
-        // Unconditional: just the target tokens (all mask initially); all audio; full attention.
-        Array.Fill(uncondLoop.Ids, (long)MaskId);
-        Array.Fill(uncondLoop.AudioMask, true);
-        Array.Fill(uncondLoop.Attn, true);
+        var uncondIds = new long[C * T];
+        Array.Fill(uncondIds, (long)MaskId);
+        var uncondAmask = new bool[T];
+        Array.Fill(uncondAmask, true);
+        var uncondAttn = new bool[T * T];
+        Array.Fill(uncondAttn, true);
 
         var tokens = new long[C, T];
         for (int cb = 0; cb < C; cb++) for (int t = 0; t < T; t++) tokens[cb, t] = MaskId;
@@ -118,9 +123,8 @@ public sealed class OmniVoiceTts : IDisposable
         for (int step = 0; step < cfg.NumStep; step++)
         {
             swTf.Restart();
-            // The cond and uncond passes are independent within a step; launch concurrently.
-            float[] cLogits = condLoop.Logits, uLogits = uncondLoop.Logits;
-            Parallel.Invoke(() => condLoop.Run(), () => uncondLoop.Run());
+            float[] cLogits = _graphs.RunTransformer(condIds, condAmask, condAttn, 1, condLen);
+            float[] uLogits = _graphs.RunTransformer(uncondIds, uncondAmask, uncondAttn, 1, T);
             swTf.Stop(); LastTransformerMs += swTf.Elapsed.TotalMilliseconds;
             swHost.Restart();
 
@@ -148,8 +152,8 @@ public sealed class OmniVoiceTts : IDisposable
             for (int cb = 0; cb < C; cb++)
                 for (int t = 0; t < T; t++)
                 {
-                    condLoop.Ids[cb * condLen + (targetStart + t)] = tokens[cb, t];
-                    uncondLoop.Ids[cb * T + t] = tokens[cb, t];
+                    condIds[cb * condLen + (targetStart + t)] = tokens[cb, t];
+                    uncondIds[cb * T + t] = tokens[cb, t];
                 }
             swHost.Stop(); LastHostMs += swHost.Elapsed.TotalMilliseconds;
         }
