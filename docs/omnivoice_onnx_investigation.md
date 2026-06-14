@@ -270,6 +270,25 @@ overhead fp16 can't touch); as length grows, sequence-scaling attention/compute 
 fp16 halves it, so the win climbs to ~40% and plateaus (compute-bound). Long-form synthesis is
 exactly where fp16 pays off — and the ~15 s chunking target (T≈375) lands in the sweet spot.
 
+### Batch-scaling headroom — no idle cores in the long regime
+
+Probed transformer per-item time vs batch size (device-IO, fp32) to see if cross-chunk
+batching could exploit idle SMs:
+
+| seq | B=1 | B=8 | throughput headroom |
+|---|---|---|---|
+| 194 (short) | 14.7 ms/item | 10.4 ms/item | ~1.6× (68→111 items/s by B=32) |
+| 512 (long-form) | 33.3 ms/item | 28.2 ms/item | ~1.18× |
+
+So at long sequence the GPU is **already compute-saturated** — batching recovers only ~15%,
+i.e. there are no meaningful idle cores. Headroom exists only at short seq (the batch=1 GEMMs
+underfill the SMs), but that's where latency is already fine (~400 ms floor). Implication:
+cross-chunk batching is **not** worth it for single long-form latency (saturated cores +
+ragged-length padding waste + memory); fp16 (reducing the compute itself) is the long-form
+lever. Batching's real use is multi-request throughput or batching short chunks. This is the
+dual of the fp16-vs-length result: long = compute-saturated → cut compute (fp16), don't try to
+parallelize across busy cores.
+
 ---
 
 ## Run 7 — 2026-06-13, length sweep closes the shape-branch question (#2/#3)
