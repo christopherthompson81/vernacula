@@ -263,6 +263,32 @@ listen-confirmed good. int8 likely crosses back toward the TF32 incoherence regi
 Host scoring stays parallelized; correctness re-verified (CPU parity 6/6 green; CUDA-fp32 vs
 CPU 0.0008; both CUDA fp32 and fp16 user-confirmed good).
 
+### IO-binding root cause + mitigations (probe_io_binding.py, tests/OmniVoiceIoProbe)
+
+Characterised the binding bug to decide whether IO binding can be reclaimed:
+
+- **Python ORT 1.26**: all binding modes (CPU-bound reused output, device output, device
+  in/out, +sync) match the plain run exactly (0.0). The pattern is sound; the bug is
+  C#/ORT-1.24.4 specific.
+- **C# ORT 1.24.4 root cause** (OmniVoiceIoProbe): a bound input `OrtValue` from
+  `CreateTensorValueFromMemory` uploads to the device **once**; mutating its host buffer in
+  place between `RunWithBinding` calls is ignored (ORT reuses the stale device copy). Probe:
+  after mutating the input A→B in place, output still equals plain(A) (max-abs 0 vs A, 48.2 vs
+  B). The diffusion loop mutates input_ids every step → every step ran on the stale step-0
+  all-mask input → noise.
+
+Two mitigations:
+1. **No upgrade** — re-create + re-bind a fresh input `OrtValue` each step (forces a fresh
+   upload) while keeping the output buffer bound. Probe confirms correct (run3 vs plain(B) =
+   0.000). Reclaims the output-alloc savings (~90 ms/gen) at zero dependency risk.
+2. **Upgrade ORT ≥1.26** repo-wide (16 csproj pins, currently 1.24.4 + DirectML 1.21.1 + macOS
+   1.19.2). Fixes the class of bug generally but affects every model — needs full regression +
+   CUDA/cuDNN re-validation. Disproportionate for OmniVoice's ~90 ms alone; worth it only as a
+   deliberate modernization.
+
+Current code uses the plain `RunTransformer` (no binding) — correct and simple; the ~90 ms
+(~7% at 32 steps) is left on the table pending a decision on (1) vs (2).
+
 ---
 
 ## Run 7 — 2026-06-13, length sweep closes the shape-branch question (#2/#3)
