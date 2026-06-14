@@ -16,6 +16,8 @@ using System.Globalization;
 using Chatterbox.Base;
 using Chatterbox.Base.Markdown;
 using NAudio.Wave;
+using NAudio.Wave.SampleProviders;
+using Vernacula.Base;
 using Vernacula.Base.Alignment;
 using Vernacula.Base.Models;
 
@@ -38,6 +40,16 @@ float   exaggeration  = ChatterboxConstants.DefaultExaggeration;
 string  backend       = "chatterbox";
 string? dataDir       = null;
 float   speed         = 1.0f;
+// OmniVoice backend (--backend omnivoice): --onnx-dir holds the three graphs
+// (omnivoice_transformer[_fp16].onnx + higgs_encoder/decoder.onnx), --tokenizer-json the
+// Qwen3 tokenizer.json; --voice (optional) is a reference WAV for cloning with --ref-text
+// its transcript; --lang/--instruct drive language and voice-design; --num-step the
+// diffusion steps; --transformer-file picks a quantized transformer variant.
+string? refText        = null;
+string? lang           = null;
+string? instruct       = null;
+int     numStep        = 32;
+string? transformerFile = null;
 // CLI default is intentionally higher than ChatterboxConstants.DefaultMaxLmSteps
 // (256). The constant is the smoke/bench reference; the CLI sees long-form
 // markdown where typical paragraph chunks run 300-500 LM steps and would
@@ -73,6 +85,11 @@ try
             case "--ep":             ep            = Next("--ep", i).ToLowerInvariant(); i++; break;
             case "--backend":        backend       = Next("--backend", i).ToLowerInvariant(); i++; break;
             case "--data-dir":       dataDir       = Next("--data-dir", i);       i++; break;
+            case "--ref-text":       refText       = Next("--ref-text", i);       i++; break;
+            case "--lang":           lang          = Next("--lang", i);           i++; break;
+            case "--instruct":       instruct      = Next("--instruct", i);       i++; break;
+            case "--transformer-file": transformerFile = Next("--transformer-file", i); i++; break;
+            case "--num-step":       numStep       = int.Parse(Next("--num-step", i)); i++; break;
             case "--speed":
                 if (!float.TryParse(Next("--speed", i), System.Globalization.NumberStyles.Float,
                         System.Globalization.CultureInfo.InvariantCulture, out speed))
@@ -121,7 +138,9 @@ catch (ArgumentException ex)
 
 // ── Validate ───────────────────────────────────────────────────────────────────
 
-if (onnxDir is null || voicePath is null)
+// OmniVoice's --voice (reference WAV) is optional — without it the model runs in
+// voice-design / auto mode. Every other backend requires it.
+if (onnxDir is null || (voicePath is null && backend != "omnivoice"))
 {
     Console.Error.WriteLine("Missing required: --onnx-dir <dir> --voice <wav>");
     PrintUsage();
@@ -157,7 +176,7 @@ switch (ep)
 }
 
 onnxDir   = ExpandHome(onnxDir);
-voicePath = ExpandHome(voicePath);
+if (voicePath is not null) voicePath = ExpandHome(voicePath);
 outPath   = ExpandHome(outPath ?? "chatterbox_out.wav");
 if (textFile is not null) textFile = ExpandHome(textFile);
 if (tokenizerJson is not null) tokenizerJson = ExpandHome(tokenizerJson);
@@ -251,6 +270,82 @@ if (backend == "kokoro")
     var synthSec = kSw.Elapsed.TotalSeconds;
     Console.WriteLine($"DONE: {totalAudioSec:F1}s audio synthesized in {synthSec:F1}s "
         + $"({(synthSec > 0 ? totalAudioSec / synthSec : 0):F1}x real-time) → {outPath}");
+    return 0;
+}
+
+// ── OmniVoice backend (separate, self-contained synthesis path) ─────────────────
+if (backend == "omnivoice")
+{
+    if (tokenizerJson is null)
+    {
+        Console.Error.WriteLine("--backend omnivoice requires --tokenizer-json <Qwen3 tokenizer.json>.");
+        return 2;
+    }
+    if (!File.Exists(tokenizerJson)) { Console.Error.WriteLine($"--tokenizer-json not found: {tokenizerJson}"); return 1; }
+    if (voicePath is not null && !File.Exists(voicePath)) { Console.Error.WriteLine($"--voice not found: {voicePath}"); return 1; }
+    if (voicePath is not null && refText is null)
+    {
+        Console.Error.WriteLine("Voice cloning needs the reference transcript: pass --ref-text \"...\". "
+            + "(ASR auto-transcription isn't wired yet.)");
+        return 2;
+    }
+    if (textFile is not null && !File.Exists(textFile)) { Console.Error.WriteLine($"--text-file not found: {textFile}"); return 1; }
+
+    string ovText;
+    if (text is not null) ovText = text;
+    else
+    {
+        var raw = File.ReadAllText(textFile!);
+        var ext = Path.GetExtension(textFile!).ToLowerInvariant();
+        ovText = ext is ".md" or ".markdown" ? MarkdownTextExtractor.Extract(raw).Text : raw;
+    }
+    if (string.IsNullOrWhiteSpace(ovText)) { Console.Error.WriteLine("Text is empty."); return 1; }
+
+    SessionLoadObserver? ovOnLoad = verbose
+        ? e => Console.WriteLine($"  {e.FileName}: {e.ElapsedMs} ms  ep={(e.UsedCuda ? "cuda" : "cpu/dml")}")
+        : null;
+
+    string mode = voicePath is not null ? "clone" : (instruct is not null ? "design" : "auto");
+    Console.WriteLine($"OmniVoice: model={onnxDir}  mode={mode}  lang={lang ?? "(none)"}  "
+        + $"steps={numStep}  ep={ep}{(transformerFile is not null ? $"  transformer={transformerFile}" : "")}");
+
+    var ovLoadSw = Stopwatch.StartNew();
+    using var ov = new OmniVoiceTts(onnxDir, tokenizerJson, epEnum, ovOnLoad, transformerFile);
+    ovLoadSw.Stop();
+    Console.WriteLine($"load: {ovLoadSw.ElapsedMilliseconds} ms");
+
+    long[,]? refCodes = null;
+    int refTokens = 25;
+    if (voicePath is not null)
+    {
+        refCodes = ov.EncodeReference(LoadWav24kMono(voicePath));
+        refTokens = refCodes.GetLength(1);
+        Console.WriteLine($"reference: {refTokens} codes");
+    }
+
+    int target = OmniVoiceDuration.EstimateTargetTokens(ovText, refText, voicePath is not null ? refTokens : null);
+    // Single-shot for now: long text isn't chunked yet (the chunk-and-cross-fade path is a
+    // follow-up). Warn past a generous bound rather than silently producing degraded audio.
+    if (target > 1500)
+        Console.Error.WriteLine($"WARNING: estimated {target} tokens (~{target / 25}s). Long-form chunking "
+            + "isn't implemented yet; output may degrade. Split the input for now.");
+
+    var ovSw = Stopwatch.StartNew();
+    var tokens = ov.GenerateTokens(ovText, target, refText, refCodes, lang, instruct,
+        new OmniVoiceTts.GenConfig(NumStep: numStep));
+    float[] ovAudio = ov.DecodeTokens(tokens);
+    ovSw.Stop();
+
+    float ovPeak = 0f;
+    foreach (var v in ovAudio) ovPeak = System.Math.Max(ovPeak, System.Math.Abs(v));
+    if (ovPeak > 1e-6f) { float g = 0.95f / ovPeak; for (int i = 0; i < ovAudio.Length; i++) ovAudio[i] *= g; }
+
+    var ovFmt = WaveFormat.CreateIeeeFloatWaveFormat(OmniVoiceTts.SampleRate, 1);
+    using (var w = new WaveFileWriter(outPath, ovFmt)) w.WriteSamples(ovAudio, 0, ovAudio.Length);
+
+    double ovSec = ovAudio.Length / (double)OmniVoiceTts.SampleRate, ovMs = ovSw.Elapsed.TotalMilliseconds;
+    Console.WriteLine($"DONE: {ovSec:F1}s audio in {ovMs / 1000:F1}s "
+        + $"({(ovMs > 0 ? ovSec / (ovMs / 1000) : 0):F1}x real-time) → {outPath}");
     return 0;
 }
 
@@ -535,6 +630,22 @@ static string ExpandHome(string path)
         ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), path[2..])
         : path;
 
+// Read a WAV, downmix to mono, resample to 24 kHz (the OmniVoice codec rate).
+static float[] LoadWav24kMono(string path)
+{
+    const int sr24 = OmniVoiceTts.SampleRate;
+    var (samples, sr, ch) = AudioUtils.ReadAudio(path);
+    float[] mono = ch > 1 ? AudioUtils.DownmixToMono(samples, ch) : samples;
+    if (sr == sr24) return mono;
+    var src = new FloatArraySampleProvider(mono, WaveFormat.CreateIeeeFloatWaveFormat(sr, 1));
+    var rs = new WdlResamplingSampleProvider(src, sr24);
+    var outBuf = new List<float>(mono.Length * sr24 / System.Math.Max(1, sr) + 1024);
+    var chunk = new float[4096];
+    int n;
+    while ((n = rs.Read(chunk, 0, chunk.Length)) > 0) outBuf.AddRange(chunk[..n]);
+    return outBuf.ToArray();
+}
+
 static void PrintUsage()
 {
     Console.Error.WriteLine("""
@@ -582,5 +693,18 @@ static void PrintUsage()
                                    than the smoke-bench default of 256.
           --verbose / -v           Print per-stage timing and cache info.
           --help / -h              Show this message.
+
+        Backends (--backend <name>, default "chatterbox"):
+          kokoro     Kokoro-82M. --voice is a voice name (e.g. af_heart); requires
+                     --data-dir <espeak-ng-portable data/>.
+          omnivoice  OmniVoice diffusion TTS. --onnx-dir holds omnivoice_transformer
+                     [_fp16].onnx + higgs_encoder/decoder.onnx; --tokenizer-json is the
+                     Qwen3 tokenizer.json (required). Modes:
+                       clone  — --voice <ref.wav> + --ref-text "<transcript>"
+                       design — --instruct "female, british accent" (no --voice)
+                       auto   — neither
+                     Extra flags: --lang <code> (e.g. en), --num-step <n> (default 32),
+                     --transformer-file <name> (e.g. omnivoice_transformer_fp16.onnx for
+                     the ~13% faster fp16 graph on CUDA). Long-form chunking not yet wired.
         """);
 }
