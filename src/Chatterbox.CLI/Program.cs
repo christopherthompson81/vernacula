@@ -16,7 +16,6 @@ using System.Globalization;
 using Chatterbox.Base;
 using Chatterbox.Base.Markdown;
 using NAudio.Wave;
-using NAudio.Wave.SampleProviders;
 using Vernacula.Base;
 using Vernacula.Base.Alignment;
 using Vernacula.Base.Models;
@@ -89,7 +88,10 @@ try
             case "--lang":           lang          = Next("--lang", i);           i++; break;
             case "--instruct":       instruct      = Next("--instruct", i);       i++; break;
             case "--transformer-file": transformerFile = Next("--transformer-file", i); i++; break;
-            case "--num-step":       numStep       = int.Parse(Next("--num-step", i)); i++; break;
+            case "--num-step":
+                if (!int.TryParse(Next("--num-step", i), out numStep) || numStep < 1)
+                    throw new ArgumentException("--num-step must be a positive integer.");
+                i++; break;
             case "--speed":
                 if (!float.TryParse(Next("--speed", i), System.Globalization.NumberStyles.Float,
                         System.Globalization.CultureInfo.InvariantCulture, out speed))
@@ -208,6 +210,11 @@ if (!Directory.Exists(onnxDir))
 // ── Kokoro backend (separate, self-contained synthesis path) ────────────────────
 if (backend == "kokoro")
 {
+    if (voicePath is null)   // global check allows null voice for omnivoice; Kokoro needs it
+    {
+        Console.Error.WriteLine("--backend kokoro requires --voice <voice name, e.g. af_heart>.");
+        return 2;
+    }
     if (dataDir is null)
     {
         Console.Error.WriteLine("--backend kokoro requires --data-dir <espeak-ng-portable data/ dir>.");
@@ -633,17 +640,9 @@ static string ExpandHome(string path)
 // Read a WAV, downmix to mono, resample to 24 kHz (the OmniVoice codec rate).
 static float[] LoadWav24kMono(string path)
 {
-    const int sr24 = OmniVoiceTts.SampleRate;
     var (samples, sr, ch) = AudioUtils.ReadAudio(path);
     float[] mono = ch > 1 ? AudioUtils.DownmixToMono(samples, ch) : samples;
-    if (sr == sr24) return mono;
-    var src = new FloatArraySampleProvider(mono, WaveFormat.CreateIeeeFloatWaveFormat(sr, 1));
-    var rs = new WdlResamplingSampleProvider(src, sr24);
-    var outBuf = new List<float>(mono.Length * sr24 / System.Math.Max(1, sr) + 1024);
-    var chunk = new float[4096];
-    int n;
-    while ((n = rs.Read(chunk, 0, chunk.Length)) > 0) outBuf.AddRange(chunk[..n]);
-    return outBuf.ToArray();
+    return AudioUtils.ResampleMono(mono, sr, OmniVoiceTts.SampleRate);
 }
 
 static void PrintUsage()

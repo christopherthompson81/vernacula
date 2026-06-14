@@ -308,6 +308,27 @@ public static class AudioUtils
     }
 
     /// <summary>
+    /// Resample a mono float buffer from <paramref name="srcSampleRate"/> to
+    /// <paramref name="dstSampleRate"/> (WDL resampler). Returns the input unchanged when the
+    /// rates match. The output-capacity estimate is computed in 64-bit to avoid int overflow on
+    /// long clips (e.g. a multi-second 16 kHz buffer × a 24 kHz target).
+    /// </summary>
+    public static float[] ResampleMono(float[] mono, int srcSampleRate, int dstSampleRate)
+    {
+        if (srcSampleRate == dstSampleRate) return mono;
+        var fmt = WaveFormat.CreateIeeeFloatWaveFormat(srcSampleRate, 1);
+        var src = new FloatArraySampleProvider(mono, fmt);
+        var resampler = new WdlResamplingSampleProvider(src, dstSampleRate);
+        var outList = new List<float>(
+            (int)((long)mono.Length * dstSampleRate / Math.Max(1, srcSampleRate) + 1024));
+        var buf = new float[8192];
+        int read;
+        while ((read = resampler.Read(buf, 0, buf.Length)) > 0)
+            for (int i = 0; i < read; i++) outList.Add(buf[i]);
+        return outList.ToArray();
+    }
+
+    /// <summary>
     /// In-place always-on preprocessor for ASR input:
     ///   • 2nd-order high-pass at 75 Hz (Butterworth, Q≈0.707) — removes rumble,
     ///     handling noise, and HVAC low-end without touching speech fundamentals

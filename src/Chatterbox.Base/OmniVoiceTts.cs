@@ -144,17 +144,19 @@ public sealed class OmniVoiceTts : IDisposable
             });
 
             int k = schedule[step];
-            if (k <= 0) continue;
-            foreach (var (cb, t) in TopK(score, T, k))
-                tokens[cb, t] = pred[cb, t];
+            if (k > 0)
+            {
+                foreach (var (cb, t) in TopK(score, T, k))
+                    tokens[cb, t] = pred[cb, t];
 
-            // Write the full token field back into both passes for the next step.
-            for (int cb = 0; cb < C; cb++)
-                for (int t = 0; t < T; t++)
-                {
-                    condIds[cb * condLen + (targetStart + t)] = tokens[cb, t];
-                    uncondIds[cb * T + t] = tokens[cb, t];
-                }
+                // Write the full token field back into both passes for the next step.
+                for (int cb = 0; cb < C; cb++)
+                    for (int t = 0; t < T; t++)
+                    {
+                        condIds[cb * condLen + (targetStart + t)] = tokens[cb, t];
+                        uncondIds[cb * T + t] = tokens[cb, t];
+                    }
+            }
             swHost.Stop(); LastHostMs += swHost.Elapsed.TotalMilliseconds;
         }
         return tokens;

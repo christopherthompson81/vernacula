@@ -16,7 +16,6 @@
 using System.Diagnostics;
 using Chatterbox.Base;
 using NAudio.Wave;
-using NAudio.Wave.SampleProviders;
 using Vernacula.Base;
 using Vernacula.Base.Models;
 
@@ -116,15 +115,7 @@ internal static class Program
     {
         var (samples, sr, ch) = AudioUtils.ReadAudio(path);
         float[] mono = ch > 1 ? AudioUtils.DownmixToMono(samples, ch) : samples;
-        if (sr == OmniVoiceTts.SampleRate) return mono;
-        var src = new FloatArraySampleProvider(mono, WaveFormat.CreateIeeeFloatWaveFormat(sr, 1));
-        var rs = new WdlResamplingSampleProvider(src, OmniVoiceTts.SampleRate);
-        var outBuf = new List<float>(mono.Length * OmniVoiceTts.SampleRate / sr + 1024);
-        var chunk = new float[4096];
-        int n;
-        while ((n = rs.Read(chunk, 0, chunk.Length)) > 0)
-            outBuf.AddRange(chunk[..n]);
-        return outBuf.ToArray();
+        return AudioUtils.ResampleMono(mono, sr, OmniVoiceTts.SampleRate);
     }
 
     private static void Normalize(float[] x, float peak)
