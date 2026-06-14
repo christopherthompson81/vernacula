@@ -256,6 +256,20 @@ memory further for mobile but risks quality and — being weight-bandwidth, not 
 limited at int8's typical W8A8 — its speed benefit on the 3090 is uncertain; deferred.
 Combined with the loop work: original 1803 ms → ~610 ms (~3×).
 
+**fp16 benefit scales with output length** (32 steps, CUDA, transformer ms):
+
+| target tokens | ~audio | fp32 | fp16 | fp16 win |
+|---|---|---|---|---|
+| 25 | ~1 s | 432 | 434 | ~0% |
+| 100 | ~4 s | 597 | 466 | 22% |
+| 300 | ~12 s | 1281 | 785 | 39% |
+| 600 | ~24 s | 2415 | 1436 | 41% |
+
+Short clips sit on a fixed per-step floor (~400 ms / 32 forwards — launch + weight-load
+overhead fp16 can't touch); as length grows, sequence-scaling attention/compute dominates and
+fp16 halves it, so the win climbs to ~40% and plateaus (compute-bound). Long-form synthesis is
+exactly where fp16 pays off — and the ~15 s chunking target (T≈375) lands in the sweet spot.
+
 ---
 
 ## Run 7 — 2026-06-13, length sweep closes the shape-branch question (#2/#3)
