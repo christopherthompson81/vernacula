@@ -287,10 +287,26 @@ buys OmniVoice nothing.** Reverted; the loop stays on plain `RunTransformer` (co
 simplest, as-fast). The probes (`probe_io_binding.py`, `tests/OmniVoiceIoProbe`) are kept as
 the record of why.
 
-The only path that *would* change this is a repo-wide **ORT ≥1.26** bump (16 csproj pins, +
-DirectML 1.21.1 / macOS 1.19.2), where Python showed the staleness is gone — but that fixes a
-bug we no longer hit, for no OmniVoice speedup, so it's only worth doing as a deliberate
-whole-repo modernization (benefits every model, removes the footgun), with full regression.
+### ORT 1.26.0 regression probe (exploratory)
+
+Bumped all 16 csproj ORT pins 1.24.4 → 1.26.0 on a throwaway branch and regression-tested:
+
+- **Builds**: full solution, 0 errors (only a pre-existing `Tmds.DBus` CVE warning).
+- **Managed tests**: Vernacula.Tests 22/22, Chatterbox.Tests 39 + 4 heavy — all green.
+- **OmniVoice runtime**: all 8 OmniVoice/Qwen3 tests pass; CUDA vs CPU 0.0001 (correct).
+- **Cross-model**: Chatterbox smoke (autoregressive LM + flow vocoder, KV-cache IO binding)
+  runs and produces audio.
+- **IO-binding staleness is NOT fixed by 1.26** — correcting an earlier wrong claim. The C#
+  mutation probe (OmniVoiceIoProbe) is *still stale* on 1.26 (mutating a bound buffer in place
+  → reused stale device copy). My earlier "Python 1.26 handles all modes" was a mis-read: the
+  Python probe never tested mutation-after-bind. So the behavior is **inherent ORT semantics
+  on both versions**, and the rebind-fresh-each-step pattern is the only fix (works on both).
+
+**Verdict:** 1.26.0 doesn't break the tested paths (build + managed tests + OmniVoice +
+Chatterbox), so the upgrade is *viable* — but it gives OmniVoice nothing (the IO staleness is
+inherent, not version-specific). Not adopted; the bump was discarded. A real repo-wide upgrade
+would still need to smoke the rest of the model zoo (Whisper, Parakeet, Granite, Indic,
+VibeVoice, Cohere, Kokoro, diarization) which this probe did not exercise.
 
 ---
 
