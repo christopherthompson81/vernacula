@@ -1,4 +1,4 @@
 # Generated artifacts — large, reproducible from the scripts. Do not commit.
-onnx/
+onnx
 capture/
 .venv-omnivoice-export/
