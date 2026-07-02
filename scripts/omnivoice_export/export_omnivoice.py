@@ -150,6 +150,9 @@ def main() -> None:
         help="Comma-separated subset to export.",
     )
     p.add_argument("--no-dynamo", action="store_true", help="Skip dynamo, legacy only.")
+    p.add_argument("--adapter", default=None,
+                   help="Optional peft LoRA dir to merge into the model before export "
+                        "(produces a STANDALONE fine-tuned graph, not base+adapter).")
     args = p.parse_args()
 
     out_dir = Path(args.out_dir)
@@ -162,6 +165,13 @@ def main() -> None:
 
     print(f"Loading {args.model} (fp32) on {dev} ...")
     model = OmniVoice.from_pretrained(args.model, device_map=args.device, dtype=torch.float32)
+    if args.adapter:
+        # Merge the LoRA (+ full embed_tokens from modules_to_save) into the base weights
+        # so the exported graph is a self-standing fine-tuned model, not base+delta.
+        from peft import PeftModel
+        print(f"Merging adapter {args.adapter} ...")
+        model = PeftModel.from_pretrained(model, args.adapter)
+        model = model.merge_and_unload()
     model.eval()
     # Force a plain attention impl (the flex_attention path is guarded and only used
     # when document_ids is passed; inference passes an explicit attention_mask).
