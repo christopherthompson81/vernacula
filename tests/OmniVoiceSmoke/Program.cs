@@ -83,9 +83,14 @@ internal static class Program
 
         long[,]? refCodes = null;
         int refTokens = 25;
+        float? refRms = null;   // pre-boost ref RMS, for output volume un-boost (Python parity)
         if (clone)
         {
             float[] refWav = Load24kMono(refAudio);
+            refRms = Rms(refWav);
+            // add_punctuation on the ref transcript (Python create_voice_clone_prompt): the
+            // punctuated ref_text must feed BOTH the duration estimate and the combined text.
+            refText = refText is null ? null : OmniVoiceTextPrep.AddPunctuation(refText);
             refCodes = tts.EncodeReference(refWav);
             refTokens = refCodes.GetLength(1);
             Console.WriteLine($"reference: {refWav.Length} samples -> {refTokens} codes; ref_text={refText}");
@@ -102,7 +107,16 @@ internal static class Program
             + $"[transformer {tts.LastTransformerMs:f0} ms, host {tts.LastHostMs:f0} ms]");
 
         float[] audio = tts.DecodeTokens(tokens);
-        Normalize(audio, 0.95f);
+        // Output post-processing (Python _post_process_audio), in order: remove silence →
+        // volume → fade-in/out + zero-pad the edges.
+        audio = OmniVoiceAudioPost.RemoveSilence(audio, OmniVoiceTts.SampleRate,
+            midSilMs: 500, leadSilMs: 100, trailSilMs: 100);
+        // Volume (Python): with a reference, un-boost a previously-boosted quiet ref
+        // (audio *= ref_rms/0.1 when ref_rms < 0.1; else leave the model's own level). Without a
+        // reference, peak-normalise to 0.5.
+        if (refRms is float rr) { if (rr < 0.1f) Scale(audio, rr / 0.1f); }
+        else Normalize(audio, 0.5f);
+        audio = OmniVoiceAudioPost.FadeAndPad(audio, OmniVoiceTts.SampleRate);
 
         var fmt = WaveFormat.CreateIeeeFloatWaveFormat(OmniVoiceTts.SampleRate, 1);
         using (var w = new WaveFileWriter(outPath, fmt))
@@ -125,5 +139,17 @@ internal static class Program
         if (max < 1e-6f) return;
         float g = peak / max;
         for (int i = 0; i < x.Length; i++) x[i] *= g;
+    }
+
+    private static void Scale(float[] x, float g)
+    {
+        for (int i = 0; i < x.Length; i++) x[i] *= g;
+    }
+
+    private static float Rms(float[] x)
+    {
+        double s = 0;
+        foreach (var v in x) s += (double)v * v;
+        return x.Length == 0 ? 0f : (float)Math.Sqrt(s / x.Length);
     }
 }

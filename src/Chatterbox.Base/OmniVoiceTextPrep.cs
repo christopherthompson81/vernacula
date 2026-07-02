@@ -84,6 +84,26 @@ public sealed partial class OmniVoiceTextPrep
         return full;
     }
 
+    // End-of-sentence punctuation (utils/text.py END_PUNCTUATION) — if the text already ends in
+    // one of these, add_punctuation is a no-op.
+    private static readonly HashSet<char> EndPunctuation = new(
+        new[] { ';', ':', ',', '.', '!', '?', '…', ')', ']', '}', '"', '\'', '“', '”',
+                '‘', '’', '；', '：', '，', '。', '！', '？', '、', '）', '】' });
+
+    /// <summary>Port of add_punctuation: append a period (or Chinese 。 if the text contains any
+    /// CJK char) when it doesn't already end in sentence punctuation. Python applies this to the
+    /// reference transcript in create_voice_clone_prompt, so the punctuated ref_text feeds BOTH
+    /// the duration estimate and the combined text.</summary>
+    public static string AddPunctuation(string text)
+    {
+        text = text.Trim();
+        if (text.Length == 0) return text;
+        if (EndPunctuation.Contains(text[^1])) return text;
+        bool isChinese = false;
+        foreach (var ch in text) if (ch >= '一' && ch <= '鿿') { isChinese = true; break; }
+        return text + (isChinese ? "。" : ".");
+    }
+
     [GeneratedRegex(@"[\r\n]+")] private static partial Regex NewlineRegex();
     [GeneratedRegex(@"[ \t]+")] private static partial Regex SpacesRegex();
     [GeneratedRegex(@"(?<=[一-鿿])\s+|\s+(?=[一-鿿])")] private static partial Regex CjkSpaceRegex();

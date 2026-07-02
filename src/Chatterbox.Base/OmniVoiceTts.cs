@@ -47,9 +47,11 @@ public sealed class OmniVoiceTts : IDisposable
         float LayerPenaltyFactor = 5.0f, bool Denoise = true);
 
     /// <summary>Encode a 24 kHz mono reference waveform into voice-clone codes [8, Tref].
-    /// The input is RMS-normalised and clipped to a multiple of the codec hop, mirroring
-    /// create_voice_clone_prompt's tokenization-relevant steps.</summary>
-    public long[,] EncodeReference(float[] refWav24k)
+    /// Mirrors create_voice_clone_prompt's tokenization-relevant steps: RMS-boost a quiet clip,
+    /// (when <paramref name="preprocessPrompt"/>) remove silence so the token count reflects
+    /// actual speech — critical, since that count drives the duration estimate — then clip to a
+    /// multiple of the codec hop.</summary>
+    public long[,] EncodeReference(float[] refWav24k, bool preprocessPrompt = true)
     {
         float rms = Rms(refWav24k);
         var wav = refWav24k;
@@ -59,6 +61,11 @@ public sealed class OmniVoiceTts : IDisposable
             float g = 0.1f / rms;
             for (int i = 0; i < wav.Length; i++) wav[i] = refWav24k[i] * g;
         }
+        // Silence removal BEFORE encoding (Python does this when preprocess_prompt): edge +
+        // mid silence inflate the ref token count → an over-long duration estimate → stretched
+        // output. Params match remove_silence(mid=200, lead=100, trail=200) for the reference.
+        if (preprocessPrompt)
+            wav = OmniVoiceAudioPost.RemoveSilence(wav, SampleRate, midSilMs: 200, leadSilMs: 100, trailSilMs: 200);
         int clip = wav.Length % OmniVoice.HopLength;
         if (clip > 0) wav = wav[..^clip];
         return _graphs.EncodeAudio(wav);
