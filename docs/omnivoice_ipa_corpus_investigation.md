@@ -1049,3 +1049,29 @@ book the cook shook") but slightly soft in a longer sentence → it's **sentence
 speech rendering fidelity**, a model-capacity frontier, NOT a corpus/IPA defect. Corpus + phonemizer
 work validated. Remaining naturalness gains are model-side (bigger backbone / more data) or the
 one-symbol-one-sound phonemizer audit for genuinely-splittable overloaded glyphs.
+
+---
+
+## Run 21 — 2026-07-02 — Distributable diff: base ONNX + 31 MB delta (not 2.45 GB re-ship)
+
+Question: is there a small "diff" applyable over the base OmniVoice transformer ONNX? The fine-tune
+= LoRA (true low-rank) + a fully-retrained embed_tokens — but embed is effectively SPARSE: only the
+IPA-relevant rows learned; the other ~148k just drift ~0.0003 by weight decay. Per-row max|Δ| is
+cleanly bimodal (decay ~0.0003 vs real changes >0.005), so keeping rows with max|Δ| > 0.001 (5416
+of 151676, inclusive so it also captures *suppressed* orthographic tokens — a real learned change)
+gives the whole diff:
+- LoRA A/B factors (fp16): ~20 MB.  embed changed rows (fp16) + indices: ~11 MB.  **Total 31.3 MB**
+  vs the 2.45 GB merged transformer (~78x smaller).  `extract_diff.py`.
+
+`apply_diff.py` folds it onto a base transformer.onnx by patching the EXTERNAL DATA FILE directly:
+MatMul nodes keep their module path (/model/llm/layers.N/self_attn/q_proj/MatMul) so we map
+layer/proj -> the generically-named weight initializer they consume; add ΔWᵀ=((B@A)·2)ᵀ (ONNX
+weight is (in,out) vs PyTorch (out,in)); overwrite only the changed embed rows.
+- **Timing** (raw-bytes patch): fs-copy 2.1s + Linears 4.4s + **embed 0.03s** (was ~2s via
+  full-table round-trip) = **6.6s** to produce the merged file; a load-time in-memory fold skips
+  the copy (~4.5s). Not a long job.
+- **Parity**: folded-onnx vs merged-v4-PyTorch = **100.000% argmax**, max|Δlogit| 9.2e-3 — exact.
+
+Distribution story (fits the "it's its own model" stance): ship base transformer.onnx once (base
+model is ~public) + the 31 MB diff; fold locally to reconstruct the standalone fine-tuned model.
+Not an adapter run alongside the base — a reconstruction delta.
