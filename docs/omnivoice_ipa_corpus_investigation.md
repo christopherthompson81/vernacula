@@ -1075,3 +1075,24 @@ weight is (in,out) vs PyTorch (out,in)); overwrite only the changed embed rows.
 Distribution story (fits the "it's its own model" stance): ship base transformer.onnx once (base
 model is ~public) + the 31 MB diff; fold locally to reconstruct the standalone fine-tuned model.
 Not an adapter run alongside the base — a reconstruction delta.
+
+---
+
+## Run 22 — 2026-07-02 — Diff as ONNX + C# load-time fold (no merged file)
+
+Refined the distributable diff for the ONNX/C# deployment path:
+- **Diff format -> ONNX** (`extract_diff.py` now emits `ipa_diff.onnx`, 31.3 MB): LoRA A/B + sparse
+  embed rows as initializers, LoRA scale in metadata. Rationale: the C# fold must parse ONNX
+  protobuf anyway (base-graph offsets + MatMul-node->weight map), so one format/reader end to end
+  (no safetensors dep in C#). `apply_diff.py` reads the ONNX diff; still 100% parity.
+- **Host plan (corrected):** the ONNX *conversion* of k2-fsa/OmniVoice is ours (not public), so we
+  host the base 3-graph ONNX (transformer 2.45 GB + shared codec enc/dec) + the 31 MB diff; the
+  diff folds onto the base at load.
+- **C# load-time fold** (`Chatterbox.Base/OmniVoiceDiff.cs`): added ONNX-protobuf codegen to
+  Chatterbox.Base (Grpc.Tools compiles proto/onnx.proto). Parses base+diff, reads each Linear's
+  external-data byte range, folds `W += ΔWᵀ = ((B@A)*scale)ᵀ` (cache-friendly transposed+parallel
+  matmul — the naive strided W-write was a 25 s killer, fixed to 2.5 s), overwrites the changed
+  embed rows, and hands the folded tensors to ORT via `SessionOptions.AddInitializer` (ORT reads
+  the rest from the base .onnx.data). **No 2.45 GB merged file** — the true load-time apply.
+- **Validated** (OmniVoiceSmoke `--fold-selftest`): base+diff (C#) vs Python-merged transformer =
+  **100.000% argmax**, max|Δlogit| 9.9e-5, fold **2.5 s**.

@@ -25,6 +25,9 @@ internal static class Program
 {
     private static int Main(string[] args)
     {
+        if (args.Length > 0 && args[0] == "--fold-selftest")
+            return FoldSelfTest(args[1], args[2], args[3]);
+
         string onnxDir = "scripts/omnivoice_export/onnx";
         string modelDir = "/mnt/data/models/omnivoice/k2-fsa-OmniVoice";
         string refAudio = "scripts/omnivoice_export/capture/ref_voice.wav";
@@ -151,5 +154,58 @@ internal static class Program
         double s = 0;
         foreach (var v in x) s += (double)v * v;
         return x.Length == 0 ? 0f : (float)Math.Sqrt(s / x.Length);
+    }
+
+    /// <summary>Validate the C# load-time fold: run the BASE transformer with the diff applied via
+    /// SessionOptions.AddInitializer, vs the Python-folded MERGED transformer, on the same input;
+    /// they must match. Args: base.onnx diff.onnx merged.onnx</summary>
+    private static int FoldSelfTest(string baseOnnx, string diffOnnx, string mergedOnnx)
+    {
+        Console.WriteLine("fold self-test: base+diff (C#) vs merged (Python)");
+        using var diff = new Chatterbox.Base.OmniVoiceDiff();
+        var opts = new Microsoft.ML.OnnxRuntime.SessionOptions();
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        diff.ApplyTo(opts, baseOnnx, diffOnnx);
+        Console.WriteLine($"  fold (parse + read ranges + AddInitializer): {sw.ElapsedMilliseconds} ms");
+        using var folded = new Microsoft.ML.OnnxRuntime.InferenceSession(baseOnnx, opts);
+        using var merged = new Microsoft.ML.OnnxRuntime.InferenceSession(mergedOnnx);
+
+        // small synthetic input; only need identical input to both sessions to compare outputs
+        const int S = 16, C = 8, twoB = 2;
+        var ids = new long[twoB * C * S];
+        for (int i = 0; i < ids.Length; i++) ids[i] = (i * 7 + 3) % 1024;   // arbitrary valid ids
+        var amask = new bool[twoB * S]; for (int i = 0; i < amask.Length; i++) amask[i] = i % 2 == 0;
+        var attn = new bool[twoB * S * S]; Array.Fill(attn, true);
+        Microsoft.ML.OnnxRuntime.Tensors.DenseTensor<long> IdsT() => new(ids, new[] { twoB, C, S });
+        Microsoft.ML.OnnxRuntime.Tensors.DenseTensor<bool> MaskT() => new(amask, new[] { twoB, S });
+        Microsoft.ML.OnnxRuntime.Tensors.DenseTensor<bool> AttnT() => new(attn, new[] { twoB, 1, S, S });
+        float[] Run(Microsoft.ML.OnnxRuntime.InferenceSession s)
+        {
+            using var o = s.Run(new[]
+            {
+                Microsoft.ML.OnnxRuntime.NamedOnnxValue.CreateFromTensor("input_ids", IdsT()),
+                Microsoft.ML.OnnxRuntime.NamedOnnxValue.CreateFromTensor("audio_mask", MaskT()),
+                Microsoft.ML.OnnxRuntime.NamedOnnxValue.CreateFromTensor("attention_mask", AttnT()),
+            });
+            return o.First(v => v.Name == "logits").AsTensor<float>().ToArray();
+        }
+        float[] a = Run(folded), b = Run(merged);
+        int V = 1025, n = a.Length / V, agree = 0;
+        double maxd = 0;
+        for (int p = 0; p < n; p++)
+        {
+            int am = 0, bm = 0; float av = float.MinValue, bv = float.MinValue;
+            for (int v = 0; v < V; v++)
+            {
+                if (a[p * V + v] > av) { av = a[p * V + v]; am = v; }
+                if (b[p * V + v] > bv) { bv = b[p * V + v]; bm = v; }
+                maxd = Math.Max(maxd, Math.Abs(a[p * V + v] - b[p * V + v]));
+            }
+            if (am == bm) agree++;
+        }
+        Console.WriteLine($"  argmax agreement: {100.0 * agree / n:F3}%   max|Δlogit|: {maxd:E2}");
+        bool pass = agree == n;
+        Console.WriteLine(pass ? "  PASS" : "  CHECK");
+        return pass ? 0 : 1;
     }
 }

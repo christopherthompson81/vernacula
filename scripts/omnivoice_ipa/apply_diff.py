@@ -17,12 +17,12 @@ import shutil
 import time
 import numpy as np
 import onnx
-from safetensors import safe_open
+from onnx import numpy_helper
 
 BASE_DIR = "/mnt/data/omnivoice_ipa/onnx_base"
 BASE_ONNX = f"{BASE_DIR}/omnivoice_transformer.onnx"
 BASE_DATA = f"{BASE_DIR}/omnivoice_transformer.onnx.data"
-DIFF = "/mnt/data/omnivoice_ipa/onnx/ipa_diff.safetensors"
+DIFF = "/mnt/data/omnivoice_ipa/onnx/ipa_diff.onnx"
 OUT_ONNX = f"{BASE_DIR}/omnivoice_transformer_ipa.onnx"
 OUT_DATA_NAME = "omnivoice_transformer_ipa.onnx.data"
 CAP = "/home/chris/Programming/vernacula/scripts/omnivoice_export/capture/reference.npz"
@@ -35,12 +35,10 @@ def ext(init):
 
 
 def main():
-    diff = {}
-    with safe_open(DIFF, "pt") as h:
-        meta = h.metadata()
-        for k in h.keys():
-            diff[k] = h.get_tensor(k).float().numpy()
-    scale = float(meta["scale"])
+    dm = onnx.load(DIFF)
+    diff = {i.name: numpy_helper.to_array(i).astype(np.float32) if i.name != "embed_idx"
+            else numpy_helper.to_array(i) for i in dm.graph.initializer}
+    scale = float({p.key: p.value for p in dm.metadata_props}["lora_scale"])
 
     m = onnx.load(BASE_ONNX, load_external_data=False)
     inits = {i.name: i for i in m.graph.initializer}
@@ -65,7 +63,7 @@ def main():
     with open(out_data, "r+b") as f:
         for (layer, sub, proj), wname in node2w.items():
             key = f"llm.layers.{layer}.{sub}.{proj}"
-            A, B = diff.get(f"{key}.lora_A.weight"), diff.get(f"{key}.lora_B.weight")
+            A, B = diff.get(f"{key}.lora_A"), diff.get(f"{key}.lora_B")
             if A is None or B is None:
                 continue
             off, ln = ext(inits[wname])

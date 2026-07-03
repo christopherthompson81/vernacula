@@ -36,6 +36,16 @@
     <PackageReference Include="Markdig" Version="0.34.0" />
   </ItemGroup>
 
+  <!-- ONNX protobuf: read the base transformer graph (initializer external-data
+       offsets + MatMul-node→weight map) and the IPA diff .onnx, to fold the
+       fine-tune onto the base at load (OmniVoiceDiff). Grpc.Tools compiles
+       proto/onnx.proto -> C# (messages only, no gRPC); build-time only. -->
+  <ItemGroup>
+    <PackageReference Include="Google.Protobuf" Version="3.28.3" />
+    <PackageReference Include="Grpc.Tools" Version="2.68.1" PrivateAssets="all" />
+    <Protobuf Include="proto/onnx.proto" GrpcServices="None" ProtoRoot="proto" />
+  </ItemGroup>
+
   <ItemGroup>
     <!-- Shared ORT plumbing: OrtSessionBuilder, ExecutionProvider enum, etc. -->
     <ProjectReference Include="..\Vernacula.Base\Vernacula.Base.csproj">

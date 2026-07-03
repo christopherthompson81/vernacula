@@ -11,14 +11,15 @@ Output (fp16 safetensors): LoRA A/B factors per module + the changed embed rows 
 indices + metadata (scale, threshold). ~30 MB vs the 2.45 GB merged transformer (~80x smaller).
 """
 import glob
-import json
+import numpy as np
+import onnx
 import torch
+from onnx import helper, numpy_helper
 from safetensors import safe_open
-from safetensors.torch import save_file
 
 BASE = "/mnt/data/models/omnivoice/k2-fsa-OmniVoice"
 ADAPTER = "/mnt/data/omnivoice_ipa/train/checkpoints_v4/checkpoint-4000/adapter_model.safetensors"
-OUT = "/mnt/data/omnivoice_ipa/onnx/ipa_diff.safetensors"
+OUT = "/mnt/data/omnivoice_ipa/onnx/ipa_diff.onnx"
 EMBED_THRESHOLD = 0.001   # rows with max|Δ| below this are weight-decay drift → keep base
 LORA_ALPHA, LORA_R = 32, 16   # scale = alpha/r = 2.0
 
@@ -33,32 +34,36 @@ def base_embed():
 
 
 def main():
-    tensors = {}
-    meta = {"scale": str(LORA_ALPHA / LORA_R), "embed_threshold": str(EMBED_THRESHOLD)}
+    inits = []
     with safe_open(ADAPTER, "pt") as h:
         keys = list(h.keys())
-        # LoRA A/B — store fp16, keyed by the peft module path (layer.N....proj)
+        # LoRA A/B — fp16 initializers, named by the peft module path (layer.N....proj_lora_A)
+        # so the fold maps them to the base graph's Linear weights.
         for k in keys:
             if ".lora_A.weight" in k or ".lora_B.weight" in k:
-                # e.g. base_model.model.llm.layers.0.self_attn.q_proj.lora_A.weight
-                tensors[k.replace("base_model.model.", "")] = h.get_tensor(k).half()
-        # sparse embed rows
+                name = k.replace("base_model.model.", "").replace(".weight", "")
+                inits.append(numpy_helper.from_array(
+                    h.get_tensor(k).half().numpy(), name))
         ek = [k for k in keys if "embed_tokens" in k][0]
         ft = h.get_tensor(ek).float()
     d = (ft - base_embed()).abs().amax(dim=1)
     idx = torch.nonzero(d > EMBED_THRESHOLD, as_tuple=True)[0]
-    tensors["embed_rows"] = ft[idx].half()
-    tensors["embed_idx"] = idx.to(torch.int32)
+    inits.append(numpy_helper.from_array(ft[idx].half().numpy(), "embed_rows"))
+    inits.append(numpy_helper.from_array(idx.to(torch.int32).numpy(), "embed_idx"))
 
-    n_lora = len([k for k in tensors if "lora_" in k])
-    meta["n_lora_tensors"] = str(n_lora)
-    meta["n_embed_rows"] = str(len(idx))
-    save_file(tensors, OUT, metadata=meta)
+    # a ModelProto that carries the diff as initializers (empty graph — it's a tensor container,
+    # not a runnable model). C# reads graph.initializer via the same ONNX protobuf reader it uses
+    # for the base transformer; metadata carries the LoRA scale.
+    graph = helper.make_graph([], "ipa_diff", [], [], initializer=inits)
+    m = helper.make_model(graph, producer_name="omnivoice_ipa_extract_diff")
+    m.metadata_props.append(onnx.StringStringEntryProto(key="lora_scale", value=str(LORA_ALPHA / LORA_R)))
+    m.metadata_props.append(onnx.StringStringEntryProto(key="embed_threshold", value=str(EMBED_THRESHOLD)))
+    onnx.save_model(m, OUT)
 
     import os
-    sz = os.path.getsize(OUT) / 1e6
-    print(f"wrote {OUT}: {sz:.1f} MB")
-    print(f"  LoRA tensors: {n_lora} (fp16), embed rows: {len(idx)}/{ft.shape[0]} (>{EMBED_THRESHOLD})")
+    n_lora = sum(1 for i in inits if "lora_" in i.name)
+    print(f"wrote {OUT}: {os.path.getsize(OUT)/1e6:.1f} MB")
+    print(f"  LoRA initializers: {n_lora} (fp16), embed rows: {len(idx)}/{ft.shape[0]} (>{EMBED_THRESHOLD})")
 
 
 if __name__ == "__main__":
