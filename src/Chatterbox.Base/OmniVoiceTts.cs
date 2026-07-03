@@ -33,9 +33,10 @@ public sealed class OmniVoiceTts : IDisposable
     public double LastHostMs { get; private set; }
 
     public OmniVoiceTts(string onnxDir, string tokenizerJsonPath, ExecutionProvider ep,
-                        SessionLoadObserver? onLoad = null, string? transformerFile = null)
+                        SessionLoadObserver? onLoad = null, string? transformerFile = null,
+                        string? diffPath = null)
     {
-        _graphs = new OmniVoice(onnxDir, ep, onLoad, transformerFile);
+        _graphs = new OmniVoice(onnxDir, ep, onLoad, transformerFile, diffPath);
         _tok = new Qwen3Tokenizer(tokenizerJsonPath);
         _prep = new OmniVoiceTextPrep(_tok);
     }

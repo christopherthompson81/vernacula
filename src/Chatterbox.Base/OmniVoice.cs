@@ -1,5 +1,7 @@
+using System.Diagnostics;
 using Microsoft.ML.OnnxRuntime;
 using Microsoft.ML.OnnxRuntime.Tensors;
+using Vernacula.Base.Inference;
 using Vernacula.Base.Models;
 
 namespace Chatterbox.Base;
@@ -37,13 +39,38 @@ public sealed class OmniVoice : IDisposable
     private readonly InferenceSession _transformer;
     private readonly InferenceSession _encoder;
     private readonly InferenceSession _decoder;
+    // Non-null only when loaded with an IPA diff; its OrtValues back the folded transformer
+    // initializers and must outlive _transformer (disposed after it).
+    private readonly OmniVoiceDiff? _diff;
 
     public OmniVoice(string onnxDir, ExecutionProvider ep, SessionLoadObserver? onLoad = null,
-                     string? transformerFile = null)
+                     string? transformerFile = null, string? diffPath = null)
     {
         // disableTf32: TF32's ~1e-2 matmul error compounds into noise through the diffusion
         // loop on CUDA — OmniVoice must run full-fp32 matmul to match the CPU/reference output.
-        _transformer = SessionLoader.LoadAndReport(Path.Combine(onnxDir, transformerFile ?? TransformerFile), ep, onLoad, disableTf32: true);
+        string transformerPath = Path.Combine(onnxDir, transformerFile ?? TransformerFile);
+        if (diffPath is null)
+        {
+            _transformer = SessionLoader.LoadAndReport(transformerPath, ep, onLoad, disableTf32: true);
+        }
+        else
+        {
+            // IPA fine-tune as a load-time fold: build a SessionOptions with the same EP/TF32
+            // setup as the cached path, register the folded initializers on it, then create the
+            // session directly. The disk cache is bypassed — it keys on the file, not on the
+            // AddInitializer overrides, so a cached graph would silently serve the base weights.
+            _diff = new OmniVoiceDiff();
+            var sw = Stopwatch.StartNew();
+            var opts = OrtSessionBuilder.Create(
+                ep, GraphOptimizationLevel.ORT_ENABLE_ALL, enableProfiling: false,
+                out var usedCuda, disableTf32: true);
+            _diff.ApplyTo(opts, transformerPath, diffPath);
+            _transformer = new InferenceSession(transformerPath, opts);
+            sw.Stop();
+            onLoad?.Invoke(new SessionLoadEvent(
+                Path.GetFileName(transformerPath), sw.ElapsedMilliseconds, CacheHit: false,
+                usedCuda, new FileInfo(transformerPath).Length));
+        }
         _encoder = SessionLoader.LoadAndReport(Path.Combine(onnxDir, EncoderFile), ep, onLoad, disableTf32: true);
         _decoder = SessionLoader.LoadAndReport(Path.Combine(onnxDir, DecoderFile), ep, onLoad, disableTf32: true);
     }
@@ -131,5 +158,7 @@ public sealed class OmniVoice : IDisposable
         _transformer.Dispose();
         _encoder.Dispose();
         _decoder.Dispose();
+        // After the session — its initializers alias the diff's OrtValue-backed arrays.
+        _diff?.Dispose();
     }
 }

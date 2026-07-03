@@ -40,6 +40,7 @@ internal static class Program
         int numStep = 16;
         int? durationTokens = null;
         string? transformerFile = null;  // e.g. omnivoice_transformer_fp16.onnx
+        string? diffPath = null;         // ipa_diff.onnx: fold the IPA fine-tune onto the base at load
 
         for (int i = 0; i < args.Length - 1; i++)
         {
@@ -57,6 +58,7 @@ internal static class Program
                 case "--num-step": numStep = int.Parse(args[++i]); break;
                 case "--target-tokens": durationTokens = int.Parse(args[++i]); break;
                 case "--transformer": transformerFile = args[++i]; break;
+                case "--diff": diffPath = args[++i]; break;
             }
         }
 
@@ -79,9 +81,10 @@ internal static class Program
 
         var sw = Stopwatch.StartNew();
         Console.WriteLine($"Loading OmniVoice ({ep}) ...");
+        if (diffPath is not null) Console.WriteLine($"folding IPA diff at load: {diffPath}");
         using var tts = new OmniVoiceTts(onnxDir, tokenizerJson, epEnum,
             e => Console.WriteLine($"  loaded {e.FileName} in {e.ElapsedMs} ms (cuda={e.UsedCuda})"),
-            transformerFile);
+            transformerFile, diffPath);
         Console.WriteLine($"loaded in {sw.ElapsedMilliseconds} ms");
 
         long[,]? refCodes = null;
