@@ -1096,3 +1096,563 @@ Refined the distributable diff for the ONNX/C# deployment path:
   the rest from the base .onnx.data). **No 2.45 GB merged file** — the true load-time apply.
 - **Validated** (OmniVoiceSmoke `--fold-selftest`): base+diff (C#) vs Python-merged transformer =
   **100.000% argmax**, max|Δlogit| 9.9e-5, fold **2.5 s**.
+
+## Run 23 — 2026-07-28 — Re-phonemize FLEURS with vernacula-phonemizer; diff vs the espeak corpus
+
+**Question.** The shipped IPA corpus was produced by `espeak-ng-portable` in canonical-IPA mode.
+`vernacula-phonemizer` is the intended native replacement. Where do the two disagree on the same
+FLEURS text, and which disagreements are *vernacula defects* rather than defensible convention
+differences? (espeak is **not** ground truth here — this ranks where to look, not who is right.)
+
+**Setup.** Repo moved to `/mnt/data/Programming/vernacula`; corpus root still `/mnt/data/omnivoice_ipa`.
+
+- New: `scripts/omnivoice_ipa/omnivoice_fleurs_phonemize_vernacula.mts`
+  (`.mts`, not `.ts` — this repo has no `type: module`, so tsx compiled the old `.ts` as CJS and
+  rejected top-level await). Uses **`phonemizeAsync`**, not `phonemize`: the async entry is what
+  restores unwritten vowels on the unpointed abjads (Arabic) and engages the neural OOV/tagger
+  models (en, fr, bn, fa, …). Sync would have emitted an Arabic consonant skeleton.
+- New: `scripts/omnivoice_ipa/compare_ipa_engines.py` → `work/ipa_engine_diff/`.
+- Variety mapping — took the closest registry variety where one exists, since that is what
+  production ships: `ar_eg→arz`, `es_419→es-419`, `pt_br→pt-BR` (espeak was run on the bare
+  `ar`/`es`/`pt`, so part of those three diffs is dialect, not engine).
+
+**Run.** All 28 FLEURS languages, 76k utterances, **0 errors** (2 EMPTY in `kk_kz`, both the same
+duplicate id 1313). Whole corpus re-phonemized in well under a minute — Arabic is the slow path at
+116 utt/s (neural diacritizer); everything else is 2–3.5k/s.
+
+Note: FLEURS `train.tsv` repeats a transcript id across speakers, so the ~2–3.4k rows per language
+dedupe to ~1.2–1.5k unique ids. Comparison is on unique ids.
+
+**Method caveat found and fixed mid-run.** My IPA segmenter split `d͡ʒ` into two units — U+0361 is
+itself category `Mn`, so the generic combining-mark branch swallowed the tie bar before the tie-bar
+branch ran. Fixed (tie bar tested first) and re-ran; **metrics moved by <0.01**, so no conclusion
+depended on it. Recorded because the same trap will bite any future IPA tokenizer work.
+
+**Headline — `segments_only` distance** (stress and tone stripped, so it isolates *which sounds*
+from *how they are marked*):
+
+| tier | languages |
+|---|---|
+| near-agreement (<0.05) | `zu_za` .008, `ha_ng` .003, `kk_kz` .013, `ff_sn` .029, `vi_vn` .045, `fr_fr` .047 |
+| convention-level (.06–.16) | `es_419` .064, `cmn` .067, `th_th` .074, `am_et` .095, `ko_kr` .108, `en_us` .112, `ja_jp` .112, `hi_in` .130, `cy_gb` .134, `ta_in` .139, `de_de` .153, `xh_za` .157 |
+| large (.17–.23) | `cs_cz` .174, `ru_ru` .190, `sv_se` .201, `ca_es` .206, `ar_eg` .224 |
+| very large (>.3) | `pt_br` .326, `sd_in` .398, `ga_ie` .495 |
+
+**Reading the big three — two are *not* vernacula bugs:**
+
+- **`ga_ie` (.495) — vernacula is more correct.** The entire diff is the broad/slender contrast:
+  vernacula marks velarization/palatalization on essentially every consonant (`n`→`n̪ˠ` ×932,
+  `s`→`sˠ` ×787, `l`→`l̪ˠ`, `r`→`ɾʲ`), espeak marks it sparsely. Irish consonants are phonemically
+  broad/slender, so this is a real phonological distinction espeak drops.
+- **`pt_br` (.326) — the *existing corpus* is wrong, not vernacula.** espeak's `pt_br` output is
+  **European** Portuguese: `ɨ` reduction (`dɨ`, `nˈɔɾtɨ`), coda `ʃ` (`pɐkiʃtˈɐ̃ᶷ̃`). Vernacula gives
+  proper BP — `d͡ʒ/t͡ʃ` palatalization (`nˈɔɾt͡ʃi`), l-vocalization (`sˈuw`). Top subs `ɨ`→`e` ×3192,
+  `ʃ`→`s` ×1366 are exactly this. **The shipped fine-tune corpus has EP phonemes on BP audio.**
+- **`sd_in` (.398) — this one *is* a vernacula defect.** See below.
+
+**Confirmed vernacula-phonemizer defects (minimal repros verified directly, not inferred):**
+
+1. **Sindhi has no stress at all.** `ˈ`/`ˌ` in **0 of 3443** `sd_in` lines (espeak: 3443/3443).
+   Compounded by over-applied schwa epenthesis and lost vowel quality — top subs `ʌ`→`ə` ×3889,
+   `eː`→`iː` ×1674, `ɪ`→`ə` ×1251. `نمائش` → `nəmaːʃə` vs espeak `nˈʊmaːˈɪʃ`; nearly every word
+   also gains a final `ə`. Sindhi looks materially under-developed.
+2. **Amharic and Oromo also emit zero stress** (`am_et`, `om_et`: 0%; espeak 100%).
+   (`ja_jp` 0% and `cmn` 17% are *correct* — pitch accent `ꜜ` and tone letters instead.)
+3. **Irish has no number expansion.** `phonemizeAsync("25 agus 21","ga")` →
+   `"d̪ˠˈoː kˈuːɟ ˈaɡəsˠ d̪ˠˈoː ˈeːn̪ˠ"` — digit-by-digit ("two five"), not `fiche a cúig`.
+   `"1998"` → `"ˈeːn̪ˠ n̪ˠˈiː n̪ˠˈiː ˈɔxt̪ˠ"`. English control is fine (`"25 dogs"` → `twˈɛnti fˈaᶦv`),
+   so the machinery exists and Irish just isn't wired to it.
+4. **Arabic lexicon annotation leaks into output.** `phonemizeAsync("كتب","arz")` →
+   **`"katab/[kˈatab"`** — a raw `/[`-separated alternatives entry emitted verbatim. 11 utterances
+   in `ar_eg`. Small blast radius, trivially reproducible, clearly wrong.
+5. **Punctuation leaks into the IPA string** in every language, and *more* than espeak
+   (`ja_jp` 4% vs 0%, `hi_in` 6% vs 0%, `de_de` 12% vs 4%). `phonemizeAsync("これは、テストです！","ja")`
+   → `"ko̞ɾe̞wä , te̞sɯᵝto̞de̞sɯᵝ !"`; Catalan leaks `:` and `;`. This matters for the TTS token
+   vocabulary — stray `,!.:;?` become phoneme tokens.
+6. **Runaway length marks.** `"ああああ"` → `"äːːː"` (triple `ː`); `ja` also shows `e̞ːːː`, `ɯᵝːː`.
+
+**Convention-level differences (no action — but they change the token inventory):** `e`→`ɛ` /
+`i`→`ɪ` across cs/xh/ru (vernacula uses lax symbols), gemination written `kk`→`kː` (ta, ar, ru),
+`v`→`ʋ` (ta), `r`→`ɾ` (am, tr), `l`→`ɫ` (ca, en), aspiration `kʰ/tʰ/pʰ` marked in en, German
+offglides `aᶦ`→`aɪ̯`. Any of these silently changes the phoneme vocabulary the model is trained on.
+
+**Implication for next step.** Three things are now decoupled:
+(a) **vernacula fixes** — Sindhi (stress + epenthesis), am/om stress, Irish numerals, the Arabic
+`/[` leak, punctuation stripping, length-mark clamping;
+(b) **a corpus bug independent of the engine swap** — `pt_br` was phonemized as European
+Portuguese and should be regenerated regardless of which engine wins;
+(c) **a vocabulary decision** — even the "no action" convention diffs change the token set, so the
+IPA token inventory has to be re-derived (and the fine-tune re-run) if we switch engines. That is
+the expensive part, not the phonemization itself.
+
+**Artifacts.** `work/phonemized_vernacula/byid/*.tsv` (new IPA),
+`work/ipa_engine_diff/{summary.tsv,report.md,<lang>.{subs,words}.tsv,<lang>.samples.txt}`.
+Per-language `.samples.txt` is worst-first side-by-side and is the fastest way to eyeball a language.
+
+## Run 24 — 2026-07-28 — vernacula-phonemizer #547 (Sindhi) fixed; `sd_in` corpus re-generated
+
+First of the six Run 23 defects to be fixed upstream. Full write-up lives in the phonemizer repo
+(`docs/investigations/sd_native_bringup_investigation.md`, Phase 4); corpus-side effect only here.
+
+- **Stress:** `sd_in` went from **0% → 100%** of utterances carrying a primary stress mark. Sindhi
+  was the one Indo-Aryan Perso-Arabic module never wired to the shared `applyWeightStress` rule that
+  hi/ur/pa already use.
+- **Epenthesis:** default-ə no longer splits a homorganic nasal + stop cluster (سنڌ `sənəd̪ʰə` →
+  `sˈənd̪ʰə`). Measured against the 539-word Sindhi lexicon: 53 → 41 split clusters.
+- **Corpus metrics** (`compare_ipa_engines.py sd_in`): mean distance **0.565 → 0.518**;
+  segments-only **0.398 → 0.395**. The segments-only number barely moves *by design* — it strips
+  stress, which is what this change was mostly about. Upstream referee eval 77.0% → 77.5%.
+- **Not fixed, and not fixable in code:** Sindhi short-vowel *quality* (`kət̪aːbə` vs attested
+  `kɪt̪aːbʊ`). That is the abjad wall — 408 of 539 lexicon words differ on it — and only lexicon
+  coverage moves it. Sindhi will remain the weakest language in the corpus after #547 closes.
+
+`work/phonemized_vernacula/byid/sd_in.tsv` regenerated (3443 utterances, 0 errors).
+
+**Script bug found and fixed:** `omnivoice_fleurs_phonemize_vernacula.mts` ignored positional
+language args when `--limit` was absent (the `li + 1` skip dropped `argv[0]` because `li` was -1),
+so `... sd_in` silently re-ran all 28 languages. Harmless (idempotent) but it made the single-language
+turnaround look slower than it is. Guarded on `li >= 0`.
+
+## Run 25 — 2026-07-28 — Two espeak-diff issues were FALSE POSITIVES; how to read the diff
+
+Working #547–#552 (filed from the Run 23 espeak diff) surfaced a systematic error in how I read that
+diff. Recording it here, because this doc is what generated the issues.
+
+**#551 "punctuation leaks into the IPA output" — INVALID, it is a designed phrase break.**
+`src/core/clauses.ts` implements a clause-pause mechanism: a punctuation token becomes a PENDING pause
+rendered between phonemized tokens (`sink.pause(mark)`), deliberately never doubled and never trailing.
+Each language declares its own map, and the dispatch is guarded — `const mk = CLAUSE_MARK[m[3]]; if (mk)
+sink.pause(mk)` — so an UNMAPPED character is dropped by construction and only declared markers can reach
+the output.
+
+Verified empirically across 12 corpus languages: every punctuation character appearing in our FLEURS
+output is a declared clause marker, **zero undeclared** (sd `,.;?` vs declared `,.;?`; ca `!.:;` vs
+`!,.:;?…`; am `!,.:;?` vs `!,.:;?`). TTS front-ends want phrase-break markers, and that is what these are.
+
+What I read as "leaking more than espeak" was simply that WE emit break markers where espeak does not.
+And the `、`→`,` / `।`→`.` mapping I flagged as "normalising but not removing" is the design working:
+script-specific punctuation normalised to a canonical break token.
+
+**#548 Amharic "no stress marks" — INVALID.** 915 human referee entries mark no Amharic stress, and
+espeak's own marks sit on the first syllable 99.1% of the time — a positional default carrying no lexical
+information. (The Oromo half WAS real and is now implemented from a phonetic reference.)
+
+### The reading error, and the correction
+The Run 23 write-up said "espeak is not ground truth — this ranks where to look, not who is wrong", and
+then I filed issues as if a difference were a defect. Three questions to ask before filing from a diff:
+
+1. **Does the feature exist in the language?** (Amharic stress does not — check the human referees, which
+   for am/om/ga carry exactly this evidence.)
+2. **Is the difference OUR deliberate design?** (Clause pauses are; `git grep` the mechanism before
+   assuming a leak.)
+3. **Is espeak's own output informative, or a default?** (99.1%-first-syllable is a filler; measure the
+   distribution rather than trusting the presence of a mark.)
+
+Score so far: #547 real, #549 real (though my diagnosis was wrong — it was a documented stub, not
+unwired), #550 real, #548 half-real, #551 not real. **#552 (runaway length marks) has not been re-examined
+under these questions** and should be before any code is written — some languages contrast overlong vowels.
+
+## Run 26 — 2026-07-28 — pt_br espeak corpus regenerated as BRAZILIAN Portuguese
+
+Fixes the corpus bug found in Run 23: the espeak transcription of `pt_br` was EUROPEAN Portuguese.
+`omnivoice_flieurs_phonemize` maps a FLEURS code to espeak's data dir by taking the first `_` segment,
+so `pt_br` fell through to bare `pt` — and espeak's `pt` is EP (ɨ-reduction, coda ʃ: `pɐkiʃtɐ̃ᶷ̃`). The
+shipped fine-tune corpus therefore had EP phonemes on Brazilian audio.
+
+**Fix:** espeak-ng-portable ships a full `data/pt-br`; verified it produces genuine BP (`nˈɔɾt͡ʃi`,
+`ˈĩnd͡ʒjɐ`, no ɨ) before wiring it. The script now carries a `VARIETY` map (`pt_br → pt-br`) with a
+header note explaining WHY the fallthrough is wrong, so the next rebuild cannot silently regress.
+Checked for other affected languages: espeak-ng-portable has **no** closer variety for `es_419` or
+`ar_eg` (bare `es`/`ar` is all it ships), so pt_br was the only one of the three variety-mismatch
+languages fixable on the espeak side. (Script renamed `.ts` → `.mts` — same CJS/top-level-await trap
+as Run 23's companion script.)
+
+**Result** (`compare_ipa_engines.py pt_br`, 2,793 utterances, 0 errors):
+
+| | Run 23 (espeak=EP) | now (espeak=BP) |
+|---|---|---|
+| mean distance | 0.385 | **0.274** |
+| segments-only | 0.326 | **0.211** |
+| tok-align | 81% | 79% |
+| `ɨ` in the diff | ×7,094 (top sub) | **0** |
+
+The EP signature is gone entirely; what remains is convention-level notation (z~s voicing assimilation,
+ẽn~ẽ nasal spelling, ɐ̃ᶷ̃~ɐ̃w̃ offglide, x~ʁ rhotic — both valid BP), putting pt_br in the same tier as
+sv/ca instead of the pathological tier. The two engines now agree they are describing the same dialect.
+
+**Downstream consequence, not yet done:** everything derived from the OLD pt_br espeak IPA — the token
+corpus, the IPA vocabulary, and the fine-tune itself — was trained on EP phonemes for Brazilian audio and
+needs regeneration. That work is already queued as part of the engine-switch re-fine-tune (Run 23 note c),
+so this fix slots into that rebuild rather than triggering its own.
+
+## Run 27 — 2026-07-28 — Post-fix re-diff: one confirmed defect left in the whole table
+
+Regenerated all 28 vernacula transcriptions after the #547–#552 fixes and re-ran the engine diff,
+this time judging every large systematic substitution against a HUMAN referee (Run 25 discipline)
+instead of against espeak. Verdicts on everything ≥0.1 segments-only:
+
+| lang | seg-only | verdict |
+|---|---|---|
+| ga_ie | .491 | vernacula MORE correct (broad/slender marked; espeak drops it) — no action |
+| sd_in | .400 | espeak is no longer a valid referee here: our vowels are attested-sourced (kaikki/Devanagari), espeak defaults its own — diff ≠ signal |
+| ar_eg | .223 | dialect (we run arz, espeak has no Egyptian) — no action |
+| pt_br | .211 | convention-level since Run 26 (z~s assimilation, nasal/offglide notation, x~ʁ) |
+| ca_es | .206 | **CONFIRMED DEFECT — see below** (plus l~ɫ, r~ɾ notation) |
+| sv_se | .201 | judged vs wikipron: the referee writes unstressed e as **ɛ** (vatten `v a tː ɛ n`, efter `ɛ f t ɛ r`) — sides with US; espeak's ə is the outlier. ə→ɛ ×5194 is espeak being wrong. |
+| ru_ru | .190 | lax-vowel notation (i~ɪ, ɑ~a, u~ʊ) — convention |
+| cs_cz | .174 | e~ɛ, i~ɪ notation — convention |
+| xh_za | .157 | e~ɛ, o~ɔ: Xhosa mid vowels are open-mid — vernacula right |
+| ta_in | .139 | v~ʋ, geminate CC~Cː notation; ச s~t͡ɕ worth a referee look someday |
+| cy_gb | .134 | vowel-notation conventions (Run 23) |
+| hi_in | .130 | t→t̪, d→d̪: espeak DROPS dentality — vernacula right |
+| om_et | .129 | segmental conventions; stress now implemented (mean .297→.231) |
+| ko_kr | .108 | ʌ~ɘ notation + unreleased finals k̚/p̚ — vernacula narrower |
+
+### The one confirmed defect: Catalan clitic vowel reduction
+espeak `əl`, we say `ɛɫ` — and the human referee sides with espeak (`em` → `ə m`; Central Catalan
+proclitics are [ə]). Affected: el, els, em, et, es, en, del, pel (ə class) and al (should stay a? — to
+verify during the fix). Content monosyllables correctly keep their full vowel (mel `mˈɛɫ`).
+
+**Root cause located** (`catalan.ts`): the engine already KNOWS these are unstressed — `FUNCTION_WORDS`
+de-stresses them — but the de-stressing is a post-hoc `ipa.replace("ˈ","")` applied AFTER `reduce()`
+ran with the word's single nucleus at the stress index. The mark is stripped; the vowel keeps its
+stressed quality. Fix shape: for a function word, run reduction with stress = -1 (reduce every nucleus)
+instead of stripping the mark afterwards. The `əl→ɛɫ` ×633 and part of `ə→ɛ` ×1184 rows fall out of it.
+
+### Bottom line
+After this round, the espeak diff is **mined out**: every remaining systematic difference is either a
+notation convention, a documented dialect split, espeak being wrong (sv, hi, ga, xh), or the one Catalan
+clitic bug above. Further vernacula improvement has to come from human referees and phonetic references
+(the Oromo/Kamisee pattern), not from more espeak comparison.
+
+### Run 27 addendum — the Catalan clitic defect is FIXED (vernacula-phonemizer #558)
+`phonemizeWord` gained an `unstressed` flag that sets the stress index to -1 BEFORE reduction (the old
+post-hoc ˈ strip removed the mark after the vowel had already kept its stressed quality). el gat →
+`əɫ ɡˈat`, ho → `u`; evidence-based exceptions o/no/com keep their vowel (the referee attests o → "o",
+em → "ə m"). Citation forms and the referee eval (81.3%) untouched by construction.
+
+**Corpus effect: ca_es segments-only 0.206 → 0.159.** With that, the espeak diff is fully mined out —
+every remaining row in the Run 27 table is convention, dialect, or espeak's own error.
+
+## Run 28 — 2026-07-28 — Qualitative read of the vernacula corpus (not metrics: actual reading)
+
+Mechanical sweep first: **zero empty outputs** across all 28 languages, no degenerate repetitions
+(the 3 flagged vi_vn lines were the word ở legitimately repeating — but see below), no junk characters
+(after discounting my own too-narrow IPA character class).
+
+### The transcripts read WELL
+Close-read random samples in en/de/fr/es/hi/ja/cmn/ar. The narrow features that make TTS sound natural
+are present and correct: English aspiration + flapping + plausible OOV surnames (huhne → hˈʌn); French
+LIAISON (les autorités → le zotɔʁite); Spanish spirantization β/ð/ɣ + seseo + yeísmo; Hindi dentals,
+nasalized vowels, geminate d̪ʱː; Japanese sokuon and pitch accent; Mandarin tone letters; German
+ɐ̯-vocalization and diphthongs. (One false alarm recorded honestly: en "16" looked like "sixty" in a
+truncated display; it is sɪkstˈiːn.)
+
+### Noticeably wrong, ranked
+1. **German: prefix destressing misses common irregular participles.** gesagt/gemacht/bekommen/verstehen
+   are correctly ɡə-/bə-/fəɐ̯-, but **gegangen → ɡˈeːɡaŋən, bedeutet → bˈeːdɔʏ̯tət, genutzten →
+   ɡˈeːnʊt͡stən** — stressed long [eː] on the prefix. These are top-frequency words; a German ear hears
+   it immediately. The detector plainly exists and fails on a class of stems — the highest-value fix.
+2. **Silent content dropping.** Token retention by language exposed it:
+   - **sd_in 93.0%** — BOTH digits and Latin words vanish (اسپتال ۾ 45 → no "45"; facebook → nothing).
+     `SindhiPhonemizer` accepts a `foreign` phonemizer but the registry never passes one — a one-line wire.
+   - **vi_vn 98.0%** — numbers are PERFECT (25 → hai mươi lăm) but Latin proper nouns vanish
+     (paris, sofia, bulgaria dropped whole).
+   - **om_et 94.5%** — numbers dropped (dhibbentaa 25 → no 25); Latin names fine.
+   For TTS this is worse than a wrong phone: the audio will be missing words the text has.
+3. **arz numbers are MSA, not Egyptian**: 80 → θamaːnuːn (with θ, which Egyptian lacks) rather than
+   tamanīn. Understandable (numbers route through the MSA compositor) but audible.
+4. Minor: French roman numerals (xviie → ksvjj); Arabic foreign names pass through the abjad with no
+   vowels (سنترال → sntrˈaːl); cy numbers still digit-by-digit (the Welsh stub, noted at #549);
+   ja under-segmentation fusing particles (known, #552 scope).
+
+### Verdict
+Qualitatively, yes — these are BETTER transcripts than the espeak corpus: narrower where it matters
+(aspiration, liaison, spirantization, dentals, pitch/tone) and now backed by referee-validated fixes.
+The remaining defects are enumerable and small: one German stress bug, three wiring gaps for
+numbers/foreign words, and a handful of cosmetics. Nothing structural.
+
+### Run 28 addendum — the fixable half SHIPPED (vernacula-phonemizer #560); long-haul logged
+- **German prefix stress**: inflection-aware stress lookup + guarded prefix fallback. bedeutet →
+  bədˈɔʏ̯tət, gegangen → ɡəɡˈaŋən; roots (beiden, gestern) protected by the same mechanism. 11/14 of the
+  most frequent affected words were wrong; all correct now. de referee eval unchanged (78.2% — citation
+  lemmas were already covered).
+- **No silent content loss**: sd retention 93.0→98.1% (Latin+digits wired to English à la ur/hi, and the
+  two dropped PARTICLES added: ۾ [mẽ] ×1068 kaikki-attested, ۽ aẽ ×839), om 94.5→98.5% (digits via
+  English as a documented stopgap), vi 98.0→103.9% (non-syllable Latin tokens routed to English —
+  paris/sofia no longer vanish).
+- **Long-haul logged as issues**: #561 Arabic-variant numerals (arz 80 → θamaːnuːn is MSA with a phoneme
+  Egyptian lacks); #562 text-normalization layer (ordinals, roman numerals, initialisms, dates/times,
+  units, and the Welsh + Oromo number compositors).
+Corpora regenerated for de/sd/vi/om. The Run 28 "noticeably wrong" list is now: fixed (1, 2), logged
+(3, 4). Enhanced-corpus state is what the re-fine-tune should build from.
+
+### Run 28 addendum 2 — Arabic foreign-name repair SHIPPED (vernacula-phonemizer #563)
+Tier 1 (mater lectionis: و/ي inside an illegal run re-read as the u/i they carry in loan spellings) +
+Tier 2 (epenthesis after the run's first consonant — template SELECTED against 57 attested loanword
+transcriptions, not assumed). No foreignness detector: the repair keys on the (C)V(C)(C) phonotactic
+signature, so native output is untouched by construction.
+
+  سنترال بوكنج  sntrˈaːl bwknɡ → sinitrˈaːl bukinɡ    (bukinɡ = "booking")
+
+Corpus: **931 → 0** phonotactically illegal arz tokens (2.38% → 0.00%); ar_eg regenerated. Tier 3
+(diacritizer trained on mined transliterated names) deliberately not logged — future work, approach
+obvious from here. The Run 28 list is now fully dispositioned: German stress ✓, silent loss ✓ (sd/vi/om),
+Arabic foreign names ✓, arz MSA numerals → #561, normalization layer → #562.
+
+### Run 28 addendum 3 — Egyptian numerals SHIPPED (vernacula-phonemizer #564, closes #561)
+`numberToIpa` parameterized by variety table; egyptian.jsonc carries per-form-attested Egyptian numerals
+(kaikki/wikipron/Wiktionary-arz, with the fused hundreds 300–900 flagged as pedagogical-literature-only).
+80 θamaːnuːn → **tamaniːn**, 25 → xamsa **wi** ʕiʃriːn, 1998 → ʔalf wi tusʕumijːa wi tamanja wi tisʔiːn.
+Three homograph traps caught (sˤafːar≠sˤifr, ʔalːif≠ʔalf, majjitiːn≠miteːn). MSA + nine other varieties
+byte-unchanged; adding another variety is now a data exercise. ar_eg regenerated — zero θ/ð tokens remain.
+Board: #562 (normalization layer) is the only open issue.
+
+### Run 28 addendum 4 — English text normalization SHIPPED (vernacula-phonemizer #565, first #562 consumer)
+Pure text→text pass at the top of the en pipeline; every rewrite emits words/digits the existing
+number/ordinal/OOV machinery already speaks. Fixed: % and $ (previously DROPPED — silent loss), units
+(40 km → kilometers; was "k-e-m"), dates (february 16 → sixteenth), times (12:05 → twelve oh five, no
+spurious pause), years (in 1998 → nineteen ninety-eight), roman numerals (world war ii → two; henry
+viii → the eighth; closed 2–20 set minus vi/xi, context-gated cardinal-vs-regnal). Corpus-validated:
+131/1,476 en_us utterances changed, all sampled changes improvements; en_us regenerated. #562 stays
+open for the other languages + the Welsh/Oromo compositors.
+
+### Run 28 addendum 5 — multilanguage normalization SHIPPED (vernacula-phonemizer #566)
+Shared symbol layer (%, currency, units — one engine, per-language data, Slavic 3-way agreement,
+Turkish prefix percent, Cyrillic units for ru) wired for fr/de/es/pt/ca/cs/ru/sv/tr/ga/hi; French roman
+numerals (xviie siècle → dix-septième — the exact Run 23 example — and louis xiv → louis quatorze);
+Welsh compositor (decimal, mutation core, feminine mil; every base word referee-attested) and Oromo
+compositor (corpus-attested core + [r]-flagged linker), both replacing digit stopgaps. 13 corpora
+regenerated; a worktree before/after audit verified ONLY trigger utterances changed. Suite 1493/1493.
+(This addendum was briefly committed to the WRONG repo by a wrong-cwd append — twice now with this
+doc — removed there, restored here. Check `pwd` before `cat >>`.)
+
+### Run 28 addendum 6 — Japanese particle segmentation SHIPPED (vernacula-phonemizer #567)
+The #552 under-segmentation residual, both directions: fused particles let coalescence cross the
+bunsetsu boundary (そのうち → so̞no̞ːt͡ɕi; now so̞no̞ ɯᵝt͡ɕi), and stranded particles carried pitch accents
+(端では → häɕide̞ wäꜜ — 286 accented strands corpus-wide, a PRE-EXISTING defect the audit surfaced).
+Mechanisms: extended particle sets (の/と/も/や/で + から/まで/など + run-start demonstratives, each with
+a stated safety argument), particle CHAINING (では/での attach to their content word), and a pitch-layer
+guard (bare particle tokens are heiban). ja_jp: 751/1,332 utterances improved; accented strands 286 → 13.
+The corpus diff caught two regressions synthetic probes missed (です/できます tearing) — same lesson as
+the English round: the corpus pass is the review.
+
+## Run 29 — 2026-07-29 — Fine-tune impact audit of the unwired #562 languages; TWO number bugs found
+
+Question: do the normalization gaps in the unwired languages (am/ar/cmn/ja/kk/ko/th/ta/vi/xh/zu, cy %)
+matter for the FLEURS training pairs? Frame: the AUDIO contains whatever the speaker said for those
+tokens, so a transcript that drops or misreads them is a misaligned pair.
+
+**Symbol classes (%, currency, time, unit): 288/17,236 utterances = 1.7%** across the 12 unwired
+languages (0.3%–3.0% each). In those, the number is READ but the symbol word is missing (cmn "40%" →
+sìshí without 百分之; ja without パーセント) — a one-word audio↔text mismatch per occurrence. Real but
+small; exclusion or per-language wiring both viable later.
+
+**But probing every language with `phonemize("25", lang)` exposed two pre-existing bugs that dwarf the
+symbol question — fixed and merged as #568:**
+- **Thai dropped EVERY number**: the tokenizer matched `(\d+)` with no consuming branch. 23.4% of th_th
+  utterances contain digits — all had silently lost them. The largest single silent-content-loss found
+  in this entire effort. New kaikki-attested Thai compositor (script-words through the g2p).
+- **Amharic dropped every TEN**: `String(t)` vs a "20"-keyed table — a one-character fix. 21.7% of am_et
+  utterances contain digits; 25 read as "five", 1998 as thousand-nine-hundred-eight.
+
+Neither was visible to the espeak diff (alignment absorbed the gap), the referee evals (no digits in
+citation words), or the retention sweep (th's spaceless ratio is meaningless; am's loss fractional).
+th_th and am_et regenerated.
+
+**Residual answer for the fine-tune:** after #568, the remaining mismatch surface in unwired languages
+is the 1.7% symbol-word utterances plus the year-reading question (languages that read years non-
+cardinally in speech — e.g. cmn/ja digit-wise years — get cardinal IPA today; bounded by the ~100
+year tokens per language). Both are candidates for utterance EXCLUSION lists at fine-tune time rather
+than blockers: filter utterances matching the symbol/year trigger patterns in unwired languages
+(~1–3% of data) until the words are wired.
+
+### Run 29 addendum — FLEURS-priority symbol layer SHIPPED (vernacula-phonemizer #569)
+The 13 remaining languages wired for %, currency and units, scoped to exactly what their FLEURS text
+contains (the Run 29 inventory drove the word list): am በመቶ/ዶላር, arz في المئة (inserted PRE-diacritizer —
+post-diacritizer injection reached the g2p as bare skeleton), cmn 百分之 prefix, ja パーセント+キロメートル,
+kk пайыз + CYRILLIC км/кг, ko 퍼센트/달러/킬로미터, th เปอร์เซ็นต์ (kaikki-attested), ta சதவீதம்/டாலர்,
+vi phần trăm + per-syllable units (ki lô mét), xh/zu class-prefix loans (iipesenti/amaphesenti,
+iikhilomitha/amakhilomitha), cy y cant + referee-attested doler/punt/cilogram (singular after numerals),
+hi +¥ येन. NOT wired, stated: xh/zu mm/cm/mi/mph, xh ¥, and clock times everywhere.
+
+The 13-language probe caught two latent ENGINE bugs from #566 before merge (NUM space-grouping fusing
+any space-separated digits; the %-prefix fallback gluing a currency remnant into a preceding number —
+88% $2 → 882) plus the Arabic ordering bug. All regression-tested.
+
+**Fine-tune impact status: the 1.7% symbol-utterance mismatch is now ~0 for the wired classes.** The
+remaining exclusion-list candidates are only: xh/zu minor units, clock times (all languages), and the
+year-reading nuance for languages with non-cardinal year speech. 13 corpora regenerated.
+
+---
+
+## Run 30 — 2026-07-29 — v5 fine-tune: retrain on the vernacula-phonemizer corpus
+
+The engine switch goes to training. Sequence (the Run 20 recipe, retargeted):
+
+1. **Manifest patch:** `patch_manifest_ipa.py` gained `--byid <dir>` + a per-language MISS report
+   (a sentence_id absent from byid would silently keep espeak IPA → mixed-engine corpus).
+   Ran with `--byid work/phonemized_vernacula/byid`: **71,964 rows refreshed across 28 langs,
+   0 misses** — full engine swap, audio codes untouched.
+   - Partial "changed" counts for ff/ha (and some zu/kk/th/vi rows) are NOT misses: checked
+     ff_sn/ha_ng row-identity — the two engines genuinely emit identical IPA for most of those
+     shallow-orthography sentences.
+2. **Offglide-collision check (Run 20 regression risk):** vernacula en_us already writes
+   superscript offglides (aᶦ 3403 / aᶷ 1220 / eᶦ 4132 / oᶷ 3177; zero plain aɪ/aʊ), bare ʊ=728
+   ≈ pure FOOT. The books→bucks label fix carries over — no collision reintroduced.
+3. **Sampling weights re-run** (`sampling_budget.py`, reads the manifests): fr 2.88→1.0 (espeak's
+   scarce ɒ isn't a vernacula symbol; scarcest fr-owned is now ɥ=1094), ga 1.46→1.0, only
+   **sd_in 1.34 and ha_ng 1.31 (→2× via ceil)** remain oversampled. Three census primitives now
+   count 0 in-corpus — kk ʀ (vernacula uses ʁ), ca ɱ, ga ̆ — convention respellings, not lost
+   sounds; reported as gaps, not weight drivers.
+4. **Webdataset rebuilt** (28 langs, dev holdouts re-split same fractions), `data_config.json`
+   regenerated.
+5. **v5 launched:** `train_config_v5.json` = v4 verbatim (4000 steps, lr 1e-4 cosine, bf16,
+   batch_tokens 2048×4 accum — Run 20 established 4000 is the right schedule; 8000 was the wrong
+   lever). Output `checkpoints_v5/`. ~1.13 s/it on the 3090 ⇒ ~75 min.
+
+What v5 has to learn that v4 never saw (Run 23 note c, now live): ɛ/ɪ lax-vowel conventions,
+geminate Cː, aspiration kʰ/tʰ/pʰ, dentals t̪/d̪, ʋ, ɫ, ja pitch-accent marks + heiban particles,
+sd implosives from the new lexicon/neural tier, all the #547–#569 normalization output (numbers,
+%, currency, units as in-language words). Next: eval-loss check, then the acceptance battery
+(gen_accept_test / rare-phone / books-better carriers) A/B'd against v4.
+
+**v5 training complete (2026-07-29 10:46, ~2h04 wall):** eval loss 500→4000:
+4.132, 4.037, 3.977, 4.008, 3.992, 3.982, 4.022, **3.966** — the same convergence
+shape as v4 (3.979 final; different dev IPA so not strictly comparable, but no regression signal
+and no instability from the new symbol inventory).
+
+**Acceptance battery (gen_accept_test, checkpoint-4000, GT-duration mode):** base-vs-v5 pairs +
+ground truth for three maximally-engine-changed languages, dev-held-out utterances:
+- **en_us** — target opens "ˈɑːn sɛptˈɛmbɚ twˈɛnti fˈɔːɹθ sˈɛvəntˈiːn fˈɪfti nˈaᶦn…": a live
+  test of the #562 date/year normalization (ordinal day + pair-wise year read) plus the t̬/offglide
+  conventions.
+- **sd_in** — vernacula's rebuilt Sindhi (implosives ɽ/ɗ…, dentals t̪/d̪, weight stress, 9.9k
+  lexicon + neural OOV): tests the deepest single-language rewrite.
+- **ja_jp** — pitch-accent marks (ꜜ), mora conventions (ɯᵝ, e̞/o̞), heiban particles: symbols the
+  model has NEVER seen in v4's espeak corpus (espeak ja had no pitch marks).
+Note (gen harness): stale `/home/chris/Programming/vernacula` ONNX/capture paths in
+gen_accept_test.py / apply_diff.py / ingest_fleurs.py updated to /mnt/data after the repo move;
+dev ids are now wav-basename keys (multi-speaker re-ingest), so the old 903/279 defaults are dead.
+Wavs → train/gen_test/v5_listen/{en,sd,ja}_{base,v5,groundtruth}.wav. **User listening verdict
+pending.** After verdict: ONNX export (export_omnivoice.py --adapter, checkpoints_v5) + extract_diff
+→ new ipa_diff.onnx + HF re-publish, and re-derive the token-corpus dataset if the verdict holds.
+
+**Listening feedback #1 (en): "st. james" → "street . james" — FIXED (phonemizer PR #570).**
+Two defects behind one artifact: the CMU dict maps bare `st`→STREET / `dr`→DRIVE (so saint-type
+uses read wrong), and the abbreviation's period leaked into the clause segmenter as a phrase
+break. Fix: English normalization step 0 — dotted `st./dr./mt./mr./mrs.` resolved to words with
+the dot CONSUMED; st/dr disambiguated by the NEIGHBOR test (following content word → saint/doctor
+precedes a name; function word or phrase end → street/drive follows one; FLEURS is lowercased so
+capitalization can't be the signal). Undotted `st` + content word → saint (st petersburg).
+Known edge, unchanged: stone-weight "1 st of" still reads street (absent from prose).
+Suite 1504/1504 (8 new). en_us regenerated: 12 utterances changed, ALL trigger-matched
+(st james/louis/petersburg/heliers ×9, dr. tony/lee ×3) — clean isolation; manifest re-patched.
+v5 saw 9 "street"-for-saint utterances in training (0.35% of en) — negligible for the model;
+the fix matters mainly for live inference phonemization and the NEXT retrain's corpus.
+
+**Listening feedback #2: "weird pauses — is there timescale manipulation?" — YES, and removed.**
+gen_accept_test forced `duration = len(GT wav)/SR`, handing the model the HUMAN's pause time +
+lead/trail silence as speech budget. Measured: ja GT 11.0s contains only 8.35s speech (17.7%
+internal pauses); en GT 15.3s → 13.2s speech. The model doesn't know where the human paused, so
+it filled the budget with drag and misplaced pauses. Three-regime A/B confirmed: ja GT-forced
+11.2s vs natural ~8.9–14s vs speech-only×1.05 8.96s (tight, zero internal silence — best pacing).
+**User decision: remove the force-duration mechanism altogether** — gen() no longer takes a
+duration; generate() uses its own estimator. Caveat, stated: RuleDurationEstimator is
+orthographic-calibrated, so on IPA it under-budgets en (8.49s for 13.2s GT speech — fast) and
+over-budgets ja (14.0s — slow). Removing the forcing removes the FALSE pauses; honest-estimate
+pacing is now what the test judges, and an IPA-calibrated estimator is the remaining lever
+(same family as the C# duration work in Run 17).
+Side findings: sd's dev ref clip is 21.2s — generate() itself warns >20s refs degrade cloning
+(pick 5–10s refs for future tests); en target IPA carries no punctuation, so en's residual
+clause pauses are model-learned pausing (FLEURS en audio pauses at clauses), not break markers.
+
+**Productionize (the Run 21/22 path, retargeted to v5):**
+- `extract_diff.py` → checkpoints_v5/checkpoint-4000: **ipa_diff.onnx 31.4 MB** (392 fp16 LoRA
+  initializers; 5,432/151,676 embed rows > 0.001 — v4 was 5,416; v4 diff kept as ipa_diff_v4.onnx).
+- `apply_diff.py` fold onto onnx_base: 6.3 s total; **parity folded-vs-merged-v5 PyTorch:
+  100.000% argmax, max|Δlogit| 7.95e-3** (v4 was 9.2e-3). Known-harmless peft warning
+  (audio_tokenizer semantic-encoder LoRA keys missing = untrained no-op adapters).
+- **C# fold self-test** (OmniVoiceSmoke --fold-selftest): base+diff vs Python-merged =
+  **100.000% argmax, max|Δlogit| 9.9e-5, fold 2.75 s** — Run 22 numbers reproduced.
+- **C# end-to-end smoke** through the shippable runtime (Qwen3 tokenizer → 3 ONNX graphs →
+  32-step diffusion, diff folded at load): saint-sentence target with LIVE vernacula IPA
+  (ref_text also re-phonemized with the current engine) → 6.11s WAV, clean. Sent to user.
+The distributable is unchanged in shape: base 3-graph ONNX (hosted once) + 31.4 MB v5 diff.
+NOT yet done (outward-facing, awaiting go-ahead): HF re-publish of the diff (publish_hf.py) and
+the token-corpus dataset re-publish (publish_hf_dataset.py — old one is espeak-based AND
+pt_br-EP-contaminated).
+
+**HF publish (user go-ahead):** both repos updated in place.
+- Model `christopherthompson81/omnivoice-ipa-onnx`: v5 `ipa_diff.onnx` (31.4 MB) replaced v4's;
+  base 3-graph ONNX unchanged (HF deduped — only the diff uploaded new bytes). Card rewritten:
+  IPA source is now vernacula-phonemizer (linked), with the normalization/stress/pitch story.
+- Dataset `christopherthompson81/omnivoice-ipa-corpus`: all 28 manifests re-uploaded (vernacula
+  IPA incl. the saint fix; codes .npz byte-identical, deduped). Card: phonemizer credit updated,
+  IPA-notes section extended (aspiration, dentals, geminates, ja pitch/mora, sd implosives,
+  normalize-before-phonemize contract), example row refreshed to the real current en_us row.
+- Post-publish verification: downloaded manifest_en_us.jsonl from the hub — 2,596 rows,
+  sentence 46 carries sˈeᶦnt; model repo file list confirmed (5 files + card).
+This closes the v5 production loop: corpus → train → parity → C# fold → smoke → published.
+
+---
+
+## Run 31 — 2026-07-30 — ASR × phonemization: the transcript is the SCRIPT, not what was said
+
+**Question:** vernacula-phonemizer #562 had to choose how English reads `i.e.` and `e.g.` — the letter
+names, the English gloss, or the full Latin, all interchangeable in speech. Since our output is a training
+target paired with audio, the question is answerable rather than a matter of taste: what did the reader
+actually say? We ship Parakeet, so ask it.
+
+**Method.** All six `en_us` FLEURS recordings containing either form (four distinct sentences, two of them
+read twice by different speakers). ASR is the production pipeline (Sortformer → Parakeet TDT v3), CPU EP.
+
+```sh
+# wav name is column 2 of the FLEURS tsv
+cd /mnt/data/omnivoice_ipa/corpus/fleurs_transcripts/data/en_us
+grep -h 'e\.g\.\|i\.e\.' *.tsv | awk -F'\t' '{print $2}' | sort -u
+# extract ONLY those (the archive is 1.4 GB)
+tar -xzf /mnt/data/omnivoice_ipa/corpus/audio_cache/data/en_us/audio/train.tar.gz train/<id>.wav
+cd src/Vernacula.CLI && dotnet build -c Release -p:EP=Cpu -p:Platform=x64
+dotnet run -c Release -p:EP=Cpu -p:Platform=x64 --no-build -- \
+    --audio <wav> --model /home/chris/.local/share/Parakeet/models --output <out>.txt --export-format txt
+```
+
+**Raw finding.**
+
+| recording | transcript | what the reader said |
+|---|---|---|
+| 8943036589905798133 | `i.e. 0 or 1` | *"values, zero or one"* — **omitted** |
+| 8444646757018174763 | `i.e. 0 or 1` | **omitted** |
+| 6335280368099145037 | `(e.g. in the Netherlands` | *"E.g., in the Netherlands"* — letter names |
+| 12268645777003278278 | `e.g. the Pennsylvania Wilds` | *"e. g. the Pennsylvania Wilds"* — letter names |
+| 9035023492553755712 | `(e.g. visa)` | *"For example, a visa"* — the gloss |
+| 9748067524408569243 | `(e.g. visa)` | *"Example given a visa"* |
+
+**Implications.**
+
+1. **The reading question had no answer, and that is the answer.** `e.g.` gets three renderings across four
+   recordings, including two speakers reading *the same sentence* differently. No target to match ⇒ the
+   choice is free. (The phonemizer went with the English gloss, per preference: *that is* / *for example*.)
+2. **`i.e.` was not spoken at all** by either reader — treated as unspoken punctuation. For that
+   construction *any* expansion adds phonemes the audio does not contain; the letter names would have been
+   exactly as wrong as the gloss.
+3. **The real finding, and it is ours not the phonemizer's: the FLEURS transcript is the script the reader
+   was given, not a record of what they said.** Every quality gate we have — the espeak diff (Runs 23–28),
+   the qualitative read (Run 28), the phonemizer's own corpus diffs — compares text against text. Where
+   transcript and audio diverge, the phonemizer can be perfectly correct and the *pair* still teaches a
+   wrong alignment. 2 of 6 recordings diverged here, on the token under study, and nothing in the pipeline
+   would have flagged it.
+
+**Method caveat.** Parakeet emits normalized orthography, which is what makes it a usable arbiter of
+*which* reading — it wrote `E.g.` for the letter names and `For example` for the words, and would not
+invent either spelling from the other's sound. It is NOT a phonetic transcription: it cannot distinguish
+reduced from full forms, and a token it drops may have been said fast rather than skipped. Two independent
+readers omitting `i.e.` is much stronger evidence than one would be.
+
+**Next step, not taken.** A **divergence audit**: ASR a whole corpus, align to the transcript, report the
+disagreements — as a data-quality filter on the training pairs and as a source of normalization questions.
+Costs real ASR time per language, so it wants one language measured first to find the actual divergence
+rate before committing. Two things it must not assume: that divergence means the transcript is wrong (the
+reader may have misread), and that a phonemizer change is the fix (often the right response is to drop the
+pair). Technique for the one-off case is recorded in the phonemizer playbook, step 5b.
