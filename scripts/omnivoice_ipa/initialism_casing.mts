@@ -59,6 +59,11 @@ export const INITIALISM_UPPERCASE: readonly string[] = [
     // `kǀˈɛːɔ`. Inert in the other seven languages that have it. The ceiling was real for two of the
     // three, not all three.
     "ceo",
+    // ⚠ `usa` ×97, and it passes the collision test the same way `un` did: es/pt/ca — where *usa* is
+    // the 3rd person of *usar*, "uses" — are INERT to the repair, while sv (×29), cs (×15), de (×14),
+    // ff, xh and om all change, and there it is genuinely the country. English is inert too because
+    // it already reads `usa` as jˌuːɛsˈeᶦ. The host that knows the word keeps it; the rest spell it.
+    "usa",
     // Places / companies commonly initialised
     "png", "hk",
     // Alphanumeric codes — the pass has an attached-to-digits branch (`CG4684` is its own cited example),
@@ -113,6 +118,9 @@ export const EXCLUDED: Readonly<Record<string, string>> = {
     // ⚠ REJECTED FROM THE CASING DIFFERENTIAL and the COLLISION GATE. Both report a token that reads
     // differently when uppercased, or that also occurs in another corpus; that is a strong signal but
     // never a verdict, and these are exactly the cases where acting on it would do damage.
+    us: "PRONOUN in en (×39) and Catalan *us* 'to you' (×42) — and unlike `usa`, English is NOT inert, "
+        + "so uppercasing would spell out the English pronoun. The dotted `u.s.` is already handled "
+        + "separately by the dotted-initialism rule, which is the form that carries the evidence",
     eu: "WORD in cy (their) ×660, fr (eu, avoir) ×46, pt (I) ×15 — the initialism is the minority",
     wwii: "roman-numeral compound — WWII is 'World War Two', NOT the letter names the uppercase pass gives it",
     led: "ordinary verb ×13 in context ('led to', 'led by'), not the diode. The homograph loses to frequency",
