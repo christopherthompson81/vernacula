@@ -2876,3 +2876,24 @@ the **UNESCO Bamako alphabet** — a letter's name is the letter plus -a (ba, ca
 correct by a documented standard. The discrepancy is that readers **code-switch to English letter
 names for international acronyms**. That is a reader behaviour, not an engine error, and it belongs
 with the parked nativisation question rather than in a fix.
+
+### The exclusion now takes TWO sources, because they find different things
+
+`exclude_defective.py` unions the DB `status` column with `work/silent_audio.tsv`:
+
+  · the DB carries what the RECOGNIZER-based sweep concluded — including the Welsh TRUNCATION, which
+    is audible and would never trip a silence test;
+  · the TSV carries what measuring the WAVEFORM found — the Spanish files that are full length and
+    empty, which no duration or transcript check can see.
+
+Neither is a superset of the other. Total exclusion is now **988 utterances** (was 498): cy_gb 480,
+es_419 490, ff_sn 9, sd_in 6, am_et 2, ar_eg 1. **No phone is lost in any language.**
+
+⚠ **The scan itself had to be rewritten before it could be trusted to finish.** The first version
+accumulated results in memory and wrote once at the end; the run was killed partway and left NOTHING
+on disk, so all 66 languages would have had to be rescanned. It now appends per language with a
+`#done` marker and resumes. A long job that cannot be resumed is a job that has to be run twice.
+
+It is scanning all **66 downloaded languages / 132 GB**, not just the 28 in the corpus — the extra
+cost is small next to the rescan risk, and the user plans to expand past 28, so the answer is worth
+having in advance.
