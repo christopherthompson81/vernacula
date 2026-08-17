@@ -37,6 +37,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import os
 import sqlite3
 import statistics
 import sys
@@ -44,6 +45,25 @@ import sys
 ROOT = "/mnt/data/omnivoice_ipa"
 DB = f"{ROOT}/work/asr_align/align.sqlite"
 AUTOMATIC = ("verified", "investigate", "recognizer_short", "defective_audio")
+SILENT_TSV = f"{ROOT}/work/silent_audio.tsv"
+
+
+def load_silent(path: str = SILENT_TSV) -> dict[str, set[str]]:
+    """{lang: {wav basename}} from scan_silent_audio.py — empty if it has not been run."""
+    out: dict[str, set[str]] = {}
+    if not os.path.exists(path):
+        return out
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            if line.startswith("#") or not line.strip():
+                continue
+            p = line.rstrip("\n").split("\t")
+            if len(p) >= 2:
+                out.setdefault(p[0], set()).add(p[1])
+    return out
+
+
+SILENT = load_silent()
 
 
 def ensure_columns(db: sqlite3.Connection) -> None:
@@ -113,6 +133,21 @@ def apply_auto(db: sqlite3.Connection) -> None:
                         "WHERE lang=? AND wav=? AND status IN " + str(AUTOMATIC),
                         ("audio far too short for its text; upstream FLEURS data, not our download",
                          lang, w))
+
+        # ⚠ SILENT AUDIO IS A SECOND, INDEPENDENT DEFECT AND THE RATE TEST ABOVE CANNOT SEE IT. The Welsh
+        # files are TRUNCATED, so they fail on seconds-per-phone. The 490 Spanish ones are FULL LENGTH AND
+        # EMPTY — a perfectly normal duration containing nothing — so their rate is unremarkable and they
+        # score `recognizer_short` instead. Measured from the waveform by scan_silent_audio.py.
+        #
+        # ⚠ AND IT HAS TO LIVE HERE, not in a one-off UPDATE. `defective_audio` is in AUTOMATIC, so the
+        # label was applied by hand once and then silently REVERTED the next time this pass ran — the
+        # comment survived, the status did not. A verdict inside an automatic category is only durable if
+        # the automatic pass can reproduce it.
+        for w in SILENT.get(lang, ()):  # noqa: B007 — set of wav basenames
+            db.execute(
+                "UPDATE utt SET status='defective_audio', comment=COALESCE(NULLIF(comment,''),?) "
+                "WHERE lang=? AND wav=? AND status IN " + str(AUTOMATIC),
+                ("silent audio (rms < 1e-4 at full duration); upstream FLEURS data", lang, w))
         db.commit()
         print(f"  {lang}: {len(scored)} scored, {len(short)} short", file=sys.stderr)
 
