@@ -1656,3 +1656,281 @@ Costs real ASR time per language, so it wants one language measured first to fin
 rate before committing. Two things it must not assume: that divergence means the transcript is wrong (the
 reader may have misread), and that a phonemizer change is the fix (often the right response is to drop the
 pair). Technique for the one-off case is recorded in the phonemizer playbook, step 5b.
+
+## Run 32 — 2026-08-17 — Re-phonemize on the normalization-layer phonemizer; hand QC before v6
+
+**Question.** vernacula-phonemizer gained text-normalization layers across all languages since the
+v5 corpus was cut (592 commits, 2026-07-29 → 2026-08-16). Re-phonemize FLEURS, hand-read every
+changed entry, and decide whether the corpus is fit to retrain on.
+
+**Setup.**
+- Snapshot of the corpus v5 actually trained on: `work/phonemized_v5/byid` (copied from
+  `phonemized_vernacula/byid` before overwriting — the diff has no baseline otherwise).
+- Re-ran `omnivoice_fleurs_phonemize_vernacula.mts --all` (`phonemizeAsync`, unchanged):
+  **28 languages, 77,584 utterances, 0 errors, 0 empty.** kk_kz's two v5 EMPTYs are gone.
+- New: `scripts/omnivoice_ipa/diff_corpus_versions.py`. `compare_ipa_engines.py` is the wrong shape
+  for a version bump — it samples 1200/lang and ranks worst-first because *everything* differs
+  between two engines. Here almost every row is byte-identical, so this sweeps **every** row and
+  dumps the changed set exhaustively (`<lang>.changed.txt` = the hand-read queue), plus per-language
+  symbol-inventory deltas (new symbols = tokens the live v5 model has never seen).
+
+**Headline: 7,108 of 40,058 unique utterances changed (17.7%).** Spread is very uneven —
+tr_tr 55.6%, ff_sn 47.4%, sd_in 42.7%, ko_kr 35.1%, th_th 34.7%, vi_vn 27.4%, fr_fr 27.0%,
+am_et 25.8%, ta_in 24.3% at the top; en_us 4.1%, hi_in 4.5%, ca_es 5.1% at the bottom.
+
+### The single systemic finding: the v5 corpus read thousands separators as the word "zero"
+
+This is not a per-language cosmetic. Reading the changed sets, the *same* defect class shows up in
+essentially every language, and the audio contains none of it:
+
+| lang | v5 said | current says |
+|---|---|---|
+| fr_fr | `zeʁo zeʁo` for a grouped thousand | `mil` / `miljɔ̃` |
+| ru_ru | `nolʲ` | `tɨsʲət͡ɕ` |
+| am_et | `1,000` → `and , zeɾo` ("one, zero") | `ʃi` |
+| kk_kz | `nøɫ` | `məŋ` |
+| es_419 | `seɾo` | `mil` |
+| de_de | `ʊlnʊlnʊl` ("null null null") | — dropped, correct |
+| sv_se | `783,562` → "…åttiotre **komma** fem sex två" | `…ɔtːɪɔtrɛtɵsɛn fˈɛmhɵndrasɛkstɪɔtvɔ` |
+| xh_za | `¥2,500` → `kʼuɓˈiːni , amakʰˈuːlu amaɬˈaːnu` | `amawˈaːkʼa amaɓˈiːni … iijˈɛːni` (¥ was silently dropped) |
+| cmn | `,` leaked | `t͡ɕʰiɛn` (千) |
+
+Swedish is the sharpest case because comma genuinely *is* its decimal mark: v5 read a
+3-digit-grouped number as a decimal ("seven hundred eighty-three **point** five six two"); current
+resolves grouping-vs-decimal by group width and gets it right.
+
+Alongside it, the same layer fixed times, units, ordinals, and symbol words in-language:
+hi `,`→`bəd͡ʒkəɾ` (बजकर), de `,`→`uːɐ̯` (Uhr), cs `,`→`ɦoɟɪn` (hodin), ru `,`→`t͡ɕɪsof` (часов),
+sv `h`→`peːrtɪ̀mːɛ` (per timme), hi `×`→`ɡʊɳaː` (गुणा), tr `ks`→`t͡ʃaɾpɯ` (çarpı),
+de `bzw.`→`bəˈt͡siːʊŋsvaɪ̯zə`, fr `av. J.-C.`→`ʒezykʁi`, cy/xh `a.m./p.m.`→`ə prˈənhaᶷn` /
+`kʼusˈaːsa` + `ˈɛːmv̤a kʼwɛmˈiːni`, am `ኪ.ሜ`→`kilo metɨɾ` (was `ki . me`, letters + leaked dots).
+
+### Per-language reads worth naming
+
+- **tr_tr (55.6%, the largest mover) — Turkish dot-ordinals, with vowel harmony.** `1.` = "birinci".
+  v5 leaked a bare `.`; current emits `-inci/-ıncı/-üncü/-uncu` correctly harmonised. Turkish writes
+  ordinals with a dot constantly, which is the whole 55.6%.
+- **vi_vn (27.4%) — v5 was spelling Vietnamese syllables out as ENGLISH LETTER NAMES.** Top subs are
+  `iːʲeᶦt͡ʃwaᶦ`→`əj`, `tʰiːwaᶦ`→`t̪əj`, `ɛɫwaᶦ`→`ləj`, `d͡ʒiːwaᶦ`→`ɣəj`: v5 read *đây/tây/lây/ghây*
+  as "ay-aitch-why", "tee-why", "el-why". The `-ây` rhyme is common, so a meaningful slice of the v5
+  Vietnamese corpus was garbage. Now read as Vietnamese.
+- **ta_in (24.3%) — Tamil years were digit-composed.** `1980` → v5 "onru aayiram onbadu nuuru
+  enbadu"; current `ˈaːjɪɾˌɐt̪ːʊ t̪ˈoɭːaːjˌɪɾɐt̪ːʊ ˈeɳbɐd̪ʊ` (ஆயிரத்து தொள்ளாயிரத்து எண்பது), the
+  actual Tamil year form. `1912` → v5 "pattu irandu" (ten two) → `pˈɐnːɪɾˌɐɳɖʊ` (twelve). `-ஆம்`
+  now fuses (`ˈaᶦn̪d̪aːm`) instead of splitting.
+- **cy_gb — traditional Welsh vigesimal ordinals.** `16eg` → v5 `ˈɨːn dˈeːɡ χwˈeːχ ˈeːɡ` (garbage)
+  → `ˈɨnvɛd ˈar bˈəmθɛɡ` ("unfed ar bymtheg"); `14eg` → `pɛdwˈɛrɨð ˈar ðˈeːɡ`.
+- **sv_se — century idiom.** `1100-1200-talet` → v5 "ettusen etthundra ettusen tvåhundra-talet"
+  → `ˈɛlvahɵndra tɪlː tˈɔlvhɵndratalɛt` (and the dash reads as "till").
+- **ko_kr (35.1%) — cross-boundary sandhi, on top of numerals.** Top subs are ㄴ→ㄹ lateralisation
+  (`n`→`ɭ` ×27), coda nasalisation (`p̚`→`m` ×35, `k̚`→`ŋ` ×29), intervocalic voicing (`p`→`b` ×24,
+  `k`→`ɡ` ×19), tensification (`k`→`k͈` ×12). Also native-vs-Sino numeral selection by counter
+  (`15개` → `ˈjɘɭdɐsɘt̚k͈ɛ`, native, correct) and unit idiom (`480km/h` → `sisˈok̚ …`, 시속 first).
+- **ff_sn (47.4%) / sd_in (42.7%) / om_et — number compositors now emit words** (Fula
+  `ɗiɗi/tati/ɡoː/sapːo`, Sindhi `həzaːɾʊ`, Oromo `kuma`) where v5 emitted digits-as-letters or
+  dropped them. ff also resolves a literal `&amp;` HTML entity to "e".
+- **en_us (4.1%, all good)** — `sámi` → v5 `ˈɛs mˈiː` (spelled S-M; the acute broke lookup) →
+  `sˈæmi`; `müslüm gürses` → v5 `ˈɛm sɫ ˈɛm d͡ʒˈiː ɹsˈɛs` → `məslˈʌm ɡˈʊɹsz`;
+  `+30°c` → v5 `θˈɝd̬iː sˈiː ˈɑːɹ` ("thirty C R") → `plˈʌs θˈɝd̬iː dᵻɡɹˈiːz sˈɛɫsiʲəs`;
+  `km2` → v5 `kʰˈeᶦəm tʰˈuː` ("K-M two") → `skwˈɛɹ kəlˈɑːmʌt̬ɚz`; `e.g.` → `fɔːɹ ɪɡzˈæmpəɫ`
+  (the Run 31 decision, now shipped).
+
+### Confirmed defect, and it is the valuable one: foreign-word delegation uses the SYNC path
+
+Non-Latin-script languages now read their Latin-script proper nouns instead of dropping them —
+right call, the audio contains those words and v5's target did not (am_et `national hurricane
+center` and `danielle` were both simply absent from the v5 target). But the delegated IPA is
+**degraded**, and the reason is exact:
+
+```
+                 phonemizeAsync(w,"en")      phonemize(w,"en")      what the corpus contains
+liguria          ləɡjˈʊɹiʲə                  lˈaᶦʊɹiʲə              lˈaᶦʊɹiʲə     (ɡ deleted)
+adekoya          æd̬əkʰˈɔᶦə                   ˈædŋkoᶷjˌɑː            ˈædŋkoᶷjˌɑː   (illegal dŋ)
+riomaggiore      ɹiʲoᶷmˈæd͡ʒiʲɔːɹ              ˈɛɹiʲoᶷmˌæɡɪŋˌɔːɹ      ˈɛɹiʲoᶷmˌæɡɪŋˌɔːɹ
+caboolture       kəbˈuːɫt͡ʃɹ                   kʰˈeᶦbuːɫt͡ʃəwɹi        kʰˈeᶦbuːɫt͡ʃəwɹi
+sezen            sˈɛzən                      sˈɑːʃɛn                sˈɑːʃɛn
+pbs              pʰˈiːbiːz                   pz                     pz
+```
+
+The corpus matches **sync byte-for-byte in every case**, including inside a synthetic Thai host
+sentence. So the host→English delegation is not calling the async entry, and every delegated token
+loses the neural OOV model — the exact downgrade `omnivoice_fleurs_phonemize_vernacula.mts`'s header
+warns about for the top-level call. **Blast radius: 1,500 of 15,543 unique non-Latin-script
+utterances (9.7%) contain a Latin token** — am_et 8.2%, ar_eg 2.7%, cmn 16.5%, hi_in 3.8%,
+ja_jp 8.7%, kk_kz 10.2%, ko_kr 15.2%, ru_ru 8.8%, ta_in 7.4%, th_th 15.2%, sd_in 8.2%. Fixing this
+upstream and re-running costs ~1 minute of phonemization, so it should land before v6 is cut.
+
+**Second, smaller defect: initialism reading.** `tb`→`tʰˈiːbˈiː` ✓ and `aol`→`ˈeᶦˈoᶷˈɛɫ` ✓, but
+`pbs`→`pʰˈiːbiːz` ("pee-beez") and `xdr`→`ˈɛkdɹ` — both wrong even on the *async* path, so this is
+independent of the delegation bug. Should be "pee-bee-ess" / "ex-dee-ar".
+
+### Open design question the diff cannot answer
+
+Delegated foreign words get **American English phonology inside a non-English utterance** —
+`sezen aksu` (Turkish) as `sˈɛzən ˈæksuː` in Korean and Thai text. A Korean reader says that name
+with Korean phonology. Per Run 31, this is answerable from the audio rather than by taste, and it is
+the one place a targeted wav2vec2/ASR probe earns its cost: sample the ~20 utterances where a Latin
+proper noun sits in Korean or Thai audio and check which phonology the reader used. Everything else
+in this diff is self-evidently better than v5 and does not need an acoustic arbiter.
+
+### Mechanical sweep
+
+0 empty rows in all 28 languages. Degenerate 3-repeats: cmn 12, ta 3 — both checked:
+- **cmn is a false alarm** (as in Run 28): `1444年` → `ji sɹ̩ sɹ̩ sɹ̩` is the correct Chinese
+  digit-by-digit year reading.
+- **ta 157 is a real (3-row) defect:** `us$11.000 … us$22,500` — the dot-grouped `11.000` read as a
+  decimal (`pˈʊɭːɪ pˈuːd͡ʒːɪjɐm ×3`, "point zero zero zero") even though the sibling number in the
+  same sentence uses comma-grouping. Same family as the phonemizer's current separator work. Also
+  `us$` reads as `ˈʌs` with the `$` dropped.
+
+**Punctuation leak (Run 23 defect #5) narrowed but not closed.** `:` (×123) and `;` (×35) are gone
+corpus-wide — collapsed into `,`. Remaining stream punctuation is `, . ! ?` only: **5,850 marks
+across 4,247 utterances**, worst in am_et (816), ff_sn (663), sd_in (567), de_de (386).
+`phonemizeAsync("yahoo!","en")` → `jˈɑːhuː !` and the ja `、`/`。` leaks both reproduce. These still
+become phoneme tokens in the fine-tune vocabulary.
+
+**German dot-ordinals are NOT handled** (contrast Turkish, which is): `am 16. februar` →
+`am zˈɛçt͡sen . fˈeːbʁuaːɐ̯` — cardinal plus a leaked dot, not "sechzehnten". `der 3. mai` →
+`deːɐ̯ dʁaɪ̯ . maɪ̯`. 103 de_de source utterances match `\d{1,2}\.\s`.
+
+### Verdict
+
+The corpus is materially better than v5 and the v5 numeral defect was bad enough that a retrain is
+justified on its own. Nothing structural is wrong. Before cutting v6 I would land two cheap upstream
+fixes — **foreign-word delegation → async** (9.7% of non-Latin-script utterances) and German
+dot-ordinals (103 utterances) — since re-phonemizing is ~1 minute and both change the training
+target. The initialism and `us$`/dot-grouping defects are small enough to ship around.
+
+**Artifacts.** `work/phonemized_v5/byid/` (v5 baseline snapshot),
+`work/phonemized_vernacula/byid/` (current), `work/ipa_version_diff/{summary.tsv,report.md,
+<lang>.changed.txt,<lang>.subs.tsv,<lang>.symbols.tsv}`. `<lang>.changed.txt` is the hand-read queue.
+
+**Not yet done:** manifest patch, sampling-weight re-run, webdataset rebuild, v6 train. Warm-start
+vs fresh is still open — see the note below.
+
+## Run 33 — 2026-08-17 — Both upstream fixes landed; and the audio says readers NATIVIZE
+
+Run 32's two blockers fixed in vernacula-phonemizer (branch `norm/foreign-async-oov`, not pushed),
+corpus regenerated, and the foreign-word routing question put to the audio.
+
+### Fix 1 — foreign-run delegation now uses the neural English path
+
+Not the one-line change it looked like. `core/foreign.ts` types its reader `(text: string) => string`
+**on purpose**: the host stack it maintains is only correct inside one synchronous turn, so the
+delegation cannot simply become async. The seam that did work is the one `phonemizeEnNeural` already
+uses on itself — resolve OOV readings asynchronously *first*, then hand them to the sync render as an
+`oovOverride`. So `phonemizeAsync` now tags the Latin words ahead of the host's render and memoizes
+them for the sync reader.
+
+A **plain memo**, not a scoped override: the tagger reads a bare lowercased g2pKey, so a reading is
+context-free and there is nothing to restore — none of the interleaving hazard that constrains the
+host stack. Consulted only on the foreign path, so `phonemize()` is byte-identical regardless of what
+ran before it (asserted in the new test).
+
+**Two invisible failures on the way, both worth recording:**
+1. `this.text` inside the new `EnglishPhonemizer.textWithOov` resolved to the **one-argument wrapper
+   `getPhonemizer` shadows onto the instance**, which silently drops arguments two and three. No
+   error, just the old reading — exactly the trap registry.ts documents for wrapper objects. It calls
+   the prototype method instead.
+2. **Fixing `setDefaultForeign` alone fixed almost nothing.** `emitUnclaimed` asks the script router
+   FIRST and `SCRIPT_TARGET.Latin` is `"en"`, so that is where embedded Latin actually goes; and ~46
+   engines that claim Latin themselves (mandarin, hindi, sindhi, amharic, vietnamese, …) are handed
+   the reader at construction and reach neither path. One `readAsEnglish` now serves all three.
+
+### Fix 2 — German dot-ordinals: the month test was case-sensitive
+
+Not a missing feature — a **casing** bug. `am 16. Februar` was already correct all along; only
+`am 16. februar` failed, because the `ORDINAL_NOUN` test ran case-sensitively against capitalised
+month names and FLEURS ships German lowercased. Folded case on that condition only; the second
+condition still requires a capitalised noun because it is the one that has to reject a sentence-final
+`N.`, and on lowercased text capitalisation is the sole signal — the same wall the English `st./dr.`
+work hit in Run 30. Also added a **≤ 31 guard**, which closes an over-fire the fold would have
+widened (`im Jahr 1998. Mai war warm` read 1998 as an ordinal): a German day and a century are both
+≤ 31, and all 100 such ordinals in the corpus are, so the guard is free — and it fixes the
+capitalised form too. Suite **4751/4751** (8 new tests across the two fixes).
+
+### Isolation audit — the fixes changed only what they should
+
+Re-phonemized all 28 (0 errors, 0 empty, 77,584 rows) and diffed against the pre-fix tree
+(`work/phonemized_prefix`, `work/ipa_fix_audit`):
+
+- **16 of 28 languages changed by exactly 0 rows** — every Latin-script one (ca cs cy en es ff fr ga
+  ha pt sd sv tr xh zu).
+- Of the 12 that moved, **100% of changed rows contain a Latin token**: th 103, ko 80, cmn 123, am 52,
+  ru 49, ja 42, kk 65, ta 33, hi 26, ar 17, vi 185, om 1. No collateral.
+- **de_de: 50 unique rows, 50 of 50 trigger-matched** (`am 6. juli` → zˈɛçstən, `am 10. august` →
+  t͡sˈeːntən; leaked ` . ` pauses gone). The one my grep first flagged as untriggered is
+  `des 18. jahrunderts` — the corpus's own misspelling, which is deliberately in `ORDINAL_NOUN`.
+- Quality of the recovered readings: `maroochydore` mˈɑːɹɔːˌɑːʃˌɔᶦd̬ˌɔːɹ → mɚˈuːt͡ʃid̬ˌɔːɹ, `noosa`
+  nɔːoᶷzˈɑː → nˈuːsə, `janissary` jˈænɪəsˌɑːɹ → d͡ʒˈænəsˌɛɹi, `safina` sˈeᶦfinˌɑː → səfˈiːnə, and
+  `hesperonychus` recovers a dropped initial h. Two small regressions, both Turkish names read by an
+  English model (`fatih` fətʰˈiː → fˈeᶦt̬ɪ, `erkoç` ˈɝkʰɑː → ˈɝkɑːk) — which is the routing question
+  below, not the reader's quality.
+- Punctuation after the fixes: 5,749 marks in 4,242 utterances, still only `, . ! ?`.
+
+### The routing probe — wav2vec2, and the answer is NATIVIZATION
+
+New: `scripts/omnivoice_ipa/probe_foreign_phonology.py`. Parakeet is European-only, so this uses
+**`facebook/wav2vec2-xlsr-53-espeak-cv-ft`** — a multilingual IPA phone recognizer, language-agnostic
+by construction and so not presupposing either answer. 21 utterances across ko/ja/cmn/ta/ru/am/th,
+selected because the transcript **begins** with the Latin token, which makes the region of interest
+the head of the phone string and removes the need for any alignment.
+
+(Mechanics note: `Wav2Vec2PhonemeCTCTokenizer` hard-requires the `phonemizer` package in its
+constructor, but only for the *encode* direction. Loading it `do_phonemize=False` skips that backend —
+so the probe needs no espeak, and no second phonemizer inside the loop it is refereeing.)
+
+| lang | token | what the corpus now targets | what the reader said | |
+|---|---|---|---|---|
+| ja | global running | ɡ**l**ˈoᶷbə**ɫ** **ɹ**ˈʌnɪŋ | ɡ**ɾ**oːba**r**dan**ɲ**iŋɡ**oː** | Japanese: ɾ/r for l, oː, epenthesis |
+| ja | modern education | mˈɑːd̬**ɚ**n ˌɛd͡ʒəkʰˈ**eᶦ**ʃən | muːdan eduk**eː**ʃʊn | no ɚ, no d͡ʒ, eː |
+| ko | atlanta thrashers | ætlˈæntə **θ**ɹˈæʃ**ɚ**z | atlɑnta **t**rɛnʃ**ro**s | θ→t, æ→a, no ɚ |
+| ko | palm / commons | pʰˈɑːm / kʰˈɑːmənz | pam / komos | short vowels |
+| cmn | metroplus | mˈɛtɹoᶷpləs | mei**5**ts.ou**5**plɑ**5**s | Mandarin syllables, **tone-marked** |
+| cmn | cell / lockwood | sˈɛɫ / lˈɑːkwʊd | siɛ5 / lɑu5xu5t | tone-marked |
+| th | fernando alonso | f**ɚ**nˈændoᶷ əlˈɑːnsoᶷ | f**oː**nand**oː** alans**oː** | no ɚ, long monophthongs |
+| th | lodin | lˈoᶷd̬ɪ**n** | loːdɛ**ŋ** | Thai coda nasal |
+| ta | myspace | mˈaᶦspeᶦs | maɪ**ji**speːs**a** | Tamil epenthesis + final a |
+| ru | myspace / hokuriku | mˈaᶦspeᶦs / **h**ˌɑːkɚˈiːkʰuː | maɪ**jɪ**speːs / **x**okoriki | Russian epenthesis, x for h |
+| am | whistler | wˈɪsl**ɚ** | wist**e**la**r** | Amharic epenthesis |
+| th | **kier starmer** | kʰˈɪɹ stˈɑːɹm**ɚ** | kiːəstɑːm**ɚ** | **English — the one clear case** |
+
+**~18 of 21 nativized.** The divergence is not random: what disappears is precisely the set of
+English-only phones (ɚ ɝ θ æ, the oᶷ/eᶦ offglides, /l/ vs /ɹ/) and what appears is host machinery
+(epenthesis, coda-nasal substitution, Mandarin tone letters, monophthongal long vowels). A
+recognizer's noise does not manufacture a systematic pattern in that shape. Caveats stated plainly:
+21 utterances, and the recognizer has its own espeak-flavoured biases — this establishes a direction,
+not a rate.
+
+**So routing embedded Latin to American English gives the model a target the audio does not contain.**
+The right target is host-nativized, which is a real phonemizer feature (per-language loanword
+adaptation), not a v6 blocker. Logged as future work; v6 trains with English delegation, now at least
+with the *good* English readings.
+
+**Second finding, unlooked for, and it corroborates Run 32's other defect acoustically.** Two of the
+21 are initialisms, and the readers said **letter names** while the corpus targets a word:
+
+| token | corpus target | reader | |
+|---|---|---|---|
+| `acma` (am) | ˈækmɑː | esiːeme | "A-C-M-A" |
+| `rspca` (ta) | ɹspkˈɑː | arʌsbilθienuː… | "ar-es-pee-see-ay" |
+| `wned` (ja) | **wn**ˈɛd | dabudjoeniːdiː | "double-u-en-ee-dee" |
+
+That upgrades the initialism defect (Run 32: `pbs`→pʰˈiːbiːz, `xdr`→ˈɛkdɹ) from cosmetic to
+**measured wrong against the audio** — and `ɹspkˈɑː` / `wnˈɛd` are unpronounceable onsets besides. The
+rule the audio supports: an all-consonant or otherwise unpronounceable letter run is read as letter
+names.
+
+**Root cause found, and it is NOT a quick fix — deferred past v6 deliberately.** The initialism pass
+matches `\p{Lu}{2,}` — **capitals are the signal**, and FLEURS is lowercased, so `pbs`/`xdr`/`rspca`/
+`wned` never enter the pass at all. Third instance of the same wall (German ordinals here, English
+`st./dr.` in Run 30): *lowercased input has no casing signal*. The alternative signal is already sitting
+right there — `isUnreadable` (no vowel, or an illegal onset/coda) is case-independent, and `isRecorded`
+guards real dictionary words — so extending the match to lowercase unreadable runs is the right fix.
+But `core/initialisms.ts` is **shared by ~190 engines** (it is what reads French TGV and Russian США),
+so widening its matcher is a fleet-wide change and wants this repo's fleet-audit treatment, not a
+bolt-on. Logged as its own pass. v6 ships with the handful of word-read initialisms; blast radius is
+~a dozen utterances corpus-wide, against the ~7,100 rows v6 fixes.
+
+**Artifacts.** `work/phonemized_prefix/` (pre-fix baseline), `work/ipa_fix_audit/` (isolation audit),
+`work/asr_probe/{candidates.tsv,phones.tsv,en_readings.tsv,wav/}`.
