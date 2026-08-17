@@ -2962,3 +2962,76 @@ files, and a duration test alone would have missed all 490 Spanish ones.
 988 utterances excluded (cy_gb 480 truncated, es_419 490 silent, ff_sn 9, sd_in 6, am_et 2, ar_eg 1).
 No phone is lost in any language, and U+0325 — the primitive Welsh solely provides — survives at
 1,557 occurrences across 1,110 utterances.
+
+## Run 42 — 2026-08-17 — The Nguni click issue: LEXICALISE the loans (PR #824, `a9272d3`)
+
+Run 40 called this the intrinsic ceiling of a phonotactic test and Run 41 peeled `ceo` off it. This
+run resolves the rest — not by improving the test, but by accepting that it cannot be improved.
+
+### The defect, measured precisely
+
+Every ⟨c/q/x⟩-initial token in xh/zu, crossed against **cross-language spread** (how many of the 28
+parallel corpora contain it — the same discriminator the initialism work validated: an international
+name appears in 9-21, a native Nguni word in 1-2):
+
+    CLICKED 59 / REFUSED 64 tokens
+    ⚠ clicked with HIGH spread (wrong): 12  — covid xdr cuerden cadwalder canada chhatrapati
+                                             corniglia chile choudhary capuzzo carolina congo
+    clicked with LOW spread (right):    cishe ×109, xesha ×21, qiniseka, qho, cwaka, cala…
+    refused with LOW spread:            congress, crude, container — English, correctly refused
+
+### The 12 fail for TWO different reasons, and only one is the "ceiling"
+
+    fails SIGNAL 3 (looks Nguni)     canada chile carolina congo (+china)   — the documented trade
+    fails SIGNAL 2 (not in CMUdict)  covid cuerden cadwalder chhatrapati corniglia choudhary capuzzo
+
+The signal-2 group is phonotactically impossible in Nguni, so signal 3 already clears them; they fail
+only because an English pronunciation dictionary carries no proper nouns.
+
+### ⚠ THE OBVIOUS FIX WAS MEASURED AND IT IS WRONG
+
+Relaxing signal 2 (the dictionary check) would fix seven of the twelve in one line. Tested against the
+corpus, it also newly routes **real Nguni words** to English: `xakuvakashelwa`, `xawusezantsi`,
+`qinsekisa`, `qhwa'`, and — worst — **`compyutha`, the NATIVISED borrowing of "computer"**, which must
+stay Nguni. **A lexicon adds words one at a time; loosening a signal removes a guard from all of them
+at once.** Signal 2 stays.
+
+### ⚠ AND THE READINGS SPLIT TWO WAYS, which is why no rule could have worked
+
+Against the audio, Nguni readers do not treat these alike:
+
+    canada   ASR `b a s e k a n a d`      -> /kanada/,  NATIVISED with a plain k
+    congo    ASR `l i k o o v k o ŋ ɡ`    -> /kongo/,   nativised
+    mexico   ASR `u m e ð u k s i k o`    -> /meksiko/, nativised, ⟨x⟩ as its Latin /ks/
+    china    ASR `tʃ h aɪ n n a`          -> ENGLISH /tʃaɪna/
+    chile    ASR `o d i tʃ aɪ l`          -> English
+    carolina ASR `e r o l aɪ n a`         -> English (the ⟨aɪ⟩ is the tell)
+
+Long-established borrowings are nativised; newer names keep English phonology. That is a fact about
+each word, not about its shape — **which is the definition of something that must be lexicalised**, and
+is how English handles its own loans.
+
+Two verdicts per entry: `declick` (Nguni phonology, click letter read as its Latin value) or `foreign`
+(the English reader, the path 435 tokens already take). `src/languages/zulu/nguniLoans.ts`.
+
+### Result
+
+    wrongly-clicked high-spread tokens: 12 -> 1     (that one, `xdr`, is fixed corpus-side already)
+    xh+zu rows whose IPA changed: 104
+      moved CLOSER to the audio: 73     further: 21     3.5 : 1
+
+⚠ **Note the contrast with Run 41's initialism scoring (95 closer / 131 further, unusable).** The
+metric works here and failed there for a structural reason: de-clicking is LENGTH-NEUTRAL (`kǀ`→`kʼ`),
+so it carries none of the expansion bias that made whole-utterance distance penalise letter-name
+spelling. The instrument is fine when the edit does not change the string length.
+
+Native words verified untouched — `cha`, `cela`, `caba`, `cima`, `coca`, `xhosa`, `cishe`, `xesha`,
+`qiniseka`, `cwaka`, `ukucela`, `compyutha`, `qho` all keep their clicks, pinned by test. 2,964 xh and
+1,951 zu rows still contain clicks, as they should.
+
+⚠ **One existing test pinned the OLD trade** (`china` keeps a wrong click, "the alternative was reading
+`xhosa` as English"). That expectation is obsolete rather than wrong — the lexicon fixes named words
+WITHOUT loosening the signal — so it now pins `cuba` and `cima`, still unlisted and still correctly
+clicked.
+
+Corpus rebuilt: **73,798 train + 2,123 dev = 75,921 utterances, 0 defective pairs, 0 split leakage.**
