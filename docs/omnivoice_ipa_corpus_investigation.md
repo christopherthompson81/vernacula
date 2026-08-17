@@ -2897,3 +2897,40 @@ on disk, so all 66 languages would have had to be rescanned. It now appends per 
 It is scanning all **66 downloaded languages / 132 GB**, not just the 28 in the corpus — the extra
 cost is small next to the rescan risk, and the user plans to expand past 28, so the answer is worth
 having in advance.
+
+### ⚠ THE DISTANCE METRIC HAS A RESOLUTION FLOOR, AND A BIAS — do not use it to judge initialisms
+
+Re-phonemized on the extended allowlist (+nba +fbi +cctv +ceo +usa, and the Turkish locale fix):
+**113 rows changed across 19 languages**, every visible example a repair — `ga n̪ˠˈəbˠə → ˈɛnʲ…`
+(the *nba* case), `zu kǀˈɛːɔ → sˈiː…` (the click), `cs ˈusa → ˈuː ˈɛs ˈaː`, `es fβˈi → ˈefe…`.
+
+Then I scored them against the audio the way Run 40 scored the earlier fixes, and got the opposite of
+what I expected:
+
+    moved CLOSER 95      moved further 131      mean delta +0.0011
+
+**That is not evidence against the change. It is the metric failing.** Measured:
+
+    median folded utterance          120 phones
+    median size of the edit            2 phones     -> 1.7% of the string
+
+A 1.7% edit sits far below this recognizer's own error rate, so the split is noise. Run 40's result
+was trustworthy for the opposite reason — 1,927 rows at 4.2:1 is a ratio no noise process produces —
+not because the metric is sharp.
+
+⚠ **And there is a SYSTEMATIC BIAS on top of the noise, in one direction.** Letter-name expansion
+*lengthens* the string (`nbˈa` → `ˈɛn bˈiː ˈeᶦ`), and the recognizer under-detects short spelled
+syllables. So whole-utterance distance penalises correct spelling. A metric that is biased against
+the very change being tested cannot adjudicate it, however much data you give it.
+
+**The right instrument is TOKEN-LEVEL: does the recognizer show letter names where the token sits?**
+
+    ca  nba   ASR  … u n i t s | e m b i eɪ | b a s u s p …    "em-bi-ay"     ✓ spelled
+    am  fbi   ASR  … b ə eː f eː v i aɪ | i ɡ ə f i t …        "ef-bi-ay"     ✓ spelled
+    de  ceo   ASR  … ɛ p ə l | ts iː aʊ | s t iː f dʒ ɔ p s …  German names   ✓ spelled
+
+Same instrument that carried Run 33 (`rspca` → "ar-es-pee-see-ay"), the `un` question (`j u e n`),
+and the Nguni `ceo` (`s i i o`). The additions stand on that evidence, not on the aggregate.
+
+**Rule for the rest of this work: aggregate distance answers "did a WIDE change help?" It cannot
+answer "was this ONE token right?" — that needs the audio at the token.**
