@@ -2736,3 +2736,72 @@ PR #823 (`28f4d26`). **A fix is not done until the thing it targeted is gone fro
 585 Welsh train files (17.1%) with median 1.44 s of audio against a median-14.16 s transcript, with
 the tar-member evidence that it is not a download artifact, the recognizer findings, and the file
 list in `fleurs_cy_gb_truncated_audio.txt`. Ready to file against `google/fleurs`.
+
+## Run 40 — 2026-08-17 — Re-score on the rebuilt corpus: did the fixes actually help?
+
+The corpus was rebuilt on the merged phonemizer, so the alignment DB's `ipa` column went stale while
+`phones` — the recognizer output — did not. That makes an OBJECTIVE test available for free: stash
+the old IPA in `ipa_prev`, refresh from the new manifests (2,111 rows changed), and re-score. Any
+movement is attributable to the fixes, because the audio side never moved.
+
+### The fixes are confirmed, not just plausible
+
+    rows that moved CLOSER to the audio: 1554        further: 373        (4.2 : 1)
+    median distance improved in 20 of 27 languages
+
+Per-language, the targeted fixes are decisive — this is the first evidence for them that does not
+depend on my reading being right:
+
+    kk_kz  399 better /   7 worse    the ь/ъ glottal-stop fix
+    ha_ng  174 /   7                 the ⟨ch⟩ digraph
+    hi_in   74 /   1                 ज्ञ → /ɡj/
+    ja_jp   73 /   3                 the つ counter
+    en_us   35 /   1                 dotted initialisms
+    ff_sn  564 / 168                 ⟨sh⟩/⟨ch⟩/⟨cch⟩
+
+### ⚠ THE THREE LANGUAGES THAT GOT WORSE, AND WHAT THEY EACH TURNED OUT TO BE
+
+**xh_za (31 better / 63 worse) — a REAL defect, not mine.** Foreign `c`-initial words are being read
+with Nguni CLICKS: `ceo` was `sˈiːʲiːʲˈoᶷ` ("see-ee-oh") and is now `kǀˈɛːɔ`; `china` was `t͡ʃˈaᶦnə`,
+now `kǀʰˈiːna`. The recognizer is unambiguous — it heard `s i i o` for *ceo* and `tʃ aɪ n aɪ` for
+*china*. No click.
+
+Measured the classifier rather than just complaining about it: **native 12/12 correct** (`cela`,
+`caba`, `cha`, `cishe`, `cwaka`, `qaphela`, `ukucela` all keep their clicks), **foreign 16/19
+correct** (`city`, `court`, `class`, `crown`, `computer`, `cnn` all correctly refused). The three
+failures are exactly the foreign words that are PHONOTACTICALLY LEGAL NGUNI — `canada` is CV.CV.CV
+and indistinguishable from a native word by shape; `china`'s ⟨ch⟩ is a legal Nguni digraph. That is
+the intrinsic ceiling of a phonotactic test, not a bug in it, and no rule keyed on shape can fix it.
+~30 rows in 76k. Documented, not hacked around.
+
+**ff_sn (168 worse) — my `un` addition, and I was wrong about why.** `ha un be` became
+`hˈa ˈu nˈa bˈe`. My first read was that I had broken a Fulfulde word by adding `un` to a globally-
+applied allowlist on ENGLISH evidence. The audio says otherwise: the recognizer heard `h a j u e n v`
+— **the reader spelled it "yu-en"**. Same in Xhosa (`b e j u e n`), and the contexts confirm it
+everywhere it fires: xh `be-un`, zu `le-un`, ko `un 회원국`, sd/th, all United Nations. The addition
+is correct. The residual distance is a LETTER-NAME CONVENTION mismatch — Fula spells N as `nˈa` and
+Xhosa as `ˈɛːni` where the reader used the international `en` — which is a different question
+entirely, and a much smaller one.
+
+**zu_za (28/28, median flat)** — the same Nguni click issue as xh.
+
+### The structural hazard the `un` scare exposed — `check_allowlist_collisions.py`
+
+⚠ **`restoreInitialismCasing()` takes no language argument.** Every token in the allowlist is
+uppercased in ALL 28 corpora, but each was added on evidence from ONE. `un` is the indefinite article
+in French (1,050), Spanish (847), Catalan (778), "one" in Welsh (297), "flour" in Turkish (44) —
+**3,064 standalone occurrences against the 6 it was added for.**
+
+So I gated it, and the result is genuinely reassuring in a way I did not expect:
+
+    dda   changes output in 27/28 languages — but NOT in cy, where it is the Welsh word "good"
+    un    changes output in 16/28 — but NOT in fr, es, ca, cy, tr, where it is a word
+
+**In both cases the one language that would be damaged is exactly the language that is inert.** Not
+luck: a host engine that has its own lexical or rule claim on the string reads it as that word, and
+the capital-keyed initialism pass never gets it. The global allowlist is safer by construction than
+its design suggests — but only where the host actually knows the word, which is why the gate stays.
+
+Of 76 allowlist tokens, 18 appear in more than one corpus and **zero are real collisions**: the rest
+are the same initialism appearing across parallel FLEURS translations (`gmt`, `gps`, `pbs`, `rspca`,
+`utc`, `afcfta`, `hk`, `png`), which is correct behaviour.
