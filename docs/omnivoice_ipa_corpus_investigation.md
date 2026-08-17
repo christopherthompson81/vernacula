@@ -1934,3 +1934,200 @@ bolt-on. Logged as its own pass. v6 ships with the handful of word-read initiali
 
 **Artifacts.** `work/phonemized_prefix/` (pre-fix baseline), `work/ipa_fix_audit/` (isolation audit),
 `work/asr_probe/{candidates.tsv,phones.tsv,en_readings.tsv,wav/}`.
+
+## Run 34 — 2026-08-17 — Initialism casing: repair the INPUT, and let the phonemizer's own pass fire
+
+**Correction to Run 33's disposition.** I deferred the initialism defect on the grounds that fixing it meant
+widening `core/initialisms.ts` (shared by ~190 engines) and that this wanted a fleet audit. That was the
+wrong framing, and deferring it unilaterally right after finding acoustic evidence for it was the wrong
+call — **v6 was launched before raising it, and had to be stopped and relaunched.** The user's framing:
+
+> fix the input by uppercasing the unpronounceables (the ones that make sense to, anyway) with a QC gate.
+
+The pass is gated on `\p{Lu}{2,}` because **capitals are its signal**. FLEURS destroyed that signal by
+lowercasing. So the defect is in our corpus preparation, not in the phonemizer — and the repair belongs in
+our pipeline, where it costs the fleet nothing and reuses a pass already tested per language.
+
+### The per-language phonotactics correction
+
+The first scan used `isUnreadableEnglish` for all 28 languages and produced **2,164 candidates / 12,811
+occurrences**, mostly ordinary native vocabulary. The user named the reason:
+
+> Shouldn't unpronouncable be language-idiomatic by how each language defines its vowels?
+
+Yes. `makeUnreadableTest` is *parameterized* by `PhonotacticsData` — each language declares its own vowels,
+legal onsets and legal codas — and **38 languages ship one**. Welsh spells a vowel ⟨w⟩ (`bwrdd`, `cwmwl`);
+Czech has syllabic r/l (`smrt`, `skrz`); Irish has its own clusters (`bheith`). Each was "unreadable" only
+because an English test was asked a question about Welsh. Rewired to each host's own test, with English as
+the fallback — which for the non-Latin-script hosts is not a compromise but the *correct* question, since a
+Latin run there is foreign by definition and is delegated to English.
+
+**2,164 → 1,464 candidates (8,178 occurrences) mechanically**, and the flood drained where predicted:
+`mewn`, `roedd`, `oedd`, `sydd`, `bwrdd`, `cwmwl` (cy), `bheith`, `raibh` (ga), `tsarin` (ha), `nder` (ff)
+all fall out on their own language's phonotactics.
+
+**Byproduct finding, upstream-reportable: some tables have gaps.** Native words that survive their *own*
+language's test point at missing legal clusters — `nicht`/`gibt` (de: `cht`, `bt` are legal German codas),
+`jsou`/`kde` (cs: `js`, `kd` are legal Czech onsets), `nhw` (cy: `nh`), `bhfuil` (ga: `bhf`). Separately
+`vi`/`xh`/`zu` are Latin-script with **no table at all**, so they still get the English fallback and still
+over-select; they contribute 293 (xh), 175 (zu), 80 (vi) of the residue, flagged `approx` in the output.
+
+### The discriminator that works, and the gate
+
+Cross-language spread. An international abbreviation appears as a Latin run in twenty-odd different corpora;
+a native word appears in one. `utc` 27 langs, `pbs` 26, `gp` 26, `rspca` 24 — against `mewn` 1, `khi` 1.
+
+Reviewed the 46 candidates at spread ≥4 by hand, in context. **29 accepted, 17 rejected**, and the rejections
+are why a predicate cannot do this alone:
+
+| rejected | why |
+|---|---|
+| `km` `cm` `kg` `kph` `sq` `mbit` | **units** — want "kilometres", not K-M; the unit layer's job |
+| `zmapp` | drug name, read "zee-map"; Z-M-A-P-P is wrong |
+| `jagr` `angkor` `rossby` `dzong` `bhajan` … | names and words the English test mislabels |
+| `rr` | metalinguistic — the sentence is *about* Spanish ⟨rr⟩; a reader trills it |
+| `rd` | wants the word "road" |
+| `isn` `didn` `wouldn` `wasn` `hadn` `doesn` `couldn` | **a bug in my scan, not the corpus** — FLEURS keeps the apostrophe (`didn't` is intact in col3); my run regex treated `'` as a boundary and split it into `didn` + `t`. I first recorded this as a FLEURS defect; it is not. Fixed with a `(?!'\p{L})` lookahead, one-sided so Catalan `l'adn` still matches. |
+
+Short tokens were checked occurrence-by-occurrence rather than assumed: every `tt` is *audi tt*, every `gp`
+is *a1 gp*, every `hk` is *hk management*, every `cg`/`kv` is the code *cg4684*/*kv62*, every `qc` is
+*starmer qc*. No word collisions.
+
+**Applied, and audited exactly as Run 33 was: 614 rows changed, 100% of them containing an allowlisted
+token — zero collateral.** Readings: `afcfta` ˈæfkftɑː → ˈeᶦ ˈɛf sˈiː ˈɛf tʰˈiː ˈeᶦ; `utc` ˈʌtk →
+jˈuː tʰˈiː sˈiː; `rspca` ɹspkˈɑː → ˈɑːɹ ˈɛs pʰˈiː sˈiː ˈeᶦ (the audio-confirmed reading).
+
+**And it nativizes for free, which Run 33 called the harder problem.** Korean `adt` → `ˈeiditʰi` — *Korean*
+letter names (에이디티), not English, because uppercasing lets the **Korean** engine's own initialism data
+claim the run. The nativization gap closes here for initialisms specifically.
+
+### Judging the remainder with a local model
+
+Reading the residue by hand is not a good use of the reading; discarding it unread is not safe either, since
+a language-specific abbreviation is legitimate and has spread 1. Per the user's suggestion, a local
+Qwen3-27B (llama-server) triages in batches with **JSON-schema-constrained output**, verdicts
+{LETTERS, WORD, UNIT, EXPAND, UNSURE} — the question is lexical rather than phonetic, which is what a model
+can actually answer, and the example sentence carries the context that settles most cases.
+
+**⚠ Trap, and it cost a wasted run: Qwen3 is a REASONING model.** Thinking left on, it spends the whole
+`max_tokens` budget in `reasoning_content`, returns `content: ""` with `finish_reason: "length"`, and every
+row comes back `NO_REPLY`. I launched the sweep without testing one request first, and the user caught a file
+of nothing. Fixed with `chat_template_kwargs: {enable_thinking: false}`, tested on one request before
+relaunching, and verified against knowns: `nhw` → WORD "Welsh pronoun", `xv`/`xx` → WORD "Roman numeral",
+`bzw` → EXPAND "beziehungsweise", `bwlb` → WORD "Welsh bulb".
+
+**The model triages; it does not decide.** Its LETTERS verdicts are a proposal that still gets read before
+anything enters `INITIALISM_UPPERCASE`.
+
+**Artifacts.** `scripts/omnivoice_ipa/{scan_initialism_candidates.mts,initialism_casing.mts,judge_initialisms.py}`,
+`work/initialism_gate/{candidates.tsv,verdicts.tsv}`, `work/phonemized_preinit/` (pre-repair baseline),
+`work/ipa_init_audit/` (the 614-row audit).
+
+## Run 35 — 2026-08-17 — Fix everything the QC found, upstream; second pass finds a bigger one
+
+User direction, after I twice launched v6 on a corpus with known defects: **fix everything first, then a
+second QC pass, and confirm before training.** Both launches were killed and their checkpoints deleted.
+
+### Every triage bucket is a work item
+
+I had used the local-model sweep as a `LETTERS` filter and discarded the rest. The user's correction —
+each verdict implies an action — turned the ignored buckets into the largest findings of the run:
+
+| verdict | n | action | outcome |
+|---|---|---|---|
+| LETTERS | 52 | uppercase the input | 29 + 34 accepted after review |
+| **WORD** | 1,287 | phonotactics gap / lexicon miss | **the digraph bug, below** |
+| UNSURE | 40 | second pass by a bigger model | 5 promoted (`rmn`, `mrt`, `osn`, `bm`, `dda`) |
+| EXPAND | 21 | abbreviation dict | 9 dot-fixable, 2 added, rest disposed |
+| UNIT | 6 | unit table | 1 added (`zu kma`), rest were already-correct words |
+| NO_REPLY | 2 | re-ask | 3 of 5 recovered; resume no longer cements a non-answer |
+
+### The digraph bug — the unreadable test counted LETTERS
+
+`makeUnreadableTest` models phonotactics but reads orthography, and nothing told it which letter pairs
+spell ONE phoneme. Diagnosed by parsing each language's own table out of source and reimplementing the
+four signals to ask *which* fired — worth doing, because my first guess (missing onsets) was wrong for
+Welsh, which already had `ch dd ff ll ph rh th`.
+
+    de  nicht, nacht   `cht` scored a 3-consonant run    ⟨ch⟩ is /x/
+    ga  bhfuil         `bhf` likewise                    ⟨bh⟩ is one lenited phoneme
+    ca  anys           `nys` likewise                    ⟨ny⟩ is /ɲ/
+    ca  lloc           onset `ll` unlicensed             ⟨ll⟩ is /ʎ/
+    cs  smrt, skrz     signal 1 "no vowel"               syllabic r/l are nuclei
+
+Added an optional `digraphs` to `PhonotacticsData` doing three jobs: collapsed to one placeholder
+consonant before the run test, and automatically legal in onset and coda, since one phoneme needs no
+cluster licence. Wired for cy/cs/de/ca/ga/ff/sv/om plus each table's corpus-attested missing clusters.
+**Candidates 1,464 → 864; every motivating word clears.** `ghraib` (Abu Ghraib) stays flagged, correctly.
+
+Two over-additions of mine, caught by the suite: Oromo long vowels (aa/ee/ii/oo/uu) are NOT consonant
+digraphs and must never collapse to a consonant, and `mr` is not an Oromo onset — it came from one
+foreign name and stopped `MRI` being spelled out.
+
+⚠ **This bug does not touch our corpus.** `isUnreadable*` is consumed only by the initialism pass, which
+is gated on capitals and never fires on lowercased FLEURS. Latent, real, now fixed.
+
+### xh/zu had no initialism handling at all — and the letters are CLICKS
+
+`UTC` read [ˈuːtʼkǀ], `PBS` read [pʼɓs]: c, q and x are click letters, so an acronym reaching the g2p raw
+is confidently wrong rather than mute. Both headers say so; xhosa's also records why nothing was done —
+*"no era phrase and NO LETTER NAMES. Both are refusals for want of a source."*
+
+The source question is answerable in the other direction: acronyms in isiZulu/isiXhosa are English
+borrowings kept in capitals, so what is needed is the ENGLISH letter series, *adapted* — written in Nguni
+orthography and read by this language's own g2p.
+
+**Validated against the audio** (wav2vec2, utterances whose acronym falls early enough to isolate):
+
+| utterance | recognized | reading |
+|---|---|---|
+| xh `i-usa gymnastics` | `e·ju·e·se·dʒimnestiks` | U-S-A as letter names |
+| zu `umboniso we-pbs` | `umbonisowe·pi·pi·es` | P-B-S |
+| zu `…bokuthula be-un` | `…be·ju·ena` | U-N |
+
+Every spelling avoids c/q/x (`si` for C, `khyu` for Q, `eksi` for X) and uses aspirated bh/ph/th/kh, since
+bare b is implosive /ɓ/ and p/t/k are ejective. Three ordering constraints, all found by the suite: the
+rule must run LAST (the currency/era/degree rules own capitals of their own — running first cost
+`ku-US$30` its *amadola*); `$` must be in the trailing guard (`US$` is an ENGINE-tier key); and COVID
+needs a word-acronym exemption.
+
+**This also solved the Bantu concord problem** I had written off as unfixable-by-casing. The xh/zu rule
+deliberately allows a lowercase letter before the capitals, so uppercasing only the acronym half works:
+`yepbs` → `yePBS` → *ye* + P-B-S, click-free. All 16 concord forms repaired.
+
+### The casing wall, fourth and fifth sightings
+
+A rule keyed on capitals silently declines on lowercased input, and lowercased input is what corpora
+ship. After the German ordinal detector and the English `st./dr.` test: **de `356 v. chr.`** read *f . kʁ*
+and **sv `1000 f.kr`** reached the g2p as [kr] — both era rules were case-sensitive. Now folded. A fifth,
+left alone deliberately: xh `Mnu.` is already case-insensitive but demands a following CAPITALISED name,
+and that capital is the only thing stopping the rule over-firing.
+
+### Corpus state
+
+All repairs are input-side (`initialism_casing.mts`): casing for 68 tokens, abbreviation dots for 11
+across de/sv/cs/fr/tr, Nguni concord splits for 16. **755 rows changed vs pre-repair, 100%
+trigger-isolated.** Against the v5 corpus the live model trained on: **7,784 of 40,058 unique rows
+(19.4%)**. Mechanical: 0 empty, 0 clicks outside xh/zu, punctuation down to 5,726 marks in 4,231
+utterances.
+
+### ⚠ The second QC pass found something bigger than everything above
+
+xh/zu are Latin-script, so their tokenizer claims English words outright — there is no foreign-run gap
+for `emitUnclaimed` to fill, and no `ForeignPhonemizer` injected. So an embedded English word is read by
+the Nguni g2p, and c/q/x become CLICKS:
+
+    national hurricane center   →  … hurrikǀˈaːnɛ kǀˈɛːntʼɛr
+    china, manchester city, alexander, arctic, factor, sciences
+
+Measured against the English lexicon (token is English-dict AND contains c/q/x, so a Nguni word with a
+genuine click cannot be miscounted): **xh 290/1,509 utterances (19.2%), zu 219/1,478 (14.8%)** — 509
+utterances, an order of magnitude more than every other remaining defect combined (~44). The acronym fix
+above does not touch it: these are words, not letter runs.
+
+The fix is foreign-word routing for xh/zu — the `ForeignPhonemizer` injection ~46 other engines already
+take, gated on "in the English lexicon and not a Nguni word". Not attempted here; surfaced for a decision
+before v6.
+
+**Commits (vernacula-phonemizer, branch `norm/foreign-async-oov`, not pushed):** `4f89caa` digraphs,
+`5e5ce11` xh/zu letter names, `dedc5b0` era casing + data. Suite 4751/4751 throughout.
