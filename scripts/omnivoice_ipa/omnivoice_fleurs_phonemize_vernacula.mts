@@ -90,7 +90,7 @@ async function run(lang: string, limit: number): Promise<void> {
       // the initialism pass is gated on, and the PERIOD each language's abbreviation table is keyed on.
       // (The third, apostrophes, is not repairable from our side — see initialism_casing.mts.)
       const repaired = restoreNguniConcordAcronyms(
-        restoreAbbreviationDots(restoreInitialismCasing(txt), lang), lang);
+        restoreAbbreviationDots(restoreInitialismCasing(txt, lang), lang), lang);
       const ipa = (await phonemizeAsync(repaired, code)).replace(/[\r\n]+/g, " ").trim();
       if (ipa) { lines.push(`${id}\t${ipa}`); ok++; }
       else errs.push(`${id}\tEMPTY`);

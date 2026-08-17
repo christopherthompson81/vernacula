@@ -198,14 +198,32 @@ export const EXCLUDED: Readonly<Record<string, string>> = {
  * letters and combining marks but NOT digits, so `cg4684` and `kv62` are claimed too — which is the point,
  * since the pass's alphanumeric-code branch is uppercase-gated in the same way.
  */
-const PATTERNS: ReadonlyArray<readonly [RegExp, string]> = INITIALISM_UPPERCASE.map(
-    (t) => [new RegExp(`(?<![\\p{L}\\p{M}])${t}(?![\\p{L}\\p{M}])`, "gu"), t.toUpperCase()] as const,
+const MATCHERS: ReadonlyArray<readonly [RegExp, string]> = INITIALISM_UPPERCASE.map(
+    (t) => [new RegExp(`(?<![\\p{L}\\p{M}])${t}(?![\\p{L}\\p{M}])`, "gu"), t] as const,
 );
 
+/**
+ * ⚠ TURKISH DOES NOT UPPERCASE ⟨i⟩ TO ⟨I⟩. Its dotted/dotless pair is two distinct letters: the
+ * capital of `i` is `İ`, and plain `I` is the capital of `ı`, a different vowel. A naive
+ * `.toUpperCase()` therefore silently rewrites the VOWEL — `hiv` → `HIV` reads `hˈɯv` instead of
+ * `hˈiv`, and `fbi` → `FBI` ends in `ˈɯ` instead of `ˈi`. The engine is right; the repair was handing
+ * it the wrong word.
+ *
+ * Caught by running the casing differential over all 28 corpora: tr_tr returned 628 "hits" —
+ * `bir`, `ile`, `iyi`, essentially every i-word — which is not a plausible defect rate and was in
+ * fact my own tooling making the same mistake. Exposure in the corpus is small (hiv ×2, fbi ×3), but
+ * this is a shared function and the allowlist grows.
+ */
+const TURKIC = new Set(["tr", "tr_tr", "az", "az_az"]);
+
 /** Uppercase every reviewed initialism in `text`. Case-preserving for everything else. */
-export function restoreInitialismCasing(text: string): string {
+export function restoreInitialismCasing(text: string, lang?: string): string {
+    const locale = lang !== undefined && TURKIC.has(lang.toLowerCase()) ? "tr" : undefined;
     let out = text;
-    for (const [re, up] of PATTERNS) out = out.replace(re, up);
+    for (const [re, tok] of MATCHERS) {
+        const up = locale ? tok.toLocaleUpperCase(locale) : tok.toUpperCase();
+        out = out.replace(re, up);
+    }
     return out;
 }
 

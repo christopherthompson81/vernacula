@@ -33,13 +33,21 @@ import { readFileSync } from "node:fs";
 const TOKENS = "/tmp/claude-1000/-mnt-data-Programming-vernacula/094be646-3763-4932-9f18-6babb274e16e/scratchpad/tokens.json";
 const [lang, code] = [process.argv[2] ?? "en_us", process.argv[3] ?? "en"];
 
+// ⚠ TURKISH/AZERI NEED A LOCALE-AWARE UPPERCASE. `"bir".toUpperCase()` is "BIR", but Turkish's
+// capital of ⟨i⟩ is ⟨İ⟩ — plain ⟨I⟩ is the capital of ⟨ı⟩, a DIFFERENT VOWEL. Without this the gate
+// hands the engine a different word and then reports the difference as a finding: tr_tr returned 628
+// "hits" (bir, ile, iyi — essentially every i-word), all of them this bug. The engine was right.
+const TURKIC = new Set(["tr", "tr_tr", "az", "az_az"]);
+const upper = (s: string, lang: string): string =>
+    TURKIC.has(lang.toLowerCase()) ? s.toLocaleUpperCase("tr") : s.toUpperCase();
+
 const all = JSON.parse(readFileSync(TOKENS, "utf-8")) as Record<string, Record<string, number>>;
 const counts = new Map<string, number>(Object.entries(all[lang] ?? {}));
 
 const hits: { tok: string; n: number; lo: string; up: string }[] = [];
 for (const [tok, n] of counts) {
     const lo = (await phonemize(tok, code)).trim();
-    const up = (await phonemize(tok.toUpperCase(), code)).trim();
+    const up = (await phonemize(upper(tok, lang), code)).trim();
     if (lo !== up) hits.push({ tok, n, lo, up });
 }
 hits.sort((a, b) => b.n - a.n);
