@@ -37,6 +37,12 @@ export const INITIALISM_UPPERCASE: readonly string[] = [
     "pbs", "wned", "qvc",
     // Technical
     "vpn", "pstn", "dslr", "gp", "xdr", "qc",
+    // ⚠ Added by the CASING DIFFERENTIAL (scan_casing_differential.mts), which compares
+    // phonemize(token) against phonemize(TOKEN) and reports every disagreement. It found 73 English
+    // candidates against the earlier phonotactic scan's 1,464, and each came with its own answer
+    // attached. These four were the only genuinely new initialisms in that set — everything else it
+    // surfaced was already on this list, already in EXCLUDED, or an ordinary word.
+    "gps", "hiv", "usaf", "un",
     // Places / companies commonly initialised
     "png", "hk",
     // Alphanumeric codes — the pass has an attached-to-digits branch (`CG4684` is its own cited example),
@@ -90,6 +96,11 @@ export const INITIALISM_UPPERCASE: readonly string[] = [
 export const EXCLUDED: Readonly<Record<string, string>> = {
     // UNITS. Letter names are wrong; these want the unit-expansion layer, which reads the ones attached to a
     // number already (`40 km` → kilometers). The standalone residue is a normalization gap, not an initialism.
+    // ⚠ REJECTED FROM THE CASING DIFFERENTIAL. The gate reports any token that reads differently when
+    // uppercased; that is a strong signal but not a verdict, and these are exactly where it misleads.
+    wwii: "roman-numeral compound — WWII is 'World War Two', NOT the letter names the uppercase pass gives it",
+    led: "ordinary verb ×13 in context ('led to', 'led by'), not the diode. The homograph loses to frequency",
+    ll: "TOKENIZER ARTIFACT — the tail of we'll / I'll, split on the apostrophe. Not in the source text at all",
     km: "unit — kilometre, wants 'kilometers' not K-M",
     cm: "unit — centimetre",
     kg: "unit — kilogram",

@@ -2325,3 +2325,333 @@ Order is: exclude `defective_audio` -> patch manifests -> sampling weights -> we
 ⚠ **And it argues the audio gate should run BEFORE any future training, not after.** Every text-side gate
 we have — espeak diff, qualitative reads, the local-model sweep — is blind to this by construction: the
 transcript is fine, the IPA is fine, and only the PAIR is broken.
+
+## Run 37 — 2026-08-17 — The local-model exhaustive judge does NOT work. Abandoned.
+
+**Question.** Run 36's distance heuristic flags 1,782 rows (2.3%) as `investigate` and calls the other
+97% `verified`. Reading every row with a local model instead of trusting a heuristic looked like it
+would have value. Would it?
+
+**Answer: no.** Recording this in full because the failure is specific and worth not repeating.
+
+**Single-stage judge** (`judge_alignment.py`, Qwen3-27B IQ4_XS, thinking off, constrained JSON,
+two-question prompt: Q1 is the IPA correct for the transcript, ignoring the recognizer; Q2 does the
+recognizer's output match the IPA). Verdicts were dominated by `reader_diverged` fabrications wherever
+the recognizer's phone string diverged for ordinary acoustic reasons. An arithmetic guard
+(`nh/ni > 0.85` downgrades the verdict) suppressed the worst of it, but the judgement underneath was
+never sound — the guard was doing the work, and the guard is just another heuristic.
+
+**Two-stage cascade** (`judge_cascade.py`, the user's suggestion): a cheap non-thinking screen splits
+agree / don't-agree, and only don't-agree goes to a thinking-mode adjudicator. This is the right shape.
+It failed at stage 1.
+
+Screen check-rate by language, after three instruction rewrites, one structural fix (make the model
+QUOTE the offending token as evidence rather than assert a verdict), and one real bug fix (a bare `?`
+placeholder was being counted as evidence in 62% of checks):
+
+    es_419  100.0%      en_us  93.3%      fr_fr  88.0%
+    de_de    73.3%      th_th  68.0%      am_et  46.3%
+
+Whole-sample rates across tuning attempts: 98.0% -> 93.7% -> 37.7% check. Even the best is useless:
+37.7% of 76,236 rows is ~28,700 adjudications. And note the ORDER — the screen flags MOST where the
+model reads BEST. It is not detecting defects, it is detecting how much of the row it can parse.
+A screen whose sensitivity is a function of the model's own literacy cannot be calibrated.
+
+**Then: is the adjudicator itself sound?** Tested the four `am_et` screen false positives (all four
+hand-verified CORRECT: `1960s`, `2015`, `¥7,000`, `university`) with thinking ON. All four returned
+`no_reply`. Retried one with `max_tokens: 8000` — `finish_reason=length`, 7,205 completion tokens,
+**empty `content`**, 13,367 chars of truncated `reasoning_content`. It thought for 7,205 tokens about
+a two-field comparison and never reached a conclusion.
+
+**Why it truncated, and why that closes the question.** The server ran `-np 8 -c 65536` = 8,192 tokens
+per slot, which is exactly where it stopped. Fewer slots buys per-slot context but costs concurrency,
+and the two fight each other directly. Feasibility for the 1,782 distance-flagged rows alone at the
+measured 118 s/row:
+
+    -np 2  ->  29.2 h        -np 4  ->  14.6 h        -np 8  ->  7.3 h (but 8,192 is not enough)
+
+That is for 2.3% of the corpus. The exhaustive version was never on the table.
+
+**Decision (user's): go back to the heuristic and manual fixes.** The distance heuristic plus reading
+the flagged rows by language is the gate. Every systemic defect found so far — the initialism casing
+wall, the de ordinals, the xh/zu letter names, the es/pt `irm`, the 585 truncated Welsh files — came
+out of that loop, not out of a model verdict. The local model was useful exactly once, for bulk
+triage of a 1,464-row candidate list where the answer was a category label and a human reviewed the
+output in bulk afterwards (Run 34). That is its shape: pre-sort a list for a human, not adjudicate.
+
+**Kept:** `judge_alignment.py`, `judge_cascade.py` stay in the tree as a recorded dead end.
+
+## Run 38 — 2026-08-17 — Per-language sweep of the `investigate` queue (continued)
+
+Method after Run 37: read the distance-flagged rows per language, by hand, looking for SYSTEMIC
+defects rather than adjudicating rows one at a time. The heuristic picks the queue; I read it.
+
+### ff_sn (Fulfulde) — 117 flagged — **two digraphs missing from the rule table**
+
+⚠ **First, the trap in reading this language's queue.** wav2vec2-xlsr-53 has no Fula, so most of the
+high-distance rows are the RECOGNIZER failing, not the IPA. Row 28129 is the control: where the
+recognizer does decode (`ɡ o t o h a n d e r e iː m e...` vs `ɡˈoto hˈa ⁿdˈeɾ hˈimɓe...`) it matches
+cleanly. So the distance ranking is nearly useless here — the finding came from reading the IPA
+COLUMN ALONE and noticing sequences that cannot be IPA at all.
+
+    cctv neldinan himɓe ...     -> t͡ʃːtv ...          the initialism casing wall again (known class)
+    ... shawwal inji ...        -> shˈawːal ...        LITERAL "sh" sitting in an IPA stream
+    kuje waya be komputa        -> ... t͡ʃhaⁿd͡ʒˈata   an impossible cluster t͡ʃ + h
+
+Counted across the whole ff_sn corpus, not just the queue: **280 of 280** rows containing ⟨sh⟩ keep it
+as the literal two letters, and **514 of 530** rows containing ⟨ch⟩ emit `t͡ʃh`. Not a sampling
+artifact — a total failure, on every occurrence.
+
+**Cause.** Fula writes /t͡ʃ/ as a bare ⟨c⟩, so the rule table never needed a ⟨ch⟩ entry for native
+words. But FLEURS ff is Nigerian/Adamawa Fulfulde, which is Hausa-influenced and full of both
+spellings. The longest-match scan read `c`→t͡ʃ then `h`→h; ⟨sh⟩ had no rule at any level and fell
+through to `s` + `h`. The letter-level fallback was NOT silently deleting anything — `h` is a real
+Fula phoneme, so it did exactly what it should. The defect was only ever the two missing digraphs.
+
+**And the manifest already contradicted itself.** `fula.jsonc` declares the Adlam loan letter
+U+1E943 → `"sh"` as one of the letters "mapped to the same Boko equivalents the Latin engine already
+uses." It did not use it. The second script transliterated straight into the same dead end.
+
+**Third rule, found only by checking the ordering.** ⟨cch⟩ is the geminate of ⟨ch⟩ and fails one level
+up: `cc`→t͡ʃː matches first and the `h` is left over. 25 rows (acchugo, yeccheta, picchu, bocchi).
+Adding ⟨ch⟩ without ⟨cch⟩ would have fixed 514 rows and left 25 broken in a way the same read had
+already walked past.
+
+Evidence, no counterexample either direction: shiri / karshe / kashi / shafi / tasha / shawara + the
+English loans spanish / british / washington are all /ʃ/; chede / chaka / chanji / china / march /
+charles are all /t͡ʃ/. The one true exception in the corpus is `hesperonychus`, a Latin taxonomic
+name where ⟨ch⟩ = /k/ — one word, not worth a rule.
+
+Fixed upstream: `6dea7af` on `norm/qc-backlog`, with regression tests. Full CI green (4,772 tests).
+
+**This is the same SHAPE as the Uzbek case documented at the top of `core/latinPhones.ts`** — a letter
+that is unreadable alone but essential in a sequence — running in the opposite direction. Fula reads
+the bare letter and misses the digraph. Worth asking of every rule-scan engine, not just this one.
+
+### ha_ng (Hausa) — 109 flagged — **the same digraph, in the sister language**
+
+The ff finding handed over a direct hypothesis: those ⟨sh⟩/⟨ch⟩ spellings in Fulfulde came from
+Hausa, so check Hausa. Hausa HAS ⟨sh⟩→ʃ. It does not have ⟨ch⟩, and reads a bare ⟨c⟩ as /t͡ʃ/ —
+the exact ff shape. **182 of 182** rows containing ⟨ch⟩ emit `t͡ʃh`.
+
+What differs is the vocabulary: Fulfulde's ⟨ch⟩ words are native (chede, chaka, chanji), Hausa's are
+almost entirely foreign proper nouns (china ×32, charles, chile, richard, ovechkin, gingrich). So I
+checked whether they should be routing to a foreign reader instead — they do not, and cannot:
+`NATIVE_CLASS` in `hausa.ts` accepts all of `a-z`, so a plain-ASCII name carries no letter Hausa
+lacks and nothing marks it foreign. That is the existing design (`makeNativiser`, not
+`readForeignRun`), so the only question left is what the host makes of the spelling — and /t͡ʃ/ is
+what a Hausa reader does with it, which is the nativising Run 33's audio established.
+
+Fixed: `baf5c0b`. ⚠ The ~15 true /k/ readings (orchestra, hesperonychus, maroochydore) are now wrong
+in a *different* way than before. They were already wrong, and no rule separates them — nothing in
+host text says which orthography a name came from. `core/latinPhones.ts` already documents this.
+
+### Generalising it: `audit_digraph_coverage.py`
+
+Two of these in two languages is a class, so I built the gate instead of hunting language by
+language. It enumerates the consonant sequences the corpus actually contains, subtracts the rule
+keys, and ranks the remainder — flagging `SCANS-CLEAN` for sequences whose every letter has its own
+rule, which is the dangerous kind: it decomposes silently and errors nowhere.
+
+Only **5 of the 182 engines** are auditable this way — `fula hausa hungarian xhosa zulu` are the only
+ones with a jsonc `"rules"` table; the other ~177 carry their mapping in code. Four are FLEURS
+languages, and two of those were the two bugs.
+
+**Two negative results, which are the point of running it:**
+
+**xh_za / zu_za are clean.** Their tables carry `ntsh thsh tshh ngc ngq ngx nkc nkq nkx ths tsh tyh
+bh ch dl dy gc gq gr gx hh hl kh kl mb nc ng nj nk nq nx ny ph qh rh sh th ts ty xh` — every
+surviving trigram (`mth`, `thw`, `gcw`, `qhw`, `ncw`, `dlw`) decomposes into a listed digraph plus
+`w`/`y`, which is correct. `tyh` never appeared in the uncovered list *because it is already a rule*.
+The gate finding nothing in half the languages it can read is what makes the other half credible.
+
+**⚠ And it produced one false lead that the AUDIO killed — worth recording, because I nearly shipped
+it.** The audit flagged Fulfulde ⟨dy⟩ ×88 in what looked like native words. `dyam` ×36 sits beside
+`jam` ×25, `dyona`/`dyonata` beside `jonta` ×40 — a textbook case for ⟨dy⟩ = /d͡ʒ/, which is a real
+Pulaar orthographic convention, and I had the rule half-written. Then the recognizer:
+
+    jirgi je les dyam ...        -> l ɛ s m iː a m      "les dyam" = UNDER WATER (a submarine)
+    ko be wala masibo dyam ...   -> m a s i v o ɲ a m i    a disaster, water entered the town
+    sikhs do dyona deena ...     -> d o d u n j aː n a
+    a dyona ko hatoi ...         -> o d i o n a k a
+
+`dyam` is not `jam` "peace" — it is `diyam` "water" (×65, and `ndiyam` ×100) with the vowel letter
+dropped, and `dyona` is `diyona`. ⟨dy⟩ here is a SPELLING VARIANT in the FLEURS text, not a digraph.
+One sentence contains both `ndyiam` and `diyam`. The rule would have turned /dijam/ into /d͡ʒam/ on
+61 native tokens — a worse defect than the one it was fixing, on evidence that read as conclusive.
+
+**The rule this gives us: the audit proposes, the audio disposes.** Frequency and minimal-pair
+co-occurrence in the text were not enough; only listening separated the digraph from the typo.
+
+### pt_br — 118 flagged — clean
+
+Correct Brazilian palatalization (`d͡ʒi`, `t͡ʃi`), nasalization (`ẽj̃`, `ɐ̃w̃`), and the recognizer
+broadly agrees. The distance is recognizer drift toward EUROPEAN Portuguese — it hears `ɡ ɔ ʃ t` for
+`ɡˈɔstɐ̃w̃`, coda ʃ where BP has s. One real signal, and it is the known Run 33 class, not a defect:
+in `a modern education o acusou de...` the reader says the English title IN ENGLISH
+(`ɛ d ʊ k eɪ ʃ ʊ ŋ`) while we nativise it to `edukat͡ʃˈiõ` (as if `-ção`).
+
+### ⚠ THE BIGGEST FINDING OF THE SWEEP: six engines leak RAW ORTHOGRAPHIC LETTERS
+
+Rather than eyeball 20 rows for each of the 18 remaining languages, I ran a cheap general scan first:
+count every character in each language's IPA and look at the rarest ones, on the theory that a leaked
+orthographic letter is rare and odd. No ASCII `g` anywhere (IPA needs U+0261 ɡ) and no stray digits —
+clean. But:
+
+    ⟨q⟩ stands in the IPA of FIVE languages that have no /q/:  cy ×38  ga ×33  sv ×13  es ×9  ca ×5
+
+All of them the same handful of items — `Qing`, `Qatar`, `piquet`, `Albuquerque`, `Joaquim`,
+Greenlandic `Kalaallit`. `qˈiŋ`, `piqˈɨɛt`, `ˈal̪ˠbˠəqəəɾʲqəə`, `qatˈɑːr`.
+
+**Cause, and it is one line repeated six times.** `core/latinPhones.ts` is the floor under a letter no
+g2p can read — it maps `q`→k, `x`→ks, `y`→j — and 46 engines call it. Six do not:
+
+    welsh/g2p.ts:145   else if (/[a-z]/.test(c)) segs.push({ ph: c, ... }); // unknown letter: pass through
+    irish/g2p.ts:105   spanish/g2p.ts:210   catalan/g2p.ts:139   swedish/g2p.ts:207   galician/g2p.ts:223
+
+They push the RAW ORTHOGRAPHIC CHARACTER into the phone stream. The letter never fell through to the
+floor — it walked straight past it into the output.
+
+**⚠ Why it survived every previous review.** /q/ is a perfectly ordinary phone. No inventory check, no
+distance metric and no plausibility read flags it, because the string is only wrong FOR THIS LANGUAGE.
+Swedish makes the point sharpest: ⟨qu⟩ already had its own rule, so `square` → `skvˈɑ̀ːrɛ` was correct
+all along and ONLY the bare letter leaked — the engine looked like it handled q.
+
+**Irish leaked three — ⟨q⟩, ⟨x⟩ and ⟨y⟩ — and ⟨y⟩ is the one that should worry us.** `y` is a valid
+IPA symbol for a close front rounded vowel. An orthographic y did not look out of place in the
+output at all; it silently became a VOWEL. A phone-set check would have passed it.
+
+Fixed: `22a2f23`, all six wired to `latinPhone`, each keeping its raw-character path as the last
+resort for when the shared reading itself declines (a typed letter is content; the floor exists to
+give it a sound, not to delete it). Regression tests in `test/latin-phones.test.ts`, including a
+guard pinning `sv square` so the fix cannot reach past the bare letter. Full CI green, 4,777 tests.
+
+**Method note worth keeping.** This was not found by reading the investigate queue — the flagged rows
+for cy/ga/sv/es/ca do not concentrate on these words at all. It was found by asking a different
+question: *what characters appear in this language's output that this language's engine should not be
+able to produce?* That question is cheap, general, and it found a six-engine defect in one pass.
+
+### sv_se — ⟨cc⟩ is a loan cluster, not a geminate — `68a7fc9`
+
+Same pass as the ⟨q⟩ leak, one branch over. The geminate branch fires on any doubled consonant, but
+⟨c⟩ is contextual in Swedish and so is absent from `CONS` — which dropped ⟨cc⟩ into that branch's
+`else`, and the `else` pushed the raw character: `acceptera` → `acɛptˈeːra`, `piccolo` → `pˈɪ̀cɔlɔ`.
+⟨cc⟩ is /ks/ before a front vowel (vaccin, vaccineras, acceptera, acceptabelt) and /k/ elsewhere
+(piccolo, cappuccino), and unlike single ⟨c⟩ it is NOT gated on the stressed onset.
+
+### ru_ru / cmn_hans_cn / th_th / pt_br — read and clean
+
+- **ru** (94 flagged): correct reduction (ɐ/ə), palatalization, ɕː. Distance is recognizer noise.
+- **cmn** (89): correct Chao tone letters and finals. Checked `yu`→`jy` ×1608 as a possible spurious
+  glide — it is a deliberate convention, consistent with `yi`→`ji` and `you`→`jioᵘ`, in a table
+  validated against wikipron + epitran. Not a defect.
+- **th** (65): tones and length correct; `991` correctly expanded to `kˈaː˥˩w rˈɔː˦˥j kˈaː˥˩w sˈi˨˩p`.
+
+### kk_kz — ⚠ ⟨ь⟩ AND ⟨ъ⟩ WERE BOTH MAPPED TO A GLOTTAL STOP — `fe852f5`
+
+`kazakh.jsonc` had `"ъ": "ʔ"` and `"ь": "ʔ"`. **408 rows** carried a glottal stop that is not in the
+word: миль `mˈəjɫʔ`, гольф `ɡˈoɫʔf`, пальма `pɑɫʔmˈɑ`, Нью `nʔjˈu`, премьер `premʔˈer`, Чарльз
+`t͡ʃˈɑrɫʔz`. Found by reading the queue — `коньки` came out `kˈonʔkəjʃɪnɪŋ` while the recognizer heard
+`k a n ɡ iː t ʃ n ə ŋ`, no glottal anywhere.
+
+Neither sign denotes a sound. Kazakh is Turkic and meets them only in Russian loans, where they do
+**opposite** jobs — ь palatalises what precedes, ъ separates with a /j/ — so one entry for both could
+never have been right. A palatalised l is light, so ⟨ль⟩ also escapes the dark ɫ that ⟨л⟩ emits for
+vowel harmony, while native алма/бала keep theirs.
+
+⚠ **Two existing tests had the defect baked into them** and failed on the fix: съезд expected
+`sʔˈezd`, Цельсий expected `t͡sˈelʔsəjj`. Both expectations were simply wrong (/sjest/, /tsɛlʲsij/).
+Corrected with the g2p rather than around it — and съезд is a second independent attestation of the
+separating ⟨ъ⟩, beyond объектив. **A test can encode a defect and then defend it.**
+
+Backlogged for kk, too small to justify an engine change: `д-р` (2 rows) reads as letter names where
+the reader said "doktor", and `ақш` (АҚШ = USA) reads as a word — both the known lowercased-
+abbreviation/initialism class.
+
+### hi_in — ज्ञ is not its parts — `3e0900d`
+
+Composed literally the ligature is ज (d͡ʒ) + halant + ञ (ɲ) → `d͡ʒɲ`. Modern Standard Hindi says
+/ɡj/: ज्ञान gyaan, विज्ञान vigyaan, वैज्ञानिक vaigyaanik, विशेषज्ञ visheshagya. **73 of 73 rows**
+wrong. The recognizer settled it rather than my reading — we wrote `d͡ʒɲˈaːt̪`, the audio came back
+`ɡ i a t`. ⚠ Scoped to Hindi deliberately: **Marathi reads the same ligature as `dnya`**, so this
+must not move to the shared Devanagari layer; a test pins mr as not containing ɡj.
+
+### ja_jp — the hiragana counter つ — `f55d2df`
+
+`1つには` → `it͡ɕi t͡sɯᵝniwä`, "ichi-tsu". つ is the native (wago) general counter and is wholly
+suppletive — 1つ is ひとつ, never いちつ. **89 rows** (1つ ×47, 2つ ×24, 3つ ×12, 5つ ×6).
+
+The cause is a nice one: つ is the ONLY counter written in HIRAGANA, and the number+counter fusion
+regex matched `\p{Script=Han}` only — so a digit + つ never reached `readCounter` at all. The counter
+table itself was fine; 人 already had its ひとり/ふたり irregulars. Only つ was added beside Han, never
+kana generally: a digit is followed by an ordinary particle constantly (3の, 5は), both pinned by test.
+
+### A gate that found nothing (worth recording)
+
+Scanned every language's IPA for SOURCE-SCRIPT characters — Cyrillic, Devanagari, Thai, Han leaking
+into the phone stream. **Zero hits across all 28.** Every character that tripped the first draft was
+legitimate IPA: θ β χ are the dental/bilabial/uvular fricatives, ⁿ ⁱ are prenasalisation and offglide,
+ꜜ is Japanese downstep. Note this gate would NOT have caught the Kazakh ʔ — a glottal stop is
+perfectly good IPA, just absent from the word — which is the same reason ⟨q⟩ needed a per-language
+question rather than a universal one.
+
+### ar_eg / tr_tr / ko_kr / ta_in / vi_vn / om_et / sd_in — read and clean
+
+Egyptian Arabic reads ق→ʔ and ج→ɡ correctly (the distance is the RECOGNIZER using MSA, not us).
+Turkish k→c/ɟ palatalization is right and `2011'de` → `icˈi bˈin ˈon biɾdˈe`. Korean tense/aspirated/
+unreleased codas are right and `64세인` → `ˈjuk̚s͈ip̚s͈ɐsein`. Sindhi numbers are right
+(`1994` → `hˈɪkʊ həzˈaːɾʊ nˈəwə sˈəʊ t͡ʃoːɾaːnˈoːj`). Oromo ejectives and ᶑ are right.
+
+### xh_za / zu_za — a routing SPLIT inside one phrase (documented, not fixed)
+
+    i-international olympic committee -> ˈiː intʼɛrnatʼiˈɔːnal | oᶷlˈɪmpɪk kəmˈɪt̬i
+                                              read as ZULU     |  read as ENGLISH
+
+Not the concord hyphen — tested in isolation, `international` reads Zulu while `olympic` and
+`committee` each route to English. The classifier decides per word and splits one English proper name
+down the middle. The reader said all of it in English (`i n t ɛ ɾ n a ʃ ə n a l`).
+
+Left alone deliberately. Which half is right is the per-language nativisation question the user
+parked after Run 33, and the volume is small — the character scan shows only tens of English-only
+phones in xh/zu, so the overwhelming majority of foreign words ARE nativised. What is defensible to
+say now is narrower and firmer: **whatever the policy, it should not change mid-phrase.**
+
+⚠ A metric I threw away rather than report: counting rows containing "English-only" phones
+(ɝ ʌ ð θ ᵻ oᶷ eᶦ ɹ) gave cy_gb 98.4% and es_419 88.1% — because θ is native Welsh ⟨th⟩. The instrument
+was measuring the wrong thing; the per-language character scan is the one that works.
+
+### ⚠ THE CASING WALL, MEASURED — `scan_casing_differential.mts`
+
+Found via sd_in, of all places: `ذاتي vpn ورچوئل` dropped `vpn` from the IPA entirely. Chasing it
+landed in the ENGLISH layer, and the failure is not Sindhi's:
+
+    vpn  -> "vpn"     the raw letters, standing in an IPA stream
+    vhs  -> "vs"      the h DELETED
+    hq   -> "k"       two letters, one phone
+    nhs  -> "ns"      h deleted again
+    hdmi -> "dmˈɪ"        wto -> "ˈuːt"        vga -> "vŋɡˈʌ"
+
+Every one of them is correct when uppercased (`VPN` → `vˈiː pʰˈiː ˈɛn`). The capital-keyed initialism
+rule declines on lowercased FLEURS input, and the ordinary word g2p accepts the token without
+complaint — because a letter run IS readable as a word. Fluent, wrong, and sometimes lossy.
+
+**The gate this suggests is much sharper than the one I built in Run 34.** That one asked each
+language's phonotactics whether a token was UNREADABLE and produced 1,464 candidates needing bulk
+triage. This asks a question that needs no judgement at all:
+
+    does phonemize(token) differ from phonemize(TOKEN)?
+
+Casing is not phonemic, so for an ordinary word the two agree. A disagreement IS the wall, directly
+observed — and the uppercase reading is simultaneously the answer, so every hit arrives with its fix
+attached. **73 English candidates instead of 1,464.**
+
+**And the yield vindicates the earlier hand review:** of those 73, the genuine initialisms were almost
+all already on the allowlist (vpn, xdr, qc, png, afcfta, wned, bce, utc, gmt) or already in EXCLUDED
+with a reason (km, cm, kg, kph, sq, zmapp, angkor, jagr, dzong). Only **four** were new — `gps`,
+`hiv`, `usaf`, `un` ("waste from the UN camp") — now added.
+
+⚠ The gate misleads in three recorded ways, all now in EXCLUDED: `wwii` (uppercasing gives letter
+names, but WWII is "World War Two"), `led` (×13 as the ordinary verb — the homograph loses to
+frequency), and `ll` (the tail of we'll / I'll split on the apostrophe — **the tokenizer artifact I
+mistook for a corpus defect once already**, showing up in a new instrument). A strong signal is still
+not a verdict.
