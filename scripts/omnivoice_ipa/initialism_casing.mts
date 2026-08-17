@@ -73,6 +73,8 @@ export const INITIALISM_UPPERCASE: readonly string[] = [
     // ── Promoted from the model's UNSURE bucket on a second pass. It hedged; these are unambiguous once
     // you know the language, and each was verified to read as that language's OWN letter names:
     "bnp",      // sv — GDP (bruttonationalprodukt), said be-enn-pe
+    "mcs",      // ga — REM (mearchorraí súl) → em-ce-as in Irish letter names
+    "rs",       // cs — multiple sclerosis (roztroušená skleróza)
     "rmn",      // ca/es/fr/pt — MRI (ressonància magnètica nuclear) → erra-ema-ena
     "mrt",      // de/sv — MRI (Magnetresonanztomographie) → em-er-te
     "osn",      // cs — the UN (Organizace spojených národů) → o-es-en

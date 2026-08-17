@@ -2165,3 +2165,68 @@ original 2,164.
 
 Upstream commits on `norm/foreign-async-oov`: `4f89caa` digraphs, `5e5ce11` Nguni letter names,
 `dedc5b0` era casing + data, `966ad42` xh/zu foreign routing. Suite 4751/4751.
+
+## Run 36 — 2026-08-17 — wav2vec2 over the whole corpus: the first gate that listens
+
+Every gate so far compared TEXT to TEXT. Run 31 named the limit — the FLEURS transcript is the script the
+reader was given, not a record of what they said — so a phonemizer can be perfectly correct and the PAIR
+still teach a wrong alignment. This is the first gate with audio on one side.
+
+**Pass.** `asr_align_corpus.py`: `facebook/wav2vec2-xlsr-53-espeak-cv-ft` over all 28 languages,
+**77,584 utterances, 28/28 complete, 0 errors**, ~28 utt/s on the 3090. Audio streamed straight out of the
+per-language `train.tar.gz` (104 GB), nothing extracted; rows land in SQLite (WAL) so the analysis can run
+against a partial table while the pass continues. Schema is one row per RECORDING, not per sentence_id:
+FLEURS repeats a sentence across speakers, and each recording is a separate observation of what a reader
+did.
+
+**Scoring** (`asr_align_report.py`) is relative to each language's own median, never absolute — the
+recognizer is systematically closer to some languages than others, so an absolute threshold would rank
+LANGUAGES by how well wav2vec2 knows them rather than utterances by how wrong they are. Outliers are
+3×MAD (not stdev: the tail we are hunting is exactly what would inflate stdev and hide itself).
+
+### Three methodology bugs, each of which silently disabled a whole language
+
+1. **Recognizer failure had to be split off first, or it owns the worklist.** On some utterances the model
+   returns almost nothing — a full Welsh sentence came back as the single phone `k`. Those score ~1.0 and
+   say nothing about our IPA. Classified `recognizer_short` by a length ratio: **cy_gb 243, sd_in 229**,
+   near-zero elsewhere. That is itself a finding, and it cut cy_gb's apparent tail from 240 to 63.
+2. **My `fold()` kept MODIFIER LETTERS.** `ˠ ʲ ʰ ʷ ᶦ` are category **Lm** with combining class 0, so a
+   `unicodedata.combining()` test keeps them and each counts as a phone. Irish marks velarisation on
+   nearly every consonant, so its IPA carried ~2× the recognizer's phone count: **ga_ie's MINIMUM over
+   2,845 utterances was 0.371** and its investigate list came out EMPTY — when everything is uniformly bad,
+   nothing looks like an outlier. Fixed: ga_ie median 0.674 → 0.481, investigate 0 → 35.
+3. **Tone was compared asymmetrically.** We write tone letters (˥˦˧˨˩, stripped); the recognizer writes
+   tone DIGITS (`siɛ5`, `ŋo5`), which were kept. Every tonal utterance carried a fixed penalty.
+   Fixed: cmn 0.510 → 0.375, th 0.396 → 0.361, vi 0.611 → 0.590.
+
+### Where the method has power, and where it has none
+
+| | median distance | reading |
+|---|---|---|
+| strong | fr .086 · es .108 · om .177 · de .179 · en .195 | tight distribution, outliers stand out |
+| workable | ff .272 · cy .280 · cs .289 · ha .299 · ja .322 · sv/pt .353 · cmn .375 | |
+| weak | ko .562 · sd .553 · tr .511 · kk .496 · ga .481 | high median, flat spread — few detectable outliers |
+| **none** | **vi .590** | investigate=2 of 2,994; the recognizer is uniformly mediocre on Vietnamese |
+
+**76,737 scored; 74,449 (97.0%) inside their language's bulk; 2,288 flagged.** The bulk is the useful
+half of the result: it says most of the corpus does not need looking at.
+
+### First real finding out of the queue: adjacent numbers merge
+
+en_us #28, `batten was ranked 190th on the 2008 400 richest americans list` — we read
+*two MILLION eight thousand four hundred*; the reader said *two thousand and eight … four hundred*. The
+two numbers are being joined across the space:
+
+    "the 2008 list"        -> tʰˈuː θˈaᶷzənd ˈeᶦt                    correct
+    "the 2008 400 richest" -> tʰˈuː mˈɪɫjən ˈeᶦt θˈaᶷzənd fˈɔːɹ hˈʌndɹəd   2008400
+
+⚠ NOT a blanket bug: space-as-thousands-grouping is CORRECT in fr/cs/sv/ru, and those read `2 008 400` as
+2,008,400 properly. English does not group with spaces. Corpus exposure is small (6 en_us utterances, one
+of them the date `july 21 356 bce` → 21356) but it is a correctness defect in the flagship language, and
+invisible to every text-vs-text gate we have run.
+
+Also confirmed from the audio, en_us #1225: `just not one that looks too expensive` — the reader said
+*not just*. Category 1, reader divergence: nothing to fix, and exactly the class Run 31 predicted.
+
+**Artifacts.** `work/asr_align/{align.sqlite,summary.tsv,investigate.tsv,recognizer_short.tsv}`,
+`scripts/omnivoice_ipa/{asr_align_corpus.py,asr_align_report.py,nativize_probe.py}`.
