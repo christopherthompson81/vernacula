@@ -2805,3 +2805,74 @@ its design suggests — but only where the host actually knows the word, which i
 Of 76 allowlist tokens, 18 appear in more than one corpus and **zero are real collisions**: the rest
 are the same initialism appearing across parallel FLEURS translations (`gmt`, `gps`, `pbs`, `rspca`,
 `utc`, `afcfta`, `hk`, `png`), which is correct behaviour.
+
+## Run 41 — 2026-08-17 — Working the bug backlog: a SECOND FLEURS audio defect
+
+### ⚠ es_419 SHIPS 490 SILENT FILES (17.5% of the split) — and it is not the Welsh defect
+
+`recognizer_short` was the one bucket the QC never explained. 490 of its 737 rows are Spanish — 17.5%
+of es_419 against ≤0.2% everywhere else — and a concentration in one language is exactly the shape
+that found the Welsh problem. So I read it instead of leaving it.
+
+The rows have **empty recognizer output and NORMAL audio duration** — 11.61 s median, slightly
+*longer* than the verified rows' 10.74 s. That rules out truncation, which is what Welsh was. So I
+measured the audio itself:
+
+    EMPTY-ASR rows    rms 0.000008   peak 0.0000    full length
+    verified rows     rms 0.02-0.10  peak 0.24-0.87
+
+**They are digitally silent.** Full-length files containing nothing.
+
+Scanned the entire language rather than a sample, and the correspondence is exact:
+
+    2,796 es_419 files scanned
+      490 silent (rms < 1e-4)        490 empty-ASR        overlap 490
+        0 silent but not flagged      0 flagged but audible
+
+⚠ **This is a genuinely different defect from Welsh, with the same consequence.** Welsh audio is
+TRUNCATED (1.4 s of a 14 s sentence); Spanish audio is FULL LENGTH AND EMPTY. **A duration check
+cannot see it** — the files are exactly the right length. Both are catastrophic training pairs, and
+both are invisible to every text-side gate because the transcript and the IPA are fine and only the
+PAIR is broken.
+
+Relabelled `defective_audio` (490 rows, was `recognizer_short`). Coverage checked: **no phone is lost**,
+and es_419's owned primitives survive — ʝ 1456→1190, β 5051→4104. `scan_silent_audio.py` now measures
+this directly rather than trusting the recognizer proxy, and is running over all 28 languages.
+
+**And the other empty-ASR rows are three different things, which is why the bucket needed reading:**
+
+    es_419  490   SILENT audio                       -> data defect, excluded
+    cy_gb   338   TRUNCATED audio (1.80 s, rms 2e-4) -> the Run 36 defect, already excluded
+    sd_in    15   NORMAL audio (5.40 s, rms 0.052)   -> the recognizer simply failed. NOT a defect; kept
+
+A status column is a work log, and one bucket held three unrelated causes.
+
+### ⚠ One of the "unfixable" Nguni click cases was the CASING WALL in disguise
+
+Run 40 measured the xh/zu click classifier (native 12/12, foreign 16/19) and called the three
+failures — `china`, `canada`, `ceo` — the intrinsic ceiling of a phonotactic test. **That was right
+for two of them and wrong for the third.** `canada` is CV.CV.CV and genuinely indistinguishable from
+a native word by shape. But `ceo` is not a word at all — it is an INITIALISM, and uppercasing it
+makes xh/zu spell it `sˈiː ˈiː ˈɔː`, which is exactly what the recognizer heard (`s i i o`) where we
+were emitting the click `kǀˈɛːɔ`. Inert in the seven other languages that have it.
+
+Calling something an intrinsic limit is a claim worth re-testing per case, not per class.
+
+### Also added to the allowlist, from the corpus-wide differential
+
+`nba` (×97), `fbi` (×72), `cctv` — all read as impossible onset clusters when lowercased (`nbˈa`,
+`fβˈi`, `n̪ˠˈəbˠə`, Fula's geminate `t͡ʃːtv`) and correctly as letter names when uppercased. None is
+a word in any of the 28 corpora, which is the test that matters for a globally-applied list, and each
+pays out across a dozen languages because FLEURS is parallel.
+
+⚠ **`eu` REJECTED and recorded** — the trap the collision gate was built for. It is the European
+Union in a few rows and an ordinary WORD in far more: Welsh *eu* "their" ×660, French *eu* ×46,
+Portuguese *eu* "I" ×15. Uppercasing it globally would spell out a pronoun in three languages.
+
+### Checked and NOT a bug: the Fula letter names
+
+`un` in Fulfulde reads `ˈu nˈa` where the reader said `uː e n`. Fula's letter-name table is cited to
+the **UNESCO Bamako alphabet** — a letter's name is the letter plus -a (ba, ca, da…) — so `n`→"na" is
+correct by a documented standard. The discrepancy is that readers **code-switch to English letter
+names for international acronyms**. That is a reader behaviour, not an engine error, and it belongs
+with the parked nativisation question rather than in a fix.

@@ -43,6 +43,22 @@ export const INITIALISM_UPPERCASE: readonly string[] = [
     // attached. These four were the only genuinely new initialisms in that set — everything else it
     // surfaced was already on this list, already in EXCLUDED, or an ordinary word.
     "gps", "hiv", "usaf", "un",
+    // ⚠ Added from the CASING DIFFERENTIAL run across the whole corpus rather than English alone.
+    // All three read as impossible onset clusters when lowercased -- `nba` -> nbˈa / n̪ˠˈəbˠə,
+    // `fbi` -> fβˈi, `cctv` -> the Fula geminate t͡ʃːtv -- and correctly as letter names when
+    // uppercased. None is a word in any of the 28 corpora, which is the test that matters for a
+    // GLOBALLY-applied list. `nba` x97 and `fbi` x72 appear across the parallel translations, so
+    // the repair pays out in a dozen languages each, not just English.
+    "nba", "fbi", "cctv",
+    // ⚠ `ceo` is here because ONE OF THE "UNFIXABLE" NGUNI CLICK CASES WAS THE CASING WALL IN
+    // DISGUISE. Run 40 measured the xh/zu click classifier and found three foreign words it wrongly
+    // claims — china, canada, ceo — and called all three the intrinsic ceiling of a phonotactic test.
+    // Two of them are: `canada` is CV.CV.CV and shaped exactly like a native word. But `ceo` is not a
+    // word at all, it is an INITIALISM, and uppercasing it makes xh/zu spell it `sˈiː ˈiː ˈɔː` —
+    // which is precisely what the recognizer heard (`s i i o`) where we were emitting the click
+    // `kǀˈɛːɔ`. Inert in the other seven languages that have it. The ceiling was real for two of the
+    // three, not all three.
+    "ceo",
     // Places / companies commonly initialised
     "png", "hk",
     // Alphanumeric codes — the pass has an attached-to-digits branch (`CG4684` is its own cited example),
@@ -94,13 +110,16 @@ export const INITIALISM_UPPERCASE: readonly string[] = [
  * WORSE by uppercasing.
  */
 export const EXCLUDED: Readonly<Record<string, string>> = {
-    // UNITS. Letter names are wrong; these want the unit-expansion layer, which reads the ones attached to a
-    // number already (`40 km` → kilometers). The standalone residue is a normalization gap, not an initialism.
-    // ⚠ REJECTED FROM THE CASING DIFFERENTIAL. The gate reports any token that reads differently when
-    // uppercased; that is a strong signal but not a verdict, and these are exactly where it misleads.
+    // ⚠ REJECTED FROM THE CASING DIFFERENTIAL and the COLLISION GATE. Both report a token that reads
+    // differently when uppercased, or that also occurs in another corpus; that is a strong signal but
+    // never a verdict, and these are exactly the cases where acting on it would do damage.
+    eu: "WORD in cy (their) ×660, fr (eu, avoir) ×46, pt (I) ×15 — the initialism is the minority",
     wwii: "roman-numeral compound — WWII is 'World War Two', NOT the letter names the uppercase pass gives it",
     led: "ordinary verb ×13 in context ('led to', 'led by'), not the diode. The homograph loses to frequency",
     ll: "TOKENIZER ARTIFACT — the tail of we'll / I'll, split on the apostrophe. Not in the source text at all",
+
+    // UNITS. Letter names are wrong; these want the unit-expansion layer, which reads the ones attached to a
+    // number already (`40 km` → kilometers). The standalone residue is a normalization gap, not an initialism.
     km: "unit — kilometre, wants 'kilometers' not K-M",
     cm: "unit — centimetre",
     kg: "unit — kilogram",
