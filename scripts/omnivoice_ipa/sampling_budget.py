@@ -26,6 +26,7 @@ import glob
 import json
 import math
 import os
+import sys
 import pandas as pd
 
 # population-descending order (greedy-cover ownership). 28-lang second pass: the 24
@@ -47,6 +48,13 @@ MAX_WEIGHT = 3.0
 CENSUS = "/home/chris/Programming/espeak-ng-portable/docs/primitive-census.json"
 TOKENS = "/mnt/data/omnivoice_ipa/corpus/tokens"
 WORK = "/mnt/data/omnivoice_ipa/work"
+
+# ⚠ THE EXCLUSION HAS TO BE APPLIED HERE, NOT ONLY AT SHARD-BUILD TIME. This script sets each
+# language's oversampling weight from the count of its scarcest OWNED primitive; counting that over
+# pairs which are then discarded targets the wrong number, and nothing downstream would say so. The
+# order is: exclude -> patch manifests -> sampling weights -> webdataset. See corpus_filter.py.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from corpus_filter import load_exclusions, load_manifest  # noqa: E402
 
 
 def owned_primitives():
@@ -75,18 +83,18 @@ def main():
 
     rows = []
     detail_lines = []
+    EXCLUDED = load_exclusions()
+    total_dropped = 0
     zero_gaps = []      # (lang, primitive) 0 occurrences — unfixable by resampling
     thin_gaps = []      # (lang, primitive, count) 0<count<MIN_RESCUABLE — data gap, not sampling
     for lang in POP_ORDER:
         mf = f"{TOKENS}/manifest_{lang}.jsonl"
         if not os.path.exists(mf):
             continue
-        ipa_blob = []
-        n_utts = 0
-        for line in open(mf, encoding="utf-8"):
-            d = json.loads(line)
-            ipa_blob.append(d["ipa"])
-            n_utts += 1
+        man, n_dropped = load_manifest(lang, EXCLUDED)
+        total_dropped += n_dropped
+        ipa_blob = [d["ipa"] for d in man]
+        n_utts = len(man)
         blob = "\n".join(ipa_blob)
         counts = {p: blob.count(p) for p in owned[lang] if p != "."}  # "." = pause, not a phone
         for p, n in counts.items():
@@ -121,6 +129,13 @@ def main():
     lines = []
     W = lines.append
     W("## Per-language sampling weights (density flattening, Task #3)\n")
+    # ⚠ STATED, NOT ASSUMED. The weights below are computed over the corpus AFTER the audio-gate
+    # exclusion; printing the count is what makes a missing/stale work/exclusions.tsv visible here
+    # instead of silently shifting every weight. 0 dropped with a populated DB means the gate did
+    # not run — see exclude_defective.py.
+    W(f"Computed over the corpus AFTER exclusions: **{total_dropped} utterances dropped** "
+      f"(`work/exclusions.tsv`; audio-side defects, see corpus_filter.py). "
+      f"{'⚠ ZERO dropped — has exclude_defective.py been run?' if total_dropped == 0 else ''}\n")
     W(f"Target: every language's DELIBERATE owned primitive (the reason it's in the "
       f"census-based minimal-25 set) reaches >= {N_TOKENS} exposures/epoch. Weight = "
       f"oversampling factor vs. uniform utterance sampling, capped at {MAX_WEIGHT}x. "

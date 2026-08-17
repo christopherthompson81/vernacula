@@ -2655,3 +2655,84 @@ names, but WWII is "World War Two"), `led` (×13 as the ordinary verb — the ho
 frequency), and `ll` (the tail of we'll / I'll split on the apostrophe — **the tokenizer artifact I
 mistook for a corpus defect once already**, showing up in a new instrument). A strong signal is still
 not a verdict.
+
+## Run 39 — 2026-08-17 — The corpus-side backlog: exclusion wired, a leak found, corpus rebuilt
+
+Four items were outstanding after the phonemizer merge (`a4717ae`). Doing them turned up a fifth that
+is more serious than any of the four.
+
+### 1. `defective_audio` exclusion, wired at the RIGHT step — `corpus_filter.py` / `exclude_defective.py`
+
+The exclusion had to land before `sampling_budget.py`, not just before shard-building: that script
+sets each language's oversampling weight from the count of its scarcest OWNED primitive, and counting
+that over pairs which are then discarded targets the wrong number *silently*. Both scripts now load
+manifests through one shared `load_manifest()`, so neither can forget, and both PRINT the drop count
+so a missing `work/exclusions.tsv` is visible rather than silent.
+
+Only `defective_audio` is excluded. `investigate` (1,782) is a QC **queue**, not a verdict;
+`recognizer_short` (737) is a fact about the recognizer, not the audio. A status column is a work log,
+and only one of its values is a statement that the data is unusable.
+
+**498 utterances dropped** (of 611 flagged — the rest were already absent from the manifests):
+cy_gb 480, ff_sn 9, sd_in 6, am_et 2, ar_eg 1. The coverage re-check runs every time rather than
+trusting Run 36's note: **no phone vanishes in any language**, and U+0325 — the primitive Welsh is the
+SOLE source of — retains 1,557 of 1,846 occurrences across 1,110 utterances.
+
+### 2. ⚠ TRAIN/DEV LEAKAGE: 73–99% OF EVERY DEV SET WAS ALSO IN TRAIN
+
+Found while wiring the exclusion, by reading the code I was about to modify.
+
+`build_webdataset.py` deduped the manifest on `id` before splitting, with a comment stating `id` was
+a per-SENTENCE key shared across speakers. **It is not.** `id` is the wav stem — unique per recording
+— so the dedup was a no-op and the split was a plain row slice. FLEURS records each sentence with
+~2.2 speakers (cy_gb: 3,263 recordings over 1,502 sentences), so slicing rows put the *same sentence*
+in both splits, read by a different voice:
+
+    xh_za 99%   ff_sn 94%   cy_gb 95%   en_us 87%   ja_jp 73%   of each dev set's sentences
+
+**Dev loss was scoring recall of sentences already trained on, not generalization** — which means the
+v5 run's dev curve does not mean what it appears to mean. The comment shows the author knew the
+hazard exactly and keyed the guard to the wrong field; the guard then read as protection for the
+whole life of the pipeline.
+
+Fixed by grouping on `sentence_id` and assigning whole groups, with an assert. Dev is still sized in
+rows (~80) but now spans ~36 distinct sentences instead of ~80 leaky ones. **Verified on the built
+shards, not just the inputs: 0 shared sentence_ids across all 28 languages.**
+
+### 3. ⚠ AND I MADE THE MIRROR-IMAGE MISTAKE MYSELF, ONE COMMAND LATER
+
+`patch_manifest_ipa.py` defaults to `--byid work/phonemized/byid` — the **espeak** tree. I ran it
+without the flag and patched all 28 manifests with espeak IPA instead of vernacula.
+
+It was caught only because I checked the *manifests* for the defect signatures rather than trusting
+that the byid files being clean meant the manifests were: ff/ha/kk still showed `t͡ʃh`/`sh`/`ʔ` while
+hi/cy/ga/sv/es/ca read clean, and that split made no sense under any correct run. Re-run with the
+explicit `--byid work/phonemized_vernacula/byid`. **The lesson is the same one as #2 in both
+directions: verify the artifact, not the input.**
+
+### 4. Corpus rebuilt on the merged phonemizer
+
+Re-phonemized all 77,584 utterances (0 errors), then re-ran the pipeline in order:
+**exclude → patch manifests → sampling weights → webdataset**.
+
+Every defect signature from the sweep is now **zero in the built shards**:
+
+    ff sh 280→0   ff t͡ʃh 514→0   ha t͡ʃh 182→0   kk ʔ 408→0   hi d͡ʒɲ 73→0
+    cy q 38→0   ga q 33→0   sv q 13→0   es q 9→0   ca q 5→0   sv `acɛpt`→0
+
+…and the positive side is present: 47 ja `çito̞t͡sɯᵝ`, 109 hi `ɡj`, 252 kk palatalised `lʲ`.
+
+**Final corpus: 74,278 train + 2,133 dev = 76,411 utterances, 28 languages, 0 defective pairs,
+0 sentence leakage.**
+
+⚠ **One more incomplete fix, found by re-scanning the REGENERATED output** for the very cluster the
+⟨ch⟩ fix targeted instead of assuming it was gone: 5 ff rows and 4 ha rows still had `t͡ʃh`, all of
+them ⟨chh⟩ — the Indic transliteration digraph in *Chhatrapati* and *Chhappan*. ⟨ch⟩ matched the
+first two letters and left the second h stranded, rebuilding the exact cluster. Fixed upstream in
+PR #823 (`28f4d26`). **A fix is not done until the thing it targeted is gone from the output.**
+
+### 5. Upstream report drafted — `docs/fleurs_cy_gb_truncated_audio.md`
+
+585 Welsh train files (17.1%) with median 1.44 s of audio against a median-14.16 s transcript, with
+the tar-member evidence that it is not a download artifact, the recognizer findings, and the file
+list in `fleurs_cy_gb_truncated_audio.txt`. Ready to file against `google/fleurs`.

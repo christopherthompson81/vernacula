@@ -24,9 +24,13 @@ import io
 import json
 import math
 import os
+import sys
 import tarfile
 import numpy as np
 import pandas as pd
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from corpus_filter import load_exclusions, load_manifest  # noqa: E402
 
 ROOT = "/mnt/data/omnivoice_ipa"
 TOKENS = f"{ROOT}/corpus/tokens"
@@ -87,21 +91,42 @@ def _repeat_shard(lang_dir, split, repeat):
             out.write(f"{tar_i} {jsonl_i} {n_items} {total_seconds}\n")
 
 
-def build_lang(lang, repeat):
+def build_lang(lang, repeat, exclusions):
     codes = np.load(f"{TOKENS}/codes_{lang}.npz")
-    manifest = [json.loads(l) for l in open(f"{TOKENS}/manifest_{lang}.jsonl", encoding="utf-8")]
-    # FLEURS 'id' is a per-SENTENCE id shared across speakers; ingest_fleurs.py keyed
-    # codes by it, so only one speaker's codes survive per id (npz is deduped already).
-    # Dedup the manifest to match (one row per id) BEFORE the dev/train split, else the
-    # same id lands in both splits = train/dev leakage. IPA is identical across an id's
-    # rows (same sentence), so keeping the first row loses nothing that training reads.
-    seen = set()
-    manifest = [r for r in manifest if not (r["id"] in seen or seen.add(r["id"]))]
+    # Audio-gate exclusion (work/exclusions.tsv) is applied HERE and, more importantly, in
+    # sampling_budget.py — see corpus_filter.py for why the order matters.
+    manifest, n_dropped = load_manifest(lang, exclusions)
     lang_dir = f"{OUT}/{lang}"
     os.makedirs(lang_dir, exist_ok=True)
-    n_dev = min(max(round(len(manifest) * DEV_HOLDOUT_FRAC), DEV_HOLDOUT_MIN), DEV_HOLDOUT_MAX)
-    n_dev = min(n_dev, len(manifest) // 10)  # never hold out more than 10%
-    dev_rows, train_rows = manifest[:n_dev], manifest[n_dev:]
+
+    # ⚠ THE SPLIT IS BY SENTENCE, NOT BY ROW, AND THE DIFFERENCE IS TRAIN/DEV LEAKAGE.
+    #
+    # The previous version deduped on `id` before splitting, with a comment saying `id` was a
+    # per-SENTENCE key shared across speakers. It is not — `id` is the WAV STEM, unique per
+    # recording, so the dedup was a no-op and the split was a plain row slice. FLEURS records the
+    # same sentence with ~2.2 speakers on average (cy_gb: 3,263 recordings over 1,502 sentences),
+    # so slicing rows put the SAME SENTENCE in both splits, read by a different voice: measured at
+    # 73-99% of every dev set (xh_za 99%, cy_gb 95%, en_us 87%). Dev loss was scoring recall of a
+    # sentence already trained on, not generalization.
+    #
+    # Grouping by `sentence_id` and assigning whole groups makes the splits text-disjoint. Dev is
+    # then sized in SENTENCES and lands slightly over the row target when a group has several
+    # speakers, which is the correct direction: a clean small dev beats a leaky larger one.
+    by_sentence = {}
+    for r in manifest:
+        by_sentence.setdefault(r["sentence_id"], []).append(r)
+    groups = list(by_sentence.values())
+    n_dev_rows = min(max(round(len(manifest) * DEV_HOLDOUT_FRAC), DEV_HOLDOUT_MIN), DEV_HOLDOUT_MAX)
+    n_dev_rows = min(n_dev_rows, len(manifest) // 10)  # never hold out more than 10%
+    dev_rows, train_rows, taken = [], [], 0
+    for g in groups:
+        if taken < n_dev_rows:
+            dev_rows.extend(g)
+            taken += len(g)
+        else:
+            train_rows.extend(g)
+    assert not ({r["sentence_id"] for r in dev_rows} & {r["sentence_id"] for r in train_rows}), \
+        f"{lang}: dev/train share a sentence_id"
     train_n, train_secs = _write_shard(lang_dir, "train", train_rows, codes)
     dev_n, dev_secs = _write_shard(lang_dir, "dev", dev_rows, codes)
     # _write_shard already wrote data_train.lst / data_dev.lst as single-entry
@@ -109,11 +134,13 @@ def build_lang(lang, repeat):
     # hardlinked copies (dev is never repeated).
     os.replace(f"{lang_dir}/data_train.lst", f"{lang_dir}/_data_train_single.lst")
     _repeat_shard(lang_dir, "train", repeat)
-    return train_n, train_secs, dev_n, dev_secs
+    return train_n, train_secs, dev_n, dev_secs, n_dropped
 
 
 def main():
     weights = pd.read_csv(f"{ROOT}/work/sampling_weights.csv").set_index("lang")["weight"].to_dict()
+    exclusions = load_exclusions()
+    total_dropped = 0
     langs = sorted(w[len("codes_"):-len(".npz")] for w in os.listdir(TOKENS) if w.startswith("codes_"))
     train_entries, dev_entries = [], []
     for lang in langs:
@@ -124,7 +151,8 @@ def main():
         # language's scarcest primitive reaches ≥ N_TOKENS. Physical repeats are integer
         # shard copies, so ceil is the right whole-number floor on the boost.
         repeat = max(1, math.ceil(weights.get(lang, 1.0) - 1e-6))
-        train_n, train_secs, dev_n, dev_secs = build_lang(lang, repeat)
+        train_n, train_secs, dev_n, dev_secs, n_dropped = build_lang(lang, repeat, exclusions)
+        total_dropped += n_dropped
         # repeat is realized as `repeat` distinct hardlinked shard copies (see
         # _repeat_shard) rather than the JSON "repeat" field, which triggers a
         # webdataset group_by_keys "duplicate file name" error when the same tar
@@ -132,11 +160,14 @@ def main():
         train_entries.append(dict(language_id=lang, manifest_path=[f"{OUT}/{lang}/data_train.lst"], repeat=1))
         dev_entries.append(dict(language_id=lang, manifest_path=[f"{OUT}/{lang}/data_dev.lst"], repeat=1))
         print(f"{lang}: train {train_n} ({train_secs/60:.1f} min) x{repeat} copies, "
-              f"dev {dev_n} ({dev_secs/60:.1f} min)")
+              f"dev {dev_n} ({dev_secs/60:.1f} min)"
+              + (f"  [-{n_dropped} defective]" if n_dropped else ""))
     os.makedirs(os.path.dirname(DATA_CONFIG), exist_ok=True)
     json.dump({"train": train_entries, "dev": dev_entries},
                open(DATA_CONFIG, "w", encoding="utf-8"), indent=2)
     print(f"\n-> {DATA_CONFIG} ({len(train_entries)} languages)")
+    print(f"   excluded {total_dropped} defective-audio utterances (work/exclusions.tsv)"
+          + ("  ⚠ ZERO — has exclude_defective.py been run?" if total_dropped == 0 else ""))
 
 
 if __name__ == "__main__":
