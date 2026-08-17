@@ -2934,3 +2934,31 @@ and the Nguni `ceo` (`s i i o`). The additions stand on that evidence, not on th
 
 **Rule for the rest of this work: aggregate distance answers "did a WIDE change help?" It cannot
 answer "was this ONE token right?" — that needs the audio at the token.**
+
+### The full 66-language silence sweep — es_419 is ALONE
+
+All 66 downloaded languages / 132 GB measured for silent audio:
+
+    es_419  490        ar_eg 1   ckb_iq 1   fa_ir 1   hr_hr 1   lb_lu 2
+                       ^ singletons, four of them outside the 28-language corpus
+
+**496 silent files across 66 languages, and 490 of them are Spanish.** That is not a general FLEURS
+quality problem — it is one broken split. The other 65 languages are effectively clean, which also
+answers the question in advance for the planned expansion past 28.
+
+⚠ And `cy_gb` returns **0 silent**, correctly: Welsh audio is TRUNCATED, not empty. That is exactly
+why `exclude_defective.py` unions two sources — a silence test alone would have missed all 585 Welsh
+files, and a duration test alone would have missed all 490 Spanish ones.
+
+### Final corpus
+
+    exclude -> patch manifests -> sampling weights -> webdataset
+
+    73,798 train + 2,123 dev = 75,921 utterances, 28 languages
+      defective-audio pairs present  : 0
+      sentences leaking across splits: 0
+      residual defect patterns       : 0
+
+988 utterances excluded (cy_gb 480 truncated, es_419 490 silent, ff_sn 9, sd_in 6, am_et 2, ar_eg 1).
+No phone is lost in any language, and U+0325 — the primitive Welsh solely provides — survives at
+1,557 occurrences across 1,110 utterances.
