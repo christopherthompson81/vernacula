@@ -2305,8 +2305,22 @@ stereo, which the loader averages). Re-fetching will not help — this is what F
 
 **Consequence, and it is the important bit.** These are 585 catastrophic TRAINING PAIRS: a full sentence of
 IPA against 1.5 s of audio teaches the model to compress a sentence into a tenth of its time. They are
-17% of the Welsh corpus. Labelled `truncated_audio` in the DB (611 rows corpus-wide) so the webdataset
-build can exclude them; the exclusion itself is not yet wired.
+17% of the Welsh corpus. Labelled **`defective_audio`** in the DB (611 rows corpus-wide) — a data defect,
+not a QC verdict, and not ours to fix: the action is to exclude the pair and report upstream. Detection
+lives in `asr_align_label.py` so it is reproducible rather than ad-hoc.
+
+**⚠ AND IT COSTS COVERAGE, because Welsh is not an interchangeable 17%.** cy_gb was selected into the
+corpus as the OWNER of one census primitive, U+0325 (voiceless ring) — and it is the **sole source** of it
+across all 28 languages, 1,937 occurrences, every one Welsh. Excluding the defective rows takes 327 of
+them (16.9%), leaving **1,610 in 1,148 utterances**, so the primitive survives comfortably. The rest of
+the loss is uniform — every Welsh phone loses ~18%, matching the 17.6% of phone tokens dropped, and **no
+phone vanishes entirely**. So the exclusion is safe, but only because it was checked: a defect
+concentrated on the primitive Welsh was chosen for would have been a different answer.
+
+**Pipeline consequence.** The exclusion has to be applied BEFORE `sampling_budget.py`, not after. That
+script sets each language's oversampling weight so its scarcest owned primitive reaches a minimum
+exposure per epoch, and computing that over pairs that will then be discarded targets the wrong number.
+Order is: exclude `defective_audio` -> patch manifests -> sampling weights -> webdataset.
 
 ⚠ **And it argues the audio gate should run BEFORE any future training, not after.** Every text-side gate
 we have — espeak diff, qualitative reads, the local-model sweep — is blind to this by construction: the

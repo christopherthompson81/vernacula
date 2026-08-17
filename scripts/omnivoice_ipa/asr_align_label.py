@@ -14,6 +14,11 @@ Status values, and the split they encode:
   investigate       in the tail for its language — a real disagreement worth a human read. Set in bulk.
   recognizer_short  the recognizer returned far too little to compare (a whole Welsh sentence came back
                     as the single phone `k`). Says nothing about our IPA. Set in bulk.
+  defective_audio   the AUDIO is broken, not the IPA: far too short for its text. 585 Welsh files (17.1%
+                    of that corpus) hold ~1.5 s for a sentence needing ~96 phones. Verified against the
+                    source tar — the members really are that small there, so it is upstream FLEURS data
+                    and not our download. NOT OURS TO FIX; the action is to exclude the pair from training
+                    and report it upstream. Set in bulk.
   ---- below here are set by hand, and only ever by hand ----
   defect            our phonemization is wrong. The thing we are hunting.
   reader_divergence the reader did not say what the transcript says (Run 31's finding). Not ours to fix,
@@ -38,7 +43,7 @@ import sys
 
 ROOT = "/mnt/data/omnivoice_ipa"
 DB = f"{ROOT}/work/asr_align/align.sqlite"
-AUTOMATIC = ("verified", "investigate", "recognizer_short")
+AUTOMATIC = ("verified", "investigate", "recognizer_short", "defective_audio")
 
 
 def ensure_columns(db: sqlite3.Connection) -> None:
@@ -86,8 +91,28 @@ def apply_auto(db: sqlite3.Connection) -> None:
         for lg, wav in short:
             db.execute(
                 "UPDATE utt SET status='recognizer_short' WHERE lang=? AND wav=? "
-                "AND (status IS NULL OR status IN ('verified','investigate','recognizer_short'))",
+                "AND (status IS NULL OR status IN " + str(AUTOMATIC) + ")",
                 (lg, wav))
+
+        # ⚠ DEFECTIVE AUDIO LAST, so it wins over the scoring labels — a pair whose audio is broken should
+        # not sit in the investigate queue as though its IPA were the problem. Judged in seconds-per-phone
+        # against THIS language's own median, so a fast-speaking language is not penalised, and at a third
+        # of it, which is far outside any speaking-rate variation.
+        # ⚠ FOLDED PHONE COUNT, not LENGTH(ipa). SQL's LENGTH counts characters — diacritics, spaces and
+        # stress marks included — which is a different scale per language and made this disagree with the
+        # analysis that found the defect (608 rows vs 611). The rate has to be seconds per PHONE.
+        rate = [(w, (ns / 16000) / len(fold(ipa))) for w, ipa, ns in db.execute(
+            "SELECT wav,ipa,n_samples FROM utt WHERE lang=? AND ipa IS NOT NULL AND n_samples>0",
+            (lang,)) if ipa and len(fold(ipa)) >= 12]
+        if rate:
+            med_r = statistics.median(r for _, r in rate)
+            for w, r in rate:
+                if r < med_r / 3:
+                    db.execute(
+                        "UPDATE utt SET status='defective_audio', comment=COALESCE(NULLIF(comment,''),?) "
+                        "WHERE lang=? AND wav=? AND status IN " + str(AUTOMATIC),
+                        ("audio far too short for its text; upstream FLEURS data, not our download",
+                         lang, w))
         db.commit()
         print(f"  {lang}: {len(scored)} scored, {len(short)} short", file=sys.stderr)
 
