@@ -63,9 +63,11 @@ pretty_name: OmniVoice IPA token corpus
 # OmniVoice IPA token corpus
 
 The training corpus for the [OmniVoice IPA fine-tune](https://huggingface.co/christopherthompson81/omnivoice-ipa-onnx):
-[FLEURS](https://huggingface.co/datasets/google/fleurs) utterances re-transcribed to **IPA** with a
-portable espeak-ng-compatible phonemizer and encoded to **Higgs codec tokens**. The fine-tune teaches
-OmniVoice to accept IPA phoneme strings as text input, so the phonemizer (not the model) owns G2P.
+[FLEURS](https://huggingface.co/datasets/google/fleurs) utterances re-transcribed to **IPA** with
+[vernacula-phonemizer](https://github.com/christopherthompson81/vernacula-phonemizer) and encoded to
+**Higgs codec tokens**. The fine-tune teaches OmniVoice to accept IPA phoneme strings as text input,
+so the phonemizer (not the model) owns G2P — including stress, pitch accent, and text normalization
+(numbers, %, currency, and units are already spoken words in each language's own vocabulary).
 
 **28 languages · ~77k utterances · ~267 h.** Codes + IPA/metadata only — **not** the source audio
 (that is FLEURS'; regenerate waveforms from there via the Higgs decoder if you need them).
@@ -83,7 +85,7 @@ Manifest row:
 
 ```json
 {"id": "10004088536354799741", "sentence_id": "903", "lang": "en_us",
- "ipa": "ə tɔːɹnˈeᶦdoᶷ ɪz ə spˈɪnɪŋ kˈɑːlʌm ...", "gender": "FEMALE",
+ "ipa": "ə tɔːɹnˈeᶦd̬oᶷ ɪz ə spˈɪnɪŋ kʰˈɑːləm ...", "gender": "FEMALE",
  "dur_s": 6.8, "n_frames": 170}
 ```
 
@@ -96,6 +98,12 @@ The IPA follows a **one-symbol-one-sound** discipline so the same glyph isn't ov
 languages: English offglides use superscript nuclei (`eᶦ`, `oᶷ`) distinct from syllabic vowels, and the
 American-English intervocalic flap is `t̬` (voiced-t) rather than the tap `ɾ` used elsewhere. This is
 what lets a single model render, e.g., Zulu clicks and English vowels from IPA alone.
+
+Transcription is narrow where the language is: aspiration is marked (`kʰ tʰ pʰ`), dental stops are
+`t̪ d̪`, geminates use `ː`, Japanese carries pitch-accent downsteps (`ꜜ`) and mora conventions
+(`ɯᵝ`, `e̞ o̞`), and Sindhi has its full implosive series (`ɓ ɗ ʄ ɠ`). Non-lexical text (numbers,
+percent, currency, units, dates) is normalized to each language's own spoken words BEFORE
+phonemization, so the IPA contains no unspoken symbols.
 
 ## Loading
 

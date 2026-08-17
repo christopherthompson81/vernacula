@@ -9,7 +9,7 @@ Patches the EXTERNAL DATA FILE directly (raw bytes), so:
 The MatMul nodes keep their module path (/model/llm/layers.N/self_attn/q_proj/MatMul), so we
 map layer/proj -> the generically-named weight initializer they consume.
 
-Times each phase and validates the result against the merged v4 model by logit parity.
+Times each phase and validates the result against the merged v5 model by logit parity.
 """
 import os
 import re
@@ -25,7 +25,7 @@ BASE_DATA = f"{BASE_DIR}/omnivoice_transformer.onnx.data"
 DIFF = "/mnt/data/omnivoice_ipa/onnx/ipa_diff.onnx"
 OUT_ONNX = f"{BASE_DIR}/omnivoice_transformer_ipa.onnx"
 OUT_DATA_NAME = "omnivoice_transformer_ipa.onnx.data"
-CAP = "/home/chris/Programming/vernacula/scripts/omnivoice_export/capture/reference.npz"
+CAP = "/mnt/data/Programming/vernacula/scripts/omnivoice_export/capture/reference.npz"
 NODE_RE = re.compile(r"layers\.(\d+)/(self_attn|mlp)/(\w+_proj)/")
 
 
@@ -105,7 +105,7 @@ def main():
 
     # --- parity vs merged v4 PyTorch ---
     import sys, torch, onnxruntime as ort
-    sys.path.insert(0, "/home/chris/Programming/vernacula/scripts/omnivoice_export")
+    sys.path.insert(0, "/mnt/data/Programming/vernacula/scripts/omnivoice_export")
     from omnivoice.models.omnivoice import OmniVoice
     from export_omnivoice import TransformerWrapper
     from peft import PeftModel
@@ -117,7 +117,7 @@ def main():
     mdl = OmniVoice.from_pretrained("/mnt/data/models/omnivoice/k2-fsa-OmniVoice",
                                     device_map="cpu", dtype=torch.float32)
     mdl = PeftModel.from_pretrained(
-        mdl, "/mnt/data/omnivoice_ipa/train/checkpoints_v4/checkpoint-4000").merge_and_unload().eval()
+        mdl, "/mnt/data/omnivoice_ipa/train/checkpoints_v5/checkpoint-4000").merge_and_unload().eval()
     try:
         mdl.llm.config._attn_implementation = "sdpa"
     except Exception:
@@ -127,7 +127,7 @@ def main():
                                     torch.from_numpy(cap["tf_audio_mask"]),
                                     torch.from_numpy(cap["tf_attention_mask"])).numpy()
     agree = float(np.mean(a.argmax(-1) == b.argmax(-1)))
-    print(f"\nparity folded-vs-merged-v4: argmax {agree*100:.3f}%  max|Δlogit| {np.abs(a-b).max():.2e}")
+    print(f"\nparity folded-vs-merged-v5: argmax {agree*100:.3f}%  max|Δlogit| {np.abs(a-b).max():.2e}")
     print("PASS" if agree > 0.999 else "CHECK")
 
 

@@ -18,7 +18,7 @@ from onnx import helper, numpy_helper
 from safetensors import safe_open
 
 BASE = "/mnt/data/models/omnivoice/k2-fsa-OmniVoice"
-ADAPTER = "/mnt/data/omnivoice_ipa/train/checkpoints_v4/checkpoint-4000/adapter_model.safetensors"
+ADAPTER = "/mnt/data/omnivoice_ipa/train/checkpoints_v5/checkpoint-4000/adapter_model.safetensors"
 OUT = "/mnt/data/omnivoice_ipa/onnx/ipa_diff.onnx"
 EMBED_THRESHOLD = 0.001   # rows with max|Δ| below this are weight-decay drift → keep base
 LORA_ALPHA, LORA_R = 32, 16   # scale = alpha/r = 2.0

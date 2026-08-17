@@ -21,7 +21,7 @@ import onnxruntime as ort
 from huggingface_hub import hf_hub_download
 
 ROOT = "/mnt/data/omnivoice_ipa"
-ONNX = "/home/chris/Programming/vernacula/scripts/omnivoice_export/onnx"
+ONNX = "/mnt/data/Programming/vernacula/scripts/omnivoice_export/onnx"
 TSV = f"{ROOT}/corpus/fleurs_transcripts/data"
 PHON = f"{ROOT}/work/phonemized"
 OUT = f"{ROOT}/corpus/tokens"

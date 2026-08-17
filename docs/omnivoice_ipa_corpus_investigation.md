@@ -2131,3 +2131,37 @@ before v6.
 
 **Commits (vernacula-phonemizer, branch `norm/foreign-async-oov`, not pushed):** `4f89caa` digraphs,
 `5e5ce11` xh/zu letter names, `dedc5b0` era casing + data. Suite 4751/4751 throughout.
+
+### Run 35 addendum — xh/zu foreign-word routing SHIPPED; third QC pass clean
+
+The 509-utterance click defect is fixed. Nguni is Latin-script, so its tokenizer claims embedded English
+outright and no unclaimed gap ever reaches `core/foreign.ts` — the mechanism every non-Latin-script host
+gets for free. Wired a `ForeignPhonemizer` the way ~46 other engines take one, with the English dict
+lookup injected alongside (the shape the registry already uses for Naija's `knownWord`).
+
+**The gate needs BOTH signals, and measuring is what showed it.** Routing on "known English word" alone is
+badly unsafe here: the most frequent CMUdict hits in these corpora are ordinary Nguni words — `uma` ×105,
+`ngo` ×95, `ama` ×67, `kahle`, `yonke`, `kuba`, `moya` — so that gate would have wrecked the language.
+Routing on "contains c/q/x" alone fails the other way, those being native click letters. The conjunction
+selects **477 distinct tokens across both corpora — china, atlantic, hurricane, francisco, iraq,
+microsoft, xinhua, albuquerque — and not one Nguni word.**
+
+A word *without* a click letter is deliberately left native: `visa`, `asia`, `tsunami`, `europe` read as
+reasonable nativisations, which is what the Run 33 probe measured readers doing. This routes only where
+staying native is not merely accented but wrong.
+
+**Audit.** Only xh_za (297 rows, 19.7%) and zu_za (226, 15.3%) changed; every other language **0**.
+**100% of changed rows contain a c/q/x token, and 100% lost at least one click.**
+`electric charge` ɛlˈɛːkǀtʼrikǀ kǀʰˈaːrɡ̤ɛ → ɪlˈɛktɹɪk t͡ʃˈɑːɹd͡ʒ, while native `ngelixa` → ŋɡ̤ɛlˈiːkǁa keeps
+its click. (Patching only one engine looked like a no-op: xh emits via `phonemizeWord`, zu via
+`phonemizeCompound`, so the branch differs.)
+
+**Third QC pass, final corpus:** 77,584 rows, **0 empty**, **0 clicks outside xh/zu**, 17 three-repeats
+(the cmn digit-year false alarm plus the ta dot-grouping case, both previously dispositioned),
+punctuation 5,726 marks in 4,231 utterances (`, . ! ?` only). Initialism candidates down to 864 from the
+original 2,164.
+
+**Total vs the v5 corpus the live model trained on: 8,223 of 40,058 unique rows (20.5%).**
+
+Upstream commits on `norm/foreign-async-oov`: `4f89caa` digraphs, `5e5ce11` Nguni letter names,
+`dedc5b0` era casing + data, `966ad42` xh/zu foreign routing. Suite 4751/4751.

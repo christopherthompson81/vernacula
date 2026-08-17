@@ -37,8 +37,10 @@ library_name: onnx
 
 An **ONNX conversion** of [`k2-fsa/OmniVoice`](https://huggingface.co/k2-fsa/OmniVoice) (a
 non-autoregressive diffusion-LM TTS), plus a small **IPA fine-tune diff** that teaches the model to
-accept IPA phoneme strings (from a portable espeak-ng-compatible phonemizer) as text input — so the
-phonemizer, not the model, owns the linguistic G2P.
+accept IPA phoneme strings (from [vernacula-phonemizer](https://github.com/christopherthompson81/vernacula-phonemizer))
+as text input — so the phonemizer, not the model, owns the linguistic G2P: dictionary + neural G2P,
+stress, pitch accent, and text normalization (numbers, %, currency, units spoken in-language) all
+happen before the model sees a token.
 
 ## Files
 
@@ -66,7 +68,9 @@ needed. Reference implementations: `apply_diff.py` (Python) and `OmniVoiceDiff` 
 
 - Base model: [`k2-fsa/OmniVoice`](https://huggingface.co/k2-fsa/OmniVoice) — Apache-2.0. This
   repo redistributes an ONNX conversion of it under the same license.
-- The fine-tune was trained on codec tokens derived from [FLEURS](https://huggingface.co/datasets/google/fleurs) (CC-BY-4.0).
+- The fine-tune was trained on codec tokens derived from [FLEURS](https://huggingface.co/datasets/google/fleurs) (CC-BY-4.0),
+  transcribed to IPA with [vernacula-phonemizer](https://github.com/christopherthompson81/vernacula-phonemizer)
+  (see the [token corpus dataset](https://huggingface.co/datasets/christopherthompson81/omnivoice-ipa-corpus)).
 """
 
 
