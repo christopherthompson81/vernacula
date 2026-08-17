@@ -2273,3 +2273,41 @@ French, Catalan and Spanish readers CODE-SWITCH on foreign proper nouns — `bir
 `cinque terre` read in Italian, `washington capitals` in English — where we nativise. Amharic readers do
 the opposite. That is direct evidence that nativisation must be a per-language strategy, not a universal
 layer, which is where Run 35's probe left the question.
+
+### Run 36 addendum 2 — 585 Welsh audio files are TRUNCATED, and it is upstream FLEURS data
+
+Working the queue by language turned up something that is not a phonemizer defect at all, and is worth
+more than everything else found in this pass.
+
+**How it surfaced.** Welsh flagged rows kept showing recognized phones almost unrelated to their text.
+The recognizer-reliability check (median heard-phones / our-phones per language) put cy_gb at a healthy
+1.04 — but **17.4% of its rows fell under 0.7**, a bimodal shape no median would show. Spanish had a
+similar 17.5%, so the first hypothesis (poor Welsh coverage in xlsr-53) was wrong.
+
+**What it actually is.** Seconds-of-audio per phone, against each language's OWN median so a fast-speaking
+language is not penalised:
+
+    cy_gb   585 of 3,427 utterances (17.1%)   0.0150 s/phone   vs 0.1509 normal   -- a TENTH
+    sd_in    12   ff_sn 9   ar_eg 2   am_et 2   ta_in 1        -- negligible everywhere else
+
+Median 1.5 s of audio for a sentence needing ~96 phones. Spanish, checked, is NOT affected — its
+under-0.7 rows have entirely normal duration, so its low ratio has some other cause.
+
+**Read, not just measured** (user's ask): of the 585, **333 decode to nothing at all** and 252 give short
+fragments. Where the fragments are intelligible they look like ENGLISH — `ð ə s eɪ m ɪ k s p ɪ ɹ ɪ ə n s ə`
+("the same experience"), `h aʊ s`, `ɡ eɪ v ð ə … m eɪ ʃ ə n` — in files whose transcript is Welsh. That is
+suggestive but weak on its own: a one-second noisy fragment biases this recognizer toward English whatever
+is in it. **The duration is the unambiguous part.**
+
+**Not our download.** Checked the member sizes in the source tar directly: the truncated files really are
+small there (median 99,898 bytes vs 954,298 for normal ones; the 2:1 against the decoded duration is just
+stereo, which the loader averages). Re-fetching will not help — this is what FLEURS ships.
+
+**Consequence, and it is the important bit.** These are 585 catastrophic TRAINING PAIRS: a full sentence of
+IPA against 1.5 s of audio teaches the model to compress a sentence into a tenth of its time. They are
+17% of the Welsh corpus. Labelled `truncated_audio` in the DB (611 rows corpus-wide) so the webdataset
+build can exclude them; the exclusion itself is not yet wired.
+
+⚠ **And it argues the audio gate should run BEFORE any future training, not after.** Every text-side gate
+we have — espeak diff, qualitative reads, the local-model sweep — is blind to this by construction: the
+transcript is fine, the IPA is fine, and only the PAIR is broken.
