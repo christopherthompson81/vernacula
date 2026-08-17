@@ -2230,3 +2230,46 @@ Also confirmed from the audio, en_us #1225: `just not one that looks too expensi
 
 **Artifacts.** `work/asr_align/{align.sqlite,summary.tsv,investigate.tsv,recognizer_short.tsv}`,
 `scripts/omnivoice_ipa/{asr_align_corpus.py,asr_align_report.py,nativize_probe.py}`.
+
+### Run 36 addendum — the review columns, and working the queue by language
+
+**Schema.** `utt` gained `status`, `comment` and a cached `dist` (user request). The scoring pass produces a
+RANKING; these produce a RECORD, and the difference matters because the scorer changed three times during
+this run — a verdict written into the row survives that, a position in a sorted file does not. Automatic
+statuses (`verified` 74,446 · `investigate` 1,792 · `recognizer_short` 1,338); hand statuses (`defect`,
+`reader_divergence`, `convention`, `artefact`) are only ever set by hand, and **a bulk re-apply never
+overwrites one** — verified by re-running and checking the hand rows survived.
+
+**Four defects found by listening, each invisible to every text-vs-text gate we have run:**
+
+| | found | fix |
+|---|---|---|
+| en `2008 400` → 2008400 | reader said "two thousand and eight … four hundred" | leading group 1–3 digits + not after a month; whole-run match |
+| en `u.s.` → the word *ʌs* | reader said "U-S" | uppercase on dot-strip — a dotted run is an initialism by construction |
+| es/pt `irm` → *ˈiɾm* | reader spelled "i-ere-eme" | `acronymLetters`; `ɾm` is a legal coda so phonotactics cannot see it |
+| de `24 september` → cardinal | reader said *vierundzwanzigSTEN* | a bare number before a month is a date |
+
+Two of the four are the CASING WALL again — sixth and seventh sightings. It is now clearly a property of
+the codebase rather than a run of coincidences: *a rule keyed on capitals declines silently on lowercased
+input, and lowercased input is what corpora ship.*
+
+**Where the leverage is, measured against each language's own baseline** (a raw share is meaningless when
+the corpus is full of the thing):
+
+    4-digit year        10.4% flagged vs  6.7% corpus   1.54x
+    grouped/long number 26.3%         vs 18.8%          1.40x
+    has a digit         28.8%         vs 21.5%          1.34x
+    Latin run           only measurable for non-Latin-script hosts:
+                        ar 4.0x · sd 3.4x · hi 3.2x enriched; ko 0.0x · am 0.7x · ta 0.4x NOT
+
+⚠ **The enrichment figures are modest, and that is the result.** After the systemic fixes the queue is a
+diffuse long tail rather than one dominant cause — no remaining pattern reaches even 2× its baseline
+except delegated Latin in three languages. Continuing to grind row-by-row has visibly diminishing returns;
+the biggest remaining lever is the parked per-language nativisation question, which the queue itself
+now has evidence for.
+
+**A qualitative finding the metric could not capture, because Latin-script hosts have a 100% baseline:**
+French, Catalan and Spanish readers CODE-SWITCH on foreign proper nouns — `birmingham` read in English,
+`cinque terre` read in Italian, `washington capitals` in English — where we nativise. Amharic readers do
+the opposite. That is direct evidence that nativisation must be a per-language strategy, not a universal
+layer, which is where Run 35's probe left the question.

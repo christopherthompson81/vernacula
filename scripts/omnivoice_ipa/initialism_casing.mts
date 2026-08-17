@@ -76,6 +76,7 @@ export const INITIALISM_UPPERCASE: readonly string[] = [
     "mcs",      // ga — REM (mearchorraí súl) → em-ce-as in Irish letter names
     "rs",       // cs — multiple sclerosis (roztroušená skleróza)
     "rmn",      // ca/es/fr/pt — MRI (ressonància magnètica nuclear) → erra-ema-ena
+    "irm",      // ca/es/fr/pt — the other MRI abbreviation; audio has the reader spelling it
     "mrt",      // de/sv — MRI (Magnetresonanztomographie) → em-er-te
     "osn",      // cs — the UN (Organizace spojených národů) → o-es-en
     "bm",       // tr — the UN (Birleşmiş Milletler) → be-me
