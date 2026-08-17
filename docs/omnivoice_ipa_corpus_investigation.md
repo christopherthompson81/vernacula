@@ -3035,3 +3035,68 @@ WITHOUT loosening the signal — so it now pins `cuba` and `cima`, still unliste
 clicked.
 
 Corpus rebuilt: **73,798 train + 2,123 dev = 75,921 utterances, 0 defective pairs, 0 split leakage.**
+
+## Run 43 — 2026-08-17 — A new instrument, and a negative result across 26 of 28 languages
+
+### First, a durability bug in the QC itself
+
+Re-applying the automatic labels reverted the 490 silent-Spanish `defective_audio` rows straight back
+to `recognizer_short`. `defective_audio` is in `AUTOMATIC`, so the pass overwrote a verdict I had set
+with a one-off UPDATE — **the comment survived, the status did not**.
+
+**A verdict inside an automatic category is only durable if the automatic pass can reproduce it.**
+`apply_auto` now reads `work/silent_audio.tsv` itself, as a SECOND detector beside the existing
+seconds-per-phone one. Neither subsumes the other: Welsh is truncated and fails on rate; Spanish is
+full-length and empty, so its rate is unremarkable and the rate test cannot see it.
+
+    defective_audio   611 -> 1101      recognizer_short  737 -> 247
+    verified idempotent: two consecutive --apply runs now agree, which they did not before
+
+### `confusion_pairs.py` — for defects too thin for the queue
+
+Reading the queue row by row found every large class in this corpus, but it is a per-row instrument.
+A wrong mapping costing ONE phone per utterance never reaches a worst-first queue at all: one phone
+in a hundred does not move the distance.
+
+So: align our IPA against the recognizer per row, count the 1:1 SUBSTITUTIONS, and — the part that
+makes it a test rather than a list — **compare the profile of the `investigate` rows against the
+`verified` rows of the same language.** Recognizer noise has the same profile in both. A real defect
+class concentrates in the flagged set.
+
+    ratio ~1.0  =  the flagged rows are just noisier rows; no distinct defect class
+    ratio >> 1  =  something is different in KIND about what got flagged
+
+### The result: 26 of 28 languages come back at ratio ≈ 1
+
+    hi 1.1   ff 0.4   kk 1.2   cmn 1.2   sv 1.2   ca 1.4   am 1.4   xh 1.6   ja 1.7   de 1.7
+    ru 1.8   th 1.8   es 2.0   cs 3.1   cy 4.1   om 4.3   ha 5.6   zu 6.1   pt 6.6
+    (vi tr ta sd ko ga ar: too few flagged rows to form a profile at all)
+
+Every top pair is an expected recognizer-convention difference — vowel-quality collapse (`i→ɪ`,
+`u→ʊ`, `a→ə`), rhotic notation (`ɾ→r`), aspiration and length unmarked. **No hidden systematic defect
+anywhere in those 26.**
+
+### The two outliers are both READER or RECOGNIZER facts, not ours
+
+**en_us, ratio 188.** `ɚ→a`, `ɝ→a`, `ɛ→e`, `ə→e`. Reading the rows: `for the first time` →
+`f ɔ ɾ ð e f a s t aɪ m` — a tapped `ɾ` for /ɹ/, `e` for /ɛ ə/, `a` for /æ ʌ/, and **no r-colouring at
+all**. That is a non-rhotic, L2/Romance-accented reading against our General American IPA.
+
+Measured across the whole language rather than the flagged tail: of 2,227 rows with ≥4 rhotic
+positions, the median rhotic-LOSS rate is 0.20 (ordinary recognizer behaviour) and only **13 rows**
+exceed 80% loss, 80 exceed 60%. Reader accent variation, negligible in scale, and not a defect in the
+IPA — which is canonical GA by design.
+
+**fr_fr, ratio 31.** `ʁ→ɾ` / `ʁ→r`. Only **1 of 77** flagged rows carries ≥3 of them, and in that row
+the recognizer writes `ʁ` word-initially and `r` elsewhere in the same utterance. Its own notation
+variance, spread thin. Note fr and en have the two LOWEST median distances in the corpus (0.085,
+0.191) — a language that aligns superbly has a tail made of outliers rather than errors, which is why
+the enrichment ratio is high there and nowhere else.
+
+### What this establishes
+
+The per-language read plus this instrument now cover both failure shapes: **concentrated** defects
+(which the queue finds) and **thin, systematic** ones (which the profile comparison finds). Neither
+finds anything further. The corpus's systematic phonemization defects are worked out, and the
+remaining queue is recognizer noise, reader accent, and the two documented residues (Nguni
+`china`-class ~19 rows, the xh/zu mid-phrase routing split).
