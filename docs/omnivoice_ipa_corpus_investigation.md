@@ -3270,12 +3270,39 @@ all**. Measured across all 66:
 fr_fr 4.3% is one PHRASE-FINAL accent per rhythmic group, exactly as documented ("French has no
 lexical stress"), and am_et 1.4%. **The training corpus is not affected.**
 
-For the expansion set the six zeros split two ways:
-  · **principled** — sr/hr/sl defer 4-way lexical PITCH ACCENT, which is unwritten and not derivable
-    from spelling (serbian.jsonc says so explicitly); af documents "Stress … not modelled (folded)".
-  · **worth revisiting** — `is_is` (Icelandic stress is ALWAYS initial, trivially derivable, and the
-    header does not mention it) and `lb_lu`, which COMPUTES stress internally — the file records
-    "measured net +3.9pp over always-first-syllable" — and then emits no mark.
+### ⚠ AND "DELIBERATE DEFERRAL" DID NOT SURVIVE BEING CHECKED
 
-That is a training-relevant property for anyone expanding past 28: those languages would teach the
-model no stress placement at all.
+I first reported sr/hr/sl/af as principled deferrals because the engines SAY SO. The user pushed back
+that deferral is often a label for unfinished work. Checking it changed three of the six verdicts.
+
+**The support I offered was worthless.** I implied "our referee also omits stress." Control across the
+whole referee set: **0 of 64 `wikipron-broad` files mark stress on more than half their entries.** That
+source strips it universally, so its silence says nothing about any language.
+
+Re-derived per language, on evidence rather than on the docstring:
+
+    af_za   ⚠ NOT justified — THE DATA WAS IN HAND AND DISCARDED. The RCRL dictionary referee has
+            stress on 93% of 27,435 entries, and a second source (wiktionary) on 61%. The engine
+            SHIPS a lexicon derived from that same RCRL data — af-rcrl-lexicon.tsv, 25,117 entries —
+            with stress stripped on import:
+                referee  a.fri.ˈkɑːns   mə.ˈny.tə   rə.ˈxiə.rəŋ
+                shipped  afrikɑːns      mənytə      rəχiərəŋ
+            The header's "Stress … not modelled (folded)" describes the outcome; it does not justify it.
+
+    is_is   ⚠ NOT justified — no data is NEEDED. Icelandic primary stress is word-initial, essentially
+            without exception in native vocabulary. It is a rule, not a lexicon, and the engine header
+            does not mention stress at all.
+
+    lb_lu   ⚠ NOT justified — the rule ALREADY EXISTS. luxembourgish.ts records a measured stress
+            placement ("net +3.9pp over always-first-syllable") and then emits no mark. The work is
+            done and the output is suppressed.
+
+    sl_si   constrained by DATA, which is a narrower claim than I made. Slovene has free lexical
+    sr_rs   stress; BCS has 4-way lexical pitch accent. Neither is derivable from spelling, and NO
+    hr_hr   source in this repo carries it for them (wikipron-broad 0%, epitran 0%, no kaikki file).
+            So implementing it needs new data sourced first — not that it is impossible in principle.
+
+**Three of six were unfinished work wearing a deferral label.** The remaining three have a real
+obstacle, but the honest statement is "no stress-bearing source is available here", not "not
+derivable". None of the six is in the 28, so the training corpus is unaffected — but `af_za` is the
+one to fix first, because fixing it is an import change rather than a research problem.
