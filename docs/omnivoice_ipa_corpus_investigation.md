@@ -3100,3 +3100,63 @@ The per-language read plus this instrument now cover both failure shapes: **conc
 finds anything further. The corpus's systematic phonemization defects are worked out, and the
 remaining queue is recognizer noise, reader accent, and the two documented residues (Nguni
 `china`-class ~19 rows, the xh/zu mid-phrase routing split).
+
+## Run 44 — 2026-08-17 — The consonant-skeleton matcher (user's suggestion): built, VALIDATED, and it confirms
+
+The user's observation: comparing our IPA to the recognizer's CONSONANT SKELETON is something a model
+could do, but probably a heuristic could too. Run 43's own data argues for it — **every top
+substitution in every one of the 28 languages was vowel quality** (`i→ɪ`, `a→ə`, `u→ʊ`, `ɛ→e`, `ɔ→o`).
+That is not error, it is two conventions disagreeing about vowels by design, and it is the bulk of the
+measured distance. It is the NOISE FLOOR that hid everything smaller — the floor Run 41 hit head-on
+when a 2-phone edit in a 120-phone utterance could not be resolved at all.
+
+Consonants are the opposite: both sides agree closely, and a missing or wrong consonant is much more
+likely to be ours.
+
+### ⚠ VALIDATED AGAINST THE CORPUS'S OWN KNOWN DEFECTS, and my first version FAILED that test
+
+A new metric that has never been shown to detect anything is not evidence. The DB keeps the pre-fix
+IPA in `ipa_prev`, and the merged fixes were largely CONSONANT defects, so the metric can be scored on
+2,314 rows where a known fix changed the IPA — it must separate old from new more sharply than the
+full distance, which manages 3.5:1.
+
+    FULL distance (baseline)          1651 better /  472 worse   3.5 : 1
+    skeleton, my first parameters      555 / 307                 1.8 : 1   ⚠ WORSE
+    skeleton + glides                  619 / 488                 1.3 : 1
+    skeleton, h and ʔ KEPT            1493 / 322                 4.6 : 1   ✓
+
+**I had excluded `h` and `ʔ`,** reasoning that the recognizer inserts and drops both freely. Sound in
+the abstract, and wrong here: the single largest defect this corpus ever had was Kazakh ⟨ь⟩/⟨ъ⟩
+emitting a GLOTTAL STOP in 408 rows. Excluding ʔ threw away the evidence for the biggest fix — and it
+did so by producing TIES rather than disagreements, which is worse than a wrong answer because it
+reads as agreement. Glides genuinely do hurt (`j→ɪ` is a top-ten pair in th and pt), so they stay out.
+`--drop-weak` re-runs the losing variant so the claim stays checkable.
+
+**The tuned metric beats the full distance: 4.6:1 against 3.5:1.**
+
+### It finds 1,109 candidates the full-distance queue passed
+
+Concentrated exactly where the full metric was blind — `sd_in` 116, `vi_vn` 59 (all new), `ga_ie` 50,
+`ko_kr` 48 — the high-median-distance languages whose vowel noise swamped everything.
+
+### Read across seven languages, and every one is reader or recognizer, not us
+
+    sd vi ga ko   the RECOGNIZER cannot read the language — Irish comes back in English phones
+                  (`ð ə k uː n ɑː ʌ v d eɪ t aɪ ɹ v` for `lʲˈɛ kˈuːn̪ˠəw dʲˈeː t̪ˠˈawəɾˠfˠə`)
+    es_419        the RECOGNIZER'S DIALECT — it writes Castilian θ where Latin American Spanish
+                  correctly has seseo (`t e n θ j o n` vs our `tensjˈon`). Ours is right.
+    en_us         reader accent, the non-rhotic/L2 class already measured in Run 43
+    fr_fr         READER VARIATION IN YEAR FORM. `1945` — we write `mil nœf sɑ̃ …`, some readers say
+                  `dix-neuf cent`. Counted: of 127 rows with a 16xx-19xx year, 44 readers use "mil"
+                  and 18 use "dix-neuf". Both are correct French; **we picked the majority form.**
+    ha_ng         reader CODE-SWITCHING: `cosmonaut no 11` read as English "number eleven"
+                  (`n o m b ə e l e v`) where we read `nˈo` + Hausa *goma sha daya*. `no <digit>` is
+                  19 rows across 7 languages and `no` is an ordinary word in several — no rule.
+
+### What it establishes
+
+The suggestion was right and the instrument is a genuine improvement — it is now the sharper of the
+two and worth keeping. **It also confirms Run 43 rather than overturning it:** with the vowel noise
+removed and 1,109 fresh candidates to read, there is still no systematic phonemization defect left to
+find. What remains is recognizer limitation, recognizer dialect, reader accent, reader variation and
+reader code-switching — none of which is ours to fix, and all of which are now named.
