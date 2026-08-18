@@ -3160,3 +3160,47 @@ two and worth keeping. **It also confirms Run 43 rather than overturning it:** w
 removed and 1,109 fresh candidates to read, there is still no systematic phonemization defect left to
 find. What remains is recognizer limitation, recognizer dialect, reader accent, reader variation and
 reader code-switching — none of which is ours to fix, and all of which are now named.
+
+## Run 45 — 2026-08-17 — All 66 languages aligned; and a BOUND on what this QC can ever claim
+
+38 new languages phonemized (101k utterances, 0 errors) and aligned. The DB now holds **66 languages,
+176,526 rows**. Ran the full battery — labeller, skeleton/full ratio, consonant confusion profiling.
+
+### ⚠ THE RECOGNIZER CANNOT HEAR THE PHONES SOME LANGUAGES ARE IN THE CORPUS *FOR*
+
+The skeleton/full ratio test flags a language whose CONSONANTS disagree more than its whole string —
+the signature of a language-wide problem that MAD flagging structurally cannot see. Three new
+languages came up: kn_in 1.14, te_in 1.12, bn_in 1.04, joining es_419 1.38 and ff_sn 1.15.
+
+Their top substitutions are all one thing: `ɾ→r`, `ɭ→l`, `ʋ→v`, `ʈ→t`, `ɖ→d`, `ɳ→n`, `ɦ→h`. So I
+checked the recognizer's actual output alphabet across all 176k utterances:
+
+    phone        ours (66 langs)      recognizer
+    ʋ                    136,105               0
+    ɦ                     76,815               0
+    ʈ / ɖ / ɳ / ɽ   64,953 / 38,818 / 38,543 / 5,116    0
+    ɓ / ɗ / ʄ       27,715 / 19,316 / 3,962              0
+    ǀ / ǁ / ǃ        4,104 /  2,733 / 4,507              0
+
+**`facebook/wav2vec2-xlsr-53-espeak-cv-ft` HAS NO RETROFLEX STOPS, NO IMPLOSIVES, AND NO CLICKS.** Not
+"rarely emits" — zero, across 176,526 utterances.
+
+⚠ **And this lands precisely on the primitives the corpus was BUILT around.** Languages were selected
+as OWNERS of census primitives: Fula for ʄ/ɠ and the implosives, Nguni for the clicks, Sindhi for its
+implosives, the Indic set for the retroflex series. **The audio gate is blind to exactly the sounds
+those languages are present to provide.** Every "the recogniser disagrees" verdict in those languages
+was structurally guaranteed and says nothing about our IPA.
+
+    corpus-wide: 3.6% of our phone tokens are invisible to the recognizer
+    cmn 12.5%   pa 10.1%   mr 10.1%   hu 9.6%   ta 8.9%   gu 8.7%   te 8.3%   hi 8.0%
+    it / pt / ro: 0.0%
+
+This retro-explains every ratio outlier found so far — es_419 (allophones + a Castilian θ bias),
+ff_sn (implosives), and now kn/te/bn (retroflexes). **None was ever ours.** It also means the
+per-language medians are not comparable across languages in the way a naive reading would suggest:
+a language scores badly in proportion to how much of its inventory the instrument lacks.
+
+**What this does NOT undermine:** every defect this QC actually found — the fula digraphs, the kazakh
+glottal stop, hindi ज्ञ, the japanese counter, the ⟨q⟩ leak, the silent Spanish audio, the truncated
+Welsh audio — was found on phones the recognizer DOES have, or by reading, or by measuring the
+waveform. The bound is on what the gate can VERIFY, not on what it has found.
