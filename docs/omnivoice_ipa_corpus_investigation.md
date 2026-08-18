@@ -3204,3 +3204,78 @@ a language scores badly in proportion to how much of its inventory the instrumen
 glottal stop, hindi ज्ञ, the japanese counter, the ⟨q⟩ leak, the silent Spanish audio, the truncated
 Welsh audio — was found on phones the recognizer DOES have, or by reading, or by measuring the
 waveform. The bound is on what the gate can VERIFY, not on what it has found.
+
+## Run 46 — 2026-08-17 — Cross-word spirantization (the session's strongest fix), and a stress-coverage audit
+
+### ⚠ SPIRANTIZATION STOPPED AT THE WORD EDGE — es/ca/gl, PR #827 (`22ba3bf`)
+
+`spirantize()` guards on `i === 0`, which is WORD-initial, because a per-word function has no other
+context. **Its own comment says "except utterance-initial."** So the identical environment was read
+two ways depending on which side of a space it fell:
+
+    nada       -> nˈaða            la duda   -> la dˈuða
+    cabota(ca) -> kəβˈɔtə          la bota   -> ɫə bˈotə
+
+The engine had already committed to marking allophony; applying it in one environment and not the
+same environment across a space is the defect.
+
+**Validated against the audio, and it is the strongest signal this corpus has produced:**
+
+    1,500 es_419 rows re-scored:  1,292 CLOSER   36 further   = 35.9 : 1
+    median skeleton distance 0.146 -> 0.103        full 0.108 -> 0.085
+
+For comparison, the previous best was 4.2:1 for seven fixes combined. Corpus-wide after re-phonemizing:
+es_419 ratio 1.35 -> 1.22, ca_es -> 0.37.
+
+⚠ **This came out of the user's consonant-skeleton suggestion.** It was invisible until two things were
+true at once: vowels removed (they are the noise floor), and the recognizer's blind phones folded out.
+es_419 was then one of only two languages whose consonants disagreed MORE than their whole string —
+**and it did not move when the blind-phone fold was applied**, which is what proved the cause was ours
+and not the instrument's.
+
+`pt` is deliberately untouched: Brazilian Portuguese does not spirantize at all, so it has no
+inconsistency. Verified — 0 of 2,793 pt_br rows changed.
+
+**es_419's residual 1.22 is fully recogniser-side:** `s→θ` in 72% of rows (its espeak-European labels
+against a seseo variety), `ɾ→r` notation, and `n→m` / `n→ŋ` — Spanish nasal place assimilation, which
+our engine deliberately leaves broad and says so.
+
+⚠ **Three mistakes of mine on the way, all in the TEST update rather than the fix:**
+  · a blanket regex over test files damaged OTHER languages — Russian `dva`→`ðva`, Welsh `dˈeːɡ`→`ðˈeːɡ`,
+    Portuguese `de dˈɔlɐɾɨʃ`. My "IPA-looking" filter matched `ɫ`/`θ`/`ɾ`, which they also use. Reverted.
+  · one expectation was INVERTED — `xix` alone is utterance-initial and correctly keeps its stop.
+  · **Catalan needed a lookahead, not a capture.** The sibilant test consumed its character, advancing
+    past the left context the NEXT word needed, so a second stop in the same clause was silently missed
+    (`segons de vídeo` -> `ðə bˈiðəu`). Non-overlapping replacement makes any consumed right-context a
+    bug of exactly that shape.
+
+30 existing expectations changed, each verified individually. Two confirm the guards: `802.11n` keeps
+`bˈujt` utterance-initially while `ðˈos` spirantizes, and `el Dr. García` keeps `doktˈoɾ` after `el`.
+
+### The 38 new languages: enrichment finds nothing
+
+Consonant-profile enrichment (flagged rows vs the rest) across all 38 returns ratios of 1-4× with tiny
+counts — the flagged rows have the same profile as the rest. No distinct defect class, the same
+negative the 28 gave.
+
+### ⚠ STRESS COVERAGE — a property of the EXPANSION set, measured per word
+
+Reading the hr_hr queue turned up something no metric flags: its IPA carries **no stress marks at
+all**. Measured across all 66:
+
+    ZERO stress:      af_za  hr_hr  is_is  lb_lu  sl_si  sr_rs        (all NEW, none in the 28)
+    under 1%:         yue ckb uk as bn bg  (+ cmn/ja, which use TONE instead — correct)
+
+**Of the 28 training languages, only two are stress-poor and non-tonal, and both are principled:**
+fr_fr 4.3% is one PHRASE-FINAL accent per rhythmic group, exactly as documented ("French has no
+lexical stress"), and am_et 1.4%. **The training corpus is not affected.**
+
+For the expansion set the six zeros split two ways:
+  · **principled** — sr/hr/sl defer 4-way lexical PITCH ACCENT, which is unwritten and not derivable
+    from spelling (serbian.jsonc says so explicitly); af documents "Stress … not modelled (folded)".
+  · **worth revisiting** — `is_is` (Icelandic stress is ALWAYS initial, trivially derivable, and the
+    header does not mention it) and `lb_lu`, which COMPUTES stress internally — the file records
+    "measured net +3.9pp over always-first-syllable" — and then emits no mark.
+
+That is a training-relevant property for anyone expanding past 28: those languages would teach the
+model no stress placement at all.
