@@ -99,6 +99,11 @@ def main() -> None:
     ap.add_argument("--batch", type=int, default=8)
     ap.add_argument("--db", default=DB)
     ap.add_argument("--device", default="cuda")
+    # ⚠ RESUME BY DEFAULT. This is a GPU pass over 100+ GB of audio and it gets interrupted --
+    # twice now by the harness reaping a long background job. INSERT OR REPLACE makes a rerun
+    # correct but not cheap: without this it redoes every finished language from the top. A language
+    # already in the table with rows is skipped unless --redo is passed.
+    ap.add_argument("--redo", action="store_true", help="re-align languages already in the table")
     a = ap.parse_args()
 
     import numpy as np
