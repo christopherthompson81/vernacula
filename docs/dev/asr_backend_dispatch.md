@@ -18,6 +18,12 @@ defaults to throw, plus a coverage test backstop.
 
 ## Run the coverage test
 
+Tests run automatically in CI (`.github/workflows/dotnet-test.yml`),
+which builds the solution with `-p:EP=Cpu` and runs this test (must
+pass) plus `tests/IndicConformerTest` on every push to `main` and on
+every pull request. The dispatch-fan-out coverage test therefore blocks
+PR merges instead of silently rotting. To run it locally:
+
 ```bash
 dotnet test tests/AsrBackendCoverage
 ```

@@ -1,0 +1,29 @@
+name: dotnet-test
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  test:
+    name: Tests (CPU)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Build solution (EP=Cpu)
+        run: dotnet build Vernacula.slnx -p:EP=Cpu
+
+      - name: Test AsrBackendCoverage
+        run: dotnet test tests/AsrBackendCoverage -p:EP=Cpu
+
+      - name: Test IndicConformerTest
+        run: dotnet test tests/IndicConformerTest -p:EP=Cpu
