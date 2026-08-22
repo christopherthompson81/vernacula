@@ -26,7 +26,9 @@ import sys
 from collections import Counter
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from corpus_filter import EXCLUDE_STATUSES, EXCLUSIONS, ROOT, TOKENS  # noqa: E402
+from corpus_filter import (  # noqa: E402
+    EXCLUDE_STATUSES, EXCLUDE_UNLESS_HAND_READ_TEXT, EXCLUSIONS, ROOT, TOKENS,
+)
 
 DB = f"{ROOT}/work/asr_align/align.sqlite"
 SILENT = f"{ROOT}/work/silent_audio.tsv"
@@ -73,9 +75,20 @@ def main() -> int:
 
     db = sqlite3.connect(a.db)
     q = ",".join("?" * len(EXCLUDE_STATUSES))
+    q2 = ",".join("?" * len(EXCLUDE_UNLESS_HAND_READ_TEXT))
+    # ⚠ THE SECOND ARM IS CONDITIONAL ON REPAIR, and getting it wrong costs real work in both
+    # directions. A `reader_divergence` row with a hand `read_text` has had what the reader actually
+    # said written down and its IPA re-derived from that — 144 of 185 do — so excluding the status
+    # wholesale would throw away every row that mechanism was built to rescue. Excluding NONE of them
+    # would keep the 41 where the transcript and the audio still disagree, which teaches a wrong
+    # alignment. The condition is `read_text_src='hand'`, not `read_text IS NOT NULL`: almost every row
+    # has an AUTO read_text, which is just the transcript re-derived and says nothing about the reader.
     rows = db.execute(
-        f"SELECT lang, wav, status FROM utt WHERE status IN ({q}) ORDER BY lang, wav",
-        EXCLUDE_STATUSES,
+        f"SELECT lang, wav, status FROM utt "
+        f"WHERE status IN ({q}) "
+        f"   OR (status IN ({q2}) AND COALESCE(read_text_src,'') <> 'hand') "
+        f"ORDER BY lang, wav",
+        (*EXCLUDE_STATUSES, *EXCLUDE_UNLESS_HAND_READ_TEXT),
     ).fetchall()
 
     by_lang: dict[str, list[tuple[str, str]]] = {}

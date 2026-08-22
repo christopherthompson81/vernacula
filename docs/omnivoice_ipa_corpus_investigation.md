@@ -3306,3 +3306,379 @@ Re-derived per language, on evidence rather than on the docstring:
 obstacle, but the honest statement is "no stress-bearing source is available here", not "not
 derivable". None of the six is in the 28, so the training corpus is unaffected — but `af_za` is the
 one to fix first, because fixing it is an import change rather than a research problem.
+
+## Run 47 — 2026-08-18 — Run 46's sl/sr/hr verdict was wrong, and a pipeline round that found five defects in itself
+
+### The correction
+
+Run 46 closed the stress audit by calling `sl_si`/`sr_rs`/`hr_hr` "constrained by DATA … NO source in
+this repo carries it for them (wikipron-broad 0%, epitran 0%, no kaikki file)." **All three clauses of
+that were wrong**, and the reason they were wrong is that the instrument was `grep -c 'ˈ'`.
+
+South Slavic prosody is not written with `ˈ`. It is a tone diacritic on the vowel — `/ǎbdaːl/`,
+`/abdǒːmen/`, `/ôːn/`, `/planéːt/`. Counting the wrong character returns zero forever, and "the grep
+found nothing" had been promoted to "the data does not exist."
+
+- **kaikki dumps exist**: Slovene 5 499 headwords with IPA, 97.8% accented; Serbo-Croatian 50 692,
+  97.8% accented, 28 190 Latin + 24 875 Cyrillic in one unified dump serving all three engines.
+- **And the committed referee already carried it.** `sr.wikipron-hbs-latn.tsv` marks the accent as
+  `â ǎ ê ô` on 26 126 of 26 486 rows, and *its own header says so*. `referee-eval`'s backbone strips
+  exactly those marks, so nothing in the repo had ever looked at them.
+
+Shipped in the phonemizer since: stress position (#832), the four-way pitch accent in the fleet's Chao
+notation (#833), and a suffix-conditioned OOV transition tier (#834). Measured 99.3% position / 99.7%
+contour against the referee. `af_za` (#828), `is_is` (#829) and `lb_lu` (#830) are also done, so the
+whole Run 46 audit is closed.
+
+⚠ **A coverage number in that work was also wrong and is corrected here.** The first estimate of
+lexicon coverage said 83–84% of `sr_rs` tokens. FLEURS TSVs have seven columns and **column 5 is
+character-separated** (`i m a m o | j e d n o g o…`); reading the whole file with a word regex made every
+individual letter a token, and single letters (`i a u o e`) are all in a lexicon as one-letter words.
+Measured from column 3 only, the real figure is **43.7%**.
+
+### The round-2 pipeline run, and the five things wrong with it
+
+Extending QC to the languages fetched since the last round. Every one of these was found by checking
+rather than by a failure, except where noted.
+
+1. **The fetch was hung, not finished.** 13 h 20 m elapsed against 7 m 28 s of CPU, log silent for
+   11.5 h, the in-flight `nso_za` frozen at 335 MB. `hf_hub_download` has a 10 s read timeout (hub
+   1.8.0) and it did not fire — a dead-but-open socket leaves the call blocked with no way for the
+   caller to notice. Fixed with a **stall watchdog**: the download runs in a child process while the
+   parent watches the byte count, and a cache that has not grown in 300 s gets the child killed and
+   retried. Watching progress rather than imposing a deadline is the point — a slow link keeps its
+   time, only a frozen one is cut. It fired for real on `ny_mw` within the hour and recovered.
+
+2. **Two languages were being skipped permanently.** The "already have it" test was a `listdir` of
+   `data/`, which counts a language as cached the moment `hf_hub_download` creates its *folder*.
+   `ast_es` and `nso_za` both held empty `audio/` dirs from earlier stalls, so they read as complete
+   and would never have been retried. The dry-run said 9 missing; it was 11. Now tests for the tarball.
+
+3. **24 of the 25 alignment-ready languages had no IPA at all.** `load_ipa()` returns `{}` on a missing
+   byid file, so the aligner would have logged rows comparing recognizer output against an empty string
+   and scored every utterance 1.0 — a full GPU pass producing a uniformly "defective" corpus.
+   Phonemization is a prerequisite, and it was not in the plan.
+
+4. **Two FLEURS codes do not match the registry.** `fil_ph` is Filipino to FLEURS and `tl` to the
+   registry; `ny_mw` is `ny` (639-1) to FLEURS and `nya` (639-3) to the registry. Both now in the
+   `VARIETY` map beside the existing `ar_eg → arz`. Found the second one by pre-checking the batch
+   still downloading, rather than waiting for it to fail mid-round.
+
+5. **The label step was missing from the chain, and its order is load-bearing.**
+   `asr_align_label.py` writes the `status` column and `exclude_defective.py` reads *that*, not the
+   report — without it the new languages get no `defective_audio` at all. It also reads
+   `silent_audio.tsv` **at import**, so it must follow the silence sweep, not precede it. Correct order
+   is align → sweep → label → report.
+
+### Two traps checked and cleared
+
+- **A CPU venv that imports cleanly.** Of the venvs carrying `soundfile`+`torch`+`transformers`, only
+  `train_venv` and `ar-diac-venv` have CUDA; `export_venv` is `+cpu` and would have run the whole
+  ~66 k-utterance pass on the CPU with no error at all — days instead of an hour. Checked
+  `cuda.is_available()` rather than stopping at the first venv that imported.
+- **Today's new stress and tone marks cannot distort the scoring.** `fold()` strips Unicode categories
+  Lm (`ˈ ˌ ː`) and Sk (`˥ ˩`), and the `defective_audio` rate test uses `fold(ipa)` rather than
+  `LENGTH(ipa)` — with a comment recording that someone already hit that exact bug (608 rows vs 611).
+  Verified end to end: `sedamdˈe˩˥setix → sedamdesetix`.
+
+### Coverage after this round
+
+66 languages aligned before; 25 more in flight, 11 more still downloading → 102 of 102 once done. The
+silence sweep's `#done` markers matched the alignment set exactly at 66, so the new languages have never
+had their **waveforms** measured — which is a separate defect surface, and the reason the two sweeps are
+unioned: the recognizer pass caught the 585 truncated Welsh files (audible, invisible to a silence
+test), the silence pass caught the 490 full-length-and-empty Spanish ones (unremarkable duration,
+invisible to the rate test).
+
+## Run 48 — 2026-08-18 — The recognizer-inventory fold: a monotone win, and two folds the data refused
+
+`km_kh` came out of round 2 at median distance 0.524. Chasing that produced a fold that helps 84
+languages and rejected two of the four changes originally proposed — and also produced a wrong diagnosis,
+corrected at the end of this run.
+
+### What the DB says, over all 221 469 aligned utterances
+
+Phones we emit at least 2 000 times that the recognizer returns less than 1% as often — 30 of them,
+**902 870 tokens = 3.67% of everything we write**, which reproduces the bound established in Run 45 from
+a completely different direction:
+
+    ʋ 158956/0   ɫ 90312/0   ɦ 76815/0   ʈ 66306/0   ʂ 46938/0   ɖ 41067/0
+    ɳ 38765/0    ɓ 33146/0   ɗ 23654/0   ɽ 5120/0    ʄ 3962/0    clicks 11344/0
+
+Not noise and not our error: `wav2vec2-xlsr-53-espeak-cv-ft` has no symbol for them. Unfolded, a language
+dense in these carries a fixed penalty before correctness enters into it, and the 3×MAD test then finds
+nothing — the same way `ga_ie` hid behind modifier letters and `vi_vn` behind tone digits.
+
+### Result — nothing got worse
+
+| lang | before | after | Δ |
+|---|---|---|---|
+| pa_in | 0.442 | 0.356 | +0.086 |
+| cmn_hans_cn | 0.374 | 0.289 | +0.086 |
+| mr_in | 0.447 | 0.374 | +0.073 |
+| ta_in | 0.617 | 0.551 | +0.066 |
+| uk_ua | 0.399 | 0.339 | +0.060 |
+| **median of 84 languages** | **0.366** | **0.349** | |
+| **languages made worse** | | **0** | |
+
+The gains land exactly where the phonology predicts — Indic retroflexes, Mandarin `ʂ ʑ`, Ukrainian `ɫ`.
+
+### ⚠ Two folds the data refused
+
+**`c → tʃ`.** Khmer made `c` look unhearable — ours 1 731 against the recognizer's 10 *there*. Corpus-wide
+the recognizer writes it **10 292** times against our 49 987: a fifth, not a hundredth. `tʃ`/`dʒ` are
+contrastive across many of these languages and folding globally would have destroyed a distinction the
+recognizer does make. Generalising from one language was the error; the DB-wide count is the check.
+
+**Dropping `ʔ`.** The recognizer hears it barely better (737 against our 120 940), so the case looked
+identical — but Run 44 already ran this experiment. Dropping `ʔ` scored **1.8:1 against 4.6:1** for
+keeping it, because the largest defect this corpus has ever had was Kazakh ⟨ь⟩/⟨ъ⟩ emitting a spurious
+glottal stop in 408 rows. Folding it away deletes the evidence for that entire class of fix. The fixed
+penalty is the lesser cost, and the reason is now recorded at the fold site so it is not re-proposed.
+
+### Implementation notes
+
+- `COARSEN` moved from `consonant_skeleton.py` into `asr_align_report.py` and re-exported. Defining it in
+  the leaf and importing it upward created a circular import the moment the report needed it; the base
+  module is where it belongs, since the skeleton tool already depends on the report for `dist`/`fold`.
+- `coarsen()` applies **only inside `dist()`**. `asr_align_label.py` therefore picks it up for the
+  verified/investigate split, while its `defective_audio` rate test still uses uncoarsened
+  `len(fold(ipa))` — so clicks mapping to `""` cannot shift phone counts there.
+
+### ⚠ And the km_kh diagnosis was wrong
+
+I read `km_kh`'s high absolute median as the `ga_ie` degeneracy and proposed building a per-language fold
+mechanism for its vowels. Both were wrong, and the check that settles it is whether the TAIL separates,
+not where the median sits:
+
+| lang | median | MAD | flagged >3×MAD |
+|---|---|---|---|
+| km_kh | 0.480 | 0.056 | 62 (**3.7%**) |
+| ta_in | 0.551 | 0.059 | 48 (2.0%) |
+| gl_es | 0.108 | 0.026 | 60 (2.8%) |
+| ro_ro | 0.165 | 0.037 | 84 (2.9%) |
+| be_by | 0.316 | 0.040 | 62 (2.5%) |
+
+`km_kh` flags MORE than any of them, with a normal MAD. Nothing like `ga_ie`, whose investigate list came
+out genuinely empty. The metric is relative to each language's own distribution by design — that is the
+whole reason Run 45 chose 3×MAD over an absolute threshold — so a language the recognizer finds hard is
+already absorbed, and a high median is not a defect to engineer away.
+
+**This instrument is a coarse detector of SERIOUS disagreement, not a mechanism for realigning vowels.**
+`km_kh`'s top outlier sits at 0.970 against a 0.480 median with recognizer output like
+`b aɪ s a n ɛ ɡ p oː v i t uː` — that is the tool working. Whether each flagged pair is our bug, reader
+divergence, or recognizer artefact is what triage decides; the metric should not pre-resolve it.
+
+The per-language fold mechanism is therefore **dropped, not deferred**. The global fold stands on its own
+merit: it removes a symmetric penalty that carries no information either way, and nothing regressed.
+
+## Run 49 — 2026-08-18 — Round 2 complete: a 66k-utterance control that reframes the Welsh finding
+
+25 languages phonemized, aligned, swept and labelled. The DB goes 66 → 91 languages, 176 526 → 242 894
+utterances.
+
+    verified           233360
+    investigate          7626
+    defective_audio      1133
+    recognizer_short      767
+    defect                  4   ← hand-set
+    reader_divergence       3   ← hand-set, survived a global --apply
+    convention              1   ←
+
+### The result that matters is a NEGATIVE one
+
+The 25 new languages contributed **10 `defective_audio` rows out of 66 368 utterances = 0.015%**, and
+**one** silent file (`hy_am`, RMS 3.5e-5 over 2.1 s).
+
+    cy_gb   585 / 3427   = 17.1%   truncated
+    es_419  490          silent
+    new 25   10 / 66368  =  0.015%
+              1          silent
+
+Three orders of magnitude. This is the control the Welsh finding never had: before, "17.1% of cy_gb is
+truncated" rested on Welsh looking worse than ~40 other languages, which invites "maybe the detector is
+too aggressive." Now there is a 25-language, 66 368-utterance baseline where the same detector, unchanged,
+finds essentially nothing. Welsh is not at the bad end of a distribution — it is off it.
+
+**This strengthens `docs/fleurs_cy_gb_truncated_audio.md` materially** and the same argument covers the
+Spanish silence. Worth adding to that report before filing upstream.
+
+Secondary confirmation: the three hand-set verdicts survived a global `asr_align_label.py --apply`. The
+`status IN AUTOMATIC` guard works in practice, not only in its comment — which is the property that made
+`defective_audio` durable in the first place (Run 45).
+
+### Two pipeline gaps, both the same shape
+
+Neither produced an error. Both would have produced a pipeline that looked like it had run.
+
+1. **24 of 25 languages had no IPA before alignment was launched.** `load_ipa()` returns `{}` on a missing
+   byid file, so the aligner would have compared recognizer output against an empty string and scored
+   every utterance 1.0 — a full GPU pass yielding a uniformly "defective" corpus. Phonemization is a
+   prerequisite and was not in the plan.
+
+2. **Round 3's rows were left unlabelled.** Round 2's label pass ran before round 3 inserted, so those
+   rows carry `status NULL` — invisible to `exclude_defective.py` and indistinguishable from "no defects
+   found". Caught only because a status query showed 160 unlabelled rows that resolved to `ast_es`/
+   `nso_za`, the two round 3 had just written. Each round now queues its own sweep → label → report.
+
+⚠ **The recurring shape is a stage that quietly does not run.** Not a crash, not a wrong number — an
+absence that reads as a clean result. Both are now flagged at the top of the scripts that own them.
+
+### Ordering constraints worth keeping
+
+- `asr_align_label.py` reads `silent_audio.tsv` **at import**, so it must follow the sweep, never precede it.
+- Round 3's alignment was gated on round 2's **label** step, not on the whole chain: label does bulk
+  `UPDATE`s over the whole table while an aligner `INSERT`s into it, and two SQLite writers is how a bulk
+  relabel dies partway through. The report is read-only, so overlapping with that is fine.
+- The silence sweep and the aligner both stream `train.tar.gz`; sequencing them is about disk, which only
+  costs speed. The DB conflict above is the one that costs correctness.
+
+### Environment traps
+
+- Alignment needs `train_venv`. Bare `python3` has no `soundfile` and dies in one second — loud, harmless.
+  The dangerous one is `export_venv`: it imports cleanly and is `torch+cpu`, so it would have run the whole
+  pass on the CPU with no error at all. Check `cuda.is_available()`, not just that the import worked.
+- Two FLEURS codes do not match the registry: `fil_ph → tl` and `ny_mw → nya`. The second was found by
+  pre-checking the batch still downloading rather than waiting for it to fail mid-round.
+
+## Run 50 — 2026-08-18 — Regenerating the stale IPA, and three bugs that all looked like success
+
+After the day's phonemizer fixes, the question was which languages' stored `byid` IPA no longer matches
+the engine. Timestamps cannot answer it — a file's mtime says nothing about which PR had landed — so the
+check is empirical: re-phonemize a sample and diff against what is stored.
+
+    identical              bs_ba es_419 ca_es zu_za xh_za      (400/400)
+    marks only             is_is hr_hr sr_rs                   (400/400 differ only by ˈ ː ˥ ˩)
+    SEGMENTAL              af_za 15/400   lb_lu 16/400   id_id 5/400   ms_my 1/400
+
+Splitting marks-only from segmental is the whole point of the check: `fold()` strips suprasegmentals, so
+marks-only drift cannot move an alignment score, while segmental drift can and does.
+
+`lb_lu` came back clean on a per-word referee comparison (8 words changed, 0 better / 0 worse). `af_za`
+did not — 2 better, 5 worse — which turned out to be #828 silently dropping 198 lexicon entries, fixed in
+PR #835. **That fix is the return on this whole question**: without asking "should we regenerate?", the
+198 dropped words would have been baked into the training corpus.
+
+### ⚠ Three bugs today, and every one of them reported success
+
+1. **`--redo` was a silent no-op.** `asr_align_corpus.py --redo` gets past the language-level skip, but the
+   per-utterance guard `if wav in have: continue` ignores the flag, so every row already present is
+   skipped. The run printed `af_za: 0 utterances in 4s` and exited 0. Fixed:
+   `have = set() if a.redo else {...}`.
+
+2. **`pkill -f "[a]sr_align_corpus.py"` killed its own shell** (exit 144). The bracket trick protects the
+   *pattern*, but the same command carried a heredoc containing the plain filename — and `pkill -f`
+   matches the whole command line.
+
+3. **A wait loop deadlocked on itself.** `while pgrep -f "regen.sh"` matched the shell wrapper that had
+   *written* the script, because that wrapper's command line still holds the heredoc, literal pattern and
+   all. It waited 17 minutes for a process that had already exited.
+
+   (And the status check used to diagnose it had the same flaw: `pgrep -f` for five patterns, all five
+   present in the checking command, so all five reported RUNNING when one was.)
+
+**The rule:** `pgrep`/`pkill -f` match the entire command line, and a shell that wrote a script via heredoc
+carries that script's text for its whole life. Kill by PID; check with `ps | grep -v " grep "`.
+
+### Verification that the re-align is complete, not partial
+
+Every language's DB row count equals its `byid` row count (af_za 1032, lb_lu 2502, is_is 926, hr_hr 3461,
+sr_rs 2944, id_id 2579, ms_my 2667). Worth stating because a partial `--redo` would look identical to a
+complete one in the log — which is the same failure shape as the three above.
+
+The marks-only three are re-aligned as well, even though their distances cannot move: a DB whose `ipa`
+column disagrees with the shipped corpus is a trap for whoever reads it next.
+
+## Run 51 — 2026-08-22 — The corpus was case-folded all along, and the codes were carrying a policy
+
+### The finding that started it
+
+`refresh_ipa.py --check` reported `de_de: 0 stale / 2987 ⚠ 2985 sentence_id not in byid`, which was my
+own smoke test having truncated seven byid files. Repairing that led to asking why a German clock rule
+had never fired, and the answer generalized:
+
+    271798/271798 rows are fully case-folded (100.0%)
+    102 languages are 100% case-folded
+
+The FLEURS TSV carries BOTH transcripts — col2 raw (case + punctuation), col3 normalized — and the
+ingest reads col3. ⚠ `initialism_casing.mts` exists to reconstruct capitals from a hand-reviewed list of
+29 entries; the ground truth was in the adjacent column the whole time, for all 199,141 rows that have
+one, plus 156,393 rows of punctuation that had no reconstruction at all.
+
+### Neither column is a superset — the merge
+
+A straight swap is wrong. Measured per language:
+
+  yo_ng   the NORMALIZED column adds tone marks and sub-dot vowels raw lacks (`n`→`ń` ×263, `è`→`ẹ`)
+          and expands abbreviations (`nn`→`nǹkan`). Tone is lexically contrastive; raw loses meaning.
+  ig/ff/lg/so  the normalized column MERGED WORDS by deleting parens without a space
+          (`(1040 km)mu` → `1040 kmmu`). There raw is correct.
+
+So: norm supplies word FORMS, raw supplies CASE and PUNCTUATION. Content preserved (diacritics
+included) on 100.00% of 198,412 cased-language rows; punctuation 99.3%, capitals 99.4%.
+
+Three bugs found by measuring, not by reading the output:
+  - the validity check used a canon() that strips combining marks, so it scored 98.9% "clean" while
+    emitting DOUBLED diacritics (`ǹ̀`, `jẹ́́`) — blind to exactly what Yoruba needed;
+  - without per-language alignment keys, sr_rs (Cyrillic vs Latin) kept 20.9% of its punctuation and
+    emitted 648% of its capitals, Title-Casing whole sentences;
+  - norm is not uniformly punctuation-free, so `cunami.` merged to `cunami..` (bs/hr/oc at 110-113%).
+
+⚠ AND ONE FOUND BY TESTING THE CLAIM THE WHOLE THING RESTED ON. Restoring only the FIRST letter's case
+destroyed zu_za `iHK` → `ihk` — a Nguni class prefix on an initialism, which starts lowercase so nothing
+was capitalised. The engine then read it as a word (`ˈiːhkʼ`) instead of spelling it
+(`iɛjˈiːt͡ʃʼi kʰˈɛːji`): the restorer undoing the very repair it claimed to obsolete.
+
+### Predicted in advance: no QC movement. Confirmed.
+
+    PROSODIC change only : 1902 (88.2%)   punctuation -> pauses; fold() cannot see it
+    SEGMENTAL change     :  166 ( 7.7%)   ɹˈɑːv -> ˈɑːɹ ˈoᶷ vˈiː ;  el sr -> el seɲˈoɾ
+    scored: closer 67  further 56  same 2018   mean Δ -0.00014
+
+A wash, because `notate(units(...))` strips the pauses being restored. The justification is TTS prosody
+and segmental correctness, NOT distance. Recorded before running so it could not be rationalised after.
+
+Applied: 249,430 rows, 0 rejected, 209 hand rows untouched, all re-derived, 0 null IPA.
+
+### The codes were carrying a judgement
+
+`patch_manifest_ipa.py --db` reported 988 rows "not in source", clustered in cy_gb (480) and es_419
+(490). Those were `defective_audio` rows sitting in TRAINING MANIFESTS. Cause: both languages were
+ingested 2026-07-01, before the exclusion logic existed, and every later run skipped them because they
+already had an npz. ⚠ 96 languages pruned, 6 not, for two months, with nothing in any log to say so.
+
+⚠ THE CHEAP PATH FOUND IT AND A RE-INGEST WOULD HAVE HIDDEN IT. I had claimed the manifests needed a
+5.5-hour re-encode; they did not — the npz is a pure function of the audio, verified byte-identical by
+md5. `patch_manifest_ipa.py --db` refreshed 237,173 rows in minutes, and only because it declined to
+touch those 988 did they surface at all.
+
+Restructured so the artifacts have separate lifecycles:
+
+    codes_<lang>.npz        write-once, append-only   GPU, only for genuinely new audio
+    manifest_<lang>.jsonl   derived from npz ∩ DB     seconds, no GPU, no audio
+    align.sqlite            the complete record        the label IS the judgement
+    corpus_filter           applies policy at load     free
+
+Appending is only sound because the encoder is reproducible, and that was MEASURED: 40 utterances
+re-encoded from `en_us` (written 07-01) and 40 from `mi_nz` (08-22) came back bit-identical, across a
+driver change, an onnxruntime change, and an `arena_extend_strategy` change made the same day.
+
+### The long rows, and a threshold that was wrong by 2.6x
+
+3,494 rows exceed the encoder's 30 s window and vanish with only a log count. Two facts, worth keeping
+apart: the encoder genuinely cannot take them (a 256 s utterance needs a 7.9 GB attention buffer and
+fails — quadratic attention, as the code comment claimed), and some of them are bad pairs anyway.
+
+⚠ MY FIRST CUT WAS WRONG. A global "cps < 7" called 2,756 rows defective. But characters-per-second is
+a property of the SCRIPT as much as the speech — per-language 5th percentiles run umb_ao 3.3,
+cmn_hans_cn 4.4, en_us 7.8 — so a global cut condemns languages for writing compactly. Against each
+language's own 1-30 s distribution: 1,013 anomalous, 2,419 ordinary speech that merely runs long.
+
+Labelled `audio_overlong` (bad pair) vs `uncodeable_length` (fine pair, past the window). 2,541 of them
+carried `verified`, which the QC pass never earned — they were skipped BEFORE scoring. Third time this
+campaign that `verified` has turned out to mean "unexamined".
+
+### Where it landed
+
+    268,165 manifest rows -> 267,004 usable after the load-time filter
+    codes and manifest agree exactly: 0 rows without codes, 0 codes without a row
