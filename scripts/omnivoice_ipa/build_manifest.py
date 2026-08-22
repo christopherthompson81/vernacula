@@ -103,6 +103,25 @@ def build(lang: str, check: bool) -> tuple[int, int, int]:
                          ipa_src=src, status=status))
         if status:
             flagged += 1
+    # ⚠ THE JOIN IS BY `id`, NEVER BY POSITION, and this asserts it rather than trusting it. The npz is
+    #   a KEYED archive (`np.savez(**{utterance_id: codes})`, that way since the first commit), so a
+    #   consumer must look up `codes[row["id"]]`. ⚠ THE TWO FILES HAPPEN TO BE IN THE SAME ORDER TODAY —
+    #   this loop walks `z.files` — and that coincidence invites a zip()-based loader that works right
+    #   up until it does not. `topup_codes.py` appends at the end of the dict, so the orders WILL
+    #   diverge. Order is not a contract; the id set is.
+    # ⚠ THIS CANNOT FIRE AS THE CODE STANDS — `rows` is built by walking `z.files`, so every id is a key
+    #   by construction, and a deliberate test with a bogus id did not trip it. It is here as a guard on
+    #   that construction, not as a live check. ⚠ THE ACTUAL RISK IS ON THE CONSUMER SIDE: a loader that
+    #   zips the two files instead of looking up `codes[row["id"]]`. That is a documentation problem and
+    #   the dataset card states it.
+    ids = {r["id"] for r in rows}
+    orphan = ids - set(z.files)
+    if orphan:
+        raise AssertionError(f"{lang}: {len(orphan)} manifest ids have no codes, e.g. {sorted(orphan)[:3]}")
+    if len(ids) != len(rows):
+        raise AssertionError(f"{lang}: duplicate id in manifest ({len(rows)} rows, {len(ids)} ids)")
+    # ⚠ The reverse is NOT an error: a code with no row is a row this build dropped for having no IPA,
+    #   which `no_ipa` already counts and prints. Only a row pointing at absent codes is unrecoverable.
     if not check:
         with open(mf, "w", encoding="utf8") as f:
             for r in rows:
