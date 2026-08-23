@@ -10,6 +10,7 @@ orthographic tokens (a real, learned change), per design discussion.
 Output (fp16 safetensors): LoRA A/B factors per module + the changed embed rows (values) + their
 indices + metadata (scale, threshold). ~30 MB vs the 2.45 GB merged transformer (~80x smaller).
 """
+import argparse
 import glob
 import numpy as np
 import onnx
@@ -18,8 +19,17 @@ from onnx import helper, numpy_helper
 from safetensors import safe_open
 
 BASE = "/mnt/data/models/omnivoice/k2-fsa-OmniVoice"
-ADAPTER = "/mnt/data/omnivoice_ipa/train/checkpoints_v5/checkpoint-4000/adapter_model.safetensors"
-OUT = "/mnt/data/omnivoice_ipa/onnx/ipa_diff.onnx"
+# ⚠ THE CHECKPOINT IS AN ARGUMENT, NOT A CONSTANT. This was pinned to v5 and would have silently
+#   re-emitted the v5 diff after v6 trained — the output filename carries the version so two diffs
+#   can coexist and a stale one cannot masquerade as current.
+_ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+_ap.add_argument("--version", default="v6", help="checkpoints_<version>")
+_ap.add_argument("--step", default="4000")
+_ap.add_argument("--out", default=None)
+_A = _ap.parse_args()
+ADAPTER = (f"/mnt/data/omnivoice_ipa/train/checkpoints_{_A.version}/checkpoint-{_A.step}"
+           "/adapter_model.safetensors")
+OUT = _A.out or f"/mnt/data/omnivoice_ipa/onnx/ipa_diff_{_A.version}.onnx"
 EMBED_THRESHOLD = 0.001   # rows with max|Δ| below this are weight-decay drift → keep base
 LORA_ALPHA, LORA_R = 32, 16   # scale = alpha/r = 2.0
 

@@ -9,8 +9,9 @@ Patches the EXTERNAL DATA FILE directly (raw bytes), so:
 The MatMul nodes keep their module path (/model/llm/layers.N/self_attn/q_proj/MatMul), so we
 map layer/proj -> the generically-named weight initializer they consume.
 
-Times each phase and validates the result against the merged v5 model by logit parity.
+Times each phase and validates the result against the merged model of the SAME version by logit parity.
 """
+import argparse
 import os
 import re
 import shutil
@@ -22,9 +23,18 @@ from onnx import numpy_helper
 BASE_DIR = "/mnt/data/omnivoice_ipa/onnx_base"
 BASE_ONNX = f"{BASE_DIR}/omnivoice_transformer.onnx"
 BASE_DATA = f"{BASE_DIR}/omnivoice_transformer.onnx.data"
-DIFF = "/mnt/data/omnivoice_ipa/onnx/ipa_diff.onnx"
-OUT_ONNX = f"{BASE_DIR}/omnivoice_transformer_ipa.onnx"
-OUT_DATA_NAME = "omnivoice_transformer_ipa.onnx.data"
+# ⚠ THE VERSION IS AN ARGUMENT AND THE PARITY CHECK MUST FOLLOW IT. Both were pinned to v5; applying
+#   a v6 diff while validating against the merged v5 would report a parity FAILURE that is really a
+#   version mismatch, or worse, pass by luck and certify the wrong graph.
+_ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+_ap.add_argument("--version", default="v6")
+_ap.add_argument("--step", default="4000")
+_ap.add_argument("--skip-parity", action="store_true", help="skip the merged-model logit check")
+_A = _ap.parse_args()
+DIFF = f"/mnt/data/omnivoice_ipa/onnx/ipa_diff_{_A.version}.onnx"
+MERGED_CKPT = f"/mnt/data/omnivoice_ipa/train/checkpoints_{_A.version}/checkpoint-{_A.step}"
+OUT_ONNX = f"{BASE_DIR}/omnivoice_transformer_ipa_{_A.version}.onnx"
+OUT_DATA_NAME = f"omnivoice_transformer_ipa_{_A.version}.onnx.data"
 CAP = "/mnt/data/Programming/vernacula/scripts/omnivoice_export/capture/reference.npz"
 NODE_RE = re.compile(r"layers\.(\d+)/(self_attn|mlp)/(\w+_proj)/")
 
@@ -117,7 +127,7 @@ def main():
     mdl = OmniVoice.from_pretrained("/mnt/data/models/omnivoice/k2-fsa-OmniVoice",
                                     device_map="cpu", dtype=torch.float32)
     mdl = PeftModel.from_pretrained(
-        mdl, "/mnt/data/omnivoice_ipa/train/checkpoints_v5/checkpoint-4000").merge_and_unload().eval()
+        mdl, MERGED_CKPT).merge_and_unload().eval()
     try:
         mdl.llm.config._attn_implementation = "sdpa"
     except Exception:
@@ -127,7 +137,7 @@ def main():
                                     torch.from_numpy(cap["tf_audio_mask"]),
                                     torch.from_numpy(cap["tf_attention_mask"])).numpy()
     agree = float(np.mean(a.argmax(-1) == b.argmax(-1)))
-    print(f"\nparity folded-vs-merged-v5: argmax {agree*100:.3f}%  max|Δlogit| {np.abs(a-b).max():.2e}")
+    print(f"\nparity folded-vs-merged-{_A.version}: argmax {agree*100:.3f}%  max|Δlogit| {np.abs(a-b).max():.2e}")
     print("PASS" if agree > 0.999 else "CHECK")
 
 
