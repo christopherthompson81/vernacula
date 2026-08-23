@@ -141,7 +141,24 @@ def main():
     weights = pd.read_csv(f"{ROOT}/work/sampling_weights.csv").set_index("lang")["weight"].to_dict()
     exclusions = load_exclusions()
     total_dropped = 0
-    langs = sorted(w[len("codes_"):-len(".npz")] for w in os.listdir(TOKENS) if w.startswith("codes_"))
+    # ⚠ THE LANGUAGE SET IS THE COVERAGE ARGUMENT, NOT WHATEVER HAPPENS TO BE INGESTED. This globbed
+    #   the tokens dir, which silently became a 102-language build the moment the corpus completed —
+    #   discarding the census-derived greedy cover that `sampling_budget.POP_ORDER` encodes. Each of
+    #   those 28 is present as the OWNER of specific IPA primitives (English the 53 generalist base
+    #   letters, Zulu clicks and breathy voice, Hausa ejectives, Fula prenasals), and the MAX_WEIGHT=3
+    #   reasoning was tuned against that mix. Training on all 102 is a legitimate but DIFFERENT
+    #   experiment; it must be chosen, not inherited from an ls.
+    #   `--all` opts into it explicitly.
+    if "--all" in sys.argv:
+        langs = sorted(w[len("codes_"):-len(".npz")] for w in os.listdir(TOKENS) if w.startswith("codes_"))
+    else:
+        from sampling_budget import POP_ORDER
+        have = {w[len("codes_"):-len(".npz")] for w in os.listdir(TOKENS) if w.startswith("codes_")}
+        langs = [l for l in POP_ORDER if l in have]
+        missing = [l for l in POP_ORDER if l not in have]
+        if missing:
+            print(f"⚠ coverage-set languages with no codes: {' '.join(missing)}")
+        print(f"coverage set: {len(langs)} languages (pass --all for every ingested language)")
     train_entries, dev_entries = [], []
     for lang in langs:
         # CEIL, not round: a weight of W means the scarcest owned primitive sits at

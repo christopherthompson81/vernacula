@@ -3682,3 +3682,49 @@ campaign that `verified` has turned out to mean "unexamined".
 
     268,165 manifest rows -> 267,004 usable after the load-time filter
     codes and manifest agree exactly: 0 rows without codes, 0 codes without a row
+
+## Run 52 — 2026-08-22 — v6: the restoration validated by ear, after four instruments called it a tie
+
+v6 fine-tune, deliberately option A: the same 28-language census coverage set as v5, same sampling
+weights, same hyperparameters, same LoRA config — the restored corpus as the ONLY variable. 82,258
+utterances, 288.2 hours, 4,000 steps, 1:24 wall clock.
+
+⚠ TWO THINGS HAD TO BE FIXED BEFORE IT WAS A CONTROLLED COMPARISON AT ALL:
+
+  - `build_webdataset.py` globbed the tokens dir for its language list, so it silently became a
+    102-language build the moment the corpus completed — discarding the census-derived greedy cover
+    that `sampling_budget.POP_ORDER` encodes (English owns the 53 generalist base letters, Zulu the
+    clicks and breathy voice, Hausa the ejectives, Fula the prenasals). Training on all 102 is a
+    legitimate but DIFFERENT experiment; it must be chosen, not inherited from an `ls`. Now reads
+    POP_ORDER with `--all` as the explicit opt-in.
+  - `use_pinyin_ratio` defaulted to 0.3 from `TrainingConfig` and was never declared. Inert today —
+    the branch is gated on a `text_pinyin` key our shards do not carry — but a future shard builder
+    adding that field would silently substitute into 30% of samples with nothing to flag it. Pinned
+    to 0.0.
+
+### Four instruments, no separation
+
+    recognizer distance   67 closer / 56 further      mean Δ -0.00014
+    training loss         v5 and v6 both flat ~3.9
+    eval loss @4000       3.9658 vs 3.9777            inside v5's own ±0.04 wobble
+    pause-match proxy     0.301 vs 0.348              n=6
+
+⚠ AND THE PROXY WAS WORTHLESS, WHICH I NEARLY REPORTED AS A RESULT. The generator is stochastic —
+flow matching from a random initial state — and the same model on the same input three times spread
+by up to 0.26, against a v5→v6 difference of 0.047. Noise 5× the effect. The tell was v6@2000 scoring
+ABOVE v6@4000, which has no mechanism. The determinism control belonged before the numbers, not after.
+
+### The verdict came from listening
+
+On the punctuation-dense en_us pairs, v6@4000 is clearly better on prosody — unambiguous on the ear,
+invisible to every metric available. That is the outcome #871/#873 predicted in advance: no QC
+movement, the payoff in prosody alone.
+
+⚠ THE GENERAL LESSON, AND IT IS THE ONE WORTH KEEPING. Every automated check said "no difference".
+Had the decision rested on them, the 88.2% prosodic share of the restoration would have been written
+off and only the segmental 7.7% credited. The metrics are not merely insensitive here, they are blind
+by construction: fold() strips pause marks, next-token loss over 8 weighted codebooks barely moves for
+a shifted silence, and an energy-threshold detector counts stop closures as phrase boundaries.
+
+Scope: one listener, one language, six utterances, one checkpoint pair. Enough to justify the change,
+not to quantify it.
