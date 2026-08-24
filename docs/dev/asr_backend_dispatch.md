@@ -18,11 +18,40 @@ defaults to throw, plus a coverage test backstop.
 
 ## Run the coverage test
 
-Tests run automatically in CI (`.github/workflows/dotnet-test.yml`),
-which builds the solution with `-p:EP=Cpu` and runs this test (must
-pass) plus `tests/IndicConformerTest` on every push to `main` and on
-every pull request. The dispatch-fan-out coverage test therefore blocks
-PR merges instead of silently rotting. To run it locally:
+CI (`.github/workflows/dotnet-test.yml`) builds the solution with
+`-p:EP=Cpu` on every push to `main` and every pull request, then runs
+four test projects against the artifacts it just built:
+
+| Project | On a hosted runner |
+| --- | --- |
+| `tests/Vernacula.Tests` | 22 tests — runs |
+| `tests/Chatterbox.Tests` | 35 tests — runs |
+| `tests/AsrBackendCoverage` | 63 tests — runs; this is the fan-out backstop |
+| `tests/IndicConformerTest` | 23 tests — **all skip** |
+
+`IndicConformerTest` gates every test on the IndicConformer ONNX
+package and the `test_audio/` tree, neither of which exists on a
+runner. It reports 23 skips and passes, and `dotnet test` exits 0 when
+everything skips — so that step proves only that the project compiles.
+It is kept for the skip count, not as coverage. The tests that need
+model assets run on a dev box:
+
+```bash
+scripts/ci_local.sh          # build, then all four projects
+```
+
+That script fails if an asset-gated test skips on a machine that has
+the assets, on the reasoning that a skip there means the resolver
+stopped finding them.
+
+`Tests (CPU)` is a required status check on `main`, so the
+dispatch-fan-out coverage test blocks PR merges instead of silently
+rotting. Two things that look like breakage but are not: a pull request
+from a fork sits at `action_required` until a maintainer clicks
+"Approve and run", and a pull request whose branch predates a change to
+the workflow will not run the new version until its branch is updated.
+
+To run just this test locally:
 
 ```bash
 dotnet test tests/AsrBackendCoverage
