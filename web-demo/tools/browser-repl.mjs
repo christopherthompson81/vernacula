@@ -70,9 +70,17 @@ if (cmd === "watch") {
     const v = await page.evaluate(`(async () => { return (${expr}); })()`);
     console.log(typeof v === "string" ? v : JSON.stringify(v, null, 1));
   } catch (e) { console.error("EVAL ERROR: " + String(e).slice(0, 600)); }
+} else if (cmd === "pages") {
+  const ps = await browser.pages();
+  ps.forEach((p, i) => console.log(`  [${i}] ${p.url()}`));
 } else if (cmd === "goto") {
+  // ⚠ Close every other tab first. `start` reuses the Chrome profile, so tabs accumulate across
+  // runs and probes silently read an OLD one — which produced a set of measurements matching a
+  // previous build and read as "the change did not apply". Twice.
+  const ps = await browser.pages();
+  for (const p of ps) if (p !== page) await p.close().catch(() => {});
   await page.goto(process.argv[3], { waitUntil: "domcontentloaded", timeout: 30000 });
-  console.log("at", page.url());
+  console.log("at", page.url(), `(closed ${ps.length - 1} other tab(s))`);
 } else if (cmd === "logs") {
   console.log(fs.readFileSync(LOGS, "utf8").split("\n").slice(-Number(process.argv[3] ?? 25)).join("\n"));
 } else if (cmd === "stop") {

@@ -21,11 +21,21 @@ import { removeSilence, fadeAndPad, peakNormalize } from "./audioPost.ts";
 
 export const SAMPLE_RATE = 24000;
 
+export interface VoiceSource {
+  dataset: string; lang: string; file: string; split: string | null;
+  sentenceId: string | null; gender: string | null; durationS: number;
+  candidateIndex: number; text: string | null;
+}
+
 export interface Voice {
   id: string;
   label: string;
   /** Demo language code this reference is a NATIVE speaker of. */
   lang: string;
+  /** Preferred voice for its language when several are listed. */
+  default?: boolean;
+  /** Which FLEURS clip this is — so a noisy exemplar can be traced and swapped. */
+  source?: VoiceSource;
   /** Reference transcript, ALREADY IPA — it is fed to the model alongside the target IPA. */
   refIpa: string;
   /** Pre-encoded codec codes [8, refLen], row-major. */
@@ -72,10 +82,47 @@ export interface LoadOptions {
   transformerDataUrl?: string;
   decoderUrl: string;
   tokenizerUrl: string;
+  /** JSONC metadata (hand-editable). */
   voicesUrl: string;
+  /** The code arrays, keyed by voice id — kept out of the JSONC so it stays scannable. */
+  voiceCodesUrl: string;
   /** Fetch a URL as bytes, e.g. through a chunked/resumable cache. */
   fetchBytes: (url: string, label: string) => Promise<ArrayBuffer>;
   onProgress?: (detail: string) => void;
+}
+
+async function fetchJson<T>(url: string): Promise<T> {
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(`${url} -> ${r.status}`);
+  return r.json() as Promise<T>;
+}
+
+/**
+ * Parse JSONC — JSON plus `//` and block comments.
+ *
+ * ⚠ String-aware, deliberately. A regex that strips `//` anywhere would cut into any string
+ * containing one, and these entries carry free text (FLEURS transcripts) and IPA. Escapes are
+ * honoured so a `\"` inside a string does not end it.
+ */
+export function parseJsonc<T>(text: string): T {
+  let out = "", inStr = false, esc = false, line = false, block = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i], n = text[i + 1];
+    if (line) { if (c === "\n") { line = false; out += c; } continue; }
+    if (block) { if (c === "*" && n === "/") { block = false; i++; } continue; }
+    if (inStr) { out += c; if (esc) esc = false; else if (c === "\\") esc = true; else if (c === '"') inStr = false; continue; }
+    if (c === '"') { inStr = true; out += c; continue; }
+    if (c === "/" && n === "/") { line = true; i++; continue; }
+    if (c === "/" && n === "*") { block = true; i++; continue; }
+    out += c;
+  }
+  return JSON.parse(out) as T;
+}
+
+async function loadVoicesJsonc(url: string): Promise<Voice[]> {
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(`${url} -> ${r.status}`);
+  return parseJsonc<Voice[]>(await r.text());
 }
 
 export class OmniVoice {
@@ -85,6 +132,7 @@ export class OmniVoice {
     private readonly decoder: ort.InferenceSession,
     readonly tokenizer: Qwen3Tokenizer,
     readonly voices: Voice[],
+    private readonly codes: Record<string, number[]>,
     readonly backend: Backend,
   ) {}
 
@@ -117,8 +165,19 @@ export class OmniVoice {
     const decoder = await ORT.InferenceSession.create(dBytes, { executionProviders: [dEp], graphOptimizationLevel: graphOpt });
 
     const tokenizer = await Qwen3Tokenizer.load(o.tokenizerUrl);
-    const voices: Voice[] = await (await fetch(o.voicesUrl)).json();
-    return new OmniVoice(ORT, transformer, decoder, tokenizer, voices, { ep });
+    const [voices, codes] = await Promise.all([
+      loadVoicesJsonc(o.voicesUrl),
+      fetchJson<Record<string, number[]>>(o.voiceCodesUrl),
+    ]);
+    return new OmniVoice(ORT, transformer, decoder, tokenizer, voices, codes, { ep });
+  }
+
+  private codesFor(v: Voice): number[] {
+    const c = this.codes[v.id];
+    // A voice whose codes are missing would otherwise be silently treated as no-reference, which
+    // is the regime that emits noise on short input. Fail loudly instead.
+    if (!c) throw new Error(`voice "${v.id}" has no codes in voice-codes.json`);
+    return c;
   }
 
   /** IPA string -> 24 kHz mono waveform. `ipa` and `voice.refIpa` must BOTH be IPA. */
@@ -133,7 +192,7 @@ export class OmniVoice {
     const target = estimateTargetTokens(ipa, refIpa, voice.refLen);
 
     const cond = prepare(this.tokenizer, ipa, target, refIpa,
-                         Int32Array.from(voice.codes), voice.refLen,
+                         Int32Array.from(this.codesFor(voice)), voice.refLen,
                          null,          // language: null is the IPA fine-tune's conditioning
                          null, config.denoise);
 
@@ -202,14 +261,18 @@ export class OmniVoice {
  * demonstration than one read by an English voice, because voice cloning is ACOUSTIC and the
  * reference carries the speaker's accent along with their timbre.
  */
-const VOICE_FALLBACK: Record<string, string> = { is: "sv", it: "es" };
+/** Voices available for a language, preferred first. */
+export function voicesFor(voices: Voice[], lang: string): Voice[] {
+  const own = voices.filter((v) => v.lang === lang);
+  return own.sort((a, b) => Number(b.default ?? false) - Number(a.default ?? false));
+}
 
-/** The reference voice for a language: its own, else a phonetically near neighbour, else English. */
-export function voiceFor(voices: Voice[], lang: string): Voice {
-  return voices.find((v) => v.lang === lang)
-      ?? voices.find((v) => v.lang === VOICE_FALLBACK[lang])
-      ?? voices.find((v) => v.lang === "en")
-      ?? voices[0];
+/** The reference voice for a language. Every offered language now has a NATIVE exemplar — the
+ *  earlier phonetic-proximity fallback (is -> sv, it -> es) is gone because FLEURS has both. */
+export function voiceFor(voices: Voice[], lang: string, id?: string): Voice {
+  const own = voicesFor(voices, lang);
+  const byId = id ? own.find((v) => v.id === id) : undefined;
+  return byId ?? own[0] ?? voices.find((v) => v.lang === "en") ?? voices[0];
 }
 
 /**

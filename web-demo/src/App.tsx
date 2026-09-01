@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { LANGUAGES, MODELS, NUM_STEPS } from "./inference/config.ts";
 import { phonemize } from "./inference/phonemizer.ts";
-import { OmniVoice, voiceFor, type Voice } from "./inference/omnivoice.ts";
+import { OmniVoice, voiceFor, voicesFor, type Voice } from "./inference/omnivoice.ts";
 import { encodeWav } from "./inference/audioPost.ts";
 import { fetchModel } from "./inference/modelCache.ts";
 import type { Progress, Token } from "./types.ts";
@@ -28,6 +28,8 @@ export default function App() {
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
   const [stats, setStats] = useState<string>("");
   const [ep, setEp] = useState<string>("");
+  const [voiceId, setVoiceId] = useState<string | undefined>();
+  const [langVoices, setLangVoices] = useState<Voice[]>([]);
   const engine = useRef<OmniVoice | null>(null);
   const voice = useRef<Voice | null>(null);
 
@@ -52,6 +54,7 @@ export default function App() {
     });
     engine.current = ov;
     setEp(ov.backend.ep);
+    setLangVoices(voicesFor(ov.voices, lang));
     return ov;
   }, []);
 
@@ -67,8 +70,9 @@ export default function App() {
       setProgress({ stage: "generating", fraction: 0 });
       // ⚠ Pick the voice for THIS language every time, not once at load: the reference carries the
       // speaker's accent, so reusing an English voice for German is audibly wrong.
-      const v = voiceFor(ov.voices, lang);
+      const v = voiceFor(ov.voices, lang, voiceId);
       voice.current = v;
+      setLangVoices(voicesFor(ov.voices, lang));
       const r = await ov.synthesize(out, v, { numStep: NUM_STEPS },
         (step, total) => setProgress({ stage: "generating", fraction: step / total, detail: `step ${step}/${total}` }));
 
@@ -80,7 +84,7 @@ export default function App() {
     } catch (e) {
       setProgress({ stage: "error", detail: e instanceof Error ? e.message : String(e) });
     }
-  }, [text, lang, ensureEngine, audioUrl]);
+  }, [text, lang, voiceId, ensureEngine, audioUrl]);
 
   const busy = progress.stage === "loading-models" || progress.stage === "phonemizing" || progress.stage === "generating";
 
@@ -102,12 +106,25 @@ export default function App() {
                     setLang(c);
                     setText(LANGUAGES.find((l) => l.code === c)!.sample);
                     setIpa(""); setTokens(null); setStats("");
+                    // A voice belongs to a language; carrying one across would reintroduce the
+                    // accent bleed that per-language references exist to remove.
+                    setVoiceId(undefined);
+                    setLangVoices(engine.current ? voicesFor(engine.current.voices, c) : []);
                   }}>
             {LANGUAGES.map((l) => (
               <option key={l.code} value={l.code}>{l.name}{l.trained === false ? " (untrained)" : ""}</option>
             ))}
           </select>
         </label>
+        {langVoices.length > 1 && (
+          <label>
+            Voice
+            <select value={voiceId ?? langVoices[0].id} disabled={busy}
+                    onChange={(e) => setVoiceId(e.target.value)}>
+              {langVoices.map((v) => <option key={v.id} value={v.id}>{v.label}</option>)}
+            </select>
+          </label>
+        )}
         <button onClick={generate} disabled={busy || !text.trim()}>
           {busy ? "Working…" : "Generate"}
         </button>

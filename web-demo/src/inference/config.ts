@@ -50,6 +50,9 @@ export const LANGUAGES: LanguageOption[] = [
   { code: "sd",  name: "Sindhi",     dataMb: 2.7, sample: "اڄ ساحل تي موسم تمام سٺي آهي." },
   // Deliberately outside the corpus — the premise is that an IPA-conditioned model renders these
   // from phones it already holds, and a demo should let you hear that rather than take it on faith.
+  // Outside the v6 fine-tune's 28-language coverage set — the model renders them from phones it
+  // already holds, which is the premise. FLEURS has both, so each still gets a NATIVE reference
+  // voice rather than a stand-in from a neighbouring language.
   { code: "is",  name: "Icelandic",  dataMb: 0.1, trained: false, sample: "Góðan daginn. Veðrið er mjög gott í dag." },
   { code: "it",  name: "Italian",    dataMb: 0.1, trained: false, sample: "Buongiorno. Il tempo è molto piacevole oggi." },
 ];
@@ -82,7 +85,8 @@ export const MODELS = {
   transformerDataUrl: `${HF}/omnivoice_transformer_ipa.int4.onnx.data`,
   decoderUrl: `${HF}/higgs_decoder.onnx`,
   tokenizerUrl: `${HF}/tokenizer.json`,
-  voicesUrl: "/models/voices.json",
+  voicesUrl: "/models/voices.jsonc",
+  voiceCodesUrl: "/models/voice-codes.json",
 } as const;
 
 /**
