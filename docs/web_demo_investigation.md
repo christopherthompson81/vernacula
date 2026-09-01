@@ -721,3 +721,38 @@ import of its threaded `.mjs` sidecar stays out of Vite's pipeline.
 **Verified through the real UI on the production build:** 470 MB transformer + 87 MB decoder with
 progress, WebGPU transformer + WASM decoder, `2.4s audio in 13.8s · 60 tokens · 32 steps · webgpu`,
 no errors from the current bundle.
+
+---
+
+## Run 15 — 2026-09-01, all 30 languages, fetched per language
+
+The picker offered 30 languages while only `en`, `es`, `cy` had staged data — selecting German
+would have thrown `phonemizer data not prefetched`. Fixed by staging every offered language and
+splitting the fetch in two:
+
+- **engine** — 182 manifests, **4.5 MB**, read by importing the engine whatever language you pick;
+- **per-language** — fetched only when that language is chosen.
+
+⚠ **Most languages' lists include English's tables**, which is why nearly every per-language figure
+lands around 12.2 MB. `phonemizeAsync` prewarms the English tagger for mixed-Latin text, and a run
+in a script the host language does not own is delegated through `core/foreign.ts`. Upstream's
+browser notes say to expect this; because the lists are RECORDED from the engine rather than
+declared, it is captured rather than guessed at.
+
+⚠ **And it is why the first total was wrong.** Summing per-language sizes gave "202 MB", but nearly
+all of it is the same shared files counted once per language. Deduplicated on disk the answer is
+**66 MB** — a third of the figure. The staging script now counts each file once and says the
+per-language numbers overlap.
+
+Verified through the UI: selecting German and generating downloads only German's tables (the model
+came from the Cache API, no re-download) and produces
+`dˈas vˈɛtɐ ɪst hˈɔʏ̯tə zeːɐ̯ ʃøːn an deːɐ̯ kˈʏstə` — 2.3 s audio in 12.5 s at 32 steps on WebGPU.
+
+**Status: the demo works.** Text → IPA → speech, client-side, listen-confirmed good by the user.
+`dist` is 71 MB (25 MB app + 66 MB phonemizer data); the 558 MB of models come from HuggingFace and
+are cached in the browser after first load.
+
+Remaining: karaoke highlighting (deferred by request; `Token` already carries `start`/`end`, and the
+honest first version is proportional attribution from audio-token positions at 25/s), and the
+Netlify deploy itself. If 66 MB of data on the site is unwelcome, it can move to the HF repo
+alongside the models — HF already serves them with the CORS headers COEP needs.

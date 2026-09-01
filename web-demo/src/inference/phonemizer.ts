@@ -23,17 +23,41 @@ import { getOrt } from "./ortInit.ts";
 
 type PhonemizeAsync = (text: string, lang: string) => Promise<string>;
 
+interface KeyManifest { engine: string[]; languages: Record<string, string[]> }
+
+/**
+ * ⚠ TWO PHASES, AND THE SPLIT IS WHAT KEEPS FIRST LOAD SMALL. `engine` is what importing the engine
+ * reads — every language's manifest, 182 files / 4.5 MB — and is needed whatever language you pick.
+ * Per-language tables are fetched only when that language is chosen; all 28 together are ~202 MB,
+ * which is not a first-load budget.
+ *
+ * ⚠ Expect English's data in most languages' lists. `phonemizeAsync` prewarms the English tagger
+ * for mixed-Latin text, and a run in a script the host language does not own is delegated
+ * (core/foreign.ts) — so a Thai page containing an English phrase loads English's tables too. The
+ * lists are RECORDED from the engine rather than declared, so this is captured rather than guessed.
+ */
+const bytes = new Map<string, Uint8Array>();
+let manifest: KeyManifest | undefined;
+const fetched = new Set<string>();
+
+async function fetchKeys(keys: string[], onProgress?: (d: string) => void, label = ""): Promise<void> {
+  const missing = keys.filter((k) => !bytes.has(k));
+  if (missing.length === 0) return;
+  let done = 0;
+  await Promise.all(missing.map(async (k) => {
+    const r = await fetch(`${DATA_BASE}/${k}`);
+    if (!r.ok) throw new Error(`phonemizer data ${k} -> ${r.status}`);
+    bytes.set(k, new Uint8Array(await r.arrayBuffer()));
+    if (++done % 20 === 0) onProgress?.(`${label}${done}/${missing.length} files`);
+  }));
+}
+
 let enginePromise: Promise<PhonemizeAsync> | undefined;
 
 async function init(onProgress?: (d: string) => void): Promise<PhonemizeAsync> {
   onProgress?.("fetching phonemizer data");
-  const keys: string[] = await (await fetch(`${DATA_BASE}/_keys.json`)).json();
-  const bytes = new Map<string, Uint8Array>();
-  await Promise.all(keys.map(async (k) => {
-    const r = await fetch(`${DATA_BASE}/${k}`);
-    if (!r.ok) throw new Error(`phonemizer data ${k} -> ${r.status}`);
-    bytes.set(k, new Uint8Array(await r.arrayBuffer()));
-  }));
+  manifest = await (await fetch(`${DATA_BASE}/_keys.json`)).json();
+  await fetchKeys(manifest!.engine, onProgress, "phonemizer ");
 
   onProgress?.(`loading phonemizer (${bytes.size} files)`);
   const vp = await import(/* @vite-ignore */ ENGINE_URL);
@@ -46,8 +70,6 @@ async function init(onProgress?: (d: string) => void): Promise<PhonemizeAsync> {
       return b;
     },
   });
-  // The neural tier (English's BiLSTM and friends) reaches ORT through this seam. Each neural
-  // path DEGRADES to the rule engine when its model is absent rather than throwing.
   // Same module the TTS side uses, loaded from the CDN — NOT bundled. See ortInit.ts.
   vp.setOrtLoader(() => getOrt());
   const engine = await vp.loadEngine();
@@ -59,7 +81,16 @@ async function init(onProgress?: (d: string) => void): Promise<PhonemizeAsync> {
 export async function phonemize(text: string, lang: string,
                                 onProgress?: (d: string) => void): Promise<string> {
   enginePromise ??= init(onProgress);
-  return (await enginePromise)(text, lang);
+  const phon = await enginePromise;
+  if (!fetched.has(lang)) {
+    const keys = manifest?.languages[lang];
+    if (keys?.length) {
+      onProgress?.(`fetching ${lang} data`);
+      await fetchKeys(keys, onProgress, `${lang} `);
+    }
+    fetched.add(lang);
+  }
+  return phon(text, lang);
 }
 
 export function phonemizerReady(): boolean {
