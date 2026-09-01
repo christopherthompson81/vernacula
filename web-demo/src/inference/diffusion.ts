@@ -23,7 +23,10 @@ export interface GenConfig {
  *  greedy and therefore DETERMINISTIC. Re-running a failure reproduces it exactly; it is not a
  *  bad sample to re-roll. */
 export const DEFAULT_CONFIG: GenConfig = {
-  numStep: 16, guidanceScale: 2.0, tShift: 0.1, layerPenaltyFactor: 5.0, denoise: true,
+  // ⚠ 32, NOT 16. 16 is audibly degraded (see config.ts and the "fix two defects" commit), and
+  // `synthesize` merges {...DEFAULT_CONFIG, ...cfg} with cfg optional — so a caller that omits
+  // numStep would silently take the known-bad value.
+  numStep: 32, guidanceScale: 2.0, tShift: 0.1, layerPenaltyFactor: 5.0, denoise: true,
 };
 
 /** Runs the transformer once: input_ids [1,8,S] + audio_mask [1,S] + attention_mask [1,1,S,S]

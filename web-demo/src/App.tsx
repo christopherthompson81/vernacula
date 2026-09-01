@@ -56,7 +56,7 @@ export default function App() {
     setEp(ov.backend.ep);
     setLangVoices(voicesFor(ov.voices, lang));
     return ov;
-  }, []);
+  }, [lang]);
 
   const generate = useCallback(async () => {
     if (!text.trim()) return;

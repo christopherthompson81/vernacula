@@ -18,7 +18,7 @@
   <ItemGroup>
     <!-- Kokoro's G2P frontend. Direct rather than transitive through Chatterbox.Base — see the
          PrivateAssets note on that project's reference to it. -->
-    <ProjectReference Include="..\\..\\external\espeak-ng-portable\csharp\src\Vernacula.Phonemizer\Vernacula.Phonemizer.csproj" />
+    <ProjectReference Include="..\..\external\espeak-ng-portable\csharp\src\Vernacula.Phonemizer\Vernacula.Phonemizer.csproj" />
     <ProjectReference Include="..\..\src\Chatterbox.Base\Chatterbox.Base.csproj">
       <Private>true</Private>
       <SetConfiguration>EP=Cuda</SetConfiguration>

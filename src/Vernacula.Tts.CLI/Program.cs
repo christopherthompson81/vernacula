@@ -189,12 +189,20 @@ internal static class Program
             Console.Error.WriteLine($"--diff not found: {diffPath}"); return 1;
         }
 
-        var epEnum = ep switch
+        // ⚠ Reject an unrecognised value rather than falling through to Auto. `--ep cud` or
+        // `--ep gpu` would otherwise silently run somewhere the caller did not ask for — and the
+        // gap between providers here is ~20x, so it reads as "this is just slow".
+        // Chatterbox.CLI errors on the same input; match it.
+        ExecutionProvider epEnum;
+        switch (ep)
         {
-            "cpu" => ExecutionProvider.Cpu,
-            "cuda" => ExecutionProvider.Cuda,
-            _ => ExecutionProvider.Auto,
-        };
+            case "cpu": epEnum = ExecutionProvider.Cpu; break;
+            case "cuda": epEnum = ExecutionProvider.Cuda; break;
+            case "auto": epEnum = ExecutionProvider.Auto; break;
+            default:
+                Console.Error.WriteLine($"--ep must be cpu, cuda or auto (got \"{ep}\").");
+                return 2;
+        }
 
         // ⚠ THE DIFF MUST BE APPLIED TO THE GENUINE BASE, and nothing here can check that for you.
         // The diff is a LoRA plus absolute replacement embedding rows; applied to weights that are

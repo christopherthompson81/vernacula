@@ -12,7 +12,18 @@ const CHUNK = 32 * 1024 * 1024;
 if (navigator.storage?.persist) void navigator.storage.persist();
 
 export interface DownloadProgress { url: string; loaded: number; total: number; cached: boolean; }
-interface Meta { total: number; chunks: number; done: boolean; }
+/**
+ * ⚠ `sizes` holds each chunk's ACTUAL byte length, and that is load-bearing. `flush()` fires once
+ * `partBytes >= CHUNK` and writes everything accumulated, so a stored chunk is CHUNK plus whatever
+ * the last read added — essentially never exactly CHUNK. Deriving the resume offset as
+ * `chunks * CHUNK` therefore UNDER-counts what is cached: the Range request re-fetches bytes already
+ * stored, and reassembly then writes more bytes than `total`, throwing RangeError or — worse —
+ * silently producing a duplicated-byte, corrupt model. A 472 MB download interrupted at 200 MB
+ * would fail on every subsequent load.
+ */
+interface Meta { total: number; chunks: number; sizes: number[]; done: boolean; }
+
+const cachedBytes = (m: Meta) => m.sizes.reduce((a, b) => a + b, 0);
 
 const metaKey = (u: string) => `${u}\x00meta`;
 const chunkKey = (u: string, i: number) => `${u}\x00c:${i}`;
@@ -31,8 +42,16 @@ async function putMeta(u: string, m: Meta) {
 async function ensureDownloaded(url: string, onProgress?: (p: DownloadProgress) => void): Promise<Meta> {
   let meta = await getMeta(url);
   if (meta?.done) return meta;
+  // A meta written before `sizes` existed cannot be resumed correctly — its offset is unknowable.
+  // Discard it rather than resume from a wrong offset.
+  if (meta && !Array.isArray(meta.sizes)) {
+    const c = await caches.open(CACHE);
+    await c.delete(metaKey(url));
+    await Promise.all(Array.from({ length: meta.chunks }, (_, i) => c.delete(chunkKey(url, i))));
+    meta = null;
+  }
 
-  const resumeFrom = meta ? meta.chunks * CHUNK : 0;
+  const resumeFrom = meta ? cachedBytes(meta) : 0;
   let res: Response, start = resumeFrom;
   if (resumeFrom > 0) {
     res = await fetch(url, { headers: { Range: `bytes=${resumeFrom}-` } });
@@ -49,7 +68,7 @@ async function ensureDownloaded(url: string, onProgress?: (p: DownloadProgress) 
   }
 
   const total = start + Number(res.headers.get("Content-Length") ?? 0);
-  meta ??= { total, chunks: 0, done: false };
+  meta ??= { total, chunks: 0, sizes: [], done: false };
   meta.total = total || meta.total;
 
   const reader = res.body!.getReader();
@@ -59,7 +78,7 @@ async function ensureDownloaded(url: string, onProgress?: (p: DownloadProgress) 
     const buf = new Uint8Array(partBytes);
     let o = 0; for (const p of parts) { buf.set(p, o); o += p.byteLength; }
     await cache.put(chunkKey(url, idx), new Response(new Blob([buf.buffer as ArrayBuffer])));
-    idx++; meta!.chunks = idx; await putMeta(url, meta!);
+    idx++; meta!.chunks = idx; meta!.sizes.push(buf.byteLength); await putMeta(url, meta!);
     parts = []; partBytes = 0;
   };
   for (;;) {
@@ -70,7 +89,7 @@ async function ensureDownloaded(url: string, onProgress?: (p: DownloadProgress) 
     if (partBytes >= CHUNK) await flush();
   }
   if (partBytes > 0) await flush();
-  meta.done = true; meta.total = loaded;
+  meta.done = true; meta.total = cachedBytes(meta);
   await putMeta(url, meta);
   return meta;
 }
@@ -79,7 +98,7 @@ async function ensureDownloaded(url: string, onProgress?: (p: DownloadProgress) 
 export async function fetchModel(url: string, onProgress?: (p: DownloadProgress) => void): Promise<ArrayBuffer> {
   const meta = await ensureDownloaded(url, onProgress);
   const cache = await caches.open(CACHE);
-  const out = new Uint8Array(meta.total);
+  const out = new Uint8Array(cachedBytes(meta));
   let off = 0;
   for (let i = 0; i < meta.chunks; i++) {
     const r = await cache.match(chunkKey(url, i));

@@ -179,6 +179,16 @@ public sealed class OmniVoiceDiff
             patched.Add(nd);
         }
 
+        // ⚠ The embedding half must be as loud about failing as the LoRA half. If the base graph
+        // names the table something else, or emits the lookup as anything but a 2-input Gather,
+        // PatchedEmbedRows stays 0 and the 5,572 replacement rows are silently never applied — the
+        // session still loads and runs, producing a HALF-patched model. That is the silent-partial
+        // -application failure this file exists to prevent.
+        if (diff.ContainsKey("embed_rows") && PatchedEmbedRows == 0)
+            throw new InvalidOperationException(
+                $"IPA diff {Path.GetFileName(diffOnnxPath)} carries embed_rows, but no embed_tokens "
+                + "Gather was matched in the base graph — the embedding half would be skipped, "
+                + "leaving a half-patched model that still loads and runs.");
         if (modules == 0)
             throw new InvalidOperationException(
                 $"IPA diff {Path.GetFileName(diffOnnxPath)} patched no modules of "

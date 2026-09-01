@@ -80,7 +80,10 @@ async function init(onProgress?: (d: string) => void): Promise<PhonemizeAsync> {
  *  where one exists; the sync entry is the fallback and gives different (worse) IPA. */
 export async function phonemize(text: string, lang: string,
                                 onProgress?: (d: string) => void): Promise<string> {
-  enginePromise ??= init(onProgress);
+  // ⚠ Clear the cached promise on failure. Caching the PROMISE means one transient fetch error
+  // would poison the page: every later click re-awaits the same rejection and reports the same
+  // message, with no way to retry short of a reload.
+  enginePromise ??= init(onProgress).catch((e) => { enginePromise = undefined; throw e; });
   const phon = await enginePromise;
   if (!fetched.has(lang)) {
     const keys = manifest?.languages[lang];
