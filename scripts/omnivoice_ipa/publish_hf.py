@@ -27,6 +27,7 @@ from huggingface_hub import HfApi, whoami
 ONNX_BASE = "/mnt/data/omnivoice_ipa/onnx_base"
 ONNX = "/mnt/data/omnivoice_ipa/onnx"
 ONNX_WEB = "/mnt/data/omnivoice_ipa/onnx_web"
+BASE_SNAPSHOT = "/mnt/data/models/omnivoice/k2-fsa-OmniVoice"
 
 # sha256 of onnx_base/omnivoice_transformer.onnx.data — the base that matches k2-fsa/OmniVoice.
 BASE_SHA256 = "2ea0980e184bbf8457048fbb3ed2a01f8f8c3816a8ee9fbff3ce0886c1aeeb4a"
@@ -48,6 +49,10 @@ def files(version):
         # no diff, no fold. Its sidecar name is recorded inside the .onnx, so both keep these names.
         (f"{ONNX_WEB}/omnivoice_transformer_ipa.int4.onnx", "omnivoice_transformer_ipa.int4.onnx"),
         (f"{ONNX_WEB}/omnivoice_transformer_ipa.int4.onnx.data", "omnivoice_transformer_ipa.int4.onnx.data"),
+        # The Qwen3 tokenizer, straight from the upstream snapshot. Needed by any consumer that
+        # synthesises text rather than replaying captured ids, and a browser has nowhere else to
+        # get it. Same Apache-2.0 terms as the base model, already credited in the card.
+        (f"{BASE_SNAPSHOT}/tokenizer.json", "tokenizer.json"),
     ]
 
 CARD = """---
@@ -78,6 +83,7 @@ happen before the model sees a token.
 | `higgs_encoder.onnx` | 654 MB | Higgs codec encoder (24 kHz audio → codes) |
 | `higgs_decoder.onnx` | 86 MB | Higgs codec decoder (codes → 24 kHz audio) |
 | `omnivoice_transformer_ipa.int4.onnx` (+`.onnx.data`) | 472 MB | the fine-tuned transformer, **merged and quantized** for browsers — no base or diff needed |
+| `tokenizer.json` | 11 MB | the Qwen3 tokenizer, for consumers that synthesise text |
 | `ipa_diff.onnx` | 31 MB | the IPA fine-tune, as a reconstruction diff over the base transformer (currently the **{VERSION}** extraction, sha256 `{DIFF_SHA256}`) |
 
 The transformer is the base (un-fine-tuned) graph; the encoder/decoder are the codec, unchanged by

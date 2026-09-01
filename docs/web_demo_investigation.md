@@ -442,3 +442,63 @@ one child process per language), `tools/smoke-phonemizer.mjs` (the cross-engine 
 **Remaining for the demo:** the diffusion loop in TypeScript (a port of
 `Chatterbox.Base.OmniVoiceTts.RunDiffusion`) and the React UI. The graphs themselves are just
 `session.run`.
+
+---
+
+## Run 10 — 2026-09-01, the pipeline ported, and cross-checked against C# by number
+
+The diffusion loop and everything around it are now TypeScript: `qwen3Tokenizer.ts` (byte-level
+BPE), `textPrep.ts`, `duration.ts`, `diffusion.ts`, `audioPost.ts`, `omnivoice.ts`. Ports of
+`Chatterbox.Base.{Tokenization.Qwen3Tokenizer, OmniVoiceTextPrep, OmniVoiceDuration, OmniVoiceTts,
+OmniVoiceAudioPost, OmniVoice}`.
+
+**Two ports needed care rather than transcription:**
+
+- The Qwen split regex opens `(?i:'s|'t|…)` and **JavaScript has no inline group modifiers**, so
+  the contractions are spelled out case-by-case. Everything else is identical under `u`.
+- `OmniVoiceDuration` switches on .NET `UnicodeCategory`; the JS equivalent is property escapes
+  (`\p{Mn}\p{Mc}\p{Me}` -> mark, `\p{Pc}…\p{So}` -> punctuation, `\p{Zs}\p{Zl}\p{Zp}` -> space,
+  `\p{Nd}\p{Nl}\p{No}` -> digit), which map one-to-one.
+
+The C# parallelises CFG scoring across (codebook, position) — three 1025-way softmaxes per slot,
+the host hot path. JS is single-threaded, so it runs sequentially over reused buffers. Measured
+host cost 0.9 s of an 11.2 s generation, so it is not currently worth a worker pool.
+
+**Voice codes are precomputed** (`tools/make-voices.mjs`), mirroring `EncodeReference` exactly —
+RMS-boost, remove silence at the REFERENCE parameters (mid 200 / lead 100 / trail 200, not the
+output chain's 500/100/100), clip to a hop multiple, encode. Output: **2.8 KB of JSON in place of
+the 654 MB encoder**, and it is what lets every generation be voice-cloned, which is what keeps
+short input stable.
+
+**Cross-check against the C# CLI, same text, same int4 model, same reference clip:**
+
+| | TypeScript (browser, WebGPU) | C# (CLI, CPU) |
+|---|---|---|
+| IPA | `ðə kwˈɪk bɹˈaᶷn fˈɑːks…` | identical |
+| reference codes | 82 | 82 |
+| **target tokens** | **134** | **134** |
+| audio length | 5.38 s | 5.3 s |
+| wall clock | 11.2 s (transformer 9.8, host 0.9) | 18.7 s |
+
+`targetTokens` depends only on the tokenizer, text prep and duration estimator, so agreement there
+means those three ports are exact — a stronger statement than "it produced audio". The diffusion
+field itself will differ slightly between execution providers, which is why the audio is compared
+by ear rather than diffed.
+
+**Production build verified, not just dev.** Serving `dist/` in a browser:
+
+    phonemizer from built site: həlˈoᶷ wˈɝɫd .     (matches C#)
+    crossOriginIsolated: true                      (COOP/COEP -> SharedArrayBuffer -> WASM threads)
+    HF ranged fetch: HTTP 206, 1024 bytes          (cross-origin + Range under COEP)
+
+All three were real risks: Vite could have broken the phonemizer's `import.meta.url` keys, missing
+isolation would have silently dropped WASM to one thread, and a CORS failure would have made the
+model unfetchable from the site's origin.
+
+⚠ **ORT's wasm sidecars are served from jsDelivr, not bundled.** Shipping all four variants put
+~100 MB in `dist/` (131 MB -> 52 MB after the change) for files the CDN serves with the CORS headers
+COEP needs. This also keeps ORT's dynamic import of its threaded `.mjs` sidecar out of Vite's module
+pipeline, which cannot resolve a dynamic import of a file in `public/`.
+
+`tokenizer.json` (11 MB) was missing from the HF repo — a browser has nowhere else to get it — so it
+is published there now alongside the model.

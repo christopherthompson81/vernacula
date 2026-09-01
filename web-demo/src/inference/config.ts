@@ -14,6 +14,8 @@ export interface LanguageOption {
   /** Approximate size of this language's data files, in MB — shown before download. */
   dataMb: number;
   sample: string;
+  /** false = outside the v6 fine-tune corpus: it renders, but extrapolated. */
+  trained?: boolean;
 }
 
 /** The 28 languages of the v6 coverage set, with the phonemizer data each one pulls. */
@@ -46,6 +48,10 @@ export const LANGUAGES: LanguageOption[] = [
   { code: "xh",  name: "Xhosa",      dataMb: 0.1, sample: "Imozulu intle kakhulu namhlanje elunxwemeni." },
   { code: "kk",  name: "Kazakh",     dataMb: 0.1, sample: "Бүгін жағалауда ауа райы өте жағымды." },
   { code: "sd",  name: "Sindhi",     dataMb: 2.7, sample: "اڄ ساحل تي موسم تمام سٺي آهي." },
+  // Deliberately outside the corpus — the premise is that an IPA-conditioned model renders these
+  // from phones it already holds, and a demo should let you hear that rather than take it on faith.
+  { code: "is",  name: "Icelandic",  dataMb: 0.1, trained: false, sample: "Góðan daginn. Veðrið er mjög gott í dag." },
+  { code: "it",  name: "Italian",    dataMb: 0.1, trained: false, sample: "Buongiorno. Il tempo è molto piacevole oggi." },
 ];
 
 /**
@@ -58,13 +64,25 @@ export const LANGUAGES: LanguageOption[] = [
  * ~1.2 GB and was previously listen-confirmed good. Do not treat the small one as the default
  * until it has been heard.
  */
+/**
+ * Model bundle, served from the public HuggingFace repo (the Parakeet demo uses the same pattern:
+ * HF sends `access-control-allow-origin: *` and supports range requests, which is what the chunked
+ * cache needs). `tokenizer.json` and `voices.json` are small and ship with the site.
+ *
+ * ⚠ PRECISION IS NOT A PREFERENCE HERE. The diffusion loop is precision-sensitive: naive INT8
+ * dynamic quantization produced output that was not recognizable as speech, because it quantizes
+ * ACTIVATIONS and a 32-iteration loop compounds that error. This build is WEIGHT-ONLY int4
+ * (MatMulNBits, block 32) with an int8 per-row embedding, listen-confirmed indistinguishable from
+ * fp32. Do not swap it for something smaller without a listening test.
+ */
+const HF = "https://huggingface.co/christopherthompson81/omnivoice-ipa-onnx/resolve/main";
+
 export const MODELS = {
-  transformer: "/models/omnivoice_transformer_ipa_v6.int8.onnx",
-  decoder: "/models/higgs_decoder.int8.onnx",
-  /** Reference voice as pre-encoded codec codes — a few KB, so the 654 MB Higgs ENCODER never
-   *  ships. Also means every generation runs in clone mode, which is what keeps short input
-   *  stable (see README "Short input"). */
-  voices: "/models/voices.json",
+  transformerUrl: `${HF}/omnivoice_transformer_ipa.int4.onnx`,
+  transformerDataUrl: `${HF}/omnivoice_transformer_ipa.int4.onnx.data`,
+  decoderUrl: `${HF}/higgs_decoder.onnx`,
+  tokenizerUrl: `${HF}/tokenizer.json`,
+  voicesUrl: "/models/voices.json",
 } as const;
 
 /** Diffusion steps. 32 is the desktop default; 16 halves browser latency at some quality cost. */
