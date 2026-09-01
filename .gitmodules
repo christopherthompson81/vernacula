@@ -1,3 +1,6 @@
 [submodule "external/espeak-ng-portable"]
 	path = external/espeak-ng-portable
 	url = https://github.com/christopherthompson81/espeak-ng-portable.git
+[submodule "external/vernacula-phonemizer"]
+	path = external/vernacula-phonemizer
+	url = https://github.com/christopherthompson81/vernacula-phonemizer.git

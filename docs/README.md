@@ -7,6 +7,7 @@ User and reference documentation for Vernacula. Start with [Installation](instal
 - [Installation](installation.md) — .NET 10, FFmpeg, GPU prerequisites, Linux installer
 - [Desktop app](desktop-app.md) — features, screenshots, walkthrough
 - [CLI reference](cli-reference.md) — invocation, arguments, examples
+- [vernacula-tts](tts-cli.md) — IPA-native text-to-speech (phonemizer → OmniVoice IPA fine-tune)
 - [Models](models.md) — required and optional model downloads
 - [Building from source](building.md) — execution providers and publish guidance
 

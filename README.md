@@ -46,6 +46,7 @@ Vernacula's models are converted in-house from upstream PyTorch / NeMo / Hugging
 | Cohere Transcribe | [CohereLabs/cohere-transcribe-03-2026](https://huggingface.co/CohereLabs/cohere-transcribe-03-2026) | [scripts/cohere_export](scripts/cohere_export) |
 | VibeVoice-ASR | [microsoft/VibeVoice-ASR-HF](https://huggingface.co/microsoft/VibeVoice-ASR-HF) | [scripts/vibevoice_export](scripts/vibevoice_export) |
 | Granite Speech 4.1 | [ibm-granite/granite-speech-4.1-2b](https://huggingface.co/ibm-granite/granite-speech-4.1-2b) | [scripts/granite_export](scripts/granite_export) |
+| OmniVoice (IPA fine-tune, TTS) | [k2-fsa/OmniVoice](https://huggingface.co/k2-fsa/OmniVoice) | [scripts/omnivoice_export](scripts/omnivoice_export), [scripts/omnivoice_ipa](scripts/omnivoice_ipa) |
 | DeepFilterNet3 (streaming) | [Rikorose/DeepFilterNet](https://github.com/Rikorose/DeepFilterNet) | [scripts/deepfilternet3_export](scripts/deepfilternet3_export) |
 | DiariZen + WeSpeaker | [BUTSpeechFIT/DiariZen](https://github.com/BUTSpeechFIT/DiariZen) | [scripts/diarizen_export](scripts/diarizen_export) |
 | VoxLingua107 (language ID) | [speechbrain/lang-id-voxlingua107-ecapa](https://huggingface.co/speechbrain/lang-id-voxlingua107-ecapa) | [scripts/voxlingua107_export](scripts/voxlingua107_export) |
