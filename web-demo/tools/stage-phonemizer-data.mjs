@@ -11,12 +11,32 @@
  *   node tools/stage-phonemizer-data.mjs es cy en
  */
 import { execFileSync } from "node:child_process";
-import { mkdirSync, copyFileSync, existsSync, rmSync, writeFileSync, statSync } from "node:fs";
+import { mkdirSync, copyFileSync, existsSync, rmSync, writeFileSync, statSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+
+/**
+ * ⚠ RECORD WITH REPRESENTATIVE TEXT, NOT THE DEFAULT PROBE. Some tables load lazily on first USE
+ * rather than at construction — Japanese's pitch-accent and kanji readings sit behind a `??=` that
+ * a Latin-script probe never reaches. Staging with the default probe produced a Japanese list that
+ * was missing `languages/japanese/pitch-accent.tsv`, and the demo failed at run time with
+ * "phonemizer data not prefetched". Upstream's tool says this in its header; ignoring it cost a
+ * user-visible bug.
+ *
+ * The sample sentences the demo ships are exactly the representative text, so they are read from
+ * config.ts rather than duplicated here.
+ */
+function samplesFromConfig() {
+    const src = readFileSync("src/inference/config.ts", "utf8");
+    const out = {};
+    for (const m of src.matchAll(/code:\s*"([\w-]+)"[^}]*?sample:\s*"((?:[^"\\]|\\.)*)"/g))
+        out[m[1]] = JSON.parse(`"${m[2]}"`);
+    return out;
+}
 
 const REPO = "../external/vernacula-phonemizer";
 const OUT = "public/vphon-data";
 const langs = process.argv.slice(2);
+const SAMPLES = samplesFromConfig();
 if (!langs.length) { console.error("usage: stage-phonemizer-data.mjs <lang>..."); process.exit(2); }
 
 rmSync(OUT, { recursive: true, force: true });
@@ -31,8 +51,12 @@ for (const code of langs) {
     // One child process per language — upstream's tool does the same, because the table loaders
     // memoize and a second language in the same process records no read for a file the first
     // already pulled, attributing shared data to whichever ran first.
-    const out = execFileSync("npx", ["tsx", "tools/browser-prefetch.mts", code],
-                             { cwd: REPO, encoding: "utf8", maxBuffer: 1 << 28 });
+    const text = SAMPLES[code];
+    const argv = text ? ["tsx", "tools/browser-prefetch.mts", "--text", text, code]
+                      : ["tsx", "tools/browser-prefetch.mts", code];
+    if (!text) console.warn(`  ⚠ ${code}: no sample text in config.ts — recording with the default probe,`
+                          + ` which may miss tables that load lazily in this language's script`);
+    const out = execFileSync("npx", argv, { cwd: REPO, encoding: "utf8", maxBuffer: 1 << 28 });
     const d = JSON.parse(out);
     for (const k of d.engine.keys) engine.add(k);
     const own = new Set();

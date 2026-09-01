@@ -8,9 +8,10 @@
     "build:phonemizer": "node tools/build-phonemizer.mjs",
     "build:phonemizer-data": "node tools/stage-phonemizer-data.mjs",
     "dev": "npm run build:phonemizer && vite",
-    "build": "npm run build:phonemizer && tsc && vite build",
+    "build": "npm run build:phonemizer && npm run verify:phonemizer-data && tsc && vite build",
     "preview": "vite preview",
-    "smoke:phonemizer": "node tools/smoke-phonemizer.mjs"
+    "smoke:phonemizer": "node tools/smoke-phonemizer.mjs",
+    "verify:phonemizer-data": "node tools/verify-phonemizer-data.mjs"
   },
   "dependencies": {
     "onnxruntime-node": "^1.29.0",

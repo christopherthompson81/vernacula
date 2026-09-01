@@ -833,3 +833,45 @@ cloning will reproduce as timbre even after normalization.
 phonemizer TABLES staged as well as a voice, and recording those is one child process per language
 (~10 s each) plus data. Voices are cheap and complete; picker entries are not. Expanding it is a
 separate, measurable step.
+
+---
+
+## Run 18 — 2026-09-01, Japanese: "recorded" is not the same as "complete"
+
+**Symptom:** selecting Japanese failed with `phonemizer data not prefetched:
+languages/japanese/pitch-accent.tsv`.
+
+**Cause, and it was written down in advance.** `tools/browser-prefetch.mts` says in its header:
+
+> ⚠ AND THE PER-LANGUAGE LIST IS ONLY AS COMPLETE AS THE TEXT YOU FEED IT. Some tables load lazily
+> on first USE, not at construction — Japanese's kanji readings and Zhuang's Sawndip dictionary are
+> both behind a `??=` that a probe in the wrong script never reaches.
+
+Staging ran the default probe (a Latin word and a number) for every language, so Japanese's
+script-gated tables were never touched and were recorded as absent. Recording from the engine is far
+better than a hand-kept list — but a recording captures only what the probe reached, and reading the
+warning is not the same as acting on it.
+
+**Two fixes, and the second is the one that matters:**
+
+1. Record with the sentences the demo actually ships. They are already in `config.ts`, so the
+   staging script reads them from there rather than duplicating them, and warns when a language has
+   no sample and falls back to the default probe.
+2. **A replay gate.** `tools/verify-phonemizer-data.mjs` installs the staged files as the ONLY data
+   source — a frozen Map, nothing else reachable — and phonemizes every shipped sample through the
+   real engine, reporting each missing key. Run against the broken staging it reproduced the bug
+   exactly (`FAIL ja … missing languages/japanese/pitch-accent.tsv`, 29/30 passing) before any fix
+   was applied, which is the property a gate needs.
+
+After re-staging: **30/30 languages phonemize from the staged data alone**, 230 unique files,
+75.4 MB. Verified in the browser:
+
+    ja   kʲo̞ꜜːhä käiɡänno̞ te̞ꜜŋkiɡä to̞te̞mo̞ käite̞kide̞sɯᵝ .   5.2 s audio in 23.5 s
+    cmn  t͡ɕin˥˥ tʰiɛn˥˥ xaⁱ˨˩˦ piɛn˥˥ tɤ tʰiɛn˥˥ t͡ɕʰi˥˩ …      5.1 s audio in 27.2 s
+
+Japanese pitch accent (`ꜜ`) and Mandarin tone letters both present, which is the point of having
+those tables at all.
+
+⚠ The gate runs in `npm run build`. A staged set that cannot phonemize the shipped samples is a
+broken site, and the failure is invisible until a visitor picks that language — exactly how this one
+was found.
