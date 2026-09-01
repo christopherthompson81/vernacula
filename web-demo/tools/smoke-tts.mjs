@@ -14,9 +14,11 @@ const done = (c) => { try { CHILD?.kill("SIGKILL"); } catch {} process.exit(c); 
 process.on("exit", () => { try { CHILD?.kill("SIGKILL"); } catch {} });
 
 const PORT = 8794, PUB = path.resolve("public");
+const MODEL = process.env.MODEL ?? "/mnt/data/omnivoice_ipa/onnx_web/omnivoice_transformer_ipa.int4.onnx";
+const MODEL_NAME = MODEL.split("/").pop();
 const MODELS = {
-  "/models/omnivoice_transformer_ipa.int4.onnx": "/mnt/data/omnivoice_ipa/onnx_web/omnivoice_transformer_ipa.int4.onnx",
-  "/models/omnivoice_transformer_ipa.int4.onnx.data": "/mnt/data/omnivoice_ipa/onnx_web/omnivoice_transformer_ipa.int4.onnx.data",
+  [`/models/${MODEL_NAME}`]: MODEL,
+  [`/models/${MODEL_NAME}.data`]: MODEL + ".data",
   "/models/higgs_decoder.onnx": "/mnt/data/Programming/vernacula/scripts/omnivoice_export/onnx/higgs_decoder.onnx",
   "/models/tokenizer.json": "/mnt/data/models/omnivoice/k2-fsa-OmniVoice/tokenizer.json",
 };
@@ -41,10 +43,13 @@ try{
 
   // 2. synthesize
   const mod = await import("/app/omnivoice.js");
+  if (${JSON.stringify(process.env.EP ?? null)}) mod.setForcedEp(${JSON.stringify(process.env.EP ?? null)});
+  if (${JSON.stringify(process.env.GRAPH_OPT ?? null)}) mod.setGraphOpt(${JSON.stringify(process.env.GRAPH_OPT ?? null)});
+  if (${JSON.stringify(process.env.DECODER_EP ?? null)}) mod.setDecoderEp(${JSON.stringify(process.env.DECODER_EP ?? null)});
   const t0 = performance.now();
   const ov = await mod.OmniVoice.load({
-    transformerUrl: "/models/omnivoice_transformer_ipa.int4.onnx",
-    transformerDataUrl: "/models/omnivoice_transformer_ipa.int4.onnx.data",
+    transformerUrl: "/models/${MODEL_NAME}",
+    transformerDataUrl: "/models/${MODEL_NAME}.data",
     decoderUrl: "/models/higgs_decoder.onnx",
     tokenizerUrl: "/models/tokenizer.json",
     voicesUrl: "/models/voices.json",

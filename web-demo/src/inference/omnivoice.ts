@@ -35,6 +35,36 @@ export interface Voice {
 
 export interface Backend { ep: "webgpu" | "wasm"; }
 
+/** Force an execution provider (tests/debugging). Unset = auto. */
+export let forcedEp: "webgpu" | "wasm" | undefined;
+export function setForcedEp(ep: "webgpu" | "wasm" | undefined) { forcedEp = ep; }
+
+/**
+ * Execution provider for the DECODER only.
+ *
+ * ⚠ DEFAULTS TO WASM EVEN WHEN THE TRANSFORMER IS ON WebGPU, and that is a correctness fix rather
+ * than a preference. Running the Higgs codec decoder on WebGPU garbles the audio — measured, with
+ * everything else held fixed: transformer WebGPU + decoder WebGPU gave peak 0.394 / rms 0.055 and
+ * was audibly bad, while transformer WebGPU + decoder WASM gave peak 0.530 / rms 0.066, byte-for-
+ * byte the same figures as an all-WASM run, which was listen-confirmed perfect.
+ *
+ * It is NOT the transformer: one forward pass with identical inputs agrees between the two
+ * providers to max |Δlogit| 2e-4 with 100.000% argmax agreement. The transformer is attention over
+ * a quantized MatMulNBits graph; the decoder is a convolutional DAC, and ORT's WebGPU conv kernels
+ * are what diverge.
+ *
+ * The cost is negligible: the transformer runs 64 times per generation (32 steps x 2 CFG passes)
+ * and the decoder once, so this buys correctness for about 1 s out of 20.
+ */
+export let decoderEp: "webgpu" | "wasm" | undefined = "wasm";
+export function setDecoderEp(ep: "webgpu" | "wasm" | undefined) { decoderEp = ep; }
+
+/** Graph optimization level override (tests/debugging). Fusions change numerics, and this loop is
+ *  precision-sensitive — the C# CUDA path disables TF32 for the same reason. */
+type GraphOpt = NonNullable<ort.InferenceSession.SessionOptions["graphOptimizationLevel"]>;
+export let graphOpt: GraphOpt = "all";
+export function setGraphOpt(l: GraphOpt) { graphOpt = l; }
+
 export interface LoadOptions {
   transformerUrl: string;
   transformerDataUrl?: string;
@@ -57,12 +87,13 @@ export class OmniVoice {
 
   static async load(o: LoadOptions): Promise<OmniVoice> {
     initOrt();
-    const ep = await pickExecutionProvider();
+    const ep = forcedEp ?? await pickExecutionProvider();
+    if (ep === "webgpu") await useMaxLimitsDevice();
     o.onProgress?.(`execution provider: ${ep}`);
 
     const opts: ort.InferenceSession.SessionOptions = {
       executionProviders: [ep],
-      graphOptimizationLevel: "all",
+      graphOptimizationLevel: graphOpt,
     };
 
     o.onProgress?.("downloading transformer");
@@ -78,7 +109,9 @@ export class OmniVoice {
 
     o.onProgress?.("downloading decoder");
     const dBytes = await o.fetchBytes(o.decoderUrl, "decoder");
-    const decoder = await ort.InferenceSession.create(dBytes, { executionProviders: [ep], graphOptimizationLevel: "all" });
+    const dEp = decoderEp ?? ep;
+    o.onProgress?.(`decoder provider: ${dEp}`);
+    const decoder = await ort.InferenceSession.create(dBytes, { executionProviders: [dEp], graphOptimizationLevel: graphOpt });
 
     const tokenizer = await Qwen3Tokenizer.load(o.tokenizerUrl);
     const voices: Voice[] = await (await fetch(o.voicesUrl)).json();
@@ -120,9 +153,15 @@ export class OmniVoice {
 
   private async runTransformer(ids: BigInt64Array, audioMask: Uint8Array,
                                attn: Uint8Array, seq: number): Promise<Float32Array> {
+    // ⚠ COPY THE INPUT, DO NOT HAND OVER THE LIVE BUFFER. The diffusion loop mutates input_ids in
+    // place every step and would otherwise pass the same backing array each time. The C# port hit
+    // exactly this on CUDA: a bound tensor uploads to the device ONCE, and in-place mutation
+    // between runs is ignored, so every step silently re-ran on the step-0 all-mask input
+    // (docs/omnivoice_onnx_investigation.md, "IO-binding root cause"). A fresh copy per call costs
+    // a few hundred KB and removes the whole class of bug.
     const feeds = {
-      input_ids: new ort.Tensor("int64", ids, [1, NUM_CODEBOOKS, seq]),
-      audio_mask: new ort.Tensor("bool", audioMask, [1, seq]),
+      input_ids: new ort.Tensor("int64", ids.slice(), [1, NUM_CODEBOOKS, seq]),
+      audio_mask: new ort.Tensor("bool", audioMask.slice(), [1, seq]),
       attention_mask: new ort.Tensor("bool", attn, [1, 1, seq, seq]),
     };
     const out = await this.transformer.run(feeds);
@@ -145,6 +184,34 @@ export class OmniVoice {
  * 8-thread WASM (~20.7 s). Firefox's WebGPU was SLOWER than WASM and flat in sequence length, so
  * probing for an adapter is not enough on its own — the UI reports which path it got.
  */
+/**
+ * Hand ORT a device built with the adapter's MAXIMUM limits.
+ *
+ * ⚠ WebGPU's `requestDevice()` grants DEFAULT limits — maxBufferSize 268 MB — however large the
+ * adapter's maximum, and ORT takes the default. A model with any single tensor above that kills the
+ * device with "Out of memory" on a GPU with tens of GB free. This build's largest tensor is 155 MB
+ * so it clears the default, but that is luck rather than design, and it forecloses larger models.
+ */
+interface AdapterLike {
+  limits: { maxBufferSize: number; maxStorageBufferBindingSize: number };
+  requestDevice(d?: { requiredLimits?: Record<string, number> }): Promise<unknown>;
+}
+
+async function useMaxLimitsDevice(): Promise<void> {
+  try {
+    const gpu = (navigator as unknown as { gpu?: { requestAdapter(): Promise<AdapterLike | null> } }).gpu;
+    const adapter = await gpu?.requestAdapter();
+    if (!adapter) return;
+    const device = await adapter.requestDevice({
+      requiredLimits: {
+        maxBufferSize: adapter.limits.maxBufferSize,
+        maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize,
+      },
+    });
+    (ort.env.webgpu as unknown as { device?: unknown }).device = device;
+  } catch { /* fall back to ORT's own default-limits device */ }
+}
+
 export async function pickExecutionProvider(): Promise<"webgpu" | "wasm"> {
   try {
     const gpu = (navigator as unknown as { gpu?: { requestAdapter(): Promise<unknown> } }).gpu;

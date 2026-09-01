@@ -145,8 +145,14 @@ export async function runDiffusion(
       // Top-k by score, ties broken by flat index cb*T+t ASCENDING — matching the row-major
       // flatten Python's topk operates on. A different tie-break commits different tokens.
       for (let i = 0; i < C * T; i++) order[i] = i;
-      const ord = Array.from(order).sort((a, b) =>
-        score[a] !== score[b] ? score[b] - score[a] : a - b);
+      // ⚠ COMPARE, DO NOT SUBTRACT. Committed slots carry -Infinity, and `score[b] - score[a]`
+      // is NaN when both are -Infinity — a comparator returning NaN leaves the sort order
+      // undefined, so the top-k picks arbitrary slots and the token field degrades. The C#
+      // uses CompareTo, which orders infinities correctly.
+      const ord = Array.from(order).sort((a, b) => {
+        if (score[a] !== score[b]) return score[a] > score[b] ? -1 : 1;   // descending by score
+        return a - b;                                                     // ties: flat index ascending
+      });
       for (let i = 0; i < k && i < ord.length; i++) tokens[ord[i]] = pred[ord[i]];
 
       // Write the whole field back into both passes for the next step.

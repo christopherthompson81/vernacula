@@ -502,3 +502,125 @@ pipeline, which cannot resolve a dynamic import of a file in `public/`.
 
 `tokenizer.json` (11 MB) was missing from the HF repo — a browser has nowhere else to get it — so it
 is published there now alongside the model.
+
+---
+
+## Run 11 — 2026-09-01, int4 has quirks, and the EP moves the output too
+
+**⚠ CORRECTION TO RUN 4.** Run 4 recorded "all the outputs are fine" for the 2x2 and for both
+embedding variants, and locked w4+emb-int8 on that basis. On further listening the user reports the
+int4 build "has quirks — it might be quantized too much". The earlier verdict came from **one
+sentence per variant**; quantization damage that a single short clip hides is exactly the failure
+mode a one-shot listening test has. Treat Run 4's approval as provisional and superseded here.
+
+**Two independent effects were being conflated, and they are now separated:**
+
+1. **The execution provider changes the output.** Identical input, identical model, same port:
+
+       WebGPU (Chrome/Dawn)  peak 0.3799  rms 0.0488   generate 10.0 s
+       WASM   (fp32)         peak 0.4840  rms 0.0617   generate 83.7 s
+
+   Not a subtle difference — the diffusion loop is precision-sensitive and lands on a different
+   token field. This is the same phenomenon as the earlier TF32/fp16 results, now reproduced in the
+   browser. Whatever model is chosen, WASM and WebGPU need separate listening.
+
+2. **A comparator bug in the port, found and fixed, that turned out NOT to be the cause.**
+   `sort((a,b) => score[b] - score[a])` returns **NaN** when both slots carry `-Infinity`
+   (already-committed slots), and a NaN comparator leaves the sort order undefined — so the top-k
+   could commit arbitrary slots. The C# uses `CompareTo`, which orders infinities correctly. Fixed
+   to an explicit comparison. ⚠ Output was **identical to four decimals** afterwards (peak 0.3799,
+   rms 0.0488), so this was a latent bug rather than the audible defect. Worth keeping fixed; not
+   worth crediting with the symptom.
+
+**The ladder now under test**, all generated through the C# CLI on CPU — the reference path — with
+the same longer sentence and reference clip, so quantization is the only variable:
+
+| clip | weights | embedding | size |
+|---|---|---|---|
+| a | fp32 | fp32 | 2452 MB (ground truth) |
+| b | **int8** block-32 | int8 per-row | 696 MB |
+| c | int4 block-32 | **fp16** | 626 MB |
+| d | int4 block-32 | int8 per-row | 472 MB |
+
+Three-way discrimination by design: b clean + d not -> weight width; c clean + d not -> the int8
+embedding; both clean -> both contribute. Pending listening.
+
+⚠ Note the method change: one sentence per variant is what produced the wrong answer in Run 4, so
+the sentence here is longer and the comparison is against an fp32 control in the same batch rather
+than against memory of an earlier clip.
+
+---
+
+## Run 12 — 2026-09-01, TWO defects: 16 steps, and the DECODER on WebGPU
+
+The browser output was degraded for two unrelated reasons, and separating them took eliminating
+most of a page of plausible causes. Recording the dead ends, because several were expensive.
+
+### Defect 1 — 16 diffusion steps
+
+`NUM_STEPS` was set to 16 to halve browser latency. Every clip the user called fine had been
+generated at **32** (the CLI default, never overridden); every clip called quirky was at 16 — the
+ladder in Run 11 used `--num-step 16`, and so did the browser. Same text, voice, model and provider;
+step count was the only variable. **Fixed: 32.** ⚠ This also invalidates Run 11's ladder, which was
+comparing quantization levels while unknowingly varying step count.
+
+### Defect 2 — the Higgs decoder on WebGPU
+
+With steps fixed, the browser was still wrong on WebGPU and perfect on WASM. The decisive
+measurement was NOT a listening test:
+
+    one forward pass, identical inputs, WASM vs WebGPU:
+      max |Δlogit| = 0.0002   mean = 0.00002   argmax agreement = 100.000%
+
+The transformer kernels agree. So the transformer could not be producing a different token field —
+which pointed at the only other graph in the pipeline. Splitting the providers settled it:
+
+| transformer | decoder | peak / rms | verdict |
+|---|---|---|---|
+| WebGPU | WebGPU | 0.394 / 0.055 | bad |
+| WebGPU | **WASM** | **0.530 / 0.066** | **perfect** (user-confirmed) |
+| WASM | WASM | 0.530 / 0.066 | perfect (user-confirmed) |
+
+The split run reproduces the all-WASM figures exactly, so the token field was always fine: **ORT's
+WebGPU convolution kernels garble the codec decoder.** The transformer is attention over a quantized
+MatMulNBits graph; the decoder is a convolutional DAC.
+
+**Fixed, and nearly free:** the decoder defaults to WASM even when the transformer is on WebGPU. The
+transformer runs 64 times per generation (32 steps x 2 CFG passes), the decoder once — 20.6 s vs
+19.5 s, about 1 s for correctness.
+
+### Dead ends, in the order they were eliminated
+
+- **Quantization.** The user reported the same quirks on the UNQUANTIZED fp32 model, which
+  exonerated int4 outright and is what redirected the search. Run 11's "int4 is quantized too far"
+  framing is **withdrawn**.
+- **Symbol coverage.** Every symbol in the target AND reference IPA is in the en_us training corpus
+  at healthy counts (`ᵻ` 2098, `ɫ` 4181, `æ` 5561).
+- **Phonemizer drift.** **58/60 identical** to the actual training text. ⚠ A first attempt said
+  0/60 — it compared against `work/phonemized_vernacula/byid/en_us.tsv`, an older artifact with
+  punctuation STRIPPED, while the training shards keep it. Wrong reference, not a finding.
+- **Sync vs async phonemization.** Identical for this sentence; every word is in the dictionary and
+  the BiLSTM only fires on the OOV tail. Still a real hazard elsewhere — upstream's neural tier
+  degrades to the sync reading SILENTLY when a model is missing.
+- **A NaN comparator in the port.** `sort((a,b) => score[b] - score[a])` is NaN when both slots are
+  `-Infinity`, leaving the order undefined. Genuine bug, fixed — but output was identical to four
+  decimals, so it was latent, not the symptom.
+- **Input-buffer staleness.** The loop mutates `input_ids` in place, which is exactly the CUDA
+  IO-binding bug from `omnivoice_onnx_investigation.md`. Copying per call changed nothing;
+  ORT-web copies anyway. Kept, because the class of bug is real and the copy is cheap.
+- **Graph optimization level.** `disabled` and `basic` made no difference.
+- **`enableFp16Precision`.** Looked like the knob; it is a **QNN** option, not WebGPU. ORT 1.29's
+  WebGPU EP exposes only `preferredLayout` and `enableGraphCapture`, and Chrome's NVIDIA adapter
+  reports `shader-f16: false` anyway.
+
+### Two facts worth keeping
+
+- **ORT's WebGPU `MatMulNBits` supports only 2-bit and 4-bit.** An int8-weight model fails at
+  session creation there ("Only 2b and 4b quantization is supported"), so int4 is not merely the
+  smallest option on WebGPU — it is the only quantized one.
+- **An fp32 model cannot load in a browser at all**: its 2.45 GB sidecar exceeds the ~2 GB
+  ArrayBuffer limit, and the fetch fails outright.
+
+Also applied while here: the app now hands ORT a device built with the adapter's MAXIMUM limits
+(Run 7's finding, which had been recorded but never wired into the app). This build's largest tensor
+is 155 MB and clears the 268 MB default, but that was luck rather than design.

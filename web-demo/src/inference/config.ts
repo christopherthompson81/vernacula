@@ -85,5 +85,13 @@ export const MODELS = {
   voicesUrl: "/models/voices.json",
 } as const;
 
-/** Diffusion steps. 32 is the desktop default; 16 halves browser latency at some quality cost. */
-export const NUM_STEPS = 16;
+/**
+ * Diffusion steps.
+ *
+ * ⚠ 32, NOT 16 — and this is a quality setting, not a performance knob. 16 was tried to halve
+ * browser latency and the output came back audibly degraded ("quirks"), on the FP32 model as well
+ * as the quantized ones, which is how it was told apart from quantization damage. The same
+ * sentence, same voice, same model and same execution provider is clean at 32 and quirky at 16.
+ * The desktop CLI has always defaulted to 32; matching it is what makes the browser sound the same.
+ */
+export const NUM_STEPS = 32;
