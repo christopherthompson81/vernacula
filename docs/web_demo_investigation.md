@@ -384,3 +384,61 @@ w4+emb-int8 build, whose 155 MB largest tensor clears even the default cap.
 ⚠ **Caveat on generality.** These numbers are one machine, one GPU, one browser. A visitor on
 Firefox gets the 48 s path, and one without WebGPU at all gets 20.7 s on WASM — so the fallback is
 not decorative, and the UI needs to say which path it is on rather than silently being 17x slower.
+
+---
+
+## Run 9 — 2026-09-01, the phonemizer runs in the browser, and its IPA is byte-identical
+
+Upstream implemented #1245 (and #1247, publishing the asset tree as `vernacula-phonemizer-data`).
+Submodule moved 2855070f -> 34541a5b. C# port unaffected: solution builds, parity gate still
+**4 languages byte-identical, 800 rows**.
+
+**The seams, as shipped:** `setDataSource({read(key): Uint8Array})` — synchronous, as the issue
+insisted — plus `setOrtLoader(() => import("onnxruntime-web"))`, both re-exported from a new
+`src/browser.ts` whose `loadEngine()` hides the engine behind a dynamic import. That indirection is
+load-bearing: `registry.ts` reads 182 manifests at MODULE SCOPE, so a static import would run them
+before the consumer's `setDataSource()` call. Upstream also built the recording tool
+(`tools/browser-prefetch.mts`) rather than a declared manifest, for the reason the issue gave — a
+missing optional table is not an error to the engine, it is an empty Map and a plausible wrong
+reading.
+
+**⚠ The one constraint that shapes the build: keys come from `import.meta.url`.** `dataPath.ts`
+slices after the last `/src/`, so a bundler rewriting module URLs to chunk names erases the only
+thing naming the data (it throws rather than guessing). That rules out letting Vite bundle the
+engine. Solution: transpile per-file with esbuild (`bundle: false`) into `public/vphon/src/`,
+preserving the tree, and load it with a dynamic import of an ABSOLUTE URL, which Vite leaves alone.
+`import.meta.url` is then `/vphon/src/languages/welsh/welsh.js` -> key `languages/welsh`. 715
+modules, 4.7 MB of JS; esbuild leaves specifiers verbatim so the explicit `.ts` extensions are
+rewritten to `.js` afterwards. Verified: no `.ts` specifiers and **no `node:` specifiers** anywhere
+in the output.
+
+**Payload, recorded not guessed:**
+
+| phase | files | size |
+|---|---|---|
+| engine (needed for any language) | 182 | 4.46 MB |
+| + `es` | 0 | 0 |
+| + `cy` | 1 | 0.04 MB |
+| + `en` | 7 | 14.59 MB |
+
+English is the outlier because of the BiLSTM and its lexicons. `es`+`cy`+`en` together stage 190
+files / 19.1 MB — against 151 MB for the whole tree.
+
+**Cross-engine verification, which is the point of the run.** Running in headless Firefox through
+both seams, against the same sentences the C# CLI rendered earlier:
+
+    [es] bwˈenos ðˈias . el tjˈempo estˈa mˈuᶦ aɣɾaðˈaβle ˈoᶦ .        (8 ms)
+    [cy] bˈɔrɛ dˈaː . krˈɔᶤsɔ ˈiː ɡˈəmrɨ .                              (12 ms)
+    [en] həlˈoᶷ wˈɝɫd . ðɪs ɪz ðə vɚnˈækjələ tʰˈɛkst tʰuː spˈiːt͡ʃ pʰˈaᶦplaᶦn .  (501 ms)
+
+**Byte-identical to the C# CLI output on all three.** So TypeScript-in-browser, the C# port, and the
+engine that phonemized the training corpus all agree. Prefetch 152 ms, `loadEngine()` 517 ms; the
+501 ms for English is the first call pulling the BiLSTM through ORT, not per-phrase cost.
+
+Kept: `tools/build-phonemizer.mjs`, `tools/stage-phonemizer-data.mjs` (wraps the upstream recorder,
+one child process per language), `tools/smoke-phonemizer.mjs` (the cross-engine check above).
+`public/vphon/` and `public/vphon-data/` are generated, and gitignored.
+
+**Remaining for the demo:** the diffusion loop in TypeScript (a port of
+`Chatterbox.Base.OmniVoiceTts.RunDiffusion`) and the React UI. The graphs themselves are just
+`session.run`.

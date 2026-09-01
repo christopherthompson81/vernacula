@@ -5,10 +5,13 @@
   "type": "module",
   "description": "Browser demo: text -> canonical IPA -> speech, entirely client-side",
   "scripts": {
+    "build:phonemizer": "node tools/build-phonemizer.mjs",
+    "build:phonemizer-data": "node tools/stage-phonemizer-data.mjs",
     "copy-wasm": "node -e \"const fs=require('fs');fs.readdirSync('node_modules/onnxruntime-web/dist').filter(f=>f.endsWith('.wasm')).forEach(f=>fs.copyFileSync('node_modules/onnxruntime-web/dist/'+f,'public/'+f))\"",
-    "dev": "npm run copy-wasm && vite",
-    "build": "npm run copy-wasm && tsc && vite build",
-    "preview": "vite preview"
+    "dev": "npm run build:phonemizer && npm run copy-wasm && vite",
+    "build": "npm run build:phonemizer && npm run copy-wasm && tsc && vite build",
+    "preview": "vite preview",
+    "smoke:phonemizer": "node tools/smoke-phonemizer.mjs"
   },
   "dependencies": {
     "onnxruntime-web": "^1.20.1",
@@ -20,6 +23,7 @@
     "@types/react-dom": "^18.3.1",
     "@vitejs/plugin-react": "^4.3.3",
     "typescript": "^5.6.3",
-    "vite": "^6.0.3"
+    "vite": "^6.0.3",
+    "esbuild": "^0.24.0"
   }
 }
