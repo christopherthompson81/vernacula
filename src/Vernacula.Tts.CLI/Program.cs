@@ -188,15 +188,6 @@ internal static class Program
         {
             Console.Error.WriteLine($"--diff not found: {diffPath}"); return 1;
         }
-        // OmniVoiceDiff reads the base weights as fp32 (ReadFloat32) and adds ΔWᵀ in place, so a
-        // quantized transformer would be reinterpreted as fp32 and folded into garbage — silently,
-        // since the graph still runs. Refuse rather than emit noise.
-        if (diffPath is not null && transformerFile is not null && transformerFile != OmniVoice.TransformerFile)
-        {
-            Console.Error.WriteLine($"--transformer-file {transformerFile} cannot be combined with the IPA diff: "
-                + "the fold assumes fp32 base weights. Use the fp32 transformer, or --no-diff.");
-            return 2;
-        }
 
         var epEnum = ep switch
         {
@@ -205,33 +196,12 @@ internal static class Program
             _ => ExecutionProvider.Auto,
         };
 
-        // ⚠ The load-time fold is CPU-ONLY, and fails SILENTLY anywhere else.
-        // OmniVoiceDiff hands ORT the folded weights through SessionOptions.AddInitializer, which
-        // supplies them from CPU memory. When the session is planned on CUDA, ORT rejects every one
-        // — "Cannot use user supplied initializer <name> because the ORT planned memory location
-        // device is different from what is supplied", 197 of them — and quietly falls back to the
-        // base graph's own initializers. Measured: --ep cuda with the diff is BIT-IDENTICAL to
-        // --no-diff (max abs sample difference 0.0000), i.e. stock orthographic OmniVoice reading
-        // IPA. Nothing about that is audible as an error; it just sounds wrong. So refuse it.
-        if (diffPath is not null && epEnum == ExecutionProvider.Cuda)
-        {
-            Console.Error.WriteLine(
-                "--ep cuda cannot be combined with the IPA diff: the fold supplies CPU initializers, which ORT\n"
-                + "rejects when it plans the session on CUDA — silently falling back to the base model. Either:\n"
-                + "  --ep cpu                                     fold the diff (correct, ~15 s for 4 s of audio)\n"
-                + "  --no-diff --transformer-file <merged.onnx>   a PRE-MERGED IPA transformer, which needs no\n"
-                + "                                               fold and runs on CUDA (~3x real-time)");
-            return 2;
-        }
-        // Same trap via --ep auto, which resolves to CUDA where it is available. Take CPU rather
-        // than let the fold evaporate.
-        if (diffPath is not null && epEnum == ExecutionProvider.Auto)
-        {
-            Console.WriteLine("note: using CPU — the IPA diff's load-time fold only applies on CPU "
-                + "(pass --ep cuda to see the alternatives).");
-            epEnum = ExecutionProvider.Cpu;
-            ep = "cpu";
-        }
+        // ⚠ THE DIFF MUST BE APPLIED TO THE GENUINE BASE, and nothing here can check that for you.
+        // The diff is a LoRA plus absolute replacement embedding rows; applied to weights that are
+        // not the base OmniVoice checkpoint it produces a plausible-looking model that is quietly
+        // wrong. Measured: the per-row delta distributions for a right and a wrong base overlap
+        // (median 0.0086 vs 0.0124), so there is no self-check to derive from the diff's contents.
+        // Point --transformer-file at the base whose weights match the k2-fsa/OmniVoice checkpoint.
 
         // ── Text → IPA ────────────────────────────────────────────────────────────────────────
         string sourceText;
@@ -435,8 +405,10 @@ internal static class Program
                                   Defaults to ipa_diff_v6.onnx in --onnx-dir.
           --no-diff               Run the stock orthographic model. IPA input will NOT be read as
                                   phonemes; this is for A/B comparison, not for synthesis.
-          --transformer-file <n>  A transformer variant (e.g. omnivoice_transformer_fp16.onnx).
-                                  Incompatible with --diff, which folds fp32 weights.
+          --transformer-file <p>  The transformer to use; an absolute path is honoured. With --diff
+                                  this MUST be the base whose weights match the k2-fsa/OmniVoice
+                                  checkpoint — the diff carries no fingerprint, so a mismatched base
+                                  yields a quietly wrong model rather than an error.
 
         Generation:
           --out <wav>             Output path (24 kHz mono float32 WAV). Required.
@@ -444,6 +416,8 @@ internal static class Program
           --target-tokens <n>     Override the duration estimate (25 tokens ≈ 1 s).
           --ep cpu|cuda|auto      Execution provider (default auto). CUDA runs full fp32; TF32 is
                                   disabled because the diffusion loop degrades into noise under it.
+                                  The IPA diff works on every provider (it is a graph rewrite, not a
+                                  weight fold), so CUDA needs no pre-merged model.
           --verbose, -v           Per-graph load times, the IPA, and diffusion timings.
 
         Examples:

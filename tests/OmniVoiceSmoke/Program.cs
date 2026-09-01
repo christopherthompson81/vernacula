@@ -17,6 +17,7 @@ using System.Diagnostics;
 using Chatterbox.Base;
 using NAudio.Wave;
 using Vernacula.Base;
+using Vernacula.Base.Inference;
 using Vernacula.Base.Models;
 
 namespace Vernacula.OmniVoiceSmoke;
@@ -26,7 +27,7 @@ internal static class Program
     private static int Main(string[] args)
     {
         if (args.Length > 0 && args[0] == "--fold-selftest")
-            return FoldSelfTest(args[1], args[2], args[3]);
+            return FoldSelfTest(args[1], args[2], args[3], args.Length > 4 ? args[4] : "cpu");
 
         string onnxDir = "scripts/omnivoice_export/onnx";
         string modelDir = "/mnt/data/models/omnivoice/k2-fsa-OmniVoice";
@@ -159,19 +160,34 @@ internal static class Program
         return x.Length == 0 ? 0f : (float)Math.Sqrt(s / x.Length);
     }
 
-    /// <summary>Validate the C# load-time fold: run the BASE transformer with the diff applied via
-    /// SessionOptions.AddInitializer, vs the Python-folded MERGED transformer, on the same input;
-    /// they must match. Args: base.onnx diff.onnx merged.onnx</summary>
-    private static int FoldSelfTest(string baseOnnx, string diffOnnx, string mergedOnnx)
+    /// <summary>Validate the C# graph rewrite: run the BASE transformer with the diff applied as
+    /// LoRA nodes, vs the Python-folded MERGED transformer, on the same input; they must agree.
+    /// Args: base.onnx diff.onnx merged.onnx [ep]
+    ///
+    /// ⚠ PASS THE EP. This test previously ran only on an implicit-CPU `new SessionOptions()`,
+    /// which is exactly why the old AddInitializer fold's total failure on CUDA went unnoticed
+    /// until it reached a listening test. A device argument is the point of the test now.</summary>
+    private static int FoldSelfTest(string baseOnnx, string diffOnnx, string mergedOnnx, string ep = "cpu")
     {
-        Console.WriteLine("fold self-test: base+diff (C#) vs merged (Python)");
-        using var diff = new Chatterbox.Base.OmniVoiceDiff();
-        var opts = new Microsoft.ML.OnnxRuntime.SessionOptions();
+        Console.WriteLine($"diff self-test ({ep}): base+diff (C# graph rewrite) vs merged (Python)");
+        var epEnum = ep.ToLowerInvariant() switch
+        {
+            "cuda" => ExecutionProvider.Cuda,
+            "cpu" => ExecutionProvider.Cpu,
+            _ => ExecutionProvider.Auto,
+        };
+        var diff = new Chatterbox.Base.OmniVoiceDiff();
+        var opts = OrtSessionBuilder.Create(epEnum,
+            Microsoft.ML.OnnxRuntime.GraphOptimizationLevel.ORT_ENABLE_ALL,
+            enableProfiling: false, out _, disableTf32: true);
         var sw = System.Diagnostics.Stopwatch.StartNew();
-        diff.ApplyTo(opts, baseOnnx, diffOnnx);
-        Console.WriteLine($"  fold (parse + read ranges + AddInitializer): {sw.ElapsedMilliseconds} ms");
-        using var folded = new Microsoft.ML.OnnxRuntime.InferenceSession(baseOnnx, opts);
-        using var merged = new Microsoft.ML.OnnxRuntime.InferenceSession(mergedOnnx);
+        using var folded = diff.CreateSession(opts, baseOnnx, diffOnnx);
+        Console.WriteLine($"  rewrite + load: {sw.ElapsedMilliseconds} ms "
+            + $"({diff.PatchedModules} modules, {diff.PatchedEmbedRows} embed rows)");
+        var mopts = OrtSessionBuilder.Create(epEnum,
+            Microsoft.ML.OnnxRuntime.GraphOptimizationLevel.ORT_ENABLE_ALL,
+            enableProfiling: false, out _, disableTf32: true);
+        using var merged = new Microsoft.ML.OnnxRuntime.InferenceSession(mergedOnnx, mopts);
 
         // small synthetic input; only need identical input to both sessions to compare outputs
         const int S = 16, C = 8, twoB = 2;

@@ -39,9 +39,6 @@ public sealed class OmniVoice : IDisposable
     private readonly InferenceSession _transformer;
     private readonly InferenceSession _encoder;
     private readonly InferenceSession _decoder;
-    // Non-null only when loaded with an IPA diff; its OrtValues back the folded transformer
-    // initializers and must outlive _transformer (disposed after it).
-    private readonly OmniVoiceDiff? _diff;
 
     public OmniVoice(string onnxDir, ExecutionProvider ep, SessionLoadObserver? onLoad = null,
                      string? transformerFile = null, string? diffPath = null)
@@ -55,17 +52,17 @@ public sealed class OmniVoice : IDisposable
         }
         else
         {
-            // IPA fine-tune as a load-time fold: build a SessionOptions with the same EP/TF32
-            // setup as the cached path, register the folded initializers on it, then create the
-            // session directly. The disk cache is bypassed — it keys on the file, not on the
-            // AddInitializer overrides, so a cached graph would silently serve the base weights.
-            _diff = new OmniVoiceDiff();
+            // IPA fine-tune applied as a graph rewrite (see OmniVoiceDiff): the LoRA becomes nodes
+            // and the base weights are left alone, so this works on every EP. Build a SessionOptions
+            // with the same EP/TF32 setup as the cached path, then create the session from the
+            // patched model. The disk cache is bypassed — it keys on the file, not on the diff, so
+            // a cached graph would silently serve the un-patched base.
+            var diff = new OmniVoiceDiff();
             var sw = Stopwatch.StartNew();
             var opts = OrtSessionBuilder.Create(
                 ep, GraphOptimizationLevel.ORT_ENABLE_ALL, enableProfiling: false,
                 out var usedCuda, disableTf32: true);
-            _diff.ApplyTo(opts, transformerPath, diffPath);
-            _transformer = new InferenceSession(transformerPath, opts);
+            _transformer = diff.CreateSession(opts, transformerPath, diffPath);
             sw.Stop();
             onLoad?.Invoke(new SessionLoadEvent(
                 Path.GetFileName(transformerPath), sw.ElapsedMilliseconds, CacheHit: false,
@@ -159,6 +156,5 @@ public sealed class OmniVoice : IDisposable
         _encoder.Dispose();
         _decoder.Dispose();
         // After the session — its initializers alias the diff's OrtValue-backed arrays.
-        _diff?.Dispose();
     }
 }

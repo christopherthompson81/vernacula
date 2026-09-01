@@ -346,3 +346,90 @@ warning (>1500 tokens) is unchanged.
 synthesis matters, that is a corpus gap to fill deliberately (0.21% under 3 s), not an inference
 knob. Worth noting alongside it that FLEURS is read news prose — so short *conversational* register
 is doubly absent.
+
+
+---
+
+## Run 8 — 2026-09-01, fixing the CUDA diff, and the wrong base it uncovered
+
+**Question:** can the load-time diff be made to work on CUDA at all?
+
+**Why the old approach could not be patched.** It folded ΔW into each weight matrix and passed the
+results through `SessionOptions.AddInitializer`. That is CPU-only by ORT's design — a user-supplied
+initializer must be a CPU tensor — and there is no allocator to hand it device memory before a
+session exists. So the fix had to stop supplying initializers entirely.
+
+**Fix — apply the LoRA as GRAPH NODES rather than as a weight fold.** Rank is 16, so the factors
+are tiny; only the folded product is large. Rewriting instead of folding keeps them factored:
+
+- each `MatMul(x, W) -> Y` becomes `MatMul(x, W) -> Y__lora_base`, `MatMul(x, Aᵀ) -> t`,
+  `MatMul(t, scale·Bᵀ) -> d`, `Add(Y__lora_base, d) -> Y`. Renaming the original output and letting
+  the Add produce the original name means no consumer is rewired.
+- embed_tokens gains a sparse additive correction: a compact `(changed+1, hidden)` delta table with
+  a zero row 0, plus a `(vocab,)` int32 map, as `Gather(map, ids) -> sel`,
+  `Gather(delta, sel) -> corr`, `Add(G__lora_base, corr) -> G`. The diff's embed_rows are absolute
+  replacements, so the delta is computed here by seeking to the 5,572 changed rows rather than
+  reading the whole 621 MB table.
+- nodes are inserted at the original node's position, not appended: appending puts the Add after
+  its own consumers and breaks topological order.
+
+The patched model is handed to ORT as a byte buffer with
+`session.model_external_initializers_file_folder_path` pointing at the directory holding the base
+`.onnx.data`, which is never touched. Cost: ~86 MB added to a 1.5 MB proto (the fp16 LoRA factors
+widened to fp32 to match the graph, plus the embed delta), against 2.45 GB for a merged file.
+
+**⚠ The first self-test failed, and the bug was not in the rewrite.** 58.594% argmax agreement
+against the merged model on BOTH devices. Chasing it ruled out, in order: LoRA orientation
+(verified algebraically and numerically — `dW = scale·(B@A)`, transposed, is right); weight tying
+(embed_tokens has exactly one consumer, so a Gather patch is equivalent to replacing the
+initializer); a checkpoint mismatch (diff and merged are both checkpoint-4000, written in the same
+minute).
+
+**What it actually was: two different "base" transformers, and the CLI was using the wrong one.**
+`apply_diff.py` builds the merged model from `/mnt/data/omnivoice_ipa/onnx_base/omnivoice_transformer.onnx`,
+while `--onnx-dir scripts/omnivoice_export/onnx` holds a different file of the same name. Their
+`.onnx` graph protos are **byte-identical** (same md5) but their `.onnx.data` differ in every
+sampled chunk. Against the HF checkpoint's `llm.embed_tokens.weight` as ground truth:
+
+| file | vs HF |
+|---|---|
+| `onnx_base/omnivoice_transformer.onnx.data` | **0.0 — exact** |
+| `scripts/omnivoice_export/onnx/omnivoice_transformer.onnx.data` | max 0.0383, ALL 151,676 rows differ (median row-max 2.3e-4) |
+
+The tell was arithmetic: the LoRA prediction error against the wrong base (0.0183583) equals the
+base-to-base difference exactly. Not explained by fp16 or bf16 rounding (neither round-trip
+reproduces it, and the file is genuinely fp32) — most likely two snapshots of the upstream model,
+which is a question for the model store, not for this code.
+
+⚠ So every `cpu+diff` clip in Runs 3-7 was generated from a diff applied to non-base weights, with
+a perturbation the same order as the fine-tune delta. That they sounded fine at all is luck, and
+Run 6's noisy Welsh `tts_cy` clip — the one that survived on the merged CUDA path — is most likely
+this, not the short-input effect it was later attributed to.
+
+**Result with the genuine base — PASS on both devices, and better than the old fold:**
+
+| | argmax agreement | max abs Δlogit |
+|---|---|---|
+| old fold (CPU only; noise on CUDA) | 100.000% | 1.06e-2 |
+| graph rewrite, CPU | 100.000% | **1.14e-4** |
+| graph rewrite, CUDA | 100.000% | **6.10e-5** |
+
+Two orders of magnitude better, because the LoRA is never baked into a rounded merged weight — it
+stays factored and is applied in fp32 at runtime. End-to-end audio confirms it:
+
+    CUDA + diff  vs  CUDA + pre-merged : corr +1.00000, max sample diff 0.00000
+    CUDA + diff  vs  CPU  + diff       : corr +1.00000, max sample diff 0.00001
+
+**Negative result — the diff cannot self-check its base.** The obvious guard is the magnitude of
+`embed_rows - base[idx]`, since extract_diff dropped rows below 0.001. Measured, the distributions
+overlap badly (right base: median 0.0086, 6/5572 under threshold; wrong base: median 0.0124,
+10/5572), so no threshold separates them. Not shipped; the CLI documents the requirement instead.
+
+**Consequences:** the CLI's `--ep cuda` guard from Run 3 is removed, the pre-merged transformer is
+no longer needed for CUDA, and `--fold-selftest` now takes an EP argument — it previously ran only
+on an implicit-CPU `new SessionOptions()`, which is precisely why the CUDA failure survived to a
+listening test.
+
+**Still open:** whether `scripts/omnivoice_export/onnx/omnivoice_transformer.onnx.data` should be
+replaced with the checkpoint-matching weights. It is the base for the Phase-1 export parity work
+and the `--no-diff` path, so this is not a file to overwrite on my own judgement.

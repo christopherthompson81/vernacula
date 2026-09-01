@@ -26,6 +26,7 @@ The binary lands at `src/Vernacula.Tts.CLI/bin/Release/net10.0/vernacula-tts`.
 | The three ONNX graphs | `--onnx-dir` (`OMNIVOICE_ONNX_DIR`) | `omnivoice_transformer.onnx` + `.onnx.data`, `higgs_encoder.onnx`, `higgs_decoder.onnx` |
 | Qwen3 `tokenizer.json` | `--model-dir` (`OMNIVOICE_MODEL_DIR`) | the `k2-fsa-OmniVoice` snapshot; or `--tokenizer-json` directly |
 | The IPA fine-tune | `--diff` | defaults to `ipa_diff_v6.onnx` inside `--onnx-dir` |
+| The genuine base | `--transformer-file` | required with `--diff` if `--onnx-dir`'s transformer is not the upstream checkpoint — see the warning below |
 | Phonemizer data | `--data-dir` | defaults to the `external/vernacula-phonemizer/data` submodule |
 
 Model export lives in [`scripts/omnivoice_export`](../scripts/omnivoice_export); the fine-tune
@@ -51,32 +52,38 @@ vernacula-tts --ipa --text "hɛlˈoʊ wˈɜːld." --out out.wav
 
 `--print-ipa` shows exactly what reaches the model — the first thing to check when output is wrong.
 
-## Execution provider — read this before using `--ep cuda`
+## Execution provider
 
-**The IPA diff's load-time fold only works on CPU.** `OmniVoiceDiff` supplies the folded weights
-from CPU memory via `SessionOptions.AddInitializer`; when ORT plans the session on CUDA it rejects
-all 197 of them and falls back to the base graph. Output is then *bit-identical* to running with no
-fine-tune at all — stock orthographic OmniVoice fed IPA, which is inaudible as an error and simply
-sounds wrong. The CLI refuses that combination rather than let it happen, and `--ep auto` takes CPU.
-
-**The recommended path is CUDA with a pre-merged IPA transformer** — listen-confirmed equal in
-quality to the CPU fold and roughly 10x faster. It needs no fold, so nothing gets rejected:
-
-```bash
-vernacula-tts --lang en --text "..." --ep cuda --no-diff \
-  --transformer-file /path/to/omnivoice_transformer_ipa_v6.onnx --out out.wav
-```
+The IPA diff is applied as a **graph rewrite**, not a weight fold: the LoRA becomes MatMul/Add
+nodes and the embedding correction a pair of Gathers, so the base weights are never replaced and
+ORT loads them from the untouched `.onnx.data` on any provider. `--ep cuda` works, and needs no
+pre-merged model.
 
 Measured on an RTX 3090, 32 steps, ~4.4 s of audio:
 
-| path | time | vs real-time | fine-tune active |
-|---|---|---|---|
-| CPU + folded diff | ~15–18 s | 0.2–0.3× | yes |
-| CUDA + pre-merged transformer | ~1.5 s | ~3× | yes |
-| CUDA + folded diff | ~1.4 s | ~3× | **no — silently the base model, which outputs noise** (refused) |
+| path | time | vs real-time |
+|---|---|---|
+| CPU + diff | ~16 s | 0.3× |
+| CUDA + diff | ~1.7 s | ~2.5× |
+
+The rewrite reproduces a Python-merged transformer exactly: argmax agreement 100.000%,
+max|Δlogit| 1.1e-4 on CPU and 6.1e-5 on CUDA, and end-to-end audio identical to the merged model
+(max sample difference 0.00000 on CUDA, 0.00001 CPU-vs-CUDA).
 
 CUDA runs full fp32 with TF32 disabled: the diffusion loop is precision-sensitive and degrades into
 noise under TF32. See [`omnivoice_onnx_investigation.md`](omnivoice_onnx_investigation.md).
+
+### ⚠ The diff must be applied to the genuine base
+
+The diff is a LoRA plus **absolute replacement** embedding rows. Applied to weights that are not
+the base OmniVoice checkpoint it yields a plausible-looking model that is quietly wrong — the
+perturbation is the same order as the fine-tune delta itself. There is no self-check: the per-row
+delta distributions for a right and a wrong base overlap (median 0.0086 vs 0.0124), so nothing in
+the diff's contents can detect the mistake.
+
+Point `--transformer-file` at the transformer whose weights match the `k2-fsa/OmniVoice`
+checkpoint. To verify a candidate, compare its `model.llm.embed_tokens.weight` against
+`model.safetensors` in the HF snapshot; the genuine base matches exactly.
 
 ## Languages
 
