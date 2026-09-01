@@ -11,7 +11,13 @@
  * ⚠ setDataSource() must run BEFORE loadEngine(): importing the engine reads 182 manifests at
  * module scope, so a source installed afterwards has already missed them.
  */
-const ENGINE_URL = "/vphon/src/browser.js";
+// ⚠ ASSEMBLED AT RUNTIME, AND THAT IS NOT STYLE. Vite constant-folds a literal specifier, sees it
+// resolves into public/, and refuses to serve it in dev: "This file is in /public and will be
+// copied as-is during build ... should not be imported from source code." `/* @vite-ignore */`
+// alone does not help, because the path is still statically analyzable. Building it from parts
+// makes it opaque to the bundler, which is exactly what we want — the engine must NOT be bundled
+// (its data keys come from import.meta.url; see the note below).
+const ENGINE_URL = ["", "vphon", "src", "browser.js"].join("/");
 const DATA_BASE = "/vphon-data";
 
 type PhonemizeAsync = (text: string, lang: string) => Promise<string>;

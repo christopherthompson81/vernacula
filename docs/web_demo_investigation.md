@@ -624,3 +624,51 @@ transformer runs 64 times per generation (32 steps x 2 CFG passes), the decoder 
 Also applied while here: the app now hands ORT a device built with the adapter's MAXIMUM limits
 (Run 7's finding, which had been recorded but never wired into the app). This build's largest tensor
 is 155 MB and clears the 268 MB default, but that was luck rather than design.
+
+---
+
+## Run 13 — 2026-09-01, the engine cannot live in public/ under Vite dev
+
+**Found by clicking Generate in a real browser — not by any smoke test.** Both existing smokes serve
+`public/` and `build-smoke/` from a plain Node server, so Vite never participates, and the entire
+class of "Vite intercepts this request" bug was invisible to them. First real click:
+
+    Failed to load url /vphon/src/browser.js ... This file is in /public and will be copied as-is
+    during build without going through the plugin transforms, and therefore should not be imported
+    from source code.
+
+Two rounds to fix, because the first fix was incomplete:
+
+1. Vite constant-folds a literal specifier, resolves it into `public/`, and refuses.
+   `/* @vite-ignore */` does not help — the path is still statically analyzable. Building the
+   specifier from parts at runtime (`["", "vphon", "src", "browser.js"].join("/")`) makes it opaque.
+2. That got past the overlay but not the dev server, which still intercepted the request, appended
+   `?import`, and 500'd. **Files in `public/` cannot be dynamically imported in dev at all.**
+
+Fix: a small Vite plugin that claims `/vphon/` ahead of Vite's own middleware, strips the query, and
+streams the file verbatim. Production is unaffected — `public/` is copied as-is — but `preview` now
+gets the same COOP/COEP headers as `server`, so the production build can be checked under the
+headers it will actually run with.
+
+**New tool: `tools/smoke-ui.mjs`**, which drives the running server with puppeteer — loads the page,
+clicks Generate, reports each progress transition with elapsed time, and fails on any `.error` in
+the DOM. This is the only harness that exercises Vite, the app's own module graph, and the UI state
+machine together.
+
+**And the load is fast, contrary to appearances.** Measured against the production preview:
+
+    data prefetch     0.3 s  (190 files)
+    import browser.js 0.0 s
+    loadEngine        0.8 s
+    phonemize         0.32 s
+    /vphon/src/ module requests: 715
+
+⚠ A 20-minute "stuck on loading phonemizer" the user hit was **my fault, not the app's**: I killed
+and restarted the dev server twice mid-session while they were clicking, and fetches against a dead
+server hang rather than fail. Recorded because the symptom looked exactly like an application defect
+and cost real time to disbelieve.
+
+⚠ Still open: **715 module requests** to load the engine. Fine locally, and Netlify serves HTTP/2 so
+they multiplex, but it is a lot of round trips on a cold cache over a real network. The engine
+cannot simply be bundled — its data keys come from `import.meta.url` — so if this becomes a problem
+the answer is a service worker or a precompiled key map, not a bundler flag.
