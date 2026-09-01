@@ -19,6 +19,7 @@
 // (its data keys come from import.meta.url; see the note below).
 const ENGINE_URL = ["", "vphon", "src", "browser.js"].join("/");
 const DATA_BASE = "/vphon-data";
+import { getOrt } from "./ortInit.ts";
 
 type PhonemizeAsync = (text: string, lang: string) => Promise<string>;
 
@@ -47,7 +48,8 @@ async function init(onProgress?: (d: string) => void): Promise<PhonemizeAsync> {
   });
   // The neural tier (English's BiLSTM and friends) reaches ORT through this seam. Each neural
   // path DEGRADES to the rule engine when its model is absent rather than throwing.
-  vp.setOrtLoader(() => import("onnxruntime-web"));
+  // Same module the TTS side uses, loaded from the CDN — NOT bundled. See ortInit.ts.
+  vp.setOrtLoader(() => getOrt());
   const engine = await vp.loadEngine();
   return engine.phonemizeAsync as PhonemizeAsync;
 }

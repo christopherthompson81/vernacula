@@ -672,3 +672,52 @@ and cost real time to disbelieve.
 they multiplex, but it is a lot of round trips on a cold cache over a real network. The engine
 cannot simply be bundled — its data keys come from `import.meta.url` — so if this becomes a problem
 the answer is a service worker or a precompiled key map, not a bundler flag.
+
+---
+
+## Run 14 — 2026-09-01, the silent hang: ORT's worker cannot live in the app chunk
+
+**Symptom:** clicking Generate froze at "phonemizing — loading phonemizer (190 files)" forever, with
+negligible network traffic and **no error in the UI**. The user killed it after 20 minutes.
+
+⚠ **The first thing to establish was that it was real.** A measurement said the phonemizer loads in
+1.1 s (0.3 s prefetch, 0.8 s `loadEngine`), which looked like it exonerated the app — but that
+measurement ran the steps by hand inside `page.evaluate`, NOT through the app's own bundled code,
+so it exercised a different path than the one failing. A "fast" number from the wrong path is worse
+than no number.
+
+**Tooling first, because the loop was too slow to think in.** `tools/browser-repl.mjs` keeps ONE
+Chrome alive with remote debugging: `start` / `goto` / `eval` / `logs` / `stop`, each about a
+second, with page state surviving between probes. ⚠ Its first version registered the console
+listeners in the `start` process and exited, taking them with it — an instrumented build then
+appeared to log nothing at all, which reads exactly like "the code never ran". Fixed with a
+detached collector process that stays connected.
+
+**With logs actually arriving, the cause was immediate:**
+
+    [phonemizer] phonemizeAsync start
+    [phonemizer] ortLoader called
+    [phonemizer] ort imported
+    [error] worker sent an error! ... Uncaught ReferenceError: document is not defined
+
+`onnxruntime-web` spawns a **Web Worker** for its WASM backend, and the worker loads whatever module
+ORT itself came from. Vite had bundled ORT into the app chunk — which also contains React and DOM
+code — so the worker hit `document` and died. ORT's promise then never settles: no rejection, no
+error, no traffic. A hang rather than a failure is why this looked like an application stall.
+
+⚠ It only fired through `phonemizeAsync`, because English's neural tier is the first thing to ask
+for ORT. Upstream's note that a neural path "degrades to the sync engine when its model is absent
+rather than throwing" is what made the manual test look healthy: with no ORT loader installed it
+quietly took the rule-based path and returned in 7 ms.
+
+**Fix:** `ortInit.ts` now loads ORT from a CDN at runtime and hands out the single module instance
+(`getOrt()`), and both the TTS path and the phonemizer's `setOrtLoader` use it. ORT stays in its own
+module, whose worker has no DOM references. The specifier is assembled at runtime for the same
+reason as the phonemizer's — a literal would be statically analyzed and re-bundled.
+
+Side effects, all good: app chunk **585 kB -> 168 kB**, `dist` **52 MB -> 25 MB**, and ORT's dynamic
+import of its threaded `.mjs` sidecar stays out of Vite's pipeline.
+
+**Verified through the real UI on the production build:** 470 MB transformer + 87 MB decoder with
+progress, WebGPU transformer + WASM decoder, `2.4s audio in 13.8s · 60 tokens · 32 steps · webgpu`,
+no errors from the current bundle.

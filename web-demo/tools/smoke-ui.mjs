@@ -25,6 +25,9 @@ const page = await browser.newPage();
 const errors = [];
 page.on("console", (m) => { if (m.type() === "error") errors.push("console: " + m.text().slice(0, 300)); });
 page.on("pageerror", (e) => errors.push("pageerror: " + String(e).slice(0, 300)));
+// Name the failing URLs — "a 404" is not actionable, the path is.
+page.on("response", (r) => { if (r.status() >= 400) errors.push(`HTTP ${r.status()}  ${r.url()}`); });
+page.on("requestfailed", (r) => errors.push(`FAILED  ${r.url()}  ${r.failure()?.errorText ?? ""}`));
 
 await page.goto(URL_, { waitUntil: "networkidle2", timeout: 60000 });
 console.log("  loaded:", await page.title());

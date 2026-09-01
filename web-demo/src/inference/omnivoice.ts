@@ -11,8 +11,8 @@
  * 12 s, 0.21% under 3 s) and can emit noise rather than degrade — and a demo receives short phrases
  * almost exclusively. Shipping precomputed reference codes fixes that AND drops 654 MB.
  */
-import * as ort from "onnxruntime-web";
-import { initOrt } from "./ortInit.ts";
+import type * as ort from "onnxruntime-web";
+import { getOrt, type Ort } from "./ortInit.ts";
 import { Qwen3Tokenizer } from "./qwen3Tokenizer.ts";
 import { addPunctuation, prepare, NUM_CODEBOOKS } from "./textPrep.ts";
 import { estimateTargetTokens } from "./duration.ts";
@@ -78,6 +78,7 @@ export interface LoadOptions {
 
 export class OmniVoice {
   private constructor(
+    private readonly ort: Ort,
     private readonly transformer: ort.InferenceSession,
     private readonly decoder: ort.InferenceSession,
     readonly tokenizer: Qwen3Tokenizer,
@@ -86,7 +87,7 @@ export class OmniVoice {
   ) {}
 
   static async load(o: LoadOptions): Promise<OmniVoice> {
-    initOrt();
+    const ORT = await getOrt();
     const ep = forcedEp ?? await pickExecutionProvider();
     if (ep === "webgpu") await useMaxLimitsDevice();
     o.onProgress?.(`execution provider: ${ep}`);
@@ -105,17 +106,17 @@ export class OmniVoice {
       opts.externalData = [{ path: name, data: new Uint8Array(data) }];
     }
     o.onProgress?.("creating transformer session");
-    const transformer = await ort.InferenceSession.create(tBytes, opts);
+    const transformer = await ORT.InferenceSession.create(tBytes, opts);
 
     o.onProgress?.("downloading decoder");
     const dBytes = await o.fetchBytes(o.decoderUrl, "decoder");
     const dEp = decoderEp ?? ep;
     o.onProgress?.(`decoder provider: ${dEp}`);
-    const decoder = await ort.InferenceSession.create(dBytes, { executionProviders: [dEp], graphOptimizationLevel: graphOpt });
+    const decoder = await ORT.InferenceSession.create(dBytes, { executionProviders: [dEp], graphOptimizationLevel: graphOpt });
 
     const tokenizer = await Qwen3Tokenizer.load(o.tokenizerUrl);
     const voices: Voice[] = await (await fetch(o.voicesUrl)).json();
-    return new OmniVoice(transformer, decoder, tokenizer, voices, { ep });
+    return new OmniVoice(ORT, transformer, decoder, tokenizer, voices, { ep });
   }
 
   /** IPA string -> 24 kHz mono waveform. `ipa` and `voice.refIpa` must BOTH be IPA. */
@@ -160,9 +161,9 @@ export class OmniVoice {
     // (docs/omnivoice_onnx_investigation.md, "IO-binding root cause"). A fresh copy per call costs
     // a few hundred KB and removes the whole class of bug.
     const feeds = {
-      input_ids: new ort.Tensor("int64", ids.slice(), [1, NUM_CODEBOOKS, seq]),
-      audio_mask: new ort.Tensor("bool", audioMask.slice(), [1, seq]),
-      attention_mask: new ort.Tensor("bool", attn, [1, 1, seq, seq]),
+      input_ids: new this.ort.Tensor("int64", ids.slice(), [1, NUM_CODEBOOKS, seq]),
+      audio_mask: new this.ort.Tensor("bool", audioMask.slice(), [1, seq]),
+      attention_mask: new this.ort.Tensor("bool", attn, [1, 1, seq, seq]),
     };
     const out = await this.transformer.run(feeds);
     return out.logits.data as Float32Array;
@@ -172,7 +173,7 @@ export class OmniVoice {
     const codes = new BigInt64Array(tokens.length);
     for (let i = 0; i < tokens.length; i++) codes[i] = BigInt(tokens[i]);
     const out = await this.decoder.run({
-      audio_codes: new ort.Tensor("int64", codes, [1, NUM_CODEBOOKS, tc]),
+      audio_codes: new this.ort.Tensor("int64", codes, [1, NUM_CODEBOOKS, tc]),
     });
     return out.audio_values.data as Float32Array;
   }
@@ -208,7 +209,7 @@ async function useMaxLimitsDevice(): Promise<void> {
         maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize,
       },
     });
-    (ort.env.webgpu as unknown as { device?: unknown }).device = device;
+    ((await getOrt()).env.webgpu as unknown as { device?: unknown }).device = device;
   } catch { /* fall back to ORT's own default-limits device */ }
 }
 
