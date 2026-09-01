@@ -46,7 +46,12 @@ if (cmd === "start") {
 }
 
 const browser = await connect();
-const [page] = await browser.pages();
+// ⚠ Pick the page by URL, not pages()[0]. A tab switch silently retargets every probe at whatever
+// happens to be first — which produced a run of measurements from the wrong page that looked like
+// a real defect and cost a round of debugging.
+const MATCH = process.env.PAGE_MATCH ?? "localhost:4188";
+const all = await browser.pages();
+const page = all.find((p) => p.url().includes(MATCH)) ?? all[0];
 
 if (cmd === "watch") {
   // Stays connected for the session, re-attaching on navigation, appending everything to LOGS.

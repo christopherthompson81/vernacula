@@ -756,3 +756,47 @@ Remaining: karaoke highlighting (deferred by request; `Token` already carries `s
 honest first version is proportional attribution from audio-token positions at 25/s), and the
 Netlify deploy itself. If 66 MB of data on the site is unwelcome, it can move to the HF repo
 alongside the models — HF already serves them with the CORS headers COEP needs.
+
+---
+
+## Run 16 — 2026-09-01, per-language voices, and the loudness they drag with them
+
+**User report:** switching languages "seemed to be carrying the English voice with it". Correct, and
+by construction: generation is always voice-cloned and `voices.json` held exactly ONE voice, the
+English reference. Cloning is ACOUSTIC — the reference carries the speaker's accent as well as their
+timbre — so every language was read by an English speaker.
+
+**Fix: one native reference per language, taken from the corpus.** No audio and no encoder needed —
+`tokens/codes_<lang>.npz` holds encoded codes and `tokens/manifest_<lang>.jsonl` the exact IPA they
+were trained with. ⚠ The reference IPA must be that STORED text, not a fresh phonemization: it is
+what the model saw alongside those codes. 28 languages, **0.18 MB total**. `is` and `it` are not in
+the corpus and fall back by phonetic proximity (is -> sv, it -> es) rather than to English.
+
+**"Could we just not clone?"** Tempting — it would fix loudness for free and remove the accent
+question entirely. But Run 7 measured `es/fr/ca/tr` producing NOISE at 2-3 s in no-reference mode
+(at 32 steps), recovering either by lengthening to 7-10 s or by adding a reference. The demo's
+sample sentences are exactly that length, so no-reference reintroduces a failure we had already
+diagnosed. Cloning stays; the loudness is fixed directly instead.
+
+**Three loudness bugs, all from cloning copying the reference's level.** The corpus references span
+rms **0.0017-0.099**, a 58x spread:
+
+1. **Python's un-boost was being applied to references that were never boosted.** It exists to undo
+   a gain applied when ENCODING a quiet user clip; corpus codes never went through that. German
+   (`rms 0.0167`) came out at 17% of level — the user's "German was too quiet".
+2. **Oromo produced 0.0 s of audio.** Its reference is `rms 0.0017`, so the generated audio sat
+   entirely below the -50 dBFS silence threshold and `removeSilence` deleted the whole utterance.
+   Normalising has to happen BEFORE silence detection.
+3. **And again AFTER the fade.** The fine-tune emits a leading transient inside the first 0.1 s;
+   normalising before the fade lets it take the headroom and the fade then removes it. This is the
+   Run 5 finding, now load-bearing rather than cosmetic.
+
+Final order, a deliberate demo-only deviation from Python parity (the desktop CLI keeps Python's
+behaviour): **normalize → removeSilence → fadeAndPad → normalize.** Measured after: German
+peak 0.5000, Oromo 0.5000 and 3.6 s of audio (was 0.0 s), Welsh 0.5000.
+
+⚠ **A false trail worth recording.** Three languages measured peak 0.038 / 0.000 AFTER the fix, and
+the numbers were self-consistent with the old code — which read as "the fix did not apply". The
+cause was outside the app: the user switched browser tabs, and the REPL selects `pages()[0]`, so
+every probe was reading a different page. `PAGE_MATCH` now picks the page by URL. A measurement tool
+that silently changes what it measures is worse than no tool.

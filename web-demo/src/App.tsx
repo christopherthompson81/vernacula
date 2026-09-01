@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { LANGUAGES, MODELS, NUM_STEPS } from "./inference/config.ts";
 import { phonemize } from "./inference/phonemizer.ts";
-import { OmniVoice, type Voice } from "./inference/omnivoice.ts";
+import { OmniVoice, voiceFor, type Voice } from "./inference/omnivoice.ts";
 import { encodeWav } from "./inference/audioPost.ts";
 import { fetchModel } from "./inference/modelCache.ts";
 import type { Progress, Token } from "./types.ts";
@@ -51,7 +51,6 @@ export default function App() {
       onProgress: (detail) => setProgress({ stage: "loading-models", detail }),
     });
     engine.current = ov;
-    voice.current = ov.voices[0];
     setEp(ov.backend.ep);
     return ov;
   }, []);
@@ -66,13 +65,17 @@ export default function App() {
 
       const ov = await ensureEngine();
       setProgress({ stage: "generating", fraction: 0 });
-      const r = await ov.synthesize(out, voice.current!, { numStep: NUM_STEPS },
+      // ⚠ Pick the voice for THIS language every time, not once at load: the reference carries the
+      // speaker's accent, so reusing an English voice for German is audibly wrong.
+      const v = voiceFor(ov.voices, lang);
+      voice.current = v;
+      const r = await ov.synthesize(out, v, { numStep: NUM_STEPS },
         (step, total) => setProgress({ stage: "generating", fraction: step / total, detail: `step ${step}/${total}` }));
 
       if (audioUrl) URL.revokeObjectURL(audioUrl);
       setAudioUrl(URL.createObjectURL(encodeWav(r.audio, r.sampleRate)));
       setStats(`${(r.audio.length / r.sampleRate).toFixed(1)}s audio in ${(r.generateMs / 1000).toFixed(1)}s`
-        + ` · ${r.targetTokens} tokens · ${NUM_STEPS} steps`);
+        + ` · ${r.targetTokens} tokens · ${NUM_STEPS} steps · voice ${v.label}`);
       setProgress({ stage: "ready" });
     } catch (e) {
       setProgress({ stage: "error", detail: e instanceof Error ? e.message : String(e) });

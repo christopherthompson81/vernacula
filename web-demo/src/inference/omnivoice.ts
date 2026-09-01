@@ -17,13 +17,15 @@ import { Qwen3Tokenizer } from "./qwen3Tokenizer.ts";
 import { addPunctuation, prepare, NUM_CODEBOOKS } from "./textPrep.ts";
 import { estimateTargetTokens } from "./duration.ts";
 import { runDiffusion, DEFAULT_CONFIG, type GenConfig } from "./diffusion.ts";
-import { removeSilence, fadeAndPad, peakNormalize, scale } from "./audioPost.ts";
+import { removeSilence, fadeAndPad, peakNormalize } from "./audioPost.ts";
 
 export const SAMPLE_RATE = 24000;
 
 export interface Voice {
   id: string;
   label: string;
+  /** Demo language code this reference is a NATIVE speaker of. */
+  lang: string;
   /** Reference transcript, ALREADY IPA — it is fed to the model alongside the target IPA. */
   refIpa: string;
   /** Pre-encoded codec codes [8, refLen], row-major. */
@@ -144,10 +146,25 @@ export class OmniVoice {
 
     // Python `_post_process_audio` order: remove silence -> volume -> fade + pad. Volume: un-boost
     // a reference that was boosted for being quiet; otherwise peak-normalise.
+    // ⚠ DELIBERATE DEVIATION FROM PYTHON'S POST-CHAIN, in both gain AND ORDER. Reasons, measured:
+    //
+    // 1. Cloning copies the reference's LOUDNESS, and the corpus references span rms 0.0017-0.099,
+    //    a 58x spread. Python's volume step only un-boosts a reference that IT boosted at encode
+    //    time; ours were never boosted, so applying it undoes something that never happened —
+    //    German came out at 17% of level.
+    // 2. Normalising must come BEFORE silence removal. Oromo's reference is rms 0.0017, so its
+    //    output sat entirely below the -50 dBFS silence threshold and removeSilence deleted the
+    //    whole utterance: 0.0 s of audio.
+    // 3. And again AFTER the fade, because the fine-tune emits a leading transient inside the first
+    //    0.1 s. Normalising before the fade lets that transient take the headroom and the fade then
+    //    removes it — German measured peak 0.038 with a single pre-fade normalise.
+    //
+    // The desktop CLI keeps Python's behaviour exactly; this is a demo-only choice, made because a
+    // demo with silent languages is worse than one that is not bit-faithful to the post-chain.
+    peakNormalize(audio, 0.5);
     audio = removeSilence(audio, SAMPLE_RATE, 500, 100, 100);
-    if (voice.refRms > 0 && voice.refRms < 0.1) scale(audio, voice.refRms / 0.1);
-    else peakNormalize(audio, 0.5);
     audio = fadeAndPad(audio, SAMPLE_RATE);
+    peakNormalize(audio, 0.5);
 
     return { audio, sampleRate: SAMPLE_RATE, targetTokens: target, generateMs, transformerMs, hostMs };
   }
@@ -177,6 +194,22 @@ export class OmniVoice {
     });
     return out.audio_values.data as Float32Array;
   }
+}
+
+/**
+ * Fallbacks for languages the fine-tune corpus has no speaker for. Chosen for phonetic proximity
+ * rather than alphabetically: an Icelandic sentence read by a Swedish voice is a far better
+ * demonstration than one read by an English voice, because voice cloning is ACOUSTIC and the
+ * reference carries the speaker's accent along with their timbre.
+ */
+const VOICE_FALLBACK: Record<string, string> = { is: "sv", it: "es" };
+
+/** The reference voice for a language: its own, else a phonetically near neighbour, else English. */
+export function voiceFor(voices: Voice[], lang: string): Voice {
+  return voices.find((v) => v.lang === lang)
+      ?? voices.find((v) => v.lang === VOICE_FALLBACK[lang])
+      ?? voices.find((v) => v.lang === "en")
+      ?? voices[0];
 }
 
 /**
