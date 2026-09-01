@@ -1,0 +1,25 @@
+{
+  "name": "vernacula-tts-web-demo",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Browser demo: text -> canonical IPA -> speech, entirely client-side",
+  "scripts": {
+    "copy-wasm": "node -e \"const fs=require('fs');fs.readdirSync('node_modules/onnxruntime-web/dist').filter(f=>f.endsWith('.wasm')).forEach(f=>fs.copyFileSync('node_modules/onnxruntime-web/dist/'+f,'public/'+f))\"",
+    "dev": "npm run copy-wasm && vite",
+    "build": "npm run copy-wasm && tsc && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "onnxruntime-web": "^1.20.1",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.3",
+    "typescript": "^5.6.3",
+    "vite": "^6.0.3"
+  }
+}

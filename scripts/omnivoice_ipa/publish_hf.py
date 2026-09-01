@@ -26,6 +26,7 @@ from huggingface_hub import HfApi, whoami
 
 ONNX_BASE = "/mnt/data/omnivoice_ipa/onnx_base"
 ONNX = "/mnt/data/omnivoice_ipa/onnx"
+ONNX_WEB = "/mnt/data/omnivoice_ipa/onnx_web"
 
 # sha256 of onnx_base/omnivoice_transformer.onnx.data — the base that matches k2-fsa/OmniVoice.
 BASE_SHA256 = "2ea0980e184bbf8457048fbb3ed2a01f8f8c3816a8ee9fbff3ce0886c1aeeb4a"
@@ -43,6 +44,10 @@ def files(version):
         # a distribution point with one current answer, and each superseded diff was strictly worse.
         # Traceability lives in the card (which version, and the diff's sha256), not the filename.
         (f"{ONNX}/ipa_diff_{version}.onnx", "ipa_diff.onnx"),
+        # Browser build: the fine-tune already merged in, then quantized. Ships alone — no base,
+        # no diff, no fold. Its sidecar name is recorded inside the .onnx, so both keep these names.
+        (f"{ONNX_WEB}/omnivoice_transformer_ipa.int4.onnx", "omnivoice_transformer_ipa.int4.onnx"),
+        (f"{ONNX_WEB}/omnivoice_transformer_ipa.int4.onnx.data", "omnivoice_transformer_ipa.int4.onnx.data"),
     ]
 
 CARD = """---
@@ -72,6 +77,7 @@ happen before the model sees a token.
 | `omnivoice_transformer.onnx` (+`.onnx.data`) | 2.45 GB | **base** transformer (embeds + Qwen3-0.6B + audio heads), fp32 |
 | `higgs_encoder.onnx` | 654 MB | Higgs codec encoder (24 kHz audio → codes) |
 | `higgs_decoder.onnx` | 86 MB | Higgs codec decoder (codes → 24 kHz audio) |
+| `omnivoice_transformer_ipa.int4.onnx` (+`.onnx.data`) | 472 MB | the fine-tuned transformer, **merged and quantized** for browsers — no base or diff needed |
 | `ipa_diff.onnx` | 31 MB | the IPA fine-tune, as a reconstruction diff over the base transformer (currently the **{VERSION}** extraction, sha256 `{DIFF_SHA256}`) |
 
 The transformer is the base (un-fine-tuned) graph; the encoder/decoder are the codec, unchanged by
@@ -124,6 +130,37 @@ disk.
 Reference implementations: `apply_diff.py` (Python, fold) and `OmniVoiceDiff` (C#, graph rewrite)
 in [vernacula](https://github.com/christopherthompson81/vernacula).
 
+## The quantized build (`omnivoice_transformer_ipa.int4.onnx`)
+
+For running in a browser via `onnxruntime-web`. The IPA fine-tune is already merged in, so this file
+stands alone: no base transformer, no diff, no fold. 2452 MB -> **472 MB** (5.2x).
+
+**How, and why it matters which way.** ⚠ Naive `quantize_dynamic` at INT8 produces output **not
+recognizable as speech**. It also quantizes ACTIVATIONS, and the diffusion loop runs 32 times over
+its own output, so activation error compounds — the same reason TF32 (a milder perturbation) already
+produced noise on CUDA. What works is **weight-only** quantization, which leaves every activation in
+fp32:
+
+- Linear layers: `MatMulNBits`, 4-bit, block size 32, symmetric (`MatMulNBitsQuantizer`). Listen-
+  tested at both 4 and 8 bits, and with the audio heads held at fp32 as a control — all four
+  indistinguishable, so 4-bit with nothing exempted is what ships.
+- `embed_tokens` (621 MB, and a `Gather` so the weight-only quantizer cannot reach it): quantized to
+  int8 with **per-row** scales, dequantized on the gathered slice via
+  `Gather(int8) + Gather(scale) + Cast + Mul`. Per-row rather than per-tensor because the fine-tune
+  retrained 5,572 rows of this table.
+
+Every tensor is kept under 256 MB (largest: 155 MB). ⚠ That is deliberate: WebGPU's `requestDevice()`
+grants a **default** `maxBufferSize` of 256 MB whatever the adapter advertises, and a model with a
+larger single tensor kills the device with "Out of memory" on a GPU with tens of GB free. Raising the
+limit explicitly is still worth doing, but this build does not require it.
+
+Measured, RTX 3090, 16 diffusion steps, ~4 s of audio:
+
+| runtime | ms / forward | per generation |
+|---|---|---|
+| `onnxruntime-web` WASM, 8 threads | 1295 | 20.7 s |
+| **`onnxruntime-web` WebGPU (Chrome/Dawn)** | **177** | **2.8 s** |
+
 ## Using it
 
 Text -> IPA -> audio, with the phonemizer owning all G2P. The model is conditioned
@@ -164,7 +201,12 @@ def main():
 
     api = HfApi()
     api.create_repo(repo_id, repo_type="model", private=not a.public, exist_ok=True)
-    print(f"repo: https://huggingface.co/{repo_id}  (private={not a.public})")
+    if a.public:
+        # exist_ok=True leaves an existing repo's visibility alone, so flip it explicitly.
+        api.update_repo_settings(repo_id, repo_type="model", private=False)
+        print(f"repo: https://huggingface.co/{repo_id}  -> PUBLIC")
+    else:
+        print(f"repo: https://huggingface.co/{repo_id}  (visibility unchanged)")
 
     diff_local = dict((n, l) for l, n in files(a.version))["ipa_diff.onnx"]
     card = (CARD.replace("{VERSION}", a.version)
