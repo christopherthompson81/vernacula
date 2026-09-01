@@ -43,6 +43,9 @@
     <!-- Matches Vernacula.Avalonia.csproj's ProjectReference style:
          no Private attribute (defaults to true). EP property flows
          through to base projects via SetConfiguration. -->
+    <!-- Kokoro's G2P frontend. Direct rather than transitive through Chatterbox.Base — see the
+         PrivateAssets note on that project's reference to it. -->
+    <ProjectReference Include="..\\..\\external\espeak-ng-portable\csharp\src\Vernacula.Phonemizer\Vernacula.Phonemizer.csproj" />
     <ProjectReference Include="..\Chatterbox.Base\Chatterbox.Base.csproj">
       <SetConfiguration>EP=$(EP)</SetConfiguration>
     </ProjectReference>

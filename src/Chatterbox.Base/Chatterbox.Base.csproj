@@ -54,10 +54,17 @@
     </ProjectReference>
     <!-- Kokoro G2P frontend: pure-C# espeak-ng port + KokoroFormat render target.
          Vendored as a git submodule under external/ (data/ language files ship
-         with it). Used by KokoroTts to turn text into Kokoro phonemes. -->
-    <ProjectReference Include="..\..\external\espeak-ng-portable\csharp\src\Vernacula.Phonemizer\Vernacula.Phonemizer.csproj">
-      <Private>true</Private>
-    </ProjectReference>
+         with it). Used by KokoroTts to turn text into Kokoro phonemes.
+
+         ⚠ PrivateAssets="all" — DO NOT DROP. This assembly is named Vernacula.Phonemizer, and so
+         is the SEPARATE, newer external/vernacula-phonemizer that Vernacula.Tts.CLI uses. When
+         both reach one output directory they are the same filename: the copy silently wins,
+         no warning, and whichever library lost fails at runtime with a TypeLoadException.
+         KokoroTts is the only thing in this repo that touches these types, so nothing needs the
+         reference transitively — the three projects that USE Kokoro carry their own direct
+         reference instead (Chatterbox.CLI, Chatterbox.Avalonia, tests/KokoroPerf). -->
+    <ProjectReference Include="..\..\external\espeak-ng-portable\csharp\src\Vernacula.Phonemizer\Vernacula.Phonemizer.csproj"
+                      PrivateAssets="all" />
   </ItemGroup>
 
 </Project>
