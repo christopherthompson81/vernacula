@@ -35,17 +35,34 @@ const TRANSCRIPTS = "/mnt/data/omnivoice_ipa/corpus/fleurs_transcripts/data";
 const DECODER = "/mnt/data/Programming/vernacula/scripts/omnivoice_export/onnx/higgs_decoder.onnx";
 const SR = 24000;
 
-/** demo language code -> FLEURS config code. */
-const MAP = {
-  en: "en_us", es: "es_419", de: "de_de", fr: "fr_fr", pt: "pt_br", ca: "ca_es", cs: "cs_cz",
-  sv: "sv_se", ru: "ru_ru", tr: "tr_tr", cy: "cy_gb", ga: "ga_ie", cmn: "cmn_hans_cn",
-  ja: "ja_jp", ko: "ko_kr", hi: "hi_in", ta: "ta_in", th: "th_th", vi: "vi_vn", ar: "ar_eg",
-  am: "am_et", om: "om_et", ha: "ha_ng", ff: "ff_sn", zu: "zu_za", xh: "xh_za", kk: "kk_kz",
-  sd: "sd_in",
-  // Not in the v6 fine-tune's 28-language coverage set, but FLEURS has them and the corpus
-  // ingested all 102 — so these get a NATIVE reference rather than a phonetic-proximity stand-in.
-  is: "is_is", it: "it_it",
+/**
+ * demo/phonemizer language code -> FLEURS config code, derived from what the corpus actually holds
+ * rather than hand-listed.
+ *
+ * The corpus ingested all 102 FLEURS languages, not just the 28 the v6 fine-tune trained on, so
+ * every one of them can have a native exemplar. ⚠ The demo code is the PHONEMIZER's code, because
+ * that is what selects an engine; 100 of 102 are just the FLEURS prefix, and the two that are not
+ * are listed below. A language with a voice but no phonemizer engine is still a usable VOICE — it
+ * simply cannot be a picker entry.
+ */
+const CODE_OVERRIDE = {
+  fil_ph: "tl",   // Filipino is standardized Tagalog; the engine is `tl`
+  ny_mw: "nya",   // Chichewa; the engine is `nya`, not the FLEURS `ny`
 };
+
+function buildMap() {
+  const out = {};
+  for (const f of fs.readdirSync(CORPUS)) {
+    const m = /^codes_(.+)\.npz$/.exec(f);
+    if (!m) continue;
+    const fl = m[1];
+    const code = CODE_OVERRIDE[fl] ?? fl.split("_")[0];
+    if (out[code]) { console.error(`  ⚠ ${fl} and ${out[code]} both map to "${code}" — keeping the first`); continue; }
+    out[code] = fl;
+  }
+  return out;
+}
+const MAP = buildMap();
 
 const args = process.argv.slice(2);
 const previewDir = args.includes("--previews") ? args[args.indexOf("--previews") + 1] : null;

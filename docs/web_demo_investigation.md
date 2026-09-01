@@ -800,3 +800,36 @@ the numbers were self-consistent with the old code — which read as "the fix di
 cause was outside the app: the user switched browser tabs, and the REPL selects `pages()[0]`, so
 every probe was reading a different page. `PAGE_MATCH` now picks the page by URL. A measurement tool
 that silently changes what it measures is worse than no tool.
+
+---
+
+## Run 17 — 2026-09-01, an exemplar voice for all 102 FLEURS languages
+
+Extended from 30 to **all 102**, with the mapping DERIVED from the corpus rather than hand-listed:
+the demo code is the PHONEMIZER's code, and 100 of 102 are simply the FLEURS prefix. The two that
+are not are `fil_ph -> tl` (Filipino is standardized Tagalog) and `ny_mw -> nya` (Chichewa). Every
+language yielded a verified 4-8 s exemplar; nothing was skipped.
+
+    voices.jsonc      67 KB   metadata only, hand-editable
+    voice-codes.json 626 KB   (251 KB gzipped) the code arrays, keyed by voice id
+    speakers          55 FEMALE / 47 MALE
+
+⚠ **The corpus ingested all 102 even though the fine-tune trained on 28** — which is what makes this
+possible, and is also why `is` and `it` did not need the phonetic-proximity stand-ins they had in
+Run 16. A language outside the coverage set still gets a native voice; what it does not get is a
+model that trained on its phones.
+
+**Quietest references, most likely to sound thin or noisy** — these are the ones worth judging
+first, and `--alt <lang>=<n>` replaces any of them:
+
+    mt 0.0006 · mn 0.0006 · luo 0.0006 · ps 0.0008 · lt 0.0013
+    wo 0.0015 · ckb 0.0016 · sl 0.0017 · az 0.0017 · om 0.0017
+
+against a median around 0.02 and `pa` at 0.389. ⚠ Low reference RMS no longer affects OUTPUT level —
+the demo peak-normalizes (Run 16) — but it is a decent proxy for a thin or distant recording, which
+cloning will reproduce as timbre even after normalization.
+
+**Not expanded: the picker.** It still offers 30 languages, because offering a language needs its
+phonemizer TABLES staged as well as a voice, and recording those is one child process per language
+(~10 s each) plus data. Voices are cheap and complete; picker entries are not. Expanding it is a
+separate, measurable step.
