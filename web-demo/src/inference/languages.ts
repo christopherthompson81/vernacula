@@ -21,7 +21,7 @@ export interface LanguageOption {
 export const LANGUAGES: LanguageOption[] = [
   { code: "ab", name: "Abkhaz", mb: 0.02, sample: "Ауаа ақырҭуа аиункерцәа аурыс Собора ашҭаҿ анышә имардеит." },
   { code: "af", name: "Afrikaans", mb: 3.47, sample: "Interne vergifting mag nie onmiddellik ooglopend wees nie." },
-  { code: "ak", name: "Akan", mb: 0, voice: "yo", sample: "Wɔsa saa asa yi de gye nkurɔfoɔ ani, na wɔdekyerɛkyerɛ nso." },
+  { code: "ak", name: "Akan", mb: 0, sample: "Wɔsa saa asa yi de gye nkurɔfoɔ ani, na wɔdekyerɛkyerɛ nso." },
   { code: "sq", name: "Albanian", mb: 0, sample: "Ndërtesa është e formësuar në përdhese të ngritur dhe kat." },
   { code: "am", name: "Amharic", mb: 0.01, trained: true, sample: "ዛሬ በባህር ዳርቻ የአየሩ ሁኔታ በጣም ደስ የሚል ነው።" },
   { code: "grc", name: "Ancient Greek", mb: 0, voice: "el", sample: "Στοιχεία όπως το ασβέστιο και το κάλιο θεωρούνται μέταλλα." },

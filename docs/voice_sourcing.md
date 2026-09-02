@@ -10,12 +10,12 @@ This is the list of what a native clip would fix, worst first.
 
 ## Done — 24 languages sourced from Common Voice 22.0 (CC0)
 
-**126 of 193 languages now have a native voice, up from 102.** 68 clips across 24 languages, one to
+**127 of 193 languages now have a native voice, up from 102.** 68 clips across 24 languages, one to
 three each, all Common Voice 22.0 (CC0), all selected by measuring the audio:
 
 | tier | languages |
 |---|---|
-| A — donor was a stranger | Abkhaz, Basque, Classical Nahuatl, Haitian Creole, Kinyarwanda, Quechua, Santali, Sesotho, Setswana, Tashelhit |
+| A — donor was a stranger | Abkhaz, Akan, Basque, Classical Nahuatl, Haitian Creole, Kinyarwanda, Quechua, Santali, Sesotho, Setswana, Tashelhit |
 | B — related but different | Albanian, Bashkir, Chuvash, Kurmanji, Latgalian, Min Nan, Tatar, Tigrinya, Turkmen, Uyghur |
 | C — same language, other standard | Castilian Spanish, Saraiki, Western Armenian, and Guaraní's own speakers |
 
@@ -23,6 +23,9 @@ three each, all Common Voice 22.0 (CC0), all selected by measuring the audio:
 usable length: Haitian Creole, Nahuatl, Santali, Sesotho, Setswana, Tashelhit, Tigrinya, Quechua.
 Unvalidated means no listener has confirmed the reading matches the sentence, so the audio score is
 doing all the work and a listening test matters more for these than for the rest.
+
+⚠ **Akan was missed on the first pass** because Common Voice files Twi under `tw`, and the demo's code
+for it is `ak`. Worth re-checking any gap whose Common Voice locale name differs from its ISO code.
 
 **Three could not be sourced and keep their donor:**
 
