@@ -8,6 +8,11 @@
  * what is judged is what a visitor gets.
  *
  *   node tools/preview-langs.mjs /tmp/listen ab sq eu …
+ *
+ * ⚠ RELOAD THE PAGE FIRST after changing voices.jsonc — `node tools/browser-repl.mjs goto <url>`.
+ * The engine loads the voice list once per page load and keeps it, so a preview run against a stale
+ * tab renders with the OLD voice and looks like the new one failed: Akan came back read by the
+ * Yoruba donor it had just been given a native replacement for.
  */
 import puppeteer from "puppeteer-core";
 import { mkdirSync, writeFileSync } from "node:fs";
