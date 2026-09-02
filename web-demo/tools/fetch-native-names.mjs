@@ -62,7 +62,6 @@ const PICKS = {
   cjy: "晉語",            // appears verbatim in the demo's own Jin sample sentence
   hsn: "湘語",
   mto: "ayöök",           // phonemizer catalogue
-  pbt: "پښتو",             // phonemizer catalogue
   hmn: "Hmoob",
   hne: "छत्तीसगढ़ी",
 };
@@ -76,14 +75,30 @@ const REFUSED = {
   acw: "no sourced endonym found; the Arabic varieties are inconsistently labelled and a guess is worse than a blank",
   ajp: "as acw", apc: "as acw", apd: "as acw", ayl: "as acw",
   rkt: "Wikidata's দেশী is tagged zxx (no linguistic content) rather than a Rangpuri locale — unverified",
+  pbt: "پښتو names Pashto, which is already listed as `ps`; a picker must not offer one name twice",
+  zsm: "CLDR answers Melayu, which is `ms` — the macrolanguage, not Standard Malay",
 };
 
 const meta = JSON.parse(readFileSync(META, "utf8"));
+
+// ⚠ A KEY THAT IS NOT A LANGUAGE CODE IS SILENTLY DEAD, and both tables below are hand-maintained
+// while language-meta.json is not. The phonemizer's own numeral register learned this the hard way
+// (FLEURS writes `ny_mw`, the registry ships `nya`), so the tables are checked rather than trusted.
+const stray = [...Object.keys(PICKS), ...Object.keys(REFUSED)].filter((c) => !(c in meta));
+if (stray.length) {
+  console.error(`stray key(s) in PICKS/REFUSED that name no language: ${stray.join(" ")}`);
+  process.exit(1);
+}
 const en = new Intl.DisplayNames(["en"], { type: "language", fallback: "none" });
 const prev = (() => { try { return JSON.parse(readFileSync(OUT, "utf8")); } catch { return {}; } })();
 
 const out = {};
 const gap = [];
+/** Why a language has no entry — recorded at the point of decision, never inferred afterwards. */
+const skipped = {};
+// The refusal reasons live in REFUSED above, which is the readable record; the summary only needs
+// to say that a refusal is why, not repeat nine sentences of it.
+for (const c of Object.keys(REFUSED)) skipped[c] = "refused on purpose (see REFUSED in this file)";
 for (const code of Object.keys(meta)) {
   if (REFUSED[code]) continue;
   if (PICKS[code]) { out[code] = { name: PICKS[code], src: "picked" }; continue; }
@@ -93,7 +108,11 @@ for (const code of Object.keys(meta)) {
   // Equal to the English name means either a silent CLDR fallback or a language whose endonym simply
   // IS the English name. Either way there is nothing to add, so it is not an entry.
   if (nat && eng && nat !== eng) out[code] = { name: nat, src: "cldr" };
-  else gap.push(code);
+  else {
+    gap.push(code);
+    // Provisional; the Wikidata pass below replaces it on a hit.
+    skipped[code] = nat && nat === eng ? "endonym is the English name" : "no source";
+  }
 }
 
 if (!process.argv.includes("--offline") && gap.length) {
@@ -108,7 +127,8 @@ if (!process.argv.includes("--offline") && gap.length) {
   for (const b of JSON.parse(raw).results.bindings) {
     const c = b.c.value, tag = b.native["xml:lang"] ?? "", v = b.native.value;
     // ⚠ Prefer a label tagged with the language's OWN code over a script- or region-suffixed one
-    // (`crh-cyrl`, `bar`); an untagged or foreign-tagged label is a description, not a name.
+    // (`crh-cyrl`, `crh-ro`, `bal-latn`) or a foreign-tagged one (Wikidata files the Iraqi Arabic
+    // label under plain `ar`). A label in another language is a description, not a name.
     if (!byCode.has(c) || (tag === c && byCode.get(c).tag !== c)) byCode.set(c, { tag, v });
   }
   for (const code of gap) {
@@ -116,11 +136,15 @@ if (!process.argv.includes("--offline") && gap.length) {
     // and `en-IN` gave both of them "English", which names the parent rather than the variety —
     // the same error as taking Wikidata's Gurmukhi label for Shahmukhi `pnb`. CLDR handles the
     // varieties it knows (es-419 → "español latinoamericano"), and where it does not, blank is right.
-    if (code.includes("-")) continue;
+    if (code.includes("-")) { skipped[code] = "no source for this variety (the base code names the parent)"; continue; }
     const hit = byCode.get(code);
     if (!hit) continue;
-    let name = hit.v;
-    if (name.toLowerCase() === (meta[code].name ?? "").toLowerCase()) continue;  // adds nothing
+    const name = hit.v;
+    if (name.toLowerCase() === (meta[code].name ?? "").toLowerCase()) {
+      skipped[code] = "endonym is the English name";                             // adds nothing
+      continue;
+    }
+    delete skipped[code];
     out[code] = { name, src: "wikidata" };
   }
 } else {
@@ -139,19 +163,40 @@ for (const code of Object.keys(out)) {
   const k = out[code].name.toLowerCase();
   const held = byName.get(k);
   if (held === undefined) { byName.set(k, code); continue; }
-  // The base language is the shorter code; on a tie, the one without a parenthetical English name.
-  const loser = held.length !== code.length
-    ? (held.length < code.length ? code : held)
-    : ((meta[held].name ?? "").includes("(") ? held : code);
+  // The base language is the shorter code; on a tie, the one whose English name carries a
+  // parenthetical ("Pashto (Southern)") is the variety and loses to the plain one.
+  const heldSpecific = (meta[held].name ?? "").includes("(");
+  const codeSpecific = (meta[code].name ?? "").includes("(");
+  let loser;
+  if (held.length !== code.length) loser = held.length < code.length ? code : held;
+  else if (heldSpecific !== codeSpecific) loser = heldSpecific ? held : code;
+  else {
+    // Neither is more specific by either test — a real ambiguity, not something to resolve by
+    // iteration order. Say so and keep both out, so the picker never offers one name twice.
+    console.error(`ambiguous endonym "${out[code].name}" shared by ${held} and ${code} with no `
+      + `rule to separate them — add one to PICKS or REFUSED`);
+    process.exit(1);
+  }
   const winner = loser === code ? held : code;
   byName.set(k, winner);
-  console.log(`  dropped ${loser} "${out[loser].name}" — names ${winner}, not ${loser}`);
+  const why = out[loser].src === "picked"
+    ? ` — ⚠ it is a PICKS entry, so that table now has a dead key`
+    : "";
+  console.log(`  dropped ${loser} "${out[loser].name}" — names ${winner}, not ${loser}${why}`);
+  skipped[loser] = `duplicate of ${winner}`;
   delete out[loser];
 }
 
 const sorted = Object.fromEntries(Object.keys(out).sort().map((k) => [k, out[k]]));
 writeFileSync(OUT, JSON.stringify(sorted, null, 1) + "\n", "utf8");
 const by = (s) => Object.values(sorted).filter((v) => v.src === s).length;
+// ⚠ THE ABSENT LANGUAGES ARE ABSENT FOR FOUR DIFFERENT REASONS and one "none found" hides the only
+// one anybody could act on. "endonym is the English name" is a correct outcome — Afrikaans, Akan,
+// Wolof — not a gap.
+const reasons = {};
+for (const c of Object.keys(meta)) if (!(c in sorted)) (reasons[skipped[c] ?? "no source"] ??= []).push(c);
 console.log(`${Object.keys(sorted).length}/${Object.keys(meta).length} languages have a native name`
-  + `  (cldr ${by("cldr")}, wikidata ${by("wikidata")}, picked ${by("picked")};`
-  + ` ${Object.keys(REFUSED).length} refused, ${Object.keys(meta).length - Object.keys(sorted).length - Object.keys(REFUSED).length} none found)`);
+  + ` (cldr ${by("cldr")}, wikidata ${by("wikidata")}, picked ${by("picked")})`);
+for (const [why, codes] of Object.entries(reasons).sort((a, b) => b[1].length - a[1].length))
+  console.log(`  ${String(codes.length).padStart(3)} ${why.slice(0, 62)}: ${codes.join(" ")}`);
+

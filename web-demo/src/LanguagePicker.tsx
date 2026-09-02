@@ -41,8 +41,9 @@ export function LanguagePicker({ value, disabled, onChange }: {
     <div className="picker" ref={box}>
       <input
         type="text" role="combobox" aria-expanded={open} aria-controls="lang-list"
-        disabled={disabled}
-        value={open ? query : (current ? current.name + (current.native ? ` · ${current.native}` : "") : value)}
+        aria-autocomplete="list"
+        aria-activedescendant={open && matches[active] ? `lang-opt-${matches[active].code}` : undefined}
+        disabled={disabled} value={open ? query : (current?.name ?? value)}
         placeholder="Search 193 languages…"
         onFocus={(e) => { setOpen(true); setQuery(""); e.currentTarget.select(); }}
         onChange={(e) => { setQuery(e.target.value); setOpen(true); }}
@@ -56,7 +57,7 @@ export function LanguagePicker({ value, disabled, onChange }: {
         <ul className="options" id="lang-list" role="listbox" ref={listRef}>
           {matches.length === 0 && <li className="empty">no language matches “{query}”</li>}
           {matches.map((l, i) => (
-            <li key={l.code} role="option" aria-selected={l.code === value}
+            <li key={l.code} id={`lang-opt-${l.code}`} role="option" aria-selected={l.code === value}
                 className={i === active ? "active" : undefined}
                 onMouseEnter={() => setActive(i)}
                 onMouseDown={(e) => { e.preventDefault(); choose(l); }}>

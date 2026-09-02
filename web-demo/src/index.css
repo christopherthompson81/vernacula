@@ -55,7 +55,7 @@ a { color: var(--accent); }
 .picker { position: relative; }
 .picker input { width: 15rem; font: inherit; border: 1px solid var(--line); border-radius: 7px;
                 background: var(--card); color: var(--fg); padding: .5rem .6rem; }
-.options { position: absolute; z-index: 20; top: calc(100% + 3px); left: 0; width: 25rem; max-width: 90vw;
+.options { position: absolute; z-index: 20; top: calc(100% + 3px); left: 0; width: 29rem; max-width: 92vw;
            max-height: 17rem; overflow-y: auto; margin: 0; padding: .25rem; list-style: none;
            background: var(--card); border: 1px solid var(--line); border-radius: 8px;
            box-shadow: 0 8px 24px rgba(0,0,0,.16); }
@@ -65,7 +65,8 @@ a { color: var(--accent); }
 .options li.empty { color: var(--muted); cursor: default; }
 .options .nm { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* The endonym sits beside the English name; everything from the code rightward is pushed to the far
-   edge — via .cd, not via .nm growing, so the 18 rows that HAVE no endonym align the same way. */
+   edge by .cd's auto margin rather than by .nm growing, so the 18 rows with no endonym align the
+   same way as the 175 with one. */
 .options .nat { flex: 0 1 auto; min-width: 0; color: var(--muted); font-size: .82rem;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .options .cd { margin-left: auto; padding-left: .3rem; color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .78rem; }

@@ -21,7 +21,7 @@ for (const l of LANGUAGES) {
   for (const [what, q] of [["name", l.name], ["code", l.code], ...(l.native ? [["native", l.native]] : [])]) {
     const hits = search(LANGUAGES, q);
     if (!hits.some((h) => h.code === l.code)) bad(`${l.code}: not found by ${what} "${q}"`);
-    else if (hits[0].code !== l.code && what !== "native")
+    else if (hits[0].code !== l.code)
       bad(`${l.code}: found by ${what} "${q}" but ranked behind ${hits[0].code}`);
   }
 }
