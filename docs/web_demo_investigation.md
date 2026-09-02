@@ -961,3 +961,84 @@ offers, and it takes text, not IPA. A browser aligner for this demo would need a
 PHONEME-level CTC model (e.g. wav2vec2-xlsr-53-espeak-cv-ft, ~300 MB int8, emits espeak-style
 IPA) plus a symbol fold from vernacula-phonemizer's IPA onto its inventory. That is a separate
 spike: another download of the transformer's order of size, for a highlight bar.
+
+## Run 21 — 2026-09-01 19:20, all 193 languages in the picker
+
+**Goal:** offer every language the phonemizer routes, not the 30 hand-listed ones — which needs
+four things solved: a picker that scales, a data-staging story that cannot silently miss a table, a
+sentence for each language, and a reference voice for each language.
+
+**1. Staging: whole directories, chosen by static module graph.** The recorded prefetch lists that
+served 30 languages do not scale — a recording only captures what the probe text reached, and I
+cannot write representative text in 193 languages. Two measurements settled the design:
+
+- Recording *under-reports*. A Latin probe for Basque recorded NO directory at all (its tables load
+  lazily), and Assamese's real dependency on Bengali's directory never appeared either.
+- The module graph is *exact*, because data keys are mechanical: `core/dataPath.ts` slices
+  `import.meta.url` after `/src/`, so any module mentioning it reads from the directory mirroring
+  its own. `tools/lang-dirs.mjs` walks a language's import closure and collects those.
+
+One trap, worth the note: `import type { Phonemizer } from "../../registry.ts"` appears in 164
+language modules, and following type-only edges pulls the registry — which imports all 193
+languages, so every language's answer became "all 175 directories". Skipping `import type` fixes it.
+The result reproduces the hand-derived edge table exactly: as→bengali, bs/hr→serbian, ba→russian,
+xh→zulu, gu→hindi, skr→punjabi, hyw→armenian, rn→kinyarwanda, en-GB→english+english-gb, ms→indonesian.
+`neuralRegistry`'s entries are walked separately, which is the only way `core/riderDiacritizer.onnx`
+(15 MB, Urdu and W. Punjabi) shows up at all.
+
+Sizes, with whole directories shipped so a lazily-loaded table cannot go missing:
+
+| | |
+|---|---|
+| engine set (always) | 4.5 MB, 182 manifests |
+| median language | 10 KB |
+| under 1 MB | 152 of 193 |
+| heaviest | arz 39.7, ur/pnb 29.9, ar 24.4, en 14, fa 13 MB |
+| whole tree staged | 150.7 MB in 346 files |
+
+`diacritizer-egy.onnx` is excluded for every Arabic code except `arz`, its only possible consumer —
+12 MB that ten dialects would otherwise pay for a model they cannot load.
+
+**2. The dynamic edge.** A run of text in a script the host language does not own is delegated to a
+reader chosen from the SCRIPT, not the language (`core/scripts.ts`), and upstream wraps that call in
+try/catch — so a data key we failed to prefetch does not raise, it silently degrades to the Latin
+path. The client now resolves the scripts present in the input to their readers and fetches those
+too, using the routing table lifted from the engine at staging time. Verified in the browser:
+
+    th: "วันนี้อากาศดีมาก but the weather forecast says rain."
+     -> wˈa˧nniː˦˥ ʔˈaː˧kaː˨˩t dˈiː˧maː˥˩k bˈʌt ðˈə wˈɛðɚ fˈɔːɹkæst sˈɛz ɹˈeᶦn .
+
+⚠ This changes which phoneme tables load. It does NOT change the voice — one voice renders the whole
+utterance, code-switching included.
+
+**3. Sentences, sourced rather than written.** A prefilled sentence in a language the author does not
+read is indistinguishable, to that author, from a right one. `tools/make-samples.mjs` takes them
+from FLEURS transcripts (a different clip than the language's own reference voice) and from the
+phonemizer's mined Wikipedia corpora, filtered to one sentence, one script, no digits or markup.
+Four filter bugs, each found by reading the output:
+
+1. An English sentence passed as a Tibetan sample — single-script is not enough, it must be the
+   language's OWN script, from its manifest.
+2. `"(\w+)"` does not match a two-word script name, so Santali ("Ol Chiki") and Sylheti
+   ("Syloti Nagri") had no declared script and skipped the check entirely.
+3. `s[0] !== s[0].toLowerCase()` — "starts with a capital" — is false for every caseless script, so
+   it rejected every candidate in Ethiopic, Tibetan, Sinhala, Myanmar, Arabic, Ol Chiki and Syloti
+   Nagri. 14 languages had no sample at all until it became `s[0] === s[0].toUpperCase()`.
+4. `--force` did not clear the old value first, so the samples a tightened filter had just rejected
+   survived it.
+
+187 of 193 now have one; the 30 curated parallel sentences are kept, and 19 varieties inherit their
+parent's (Arabic dialects from MSA, en-GB/en-IN from English, and so on — by SCRIPT, not by voice
+donor, since `pnb` is Shahmukhi while its donor voice `pa` is Gurmukhi).
+
+**4. The replay gate now covers everything: 187/187 languages phonemize from the staged data alone**,
+including the embedded-script fetches. One refinement: a key the engine asks for that does not exist
+upstream either is an optional probe (Saraiki's lexicon), not a staging gap.
+
+**5. Voices.** 102 languages have a native FLEURS reference; the other 91 are assigned a donor
+chosen for phonetic/areal proximity, and the UI says so. Verified: Basque read by the Spanish voice,
+Tibetan by the Burmese one, both listenable. The English default is back to the original studio
+reference clip from the export bring-up, which sounds better than the FLEURS exemplar (rms 0.061
+against 0.020); the FLEURS one stays as the second English voice.
+
+Audio: /tmp/vernacula-tts-listen/all-langs/.

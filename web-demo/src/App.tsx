@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { LANGUAGES, MODELS, NUM_STEPS } from "./inference/config.ts";
+import { MODELS, NUM_STEPS } from "./inference/config.ts";
+import { LANGUAGE_BY_CODE, voiceLangOf, type LanguageOption } from "./inference/languages.ts";
+import { LanguagePicker } from "./LanguagePicker.tsx";
 import { phonemize } from "./inference/phonemizer.ts";
 import { OmniVoice, voiceFor, voicesFor, type Voice } from "./inference/omnivoice.ts";
 import type { WordTiming } from "./inference/alignment.ts";
@@ -33,7 +35,7 @@ function activeIndex(tokens: { start?: number; end?: number }[], t: number): num
 
 export default function App() {
   const [lang, setLang] = useState("en");
-  const [text, setText] = useState(LANGUAGES.find((l) => l.code === "en")!.sample);
+  const [text, setText] = useState(LANGUAGE_BY_CODE.get("en")!.sample ?? "");
   const [progress, setProgress] = useState<Progress>({ stage: "idle" });
   const [ipa, setIpa] = useState("");
   const [tokens, setTokens] = useState<Token[] | null>(null);
@@ -51,8 +53,8 @@ export default function App() {
 
   useEffect(() => () => { if (audioUrl) URL.revokeObjectURL(audioUrl); }, [audioUrl]);
 
-  const langOpt = useMemo(() => LANGUAGES.find((l) => l.code === lang)!, [lang]);
-  const trained = langOpt.trained !== false;
+  const langOpt = useMemo(() => LANGUAGE_BY_CODE.get(lang) as LanguageOption, [lang]);
+  const trained = langOpt.trained === true;
 
   const ensureEngine = useCallback(async () => {
     if (engine.current) return engine.current;
@@ -70,7 +72,7 @@ export default function App() {
     });
     engine.current = ov;
     setEp(ov.backend.ep);
-    setLangVoices(voicesFor(ov.voices, lang));
+    setLangVoices(voicesFor(ov.voices, voiceLangOf(lang)));
     return ov;
   }, [lang]);
 
@@ -86,9 +88,9 @@ export default function App() {
       setProgress({ stage: "generating", fraction: 0 });
       // ⚠ Pick the voice for THIS language every time, not once at load: the reference carries the
       // speaker's accent, so reusing an English voice for German is audibly wrong.
-      const v = voiceFor(ov.voices, lang, voiceId);
+      const v = voiceFor(ov.voices, voiceLangOf(lang), voiceId);
       voice.current = v;
-      setLangVoices(voicesFor(ov.voices, lang));
+      setLangVoices(voicesFor(ov.voices, voiceLangOf(lang)));
       const r = await ov.synthesize(out, v, { numStep: NUM_STEPS },
         (step, total) => setProgress({ stage: "generating", fraction: step / total, detail: `step ${step}/${total}` }));
 
@@ -136,23 +138,17 @@ export default function App() {
       </header>
 
       <section className="controls">
-        <label>
+        <label className="lang">
           Language
-          <select value={lang} disabled={busy}
-                  onChange={(e) => {
-                    const c = e.target.value;
-                    setLang(c);
-                    setText(LANGUAGES.find((l) => l.code === c)!.sample);
-                    setIpa(""); setTokens(null); setWords(null); setActive(-1); setStats("");
-                    // A voice belongs to a language; carrying one across would reintroduce the
-                    // accent bleed that per-language references exist to remove.
-                    setVoiceId(undefined);
-                    setLangVoices(engine.current ? voicesFor(engine.current.voices, c) : []);
-                  }}>
-            {LANGUAGES.map((l) => (
-              <option key={l.code} value={l.code}>{l.name}{l.trained === false ? " (untrained)" : ""}</option>
-            ))}
-          </select>
+          <LanguagePicker value={lang} disabled={busy} onChange={(c) => {
+            setLang(c);
+            setText(LANGUAGE_BY_CODE.get(c)?.sample ?? "");
+            setIpa(""); setTokens(null); setWords(null); setActive(-1); setStats("");
+            // A voice belongs to a language; carrying one across would reintroduce the accent bleed
+            // that per-language references exist to remove.
+            setVoiceId(undefined);
+            setLangVoices(engine.current ? voicesFor(engine.current.voices, voiceLangOf(c)) : []);
+          }} />
         </label>
         {langVoices.length > 1 && (
           <label>
@@ -170,12 +166,25 @@ export default function App() {
 
       <textarea value={text} disabled={busy} rows={3}
                 onChange={(e) => setText(e.target.value)}
-                placeholder="Type something to say…" />
+                placeholder={langOpt.sample ? "Type something to say…"
+                             : `Type something in ${langOpt.name} — no example sentence is bundled for it yet`} />
 
-      {!trained && (
+      {(!trained || langOpt.voice) && (
         <p className="note">
-          <strong>{langOpt.name}</strong> was not in the fine-tune corpus. It still renders — the model
-          reads IPA and draws on phones it already holds — but the result is extrapolated, prosody most of all.
+          {!trained && (
+            <>
+              <strong>{langOpt.name}</strong> was not in the fine-tune corpus. It still renders — the
+              model reads IPA and draws on phones it already holds — but the result is extrapolated,
+              prosody most of all.{" "}
+            </>
+          )}
+          {langOpt.voice && (
+            <>
+              There is no native reference voice for it yet, so it is read by a{" "}
+              <strong>{LANGUAGE_BY_CODE.get(langOpt.voice)?.name ?? langOpt.voice}</strong> speaker:
+              voice cloning copies accent along with timbre, so expect one.
+            </>
+          )}
         </p>
       )}
 

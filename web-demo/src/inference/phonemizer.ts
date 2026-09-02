@@ -23,18 +23,63 @@ import { getOrt } from "./ortInit.ts";
 
 type PhonemizeAsync = (text: string, lang: string) => Promise<string>;
 
-interface KeyManifest { engine: string[]; languages: Record<string, string[]> }
+interface LangEntry { dirs: string[]; core: string[]; bytes: number; exclude?: string[] }
+interface KeyManifest {
+  engine: string[];
+  /** Every data directory, listed file by file — a language ships whole directories. */
+  dirs: Record<string, string[]>;
+  languages: Record<string, LangEntry>;
+  /** The foreign-run routing table, lifted from the engine at staging time. */
+  foreign: { defaults: Record<string, string>; overrides: Record<string, Record<string, string>> };
+}
+
+/**
+ * Scripts the engine can route a foreign run to, as a JavaScript-side detector.
+ *
+ * ⚠ THE ENGINE PICKS A READER FROM THE TEXT, NOT FROM THE SELECTED LANGUAGE. A run in a script the
+ * host language does not own is handed to another language's phonemizer, chosen by script
+ * (core/scripts.ts). So typing an English phrase inside a Thai sentence pulls ENGLISH's tables,
+ * and a Devanagari quotation inside anything pulls Hindi's. The delegation is wrapped in try/catch
+ * upstream, which means a data key we failed to prefetch does not raise — it silently degrades to a
+ * wrong reading. That is invisible, so the scripts present in the input are resolved to languages
+ * HERE and fetched before phonemizing.
+ *
+ * ⚠ This changes which phoneme tables load. It does not change the VOICE: one voice renders the
+ * whole utterance, code-switching included.
+ */
+const SCRIPT_RE: [string, RegExp][] = [
+  ["Latin", /\p{Script=Latin}/u], ["Cyrillic", /\p{Script=Cyrillic}/u], ["Arabic", /\p{Script=Arabic}/u],
+  ["Greek", /\p{Script=Greek}/u], ["Hebrew", /\p{Script=Hebrew}/u], ["Devanagari", /\p{Script=Devanagari}/u],
+  ["Bengali", /\p{Script=Bengali}/u], ["Tamil", /\p{Script=Tamil}/u], ["Telugu", /\p{Script=Telugu}/u],
+  ["Kannada", /\p{Script=Kannada}/u], ["Malayalam", /\p{Script=Malayalam}/u], ["Gujarati", /\p{Script=Gujarati}/u],
+  ["Gurmukhi", /\p{Script=Gurmukhi}/u], ["Oriya", /\p{Script=Oriya}/u], ["Sinhala", /\p{Script=Sinhala}/u],
+  ["Khmer", /\p{Script=Khmer}/u], ["Lao", /\p{Script=Lao}/u], ["Thai", /\p{Script=Thai}/u],
+  ["Tibetan", /\p{Script=Tibetan}/u], ["Myanmar", /\p{Script=Myanmar}/u], ["Ethiopic", /\p{Script=Ethiopic}/u],
+  ["Armenian", /\p{Script=Armenian}/u], ["Georgian", /\p{Script=Georgian}/u], ["Hangul", /\p{Script=Hangul}/u],
+  ["Han", /\p{Script=Han}/u], ["Kana", /\p{Script=Hiragana}|\p{Script=Katakana}/u],
+  ["Tifinagh", /\p{Script=Tifinagh}/u], ["Cherokee", /\p{Script=Cherokee}/u], ["Ol_Chiki", /\p{Script=Ol_Chiki}/u],
+  ["Adlam", /\p{Script=Adlam}/u], ["Nko", /\p{Script=Nko}/u], ["Syloti_Nagri", /\p{Script=Syloti_Nagri}/u],
+  ["Javanese", /\p{Script=Javanese}/u], ["Sundanese", /\p{Script=Sundanese}/u],
+];
+
+/** Languages whose data the engine may reach for this text, host first. */
+function languagesForText(text: string, host: string, m: KeyManifest): string[] {
+  const out = new Set([host]);
+  for (const [script, re] of SCRIPT_RE) {
+    if (!re.test(text)) continue;
+    const target = m.foreign.overrides[host]?.[script] ?? m.foreign.defaults[script];
+    if (target && target !== host) out.add(target);
+  }
+  return [...out];
+}
 
 /**
  * ⚠ TWO PHASES, AND THE SPLIT IS WHAT KEEPS FIRST LOAD SMALL. `engine` is what importing the engine
  * reads — every language's manifest, 182 files / 4.5 MB — and is needed whatever language you pick.
- * Per-language tables are fetched only when that language is chosen; all 28 together are ~202 MB,
- * which is not a first-load budget.
- *
- * ⚠ Expect English's data in most languages' lists. `phonemizeAsync` prewarms the English tagger
- * for mixed-Latin text, and a run in a script the host language does not own is delegated
- * (core/foreign.ts) — so a Thai page containing an English phrase loads English's tables too. The
- * lists are RECORDED from the engine rather than declared, so this is captured rather than guessed.
+ * A language's own directories come on top and only when it is chosen: the whole tree is 151 MB,
+ * but the median language is 10 KB and 152 of 193 are under 1 MB. The heavy ones are Arabic
+ * (24 MB, a 15 MB diacritizer), Urdu/W. Punjabi (30 MB, the shared rider model), English (14 MB),
+ * Persian, Russian and Japanese.
  */
 const bytes = new Map<string, Uint8Array>();
 let manifest: KeyManifest | undefined;
@@ -85,13 +130,18 @@ export async function phonemize(text: string, lang: string,
   // message, with no way to retry short of a reload.
   enginePromise ??= init(onProgress).catch((e) => { enginePromise = undefined; throw e; });
   const phon = await enginePromise;
-  if (!fetched.has(lang)) {
-    const keys = manifest?.languages[lang];
-    if (keys?.length) {
-      onProgress?.(`fetching ${lang} data`);
-      await fetchKeys(keys, onProgress, `${lang} `);
+  for (const code of languagesForText(text, lang, manifest!)) {
+    if (fetched.has(code)) continue;
+    const entry = manifest!.languages[code];
+    if (!entry) { fetched.add(code); continue; }
+    const skip = new Set(entry.exclude ?? []);
+    const keys = [...entry.dirs.flatMap((d) => manifest!.dirs[d] ?? []), ...entry.core]
+      .filter((k) => !skip.has(k));
+    if (keys.length) {
+      onProgress?.(code === lang ? `fetching ${lang} data` : `fetching ${code} data (embedded script)`);
+      await fetchKeys(keys, onProgress, `${code} `);
     }
-    fetched.add(lang);
+    fetched.add(code);
   }
   return phon(text, lang);
 }

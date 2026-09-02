@@ -50,3 +50,22 @@ audio { width: 100%; }
 .error { color: #b3261e; font-size: .88rem; white-space: pre-wrap; }
 footer { margin-top: 3rem; padding-top: 1.25rem; border-top: 1px solid var(--line); }
 a { color: var(--accent); }
+
+/* Language picker: an input plus a filtered listbox, because a 193-row <select> is unusable. */
+.picker { position: relative; }
+.picker input { width: 15rem; font: inherit; border: 1px solid var(--line); border-radius: 7px;
+                background: var(--card); color: var(--fg); padding: .5rem .6rem; }
+.options { position: absolute; z-index: 20; top: calc(100% + 3px); left: 0; width: 25rem; max-width: 90vw;
+           max-height: 17rem; overflow-y: auto; margin: 0; padding: .25rem; list-style: none;
+           background: var(--card); border: 1px solid var(--line); border-radius: 8px;
+           box-shadow: 0 8px 24px rgba(0,0,0,.16); }
+.options li { display: flex; align-items: baseline; gap: .45rem; padding: .3rem .45rem;
+              border-radius: 5px; cursor: pointer; font-size: .87rem; }
+.options li.active { background: color-mix(in srgb, var(--accent) 16%, transparent); }
+.options li.empty { color: var(--muted); cursor: default; }
+.options .nm { flex: 1 1 auto; }
+.options .cd { color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .78rem; }
+.options .sz { color: var(--muted); font-size: .75rem; min-width: 3.2rem; text-align: right; }
+.badge { font-size: .68rem; text-transform: uppercase; letter-spacing: .04em; padding: .05rem .3rem;
+         border: 1px solid var(--line); border-radius: 4px; color: var(--muted); }
+.badge.trained { color: var(--accent); border-color: currentColor; }

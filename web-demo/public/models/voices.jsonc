@@ -67,9 +67,14 @@
   // el — el_gr train · FEMALE · 8.0s · candidate 0
   // "Αρκετοί όμηροι έχουν διασωθεί και έχουν επιβεβαιωθεί ως τώρα τουλάχιστον 6 νεκροί."
   {"id":"el","lang":"el","default":true,"label":"el · FEMALE · 8.0s","refIpa":"aɾceti omiɾi exun ðiasoθi ce exun epiveveoθi os toɾa tulaçiston eksi nekɾi .","refLen":200,"refRms":0.17994,"source":{"dataset":"google/fleurs","lang":"el_gr","file":"13671207366276224782.wav","split":"train","sentenceId":"1208","gender":"FEMALE","durationS":8,"candidateIndex":0,"text":"Αρκετοί όμηροι έχουν διασωθεί και έχουν επιβεβαιωθεί ως τώρα τουλάχιστον 6 νεκροί."}},
+  // en — the ORIGINAL reference clip from the ONNX export bring-up (not FLEURS): a studio-clean
+  // English male read, 3.3 s. Kept as the English DEFAULT because it is audibly better than the
+  // 8 s FLEURS exemplar — less room, no channel noise, and a much higher level (rms 0.061 vs 0.020).
+  // "This is a reference voice sample for testing the export pipeline."
+  {"id":"en-reference","lang":"en","default":true,"label":"en · MALE · 3.3s · studio reference","refIpa":"ðɪs ɪz ə ɹˈɛfɚəns vˈɔᶦs sˈæmpəɫ fɔːɹ tʰˈɛstɪŋ ðə ˈɛkspɔːɹt pʰˈaᶦplaᶦn .","refLen":82,"refRms":0.06081906821933624},
   // en — en_us train · FEMALE · 8.0s · candidate 0
   // "For a few pennies some children will tell you the story."
-  {"id":"en","lang":"en","default":true,"label":"en · FEMALE · 8.0s","refIpa":"fɔːɹ ə fjˈuː pʰˈɛniz sˈʌm t͡ʃˈɪɫdɹən wɪɫ tʰˈɛɫ juː ðə stˈɔːɹi .","refLen":200,"refRms":0.01995,"source":{"dataset":"google/fleurs","lang":"en_us","file":"7690116150461205123.wav","split":"train","sentenceId":"729","gender":"FEMALE","durationS":8,"candidateIndex":0,"text":"For a few pennies some children will tell you the story."}},
+  {"id":"en","lang":"en","label":"en · FEMALE · 8.0s","refIpa":"fɔːɹ ə fjˈuː pʰˈɛniz sˈʌm t͡ʃˈɪɫdɹən wɪɫ tʰˈɛɫ juː ðə stˈɔːɹi .","refLen":200,"refRms":0.01995,"source":{"dataset":"google/fleurs","lang":"en_us","file":"7690116150461205123.wav","split":"train","sentenceId":"729","gender":"FEMALE","durationS":8,"candidateIndex":0,"text":"For a few pennies some children will tell you the story."}},
   // es — es_419 train · MALE · 8.0s · candidate 0
   // "Luego de reconquistar Danelaw, Inglaterra había disfrutado de un prolongado período pacífico."
   {"id":"es","lang":"es","default":true,"label":"es · MALE · 8.0s","refIpa":"lwˈeɣo ðe rekonkistˈaɾ ðanelˈaw , inɡlatˈera aβˈia ðisfɾutˈaðo ðe un pɾolonɡˈaðo peɾˈioðo pasˈifiko .","refLen":200,"refRms":0.05229,"source":{"dataset":"google/fleurs","lang":"es_419","file":"18193575960561485385.wav","split":"train","sentenceId":"382","gender":"MALE","durationS":8,"candidateIndex":0,"text":"Luego de reconquistar Danelaw, Inglaterra había disfrutado de un prolongado período pacífico."}},
