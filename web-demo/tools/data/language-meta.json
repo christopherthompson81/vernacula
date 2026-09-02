@@ -89,8 +89,7 @@
  },
  "ba": {
   "name": "Bashkir",
-  "sample": "Бөтә донъя стандарттар көнөнөң датаһы осраҡлы һайланмаған.",
-  "voice": "kk"
+  "sample": "Бөтә донъя стандарттар көнөнөң датаһы осраҡлы һайланмаған."
  },
  "bal": {
   "name": "Balochi",
@@ -163,8 +162,7 @@
  },
  "chv": {
   "name": "Chuvash",
-  "sample": "Механика и теория относительности: Учебник для студентов вузов.",
-  "voice": "kk"
+  "sample": "Механика и теория относительности: Учебник для студентов вузов."
  },
  "cjy": {
   "name": "Jin Chinese",
@@ -225,8 +223,7 @@
  },
  "es": {
   "name": "Spanish (Castilian)",
-  "sample": "El tiempo está muy agradable hoy en la costa.",
-  "voice": "es-419"
+  "sample": "El tiempo está muy agradable hoy en la costa."
  },
  "es-419": {
   "name": "Spanish (Latin America)",
@@ -238,8 +235,7 @@
  },
  "eu": {
   "name": "Basque",
-  "sample": "Hypancistrus contradens Hypancistrus generoko animalia da.",
-  "voice": "es-419"
+  "sample": "Hypancistrus contradens Hypancistrus generoko animalia da."
  },
  "fa": {
   "name": "Persian",
@@ -287,8 +283,7 @@
  },
  "gn": {
   "name": "Guaraní",
-  "sample": "Opaite nunga tekove oikóva ipype oĩ Yjere Mbenĩ yrembe'ýre.",
-  "voice": "es-419"
+  "sample": "Opaite nunga tekove oikóva ipype oĩ Yjere Mbenĩ yrembe'ýre."
  },
  "grc": {
   "name": "Ancient Greek",
@@ -347,8 +342,7 @@
  },
  "ht": {
   "name": "Haitian Creole",
-  "sample": "Lotería se yon vil nan pwovens Villa Clara, nan peyi Kiba.",
-  "voice": "fr"
+  "sample": "Lotería se yon vil nan pwovens Villa Clara, nan peyi Kiba."
  },
  "hu": {
   "name": "Hungarian",
@@ -360,8 +354,7 @@
  },
  "hyw": {
   "name": "Western Armenian",
-  "sample": "Քառասնօրեայ պատրաստութեան շրջանէ լրացնելէ ետք, Տէր Հայրը նշանակուած է Ս.",
-  "voice": "hy"
+  "sample": "Քառասնօրեայ պատրաստութեան շրջանէ լրացնելէ ետք, Տէր Հայրը նշանակուած է Ս."
  },
  "id": {
   "name": "Indonesian",
@@ -428,8 +421,7 @@
  },
  "kmr": {
   "name": "Kurmanji",
-  "sample": "Koma şanoyê ji karkeran, xwendekaran û bêkaran pêk hatibû.",
-  "voice": "ckb"
+  "sample": "Koma şanoyê ji karkeran, xwendekaran û bêkaran pêk hatibû."
  },
  "kn": {
   "name": "Kannada",
@@ -470,8 +462,7 @@
  },
  "ltg": {
   "name": "Latgalian",
-  "sample": "Dorbuojīs žurnalā Jaunuo dzeive, laikrokstā Latgolas Bolss.",
-  "voice": "lv"
+  "sample": "Dorbuojīs žurnalā Jaunuo dzeive, laikrokstā Latgolas Bolss."
  },
  "luo": {
   "name": "Luo",
@@ -544,8 +535,7 @@
  },
  "nan": {
   "name": "Min Nan Chinese",
-  "sample": "I-ê lāu-pē sī Rupert Oliver Benjamin van den Bogaerde; lāu-bú sī Hon.",
-  "voice": "yue"
+  "sample": "I-ê lāu-pē sī Rupert Oliver Benjamin van den Bogaerde; lāu-bú sī Hon."
  },
  "naq": {
   "name": "Nama",
@@ -557,8 +547,7 @@
  },
  "nci": {
   "name": "Classical Nahuatl",
-  "sample": "Ītech pōhui in tlācatl, auh momoloca in imman īmiyaquiliz.",
-  "voice": "es-419"
+  "sample": "Ītech pōhui in tlācatl, auh momoloca in imman īmiyaquiliz."
  },
  "ne": {
   "name": "Nepali",
@@ -635,8 +624,7 @@
  },
  "qu": {
   "name": "Quechua",
-  "sample": "Taytan: Samuel Nowlin Reeves, Jr.; Maman: Patricia Taylor.",
-  "voice": "es-419"
+  "sample": "Taytan: Samuel Nowlin Reeves, Jr.; Maman: Patricia Taylor."
  },
  "quc": {
   "name": "K'iche'",
@@ -667,13 +655,11 @@
  },
  "rw": {
   "name": "Kinyarwanda",
-  "sample": "Uyu mucyo nicyo kigize umukororombya kuri uriya ndorerezi.",
-  "voice": "lg"
+  "sample": "Uyu mucyo nicyo kigize umukororombya kuri uriya ndorerezi."
  },
  "sat": {
   "name": "Santali",
-  "sample": "ᱱᱚᱣᱟ ᱯᱟᱥᱮᱡ ᱛᱟᱭᱚᱢ ᱫᱟᱨᱟᱢ ᱢᱚᱣᱟᱢᱚᱨᱤᱭᱟ ᱦᱩᱭ ᱥᱮᱝᱜᱮᱞᱮ ᱥᱟᱞᱜᱟᱣ ᱞᱮᱫᱟ।",
-  "voice": "bn"
+  "sample": "ᱱᱚᱣᱟ ᱯᱟᱥᱮᱡ ᱛᱟᱭᱚᱢ ᱫᱟᱨᱟᱢ ᱢᱚᱣᱟᱢᱚᱨᱤᱭᱟ ᱦᱩᱭ ᱥᱮᱝᱜᱮᱞᱮ ᱥᱟᱞᱜᱟᱣ ᱞᱮᱫᱟ।"
  },
  "sd": {
   "name": "Sindhi",
@@ -681,8 +667,7 @@
  },
  "shi": {
   "name": "Tashelhit",
-  "sample": "Issuɣl ula mnnaw igzzumn ɣ Injil aɛibri s Tutlayt Tagrikt.",
-  "voice": "ar"
+  "sample": "Issuɣl ula mnnaw igzzumn ɣ Injil aɛibri s Tutlayt Tagrikt."
  },
  "shn": {
   "name": "Shan",
@@ -700,8 +685,7 @@
  },
  "skr": {
   "name": "Saraiki",
-  "sample": "دل کوں منصف بنڑا تے نمبر ڈیسو نام ڈاہ کنوں زیادہ ہر گز نہ ھوون.",
-  "voice": "sd"
+  "sample": "دل کوں منصف بنڑا تے نمبر ڈیسو نام ڈاہ کنوں زیادہ ہر گز نہ ھوون."
  },
  "sl": {
   "name": "Slovenian",
@@ -721,8 +705,7 @@
  },
  "sq": {
   "name": "Albanian",
-  "sample": "Ndërtesa është e formësuar në përdhese të ngritur dhe kat.",
-  "voice": "mk"
+  "sample": "Ndërtesa është e formësuar në përdhese të ngritur dhe kat."
  },
  "sr": {
   "name": "Serbian",
@@ -730,8 +713,7 @@
  },
  "st": {
   "name": "Sesotho",
-  "sample": "Ndima o hlahetse Afrika Borwa mme a holela Port Elizabeth.",
-  "voice": "nso"
+  "sample": "Ndima o hlahetse Afrika Borwa mme a holela Port Elizabeth."
  },
  "su": {
   "name": "Sundanese",
@@ -769,13 +751,11 @@
  },
  "ti": {
   "name": "Tigrinya",
-  "sample": "ሞሮካዊ መንነትን ባህልን ናይ ዓረብ፣ በርበር፣ ኣፍሪቃን ኤውሮጳን ባህልታት ዝተሓዋወሰ እዩ።",
-  "voice": "am"
+  "sample": "ሞሮካዊ መንነትን ባህልን ናይ ዓረብ፣ በርበር፣ ኣፍሪቃን ኤውሮጳን ባህልታት ዝተሓዋወሰ እዩ።"
  },
  "tk": {
   "name": "Turkmen",
-  "sample": "Awliýa tä kyýamata çenli ýaşajak musulmanlarda bolmalydyr.",
-  "voice": "az"
+  "sample": "Awliýa tä kyýamata çenli ýaşajak musulmanlarda bolmalydyr."
  },
  "tl": {
   "name": "Tagalog",
@@ -783,8 +763,7 @@
  },
  "tn": {
   "name": "Setswana",
-  "sample": "Maunatlala ke motse o o mo kgaolong ya legare mo Botswana.",
-  "voice": "nso"
+  "sample": "Maunatlala ke motse o o mo kgaolong ya legare mo Botswana."
  },
  "tr": {
   "name": "Turkish",
@@ -792,13 +771,11 @@
  },
  "tt": {
   "name": "Tatar",
-  "sample": "Елга Бурначка елгасына кушылып, аның кушылдыгы булып тора.",
-  "voice": "kk"
+  "sample": "Елга Бурначка елгасына кушылып, аның кушылдыгы булып тора."
  },
  "ug": {
   "name": "Uyghur",
-  "sample": "ئاندىن ئۇنىڭ خوتۇن-بالىسى بۇ مۈلكۈڭگە ھەرگىز چېقىلالمايدۇ.",
-  "voice": "uz"
+  "sample": "ئاندىن ئۇنىڭ خوتۇن-بالىسى بۇ مۈلكۈڭگە ھەرگىز چېقىلالمايدۇ."
  },
  "uk": {
   "name": "Ukrainian",

@@ -1089,3 +1089,51 @@ published file, and 12 hex still finds the row.
 way. The other 64 need audio from elsewhere; docs/voice_sourcing.md ranks them.
 
 Audio: /tmp/vernacula-tts-listen/ab/ (three generated, plus the three source clips).
+
+## Run 23 — 2026-09-01 19:55, sourcing 24 more voices from Common Voice
+
+**Goal:** a native reference for every language Common Voice 22.0 shares with the demo's 90
+donor-voice gaps. Result: **126 of 193 languages now have a native voice, up from 102** — 68 clips
+across 24 languages, all CC0.
+
+**Selection stayed measured, and the split mattered more than expected.** The default filter (7.8-9.2 s,
+2+ up-votes, no down-votes) is the right one for the well-resourced locales, but eight languages have
+NOTHING in their validated splits at that length: Haitian Creole's whole test split is 5 rows,
+Nahuatl's 5, Quechua's 10, Tigrinya's 11. Those were sourced from the **unvalidated `other` split**
+with the window widened to 4-12 s, which means no listener has confirmed the reading matches the
+sentence and the audio score carries the whole decision. Recorded as such in docs/voice_sourcing.md.
+
+**Three could not be sourced, and the reasons are worth keeping:**
+
+| language | why not |
+|---|---|
+| Aromanian | one clip in the entire dataset, and it fails the audio screen |
+| European Portuguese | `pt` is overwhelmingly Brazilian — 3 of 9,641 test rows labelled Portugal, none in the length band, 94% of rows unlabelled |
+| Western Punjabi | `pa-IN` is Gurmukhi, which is the donor `pnb` already has; Shahmukhi must come from elsewhere |
+
+**Three tool changes, each forced by something that went wrong:**
+
+1. **A script check.** A Common Voice locale need not be written in the script the engine reads —
+   `pa-IN` is Gurmukhi against `pnb`'s Shahmukhi, `zgh` ships Tifinagh and Latin, `nan-tw` mixes Han
+   with romanisation. Phonemizing a sentence in the wrong script yields confident nonsense as the
+   REFERENCE transcript, which is then fed to the model beside the codes.
+2. **An accent filter.** Common Voice `es` is Spanish everywhere and its largest labelled group is
+   Mexico, so sourcing a *Castilian* voice unfiltered would have re-imported the Latin American
+   accent the demo already has from FLEURS. `--accent "España: (Norte|Centro-Sur)"`.
+3. **Prefix fetching.** Throughput to the dataset collapsed part-way through (8 MB/s to 300 KB/s) and
+   the big archives are hundreds of MB — Kinyarwanda 676, Uyghur 553 — all discarded but three
+   clips. A tar is sequential, so `--prefix-mb N` range-fetches the head and extracts every whole
+   member: for Uyghur, 80 MB held 2,097 clips of which 238 were candidates. It only works where
+   candidates are plentiful, so the shortlist is widened rather than capped in that mode.
+
+**Two process bugs, both mine:**
+
+- A `pkill -f cv-batch` intended for the waiters killed the main batch mid-language. Restarting from
+  a consolidated script was fine because each language's work is idempotent — but the lesson from the
+  earlier `git add -A` still applies: name the thing you mean.
+- The first dry run printed entries without persisting codes, and encoding is the expensive half.
+  The tool now always writes `<work>/voices.json`, and `tools/merge-cv-voices.mjs` reads those.
+
+**Verified:** 171 voices, every id has codes of exactly `refLen × 8`, no language has two defaults,
+and the replay gate still passes 187/187. Previews under
+/tmp/vernacula-tts-listen/cv-voices/ — the unvalidated-split ones deserve the closest listen.

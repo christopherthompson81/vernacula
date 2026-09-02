@@ -27,6 +27,29 @@ const opt = (k, d) => { const i = args.indexOf(`--${k}`); return i < 0 ? d : arg
 const CV = opt("cv"), LANG = opt("lang", CV), SPLIT = opt("split", "test");
 const N = Number(opt("n", 3)), WRITE = args.includes("--write");
 const MIN_MS = Number(opt("min", 7800)), MAX_MS = Number(opt("max", 9200));
+/** Minimum up-votes. ⚠ Lower this only with the split in mind: `other` is UNVALIDATED, so its clips
+ *  carry no votes at all and nothing but the audio score stands between a bad read and the demo. */
+const VOTES = Number(opt("votes", 2));
+/**
+ * Regex over Common Voice's `accents` column.
+ *
+ * ⚠ Needed wherever the locale is broader than the demo language. Common Voice `es` is Spanish
+ * everywhere — the largest labelled group in the test split is Mexico, not Spain — so sourcing a
+ * CASTILIAN reference without filtering would likely re-import the Latin American accent the demo
+ * already has from FLEURS. Same for `pt`, which mixes Brazil and Portugal.
+ */
+const ACCENT = opt("accent") ? new RegExp(opt("accent"), "iu") : null;
+/**
+ * Fetch only the first N MB of the split archive, with a Range request.
+ *
+ * ⚠ For the big locales the archive is most of an hour on a throttled connection (Kinyarwanda's
+ * test split is 676 MB, Uyghur's 553 MB) and all of it is thrown away but three clips. A tar is
+ * sequential, so a prefix is a valid archive up to the member it cuts through: extract what is
+ * whole, ignore the truncation, and score whatever candidates landed inside. It only works when the
+ * language has candidates to spare — with 924 qualifying clips spread over 16,213, a tenth of the
+ * archive still holds ~90 of them — so the shortlist is widened in this mode rather than capped.
+ */
+const PREFIX_MB = Number(opt("prefix-mb", 0));
 /** Force specific clips instead of ranking — this is what makes a committed voice REPRODUCIBLE:
  *  the shipped set names its files, and re-running with them re-derives the same codes. */
 const CLIPS = (opt("clip", "") || "").split(",").filter(Boolean);
@@ -37,6 +60,35 @@ if (!CV) { console.error("usage: --cv <locale> [--lang <demo code>] [--n 3] [--s
 
 const HF = "https://huggingface.co/datasets/fsicoli/common_voice_22_0/resolve/main";
 mkdirSync(join(WORK, "wav"), { recursive: true });
+
+/**
+ * The scripts the phonemizer's engine declares for this language.
+ *
+ * ⚠ A Common Voice locale is not guaranteed to be written in the script the engine reads. `pa-IN` is
+ * Gurmukhi while `pnb` is Shahmukhi; `zgh` ships both Tifinagh and Latin; `nan-tw` mixes Han with
+ * romanisation. Phonemizing a sentence in the wrong script produces confident nonsense for the
+ * reference transcript, and the reference transcript is fed to the model beside the codes — so a
+ * clip whose sentence is not in the engine's script is rejected rather than encoded.
+ */
+function declaredScripts(lang) {
+  const dir = PHONEMIZER;
+  const src = readFileSync(join(dir, "src/core/scripts.ts"), "utf8");
+  const tbl = src.slice(src.indexOf("MANIFESTLESS_SCRIPTS"));
+  for (const m of tbl.slice(0, tbl.indexOf("\n};")).matchAll(/"?([\w-]+)"?:\s*\[([^\]]*)\]/g))
+    if (m[1] === lang) return [...m[2].matchAll(/"([\w ]+)"/g)].map((x) => x[1].replace(/ /gu, "_"));
+  for (const d of readdirSync(join(dir, "data/languages"))) {
+    for (const f of readdirSync(join(dir, "data/languages", d)).filter((x) => x.endsWith(".jsonc"))) {
+      const t = readFileSync(join(dir, "data/languages", d, f), "utf8");
+      if (t.match(/"language":\s*"([\w-]+)"/)?.[1] !== lang) continue;
+      const sc = t.match(/"script":\s*\[([^\]]*)\]/)?.[1];
+      if (sc) return [...sc.matchAll(/"([\w ]+)"/g)].map((x) => x[1].replace(/ /gu, "_"));
+    }
+  }
+  return [];
+}
+
+const scriptRe = (n) => n === "Kana" ? /\p{Script=Hiragana}|\p{Script=Katakana}/u
+                                     : new RegExp(`\\p{Script=${n}}`, "u");
 
 const fetchTo = (url, path) => {
   if (existsSync(path)) return path;
@@ -52,6 +104,9 @@ const tsv = (path) => {
 };
 
 console.log(`Common Voice ${CV} -> demo language ${LANG}`);
+const SCRIPTS = declaredScripts(LANG).map(scriptRe);
+if (!SCRIPTS.length) console.warn(`  ⚠ ${LANG} declares no script — sentences not script-checked`);
+const inScript = (s) => !SCRIPTS.length || SCRIPTS.some((re) => re.test(s));
 const durs = Object.fromEntries(tsv(fetchTo(`${HF}/transcript/${CV}/clip_durations.tsv`, join(WORK, "durations.tsv")))
   .map((r) => [r.clip, Number(r["duration[ms]"])]));
 const rows = tsv(fetchTo(`${HF}/transcript/${CV}/${SPLIT}.tsv`, join(WORK, `${SPLIT}.tsv`)));
@@ -60,17 +115,35 @@ const rows = tsv(fetchTo(`${HF}/transcript/${CV}/${SPLIT}.tsv`, join(WORK, `${SP
 const shortlist = CLIPS.length ? CLIPS.map((c) => rows.find((r) => r.path === c)).filter(Boolean)
   : rows.filter((r) => {
       const ms = durs[r.path] ?? 0;
-      return ms >= MIN_MS && ms <= MAX_MS && Number(r.up_votes) >= 2 && Number(r.down_votes) === 0;
-    }).slice(0, 40);
+      if (ACCENT && !ACCENT.test(r.accents ?? "")) return false;
+      return ms >= MIN_MS && ms <= MAX_MS && Number(r.up_votes || 0) >= VOTES && Number(r.down_votes || 0) === 0;
+    }).filter((r) => inScript(r.sentence)).slice(0, PREFIX_MB ? 4000 : 40);
+for (const r of shortlist) if (!inScript(r.sentence))
+  console.warn(`  ⚠ ${r.path}: sentence is not in ${LANG}'s script`);
 if (CLIPS.length && shortlist.length !== CLIPS.length)
   console.warn(`  ⚠ ${CLIPS.length - shortlist.length} named clip(s) not in ${SPLIT}.tsv`);
-console.log(`  ${shortlist.length} candidates by metadata (${MIN_MS}-${MAX_MS} ms, 2+ up, 0 down)`);
+console.log(`  ${shortlist.length} candidates by metadata (${MIN_MS}-${MAX_MS} ms, ${VOTES}+ up, 0 down)`);
 if (!shortlist.length) { console.error("  nothing matched — widen --min/--max or try --split train"); process.exit(1); }
 
-const tar = fetchTo(`${HF}/audio/${CV}/${SPLIT}/${CV}_${SPLIT}_0.tar`, join(WORK, `${SPLIT}_0.tar`));
+console.log(`  script check: ${SCRIPTS.length ? declaredScripts(LANG).join("+") : "none"}`
+          + (ACCENT ? `, accent filter ${ACCENT}` : ""));
+const tarUrl = `${HF}/audio/${CV}/${SPLIT}/${CV}_${SPLIT}_0.tar`;
+const tar = join(WORK, `${SPLIT}_0.tar`);
+if (!existsSync(tar)) {
+  if (PREFIX_MB) {
+    console.log(`  fetching first ${PREFIX_MB} MB of ${SPLIT}_0.tar…`);
+    execFileSync("curl", ["-sfL", "--max-time", "1800", "-r", `0-${PREFIX_MB * 1000000 - 1}`, tarUrl, "-o", tar]);
+  } else fetchTo(tarUrl, tar);
+}
 console.log("  extracting…");
-execFileSync("tar", ["-xf", tar, "-C", WORK, "--wildcards", ...shortlist.map((r) => `*${r.path}`)],
-             { stdio: ["ignore", "ignore", "ignore"] });
+try {
+  // A truncated tar makes tar exit non-zero AFTER extracting every whole member — which is exactly
+  // what the prefix mode wants, so the failure is expected and ignored there.
+  execFileSync("tar", ["-xf", tar, "-C", WORK, "--wildcards", ...(PREFIX_MB ? ["*.mp3"] : shortlist.map((r) => `*${r.path}`))],
+               { stdio: ["ignore", "ignore", "ignore"] });
+} catch (e) { if (!PREFIX_MB) throw e; }
+// The split archives run to hundreds of MB each and 26 languages will not fit on a scratch disk.
+if (!args.includes("--keep-tar")) execFileSync("rm", ["-f", tar]);
 
 /** Noise floor, speech fraction and peak, from 10 ms frames of the decoded clip. */
 function score(wavPath) {
@@ -99,10 +172,15 @@ function score(wavPath) {
   return { snr: mean - floor, speechFrac: speech.length / m, peak };
 }
 
+const present = new Set(readdirSync(WORK, { recursive: true }).map(String).filter((f) => f.endsWith(".mp3")));
+const byName = new Map([...present].map((f) => [f.split("/").pop(), f]));
+if (PREFIX_MB) console.log(`  ${present.size} clips inside the prefix, ${shortlist.filter((r) => byName.has(r.path)).length} of them candidates`);
 const scored = [];
+let considered = 0;
 for (const r of shortlist) {
-  const mp3 = readdirSync(WORK, { recursive: true }).find((f) => String(f).endsWith(r.path));
+  const mp3 = byName.get(r.path);
   if (!mp3) continue;
+  if (PREFIX_MB && ++considered > 40) break;
   const wav = join(WORK, "wav", r.path.replace(/\.mp3$/, ".wav"));
   execFileSync("ffmpeg", ["-v", "error", "-y", "-i", join(WORK, String(mp3)), "-ac", "1", "-ar", "24000",
                           "-sample_fmt", "s16", wav]);
@@ -154,6 +232,11 @@ for (const [i, c] of chosen.entries()) {
 }
 
 const json = (o) => JSON.stringify(o, null, 0);
+
+// ⚠ ALWAYS persist the codes, even on a dry run. Encoding is the expensive half (the split archive
+// is hundreds of MB and is deleted after extraction), so a run that only PRINTS entries throws away
+// the one artifact that cannot be cheaply recomputed. `tools/merge-cv-voices.mjs` reads these.
+writeFileSync(join(WORK, "voices.json"), JSON.stringify(entries));
 console.log("\n// paste into public/models/voices.jsonc (codes go to voice-codes.json):");
 for (const e of entries) console.log(`  // "${e.voice.source.text}"\n  ${json(e.voice)},`);
 

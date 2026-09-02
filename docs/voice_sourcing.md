@@ -8,14 +8,31 @@ cloning copies the speaker's accent along with their timbre.
 
 This is the list of what a native clip would fix, worst first.
 
-## Done
+## Done — 24 languages sourced from Common Voice 22.0 (CC0)
 
-| language | source | voices |
-|---|---|---|
-| **Abkhaz** `ab` | Common Voice 22.0, CC0 | 3 (female teens, female thirties, male twenties) |
+**126 of 193 languages now have a native voice, up from 102.** 68 clips across 24 languages, one to
+three each, all Common Voice 22.0 (CC0), all selected by measuring the audio:
 
-Abkhaz was read by a Georgian voice, which is a different family entirely. It now has three native
-references; the demo defaults to the first and the picker offers the other two.
+| tier | languages |
+|---|---|
+| A — donor was a stranger | Abkhaz, Basque, Classical Nahuatl, Haitian Creole, Kinyarwanda, Quechua, Santali, Sesotho, Setswana, Tashelhit |
+| B — related but different | Albanian, Bashkir, Chuvash, Kurmanji, Latgalian, Min Nan, Tatar, Tigrinya, Turkmen, Uyghur |
+| C — same language, other standard | Castilian Spanish, Saraiki, Western Armenian, and Guaraní's own speakers |
+
+⚠ Several came from the **unvalidated** `other` split, because their validated splits hold nothing of
+usable length: Haitian Creole, Nahuatl, Santali, Sesotho, Setswana, Tashelhit, Tigrinya, Quechua.
+Unvalidated means no listener has confirmed the reading matches the sentence, so the audio score is
+doing all the work and a listening test matters more for these than for the rest.
+
+**Three could not be sourced and keep their donor:**
+
+- **Aromanian** — Common Voice has one Aromanian clip in the whole dataset, and it fails the audio
+  screen. Still read by Romanian.
+- **European Portuguese** — Common Voice `pt` is overwhelmingly Brazilian: 3 of 9,641 test rows are
+  labelled Portugal, none in the length band, and 94% of rows carry no accent label at all. Still
+  read by the Brazilian FLEURS voice.
+- **Western Punjabi** — Common Voice `pa-IN` is Gurmukhi Punjabi, which is the donor it already has;
+  a Shahmukhi clip would have to come from elsewhere.
 
 ## What a usable clip is
 
@@ -34,7 +51,7 @@ codes, and a transcript that does not match what is said degrades the clone. Enc
 
 Only the codes (a few KB) ship; the audio does not, and neither does the 654 MB encoder.
 
-## Common Voice covers 26 of the 90 remaining
+## The remaining 67
 
 `tools/make-voice-from-commonvoice.mjs` automates the whole path — download, score, phonemize,
 encode, write both files:
@@ -49,13 +66,9 @@ reference is cloned faithfully — its noise comes out in every sentence the dem
 last step is always a listening test. `--clip a.mp3,b.mp3` forces named clips, which is what makes a
 shipped voice reproducible.
 
-Available there: Albanian, Aromanian, Bashkir, Basque, Chuvash (`cv`), Classical Nahuatl (`nhi`),
-Guaraní, Haitian Creole, Kinyarwanda, Kurmanji, Latgalian, Min Nan (`nan-tw`), European Portuguese,
-Quechua (`quy`), Santali, Saraiki, Sesotho, Setswana, Castilian Spanish, Tashelhit (`zgh`), Tatar,
-Tigrinya, Turkmen, Uyghur, Western Armenian (`hy-AM`), Western Punjabi (`pa-IN`).
-
-The other 64 need audio from somewhere else — that is where sourcing help is worth most, and the
-tiers below say which of them matter most.
+Common Voice is now exhausted for this purpose: every locale it shares with the demo's gaps has been
+tried. The remaining 67 languages need audio from somewhere else, and the tiers below say which of
+them matter most.
 
 ## Tier A — donor is a stranger (33)
 
