@@ -126,7 +126,7 @@ export const LANGUAGES: LanguageOption[] = [
   { code: "lb", name: "Luxembourgish", mb: 0.01, sample: "Insekte waren déi éischt Déieren, déi d'Loft erobert hunn." },
   { code: "mk", name: "Macedonian", mb: 0, sample: "Гледајте на скијачкиот пат како на сличен пат за пешачење." },
   { code: "mad", name: "Madurese", mb: 0.01, voice: "jv", sample: "Orèng muslim anḍi' hubungan kalabân Alla sacara vertikal ." },
-  { code: "mag", name: "Magahi", mb: 0.06, voice: "hi", sample: "अश्वत्थामा प्राचीन हिन्दु महाकाव्य महाभारतके एक पात्र हे ।" },
+  { code: "mag", name: "Magahi", mb: 0.06, sample: "अश्वत्थामा प्राचीन हिन्दु महाकाव्य महाभारतके एक पात्र हे ।" },
   { code: "mai", name: "Maithili", mb: 0.05, sample: "सन् २००८ मे हुनका पद्म विभूषणसँ सेहो पुरस्कृत कएल गेल छल ।" },
   { code: "mg", name: "Malagasy", mb: 0, sample: "I Christian Peyron no ben'ny tanàna mandritry ny taona ." },
   { code: "ms", name: "Malay", mb: 0.07, sample: "Saya gembira kerana ada yang sanggup untuk menyokong saya." },
