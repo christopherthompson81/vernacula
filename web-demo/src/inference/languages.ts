@@ -62,7 +62,7 @@ export const LANGUAGES: LanguageOption[] = [
   { code: "arz", name: "Egyptian Arabic", mb: 39.72, voice: "ar", sample: "بعدين تم نقل العاصمة جنوبالموقع جديد يسمى كوبار أو الجرمى." },
   { code: "en", name: "English", mb: 14.62, trained: true, sample: "The quick brown fox jumps over the lazy dog." },
   { code: "en-GB", name: "English (British)", mb: 14.64, sample: "Television reports show white smoke coming from the plant." },
-  { code: "en-IN", name: "English (Indian)", mb: 14.62, voice: "en", sample: "Television reports show white smoke coming from the plant." },
+  { code: "en-IN", name: "English (Indian)", mb: 14.62, sample: "Television reports show white smoke coming from the plant." },
   { code: "et", name: "Estonian", mb: 0, sample: "Kuna Aucklandi piiravad kaks sadamat, on seal palju randu." },
   { code: "ee", name: "Ewe", mb: 0, sample: "Yuroptɔwo kpakple Amerikatɔwo bua avuwo ɖe aƒemelãwo me ko." },
   { code: "fo", name: "Faroese", mb: 0, sample: "Nývalda býráðið velur ein borgarstjóra fyri alt valskeiðið." },

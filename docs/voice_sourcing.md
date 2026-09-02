@@ -2,18 +2,20 @@
 
 The browser demo offers all 193 languages the phonemizer routes. Generation is **always
 voice-cloned** — without a reference, input under ~5 s falls outside the fine-tune's distribution and
-can emit noise rather than degrade — so every language needs a reference clip. 102 have a native one
-from FLEURS. The other 91 are read by a **donor** voice from a near neighbour, which is audible:
-cloning copies the speaker's accent along with their timbre.
+can emit noise rather than degrade — so every language needs a reference clip. A language without a
+native one is read by a **donor** voice from a near neighbour, which is audible: cloning copies the
+speaker's accent along with their timbre.
 
-This is the list of what a native clip would fix, worst first.
+**152 of 193 languages now have a native voice; 41 are still on a donor.** This document records
+where each of the 41 stands, and what a usable clip has to be.
 
-## Done — 151 of 193 languages now have a native voice
+## Done — 152 of 193 languages have a native voice
 
-**Common Voice 22.0 (CC0), 25 languages:** Abkhaz, Akan, Albanian, Bashkir, Basque, Chuvash,
+**Common Voice 22.0 (CC0), 26 languages:** Abkhaz, Akan, Albanian, Bashkir, Basque, Chuvash,
 Classical Nahuatl, Guaraní, Haitian Creole, Kinyarwanda, Kurmanji, Latgalian, Min Nan, European
 Portuguese, Quechua, Santali, Saraiki, Sesotho, Setswana, Castilian Spanish, Tashelhit, Tatar,
-Tigrinya, Turkmen, Uyghur, Western Armenian.
+Tigrinya, Turkmen, Uyghur, Western Armenian, and **Indian English** (the `en` locale's
+accent-labelled rows).
 
 **Beyond Common Voice, 21 more:**
 
@@ -39,72 +41,84 @@ speaking-rate band measured across the shipped references (6.4-13.7 IPA characte
 Equal counts alone are not proof: one Hawaiian clip paired 8 words with 13.2 s of audio. Gulf Arabic
 found no provable cut and keeps a 22 s reference.
 
-## The remaining 42
+## The 41 still on a donor voice
 
-`tools/make-voice-from-commonvoice.mjs` automates the whole path — download, score, phonemize,
-encode, write both files:
+Grouped by why, because "no voice yet" means four different things and only two of them are worth
+your time.
 
-    node tools/make-voice-from-commonvoice.mjs --cv eu --lang eu --n 3 --write
+### 1. Reachable now — a source exists and needs an account, a manual download, or an hour's work (9)
 
-⚠ SELECTION IS MEASURED, NOT TRUSTED. Common Voice is crowd-recorded, and its up/down votes only say
-the reading matches the sentence, not that the recording is clean. Metadata narrows the field (8-9 s,
-two or more up-votes, no down-votes) and then the AUDIO decides: noise floor, speech fraction and
-peak are measured on every candidate, clipped and mostly-silent clips are rejected outright. A noisy
-reference is cloned faithfully — its noise comes out in every sentence the demo ever speaks — so the
-last step is always a listening test. `--clip a.mp3,b.mp3` forces named clips, which is what makes a
-shipped voice reproducible.
+| language | current donor | source | blocker |
+|---|---|---|---|
+| Awadhi, Magahi, Maithili, Haryanvi | Hindi | Vaani (CC BY 4.0), 6.6 s mean clips; Haryanvi also `bridgeconn/snow-mountain` (CC BY-SA 4.0, single studio speaker) | HuggingFace auto-approve gate — needs an account click |
+| Kirundi | Luganda | `DigitalUmuganda/Afrivoice_V2` (CC BY 4.0, 509 h) | same gate |
+| Karakalpak | Uzbek | Karakalpak Speech Corpus, Mendeley (CC BY 4.0, 50 h, 25 speakers) | Mendeley's API would not serve the file list anonymously; a browser download works |
+| Wu Chinese | Mandarin | `ASLP-lab/WenetSpeech-Wu-Bench` (Apache-2.0, 9.75 h) | the dataset exposes transcripts but no audio column through the rows API; needs a parquet download |
+| Latin | Italian | LibriVox (public domain) — Caesar, Vergil, the Vulgate | whole-book recordings; needs a passage cut and its text matched by hand |
+| Ancient Greek | Greek | LibriVox (public domain), 45 items | same, plus a choice between reconstructed and modern pronunciation |
 
-Common Voice is now exhausted for this purpose: every locale it shares with the demo's gaps has been
-tried. The remaining 67 languages need audio from somewhere else, and the tiers below say which of
-them matter most.
+### 2. Accent variants where the donor is the same written language (5)
 
-## Tier A — donor is a stranger (33)
+Cheap to improve but not wrong today: **Québécois French** ← France, **Standard Malay** ← Malay,
+**Egyptian Arabic** ← the FLEURS `ar_eg` speaker (already Egyptian, so this one is arguably done),
+**South Levantine Arabic** ← MSA (Omnilingual has North Levantine but not South), **Aragonese** ←
+Latin-American Spanish, though Common Voice 26 has 16.9 h of Aragonese proper.
 
-Different family or markedly different phonology. These are where a native clip changes the result
-most.
+### 3. Waiting on Common Voice 26 (2)
 
-~~Abkhaz ← Georgian~~ (done) · Akan ← Yoruba · Bambara ← Fula · Basque ← Spanish · Cherokee ← English ·
-Classical Nahuatl ← Spanish · Ewe ← Yoruba · Hawaiian ← Māori · Hiligaynon ← Cebuano ·
-Hmong ← Lao · Ilocano ← Cebuano · K'iche' ← Spanish · Kalaallisut ← Danish · Kikuyu ← Kamba ·
-Kinyarwanda ← Luganda · Kirundi ← Luganda · Lule Sami ← Finnish · Madurese ← Javanese ·
-Malagasy ← Swahili · Mossi ← Fula · Nama ← Xhosa · Nigerian Pidgin ← Yoruba · Papiamentu ← Spanish ·
-Quechua ← Spanish · Santali ← Bengali · Sesotho ← Sepedi · Setswana ← Sepedi · Sinhala ← Tamil ·
-Sundanese ← Javanese · Tashelhit ← Arabic · Tibetan ← Burmese · Totontepec Mixe ← Spanish ·
-Zhuang ← Thai
+Both need a Mozilla Data Collective account, since Common Voice left HuggingFace after 22.0:
+**Aromanian** (`rup` went from nothing to 30 validated clips at 7.0 s mean) and **Aragonese** above.
+CV 26 would also supply better DONORS for four languages here — Balti for Tibetan, Inupiaq for
+Greenlandic, Zoque for Totontepec Mixe, Dagbani for Mossi.
 
-⚠ Nama is the one to hear first: it has four click types, and no donor in the set has clicks except
-Xhosa, which has three different ones.
+### 4. Licence-blocked — the data exists and cannot be used (3)
 
-## Tier B — related, but a different language (28)
+**Xiang** and **Gan** Chinese: MagicData's Changsha and Nanchang corpora are CC BY-NC-ND.
+**Hakka**: `formospeech` is gated and the Taiwanese government set is under TRAIL, a RAIL-style
+licence with behavioural use restrictions. These are one licence negotiation away, not one dataset
+away.
 
-Albanian ← Macedonian · Aragonese ← Spanish · Aromanian ← Romanian · Balochi ← Pashto ·
-Bashkir ← Kazakh · Bavarian ← German · Chuvash ← Kazakh · Crimean Tatar ← Turkish ·
-Faroese ← Icelandic · Gan ← Mandarin · Guaraní ← Spanish · Haitian Creole ← French ·
-Hakka ← Cantonese · Jin ← Mandarin · Karakalpak ← Uzbek · Kurmanji ← Central Kurdish ·
-Latgalian ← Latvian · Min Dong ← Cantonese · Min Nan ← Cantonese · Nogai ← Kazakh ·
-Scottish Gaelic ← Irish · Shan ← Burmese · Tatar ← Kazakh · Tigrinya ← Amharic ·
-Turkmen ← Azerbaijani · Uyghur ← Uzbek · Wu ← Mandarin · Xiang ← Mandarin
+### 5. Nothing acceptable found anywhere (22)
 
-## Tier C — same written language, different standard or accent (30)
+Bambara · Bavarian · Bishnupriya · Balochi · Cherokee · Greenlandic · Hmong · Ilocano · K'iche' ·
+Lule Sami · Madurese · Min Dong Chinese · Mossi · Nama · Nogai · Papiamentu · Rangpuri ·
+Scottish Gaelic · Shan · Sylheti · Totontepec Mixe · Zhuang
 
-The donor reads the same orthography; what is wrong is the accent. Cheapest to source and the most
-visible to a listener who speaks it.
+Notes on the near misses, so the search is not repeated:
 
-- **English (British)** and **English (Indian)** ← General American.
-- **Spanish (Castilian)** ← Latin American, and **Portuguese (European)** ← Brazilian. FLEURS ships
-  `es_419` and `pt_br`, so those two are filed as the native voices for the *varieties they are*;
-  the European standards are the ones borrowing.
-- **French (Québécois)** ← France French.
-- The nine **Arabic dialects** ← FLEURS `ar_eg`, which is MSA read by an Egyptian speaker. Egyptian
-  Arabic is therefore well served; Moroccan, Levantine, Iraqi, Gulf, Hijazi, Sudanese and Libyan
-  are not.
-- **Western Armenian** ← Eastern Armenian (the consonant shift makes this more than an accent).
-- The Hindi-belt group — **Bhojpuri, Haryanvi, Chhattisgarhi, Magahi, Maithili, Awadhi** ← Hindi —
-  and **Bishnupriya, Rangpuri, Sylheti** ← Bengali.
-- **Western Punjabi** ← Punjabi, **Saraiki** ← Sindhi, **Southern Pashto** ← Pashto,
-  **Standard Malay** ← Malay.
-- **Latin** ← Italian and **Ancient Greek** ← Modern Greek, where there is no native speaker to find
-  and the donor is the convention.
+- **Greenlandic** is the frustrating one: acceptable CC BY 3.0 audio exists on Wikimedia Commons, but
+  no transcript exists for it anywhere. A native speaker writing out 40 seconds would close it.
+- **Scottish Gaelic** and **Bavarian** have Wikimedia Commons clips with real transcripts (a
+  Wikitongues interview with Gaelic subtitles; two public-domain spoken Wikipedia articles in
+  Bavarian). Both are usable but need hand-cutting, and the Gaelic clips are only 64 and 176 s
+  total.
+- **Cherokee**: the community corpus is CC BY-NC except for one CC0 directory, and that directory is
+  a tone wordlist.
+- **Nama, Shan, Madurese, Ilocano, Sylheti, Bishnupriya, Zhuang** surface only under `mms_ulab_v2`,
+  which is CC BY-NC-SA *and* untranscribed.
+- **Ilocano**'s 448 h `sapinsapin/pld` is research-only, and half of it is wordlists.
+
+## What a usable clip is
+
+| | |
+|---|---|
+| format | WAV, 24 kHz (mono or stereo; 16-bit PCM or 32-bit float) |
+| length | 5-12 s of continuous speech, one speaker |
+| content | ordinary connected speech, not a word list; no music, no room echo, no clipping |
+| transcript | **required**, exact, in the language's normal orthography |
+| licence | must be redistributable — the codes ship in the demo |
+
+The transcript matters as much as the audio: it is phonemized and fed to the model alongside the
+codes, and one that does not match what is said degrades the clone. The tools are
+`tools/make-voice-from-commonvoice.mjs`, `tools/make-voice-from-hf.mjs` (any ungated HuggingFace
+dataset, via the rows API) and `tools/make-voice-from-openslr.mjs`; each writes `voices.json` in its
+work directory, which `tools/merge-cv-voices.mjs` folds into the shipped files. Only the codes (a
+few KB) are published — never the audio, and never the 654 MB encoder.
+
+⚠ Selection is measured, never assumed: every candidate is scored for noise floor, speech fraction
+and peak, clipped and half-silent clips are rejected outright, and the transcript must be in the
+language's declared script. None of that can hear a bad read, so the last step is always a listening
+test.
 
 ## Also missing: example text
 
