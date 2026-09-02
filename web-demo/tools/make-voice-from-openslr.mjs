@@ -21,7 +21,7 @@ import { join, basename } from "node:path";
 const args = process.argv.slice(2);
 const opt = (k, d) => { const i = args.indexOf(`--${k}`); return i < 0 ? d : args[i + 1]; };
 const URL = opt("url"), LANG = opt("lang");
-const N = Number(opt("n", 3)), SEP = opt("sep", "\t");
+const N = Number(opt("n", 3)), SEP = opt("sep");   // unset = detect per line
 const MIN_SEC = Number(opt("min-sec", 4)), MAX_SEC = Number(opt("max-sec", 14));
 const ENCODER = opt("encoder", "/mnt/data/omnivoice_ipa/onnx_base/higgs_encoder.onnx");
 const PHONEMIZER = "../external/vernacula-phonemizer";
@@ -47,7 +47,24 @@ const walk = (d) => readdirSync(d, { withFileTypes: true }).flatMap((e) =>
 const files = walk(join(WORK, "x"));
 const wavs = new Map(files.filter((f) => /\.(wav|flac|mp3|opus)$/i.test(f))
   .map((f) => [basename(f).replace(/\.\w+$/, ""), f]));
-const indexes = files.filter((f) => /line_index|\.tsv$|\.csv$|metadata/i.test(f) && !/\.(wav|flac|mp3)$/i.test(f));
+
+/**
+ * ⚠ THE ID IN THE INDEX NEED NOT BE THE FILENAME. Tibetan (SLR158) keys its transcripts
+ * `006_01_006_144` while the file is `006_144.wav`, and ships a Kaldi-style `wav.scp` mapping the
+ * two. Where that file exists it is authoritative; without it the filename stem is the id.
+ */
+for (const scp of files.filter((f) => /wav\.scp$/i.test(f))) {
+  for (const line of readFileSync(scp, "utf8").split("\n")) {
+    const [id, rel] = line.trim().split(/\s+/u);
+    if (!id || !rel) continue;
+    const stem = basename(rel).replace(/\.\w+$/, "");
+    if (wavs.has(stem)) wavs.set(id, wavs.get(stem));
+  }
+}
+// Any text file that is not a readme — corpora name their index label.txt, line_index.tsv,
+// metadata.csv or *.trans.txt, with no convention worth guessing at.
+const indexes = files.filter((f) => /line_index|label|\.tsv$|\.csv$|\.txt$|metadata/i.test(f)
+                                 && !/readme|wav\.scp/i.test(f) && !/\.(wav|flac|mp3|opus)$/i.test(f));
 console.log(`  ${wavs.size} audio files, ${indexes.length} index file(s)`);
 
 // id -> transcript, from whichever index files the corpus ships.
@@ -55,7 +72,11 @@ const text = new Map();
 for (const idx of indexes) {
   for (const line of readFileSync(idx, "utf8").split("\n")) {
     if (!line.trim()) continue;
-    const parts = line.split(SEP === "," && line.includes('","') ? /","|^"|"$/ : SEP).map((s) => s.trim().replace(/^"|"$/g, ""));
+    // Detect the separator per line: a tab when the line has one, else a comma. Passing the wrong
+    // one silently yields a single field that matches no audio id — which is how Sundanese came
+    // back with "0 transcripts matched" from a perfectly good TSV.
+    const sep = SEP ?? (line.includes("\t") ? "\t" : ",");
+    const parts = line.split(sep).map((s) => s.trim().replace(/^"|"$/g, ""));
     // The id is whichever column matches a wav we have; the transcript is the longest other column.
     const id = parts.find((p) => wavs.has(p));
     if (!id) continue;

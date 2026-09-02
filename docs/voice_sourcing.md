@@ -8,53 +8,38 @@ cloning copies the speaker's accent along with their timbre.
 
 This is the list of what a native clip would fix, worst first.
 
-## Done — 24 languages sourced from Common Voice 22.0 (CC0)
+## Done — 151 of 193 languages now have a native voice
 
-**127 of 193 languages now have a native voice, up from 102.** 68 clips across 24 languages, one to
-three each, all Common Voice 22.0 (CC0), all selected by measuring the audio:
+**Common Voice 22.0 (CC0), 25 languages:** Abkhaz, Akan, Albanian, Bashkir, Basque, Chuvash,
+Classical Nahuatl, Guaraní, Haitian Creole, Kinyarwanda, Kurmanji, Latgalian, Min Nan, European
+Portuguese, Quechua, Santali, Saraiki, Sesotho, Setswana, Castilian Spanish, Tashelhit, Tatar,
+Tigrinya, Turkmen, Uyghur, Western Armenian.
 
-| tier | languages |
-|---|---|
-| A — donor was a stranger | Abkhaz, Akan, Basque, Classical Nahuatl, Haitian Creole, Kinyarwanda, Quechua, Santali, Sesotho, Setswana, Tashelhit |
-| B — related but different | Albanian, Bashkir, Chuvash, Kurmanji, Latgalian, Min Nan, Tatar, Tigrinya, Turkmen, Uyghur |
-| C — same language, other standard | Castilian Spanish, Saraiki, Western Armenian, and Guaraní's own speakers |
+**Beyond Common Voice, 21 more:**
 
-⚠ Several came from the **unvalidated** `other` split, because their validated splits hold nothing of
-usable length: Haitian Creole, Nahuatl, Santali, Sesotho, Setswana, Tashelhit, Tigrinya, Quechua.
-Unvalidated means no listener has confirmed the reading matches the sentence, so the audio score is
-doing all the work and a listening test matters more for these than for the rest.
+| source | licence | languages |
+|---|---|---|
+| Omnilingual ASR corpus | CC BY 4.0 | Moroccan, N. Levantine, Iraqi, Hijazi, Sudanese, Libyan and Gulf Arabic; Bhojpuri, Sinhala, Hawaiian, Southern Pashto, **Western Punjabi (Shahmukhi)** |
+| WaxalNLP | CC BY / BY-SA 4.0 | Ewe, Kikuyu, Nigerian Pidgin, Malagasy |
+| OpenBibleTTS | CC BY-SA 4.0 | Hiligaynon, Chhattisgarhi |
+| OpenSLR 83 / 158 / 44 | CC BY-SA 4.0 | British English, Tibetan, Sundanese |
+| Ravnursson | CC BY 4.0 | Faroese |
+| qirimtatar-tts | Apache-2.0 | Crimean Tatar |
 
-⚠ **Akan was missed on the first pass** because Common Voice files Twi under `tw`, and the demo's code
-for it is `ak`. Worth re-checking any gap whose Common Voice locale name differs from its ISO code.
+Two of these close gaps this document previously called unsolvable. **European Portuguese**: the
+`accents` column is nearly empty for `pt`, but the `variant` column separates the standards and
+holds readable labels ("Portuguese (Portugal)"), not codes. **Western Punjabi**: Omnilingual has
+`pnb_Arab`, in Shahmukhi.
 
-**Three could not be sourced and keep their donor:**
+⚠ **Long clips are cut, but only where the cut is provable.** Omnilingual's spontaneous speech runs
+25-80 s and a reference that long slows every later generation in that language.
+`tools/trim-to-sentences.mjs` cuts at a pause and keeps the sentences before it, requiring BOTH that
+the transcript's sentence count matches the count of speech runs AND that the result falls in the
+speaking-rate band measured across the shipped references (6.4-13.7 IPA characters per second).
+Equal counts alone are not proof: one Hawaiian clip paired 8 words with 13.2 s of audio. Gulf Arabic
+found no provable cut and keeps a 22 s reference.
 
-- **Aromanian** — Common Voice has one Aromanian clip in the whole dataset, and it fails the audio
-  screen. Still read by Romanian.
-- **European Portuguese** — Common Voice `pt` is overwhelmingly Brazilian: 3 of 9,641 test rows are
-  labelled Portugal, none in the length band, and 94% of rows carry no accent label at all. Still
-  read by the Brazilian FLEURS voice.
-- **Western Punjabi** — Common Voice `pa-IN` is Gurmukhi Punjabi, which is the donor it already has;
-  a Shahmukhi clip would have to come from elsewhere.
-
-## What a usable clip is
-
-| | |
-|---|---|
-| format | WAV, 24 kHz (mono or stereo; 16-bit PCM or 32-bit float) |
-| length | ~8 s of continuous speech, one speaker — the corpus references are all 8 s |
-| content | ordinary connected speech, not a word list; no music, no room echo, no clipping |
-| transcript | **required**, exact, in the language's normal orthography |
-| licence | must be redistributable — the codes ship in the demo |
-
-The transcript matters as much as the audio: it is phonemized and fed to the model alongside the
-codes, and a transcript that does not match what is said degrades the clone. Encode with:
-
-    node tools/make-voices.mjs <higgs_encoder.onnx> <ref.wav> <ref-ipa.txt> <id> <label>
-
-Only the codes (a few KB) ship; the audio does not, and neither does the 654 MB encoder.
-
-## The remaining 67
+## The remaining 42
 
 `tools/make-voice-from-commonvoice.mjs` automates the whole path — download, score, phonemize,
 encode, write both files:

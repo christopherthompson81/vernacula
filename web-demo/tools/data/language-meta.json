@@ -121,8 +121,7 @@
  },
  "bo": {
   "name": "Tibetan",
-  "sample": "བུམ་པ་དེ་བུམ་པ་ཞེས་བརྗོད་པའི་སྒྲའི་བརྗོད་བྱ་ཡིན་པ་བཞིན་ནོ།",
-  "voice": "my"
+  "sample": "བུམ་པ་དེ་བུམ་པ་ཞེས་བརྗོད་པའི་སྒྲའི་བརྗོད་བྱ་ཡིན་པ་བཞིན་ནོ།"
  },
  "bpy": {
   "name": "Bishnupriya",
@@ -190,8 +189,7 @@
  },
  "ee": {
   "name": "Ewe",
-  "sample": "Yuroptɔwo kpakple Amerikatɔwo bua avuwo ɖe aƒemelãwo me ko.",
-  "voice": "yo"
+  "sample": "Yuroptɔwo kpakple Amerikatɔwo bua avuwo ɖe aƒemelãwo me ko."
  },
  "el": {
   "name": "Greek",
@@ -203,8 +201,7 @@
  },
  "en-GB": {
   "name": "English (British)",
-  "sample": "Television reports show white smoke coming from the plant.",
-  "voice": "en"
+  "sample": "Television reports show white smoke coming from the plant."
  },
  "en-IN": {
   "name": "English (Indian)",
@@ -474,8 +471,7 @@
  },
  "mg": {
   "name": "Malagasy",
-  "sample": "I Christian Peyron no ben'ny tanàna mandritry ny taona .",
-  "voice": "sw"
+  "sample": "I Christian Peyron no ben'ny tanàna mandritry ny taona ."
  },
  "mi": {
   "name": "Māori",
@@ -589,8 +585,7 @@
  },
  "pnb": {
   "name": "Western Punjabi",
-  "sample": "ابوبکر د‏‏ی بیعت دے بارے وچ عمر نے میرے تو‏ں کہیا؛اے ابن عباس !",
-  "voice": "pa"
+  "sample": "ابوبکر د‏‏ی بیعت دے بارے وچ عمر نے میرے تو‏ں کہیا؛اے ابن عباس !"
  },
  "ps": {
   "name": "Pashto",
@@ -698,8 +693,7 @@
  },
  "su": {
   "name": "Sundanese",
-  "sample": "Manéhna dibantuan ku lanceuk awéwéna, Julia Brainerd Hall.",
-  "voice": "jv"
+  "sample": "Manéhna dibantuan ku lanceuk awéwéna, Julia Brainerd Hall."
  },
  "sv": {
   "name": "Swedish",
