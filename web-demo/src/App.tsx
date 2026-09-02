@@ -2,21 +2,32 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { LANGUAGES, MODELS, NUM_STEPS } from "./inference/config.ts";
 import { phonemize } from "./inference/phonemizer.ts";
 import { OmniVoice, voiceFor, voicesFor, type Voice } from "./inference/omnivoice.ts";
+import type { WordTiming } from "./inference/alignment.ts";
 import { encodeWav } from "./inference/audioPost.ts";
 import { fetchModel } from "./inference/modelCache.ts";
 import type { Progress, Token } from "./types.ts";
 
-/** Pair each orthographic word with its IPA, positionally.
+/** Pair each orthographic word with its timed IPA word, positionally.
  *
  * ⚠ Positional, and therefore approximate. The phonemizer is not word-for-word: normalization
  * expands numbers and abbreviations ("20°C" becomes several words), so the two sequences can
- * differ in length. Showing the pairing only when the counts agree is honest; a forced alignment
- * is what karaoke highlighting will need anyway. */
-function pairTokens(text: string, ipa: string): Token[] | null {
-  const words = text.trim().split(/\s+/u).filter(Boolean);
-  const ipaWords = ipa.trim().split(/\s+/u).filter((w) => !/^[.,!?;:]$/u.test(w));
-  if (words.length !== ipaWords.length || words.length === 0) return null;
-  return words.map((w, i) => ({ text: w, ipa: ipaWords[i] }));
+ * differ in length. Showing the pairing only when the counts agree is honest. Punctuation tokens
+ * in the IPA stream are timed too (they are pauses) but have no orthographic partner. */
+const PUNCT_TOKEN = /^[.,!?;:]$/u;
+
+function pairTokens(text: string, words: WordTiming[]): Token[] | null {
+  const ortho = text.trim().split(/\s+/u).filter(Boolean);
+  const ipaWords = words.filter((w) => !PUNCT_TOKEN.test(w.ipa));
+  if (ortho.length !== ipaWords.length || ortho.length === 0) return null;
+  return ortho.map((t, i) => ({ text: t, ipa: ipaWords[i].ipa, start: ipaWords[i].start, end: ipaWords[i].end }));
+}
+
+/** Index of the word under the playhead: the last one that has started. Between words there is
+ *  no gap (punctuation tokens fill the pauses), so this is also the one that has not ended. */
+function activeIndex(tokens: { start?: number }[], t: number): number {
+  let i = -1;
+  for (let k = 0; k < tokens.length; k++) if (tokens[k].start !== undefined && tokens[k].start! <= t) i = k;
+  return i;
 }
 
 export default function App() {
@@ -25,6 +36,10 @@ export default function App() {
   const [progress, setProgress] = useState<Progress>({ stage: "idle" });
   const [ipa, setIpa] = useState("");
   const [tokens, setTokens] = useState<Token[] | null>(null);
+  /** Every timed IPA token, punctuation included — the fallback highlight when pairing fails. */
+  const [words, setWords] = useState<WordTiming[] | null>(null);
+  const [active, setActive] = useState(-1);
+  const audioEl = useRef<HTMLAudioElement | null>(null);
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
   const [stats, setStats] = useState<string>("");
   const [ep, setEp] = useState<string>("");
@@ -64,7 +79,7 @@ export default function App() {
       setProgress({ stage: "phonemizing" });
       const out = (await phonemize(text, lang, (d) => setProgress({ stage: "phonemizing", detail: d }))).trim();
       setIpa(out);
-      setTokens(pairTokens(text, out));
+      setTokens(null); setWords(null); setActive(-1);
 
       const ov = await ensureEngine();
       setProgress({ stage: "generating", fraction: 0 });
@@ -76,6 +91,8 @@ export default function App() {
       const r = await ov.synthesize(out, v, { numStep: NUM_STEPS },
         (step, total) => setProgress({ stage: "generating", fraction: step / total, detail: `step ${step}/${total}` }));
 
+      setWords(r.words);
+      setTokens(pairTokens(text, r.words));
       if (audioUrl) URL.revokeObjectURL(audioUrl);
       setAudioUrl(URL.createObjectURL(encodeWav(r.audio, r.sampleRate)));
       setStats(`${(r.audio.length / r.sampleRate).toFixed(1)}s audio in ${(r.generateMs / 1000).toFixed(1)}s`
@@ -85,6 +102,26 @@ export default function App() {
       setProgress({ stage: "error", detail: e instanceof Error ? e.message : String(e) });
     }
   }, [text, lang, voiceId, ensureEngine, audioUrl]);
+
+  // Karaoke: while the audio plays, follow the playhead with requestAnimationFrame rather than
+  // `timeupdate`, which fires only ~4x/s and visibly lags short words.
+  useEffect(() => {
+    const el = audioEl.current;
+    if (!el || !words) return;
+    const timed = tokens ?? words;
+    let raf = 0;
+    const tick = () => { setActive(activeIndex(timed, el.currentTime)); raf = requestAnimationFrame(tick); };
+    const start = () => { cancelAnimationFrame(raf); tick(); };
+    const stop = () => { cancelAnimationFrame(raf); setActive(el.ended ? -1 : activeIndex(timed, el.currentTime)); };
+    // `timeupdate` as well: rAF is suspended in an occluded tab, and the coarse ticks keep the
+    // highlight alive there (and made the headless-ish REPL verification possible at all).
+    const coarse = () => setActive(activeIndex(timed, el.currentTime));
+    el.addEventListener("play", start); el.addEventListener("pause", stop); el.addEventListener("ended", stop);
+    el.addEventListener("seeked", stop); el.addEventListener("timeupdate", coarse);
+    return () => { cancelAnimationFrame(raf); el.removeEventListener("play", start); el.removeEventListener("pause", stop);
+                   el.removeEventListener("ended", stop); el.removeEventListener("seeked", stop);
+                   el.removeEventListener("timeupdate", coarse); };
+  }, [words, tokens, audioUrl]);
 
   const busy = progress.stage === "loading-models" || progress.stage === "phonemizing" || progress.stage === "generating";
 
@@ -105,7 +142,7 @@ export default function App() {
                     const c = e.target.value;
                     setLang(c);
                     setText(LANGUAGES.find((l) => l.code === c)!.sample);
-                    setIpa(""); setTokens(null); setStats("");
+                    setIpa(""); setTokens(null); setWords(null); setActive(-1); setStats("");
                     // A voice belongs to a language; carrying one across would reintroduce the
                     // accent bleed that per-language references exist to remove.
                     setVoiceId(undefined);
@@ -155,7 +192,15 @@ export default function App() {
           <h2>IPA</h2>
           {tokens
             ? <p className="pairs">{tokens.map((t, i) => (
-                <span className="pair" key={i}><span className="ortho">{t.text}</span><span className="ipa">{t.ipa}</span></span>
+                <span className={"pair" + (i === active ? " active" : "")} key={i}
+                      onClick={() => { if (audioEl.current && t.start !== undefined) audioEl.current.currentTime = t.start; }}>
+                  <span className="ortho">{t.text}</span><span className="ipa">{t.ipa}</span>
+                </span>
+              ))}</p>
+            : words
+            ? <p className="ipa-flat">{words.map((w, i) => (
+                <span className={"word" + (i === active ? " active" : "")} key={i}
+                      onClick={() => { if (audioEl.current) audioEl.current.currentTime = w.start; }}>{w.ipa}{" "}</span>
               ))}</p>
             : <p className="ipa-flat">{ipa}</p>}
           {!tokens && ipa && (
@@ -170,7 +215,7 @@ export default function App() {
       {audioUrl && (
         <section className="result">
           <h2>Audio</h2>
-          <audio controls src={audioUrl} />
+          <audio controls src={audioUrl} ref={audioEl} />
           <p className="stats">{stats}{ep ? ` · ${ep}` : ""}</p>
         </section>
       )}

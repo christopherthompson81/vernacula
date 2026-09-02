@@ -86,15 +86,18 @@ result is extrapolated, so the other 164 belong behind an "experimental" afforda
 
 ## Karaoke highlighting
 
-Deferred from the first cut, by request. `Token` in `src/types.ts` already carries optional
-`start`/`end` so the data model does not need to change when it lands.
+Word highlighting follows playback, and is **estimated, not aligned**. OmniVoice emits no
+alignment — the diffusion loop unmasks every target position at once — so `src/inference/alignment.ts`
+attributes the raw duration (`targetTokens / 25` s, exactly) to each IPA token in proportion to the
+same per-character script weights `duration.ts` used to pick `targetTokens`. That makes it
+self-consistent with the length the model was asked for, monotone, and correct at both ends, with
+drift of a few hundred ms within a sentence. Silence removal and the leading pad are mapped through
+(`removeSilenceMapped` returns the surviving runs), because without that the highlight leads the
+audio by everything that was cut.
 
-⚠ OmniVoice emits no alignment — there is nothing to read out of the diffusion loop. The two routes
-are (a) forced-align the generated audio against the text afterwards, which is what
-`Vernacula.Base.Alignment.NemoNfaAligner` does on the desktop side but means shipping another model,
-or (b) approximate from audio-token positions (25 tokens/s) attributed proportionally to IPA
-segments — cheap, no download, and roughly right for a highlight bar. (b) is the sensible first
-version.
+If the estimate proves not good enough, the upgrade is a real forced alignment of the generated audio
+against the IPA — `Vernacula.Base.Alignment.NemoNfaAligner` on the desktop side — at the cost of
+shipping another model.
 
 ## Layout
 

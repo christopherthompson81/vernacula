@@ -875,3 +875,55 @@ those tables at all.
 ⚠ The gate runs in `npm run build`. A staged set that cannot phonemize the shipped samples is a
 broken site, and the failure is invisible until a visitor picks that language — exactly how this one
 was found.
+
+## Run 19 — 2026-09-01 18:10, karaoke highlighting without an aligner
+
+**Question:** can word-level highlighting be made to track playback without shipping a forced
+aligner, given that OmniVoice emits no alignment at all (the diffusion loop unmasks every target
+position at once — there is nothing to read out of it)?
+
+**Approach:** weight-proportional attribution. The raw decoded audio is exactly `targetTokens/25`
+seconds, and `targetTokens` was chosen by `duration.ts` as a sum of per-character script weights
+over the IPA. Giving each whitespace-separated IPA token the same fraction of the raw duration as it
+contributed to that weight sum is self-consistent with the length the model was asked for — the
+words divide time the way the estimator divided tokens. Punctuation tokens (`,` `.`) are timed too;
+they are the pauses, and keeping them means consecutive words are gap-free.
+
+**What had to be threaded through, or the highlight leads the audio:**
+
+1. Silence removal deletes spans non-uniformly (every mid-gap over 500 ms, both edges).
+   `removeSilenceMapped` now returns the surviving `KeptRun[]` in ORIGINAL sample coordinates, and
+   `alignment.ts` maps each raw sample through them, snapping anything inside a removed span to the
+   seam. Synthetic check: 1 s tone / 2 s silence / 1 s tone → runs `[0,36000) [84000,120000)`,
+   word 1 ends at 1.6 s, `,` collapses to 1.6–1.6, word 2 runs 1.6–3.1 s in a 3.2 s output. The
+   last word ends exactly `PAD_SEC` before the end, which is the right answer.
+2. `fadeAndPad`'s leading 0.1 s zero-pad, added afterwards.
+
+**In the browser** (preview on 4188, REPL, English default sentence, 5.7 s audio):
+
+    0.45 The · 0.70–0.95 quick · 1.20–1.71 brown · 1.96–2.47 fox · 2.72–3.73 jumps ·
+    3.98–4.48 over · 4.73 the · 4.98–5.24 lazy · 5.49 dog.
+
+Monotone, ends aligned, and — by ear against the highlight — within a word of the truth
+throughout; "jumps" holds longest because `d͡ʒˈʌmps` is the heaviest token, which is roughly true
+of the audio too. Both display paths verified: paired (counts match) and IPA-only fallback
+(`20°C` → `twˈɛnti dᵻɡɹˈiːz sˈɛɫsiʲəs`, 9 orthographic vs 12 IPA words) highlight and are
+click-to-seek.
+
+**Two things found on the way:**
+
+- First probe showed NO highlight at all during playback, though seeking highlighted correctly.
+  Cause: `requestAnimationFrame` is suspended in an occluded window, which the REPL's Chrome is.
+  Added a `timeupdate` listener alongside rAF — coarse (~4 Hz) but alive in a background tab, and
+  what made the verification possible.
+- The first generate failed with `Cannot read properties of undefined (reading 'reduce')`. A
+  COMPLETED cache meta written before `sizes` existed returns from `ensureDownloaded` before the
+  legacy-discard check, and `fetchModel` then summed its absent `sizes`. A fully cached, valid model
+  was unloadable until the cache was cleared. Fixed by allocating `meta.total` (equal to the sum
+  for any completed meta). This affected every returning visitor from before the resumable-cache
+  change.
+
+**Limits, stated:** this is an estimate, not an alignment. Drift within a sentence of a few hundred
+ms is expected and the CSS says so (a soft tint, not a hard edge). A real alignment would mean
+shipping an aligner model — `Vernacula.Base.Alignment.NemoNfaAligner` exists on the desktop side —
+and is the upgrade path if the estimate proves not good enough.

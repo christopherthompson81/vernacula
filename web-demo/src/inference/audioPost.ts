@@ -58,11 +58,15 @@ function detectNonsilent(a: Float32Array, sr: number, minSilMs: number, seekMs =
   return non;
 }
 
+/** A run of ORIGINAL samples that survived into the output, in original coordinates. Concatenated
+ *  in order they reconstruct the output exactly — which is what makes a time map possible. */
+export interface KeptRun { src: number; len: number; }
+
 /** pydub split_on_silence + reconcatenation, with keep_silence padding and the midpoint clamp on
- *  overlapping expanded ranges. */
-function splitAndConcat(a: Float32Array, sr: number, minSilMs: number, keepMs: number, seekMs = 10): Float32Array {
+ *  overlapping expanded ranges. Returns the surviving runs alongside the audio. */
+function splitAndConcat(a: Float32Array, sr: number, minSilMs: number, keepMs: number, seekMs = 10): { audio: Float32Array; runs: KeptRun[] } {
   const ranges = detectNonsilent(a, sr, minSilMs, seekMs);
-  if (ranges.length === 0) return new Float32Array(0);
+  if (ranges.length === 0) return { audio: new Float32Array(0), runs: [] };
   const keep = Math.floor((keepMs * sr) / 1000);
   const outR = ranges.map(([s, e]) => [s - keep, e + keep] as [number, number]);
   for (let i = 0; i + 1 < outR.length; i++) {
@@ -74,30 +78,63 @@ function splitAndConcat(a: Float32Array, sr: number, minSilMs: number, keepMs: n
     }
   }
   let n = 0;
-  for (const [s0, e0] of outR) n += Math.min(a.length, e0) - Math.max(0, s0);
+  for (const [s0, e0] of outR) n += Math.max(0, Math.min(a.length, e0) - Math.max(0, s0));
   const buf = new Float32Array(Math.max(0, n));
+  const runs: KeptRun[] = [];
   let w = 0;
   for (const [s0, e0] of outR) {
     const s = Math.max(0, s0), e = Math.min(a.length, e0);
+    if (e <= s) continue;
     for (let i = s; i < e; i++) buf[w++] = a[i];
+    runs.push({ src: s, len: e - s });
   }
-  return buf.subarray(0, w);
+  return { audio: buf.subarray(0, w), runs };
 }
 
 /** Port of `remove_silence`: collapse mid-silences longer than `midSilMs` down to that length,
  *  then trim edge silences keeping lead/trail ms. */
 export function removeSilence(audio: Float32Array, sr: number,
                               midSilMs: number, leadSilMs: number, trailSilMs: number): Float32Array {
-  if (audio.length === 0) return audio;
-  const a = midSilMs > 0 ? splitAndConcat(audio, sr, midSilMs, midSilMs) : audio;
-  if (a.length === 0) return a;
+  return removeSilenceMapped(audio, sr, midSilMs, leadSilMs, trailSilMs).audio;
+}
+
+/**
+ * `removeSilence`, plus the runs of ORIGINAL audio that survived.
+ *
+ * ⚠ The runs are what make word highlighting possible. Timings are estimated against the RAW
+ * generated audio (whose length is exactly targetTokens/25 s), but silence removal deletes spans
+ * non-uniformly — collapsing every mid-gap over 500 ms and trimming both edges. Without this map a
+ * word's estimated time drifts by the total removed duration, which on a sentence with pauses is
+ * easily hundreds of milliseconds.
+ */
+export function removeSilenceMapped(audio: Float32Array, sr: number, midSilMs: number,
+                                    leadSilMs: number, trailSilMs: number,
+): { audio: Float32Array; runs: KeptRun[] } {
+  if (audio.length === 0) return { audio, runs: [] };
+  const split = midSilMs > 0
+    ? splitAndConcat(audio, sr, midSilMs, midSilMs)
+    : { audio, runs: [{ src: 0, len: audio.length }] };
+  const a = split.audio;
+  if (a.length === 0) return { audio: a, runs: [] };
+
   const lead = Math.floor((leadSilMs * sr) / 1000), trail = Math.floor((trailSilMs * sr) / 1000);
   const start = Math.max(0, detectLeadingSilence(a, sr) - lead);
   const rev = Float32Array.from(a).reverse();
   const trailStart = Math.max(0, detectLeadingSilence(rev, sr) - trail);
   const end = a.length - trailStart;
-  if (end <= start) return new Float32Array(0);
-  return a.slice(start, end);
+  if (end <= start) return { audio: new Float32Array(0), runs: [] };
+
+  // The edge trim is expressed in CONCATENATED coordinates; carry it back onto the runs so they
+  // stay in original coordinates and still concatenate to exactly the returned audio.
+  const runs: KeptRun[] = [];
+  let pos = 0;
+  for (const r of split.runs) {
+    const rs = pos, re = pos + r.len;          // this run's span in concatenated coordinates
+    pos = re;
+    const s = Math.max(rs, start), e = Math.min(re, end);
+    if (e > s) runs.push({ src: r.src + (s - rs), len: e - s });
+  }
+  return { audio: a.slice(start, end), runs };
 }
 
 /**
@@ -108,7 +145,10 @@ export function removeSilence(audio: Float32Array, sr: number,
  * it, leaving the speech well below the nominal peak. Faithful to the Python order; see
  * docs/vernacula_tts_investigation.md before "fixing" it.
  */
-export function fadeAndPad(audio: Float32Array, sr: number, padSec = 0.1, fadeSec = 0.1): Float32Array {
+/** Zero-pad `fadeAndPad` adds at each end. Exported because word timings must shift by it. */
+export const PAD_SEC = 0.1;
+
+export function fadeAndPad(audio: Float32Array, sr: number, padSec = PAD_SEC, fadeSec = 0.1): Float32Array {
   if (audio.length === 0) return audio;
   const fade = Math.trunc(fadeSec * sr), pad = Math.trunc(padSec * sr);
   const proc = Float32Array.from(audio);
