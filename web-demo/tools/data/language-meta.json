@@ -388,6 +388,7 @@
  },
  "kl": {
   "name": "Kalaallisut (Greenlandic)",
+  "sample": "Anaanaasut meeqqallu immikkut ittumik isumassorneqarlutillu ikiorneqartussaapput.",
   "voice": "ipk"
  },
  "km": {
@@ -498,6 +499,7 @@
  },
  "mto": {
   "name": "Totontepec Mixe",
+  "sample": "Tum akijpxa xa veʼe jayu kyeʼex, veʼem ax jöʼn tyukidaakjüva tijaty mëkin.",
   "voice": "zoc"
  },
  "my": {
@@ -510,6 +512,7 @@
  },
  "naq": {
   "name": "Nama",
+  "sample": "Namaseb ge Khoekhoegowab ǁgauǃnâ-aoba universiteits Namibiab dis tawa.",
   "voice": "xh"
  },
  "nb": {
@@ -530,6 +533,7 @@
  },
  "nog": {
   "name": "Nogai",
+  "sample": "Арсланлардынъ уьйири прайд деп аталады.",
   "voice": "kk"
  },
  "nso": {
@@ -595,6 +599,7 @@
  },
  "quc": {
   "name": "K'iche'",
+  "sample": "Rajawaxik xuqe' kakimulij kib' che utzukuxuk ri loq'ob'al pa we uwachulew.",
   "voice": "es-419"
  },
  "rkt": {
@@ -657,6 +662,7 @@
  },
  "smj": {
   "name": "Lule Sami",
+  "sample": "Julevsámegiella l sámegiella mav sáhkadi julevsáme bájken.",
   "voice": "fi"
  },
  "sn": {

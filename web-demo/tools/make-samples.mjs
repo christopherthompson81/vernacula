@@ -13,6 +13,12 @@
  *   2. The phonemizer's mined normalization corpora (tools/corpus/mined/<code>.jsonc), which are
  *      Wikipedia-dump paragraphs, for the 61 further languages that have one.
  *
+ * ⚠ SIX LANGUAGES ARE NOT MINEABLE and their sentences are entered by hand in language-meta.json:
+ * K'iche', Kalaallisut and Totontepec Mixe from the UDHR (public domain — the first two via the
+ * NLTK udhr2 corpus, Mixe's Article 1 as reproduced by Omniglot), and Lule Sami, Nogai and Nama
+ * from Wikimedia Incubator (CC-BY-SA), which is the only running text those three have. None has a
+ * Wikipedia dump, which is exactly why the phonemizer's mined corpora do not cover them either.
+ *
  * Hand-written entries already in language-meta.json are KEPT (--force overrides): the 30 curated
  * sentences the demo shipped with are short, parallel across languages and better demo material
  * than a random encyclopaedia line.
