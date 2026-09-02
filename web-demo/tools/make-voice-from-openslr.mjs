@@ -141,11 +141,14 @@ for (const s of scored.slice(0, N))
 const entries = [];
 for (const [i, c] of scored.slice(0, N).entries()) {
   const ipaPath = join(WORK, `${i}.ipa`);
-  const probe = join(PHONEMIZER, "slr-phonemize.tmp.mts");
+  // ⚠ PER-PROCESS FILENAME. Two sourcing runs in parallel share this directory, and a fixed
+  // name let one delete the temp module while the other was importing it — the Maithili
+  // encode died on "cannot find module" while an Awadhi run finished normally.
+  const probe = join(PHONEMIZER, `slr-phonemize.${process.pid}.tmp.mts`);
   writeFileSync(probe, `import { phonemizeAsync } from "./src/index.ts";\n`
     + `console.log(await phonemizeAsync(${JSON.stringify(c.text)}, ${JSON.stringify(LANG)}));\n`);
   let ipa;
-  try { ipa = execFileSync("npx", ["tsx", "slr-phonemize.tmp.mts"], { cwd: PHONEMIZER, encoding: "utf8" }).trim(); }
+  try { ipa = execFileSync("npx", ["tsx", `slr-phonemize.${process.pid}.tmp.mts`], { cwd: PHONEMIZER, encoding: "utf8" }).trim(); }
   finally { execFileSync("rm", ["-f", probe]); }
   writeFileSync(ipaPath, ipa);
   const id = `${LANG}-${c.id}`.slice(0, 40);

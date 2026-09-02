@@ -212,11 +212,14 @@ const entries = [];
 for (const [i, c] of chosen.entries()) {
   const ipaPath = join(WORK, `${c.path}.ipa`);
   // Phonemize in the phonemizer repo, through the same async path the demo uses.
-  const probe = join(PHONEMIZER, "cv-phonemize.tmp.mts");
+  // ⚠ PER-PROCESS FILENAME. Two sourcing runs in parallel share this directory, and a fixed
+  // name let one delete the temp module while the other was importing it — the Maithili
+  // encode died on "cannot find module" while an Awadhi run finished normally.
+  const probe = join(PHONEMIZER, `cv-phonemize.${process.pid}.tmp.mts`);
   writeFileSync(probe, `import { phonemizeAsync } from "./src/index.ts";\n`
     + `console.log(await phonemizeAsync(${JSON.stringify(c.sentence)}, ${JSON.stringify(LANG)}));\n`);
   let ipa;
-  try { ipa = execFileSync("npx", ["tsx", "cv-phonemize.tmp.mts"], { cwd: PHONEMIZER, encoding: "utf8" }).trim(); }
+  try { ipa = execFileSync("npx", ["tsx", `cv-phonemize.${process.pid}.tmp.mts`], { cwd: PHONEMIZER, encoding: "utf8" }).trim(); }
   finally { execFileSync("rm", ["-f", probe]); }
   writeFileSync(ipaPath, ipa);
 
