@@ -63,8 +63,12 @@ a { color: var(--accent); }
               border-radius: 5px; cursor: pointer; font-size: .87rem; }
 .options li.active { background: color-mix(in srgb, var(--accent) 16%, transparent); }
 .options li.empty { color: var(--muted); cursor: default; }
-.options .nm { flex: 1 1 auto; }
-.options .cd { color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .78rem; }
+.options .nm { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The endonym sits beside the English name; everything from the code rightward is pushed to the far
+   edge — via .cd, not via .nm growing, so the 18 rows that HAVE no endonym align the same way. */
+.options .nat { flex: 0 1 auto; min-width: 0; color: var(--muted); font-size: .82rem;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.options .cd { margin-left: auto; padding-left: .3rem; color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .78rem; }
 .options .sz { color: var(--muted); font-size: .75rem; min-width: 3.2rem; text-align: right; }
 .badge { font-size: .68rem; text-transform: uppercase; letter-spacing: .04em; padding: .05rem .3rem;
          border: 1px solid var(--line); border-radius: 4px; color: var(--muted); }

@@ -1,24 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { LANGUAGES, type LanguageOption } from "./inference/languages.ts";
+import { search } from "./langSearch.ts";
 
 /**
  * Type-ahead language picker.
  *
  * ⚠ A `<select>` does not scale to 193 rows. Browsers give a native select only first-letter
  * matching, so finding "Xhosa" means scrolling past 180 entries, and the codes — which are how
- * anyone who knows what they want will search — are not matched at all. This filters on name AND
- * code, prefix matches first.
+ * anyone who knows what they want will search — are not matched at all. The ranking lives in
+ * langSearch.ts so tools/check-language-search.mjs can verify it over all 193.
  */
-function score(l: LanguageOption, q: string): number {
-  const name = l.name.toLowerCase(), code = l.code.toLowerCase();
-  if (code === q) return 0;
-  if (name.startsWith(q)) return 1;
-  if (code.startsWith(q)) return 2;
-  // A word-start match inside the name: "greek" should find "Ancient Greek".
-  if (new RegExp(`\\b${q.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")}`, "u").test(name)) return 3;
-  if (name.includes(q)) return 4;
-  return -1;
-}
 
 export function LanguagePicker({ value, disabled, onChange }: {
   value: string; disabled?: boolean; onChange: (code: string) => void;
@@ -30,14 +21,7 @@ export function LanguagePicker({ value, disabled, onChange }: {
   const box = useRef<HTMLDivElement | null>(null);
   const listRef = useRef<HTMLUListElement | null>(null);
 
-  const matches = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    if (!q) return LANGUAGES;
-    return LANGUAGES.map((l) => [score(l, q), l] as const)
-      .filter(([s]) => s >= 0)
-      .sort((a, b) => a[0] - b[0] || a[1].name.localeCompare(b[1].name))
-      .map(([, l]) => l);
-  }, [query]);
+  const matches = useMemo(() => search(LANGUAGES, query), [query]);
 
   useEffect(() => { setActive(0); }, [query]);
   useEffect(() => {
@@ -57,7 +41,8 @@ export function LanguagePicker({ value, disabled, onChange }: {
     <div className="picker" ref={box}>
       <input
         type="text" role="combobox" aria-expanded={open} aria-controls="lang-list"
-        disabled={disabled} value={open ? query : (current?.name ?? value)}
+        disabled={disabled}
+        value={open ? query : (current ? current.name + (current.native ? ` · ${current.native}` : "") : value)}
         placeholder="Search 193 languages…"
         onFocus={(e) => { setOpen(true); setQuery(""); e.currentTarget.select(); }}
         onChange={(e) => { setQuery(e.target.value); setOpen(true); }}
@@ -76,6 +61,9 @@ export function LanguagePicker({ value, disabled, onChange }: {
                 onMouseEnter={() => setActive(i)}
                 onMouseDown={(e) => { e.preventDefault(); choose(l); }}>
               <span className="nm">{l.name}</span>
+              {/* ⚠ dir="auto" — an Arabic or Hebrew endonym in an otherwise LTR row renders its
+                  punctuation and any adjacent digits on the wrong side without it. */}
+              {l.native && <span className="nat" dir="auto" lang={l.code}>{l.native}</span>}
               <span className="cd">{l.code}</span>
               {l.trained && <span className="badge trained" title="in the fine-tune corpus">trained</span>}
               {l.voice && <span className="badge" title={`no native reference voice — read by the ${l.voice} voice`}>voice {l.voice}</span>}

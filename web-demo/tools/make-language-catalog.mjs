@@ -5,6 +5,7 @@
  *
  * Sources, all of them checked in so a rebuild is reproducible:
  *   tools/data/language-meta.json  names, sample sentences, voice fallbacks (hand-editable)
+ *   tools/data/native-names.json   each language's name in its own script (tools/fetch-native-names.mjs)
  *   tools/data/lang-dirs.json      per-language data size, from stage-phonemizer-data.mjs
  *   public/models/voices.jsonc     which languages have a reference voice of their own
  *
@@ -18,6 +19,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 
 const meta = JSON.parse(readFileSync("tools/data/language-meta.json", "utf8"));
 const dirs = JSON.parse(readFileSync("tools/data/lang-dirs.json", "utf8"));
+const native = JSON.parse(readFileSync("tools/data/native-names.json", "utf8"));
 
 const voicesText = readFileSync("public/models/voices.jsonc", "utf8");
 const strip = (t) => {
@@ -54,6 +56,9 @@ const rows = Object.entries(meta)
       throw new Error(`${code}'s donor voice "${voice}" has no entry in voices.jsonc`);
     return {
       code, name: m.name,
+      // Absent for the ~7 languages whose endonym IS the English name, and for the varieties where
+      // no source names OUR variety rather than a neighbouring one. See fetch-native-names.mjs.
+      native: native[code]?.name,
       mb: Math.round(((dirs[code]?.bytes ?? 0) / 1e6) * 100) / 100,
       sample: m.sample,
       voice,
@@ -65,6 +70,7 @@ const rows = Object.entries(meta)
 const lit = (v) => JSON.stringify(v);
 const body = rows.map((r) => {
   const f = [`code: ${lit(r.code)}`, `name: ${lit(r.name)}`, `mb: ${r.mb}`];
+  if (r.native) f.push(`native: ${lit(r.native)}`);
   if (r.trained) f.push("trained: true");
   if (r.voice) f.push(`voice: ${lit(r.voice)}`);
   if (r.sample) f.push(`sample: ${lit(r.sample)}`);
@@ -80,6 +86,9 @@ export interface LanguageOption {
   /** vernacula-phonemizer language code. */
   code: string;
   name: string;
+  /** The language's name as its own speakers write it, in its own script. Absent where that is the
+   *  same as the English name, or where no source names this specific variety. */
+  native?: string;
   /** Phoneme-table download for this language, in MB, on top of the 4.5 MB engine set. */
   mb: number;
   /** In the v6 fine-tune's coverage set. Everything else renders, but extrapolated. */
@@ -117,4 +126,5 @@ const noSample = rows.filter((r) => !r.sample).map((r) => r.code);
 console.log(`${rows.length} languages -> src/inference/languages.ts`);
 console.log(`  native voice: ${rows.filter((r) => !r.voice).length}, donor voice: ${rows.filter((r) => r.voice).length}`);
 console.log(`  trained: ${rows.filter((r) => r.trained).length}`);
+console.log(`  native name: ${rows.filter((r) => r.native).length}`);
 if (noSample.length) console.log(`  ⚠ no sample text: ${noSample.join(" ")}`);
