@@ -80,7 +80,7 @@ export const LANGUAGES: LanguageOption[] = [
   { code: "afb", name: "Gulf Arabic", mb: 24.38, sample: "يجمع الإنترنت بين عناصر كلٍّ من التواصل الجماهيري والشخصي." },
   { code: "ht", name: "Haitian Creole", mb: 0.01, sample: "Lotería se yon vil nan pwovens Villa Clara, nan peyi Kiba." },
   { code: "hak", name: "Hakka Chinese", mb: 0.37, voice: "yue", sample: "信洗腳禮：信洗腳禮係撈主有分，撈教訓相愛、聖潔、謙卑、服事、饒恕嘅典禮。對每一隻受浸者，愛奉主耶穌聖名分予洗腳一擺，至於互相洗腳，必要時也做得。" },
-  { code: "bgc", name: "Haryanvi", mb: 0.03, voice: "hi", sample: "जितनी कम चिंता, उतनी ज़्यादा सकारात्मक जीवन ऊर्जा का संचार." },
+  { code: "bgc", name: "Haryanvi", mb: 0.03, sample: "जितनी कम चिंता, उतनी ज़्यादा सकारात्मक जीवन ऊर्जा का संचार." },
   { code: "ha", name: "Hausa", mb: 0.03, trained: true, sample: "Yanayi a bakin teku yana da kyau sosai yau." },
   { code: "haw", name: "Hawaiian", mb: 0, sample: "Manaʻo ʻoia, pono ʻoia e noho maʻō ame ulu i kona ʻoihana." },
   { code: "he", name: "Hebrew", mb: 2.7, sample: "הטורניר הגדול בשנה נערך בדצמבר במגרשי הפולו של לאס קניטאס." },

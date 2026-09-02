@@ -97,6 +97,23 @@ for (const idx of indexes) {
 console.log(`  ${text.size} transcripts matched to audio`);
 if (!text.size) { console.error("  index/audio mismatch — check --sep or the index format"); process.exit(1); }
 
+/**
+ * Is this clip actually CLIPPED, or merely normalised to full scale?
+ *
+ * ⚠ `peak > 0.98` rejects both, and that threw away a whole corpus: every Vaani clip peaks at
+ * exactly 1.0 because the corpus is peak-normalised, yet only 0.001% of samples touch the ceiling
+ * and the longest flat run is a single sample. Real clipping FLATTENS the waveform — consecutive
+ * samples pinned at full scale — so that is what to measure.
+ */
+function clipping(x) {
+  let atCeiling = 0, run = 0, worst = 0;
+  for (let i = 0; i < x.length; i++) {
+    if (Math.abs(x[i]) >= 0.999) { atCeiling++; worst = Math.max(worst, ++run); }
+    else run = 0;
+  }
+  return { frac: atCeiling / x.length, run: worst };
+}
+
 function score(wavPath) {
   const b = readFileSync(wavPath);
   let off = 12, data = null;
@@ -117,7 +134,7 @@ function score(wavPath) {
   const sorted = [...db].sort((a, b2) => a - b2);
   const speech = db.filter((v) => v > sorted[m - 1] - 25);
   return { snr: speech.reduce((a, b2) => a + b2, 0) / (speech.length || 1) - sorted[Math.floor(m * 0.1)],
-           speechFrac: speech.length / m, peak, sec: n / 24000 };
+           speechFrac: speech.length / m, peak, sec: n / 24000, clip: clipping(x) };
 }
 
 const scored = [];
@@ -130,7 +147,7 @@ for (const [id, t] of text) {
                               "-sample_fmt", "s16", wav]);
   } catch { continue; }
   const s = score(wav);
-  if (s.sec < MIN_SEC || s.sec > MAX_SEC || s.peak > 0.98 || s.speechFrac < 0.45) continue;
+  if (s.sec < MIN_SEC || s.sec > MAX_SEC || s.clip.run >= 3 || s.clip.frac > 0.0005 || s.speechFrac < 0.45) continue;
   scored.push({ id, text: t, wav, ...s });
 }
 scored.sort((a, b) => (b.snr + 40 * b.speechFrac) - (a.snr + 40 * a.speechFrac));

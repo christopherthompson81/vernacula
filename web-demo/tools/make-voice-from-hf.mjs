@@ -128,6 +128,24 @@ function guessText(row) {
 console.log(`  ${candidates.length} candidates in ${MIN_SEC}-${MAX_SEC}s`);
 if (!candidates.length) { console.error("  nothing matched — widen --min-sec/--max-sec or raise --scan"); process.exit(1); }
 
+
+/**
+ * Is this clip actually CLIPPED, or merely normalised to full scale?
+ *
+ * ⚠ `peak > 0.98` rejects both, and that threw away a whole corpus: every Vaani clip peaks at
+ * exactly 1.0 because the corpus is peak-normalised, yet only 0.001% of samples touch the ceiling
+ * and the longest flat run is a single sample. Real clipping FLATTENS the waveform — consecutive
+ * samples pinned at full scale — so that is what to measure.
+ */
+function clipping(x) {
+  let atCeiling = 0, run = 0, worst = 0;
+  for (let i = 0; i < x.length; i++) {
+    if (Math.abs(x[i]) >= 0.999) { atCeiling++; worst = Math.max(worst, ++run); }
+    else run = 0;
+  }
+  return { frac: atCeiling / x.length, run: worst };
+}
+
 /** Noise floor, speech fraction and peak from 10 ms frames — the screen that actually rejects. */
 function score(wavPath) {
   const b = readFileSync(wavPath);
@@ -150,7 +168,7 @@ function score(wavPath) {
   const floor = sorted[Math.floor(m * 0.1)], top = sorted[m - 1];
   const speech = db.filter((v) => v > top - 25);
   return { snr: speech.reduce((a, b2) => a + b2, 0) / (speech.length || 1) - floor,
-           speechFrac: speech.length / m, peak, sec: n / 24000 };
+           speechFrac: speech.length / m, peak, sec: n / 24000, clip: clipping(x) };
 }
 
 const scored = [];
@@ -176,7 +194,7 @@ for (const [i, c] of candidates.entries()) {
   // with a transcript for the whole 48 s. A reference whose text does not match its audio is worse
   // than no reference.
   if (s.sec < MIN_SEC || s.sec > MAX_SEC) continue;
-  if (s.peak > 0.98 || s.speechFrac < 0.45) continue;
+  if (s.clip.run >= 3 || s.clip.frac > 0.0005 || s.speechFrac < 0.45) continue;
   scored.push({ ...c, wav: wavUse, text: textUse, ...s });
   if (scored.length >= 12) break;
 }
