@@ -36,6 +36,14 @@ const codes = JSON.parse(readFileSync(CP, "utf8"));
 const meta = JSON.parse(readFileSync(MP, "utf8"));
 
 const json = (o) => JSON.stringify(o, null, 0);
+/**
+ * One line, for the human-readable comment above each entry.
+ *
+ * ⚠ A transcript may contain NEWLINES — Omnilingual's spontaneous-speech rows separate sentences
+ * that way — and a `// "…"` comment carrying one leaves its tail on the next line as bare text,
+ * which makes voices.jsonc unparseable. This broke the file on the first Arabic merge.
+ */
+const oneLine = (t) => String(t).replace(/\s+/gu, " ").trim();
 let added = 0, replaced = 0;
 for (const [lang, entries] of Object.entries(byLang).sort()) {
   // Replace any existing block for this language rather than appending a second one.
@@ -48,7 +56,7 @@ for (const [lang, entries] of Object.entries(byLang).sort()) {
   }
   const cv = entries[0].voice.source.lang;
   const block = `  // ${lang} — Common Voice ${cv} (CC0). Sourced because FLEURS has no ${lang} speaker.\n`
-    + entries.map((e) => `  // "${e.voice.source.text}"\n  ${json(e.voice)},\n`).join("");
+    + entries.map((e) => `  // "${oneLine(e.voice.source.text)}"\n  ${json(e.voice)},\n`).join("");
   text = text.replace("  // af — af_za", block + "  // af — af_za");
   for (const e of entries) { codes[e.voice.id] = e.codes; added++; }
   if (meta[lang]) delete meta[lang].voice;

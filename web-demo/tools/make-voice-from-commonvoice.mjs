@@ -40,6 +40,16 @@ const VOTES = Number(opt("votes", 2));
  */
 const ACCENT = opt("accent") ? new RegExp(opt("accent"), "iu") : null;
 /**
+ * Regex over Common Voice's `variant` column — the RIGHT filter for a language whose locale covers
+ * more than one standard.
+ *
+ * ⚠ European Portuguese was written off as unsourceable on the strength of the `accents` column,
+ * which is nearly empty for `pt` and labelled only by region-of-Brazil. `variant` is the column that
+ * separates the standards, and it holds readable labels rather than codes: "Portuguese (Portugal)",
+ * not "pt-PT". 595 European rows sit in the train split alone, 65 of them in the length band.
+ */
+const VARIANT = opt("variant") ? new RegExp(opt("variant"), "iu") : null;
+/**
  * Fetch only the first N MB of the split archive, with a Range request.
  *
  * ⚠ For the big locales the archive is most of an hour on a throttled connection (Kinyarwanda's
@@ -116,6 +126,7 @@ const shortlist = CLIPS.length ? CLIPS.map((c) => rows.find((r) => r.path === c)
   : rows.filter((r) => {
       const ms = durs[r.path] ?? 0;
       if (ACCENT && !ACCENT.test(r.accents ?? "")) return false;
+      if (VARIANT && !VARIANT.test(r.variant ?? "")) return false;
       return ms >= MIN_MS && ms <= MAX_MS && Number(r.up_votes || 0) >= VOTES && Number(r.down_votes || 0) === 0;
     }).filter((r) => inScript(r.sentence)).slice(0, PREFIX_MB ? 4000 : 40);
 for (const r of shortlist) if (!inScript(r.sentence))
@@ -126,7 +137,8 @@ console.log(`  ${shortlist.length} candidates by metadata (${MIN_MS}-${MAX_MS} m
 if (!shortlist.length) { console.error("  nothing matched — widen --min/--max or try --split train"); process.exit(1); }
 
 console.log(`  script check: ${SCRIPTS.length ? declaredScripts(LANG).join("+") : "none"}`
-          + (ACCENT ? `, accent filter ${ACCENT}` : ""));
+          + (ACCENT ? `, accent filter ${ACCENT}` : "")
+          + (VARIANT ? `, variant filter ${VARIANT}` : ""));
 const tarUrl = `${HF}/audio/${CV}/${SPLIT}/${CV}_${SPLIT}_0.tar`;
 const tar = join(WORK, `${SPLIT}_0.tar`);
 if (!existsSync(tar)) {

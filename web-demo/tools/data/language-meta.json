@@ -5,13 +5,11 @@
  },
  "acm": {
   "name": "Iraqi Arabic",
-  "sample": "يجمع الإنترنت بين عناصر كلٍّ من التواصل الجماهيري والشخصي.",
-  "voice": "ar"
+  "sample": "يجمع الإنترنت بين عناصر كلٍّ من التواصل الجماهيري والشخصي."
  },
  "acw": {
   "name": "Hijazi Arabic",
-  "sample": "يجمع الإنترنت بين عناصر كلٍّ من التواصل الجماهيري والشخصي.",
-  "voice": "ar"
+  "sample": "يجمع الإنترنت بين عناصر كلٍّ من التواصل الجماهيري والشخصي."
  },
  "af": {
   "name": "Afrikaans",
@@ -19,8 +17,7 @@
  },
  "afb": {
   "name": "Gulf Arabic",
-  "sample": "يجمع الإنترنت بين عناصر كلٍّ من التواصل الجماهيري والشخصي.",
-  "voice": "ar"
+  "sample": "يجمع الإنترنت بين عناصر كلٍّ من التواصل الجماهيري والشخصي."
  },
  "ajp": {
   "name": "South Levantine Arabic",
@@ -42,13 +39,11 @@
  },
  "apc": {
   "name": "North Levantine Arabic",
-  "sample": "يجمع الإنترنت بين عناصر كلٍّ من التواصل الجماهيري والشخصي.",
-  "voice": "ar"
+  "sample": "يجمع الإنترنت بين عناصر كلٍّ من التواصل الجماهيري والشخصي."
  },
  "apd": {
   "name": "Sudanese Arabic",
-  "sample": "يجمع الإنترنت بين عناصر كلٍّ من التواصل الجماهيري والشخصي.",
-  "voice": "ar"
+  "sample": "يجمع الإنترنت بين عناصر كلٍّ من التواصل الجماهيري والشخصي."
  },
  "ar": {
   "name": "Arabic (MSA)",
@@ -56,8 +51,7 @@
  },
  "ary": {
   "name": "Moroccan Arabic",
-  "sample": "كان ؤستاد، ؤ مستشار ديال لوزير د تّقافة لفايت محمد الأشعري.",
-  "voice": "ar"
+  "sample": "كان ؤستاد، ؤ مستشار ديال لوزير د تّقافة لفايت محمد الأشعري."
  },
  "arz": {
   "name": "Egyptian Arabic",
@@ -79,8 +73,7 @@
  },
  "ayl": {
   "name": "Libyan Arabic",
-  "sample": "يجمع الإنترنت بين عناصر كلٍّ من التواصل الجماهيري والشخصي.",
-  "voice": "ar"
+  "sample": "يجمع الإنترنت بين عناصر كلٍّ من التواصل الجماهيري والشخصي."
  },
  "az": {
   "name": "Azerbaijani",
@@ -115,8 +108,7 @@
  },
  "bho": {
   "name": "Bhojpuri",
-  "sample": "जितनी कम चिंता, उतनी ज़्यादा सकारात्मक जीवन ऊर्जा का संचार.",
-  "voice": "hi"
+  "sample": "जितनी कम चिंता, उतनी ज़्यादा सकारात्मक जीवन ऊर्जा का संचार."
  },
  "bm": {
   "name": "Bambara",
@@ -178,8 +170,7 @@
  },
  "crh": {
   "name": "Crimean Tatar",
-  "sample": "Balalıqta özüniñ Cülio ağasınıñ ölümini körmege mecbur oldı.",
-  "voice": "tr"
+  "sample": "Balalıqta özüniñ Cülio ağasınıñ ölümini körmege mecbur oldı."
  },
  "cs": {
   "name": "Czech",
@@ -250,8 +241,7 @@
  },
  "fo": {
   "name": "Faroese",
-  "sample": "Nývalda býráðið velur ein borgarstjóra fyri alt valskeiðið.",
-  "voice": "is"
+  "sample": "Nývalda býráðið velur ein borgarstjóra fyri alt valskeiðið."
  },
  "fr": {
   "name": "French",
@@ -304,8 +294,7 @@
  },
  "haw": {
   "name": "Hawaiian",
-  "sample": "Manaʻo ʻoia, pono ʻoia e noho maʻō ame ulu i kona ʻoihana.",
-  "voice": "mi"
+  "sample": "Manaʻo ʻoia, pono ʻoia e noho maʻō ame ulu i kona ʻoihana."
  },
  "he": {
   "name": "Hebrew",
@@ -317,8 +306,7 @@
  },
  "hil": {
   "name": "Hiligaynon",
-  "sample": "Ang Intramuros isa ka distrito sa syudad sang Manila sa Pilipinas.",
-  "voice": "ceb"
+  "sample": "Ang Intramuros isa ka distrito sa syudad sang Manila sa Pilipinas."
  },
  "hmn": {
   "name": "Hmong",
@@ -327,8 +315,7 @@
  },
  "hne": {
   "name": "Chhattisgarhi",
-  "sample": "जितनी कम चिंता, उतनी ज़्यादा सकारात्मक जीवन ऊर्जा का संचार.",
-  "voice": "hi"
+  "sample": "जितनी कम चिंता, उतनी ज़्यादा सकारात्मक जीवन ऊर्जा का संचार."
  },
  "hr": {
   "name": "Croatian",
@@ -403,8 +390,7 @@
  },
  "ki": {
   "name": "Kikuyu",
-  "sample": "Nerthlands nĩyo thoko nene ya mahũa maria kenya nyendagia.",
-  "voice": "kam"
+  "sample": "Nerthlands nĩyo thoko nene ya mahũa maria kenya nyendagia."
  },
  "kk": {
   "name": "Kazakh",
@@ -591,13 +577,11 @@
  },
  "pbt": {
   "name": "Pashto (Southern)",
-  "sample": "د کنعان په ځمکه ستر ځنګلونه نشته، نو لرګي ډير قیمت بیه دي.",
-  "voice": "ps"
+  "sample": "د کنعان په ځمکه ستر ځنګلونه نشته، نو لرګي ډير قیمت بیه دي."
  },
  "pcm": {
   "name": "Nigerian Pidgin",
-  "sample": "Owanari Duke na Naijá lorya wey bi di waif of Donald Duke.",
-  "voice": "yo"
+  "sample": "Owanari Duke na Naijá lorya wey bi di waif of Donald Duke."
  },
  "pl": {
   "name": "Polish",
@@ -614,8 +598,7 @@
  },
  "pt": {
   "name": "Portuguese (European)",
-  "sample": "O tempo está muito agradável hoje na costa.",
-  "voice": "pt-BR"
+  "sample": "O tempo está muito agradável hoje na costa."
  },
  "pt-BR": {
   "name": "Portuguese (Brazil)",
@@ -675,8 +658,7 @@
  },
  "si": {
   "name": "Sinhala",
-  "sample": "රසය, විලාසිතාව සහ වර්ණය යන සියලු සීමාවන් ඉක්මවා යන ගායකයා.",
-  "voice": "ta"
+  "sample": "රසය, විලාසිතාව සහ වර්ණය යන සියලු සීමාවන් ඉක්මවා යන ගායකයා."
  },
  "sk": {
   "name": "Slovak",
