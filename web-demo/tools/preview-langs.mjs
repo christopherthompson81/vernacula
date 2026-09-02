@@ -35,13 +35,18 @@ for (const code of langs) {
     li.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
     await new Promise((r) => setTimeout(r, 300));
     if (!document.querySelector("textarea").value.trim()) return { err: `${code} has no sample text` };
+    // ⚠ Wait for the stats line to CHANGE, not merely to exist. The previous language's stats and
+    // audio are still on the page when Generate is clicked, and the progress bar has not rendered
+    // on the first poll — so "stats present and not busy" was already true, and the run saved the
+    // PREVIOUS language's audio under this language's name.
+    const before = document.querySelector(".stats")?.textContent ?? "";
     document.querySelector("button").click();
-    for (let i = 0; i < 300; i++) {
+    for (let i = 0; i < 600; i++) {
       await new Promise((r) => setTimeout(r, 500));
       const err = document.querySelector(".error")?.textContent;
       if (err) return { err };
       const st = document.querySelector(".stats")?.textContent;
-      if (st && !document.querySelector(".progress")) return { stats: st };
+      if (st && st !== before && !document.querySelector(".progress")) return { stats: st };
     }
     return { err: "timed out" };
   }, code);
