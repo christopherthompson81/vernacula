@@ -19,7 +19,7 @@ export interface LanguageOption {
 
 /** Every language the phonemizer can route, alphabetically by name. */
 export const LANGUAGES: LanguageOption[] = [
-  { code: "ab", name: "Abkhaz", mb: 0.02, voice: "ka", sample: "Ауаа ақырҭуа аиункерцәа аурыс Собора ашҭаҿ анышә имардеит." },
+  { code: "ab", name: "Abkhaz", mb: 0.02, sample: "Ауаа ақырҭуа аиункерцәа аурыс Собора ашҭаҿ анышә имардеит." },
   { code: "af", name: "Afrikaans", mb: 3.47, sample: "Interne vergifting mag nie onmiddellik ooglopend wees nie." },
   { code: "ak", name: "Akan", mb: 0, voice: "yo", sample: "Wɔsa saa asa yi de gye nkurɔfoɔ ani, na wɔdekyerɛkyerɛ nso." },
   { code: "sq", name: "Albanian", mb: 0, voice: "mk", sample: "Ndërtesa është e formësuar në përdhese të ngritur dhe kat." },

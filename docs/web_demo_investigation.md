@@ -1042,3 +1042,50 @@ reference clip from the export bring-up, which sounds better than the FLEURS exe
 against 0.020); the FLEURS one stays as the second English voice.
 
 Audio: /tmp/vernacula-tts-listen/all-langs/.
+
+## Run 22 — 2026-09-01 19:30, the first sourced voice: Abkhaz from Common Voice
+
+**Question:** can a native reference voice be sourced for a language FLEURS does not cover, and does
+the path generalise past one language?
+
+Abkhaz was reading with a Georgian donor voice — a different family (NW Caucasian against
+Kartvelian, ~58 consonants against 28). Common Voice 22.0 (CC0) has Abkhaz: 9,133 test clips.
+
+**Selection.** Metadata narrows, audio decides. 722 clips are 7.5-9.5 s with 2+ up-votes and no
+down-votes, which says only that the reading matches the sentence — nothing about the recording. So
+24 candidates were decoded to 24 kHz mono and scored on 10 ms frames for noise floor, speech
+fraction and peak. The spread is large and it is the reason to measure rather than trust:
+
+| clip | noise floor | speech | peak | rms |
+|---|---|---|---|---|
+| 29828647 (chosen) | 92 dB | 68% | 0.54 | 0.051 |
+| 29314594 (chosen, male) | 74 dB | 58% | 0.95 | 0.201 |
+| 29830162 | 32 dB | 59% | 0.77 | 0.055 |
+
+A noisy reference is cloned faithfully — the noise then rides on every sentence the demo speaks.
+Three clips were kept (female teens, female thirties, male twenties); the demo defaults to the
+first, and the other two are in the voice picker.
+
+**Encoding** is the existing `make-voices.mjs` path: phonemize the Common Voice sentence through the
+real engine (`ɡamzatʼovɡʲə , d͡ʒara χʂəɥˤt͡sʼarrakʼ …` — the ejectives and labialised uvulars are
+there), RMS-boost, remove silence at reference parameters, clip to a hop multiple, run the Higgs
+encoder. 8×185 codes, 1.5 KB.
+
+**Generalised into `tools/make-voice-from-commonvoice.mjs`**, which does the whole path — fetch
+transcripts, shortlist, fetch and extract the split tar, decode, score, phonemize, encode, write
+both files. Two bugs found by running it against the hand-built result:
+
+1. The id was derived with `path.replace(/\D/g, "")`, which folds in the "22" of `common_voice` and
+   the "3" of `mp3` — `common_voice_ab_23052543.mp3` became `ab-30525433`. It now takes the clip
+   number from the filename, so an id traces back to a dataset row.
+2. Ranking alone cannot reproduce a shipped voice, because the ranking changes when the scorer
+   changes. `--clip a.mp3,b.mp3` forces named clips, and the shipped entries record their filenames,
+   so re-running re-derives identical codes.
+
+⚠ `client_id` is dropped and the 64-hex `sentence_id` truncated to 12 — neither belongs in a
+published file, and 12 hex still finds the row.
+
+**Coverage:** 26 of the 90 remaining donor languages are in Common Voice 22 and can be done this
+way. The other 64 need audio from elsewhere; docs/voice_sourcing.md ranks them.
+
+Audio: /tmp/vernacula-tts-listen/ab/ (three generated, plus the three source clips).

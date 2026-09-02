@@ -8,6 +8,15 @@ cloning copies the speaker's accent along with their timbre.
 
 This is the list of what a native clip would fix, worst first.
 
+## Done
+
+| language | source | voices |
+|---|---|---|
+| **Abkhaz** `ab` | Common Voice 22.0, CC0 | 3 (female teens, female thirties, male twenties) |
+
+Abkhaz was read by a Georgian voice, which is a different family entirely. It now has three native
+references; the demo defaults to the first and the picker offers the other two.
+
 ## What a usable clip is
 
 | | |
@@ -25,12 +34,35 @@ codes, and a transcript that does not match what is said degrades the clone. Enc
 
 Only the codes (a few KB) ship; the audio does not, and neither does the 654 MB encoder.
 
+## Common Voice covers 26 of the 90 remaining
+
+`tools/make-voice-from-commonvoice.mjs` automates the whole path — download, score, phonemize,
+encode, write both files:
+
+    node tools/make-voice-from-commonvoice.mjs --cv eu --lang eu --n 3 --write
+
+⚠ SELECTION IS MEASURED, NOT TRUSTED. Common Voice is crowd-recorded, and its up/down votes only say
+the reading matches the sentence, not that the recording is clean. Metadata narrows the field (8-9 s,
+two or more up-votes, no down-votes) and then the AUDIO decides: noise floor, speech fraction and
+peak are measured on every candidate, clipped and mostly-silent clips are rejected outright. A noisy
+reference is cloned faithfully — its noise comes out in every sentence the demo ever speaks — so the
+last step is always a listening test. `--clip a.mp3,b.mp3` forces named clips, which is what makes a
+shipped voice reproducible.
+
+Available there: Albanian, Aromanian, Bashkir, Basque, Chuvash (`cv`), Classical Nahuatl (`nhi`),
+Guaraní, Haitian Creole, Kinyarwanda, Kurmanji, Latgalian, Min Nan (`nan-tw`), European Portuguese,
+Quechua (`quy`), Santali, Saraiki, Sesotho, Setswana, Castilian Spanish, Tashelhit (`zgh`), Tatar,
+Tigrinya, Turkmen, Uyghur, Western Armenian (`hy-AM`), Western Punjabi (`pa-IN`).
+
+The other 64 need audio from somewhere else — that is where sourcing help is worth most, and the
+tiers below say which of them matter most.
+
 ## Tier A — donor is a stranger (33)
 
 Different family or markedly different phonology. These are where a native clip changes the result
 most.
 
-Abkhaz ← Georgian · Akan ← Yoruba · Bambara ← Fula · Basque ← Spanish · Cherokee ← English ·
+~~Abkhaz ← Georgian~~ (done) · Akan ← Yoruba · Bambara ← Fula · Basque ← Spanish · Cherokee ← English ·
 Classical Nahuatl ← Spanish · Ewe ← Yoruba · Hawaiian ← Māori · Hiligaynon ← Cebuano ·
 Hmong ← Lao · Ilocano ← Cebuano · K'iche' ← Spanish · Kalaallisut ← Danish · Kikuyu ← Kamba ·
 Kinyarwanda ← Luganda · Kirundi ← Luganda · Lule Sami ← Finnish · Madurese ← Javanese ·

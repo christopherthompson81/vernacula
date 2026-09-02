@@ -17,6 +17,13 @@
 // ⚠ `source` identifies the exact FLEURS clip, so a noisy exemplar can be traced and replaced:
 //   re-run with --alt <lang>=<n> (or --extra <lang>=<a,b> for additional voices).
 [
+  // ab — Common Voice ab (CC0). Sourced because FLEURS has no ab speaker.
+  // "Гамзатовгьы, џьара хшыҩҵаррак сзаарԥшуазар ҳәа, ҵакы змаӡамыз ажәақәак еиқәиԥхьаӡеит."
+  {"id":"ab-29828647","lang":"ab","default":true,"label":"ab · FEMALE · 8.3s","refIpa":"ɡamzatʼovɡʲə , d͡ʒara χʂəɥˤt͡sʼarrakʼ szaarpʰʂwazar ħʷa , t͡sʼakʼə zmad͡zaməz aʒʷakʷʰakʼ ejkʷʰipʰχʲad͡zejtʼ .","refLen":185,"refRms":0.05073,"source":{"dataset":"mozilla/common_voice_22_0","lang":"ab","file":"common_voice_ab_29828647.mp3","split":"test","sentenceId":"7f336838e858","gender":"FEMALE","durationS":8.3,"candidateIndex":0,"text":"Гамзатовгьы, џьара хшыҩҵаррак сзаарԥшуазар ҳәа, ҵакы змаӡамыз ажәақәак еиқәиԥхьаӡеит."}},
+  // "Баша идырԥшӡоит акәымзар, иҭахханы дыҟазаргьы, ижәлар драцәажәартә абызшәа издырамызт."
+  {"id":"ab-29259038","lang":"ab","label":"ab · FEMALE · 8.0s","refIpa":"baʂa idərpʰʂd͡zojtʼ akʼʷəmzar , itʰaχχanə dəqʼazarɡʲə , iʒʷlar drat͡ɕʷʰaʒʷartʷʼ abəzʃʷa izdəraməztʼ .","refLen":159,"refRms":0.08472,"source":{"dataset":"mozilla/common_voice_22_0","lang":"ab","file":"common_voice_ab_29259038.mp3","split":"test","sentenceId":"00a7a78467fd","gender":"FEMALE","durationS":8,"candidateIndex":1,"text":"Баша идырԥшӡоит акәымзар, иҭахханы дыҟазаргьы, ижәлар драцәажәартә абызшәа издырамызт."}},
+  // "Анырҳәоз, ахьымӡӷ угеит акәын иаанагоз, убриаҟара аҳаҭыр лаҟәын уи аԥстәы."
+  {"id":"ab-29314594","lang":"ab","label":"ab · MALE · 8.6s","refIpa":"anərħʷoz , aχʲəmd͡zʁ uɡejtʼ akʼʷən jaanaɡoz , ubrjaqʼara aħatʰər laqʼʷən uj apʰstʷʼə .","refLen":184,"refRms":0.2012,"source":{"dataset":"mozilla/common_voice_22_0","lang":"ab","file":"common_voice_ab_29314594.mp3","split":"test","sentenceId":"07eb2642108c","gender":"MALE","durationS":8.6,"candidateIndex":2,"text":"Анырҳәоз, ахьымӡӷ угеит акәын иаанагоз, убриаҟара аҳаҭыр лаҟәын уи аԥстәы."}},
   // af — af_za train · FEMALE · 8.0s · candidate 0
   // "Hsieh het gedurende die verkiesing geïmpliseer dat Ma uit die land in ‘n tyd van mag vlug."
   {"id":"af","lang":"af","default":true,"label":"af · FEMALE · 8.0s","refIpa":"ɦsˈiɦ ɦˈɛt χədˈyːrəndə dˈi fərkˈisəŋ χəəmplisiər dˈat mˈɑː ˈœyt dˈi lˈant ˈən ə tˈəit fˈan mˈaχ flˈœχ .","refLen":200,"refRms":0.01422,"source":{"dataset":"google/fleurs","lang":"af_za","file":"17209524695097826794.wav","split":"train","sentenceId":"21","gender":"FEMALE","durationS":8,"candidateIndex":0,"text":"Hsieh het gedurende die verkiesing geïmpliseer dat Ma uit die land in ‘n tyd van mag vlug."}},
