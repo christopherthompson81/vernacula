@@ -34,8 +34,7 @@
  },
  "an": {
   "name": "Aragonese",
-  "sample": "Se dividen a mes a efectos administrativos en parroquias.",
-  "voice": "es-419"
+  "sample": "Se dividen a mes a efectos administrativos en parroquias."
  },
  "apc": {
   "name": "North Levantine Arabic",
@@ -84,8 +83,7 @@
  },
  "bal": {
   "name": "Balochi",
-  "sample": "بلؤچی زبان یک مزنئیں زبانئ مه ئیران،پاکستان و اوگانستان تها.",
-  "voice": "ps"
+  "sample": "بلؤچی زبان یک مزنئیں زبانئ مه ئیران،پاکستان و اوگانستان تها."
  },
  "bar": {
   "name": "Bavarian",
@@ -243,8 +241,7 @@
  },
  "fr-CA": {
   "name": "French (Québécois)",
-  "sample": "Il s'agit du lieu que les colons Britannique ont investit.",
-  "voice": "fr"
+  "sample": "Il s'agit du lieu que les colons Britannique ont investit."
  },
  "ga": {
   "name": "Irish",
@@ -391,7 +388,7 @@
  },
  "kl": {
   "name": "Kalaallisut (Greenlandic)",
-  "voice": "da"
+  "voice": "ipk"
  },
  "km": {
   "name": "Khmer",
@@ -485,7 +482,7 @@
  "mos": {
   "name": "Mossi",
   "sample": "Mwinkaara yé Charikpong m'be nen-taoore tênga Ghana pugin.",
-  "voice": "ff"
+  "voice": "dag"
  },
  "mr": {
   "name": "Marathi",
@@ -501,7 +498,7 @@
  },
  "mto": {
   "name": "Totontepec Mixe",
-  "voice": "es-419"
+  "voice": "zoc"
  },
  "my": {
   "name": "Burmese",
@@ -602,8 +599,7 @@
  },
  "rkt": {
   "name": "Rangpuri",
-  "sample": "পছন্দের কেকগুলি প্রায়শই একটি কাপ ভরা কফির সাথে ভাল মানায়।",
-  "voice": "bn"
+  "sample": "পছন্দের কেকগুলি প্রায়শই একটি কাপ ভরা কফির সাথে ভাল মানায়।"
  },
  "rn": {
   "name": "Kirundi",
@@ -620,8 +616,7 @@
  },
  "rup": {
   "name": "Aromanian",
-  "sample": "Gogu Puiu ira alumtãtoru contra al Comunismulu ãn Romãnia.",
-  "voice": "ro"
+  "sample": "Gogu Puiu ira alumtãtoru contra al Comunismulu ãn Romãnia."
  },
  "rw": {
   "name": "Kinyarwanda",
@@ -698,8 +693,7 @@
  },
  "syl": {
   "name": "Sylheti",
-  "sample": "ꠀꠞꠛ ꠡꠝꠣꠎꠧ ꠇꠥꠘꠤꠀ ꠡꠣꠗꠣꠞꠘꠔ ꠙꠄꠟꠣ ꠡꠘ꠆ꠔꠣꠘꠞ ꠘꠣꠝꠞ ꠃꠙꠞꠦ ꠑꠤꠇ ꠇꠞꠣ ꠅꠄ।",
-  "voice": "bn"
+  "sample": "ꠀꠞꠛ ꠡꠝꠣꠎꠧ ꠇꠥꠘꠤꠀ ꠡꠣꠗꠣꠞꠘꠔ ꠙꠄꠟꠣ ꠡꠘ꠆ꠔꠣꠘꠞ ꠘꠣꠝꠞ ꠃꠙꠞꠦ ꠑꠤꠇ ꠇꠞꠣ ꠅꠄ।"
  },
  "ta": {
   "name": "Tamil",

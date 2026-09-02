@@ -97,6 +97,12 @@ ${body}
 
 export const LANGUAGE_BY_CODE = new Map(LANGUAGES.map((l) => [l.code, l]));
 
+/** Display names for donor languages the picker does not itself list — a speaker whose language the
+ *  phonemizer has no engine for can still lend a voice. */
+export const DONOR_NAMES: Record<string, string> = {
+  zoc: "Copainalá Zoque", dag: "Dagbani", ipk: "Iñupiaq", bgp: "Eastern Balochi",
+};
+
 /** Which language's REFERENCE VOICE renders this one — itself, or its donor.
  *
  *  ⚠ Cloning is acoustic: the reference carries the speaker's accent as well as their timbre, so a

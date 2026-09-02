@@ -23,6 +23,20 @@ const opt = (k, d) => { const i = args.indexOf(`--${k}`); return i < 0 ? d : arg
 const URL = opt("url"), LANG = opt("lang");
 /** Skip the download/extract step and read an already-prepared directory of audio + index. */
 const DIR = opt("dir");
+/**
+ * Phonemize with a DIFFERENT engine than the voice's language code.
+ *
+ * ⚠ For a DONOR voice the speaker's language may have no phonemizer at all — Copainalá Zoque,
+ * Dagbani and Iñupiaq are here to read for Totontepec Mixe, Mossi and Greenlandic, none of which
+ * have a native speaker in any open corpus. The reference transcript still has to be IPA in the
+ * demo's convention, so it is rendered through the TARGET language's engine: a related language with
+ * a compatible Latin orthography (Zoque through Mixe, Dagbani through Mossi, Iñupiaq through
+ * Kalaallisut, Eastern Balochi through Balochi — the last being the same language, another variety).
+ *
+ * That IPA is an approximation of what the speaker says, and the docs say so. The alternative is the
+ * donor these replace: Spanish reading Mixe, Fula reading Mossi, Danish reading Greenlandic.
+ */
+const PHON_LANG = opt("phon-lang", null);
 const N = Number(opt("n", 3)), SEP = opt("sep");   // unset = detect per line
 const MIN_SEC = Number(opt("min-sec", 4)), MAX_SEC = Number(opt("max-sec", 14));
 const ENCODER = opt("encoder", "/mnt/data/omnivoice_ipa/onnx_base/higgs_encoder.onnx");
@@ -163,7 +177,7 @@ for (const [i, c] of scored.slice(0, N).entries()) {
   // encode died on "cannot find module" while an Awadhi run finished normally.
   const probe = join(PHONEMIZER, `slr-phonemize.${process.pid}.tmp.mts`);
   writeFileSync(probe, `import { phonemizeAsync } from "./src/index.ts";\n`
-    + `console.log(await phonemizeAsync(${JSON.stringify(c.text)}, ${JSON.stringify(LANG)}));\n`);
+    + `console.log(await phonemizeAsync(${JSON.stringify(c.text)}, ${JSON.stringify(PHON_LANG ?? LANG)}));\n`);
   let ipa;
   try { ipa = execFileSync("npx", ["tsx", `slr-phonemize.${process.pid}.tmp.mts`], { cwd: PHONEMIZER, encoding: "utf8" }).trim(); }
   finally { execFileSync("rm", ["-f", probe]); }

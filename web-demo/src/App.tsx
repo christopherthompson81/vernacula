@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { MODELS, NUM_STEPS } from "./inference/config.ts";
-import { LANGUAGE_BY_CODE, voiceLangOf, type LanguageOption } from "./inference/languages.ts";
+import { DONOR_NAMES, LANGUAGE_BY_CODE, voiceLangOf, type LanguageOption } from "./inference/languages.ts";
 import { LanguagePicker } from "./LanguagePicker.tsx";
 import { phonemize } from "./inference/phonemizer.ts";
 import { OmniVoice, voiceFor, voicesFor, type Voice } from "./inference/omnivoice.ts";
@@ -181,7 +181,7 @@ export default function App() {
           {langOpt.voice && (
             <>
               There is no native reference voice for it yet, so it is read by a{" "}
-              <strong>{LANGUAGE_BY_CODE.get(langOpt.voice)?.name ?? langOpt.voice}</strong> speaker:
+              <strong>{LANGUAGE_BY_CODE.get(langOpt.voice)?.name ?? DONOR_NAMES[langOpt.voice] ?? langOpt.voice}</strong> speaker:
               voice cloning copies accent along with timbre, so expect one.
             </>
           )}

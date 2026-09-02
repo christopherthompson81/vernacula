@@ -6,10 +6,10 @@ can emit noise rather than degrade — so every language needs a reference clip.
 native one is read by a **donor** voice from a near neighbour, which is audible: cloning copies the
 speaker's accent along with their timbre.
 
-**152 of 193 languages now have a native voice; 41 are still on a donor.** This document records
+**165 of 193 languages now have a native voice; 28 are still on a donor.** This document records
 where each of the 41 stands, and what a usable clip has to be.
 
-## Done — 152 of 193 languages have a native voice
+## Done — 165 of 193 languages have a native voice
 
 **Common Voice 22.0 (CC0), 26 languages:** Abkhaz, Akan, Albanian, Bashkir, Basque, Chuvash,
 Classical Nahuatl, Guaraní, Haitian Creole, Kinyarwanda, Kurmanji, Latgalian, Min Nan, European
@@ -64,12 +64,21 @@ Cheap to improve but not wrong today: **Québécois French** ← France, **Stand
 **South Levantine Arabic** ← MSA (Omnilingual has North Levantine but not South), **Aragonese** ←
 Latin-American Spanish, though Common Voice 26 has 16.9 h of Aragonese proper.
 
-### 3. Waiting on Common Voice 26 (2)
+### 3. Common Voice 26 — done
 
-Both need a Mozilla Data Collective account, since Common Voice left HuggingFace after 22.0:
-**Aromanian** (`rup` went from nothing to 30 validated clips at 7.0 s mean) and **Aragonese** above.
-CV 26 would also supply better DONORS for four languages here — Balti for Tibetan, Inupiaq for
-Greenlandic, Zoque for Totontepec Mixe, Dagbani for Mossi.
+Sourced through Mozilla Data Collective, which is where Common Voice went after 22.0. Everything
+there is CC0, but **terms must be accepted per dataset on the website** — there is no API route for
+it, and the site rate-limits acceptance to roughly one per minute.
+
+Native from CV 26: **Aromanian**, **Aragonese**, **Québécois French**, **Balochi** (`bgp`, Eastern
+Balochi — a variety of the same language).
+
+⚠ **Donor voices whose speaker's language the phonemizer cannot read.** Copainalá Zoque now reads
+for Totontepec Mixe, Dagbani for Mossi, and Iñupiaq for Greenlandic — replacing Spanish, Fula and
+Danish respectively. None of the three has an engine, so the reference transcript is rendered
+through the TARGET language's engine (Zoque through Mixe, Dagbani through Mossi, Iñupiaq through
+Kalaallisut), all of which share a compatible Latin orthography. That IPA approximates what the
+speaker says. It is a deliberate trade against a donor from an unrelated family.
 
 ### 4. Licence-blocked — the data exists and cannot be used (3)
 

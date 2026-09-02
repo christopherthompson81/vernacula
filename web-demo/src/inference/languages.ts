@@ -26,14 +26,14 @@ export const LANGUAGES: LanguageOption[] = [
   { code: "am", name: "Amharic", mb: 0.01, trained: true, sample: "ዛሬ በባህር ዳርቻ የአየሩ ሁኔታ በጣም ደስ የሚል ነው።" },
   { code: "grc", name: "Ancient Greek", mb: 0, sample: "Στοιχεία όπως το ασβέστιο και το κάλιο θεωρούνται μέταλλα." },
   { code: "ar", name: "Arabic (MSA)", mb: 24.38, trained: true, sample: "الطقس اليوم لطيف جدا على الساحل." },
-  { code: "an", name: "Aragonese", mb: 0, voice: "es-419", sample: "Se dividen a mes a efectos administrativos en parroquias." },
+  { code: "an", name: "Aragonese", mb: 0, sample: "Se dividen a mes a efectos administrativos en parroquias." },
   { code: "hy", name: "Armenian", mb: 0, sample: "Դրանք մի քանի պատճառով ցանցային պրոքսիներից գերադասելի են." },
-  { code: "rup", name: "Aromanian", mb: 0, voice: "ro", sample: "Gogu Puiu ira alumtãtoru contra al Comunismulu ãn Romãnia." },
+  { code: "rup", name: "Aromanian", mb: 0, sample: "Gogu Puiu ira alumtãtoru contra al Comunismulu ãn Romãnia." },
   { code: "as", name: "Assamese", mb: 2.54, sample: "কৃত্ৰিম উপগ্ৰহটো এটা ৰকেটৰ সহায়ত অন্তৰীক্ষলৈ পঠিওৱা হৈছিল।" },
   { code: "ast", name: "Asturian", mb: 0.01, sample: "Dellos cruceros incluyen Berlín, Alemaña nos sos folletos." },
   { code: "awa", name: "Awadhi", mb: 0.05, sample: "हिन्दू धरम में भगवान् श्री रामचंद्र जी के बहुतै महत्व अहै।" },
   { code: "az", name: "Azerbaijani", mb: 0, sample: "Dünyanı bu mağaranın içindən hiss edə bilmək çox çətindir." },
-  { code: "bal", name: "Balochi", mb: 0.02, voice: "ps", sample: "بلؤچی زبان یک مزنئیں زبانئ مه ئیران،پاکستان و اوگانستان تها." },
+  { code: "bal", name: "Balochi", mb: 0.02, sample: "بلؤچی زبان یک مزنئیں زبانئ مه ئیران،پاکستان و اوگانستان تها." },
   { code: "bm", name: "Bambara", mb: 0, voice: "ff", sample: "Nin sabu ye aka taji lasago lahauta ye ani duguden fitini." },
   { code: "ba", name: "Bashkir", mb: 8.73, sample: "Бөтә донъя стандарттар көнөнөң датаһы осраҡлы һайланмаған." },
   { code: "eu", name: "Basque", mb: 0, sample: "Hypancistrus contradens Hypancistrus generoko animalia da." },
@@ -68,7 +68,7 @@ export const LANGUAGES: LanguageOption[] = [
   { code: "fo", name: "Faroese", mb: 0, sample: "Nývalda býráðið velur ein borgarstjóra fyri alt valskeiðið." },
   { code: "fi", name: "Finnish", mb: 0.01, sample: "Alkuaineet, kuten kalsium ja kalium lasketaan metalleiksi." },
   { code: "fr", name: "French", mb: 4.97, trained: true, sample: "Le temps est très agréable aujourd'hui sur la côte." },
-  { code: "fr-CA", name: "French (Québécois)", mb: 4.97, voice: "fr", sample: "Il s'agit du lieu que les colons Britannique ont investit." },
+  { code: "fr-CA", name: "French (Québécois)", mb: 4.97, sample: "Il s'agit du lieu que les colons Britannique ont investit." },
   { code: "ff", name: "Fula", mb: 0.01, trained: true, sample: "Hannde weeyo maayo ngoo no welti sanne." },
   { code: "gl", name: "Galician", mb: 0.01, sample: "Está prohibido facer bromas sobre o Holocausto e os Nazis." },
   { code: "gan", name: "Gan Chinese", mb: 0.13, voice: "cmn", sample: "秋天嘚完首詩裡頭拕擬人化，佢密謀、催熟果實、收穫、舞音樂。" },
@@ -101,7 +101,7 @@ export const LANGUAGES: LanguageOption[] = [
   { code: "cjy", name: "Jin Chinese", mb: 0.18, voice: "cmn", sample: "有的晉語方言（比方説和順話）有三種不同的指示詞（近指、中指、遠指），編輯詞條時要留下這些箇指示詞，表意更準確。" },
   { code: "quc", name: "K'iche'", mb: 0, voice: "es-419" },
   { code: "kea", name: "Kabuverdianu", mb: 0, sample: "Es kazal pode opta pa faze un planu di adoson pa ses bebé." },
-  { code: "kl", name: "Kalaallisut (Greenlandic)", mb: 0.01, voice: "da" },
+  { code: "kl", name: "Kalaallisut (Greenlandic)", mb: 0.01, voice: "ipk" },
   { code: "kam", name: "Kamba", mb: 0.01, sample: "Ĩtinanĩ, ndĩa sya mbwaũ nĩsyaumisw'e vo nĩ ndĩa sya syũma." },
   { code: "kn", name: "Kannada", mb: 0.01, sample: "ಅದರ ಸರ್ವವ್ಯಾಪಿ ಶಕ್ತಿ ರಾಜನಿಂದ ಸಾಮಾನ್ಯ ಪ್ರಜೆಯವರೆಗೂ ಹರಡಿತ್ತು." },
   { code: "kaa", name: "Karakalpak", mb: 0, voice: "uz", sample: "Aliçören - Túrkiyanıń Bolu wálayatı Bolu rayonındaǵı awıl." },
@@ -140,7 +140,7 @@ export const LANGUAGES: LanguageOption[] = [
   { code: "nan", name: "Min Nan Chinese", mb: 1.44, sample: "I-ê lāu-pē sī Rupert Oliver Benjamin van den Bogaerde; lāu-bú sī Hon." },
   { code: "mn", name: "Mongolian", mb: 0.01, sample: "Цөм нь нейтрон ба протон гэсэн хоёр жижиг хэсгээс бүрддэг." },
   { code: "ary", name: "Moroccan Arabic", mb: 24.38, sample: "كان ؤستاد، ؤ مستشار ديال لوزير د تّقافة لفايت محمد الأشعري." },
-  { code: "mos", name: "Mossi", mb: 0, voice: "ff", sample: "Mwinkaara yé Charikpong m'be nen-taoore tênga Ghana pugin." },
+  { code: "mos", name: "Mossi", mb: 0, voice: "dag", sample: "Mwinkaara yé Charikpong m'be nen-taoore tênga Ghana pugin." },
   { code: "naq", name: "Nama", mb: 0, voice: "xh" },
   { code: "ne", name: "Nepali", mb: 0.05, sample: "दुई घन्टाको फरकमा सरकारी भवनहरूका नजिक तीन बम विस्फोट भयो।" },
   { code: "pcm", name: "Nigerian Pidgin", mb: 0.01, sample: "Owanari Duke na Naijá lorya wey bi di waif of Donald Duke." },
@@ -159,7 +159,7 @@ export const LANGUAGES: LanguageOption[] = [
   { code: "pt", name: "Portuguese (European)", mb: 0.05, trained: true, sample: "O tempo está muito agradável hoje na costa." },
   { code: "pa", name: "Punjabi", mb: 0.33, sample: "ਤਕਨੀਕ ਆਭਾਸੀ ਫੀਲਡ ਟ੍ਰਿਪ ਦੇ ਨਾਲ ਇਸ ਸੋਲਿਊਸ਼ਨ ਦੀ ਪੇਸ਼ਕਸ਼ ਕਰਦੀ ਹੈ।" },
   { code: "qu", name: "Quechua", mb: 0.01, sample: "Taytan: Samuel Nowlin Reeves, Jr.; Maman: Patricia Taylor." },
-  { code: "rkt", name: "Rangpuri", mb: 0.04, voice: "bn", sample: "পছন্দের কেকগুলি প্রায়শই একটি কাপ ভরা কফির সাথে ভাল মানায়।" },
+  { code: "rkt", name: "Rangpuri", mb: 0.04, sample: "পছন্দের কেকগুলি প্রায়শই একটি কাপ ভরা কফির সাথে ভাল মানায়।" },
   { code: "ro", name: "Romanian", mb: 0.05, sample: "Mi se părea că nu are sens; cu siguranță nu era echitabil." },
   { code: "ru", name: "Russian", mb: 8.72, trained: true, sample: "Сегодня очень приятная погода на побережье." },
   { code: "sat", name: "Santali", mb: 0, sample: "ᱱᱚᱣᱟ ᱯᱟᱥᱮᱡ ᱛᱟᱭᱚᱢ ᱫᱟᱨᱟᱢ ᱢᱚᱣᱟᱢᱚᱨᱤᱭᱟ ᱦᱩᱭ ᱥᱮᱝᱜᱮᱞᱮ ᱥᱟᱞᱜᱟᱣ ᱞᱮᱫᱟ।" },
@@ -183,7 +183,7 @@ export const LANGUAGES: LanguageOption[] = [
   { code: "su", name: "Sundanese", mb: 0, sample: "Manéhna dibantuan ku lanceuk awéwéna, Julia Brainerd Hall." },
   { code: "sw", name: "Swahili", mb: 0.01, sample: "Wameorodheshwa katika Orodha ya Urithi wa Dunia ya UNESCO." },
   { code: "sv", name: "Swedish", mb: 0.59, trained: true, sample: "Vädret är mycket trevligt idag vid kusten." },
-  { code: "syl", name: "Sylheti", mb: 0.01, voice: "bn", sample: "ꠀꠞꠛ ꠡꠝꠣꠎꠧ ꠇꠥꠘꠤꠀ ꠡꠣꠗꠣꠞꠘꠔ ꠙꠄꠟꠣ ꠡꠘ꠆ꠔꠣꠘꠞ ꠘꠣꠝꠞ ꠃꠙꠞꠦ ꠑꠤꠇ ꠇꠞꠣ ꠅꠄ।" },
+  { code: "syl", name: "Sylheti", mb: 0.01, sample: "ꠀꠞꠛ ꠡꠝꠣꠎꠧ ꠇꠥꠘꠤꠀ ꠡꠣꠗꠣꠞꠘꠔ ꠙꠄꠟꠣ ꠡꠘ꠆ꠔꠣꠘꠞ ꠘꠣꠝꠞ ꠃꠙꠞꠦ ꠑꠤꠇ ꠇꠞꠣ ꠅꠄ।" },
   { code: "tl", name: "Tagalog", mb: 0.04, sample: "Ito ang ikalimang CEP ni Martelly sa loob ng apat na taon." },
   { code: "tg", name: "Tajik", mb: 0.01, sample: "Президенти ИМА Ҷорҷ Буш аз эъломияи мазкур истиқбол намуд." },
   { code: "ta", name: "Tamil", mb: 0.02, trained: true, sample: "இன்று கடற்கரையில் வானிலை மிக இனிமையாக உள்ளது." },
@@ -193,7 +193,7 @@ export const LANGUAGES: LanguageOption[] = [
   { code: "th", name: "Thai", mb: 1.7, trained: true, sample: "วันนี้อากาศริมชายฝั่งดีมาก" },
   { code: "bo", name: "Tibetan", mb: 0.01, sample: "བུམ་པ་དེ་བུམ་པ་ཞེས་བརྗོད་པའི་སྒྲའི་བརྗོད་བྱ་ཡིན་པ་བཞིན་ནོ།" },
   { code: "ti", name: "Tigrinya", mb: 0.01, sample: "ሞሮካዊ መንነትን ባህልን ናይ ዓረብ፣ በርበር፣ ኣፍሪቃን ኤውሮጳን ባህልታት ዝተሓዋወሰ እዩ።" },
-  { code: "mto", name: "Totontepec Mixe", mb: 0, voice: "es-419" },
+  { code: "mto", name: "Totontepec Mixe", mb: 0, voice: "zoc" },
   { code: "tr", name: "Turkish", mb: 0.03, trained: true, sample: "Bugün sahilde hava çok güzel." },
   { code: "tk", name: "Turkmen", mb: 0, sample: "Awliýa tä kyýamata çenli ýaşajak musulmanlarda bolmalydyr." },
   { code: "uk", name: "Ukrainian", mb: 0.02, sample: "Потім Лаккха Сінг взяв на себе ініціативу у співі бгаджан." },
@@ -215,6 +215,12 @@ export const LANGUAGES: LanguageOption[] = [
 ];
 
 export const LANGUAGE_BY_CODE = new Map(LANGUAGES.map((l) => [l.code, l]));
+
+/** Display names for donor languages the picker does not itself list — a speaker whose language the
+ *  phonemizer has no engine for can still lend a voice. */
+export const DONOR_NAMES: Record<string, string> = {
+  zoc: "Copainalá Zoque", dag: "Dagbani", ipk: "Iñupiaq", bgp: "Eastern Balochi",
+};
 
 /** Which language's REFERENCE VOICE renders this one — itself, or its donor.
  *
