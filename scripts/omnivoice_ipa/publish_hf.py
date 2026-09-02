@@ -51,12 +51,13 @@ def files(version):
         (f"{ONNX_WEB}/omnivoice_transformer_ipa.int4.onnx.data", "omnivoice_transformer_ipa.int4.onnx.data"),
         # The Qwen3 tokenizer, straight from the upstream snapshot. Needed by any consumer that
         # synthesises text rather than replaying captured ids, and a browser has nowhere else to
-        # get it. Same Apache-2.0 terms as the base model, already credited in the card.
+        # get it. Apache-2.0, like the upstream CODE — the WEIGHTS in this repo are not; see the
+        # licence section of the card.
         (f"{BASE_SNAPSHOT}/tokenizer.json", "tokenizer.json"),
     ]
 
 CARD = """---
-license: apache-2.0
+license: cc-by-nc-4.0
 base_model: k2-fsa/OmniVoice
 tags:
   - text-to-speech
@@ -180,11 +181,30 @@ failure byte-for-byte.
 
 ## Attribution & license
 
-- Base model: [`k2-fsa/OmniVoice`](https://huggingface.co/k2-fsa/OmniVoice) — Apache-2.0. This
-  repo redistributes an ONNX conversion of it under the same license.
+⚠ **The weights in this repository are CC-BY-NC-4.0, not Apache-2.0.** Upstream draws the line
+between the two halves of its release, and everything here is on the restricted side:
+
+> "Our code is released under the Apache 2.0 License. The pre-trained model is licensed under the
+> CC-BY-NC due to constraints from its training data (e.g., Emilia)."
+> — [`k2-fsa/OmniVoice`](https://huggingface.co/k2-fsa/OmniVoice)
+
+Every ONNX graph here — the base transformer, the IPA diff, the merged and quantized transformer,
+and the Higgs encoder/decoder — is a format conversion or a fine-tune of those pre-trained weights,
+so the NonCommercial term follows them. **Do not use these files in a commercial product.** An
+earlier version of this card said Apache-2.0; that was wrong, and it applied upstream's CODE licence
+to its weights.
+
+| file | licence |
+|---|---|
+| every `.onnx` / `.onnx.data` in this repo | CC-BY-NC-4.0 (derivative of the OmniVoice weights) |
+| `tokenizer.json` | Apache-2.0 (the Qwen3 tokenizer, upstream code artefact) |
+| the export and quantization scripts (in the vernacula repo) | Apache-2.0 |
+
 - The fine-tune was trained on codec tokens derived from [FLEURS](https://huggingface.co/datasets/google/fleurs) (CC-BY-4.0),
   transcribed to IPA with [vernacula-phonemizer](https://github.com/christopherthompson81/vernacula-phonemizer)
   (see the [token corpus dataset](https://huggingface.co/datasets/christopherthompson81/omnivoice-ipa-corpus)).
+  CC-BY-4.0 attribution is compatible with the NonCommercial term above; the more restrictive one
+  governs the combined artefact.
 """
 
 

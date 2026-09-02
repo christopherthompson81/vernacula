@@ -242,6 +242,12 @@ export default function App() {
           speech from an IPA fine-tune of <a href="https://huggingface.co/k2-fsa/OmniVoice">k2-fsa/OmniVoice</a>,
           quantized to <a href="https://huggingface.co/christopherthompson81/omnivoice-ipa-onnx">472 MB</a> and
           cached in your browser after the first load.
+          {/* ⚠ The MODEL WEIGHTS are NonCommercial — upstream licenses its code Apache-2.0 but its
+              pre-trained weights CC-BY-NC, "due to constraints from its training data". A visitor
+              who downloads 472 MB of weights through this page should be told before they build on
+              them. It says nothing about the phonemizer or this demo's own code. */}
+          {" "}The model weights are <a href="https://creativecommons.org/licenses/by-nc/4.0/">CC-BY-NC-4.0</a>:
+          free to use and share, not in a commercial product.
         </p>
       </footer>
     </main>
