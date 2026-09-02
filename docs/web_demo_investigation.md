@@ -875,3 +875,326 @@ those tables at all.
 ⚠ The gate runs in `npm run build`. A staged set that cannot phonemize the shipped samples is a
 broken site, and the failure is invisible until a visitor picks that language — exactly how this one
 was found.
+
+## Run 19 — 2026-09-01 18:10, karaoke highlighting without an aligner
+
+**Question:** can word-level highlighting be made to track playback without shipping a forced
+aligner, given that OmniVoice emits no alignment at all (the diffusion loop unmasks every target
+position at once — there is nothing to read out of it)?
+
+**Approach:** weight-proportional attribution. The raw decoded audio is exactly `targetTokens/25`
+seconds, and `targetTokens` was chosen by `duration.ts` as a sum of per-character script weights
+over the IPA. Giving each whitespace-separated IPA token the same fraction of the raw duration as it
+contributed to that weight sum is self-consistent with the length the model was asked for — the
+words divide time the way the estimator divided tokens. Punctuation tokens (`,` `.`) are timed too;
+they are the pauses, and keeping them means consecutive words are gap-free.
+
+**What had to be threaded through, or the highlight leads the audio:**
+
+1. Silence removal deletes spans non-uniformly (every mid-gap over 500 ms, both edges).
+   `removeSilenceMapped` now returns the surviving `KeptRun[]` in ORIGINAL sample coordinates, and
+   `alignment.ts` maps each raw sample through them, snapping anything inside a removed span to the
+   seam. Synthetic check: 1 s tone / 2 s silence / 1 s tone → runs `[0,36000) [84000,120000)`,
+   word 1 ends at 1.6 s, `,` collapses to 1.6–1.6, word 2 runs 1.6–3.1 s in a 3.2 s output. The
+   last word ends exactly `PAD_SEC` before the end, which is the right answer.
+2. `fadeAndPad`'s leading 0.1 s zero-pad, added afterwards.
+
+**In the browser** (preview on 4188, REPL, English default sentence, 5.7 s audio):
+
+    0.45 The · 0.70–0.95 quick · 1.20–1.71 brown · 1.96–2.47 fox · 2.72–3.73 jumps ·
+    3.98–4.48 over · 4.73 the · 4.98–5.24 lazy · 5.49 dog.
+
+Monotone, ends aligned, and — by ear against the highlight — within a word of the truth
+throughout; "jumps" holds longest because `d͡ʒˈʌmps` is the heaviest token, which is roughly true
+of the audio too. Both display paths verified: paired (counts match) and IPA-only fallback
+(`20°C` → `twˈɛnti dᵻɡɹˈiːz sˈɛɫsiʲəs`, 9 orthographic vs 12 IPA words) highlight and are
+click-to-seek.
+
+**Two things found on the way:**
+
+- First probe showed NO highlight at all during playback, though seeking highlighted correctly.
+  Cause: `requestAnimationFrame` is suspended in an occluded window, which the REPL's Chrome is.
+  Added a `timeupdate` listener alongside rAF — coarse (~4 Hz) but alive in a background tab, and
+  what made the verification possible.
+- The first generate failed with `Cannot read properties of undefined (reading 'reduce')`. A
+  COMPLETED cache meta written before `sizes` existed returns from `ensureDownloaded` before the
+  legacy-discard check, and `fetchModel` then summed its absent `sizes`. A fully cached, valid model
+  was unloadable until the cache was cleared. Fixed by allocating `meta.total` (equal to the sum
+  for any completed meta). This affected every returning visitor from before the resumable-cache
+  change.
+
+**Limits, stated:** this is an estimate, not an alignment. Drift within a sentence of a few hundred
+ms is expected and the CSS says so (a soft tint, not a hard edge). A real alignment would mean
+shipping an aligner model — `Vernacula.Base.Alignment.NemoNfaAligner` exists on the desktop side —
+and is the upgrade path if the estimate proves not good enough.
+
+## Run 20 — 2026-09-01 18:40, karaoke: place words on the speech envelope, not on the clock
+
+**User report on Run 19:** highlight "kicks in too early and then finishes too late".
+
+**Cause:** proportional attribution over the raw generation assumes speech fills the whole span
+uniformly. It does not — the model leaves onset silence, and a low-level breathy tail that sits above
+the −50 dBFS silence threshold and so survives `removeSilence`. Every word inherited an early shift
+from the onset, and the last word was stretched across the tail.
+
+**Fix:** `alignment.ts` now measures a 10 ms RMS envelope over the FINAL audio and places each
+word's weight share on the cumulative count of SPEECH frames (within −35 dB of the loudest frame)
+rather than on seconds. Pauses and the tail consume no word weight; punctuation tokens carry zero
+weight for alignment (their pause is what the envelope already skips); in a gap nothing is lit.
+The `KeptRun` map from Run 19 is no longer needed for timing — the envelope is measured after all
+post-processing — though `removeSilenceMapped` stays as the implementation of `removeSilence`.
+
+**Browser** (same English sentence, 5.68 s, 50 ms sampling of the lit word):
+
+    0.13 The · 1.24 quick · 1.64 brown · 2.14 fox · 2.59 jumps · 3.25 over · 3.60 the ·
+    3.75 lazy · 4.15 dog. · 5.51 end
+
+Onset and end now sit on the speech. "The" holding 0.13→1.24 is the fine-tune's known leading
+transient: it is loud, so it counts as speech, and the gap after it is skipped — the first word's
+*share* is right but its *start* is the transient. User: "It does seem better after your fix."
+
+**Forced alignment, since the desktop has one** (`Vernacula.Base.Alignment.NemoNfaAligner`):
+the Viterbi core (`CtcForcedAlignment.cs`, 189 lines) ports to TypeScript in an afternoon, but the
+acoustic model is `stt_en_fastconformer_hybrid_large_pc` — 458 MB fp32, ENGLISH ONLY, sentencepiece
+over English orthography. It cannot align Welsh, Japanese or the other 28 languages the demo
+offers, and it takes text, not IPA. A browser aligner for this demo would need a multilingual
+PHONEME-level CTC model (e.g. wav2vec2-xlsr-53-espeak-cv-ft, ~300 MB int8, emits espeak-style
+IPA) plus a symbol fold from vernacula-phonemizer's IPA onto its inventory. That is a separate
+spike: another download of the transformer's order of size, for a highlight bar.
+
+## Run 21 — 2026-09-01 19:20, all 193 languages in the picker
+
+**Goal:** offer every language the phonemizer routes, not the 30 hand-listed ones — which needs
+four things solved: a picker that scales, a data-staging story that cannot silently miss a table, a
+sentence for each language, and a reference voice for each language.
+
+**1. Staging: whole directories, chosen by static module graph.** The recorded prefetch lists that
+served 30 languages do not scale — a recording only captures what the probe text reached, and I
+cannot write representative text in 193 languages. Two measurements settled the design:
+
+- Recording *under-reports*. A Latin probe for Basque recorded NO directory at all (its tables load
+  lazily), and Assamese's real dependency on Bengali's directory never appeared either.
+- The module graph is *exact*, because data keys are mechanical: `core/dataPath.ts` slices
+  `import.meta.url` after `/src/`, so any module mentioning it reads from the directory mirroring
+  its own. `tools/lang-dirs.mjs` walks a language's import closure and collects those.
+
+One trap, worth the note: `import type { Phonemizer } from "../../registry.ts"` appears in 164
+language modules, and following type-only edges pulls the registry — which imports all 193
+languages, so every language's answer became "all 175 directories". Skipping `import type` fixes it.
+The result reproduces the hand-derived edge table exactly: as→bengali, bs/hr→serbian, ba→russian,
+xh→zulu, gu→hindi, skr→punjabi, hyw→armenian, rn→kinyarwanda, en-GB→english+english-gb, ms→indonesian.
+`neuralRegistry`'s entries are walked separately, which is the only way `core/riderDiacritizer.onnx`
+(15 MB, Urdu and W. Punjabi) shows up at all.
+
+Sizes, with whole directories shipped so a lazily-loaded table cannot go missing:
+
+| | |
+|---|---|
+| engine set (always) | 4.5 MB, 182 manifests |
+| median language | 10 KB |
+| under 1 MB | 152 of 193 |
+| heaviest | arz 39.7, ur/pnb 29.9, ar 24.4, en 14, fa 13 MB |
+| whole tree staged | 150.7 MB in 346 files |
+
+`diacritizer-egy.onnx` is excluded for every Arabic code except `arz`, its only possible consumer —
+12 MB that ten dialects would otherwise pay for a model they cannot load.
+
+**2. The dynamic edge.** A run of text in a script the host language does not own is delegated to a
+reader chosen from the SCRIPT, not the language (`core/scripts.ts`), and upstream wraps that call in
+try/catch — so a data key we failed to prefetch does not raise, it silently degrades to the Latin
+path. The client now resolves the scripts present in the input to their readers and fetches those
+too, using the routing table lifted from the engine at staging time. Verified in the browser:
+
+    th: "วันนี้อากาศดีมาก but the weather forecast says rain."
+     -> wˈa˧nniː˦˥ ʔˈaː˧kaː˨˩t dˈiː˧maː˥˩k bˈʌt ðˈə wˈɛðɚ fˈɔːɹkæst sˈɛz ɹˈeᶦn .
+
+⚠ This changes which phoneme tables load. It does NOT change the voice — one voice renders the whole
+utterance, code-switching included.
+
+**3. Sentences, sourced rather than written.** A prefilled sentence in a language the author does not
+read is indistinguishable, to that author, from a right one. `tools/make-samples.mjs` takes them
+from FLEURS transcripts (a different clip than the language's own reference voice) and from the
+phonemizer's mined Wikipedia corpora, filtered to one sentence, one script, no digits or markup.
+Four filter bugs, each found by reading the output:
+
+1. An English sentence passed as a Tibetan sample — single-script is not enough, it must be the
+   language's OWN script, from its manifest.
+2. `"(\w+)"` does not match a two-word script name, so Santali ("Ol Chiki") and Sylheti
+   ("Syloti Nagri") had no declared script and skipped the check entirely.
+3. `s[0] !== s[0].toLowerCase()` — "starts with a capital" — is false for every caseless script, so
+   it rejected every candidate in Ethiopic, Tibetan, Sinhala, Myanmar, Arabic, Ol Chiki and Syloti
+   Nagri. 14 languages had no sample at all until it became `s[0] === s[0].toUpperCase()`.
+4. `--force` did not clear the old value first, so the samples a tightened filter had just rejected
+   survived it.
+
+187 of 193 now have one; the 30 curated parallel sentences are kept, and 19 varieties inherit their
+parent's (Arabic dialects from MSA, en-GB/en-IN from English, and so on — by SCRIPT, not by voice
+donor, since `pnb` is Shahmukhi while its donor voice `pa` is Gurmukhi).
+
+**4. The replay gate now covers everything: 187/187 languages phonemize from the staged data alone**,
+including the embedded-script fetches. One refinement: a key the engine asks for that does not exist
+upstream either is an optional probe (Saraiki's lexicon), not a staging gap.
+
+**5. Voices.** 102 languages have a native FLEURS reference; the other 91 are assigned a donor
+chosen for phonetic/areal proximity, and the UI says so. Verified: Basque read by the Spanish voice,
+Tibetan by the Burmese one, both listenable. The English default is back to the original studio
+reference clip from the export bring-up, which sounds better than the FLEURS exemplar (rms 0.061
+against 0.020); the FLEURS one stays as the second English voice.
+
+Audio: /tmp/vernacula-tts-listen/all-langs/.
+
+## Run 22 — 2026-09-01 19:30, the first sourced voice: Abkhaz from Common Voice
+
+**Question:** can a native reference voice be sourced for a language FLEURS does not cover, and does
+the path generalise past one language?
+
+Abkhaz was reading with a Georgian donor voice — a different family (NW Caucasian against
+Kartvelian, ~58 consonants against 28). Common Voice 22.0 (CC0) has Abkhaz: 9,133 test clips.
+
+**Selection.** Metadata narrows, audio decides. 722 clips are 7.5-9.5 s with 2+ up-votes and no
+down-votes, which says only that the reading matches the sentence — nothing about the recording. So
+24 candidates were decoded to 24 kHz mono and scored on 10 ms frames for noise floor, speech
+fraction and peak. The spread is large and it is the reason to measure rather than trust:
+
+| clip | noise floor | speech | peak | rms |
+|---|---|---|---|---|
+| 29828647 (chosen) | 92 dB | 68% | 0.54 | 0.051 |
+| 29314594 (chosen, male) | 74 dB | 58% | 0.95 | 0.201 |
+| 29830162 | 32 dB | 59% | 0.77 | 0.055 |
+
+A noisy reference is cloned faithfully — the noise then rides on every sentence the demo speaks.
+Three clips were kept (female teens, female thirties, male twenties); the demo defaults to the
+first, and the other two are in the voice picker.
+
+**Encoding** is the existing `make-voices.mjs` path: phonemize the Common Voice sentence through the
+real engine (`ɡamzatʼovɡʲə , d͡ʒara χʂəɥˤt͡sʼarrakʼ …` — the ejectives and labialised uvulars are
+there), RMS-boost, remove silence at reference parameters, clip to a hop multiple, run the Higgs
+encoder. 8×185 codes, 1.5 KB.
+
+**Generalised into `tools/make-voice-from-commonvoice.mjs`**, which does the whole path — fetch
+transcripts, shortlist, fetch and extract the split tar, decode, score, phonemize, encode, write
+both files. Two bugs found by running it against the hand-built result:
+
+1. The id was derived with `path.replace(/\D/g, "")`, which folds in the "22" of `common_voice` and
+   the "3" of `mp3` — `common_voice_ab_23052543.mp3` became `ab-30525433`. It now takes the clip
+   number from the filename, so an id traces back to a dataset row.
+2. Ranking alone cannot reproduce a shipped voice, because the ranking changes when the scorer
+   changes. `--clip a.mp3,b.mp3` forces named clips, and the shipped entries record their filenames,
+   so re-running re-derives identical codes.
+
+⚠ `client_id` is dropped and the 64-hex `sentence_id` truncated to 12 — neither belongs in a
+published file, and 12 hex still finds the row.
+
+**Coverage:** 26 of the 90 remaining donor languages are in Common Voice 22 and can be done this
+way. The other 64 need audio from elsewhere; docs/voice_sourcing.md ranks them.
+
+Audio: /tmp/vernacula-tts-listen/ab/ (three generated, plus the three source clips).
+
+## Run 23 — 2026-09-01 19:55, sourcing 24 more voices from Common Voice
+
+**Goal:** a native reference for every language Common Voice 22.0 shares with the demo's 90
+donor-voice gaps. Result: **126 of 193 languages now have a native voice, up from 102** — 68 clips
+across 24 languages, all CC0.
+
+**Selection stayed measured, and the split mattered more than expected.** The default filter (7.8-9.2 s,
+2+ up-votes, no down-votes) is the right one for the well-resourced locales, but eight languages have
+NOTHING in their validated splits at that length: Haitian Creole's whole test split is 5 rows,
+Nahuatl's 5, Quechua's 10, Tigrinya's 11. Those were sourced from the **unvalidated `other` split**
+with the window widened to 4-12 s, which means no listener has confirmed the reading matches the
+sentence and the audio score carries the whole decision. Recorded as such in docs/voice_sourcing.md.
+
+**Three could not be sourced, and the reasons are worth keeping:**
+
+| language | why not |
+|---|---|
+| Aromanian | one clip in the entire dataset, and it fails the audio screen |
+| European Portuguese | `pt` is overwhelmingly Brazilian — 3 of 9,641 test rows labelled Portugal, none in the length band, 94% of rows unlabelled |
+| Western Punjabi | `pa-IN` is Gurmukhi, which is the donor `pnb` already has; Shahmukhi must come from elsewhere |
+
+**Three tool changes, each forced by something that went wrong:**
+
+1. **A script check.** A Common Voice locale need not be written in the script the engine reads —
+   `pa-IN` is Gurmukhi against `pnb`'s Shahmukhi, `zgh` ships Tifinagh and Latin, `nan-tw` mixes Han
+   with romanisation. Phonemizing a sentence in the wrong script yields confident nonsense as the
+   REFERENCE transcript, which is then fed to the model beside the codes.
+2. **An accent filter.** Common Voice `es` is Spanish everywhere and its largest labelled group is
+   Mexico, so sourcing a *Castilian* voice unfiltered would have re-imported the Latin American
+   accent the demo already has from FLEURS. `--accent "España: (Norte|Centro-Sur)"`.
+3. **Prefix fetching.** Throughput to the dataset collapsed part-way through (8 MB/s to 300 KB/s) and
+   the big archives are hundreds of MB — Kinyarwanda 676, Uyghur 553 — all discarded but three
+   clips. A tar is sequential, so `--prefix-mb N` range-fetches the head and extracts every whole
+   member: for Uyghur, 80 MB held 2,097 clips of which 238 were candidates. It only works where
+   candidates are plentiful, so the shortlist is widened rather than capped in that mode.
+
+**Two process bugs, both mine:**
+
+- A `pkill -f cv-batch` intended for the waiters killed the main batch mid-language. Restarting from
+  a consolidated script was fine because each language's work is idempotent — but the lesson from the
+  earlier `git add -A` still applies: name the thing you mean.
+- The first dry run printed entries without persisting codes, and encoding is the expensive half.
+  The tool now always writes `<work>/voices.json`, and `tools/merge-cv-voices.mjs` reads those.
+
+**Verified:** 171 voices, every id has codes of exactly `refLen × 8`, no language has two defaults,
+and the replay gate still passes 187/187. Previews under
+/tmp/vernacula-tts-listen/cv-voices/ — the unvalidated-split ones deserve the closest listen.
+
+## Run 24 — 2026-09-02, sourcing beyond Common Voice: 102 → 165 native voices
+
+**Where it started:** 102 languages had a FLEURS voice and 91 read with a donor from a neighbouring
+language. **Where it ended: 165 native, 28 on donors.** Six sources, four of them needing a tool
+that did not exist yet.
+
+| source | licence | languages |
+|---|---|---|
+| Common Voice 22 (HuggingFace mirror) | CC0 | 26 |
+| Common Voice 26 (Mozilla Data Collective) | CC0 | 4 native + 3 donor upgrades |
+| Omnilingual ASR | CC BY 4.0 | 12 |
+| Vaani (ARTPARK-IISc) | CC BY 4.0 | 6 |
+| WaxalNLP · OpenBibleTTS · Ravnursson · qirimtatar · WenetSpeech-Wu | CC BY/BY-SA/Apache | 9 |
+| OpenSLR 83 / 158 / 44 · LibriVox | CC BY-SA / public domain | 5 |
+
+**The bugs are the content of this run.** Every one silently produced a plausible-looking result:
+
+1. **`peak > 0.98` rejects normalisation, not just clipping.** Every Vaani clip peaks at exactly 1.0
+   because the corpus is peak-normalised — 0.001% of samples at the ceiling, longest flat run one
+   sample. Haryanvi was blocked entirely. Real clipping FLATTENS the wave, so that is what to
+   measure.
+2. **A corpus with no duration field skipped the length filter.** A 48 s Ewe clip was accepted and
+   `make-voices.mjs` cut 40 s of silence from it, leaving 7.5 s of audio against a transcript for
+   the whole thing. The bound is now enforced on the DECODED audio.
+3. **Equal sentence and pause counts do not prove a cut is safe.** A speaker pauses mid-sentence and
+   runs two together; one Hawaiian clip paired 8 words with 13.2 s of audio. `trim-to-sentences.mjs`
+   now also checks speaking rate against the shipped references (6.4-13.7 IPA chars/s).
+4. **A transcript containing a newline broke voices.jsonc** — the `// "…"` comment left its tail as
+   bare text. Omnilingual separates sentences that way.
+5. **Two runs shared one temp filename** in the phonemizer directory; one deleted the module while
+   the other imported it. Per-process names now.
+6. **`"(\w+)"` does not match a two-word script name**, so Santali ("Ol Chiki") and Sylheti
+   ("Syloti Nagri") skipped the script check and were prefilled with ENGLISH sample sentences.
+7. **`s[0] !== s[0].toLowerCase()`** — "starts with a capital" — is false for every caseless script,
+   which rejected every candidate sentence in Ethiopic, Tibetan, Sinhala, Myanmar, Arabic, Ol Chiki
+   and Syloti Nagri.
+
+**Three findings worth keeping:**
+
+- **The gap analysis matched codes literally**, so Akan was missed for weeks: Common Voice files Twi
+  under `tw`. European Portuguese was likewise called unsourceable because the `accents` column is
+  nearly empty for `pt` — the `variant` column separates the standards, in readable labels
+  ("Portuguese (Portugal)"), not codes.
+- **LibriVox openings need an ASR to cut.** The English announcement and a line of Caesar are the
+  same length, so silence structure cannot separate them. `find-english-intro.py` runs the English
+  CTC bundle: boilerplate decodes cleanly, Latin decodes as noise. It also VERIFIED the pairing —
+  the decode of the chosen clip, "Gala omnissa in partte trees … nostra gallipellantum", maps word
+  for word onto the printed opening of De Bello Gallico.
+- **A donor's language may have no phonemizer at all.** Copainalá Zoque, Dagbani and Iñupiaq now
+  read for Totontepec Mixe, Mossi and Greenlandic; `--phon-lang` renders their transcripts through
+  the target's engine, which shares a compatible Latin orthography. The IPA approximates what the
+  speaker says — a deliberate trade against Spanish reading Mixe and Danish reading Greenlandic.
+
+**What is left is genuinely hard.** Of 28 donors: 3 are licence-blocked (Xiang and Gan are
+CC BY-NC-ND, Hakka is TRAIL), 5 are accent variants reading the same written language, and 20 have
+no acceptable open recording anywhere. Common Voice 26 has none of them. Greenlandic is the sharpest
+case: CC BY audio exists on Wikimedia Commons and no transcript for it exists anywhere.
+
+⚠ Mozilla Data Collective requires terms accepted **per dataset, in a browser**, with no API route
+and a rate limit of about one per minute. Budget for that before planning a CV-26 sweep.

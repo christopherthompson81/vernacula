@@ -1,6 +1,7 @@
 # OmniVoice → ONNX export investigation
 
-Tracking the Phase-1 effort to export `k2-fsa/OmniVoice` (Apache-2.0, diffusion-LM TTS) to
+Tracking the Phase-1 effort to export `k2-fsa/OmniVoice` (diffusion-LM TTS; code Apache-2.0,
+WEIGHTS CC-BY-NC-4.0) to
 ONNX and validate a Python harness against the PyTorch reference. Plan + rationale:
 `scripts/omnivoice_export/`. Precedent: `docs/kokoro_onnx_investigation.md`.
 

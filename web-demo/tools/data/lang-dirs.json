@@ -1,0 +1,1644 @@
+{
+ "en": {
+  "dirs": [
+   "languages/english"
+  ],
+  "core": [],
+  "bytes": 14615418,
+  "exclude": []
+ },
+ "en-GB": {
+  "dirs": [
+   "languages/english",
+   "languages/english-gb"
+  ],
+  "core": [],
+  "bytes": 14641204,
+  "exclude": []
+ },
+ "en-IN": {
+  "dirs": [
+   "languages/english"
+  ],
+  "core": [],
+  "bytes": 14615418,
+  "exclude": []
+ },
+ "cmn": {
+  "dirs": [
+   "languages/mandarin"
+  ],
+  "core": [],
+  "bytes": 1680351,
+  "exclude": []
+ },
+ "es": {
+  "dirs": [
+   "languages/spanish"
+  ],
+  "core": [],
+  "bytes": 16352,
+  "exclude": []
+ },
+ "es-419": {
+  "dirs": [
+   "languages/spanish"
+  ],
+  "core": [],
+  "bytes": 16352,
+  "exclude": []
+ },
+ "ar": {
+  "dirs": [
+   "languages/arabic"
+  ],
+  "core": [],
+  "bytes": 24378902,
+  "exclude": [
+   "languages/arabic/diacritizer-egy.onnx"
+  ]
+ },
+ "arz": {
+  "dirs": [
+   "languages/arabic"
+  ],
+  "core": [],
+  "bytes": 39721994,
+  "exclude": []
+ },
+ "apc": {
+  "dirs": [
+   "languages/arabic"
+  ],
+  "core": [],
+  "bytes": 24378902,
+  "exclude": [
+   "languages/arabic/diacritizer-egy.onnx"
+  ]
+ },
+ "apd": {
+  "dirs": [
+   "languages/arabic"
+  ],
+  "core": [],
+  "bytes": 24378902,
+  "exclude": [
+   "languages/arabic/diacritizer-egy.onnx"
+  ]
+ },
+ "acm": {
+  "dirs": [
+   "languages/arabic"
+  ],
+  "core": [],
+  "bytes": 24378902,
+  "exclude": [
+   "languages/arabic/diacritizer-egy.onnx"
+  ]
+ },
+ "afb": {
+  "dirs": [
+   "languages/arabic"
+  ],
+  "core": [],
+  "bytes": 24378902,
+  "exclude": [
+   "languages/arabic/diacritizer-egy.onnx"
+  ]
+ },
+ "ary": {
+  "dirs": [
+   "languages/arabic"
+  ],
+  "core": [],
+  "bytes": 24378902,
+  "exclude": [
+   "languages/arabic/diacritizer-egy.onnx"
+  ]
+ },
+ "ayl": {
+  "dirs": [
+   "languages/arabic"
+  ],
+  "core": [],
+  "bytes": 24378902,
+  "exclude": [
+   "languages/arabic/diacritizer-egy.onnx"
+  ]
+ },
+ "ajp": {
+  "dirs": [
+   "languages/arabic"
+  ],
+  "core": [],
+  "bytes": 24378902,
+  "exclude": [
+   "languages/arabic/diacritizer-egy.onnx"
+  ]
+ },
+ "acw": {
+  "dirs": [
+   "languages/arabic"
+  ],
+  "core": [],
+  "bytes": 24378902,
+  "exclude": [
+   "languages/arabic/diacritizer-egy.onnx"
+  ]
+ },
+ "fr": {
+  "dirs": [
+   "languages/french"
+  ],
+  "core": [],
+  "bytes": 4970057,
+  "exclude": []
+ },
+ "fr-CA": {
+  "dirs": [
+   "languages/french"
+  ],
+  "core": [],
+  "bytes": 4970057,
+  "exclude": []
+ },
+ "pt": {
+  "dirs": [
+   "languages/portuguese"
+  ],
+  "core": [],
+  "bytes": 49348,
+  "exclude": []
+ },
+ "pt-BR": {
+  "dirs": [
+   "languages/portuguese",
+   "languages/portuguese-br"
+  ],
+  "core": [],
+  "bytes": 65245,
+  "exclude": []
+ },
+ "ru": {
+  "dirs": [
+   "languages/russian"
+  ],
+  "core": [],
+  "bytes": 8723965,
+  "exclude": []
+ },
+ "de": {
+  "dirs": [
+   "languages/german"
+  ],
+  "core": [],
+  "bytes": 1981866,
+  "exclude": []
+ },
+ "nl": {
+  "dirs": [
+   "languages/dutch"
+  ],
+  "core": [],
+  "bytes": 1659742,
+  "exclude": []
+ },
+ "ja": {
+  "dirs": [
+   "languages/japanese"
+  ],
+  "core": [],
+  "bytes": 9231362,
+  "exclude": []
+ },
+ "tr": {
+  "dirs": [
+   "languages/turkish"
+  ],
+  "core": [],
+  "bytes": 31655,
+  "exclude": []
+ },
+ "az": {
+  "dirs": [
+   "languages/azerbaijani"
+  ],
+  "core": [],
+  "bytes": 3740,
+  "exclude": []
+ },
+ "mg": {
+  "dirs": [
+   "languages/malagasy"
+  ],
+  "core": [],
+  "bytes": 3185,
+  "exclude": []
+ },
+ "vi": {
+  "dirs": [
+   "languages/vietnamese"
+  ],
+  "core": [],
+  "bytes": 10791,
+  "exclude": []
+ },
+ "ta": {
+  "dirs": [
+   "languages/tamil"
+  ],
+  "core": [
+   "core/phonology.jsonc"
+  ],
+  "bytes": 15806,
+  "exclude": []
+ },
+ "sv": {
+  "dirs": [
+   "languages/swedish"
+  ],
+  "core": [],
+  "bytes": 585020,
+  "exclude": []
+ },
+ "ca": {
+  "dirs": [
+   "languages/catalan"
+  ],
+  "core": [],
+  "bytes": 131177,
+  "exclude": []
+ },
+ "gl": {
+  "dirs": [
+   "languages/galician"
+  ],
+  "core": [],
+  "bytes": 5390,
+  "exclude": []
+ },
+ "gd": {
+  "dirs": [
+   "languages/scottishgaelic"
+  ],
+  "core": [],
+  "bytes": 5638,
+  "exclude": []
+ },
+ "ga": {
+  "dirs": [
+   "languages/irish"
+  ],
+  "core": [],
+  "bytes": 278141,
+  "exclude": []
+ },
+ "cy": {
+  "dirs": [
+   "languages/welsh"
+  ],
+  "core": [],
+  "bytes": 46603,
+  "exclude": []
+ },
+ "ko": {
+  "dirs": [
+   "languages/korean"
+  ],
+  "core": [],
+  "bytes": 24108,
+  "exclude": []
+ },
+ "ha": {
+  "dirs": [
+   "languages/hausa"
+  ],
+  "core": [],
+  "bytes": 26591,
+  "exclude": []
+ },
+ "th": {
+  "dirs": [
+   "languages/thai"
+  ],
+  "core": [],
+  "bytes": 1701818,
+  "exclude": []
+ },
+ "shn": {
+  "dirs": [
+   "languages/shan"
+  ],
+  "core": [],
+  "bytes": 6331,
+  "exclude": []
+ },
+ "lo": {
+  "dirs": [
+   "languages/lao"
+  ],
+  "core": [],
+  "bytes": 12796,
+  "exclude": []
+ },
+ "ff": {
+  "dirs": [
+   "languages/fula"
+  ],
+  "core": [],
+  "bytes": 7805,
+  "exclude": []
+ },
+ "si": {
+  "dirs": [
+   "languages/sinhala"
+  ],
+  "core": [
+   "core/phonology.jsonc"
+  ],
+  "bytes": 9955,
+  "exclude": []
+ },
+ "kl": {
+  "dirs": [
+   "languages/kalaallisut"
+  ],
+  "core": [],
+  "bytes": 5399,
+  "exclude": []
+ },
+ "kk": {
+  "dirs": [
+   "languages/kazakh"
+  ],
+  "core": [],
+  "bytes": 3960,
+  "exclude": []
+ },
+ "tg": {
+  "dirs": [
+   "languages/tajik"
+  ],
+  "core": [],
+  "bytes": 13526,
+  "exclude": []
+ },
+ "zu": {
+  "dirs": [
+   "languages/zulu"
+  ],
+  "core": [],
+  "bytes": 20089,
+  "exclude": []
+ },
+ "xh": {
+  "dirs": [
+   "languages/xhosa",
+   "languages/zulu"
+  ],
+  "core": [],
+  "bytes": 24952,
+  "exclude": []
+ },
+ "sr": {
+  "dirs": [
+   "languages/serbian"
+  ],
+  "core": [],
+  "bytes": 1958928,
+  "exclude": []
+ },
+ "hr": {
+  "dirs": [
+   "languages/croatian",
+   "languages/serbian"
+  ],
+  "core": [],
+  "bytes": 1961022,
+  "exclude": []
+ },
+ "bs": {
+  "dirs": [
+   "languages/bosnian",
+   "languages/serbian"
+  ],
+  "core": [],
+  "bytes": 1961414,
+  "exclude": []
+ },
+ "sl": {
+  "dirs": [
+   "languages/slovenian"
+  ],
+  "core": [],
+  "bytes": 413436,
+  "exclude": []
+ },
+ "da": {
+  "dirs": [
+   "languages/danish"
+  ],
+  "core": [],
+  "bytes": 3449363,
+  "exclude": []
+ },
+ "fi": {
+  "dirs": [
+   "languages/finnish"
+  ],
+  "core": [],
+  "bytes": 5048,
+  "exclude": []
+ },
+ "et": {
+  "dirs": [
+   "languages/estonian"
+  ],
+  "core": [],
+  "bytes": 2673,
+  "exclude": []
+ },
+ "sk": {
+  "dirs": [
+   "languages/slovak"
+  ],
+  "core": [],
+  "bytes": 6385,
+  "exclude": []
+ },
+ "hu": {
+  "dirs": [
+   "languages/hungarian"
+  ],
+  "core": [],
+  "bytes": 14929,
+  "exclude": []
+ },
+ "kmr": {
+  "dirs": [
+   "languages/kurmanji"
+  ],
+  "core": [],
+  "bytes": 2911,
+  "exclude": []
+ },
+ "cs": {
+  "dirs": [
+   "languages/czech"
+  ],
+  "core": [],
+  "bytes": 18982,
+  "exclude": []
+ },
+ "hi": {
+  "dirs": [
+   "languages/hindi"
+  ],
+  "core": [
+   "core/phonology.jsonc"
+  ],
+  "bytes": 29923,
+  "exclude": []
+ },
+ "bn": {
+  "dirs": [
+   "languages/bengali"
+  ],
+  "core": [
+   "core/phonology.jsonc"
+  ],
+  "bytes": 2529210,
+  "exclude": []
+ },
+ "as": {
+  "dirs": [
+   "languages/assamese",
+   "languages/bengali"
+  ],
+  "core": [
+   "core/phonology.jsonc"
+  ],
+  "bytes": 2540476,
+  "exclude": []
+ },
+ "bpy": {
+  "dirs": [
+   "languages/bengali",
+   "languages/bishnupriya"
+  ],
+  "core": [
+   "core/phonology.jsonc"
+  ],
+  "bytes": 2537073,
+  "exclude": []
+ },
+ "so": {
+  "dirs": [
+   "languages/somali"
+  ],
+  "core": [],
+  "bytes": 3055,
+  "exclude": []
+ },
+ "ceb": {
+  "dirs": [
+   "languages/cebuano"
+  ],
+  "core": [],
+  "bytes": 4466,
+  "exclude": []
+ },
+ "hil": {
+  "dirs": [
+   "languages/hiligaynon"
+  ],
+  "core": [],
+  "bytes": 3284,
+  "exclude": []
+ },
+ "ilo": {
+  "dirs": [
+   "languages/ilocano"
+  ],
+  "core": [],
+  "bytes": 20292,
+  "exclude": []
+ },
+ "ur": {
+  "dirs": [
+   "languages/pashto",
+   "languages/persian",
+   "languages/punjabi",
+   "languages/urdu"
+  ],
+  "core": [
+   "core/phonology.jsonc",
+   "core/riderDiacritizer.meta.json",
+   "core/riderDiacritizer.onnx"
+  ],
+  "bytes": 29936533,
+  "exclude": []
+ },
+ "id": {
+  "dirs": [
+   "languages/indonesian"
+  ],
+  "core": [],
+  "bytes": 66204,
+  "exclude": []
+ },
+ "ms": {
+  "dirs": [
+   "languages/indonesian"
+  ],
+  "core": [],
+  "bytes": 66204,
+  "exclude": []
+ },
+ "zsm": {
+  "dirs": [
+   "languages/indonesian"
+  ],
+  "core": [],
+  "bytes": 66204,
+  "exclude": []
+ },
+ "pa": {
+  "dirs": [
+   "languages/punjabi"
+  ],
+  "core": [
+   "core/phonology.jsonc"
+  ],
+  "bytes": 328620,
+  "exclude": []
+ },
+ "pnb": {
+  "dirs": [
+   "languages/pashto",
+   "languages/persian",
+   "languages/punjabi",
+   "languages/urdu"
+  ],
+  "core": [
+   "core/phonology.jsonc",
+   "core/riderDiacritizer.meta.json",
+   "core/riderDiacritizer.onnx"
+  ],
+  "bytes": 29936533,
+  "exclude": []
+ },
+ "ro": {
+  "dirs": [
+   "languages/romanian"
+  ],
+  "core": [],
+  "bytes": 49496,
+  "exclude": []
+ },
+ "skr": {
+  "dirs": [
+   "languages/punjabi",
+   "languages/saraiki"
+  ],
+  "core": [
+   "core/phonology.jsonc"
+  ],
+  "bytes": 328620,
+  "exclude": []
+ },
+ "mr": {
+  "dirs": [
+   "languages/hindi",
+   "languages/marathi"
+  ],
+  "core": [
+   "core/phonology.jsonc"
+  ],
+  "bytes": 54785,
+  "exclude": []
+ },
+ "te": {
+  "dirs": [
+   "languages/telugu"
+  ],
+  "core": [
+   "core/phonology.jsonc"
+  ],
+  "bytes": 14484,
+  "exclude": []
+ },
+ "yue": {
+  "dirs": [
+   "languages/cantonese"
+  ],
+  "core": [],
+  "bytes": 2590011,
+  "exclude": []
+ },
+ "tl": {
+  "dirs": [
+   "languages/tagalog"
+  ],
+  "core": [],
+  "bytes": 43613,
+  "exclude": []
+ },
+ "om": {
+  "dirs": [
+   "languages/oromo"
+  ],
+  "core": [],
+  "bytes": 2803,
+  "exclude": []
+ },
+ "pl": {
+  "dirs": [
+   "languages/polish"
+  ],
+  "core": [],
+  "bytes": 10851,
+  "exclude": []
+ },
+ "sd": {
+  "dirs": [
+   "languages/sindhi"
+  ],
+  "core": [],
+  "bytes": 2748295,
+  "exclude": []
+ },
+ "fa": {
+  "dirs": [
+   "languages/persian"
+  ],
+  "core": [],
+  "bytes": 13477490,
+  "exclude": []
+ },
+ "it": {
+  "dirs": [
+   "languages/italian"
+  ],
+  "core": [],
+  "bytes": 13085,
+  "exclude": []
+ },
+ "pcm": {
+  "dirs": [
+   "languages/naija"
+  ],
+  "core": [],
+  "bytes": 8473,
+  "exclude": []
+ },
+ "wuu": {
+  "dirs": [
+   "languages/wu"
+  ],
+  "core": [],
+  "bytes": 1902680,
+  "exclude": []
+ },
+ "cjy": {
+  "dirs": [
+   "languages/jin"
+  ],
+  "core": [],
+  "bytes": 175605,
+  "exclude": []
+ },
+ "hak": {
+  "dirs": [
+   "languages/hakka"
+  ],
+  "core": [],
+  "bytes": 369999,
+  "exclude": []
+ },
+ "hsn": {
+  "dirs": [
+   "languages/xiang"
+  ],
+  "core": [],
+  "bytes": 192893,
+  "exclude": []
+ },
+ "gan": {
+  "dirs": [
+   "languages/gan"
+  ],
+  "core": [],
+  "bytes": 134968,
+  "exclude": []
+ },
+ "ak": {
+  "dirs": [
+   "languages/akan"
+  ],
+  "core": [],
+  "bytes": 4959,
+  "exclude": []
+ },
+ "jv": {
+  "dirs": [
+   "languages/javanese"
+  ],
+  "core": [],
+  "bytes": 22048,
+  "exclude": []
+ },
+ "sw": {
+  "dirs": [
+   "languages/swahili"
+  ],
+  "core": [],
+  "bytes": 8301,
+  "exclude": []
+ },
+ "gu": {
+  "dirs": [
+   "languages/gujarati",
+   "languages/hindi"
+  ],
+  "core": [
+   "core/phonology.jsonc"
+  ],
+  "bytes": 50301,
+  "exclude": []
+ },
+ "ps": {
+  "dirs": [
+   "languages/pashto"
+  ],
+  "core": [],
+  "bytes": 428848,
+  "exclude": []
+ },
+ "pbt": {
+  "dirs": [
+   "languages/pashto"
+  ],
+  "core": [],
+  "bytes": 428848,
+  "exclude": []
+ },
+ "kn": {
+  "dirs": [
+   "languages/kannada"
+  ],
+  "core": [
+   "core/phonology.jsonc"
+  ],
+  "bytes": 14383,
+  "exclude": []
+ },
+ "ml": {
+  "dirs": [
+   "languages/malayalam"
+  ],
+  "core": [
+   "core/phonology.jsonc"
+  ],
+  "bytes": 18268,
+  "exclude": []
+ },
+ "or": {
+  "dirs": [
+   "languages/odia"
+  ],
+  "core": [
+   "core/phonology.jsonc"
+  ],
+  "bytes": 14714,
+  "exclude": []
+ },
+ "uz": {
+  "dirs": [
+   "languages/uzbek"
+  ],
+  "core": [],
+  "bytes": 2753,
+  "exclude": []
+ },
+ "am": {
+  "dirs": [
+   "languages/amharic"
+  ],
+  "core": [],
+  "bytes": 11531,
+  "exclude": []
+ },
+ "ti": {
+  "dirs": [
+   "languages/tigrinya"
+  ],
+  "core": [],
+  "bytes": 8403,
+  "exclude": []
+ },
+ "bg": {
+  "dirs": [
+   "languages/bulgarian"
+  ],
+  "core": [],
+  "bytes": 4762,
+  "exclude": []
+ },
+ "mk": {
+  "dirs": [
+   "languages/macedonian"
+  ],
+  "core": [],
+  "bytes": 4147,
+  "exclude": []
+ },
+ "kea": {
+  "dirs": [
+   "languages/kabuverdianu"
+  ],
+  "core": [],
+  "bytes": 4455,
+  "exclude": []
+ },
+ "mt": {
+  "dirs": [
+   "languages/maltese"
+  ],
+  "core": [],
+  "bytes": 4693,
+  "exclude": []
+ },
+ "lb": {
+  "dirs": [
+   "languages/luxembourgish"
+  ],
+  "core": [],
+  "bytes": 5682,
+  "exclude": []
+ },
+ "fo": {
+  "dirs": [
+   "languages/faroese"
+  ],
+  "core": [],
+  "bytes": 4135,
+  "exclude": []
+ },
+ "is": {
+  "dirs": [
+   "languages/icelandic"
+  ],
+  "core": [],
+  "bytes": 10553,
+  "exclude": []
+ },
+ "oc": {
+  "dirs": [
+   "languages/occitan"
+  ],
+  "core": [],
+  "bytes": 5823,
+  "exclude": []
+ },
+ "haw": {
+  "dirs": [
+   "languages/hawaiian"
+  ],
+  "core": [],
+  "bytes": 2675,
+  "exclude": []
+ },
+ "mi": {
+  "dirs": [
+   "languages/maori"
+  ],
+  "core": [],
+  "bytes": 3564,
+  "exclude": []
+ },
+ "qu": {
+  "dirs": [
+   "languages/quechua"
+  ],
+  "core": [],
+  "bytes": 7517,
+  "exclude": []
+ },
+ "bo": {
+  "dirs": [
+   "languages/tibetan"
+  ],
+  "core": [],
+  "bytes": 5613,
+  "exclude": []
+ },
+ "gn": {
+  "dirs": [
+   "languages/guarani"
+  ],
+  "core": [],
+  "bytes": 2847,
+  "exclude": []
+ },
+ "sq": {
+  "dirs": [
+   "languages/albanian"
+  ],
+  "core": [],
+  "bytes": 4697,
+  "exclude": []
+ },
+ "tk": {
+  "dirs": [
+   "languages/turkmen"
+  ],
+  "core": [],
+  "bytes": 3454,
+  "exclude": []
+ },
+ "tt": {
+  "dirs": [
+   "languages/tatar"
+  ],
+  "core": [],
+  "bytes": 2653,
+  "exclude": []
+ },
+ "mto": {
+  "dirs": [
+   "languages/totontepecmixe"
+  ],
+  "core": [],
+  "bytes": 3031,
+  "exclude": []
+ },
+ "chr": {
+  "dirs": [
+   "languages/cherokee"
+  ],
+  "core": [],
+  "bytes": 3223,
+  "exclude": []
+ },
+ "smj": {
+  "dirs": [
+   "languages/lulesami"
+  ],
+  "core": [],
+  "bytes": 3126,
+  "exclude": []
+ },
+ "nci": {
+  "dirs": [
+   "languages/nahuatl"
+  ],
+  "core": [],
+  "bytes": 2003,
+  "exclude": []
+ },
+ "nog": {
+  "dirs": [
+   "languages/nogai"
+  ],
+  "core": [],
+  "bytes": 3057,
+  "exclude": []
+ },
+ "la": {
+  "dirs": [
+   "languages/latin"
+  ],
+  "core": [],
+  "bytes": 3822,
+  "exclude": []
+ },
+ "sat": {
+  "dirs": [
+   "languages/santali"
+  ],
+  "core": [],
+  "bytes": 2794,
+  "exclude": []
+ },
+ "quc": {
+  "dirs": [
+   "languages/kiche"
+  ],
+  "core": [],
+  "bytes": 2059,
+  "exclude": []
+ },
+ "ba": {
+  "dirs": [
+   "languages/bashkir",
+   "languages/russian"
+  ],
+  "core": [],
+  "bytes": 8728057,
+  "exclude": []
+ },
+ "eu": {
+  "dirs": [
+   "languages/basque"
+  ],
+  "core": [],
+  "bytes": 4264,
+  "exclude": []
+ },
+ "kaa": {
+  "dirs": [
+   "languages/karakalpak"
+  ],
+  "core": [],
+  "bytes": 2216,
+  "exclude": []
+ },
+ "crh": {
+  "dirs": [
+   "languages/crimeantatar"
+  ],
+  "core": [],
+  "bytes": 2386,
+  "exclude": []
+ },
+ "pap": {
+  "dirs": [
+   "languages/papiamento"
+  ],
+  "core": [],
+  "bytes": 3104,
+  "exclude": []
+ },
+ "naq": {
+  "dirs": [
+   "languages/nama"
+  ],
+  "core": [],
+  "bytes": 3212,
+  "exclude": []
+ },
+ "rup": {
+  "dirs": [
+   "languages/aromanian"
+  ],
+  "core": [],
+  "bytes": 3023,
+  "exclude": []
+ },
+ "ab": {
+  "dirs": [
+   "languages/abkhaz"
+  ],
+  "core": [],
+  "bytes": 19379,
+  "exclude": []
+ },
+ "chv": {
+  "dirs": [
+   "languages/chuvash"
+  ],
+  "core": [],
+  "bytes": 3640,
+  "exclude": []
+ },
+ "ee": {
+  "dirs": [
+   "languages/ewe"
+  ],
+  "core": [],
+  "bytes": 2323,
+  "exclude": []
+ },
+ "an": {
+  "dirs": [
+   "languages/aragonese"
+  ],
+  "core": [],
+  "bytes": 4873,
+  "exclude": []
+ },
+ "ast": {
+  "dirs": [
+   "languages/asturian"
+  ],
+  "core": [],
+  "bytes": 6266,
+  "exclude": []
+ },
+ "ht": {
+  "dirs": [
+   "languages/haitian"
+  ],
+  "core": [],
+  "bytes": 5292,
+  "exclude": []
+ },
+ "rkt": {
+  "dirs": [
+   "languages/hindi",
+   "languages/rangpuri"
+  ],
+  "core": [
+   "core/phonology.jsonc"
+  ],
+  "bytes": 38401,
+  "exclude": []
+ },
+ "bar": {
+  "dirs": [
+   "languages/bavarian"
+  ],
+  "core": [],
+  "bytes": 6661,
+  "exclude": []
+ },
+ "cdo": {
+  "dirs": [
+   "languages/mindong"
+  ],
+  "core": [],
+  "bytes": 4801,
+  "exclude": []
+ },
+ "hmn": {
+  "dirs": [
+   "languages/hmong"
+  ],
+  "core": [],
+  "bytes": 3291,
+  "exclude": []
+ },
+ "shi": {
+  "dirs": [
+   "languages/tashelhit"
+  ],
+  "core": [],
+  "bytes": 2808,
+  "exclude": []
+ },
+ "ckb": {
+  "dirs": [
+   "languages/central-kurdish"
+  ],
+  "core": [],
+  "bytes": 2395161,
+  "exclude": []
+ },
+ "bal": {
+  "dirs": [
+   "languages/balochi"
+  ],
+  "core": [],
+  "bytes": 22769,
+  "exclude": []
+ },
+ "bho": {
+  "dirs": [
+   "languages/bhojpuri",
+   "languages/hindi"
+  ],
+  "core": [
+   "core/phonology.jsonc"
+  ],
+  "bytes": 53213,
+  "exclude": []
+ },
+ "mag": {
+  "dirs": [
+   "languages/hindi",
+   "languages/magahi"
+  ],
+  "core": [
+   "core/phonology.jsonc"
+  ],
+  "bytes": 56994,
+  "exclude": []
+ },
+ "bgc": {
+  "dirs": [
+   "languages/hindi"
+  ],
+  "core": [
+   "core/phonology.jsonc"
+  ],
+  "bytes": 29923,
+  "exclude": []
+ },
+ "hne": {
+  "dirs": [
+   "languages/chhattisgarhi",
+   "languages/hindi"
+  ],
+  "core": [
+   "core/phonology.jsonc"
+  ],
+  "bytes": 49696,
+  "exclude": []
+ },
+ "za": {
+  "dirs": [
+   "languages/zhuang"
+  ],
+  "core": [],
+  "bytes": 28478,
+  "exclude": []
+ },
+ "awa": {
+  "dirs": [
+   "languages/awadhi",
+   "languages/hindi"
+  ],
+  "core": [
+   "core/phonology.jsonc"
+  ],
+  "bytes": 50094,
+  "exclude": []
+ },
+ "mai": {
+  "dirs": [
+   "languages/hindi",
+   "languages/maithili"
+  ],
+  "core": [
+   "core/phonology.jsonc"
+  ],
+  "bytes": 48465,
+  "exclude": []
+ },
+ "uk": {
+  "dirs": [
+   "languages/ukrainian"
+  ],
+  "core": [],
+  "bytes": 24900,
+  "exclude": []
+ },
+ "be": {
+  "dirs": [
+   "languages/belarusian"
+  ],
+  "core": [],
+  "bytes": 7205,
+  "exclude": []
+ },
+ "hy": {
+  "dirs": [
+   "languages/armenian"
+  ],
+  "core": [],
+  "bytes": 3617,
+  "exclude": []
+ },
+ "hyw": {
+  "dirs": [
+   "languages/armenian",
+   "languages/westarmenian"
+  ],
+  "core": [],
+  "bytes": 8657,
+  "exclude": []
+ },
+ "ky": {
+  "dirs": [
+   "languages/kyrgyz"
+  ],
+  "core": [],
+  "bytes": 5801,
+  "exclude": []
+ },
+ "nb": {
+  "dirs": [
+   "languages/norwegian"
+  ],
+  "core": [],
+  "bytes": 1689120,
+  "exclude": []
+ },
+ "su": {
+  "dirs": [
+   "languages/sundanese"
+  ],
+  "core": [],
+  "bytes": 2162,
+  "exclude": []
+ },
+ "ne": {
+  "dirs": [
+   "languages/hindi",
+   "languages/nepali"
+  ],
+  "core": [
+   "core/phonology.jsonc"
+  ],
+  "bytes": 47909,
+  "exclude": []
+ },
+ "nan": {
+  "dirs": [
+   "languages/minnan"
+  ],
+  "core": [],
+  "bytes": 1443014,
+  "exclude": []
+ },
+ "mn": {
+  "dirs": [
+   "languages/mongolian"
+  ],
+  "core": [],
+  "bytes": 12631,
+  "exclude": []
+ },
+ "umb": {
+  "dirs": [
+   "languages/umbundu"
+  ],
+  "core": [],
+  "bytes": 8656,
+  "exclude": []
+ },
+ "yo": {
+  "dirs": [
+   "languages/yoruba"
+  ],
+  "core": [],
+  "bytes": 24369,
+  "exclude": []
+ },
+ "ig": {
+  "dirs": [
+   "languages/igbo"
+  ],
+  "core": [],
+  "bytes": 6916,
+  "exclude": []
+ },
+ "my": {
+  "dirs": [
+   "languages/burmese"
+  ],
+  "core": [],
+  "bytes": 313512,
+  "exclude": []
+ },
+ "sn": {
+  "dirs": [
+   "languages/shona"
+  ],
+  "core": [],
+  "bytes": 7233,
+  "exclude": []
+ },
+ "rw": {
+  "dirs": [
+   "languages/kinyarwanda"
+  ],
+  "core": [],
+  "bytes": 5909,
+  "exclude": []
+ },
+ "mad": {
+  "dirs": [
+   "languages/madurese"
+  ],
+  "core": [],
+  "bytes": 5223,
+  "exclude": []
+ },
+ "nya": {
+  "dirs": [
+   "languages/chichewa"
+  ],
+  "core": [],
+  "bytes": 7546,
+  "exclude": []
+ },
+ "ln": {
+  "dirs": [
+   "languages/lingala"
+  ],
+  "core": [],
+  "bytes": 3885,
+  "exclude": []
+ },
+ "km": {
+  "dirs": [
+   "languages/khmer"
+  ],
+  "core": [],
+  "bytes": 5511835,
+  "exclude": []
+ },
+ "tn": {
+  "dirs": [
+   "languages/setswana"
+  ],
+  "core": [],
+  "bytes": 5173,
+  "exclude": []
+ },
+ "st": {
+  "dirs": [
+   "languages/sesotho"
+  ],
+  "core": [],
+  "bytes": 5655,
+  "exclude": []
+ },
+ "nso": {
+  "dirs": [
+   "languages/sepedi"
+  ],
+  "core": [],
+  "bytes": 6835,
+  "exclude": []
+ },
+ "bm": {
+  "dirs": [
+   "languages/bambara"
+  ],
+  "core": [],
+  "bytes": 3066,
+  "exclude": []
+ },
+ "wo": {
+  "dirs": [
+   "languages/wolof"
+  ],
+  "core": [],
+  "bytes": 5184,
+  "exclude": []
+ },
+ "mos": {
+  "dirs": [
+   "languages/mossi"
+  ],
+  "core": [],
+  "bytes": 4113,
+  "exclude": []
+ },
+ "ki": {
+  "dirs": [
+   "languages/kikuyu"
+  ],
+  "core": [],
+  "bytes": 9979,
+  "exclude": []
+ },
+ "kam": {
+  "dirs": [
+   "languages/kamba"
+  ],
+  "core": [],
+  "bytes": 7080,
+  "exclude": []
+ },
+ "ka": {
+  "dirs": [
+   "languages/georgian"
+  ],
+  "core": [],
+  "bytes": 8210,
+  "exclude": []
+ },
+ "lt": {
+  "dirs": [
+   "languages/lithuanian"
+  ],
+  "core": [],
+  "bytes": 20047,
+  "exclude": []
+ },
+ "lv": {
+  "dirs": [
+   "languages/latvian"
+  ],
+  "core": [],
+  "bytes": 4453,
+  "exclude": []
+ },
+ "ltg": {
+  "dirs": [
+   "languages/latgalian"
+  ],
+  "core": [],
+  "bytes": 2870,
+  "exclude": []
+ },
+ "af": {
+  "dirs": [
+   "languages/afrikaans"
+  ],
+  "core": [],
+  "bytes": 3473142,
+  "exclude": []
+ },
+ "he": {
+  "dirs": [
+   "languages/hebrew"
+  ],
+  "core": [],
+  "bytes": 2704384,
+  "exclude": []
+ },
+ "lg": {
+  "dirs": [
+   "languages/luganda"
+  ],
+  "core": [],
+  "bytes": 9515,
+  "exclude": []
+ },
+ "luo": {
+  "dirs": [
+   "languages/luo"
+  ],
+  "core": [],
+  "bytes": 4056,
+  "exclude": []
+ },
+ "rn": {
+  "dirs": [
+   "languages/kinyarwanda",
+   "languages/kirundi"
+  ],
+  "core": [],
+  "bytes": 11572,
+  "exclude": []
+ },
+ "ug": {
+  "dirs": [
+   "languages/uyghur"
+  ],
+  "core": [],
+  "bytes": 4718,
+  "exclude": []
+ },
+ "syl": {
+  "dirs": [
+   "languages/sylheti"
+  ],
+  "core": [
+   "core/phonology.jsonc"
+  ],
+  "bytes": 12414,
+  "exclude": []
+ },
+ "el": {
+  "dirs": [
+   "languages/greek"
+  ],
+  "core": [],
+  "bytes": 22389,
+  "exclude": []
+ },
+ "grc": {
+  "dirs": [
+   "languages/ancientgreek"
+  ],
+  "core": [],
+  "bytes": 3427,
+  "exclude": []
+ }
+}

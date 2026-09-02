@@ -8,8 +8,9 @@
     "build:phonemizer": "node tools/build-phonemizer.mjs",
     "build:phonemizer-data": "node tools/stage-phonemizer-data.mjs",
     "dev": "npm run build:phonemizer && vite",
-    "build": "npm run build:phonemizer && npm run verify:phonemizer-data && tsc && vite build",
+    "build": "npm run build:phonemizer && npm run verify:phonemizer-data && npm run check:language-search && tsc && vite build",
     "preview": "vite preview",
+    "check:language-search": "node --experimental-strip-types --disable-warning=ExperimentalWarning tools/check-language-search.mjs",
     "smoke:phonemizer": "node tools/smoke-phonemizer.mjs",
     "verify:phonemizer-data": "node tools/verify-phonemizer-data.mjs"
   },

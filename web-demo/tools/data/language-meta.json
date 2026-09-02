@@ -1,0 +1,802 @@
+{
+ "ab": {
+  "name": "Abkhaz",
+  "sample": "Ауаа ақырҭуа аиункерцәа аурыс Собора ашҭаҿ анышә имардеит."
+ },
+ "acm": {
+  "name": "Iraqi Arabic",
+  "sample": "يجمع الإنترنت بين عناصر كلٍّ من التواصل الجماهيري والشخصي."
+ },
+ "acw": {
+  "name": "Hijazi Arabic",
+  "sample": "يجمع الإنترنت بين عناصر كلٍّ من التواصل الجماهيري والشخصي."
+ },
+ "af": {
+  "name": "Afrikaans",
+  "sample": "Interne vergifting mag nie onmiddellik ooglopend wees nie."
+ },
+ "afb": {
+  "name": "Gulf Arabic",
+  "sample": "يجمع الإنترنت بين عناصر كلٍّ من التواصل الجماهيري والشخصي."
+ },
+ "ajp": {
+  "name": "South Levantine Arabic",
+  "sample": "يجمع الإنترنت بين عناصر كلٍّ من التواصل الجماهيري والشخصي.",
+  "voice": "apc"
+ },
+ "ak": {
+  "name": "Akan",
+  "sample": "Wɔsa saa asa yi de gye nkurɔfoɔ ani, na wɔdekyerɛkyerɛ nso."
+ },
+ "am": {
+  "name": "Amharic",
+  "sample": "ዛሬ በባህር ዳርቻ የአየሩ ሁኔታ በጣም ደስ የሚል ነው።"
+ },
+ "an": {
+  "name": "Aragonese",
+  "sample": "Se dividen a mes a efectos administrativos en parroquias."
+ },
+ "apc": {
+  "name": "North Levantine Arabic",
+  "sample": "يجمع الإنترنت بين عناصر كلٍّ من التواصل الجماهيري والشخصي."
+ },
+ "apd": {
+  "name": "Sudanese Arabic",
+  "sample": "يجمع الإنترنت بين عناصر كلٍّ من التواصل الجماهيري والشخصي."
+ },
+ "ar": {
+  "name": "Arabic (MSA)",
+  "sample": "الطقس اليوم لطيف جدا على الساحل."
+ },
+ "ary": {
+  "name": "Moroccan Arabic",
+  "sample": "كان ؤستاد، ؤ مستشار ديال لوزير د تّقافة لفايت محمد الأشعري."
+ },
+ "arz": {
+  "name": "Egyptian Arabic",
+  "sample": "بعدين تم نقل العاصمة جنوبالموقع جديد يسمى كوبار أو الجرمى.",
+  "voice": "ar"
+ },
+ "as": {
+  "name": "Assamese",
+  "sample": "কৃত্ৰিম উপগ্ৰহটো এটা ৰকেটৰ সহায়ত অন্তৰীক্ষলৈ পঠিওৱা হৈছিল।"
+ },
+ "ast": {
+  "name": "Asturian",
+  "sample": "Dellos cruceros incluyen Berlín, Alemaña nos sos folletos."
+ },
+ "awa": {
+  "name": "Awadhi",
+  "sample": "हिन्दू धरम में भगवान् श्री रामचंद्र जी के बहुतै महत्व अहै।"
+ },
+ "ayl": {
+  "name": "Libyan Arabic",
+  "sample": "يجمع الإنترنت بين عناصر كلٍّ من التواصل الجماهيري والشخصي."
+ },
+ "az": {
+  "name": "Azerbaijani",
+  "sample": "Dünyanı bu mağaranın içindən hiss edə bilmək çox çətindir."
+ },
+ "ba": {
+  "name": "Bashkir",
+  "sample": "Бөтә донъя стандарттар көнөнөң датаһы осраҡлы һайланмаған."
+ },
+ "bal": {
+  "name": "Balochi",
+  "sample": "بلؤچی زبان یک مزنئیں زبانئ مه ئیران،پاکستان و اوگانستان تها."
+ },
+ "bar": {
+  "name": "Bavarian",
+  "sample": "De zollerischen Herrn fördern eanane Neuerwerbung kräftig.",
+  "voice": "de"
+ },
+ "be": {
+  "name": "Belarusian",
+  "sample": "Гэта ўжо пяты Часовы выбарчы савет Мартэйі за чатыры гады."
+ },
+ "bg": {
+  "name": "Bulgarian",
+  "sample": "Строим къщите си от растения, както и правим дрехи от тях."
+ },
+ "bgc": {
+  "name": "Haryanvi",
+  "sample": "जितनी कम चिंता, उतनी ज़्यादा सकारात्मक जीवन ऊर्जा का संचार."
+ },
+ "bho": {
+  "name": "Bhojpuri",
+  "sample": "जितनी कम चिंता, उतनी ज़्यादा सकारात्मक जीवन ऊर्जा का संचार."
+ },
+ "bm": {
+  "name": "Bambara",
+  "sample": "Nin sabu ye aka taji lasago lahauta ye ani duguden fitini.",
+  "voice": "ff"
+ },
+ "bn": {
+  "name": "Bengali",
+  "sample": "পছন্দের কেকগুলি প্রায়শই একটি কাপ ভরা কফির সাথে ভাল মানায়।"
+ },
+ "bo": {
+  "name": "Tibetan",
+  "sample": "བུམ་པ་དེ་བུམ་པ་ཞེས་བརྗོད་པའི་སྒྲའི་བརྗོད་བྱ་ཡིན་པ་བཞིན་ནོ།"
+ },
+ "bpy": {
+  "name": "Bishnupriya",
+  "sample": "এরে পৌরসভার মানু ২৯৮২গ শহরেদে বারো ১২,৫৬৪গ গাঙেদে থাইতারা।",
+  "voice": "bn"
+ },
+ "bs": {
+  "name": "Bosnian",
+  "sample": "Ustvari, ovom metodom vodi se većina naučnih istraživanja."
+ },
+ "ca": {
+  "name": "Catalan",
+  "sample": "Avui fa molt bon temps a la costa."
+ },
+ "cdo": {
+  "name": "Min Dong Chinese",
+  "sample": "Dĕ̤ng-cé, sê Dṳ̆ng-guók gô-lĭk gì niék-sé cáik-ké cĭ-ék.",
+  "voice": "yue"
+ },
+ "ceb": {
+  "name": "Cebuano",
+  "sample": "Ang mga field trip dakong bahin sa bisan unsang classroom."
+ },
+ "chr": {
+  "name": "Cherokee",
+  "sample": "ᎤᏍᏗᏰᎬ ᎨᏒᎢ ᎠᏍᏓᏅᏅ ᎦᏂᏓᏛ ᏂᏛᎴᏅᏓ ᎯᎠ ᎦᏁᎦ, ᎠᏩᏛᏗ ᎠᎬᏫᏳᏛ ᎭᏫᎾᏗᏢ ᎦᏂᏝᎢ .",
+  "voice": "en"
+ },
+ "chv": {
+  "name": "Chuvash",
+  "sample": "Механика и теория относительности: Учебник для студентов вузов."
+ },
+ "cjy": {
+  "name": "Jin Chinese",
+  "sample": "有的晉語方言（比方説和順話）有三種不同的指示詞（近指、中指、遠指），編輯詞條時要留下這些箇指示詞，表意更準確。",
+  "voice": "cmn"
+ },
+ "ckb": {
+  "name": "Central Kurdish",
+  "sample": "کەشتیەکانی سانت پێترسبۆرگ کات لە ناو شارۆچکەکەش دەگرێتەوە."
+ },
+ "cmn": {
+  "name": "Mandarin Chinese",
+  "sample": "今天海邊的天氣非常宜人。"
+ },
+ "crh": {
+  "name": "Crimean Tatar",
+  "sample": "Balalıqta özüniñ Cülio ağasınıñ ölümini körmege mecbur oldı."
+ },
+ "cs": {
+  "name": "Czech",
+  "sample": "Dnes je velmi příjemné počasí na pobřeží."
+ },
+ "cy": {
+  "name": "Welsh",
+  "sample": "Mae'r tywydd yn braf heddiw ar hyd y traeth."
+ },
+ "da": {
+  "name": "Danish",
+  "sample": "Dernæst tog Lakkha Singh føringen for at synge bhajanerne."
+ },
+ "de": {
+  "name": "German",
+  "sample": "Das Wetter ist heute sehr schön an der Küste."
+ },
+ "ee": {
+  "name": "Ewe",
+  "sample": "Yuroptɔwo kpakple Amerikatɔwo bua avuwo ɖe aƒemelãwo me ko."
+ },
+ "el": {
+  "name": "Greek",
+  "sample": "Στοιχεία όπως το ασβέστιο και το κάλιο θεωρούνται μέταλλα."
+ },
+ "en": {
+  "name": "English",
+  "sample": "The quick brown fox jumps over the lazy dog."
+ },
+ "en-GB": {
+  "name": "English (British)",
+  "sample": "Television reports show white smoke coming from the plant."
+ },
+ "en-IN": {
+  "name": "English (Indian)",
+  "sample": "Television reports show white smoke coming from the plant."
+ },
+ "es": {
+  "name": "Spanish (Castilian)",
+  "sample": "El tiempo está muy agradable hoy en la costa."
+ },
+ "es-419": {
+  "name": "Spanish (Latin America)",
+  "sample": "Una caballería es una fuerza de combate montada a caballo."
+ },
+ "et": {
+  "name": "Estonian",
+  "sample": "Kuna Aucklandi piiravad kaks sadamat, on seal palju randu."
+ },
+ "eu": {
+  "name": "Basque",
+  "sample": "Hypancistrus contradens Hypancistrus generoko animalia da."
+ },
+ "fa": {
+  "name": "Persian",
+  "sample": "محمد عمیقا به امور فراتر از این زندگی دنیوی علاقه مند بود."
+ },
+ "ff": {
+  "name": "Fula",
+  "sample": "Hannde weeyo maayo ngoo no welti sanne."
+ },
+ "fi": {
+  "name": "Finnish",
+  "sample": "Alkuaineet, kuten kalsium ja kalium lasketaan metalleiksi."
+ },
+ "fo": {
+  "name": "Faroese",
+  "sample": "Nývalda býráðið velur ein borgarstjóra fyri alt valskeiðið."
+ },
+ "fr": {
+  "name": "French",
+  "sample": "Le temps est très agréable aujourd'hui sur la côte."
+ },
+ "fr-CA": {
+  "name": "French (Québécois)",
+  "sample": "Il s'agit du lieu que les colons Britannique ont investit."
+ },
+ "ga": {
+  "name": "Irish",
+  "sample": "Tá an aimsir go hálainn inniu cois cósta."
+ },
+ "gan": {
+  "name": "Gan Chinese",
+  "sample": "秋天嘚完首詩裡頭拕擬人化，佢密謀、催熟果實、收穫、舞音樂。",
+  "voice": "cmn"
+ },
+ "gd": {
+  "name": "Scottish Gaelic",
+  "sample": "'S e buidheann foillseachaidh a tha ann an Acair Earranta.",
+  "voice": "ga"
+ },
+ "gl": {
+  "name": "Galician",
+  "sample": "Está prohibido facer bromas sobre o Holocausto e os Nazis."
+ },
+ "gn": {
+  "name": "Guaraní",
+  "sample": "Opaite nunga tekove oikóva ipype oĩ Yjere Mbenĩ yrembe'ýre."
+ },
+ "grc": {
+  "name": "Ancient Greek",
+  "sample": "Στοιχεία όπως το ασβέστιο και το κάλιο θεωρούνται μέταλλα."
+ },
+ "gu": {
+  "name": "Gujarati",
+  "sample": "રાસાયણિકમાં હાઇડ્રોજનની શક્તિના આધારે કોબીનો રસ રંગ બદલાય."
+ },
+ "ha": {
+  "name": "Hausa",
+  "sample": "Yanayi a bakin teku yana da kyau sosai yau."
+ },
+ "hak": {
+  "name": "Hakka Chinese",
+  "sample": "信洗腳禮：信洗腳禮係撈主有分，撈教訓相愛、聖潔、謙卑、服事、饒恕嘅典禮。對每一隻受浸者，愛奉主耶穌聖名分予洗腳一擺，至於互相洗腳，必要時也做得。",
+  "voice": "yue"
+ },
+ "haw": {
+  "name": "Hawaiian",
+  "sample": "Manaʻo ʻoia, pono ʻoia e noho maʻō ame ulu i kona ʻoihana."
+ },
+ "he": {
+  "name": "Hebrew",
+  "sample": "הטורניר הגדול בשנה נערך בדצמבר במגרשי הפולו של לאס קניטאס."
+ },
+ "hi": {
+  "name": "Hindi",
+  "sample": "आज तट पर मौसम बहुत सुहावना है।"
+ },
+ "hil": {
+  "name": "Hiligaynon",
+  "sample": "Ang Intramuros isa ka distrito sa syudad sang Manila sa Pilipinas."
+ },
+ "hmn": {
+  "name": "Hmong",
+  "sample": "Muab faib mus rau hauv tsoom fwv teb chaws cuaj lub xeev.",
+  "voice": "lo"
+ },
+ "hne": {
+  "name": "Chhattisgarhi",
+  "sample": "जितनी कम चिंता, उतनी ज़्यादा सकारात्मक जीवन ऊर्जा का संचार."
+ },
+ "hr": {
+  "name": "Croatian",
+  "sample": "Naknadno je premješten u bolnicu Addenbrooke u Cambridgeu."
+ },
+ "hsn": {
+  "name": "Xiang Chinese",
+  "sample": "另外，湖湘民系肚裡好實巴多人口聲講自家血統源自老表民系。",
+  "voice": "cmn"
+ },
+ "ht": {
+  "name": "Haitian Creole",
+  "sample": "Lotería se yon vil nan pwovens Villa Clara, nan peyi Kiba."
+ },
+ "hu": {
+  "name": "Hungarian",
+  "sample": "A kalciumot, káliumot és hasonló elemeket fémnek tekintik."
+ },
+ "hy": {
+  "name": "Armenian",
+  "sample": "Դրանք մի քանի պատճառով ցանցային պրոքսիներից գերադասելի են."
+ },
+ "hyw": {
+  "name": "Western Armenian",
+  "sample": "Քառասնօրեայ պատրաստութեան շրջանէ լրացնելէ ետք, Տէր Հայրը նշանակուած է Ս."
+ },
+ "id": {
+  "name": "Indonesian",
+  "sample": "Saya senang bahwa ada orang lain yang rela mendukung saya."
+ },
+ "ig": {
+  "name": "Igbo",
+  "sample": "Onweghi nkwekọrịta zuru ụwa maka ngwa a na-akpọ ihe ochie."
+ },
+ "ilo": {
+  "name": "Ilocano",
+  "sample": "Adda pay dagiti binulod a balikas a kadawyan iti Pyu.",
+  "voice": "ceb"
+ },
+ "is": {
+  "name": "Icelandic",
+  "sample": "Góðan daginn. Veðrið er mjög gott í dag."
+ },
+ "it": {
+  "name": "Italian",
+  "sample": "Buongiorno. Il tempo è molto piacevole oggi."
+ },
+ "ja": {
+  "name": "Japanese",
+  "sample": "今日は海岸の天気がとても快適です。"
+ },
+ "jv": {
+  "name": "Javanese",
+  "sample": "Candhi kuwi dirusak nalika Alexander Agung lair wengi kae."
+ },
+ "ka": {
+  "name": "Georgian",
+  "sample": "პირველი ცხოველები, რომლებმაც ფრენა დაიწყეს მწერები იყვნენ."
+ },
+ "kaa": {
+  "name": "Karakalpak",
+  "sample": "Aliçören - Túrkiyanıń Bolu wálayatı Bolu rayonındaǵı awıl.",
+  "voice": "uz"
+ },
+ "kam": {
+  "name": "Kamba",
+  "sample": "Ĩtinanĩ, ndĩa sya mbwaũ nĩsyaumisw'e vo nĩ ndĩa sya syũma."
+ },
+ "kea": {
+  "name": "Kabuverdianu",
+  "sample": "Es kazal pode opta pa faze un planu di adoson pa ses bebé."
+ },
+ "ki": {
+  "name": "Kikuyu",
+  "sample": "Nerthlands nĩyo thoko nene ya mahũa maria kenya nyendagia."
+ },
+ "kk": {
+  "name": "Kazakh",
+  "sample": "Бүгін жағалауда ауа райы өте жағымды."
+ },
+ "kl": {
+  "name": "Kalaallisut (Greenlandic)",
+  "sample": "Anaanaasut meeqqallu immikkut ittumik isumassorneqarlutillu ikiorneqartussaapput.",
+  "voice": "ipk"
+ },
+ "km": {
+  "name": "Khmer",
+  "sample": "តើ​ប្រាសាទ​ទាំង​អស់​នោះ​បាន​រចនា និង​កសាង​ឡើង​ដោយ​របៀបណា?"
+ },
+ "kmr": {
+  "name": "Kurmanji",
+  "sample": "Koma şanoyê ji karkeran, xwendekaran û bêkaran pêk hatibû."
+ },
+ "kn": {
+  "name": "Kannada",
+  "sample": "ಅದರ ಸರ್ವವ್ಯಾಪಿ ಶಕ್ತಿ ರಾಜನಿಂದ ಸಾಮಾನ್ಯ ಪ್ರಜೆಯವರೆಗೂ ಹರಡಿತ್ತು."
+ },
+ "ko": {
+  "name": "Korean",
+  "sample": "오늘 해안의 날씨가 매우 좋습니다."
+ },
+ "ky": {
+  "name": "Kyrgyz",
+  "sample": "Көпчүлүк учурда эң сындай турган аудитория бул студенттер."
+ },
+ "la": {
+  "name": "Latin",
+  "sample": "Gallia est omnis divisa in partes tres."
+ },
+ "lb": {
+  "name": "Luxembourgish",
+  "sample": "Insekte waren déi éischt Déieren, déi d'Loft erobert hunn."
+ },
+ "lg": {
+  "name": "Luganda",
+  "sample": "Tebakozesa manyi mangi naye esira balisa kubyawandiikibwa."
+ },
+ "ln": {
+  "name": "Lingala",
+  "sample": "Toyebi mpenza te, kasi mbala mosusu eza na lolemo ekatana."
+ },
+ "lo": {
+  "name": "Lao",
+  "sample": "ມັນເບິ່ງຄືວ່າບໍ່ສົມເຫດສົມຜົນສໍາລັບຂ້ອຍ; ມັນບໍ່ຍຸດຕິທຳເລີຍ."
+ },
+ "lt": {
+  "name": "Lithuanian",
+  "sample": "Kai kurie pacientai galėjo užsikrėsti ligoninėje, mano dr."
+ },
+ "ltg": {
+  "name": "Latgalian",
+  "sample": "Dorbuojīs žurnalā Jaunuo dzeive, laikrokstā Latgolas Bolss."
+ },
+ "luo": {
+  "name": "Luo",
+  "sample": "Koro, nenore ni wache mane odiki go noketi mana kaka lebo."
+ },
+ "lv": {
+  "name": "Latvian",
+  "sample": "ASV prezidents Džordžs Bušs atzinīgi novērtēja paziņojumu."
+ },
+ "mad": {
+  "name": "Madurese",
+  "sample": "Orèng muslim anḍi' hubungan kalabân Alla sacara vertikal .",
+  "voice": "jv"
+ },
+ "mag": {
+  "name": "Magahi",
+  "sample": "अश्वत्थामा प्राचीन हिन्दु महाकाव्य महाभारतके एक पात्र हे ।"
+ },
+ "mai": {
+  "name": "Maithili",
+  "sample": "सन् २००८ मे हुनका पद्म विभूषणसँ सेहो पुरस्कृत कएल गेल छल ।"
+ },
+ "mg": {
+  "name": "Malagasy",
+  "sample": "I Christian Peyron no ben'ny tanàna mandritry ny taona ."
+ },
+ "mi": {
+  "name": "Māori",
+  "sample": "Tāria te wā, i whakakapia ngā wīra rākau ki ngā wīra rino."
+ },
+ "mk": {
+  "name": "Macedonian",
+  "sample": "Гледајте на скијачкиот пат како на сличен пат за пешачење."
+ },
+ "ml": {
+  "name": "Malayalam",
+  "sample": "വിവരങ്ങൾ കരസ്ഥമാക്കുന്നതിനുള്ള സമീപനം വ്യത്യസ്തമായിരുന്നു."
+ },
+ "mn": {
+  "name": "Mongolian",
+  "sample": "Цөм нь нейтрон ба протон гэсэн хоёр жижиг хэсгээс бүрддэг."
+ },
+ "mos": {
+  "name": "Mossi",
+  "sample": "Mwinkaara yé Charikpong m'be nen-taoore tênga Ghana pugin.",
+  "voice": "dag"
+ },
+ "mr": {
+  "name": "Marathi",
+  "sample": "त्या स्पर्धेमध्ये ११६ पैकी ३६ जणांचा हाच निकाल लागला होता."
+ },
+ "ms": {
+  "name": "Malay",
+  "sample": "Saya gembira kerana ada yang sanggup untuk menyokong saya."
+ },
+ "mt": {
+  "name": "Maltese",
+  "sample": "Ir-reliġjon ewlenija fil-Moldova hija Kristjana Ortodossa."
+ },
+ "mto": {
+  "name": "Totontepec Mixe",
+  "sample": "Tum akijpxa xa veʼe jayu kyeʼex, veʼem ax jöʼn tyukidaakjüva tijaty mëkin.",
+  "voice": "zoc"
+ },
+ "my": {
+  "name": "Burmese",
+  "sample": "တစ်ဖက်တစ်ချက်စီတွင် သစ်ပင်များပေါက်နေသော လမ်းကျယ်ကြီးများ၊"
+ },
+ "nan": {
+  "name": "Min Nan Chinese",
+  "sample": "I-ê lāu-pē sī Rupert Oliver Benjamin van den Bogaerde; lāu-bú sī Hon."
+ },
+ "naq": {
+  "name": "Nama",
+  "sample": "Namaseb ge Khoekhoegowab ǁgauǃnâ-aoba universiteits Namibiab dis tawa.",
+  "voice": "xh"
+ },
+ "nb": {
+  "name": "Norwegian (Bokmål)",
+  "sample": "Alt materie består av bittesmå partikler som heter atomer."
+ },
+ "nci": {
+  "name": "Classical Nahuatl",
+  "sample": "Ītech pōhui in tlācatl, auh momoloca in imman īmiyaquiliz."
+ },
+ "ne": {
+  "name": "Nepali",
+  "sample": "दुई घन्टाको फरकमा सरकारी भवनहरूका नजिक तीन बम विस्फोट भयो।"
+ },
+ "nl": {
+  "name": "Dutch",
+  "sample": "Het woord 'zigeuner' wordt vooral gebruikt door niet-Roma."
+ },
+ "nog": {
+  "name": "Nogai",
+  "sample": "Арсланлардынъ уьйири прайд деп аталады.",
+  "voice": "kk"
+ },
+ "nso": {
+  "name": "Sepedi",
+  "sample": "Bontši bja bophelo bja lapa la Hebrew bo diragetše moyeng."
+ },
+ "nya": {
+  "name": "Chichewa (Nyanja)",
+  "sample": "Njira zowetera ziweto zimenezi zikugwiritsidwa mpaka lero."
+ },
+ "oc": {
+  "name": "Occitan",
+  "sample": "Gaireben tot lo monde se planh dels sistèmas de transpòrt."
+ },
+ "om": {
+  "name": "Oromo",
+  "sample": "Har'a qilleensi qarqara galaanaa baay'ee gaarii dha."
+ },
+ "or": {
+  "name": "Odia",
+  "sample": "ଏହା ଆମ ପାଇଁ ଟ୍ରେନ୍, କାର୍ ଏବଂ ଅନ୍ୟ ଅନେକ ପରିବହନ ଉପକରଣ ଆଣିଛି।"
+ },
+ "pa": {
+  "name": "Punjabi",
+  "sample": "ਤਕਨੀਕ ਆਭਾਸੀ ਫੀਲਡ ਟ੍ਰਿਪ ਦੇ ਨਾਲ ਇਸ ਸੋਲਿਊਸ਼ਨ ਦੀ ਪੇਸ਼ਕਸ਼ ਕਰਦੀ ਹੈ।"
+ },
+ "pap": {
+  "name": "Papiamentu",
+  "sample": "E edificio tin un arkitectura unico den su sorto na Aruba.",
+  "voice": "es-419"
+ },
+ "pbt": {
+  "name": "Pashto (Southern)",
+  "sample": "د کنعان په ځمکه ستر ځنګلونه نشته، نو لرګي ډير قیمت بیه دي."
+ },
+ "pcm": {
+  "name": "Nigerian Pidgin",
+  "sample": "Owanari Duke na Naijá lorya wey bi di waif of Donald Duke."
+ },
+ "pl": {
+  "name": "Polish",
+  "sample": "Naukowcy mówią, że wybuch spowodowany kolizją był potężny."
+ },
+ "pnb": {
+  "name": "Western Punjabi",
+  "sample": "ابوبکر د‏‏ی بیعت دے بارے وچ عمر نے میرے تو‏ں کہیا؛اے ابن عباس !"
+ },
+ "ps": {
+  "name": "Pashto",
+  "sample": "د کنعان په ځمکه ستر ځنګلونه نشته، نو لرګي ډير قیمت بیه دي."
+ },
+ "pt": {
+  "name": "Portuguese (European)",
+  "sample": "O tempo está muito agradável hoje na costa."
+ },
+ "pt-BR": {
+  "name": "Portuguese (Brazil)",
+  "sample": "Então, Lakkha Singh tomou a frente para cantar os bhajans."
+ },
+ "qu": {
+  "name": "Quechua",
+  "sample": "Taytan: Samuel Nowlin Reeves, Jr.; Maman: Patricia Taylor."
+ },
+ "quc": {
+  "name": "K'iche'",
+  "sample": "Rajawaxik xuqe' kakimulij kib' che utzukuxuk ri loq'ob'al pa we uwachulew.",
+  "voice": "es-419"
+ },
+ "rkt": {
+  "name": "Rangpuri",
+  "sample": "পছন্দের কেকগুলি প্রায়শই একটি কাপ ভরা কফির সাথে ভাল মানায়।"
+ },
+ "rn": {
+  "name": "Kirundi",
+  "sample": "Brasserie y'i Gitega akaba ariyo ikora ico kinyobwa cane.",
+  "voice": "rw"
+ },
+ "ro": {
+  "name": "Romanian",
+  "sample": "Mi se părea că nu are sens; cu siguranță nu era echitabil."
+ },
+ "ru": {
+  "name": "Russian",
+  "sample": "Сегодня очень приятная погода на побережье."
+ },
+ "rup": {
+  "name": "Aromanian",
+  "sample": "Gogu Puiu ira alumtãtoru contra al Comunismulu ãn Romãnia."
+ },
+ "rw": {
+  "name": "Kinyarwanda",
+  "sample": "Uyu mucyo nicyo kigize umukororombya kuri uriya ndorerezi."
+ },
+ "sat": {
+  "name": "Santali",
+  "sample": "ᱱᱚᱣᱟ ᱯᱟᱥᱮᱡ ᱛᱟᱭᱚᱢ ᱫᱟᱨᱟᱢ ᱢᱚᱣᱟᱢᱚᱨᱤᱭᱟ ᱦᱩᱭ ᱥᱮᱝᱜᱮᱞᱮ ᱥᱟᱞᱜᱟᱣ ᱞᱮᱫᱟ।"
+ },
+ "sd": {
+  "name": "Sindhi",
+  "sample": "اڄ ساحل تي موسم تمام سٺي آهي."
+ },
+ "shi": {
+  "name": "Tashelhit",
+  "sample": "Issuɣl ula mnnaw igzzumn ɣ Injil aɛibri s Tutlayt Tagrikt."
+ },
+ "shn": {
+  "name": "Shan",
+  "sample": "သၵ်ႉၶ သင်ႇၶႃႇၸဝ်ႈၶဝ်သမ်ႉလႆႈၽႅဝ်ၸၼ်ႉသေႃးတႃႇပၢၼ်ႇသၵတႃႇၵၢမ်ႇ၊",
+  "voice": "my"
+ },
+ "si": {
+  "name": "Sinhala",
+  "sample": "රසය, විලාසිතාව සහ වර්ණය යන සියලු සීමාවන් ඉක්මවා යන ගායකයා."
+ },
+ "sk": {
+  "name": "Slovak",
+  "sample": "Jej prvým závodom bol slalom, kde svoju jazdu nedokončila."
+ },
+ "skr": {
+  "name": "Saraiki",
+  "sample": "دل کوں منصف بنڑا تے نمبر ڈیسو نام ڈاہ کنوں زیادہ ہر گز نہ ھوون."
+ },
+ "sl": {
+  "name": "Slovenian",
+  "sample": "Tako je bil svinčnik ob iznajdbi drag prijatelj številnim."
+ },
+ "smj": {
+  "name": "Lule Sami",
+  "sample": "Julevsámegiella l sámegiella mav sáhkadi julevsáme bájken.",
+  "voice": "fi"
+ },
+ "sn": {
+  "name": "Shona",
+  "sample": "Mhuri dzevaHebheru dzaiwanzoitira zvinhu zvakawanda panze."
+ },
+ "so": {
+  "name": "Somali",
+  "sample": "Hal bambo ayaa qarxisay debadda xafiiska garyaqaanka guud."
+ },
+ "sq": {
+  "name": "Albanian",
+  "sample": "Ndërtesa është e formësuar në përdhese të ngritur dhe kat."
+ },
+ "sr": {
+  "name": "Serbian",
+  "sample": "То ми није изгледало да има смисла; свакако није било фер."
+ },
+ "st": {
+  "name": "Sesotho",
+  "sample": "Ndima o hlahetse Afrika Borwa mme a holela Port Elizabeth."
+ },
+ "su": {
+  "name": "Sundanese",
+  "sample": "Manéhna dibantuan ku lanceuk awéwéna, Julia Brainerd Hall."
+ },
+ "sv": {
+  "name": "Swedish",
+  "sample": "Vädret är mycket trevligt idag vid kusten."
+ },
+ "sw": {
+  "name": "Swahili",
+  "sample": "Wameorodheshwa katika Orodha ya Urithi wa Dunia ya UNESCO."
+ },
+ "syl": {
+  "name": "Sylheti",
+  "sample": "ꠀꠞꠛ ꠡꠝꠣꠎꠧ ꠇꠥꠘꠤꠀ ꠡꠣꠗꠣꠞꠘꠔ ꠙꠄꠟꠣ ꠡꠘ꠆ꠔꠣꠘꠞ ꠘꠣꠝꠞ ꠃꠙꠞꠦ ꠑꠤꠇ ꠇꠞꠣ ꠅꠄ।"
+ },
+ "ta": {
+  "name": "Tamil",
+  "sample": "இன்று கடற்கரையில் வானிலை மிக இனிமையாக உள்ளது."
+ },
+ "te": {
+  "name": "Telugu",
+  "sample": "మృతదేహం సుమారు ఒక రోజు పాటు అక్కడ ఉందని పోలీసులు చెప్పారు."
+ },
+ "tg": {
+  "name": "Tajik",
+  "sample": "Президенти ИМА Ҷорҷ Буш аз эъломияи мазкур истиқбол намуд."
+ },
+ "th": {
+  "name": "Thai",
+  "sample": "วันนี้อากาศริมชายฝั่งดีมาก"
+ },
+ "ti": {
+  "name": "Tigrinya",
+  "sample": "ሞሮካዊ መንነትን ባህልን ናይ ዓረብ፣ በርበር፣ ኣፍሪቃን ኤውሮጳን ባህልታት ዝተሓዋወሰ እዩ።"
+ },
+ "tk": {
+  "name": "Turkmen",
+  "sample": "Awliýa tä kyýamata çenli ýaşajak musulmanlarda bolmalydyr."
+ },
+ "tl": {
+  "name": "Tagalog",
+  "sample": "Ito ang ikalimang CEP ni Martelly sa loob ng apat na taon."
+ },
+ "tn": {
+  "name": "Setswana",
+  "sample": "Maunatlala ke motse o o mo kgaolong ya legare mo Botswana."
+ },
+ "tr": {
+  "name": "Turkish",
+  "sample": "Bugün sahilde hava çok güzel."
+ },
+ "tt": {
+  "name": "Tatar",
+  "sample": "Елга Бурначка елгасына кушылып, аның кушылдыгы булып тора."
+ },
+ "ug": {
+  "name": "Uyghur",
+  "sample": "ئاندىن ئۇنىڭ خوتۇن-بالىسى بۇ مۈلكۈڭگە ھەرگىز چېقىلالمايدۇ."
+ },
+ "uk": {
+  "name": "Ukrainian",
+  "sample": "Потім Лаккха Сінг взяв на себе ініціативу у співі бгаджан."
+ },
+ "umb": {
+  "name": "Umbundu",
+  "sample": "Tete alume vosi vakapa ombota ye kanja kwenda ombandwa yi."
+ },
+ "ur": {
+  "name": "Urdu",
+  "sample": "فوٹونز ان عناصر سے بھی چھوٹے ہوتے ہیں جو ایٹمز کی تشکیل کرتے ہیں!"
+ },
+ "uz": {
+  "name": "Uzbek",
+  "sample": "Chizma tahlil natijasi ommabop veb-saytga joylashtiriladi."
+ },
+ "vi": {
+  "name": "Vietnamese",
+  "sample": "Hôm nay thời tiết ven biển rất dễ chịu."
+ },
+ "wo": {
+  "name": "Wolof",
+  "sample": "Anam woowu itam ci la benn gëstu ci wàllu xarala di tënku."
+ },
+ "wuu": {
+  "name": "Wu Chinese",
+  "sample": "盎格鲁部落及撒克逊部落乘虚侵入不列颠，建七小国。"
+ },
+ "xh": {
+  "name": "Xhosa",
+  "sample": "Imozulu intle kakhulu namhlanje elunxwemeni."
+ },
+ "yo": {
+  "name": "Yoruba",
+  "sample": "Eléyìí di ìse, sùgbọ́n irin mún kí àwọn pákó ẹsẹ̀ ọkọ̀ jẹ."
+ },
+ "yue": {
+  "name": "Cantonese",
+  "sample": "在日本，最早的櫻花祭是天皇專為自己和皇宮周邊其他貴族所辦的。"
+ },
+ "za": {
+  "name": "Zhuang",
+  "sample": "Youq seiz de dungjci, gij diegguek Movowj baenz lai lai.",
+  "voice": "th"
+ },
+ "zsm": {
+  "name": "Malay (Standard)",
+  "sample": "Saya gembira kerana ada yang sanggup untuk menyokong saya.",
+  "voice": "ms"
+ },
+ "zu": {
+  "name": "Zulu",
+  "sample": "Isimo sezulu sihle kakhulu namuhla ogwini."
+ }
+}

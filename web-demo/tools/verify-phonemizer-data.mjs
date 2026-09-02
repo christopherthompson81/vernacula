@@ -19,7 +19,8 @@ const REPO = "../external/vernacula-phonemizer";
 const DATA = "public/vphon-data";
 
 const manifest = JSON.parse(fs.readFileSync(`${DATA}/_keys.json`, "utf8"));
-const src = fs.readFileSync("src/inference/config.ts", "utf8");
+// The catalogue is generated, so the gate reads the SHIPPED text rather than a copy of it.
+const src = fs.readFileSync("src/inference/languages.ts", "utf8");
 const samples = {};
 for (const m of src.matchAll(/code:\s*"([\w-]+)"[^}]*?sample:\s*"((?:[^"\\]|\\.)*)"/g))
   samples[m[1]] = JSON.parse(`"${m[2]}"`);
@@ -37,15 +38,39 @@ const bytes = new Map();
 const load = (keys) => { for (const k of keys) { const p = path.join(DATA, k);
   if (fs.existsSync(p)) bytes.set(k, new Uint8Array(fs.readFileSync(p))); } };
 const missing = [];
+// Script name -> detector, built from the routing table's own keys. "Kana" is the engine's name for
+// the two Japanese syllabaries and is not a Unicode script property, so it is spelled out.
+const SCRIPT_RE = Object.fromEntries(Object.keys(manifest.foreign.defaults).map((n) => [n,
+  n === "Kana" ? /\\p{Script=Hiragana}|\\p{Script=Katakana}/u
+               : new RegExp("\\\\p{Script=" + n + "}", "u")]));
 load(manifest.engine);
 setDataSource({ read(k) { const b = bytes.get(k); if (!b) { missing.push(k); throw new Error("missing " + k); } return b; } });
 const { phonemizeAsync } = await loadEngine();
 const results = [];
+const keysFor = (code) => {
+  const e = manifest.languages[code];
+  if (!e) return [];
+  const skip = new Set(e.exclude ?? []);
+  return [...e.dirs.flatMap((d) => manifest.dirs[d] ?? []), ...e.core].filter((k) => !skip.has(k));
+};
 for (const [code, text] of Object.entries(samples)) {
-  load(manifest.languages[code] ?? []);
+  load(keysFor(code));
+  // The demo resolves embedded foreign scripts to their reader and fetches that language too;
+  // mirror it here or a sample with a Latin quotation inside fails the gate for the wrong reason.
+  for (const [script, target] of Object.entries(manifest.foreign.defaults)) {
+    const re = SCRIPT_RE[script];
+    if (!re || !re.test(text)) continue;
+    const t = manifest.foreign.overrides[code]?.[script] ?? target;
+    if (t !== code) load(keysFor(t));
+  }
   const before = missing.length;
   try { const ipa = await phonemizeAsync(text, code);
-        results.push({ code, ok: missing.length === before, ipa: ipa.slice(0, 40), missing: missing.slice(before) }); }
+        // ⚠ A key the ENGINE asks for that does not exist upstream either is an OPTIONAL probe, not
+        // a staging gap: some loaders try a lexicon that a language simply does not ship (Saraiki's
+        // is optional:true) and handle the throw. Only a key that exists in data/ and was not
+        // staged is a real failure — that is the class that produced silently wrong readings.
+        const real = missing.slice(before).filter((k) => fs.existsSync(path.join("data", k)));
+        results.push({ code, ok: real.length === 0, ipa: ipa.slice(0, 40), missing: real }); }
   catch (e) { results.push({ code, ok: false, err: String(e).slice(0, 90), missing: missing.slice(before) }); }
 }
 console.log("@@" + JSON.stringify(results));

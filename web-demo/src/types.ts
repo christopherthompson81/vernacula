@@ -4,7 +4,7 @@ export interface Token {
   text: string;
   /** Its canonical IPA, from vernacula-phonemizer. */
   ipa: string;
-  /** Playback window in seconds. Absent until alignment lands — see README "Karaoke". */
+  /** Playback window in seconds of the final audio — estimated, see inference/alignment.ts. */
   start?: number;
   end?: number;
 }

@@ -1,6 +1,7 @@
 # OmniVoice → ONNX export
 
-Exports `k2-fsa/OmniVoice` (Apache-2.0, a diffusion-language-model TTS) into ONNX graphs
+Exports `k2-fsa/OmniVoice` (a diffusion-language-model TTS; upstream code is Apache-2.0, the
+pre-trained weights are CC-BY-NC-4.0) into ONNX graphs
 for Vernacula. **Phase 1** goal: faithful fp32 graphs + a Python harness validated against
 the PyTorch reference. C# integration and quantization are later phases.
 

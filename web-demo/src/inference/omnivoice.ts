@@ -18,6 +18,7 @@ import { addPunctuation, prepare, NUM_CODEBOOKS } from "./textPrep.ts";
 import { estimateTargetTokens } from "./duration.ts";
 import { runDiffusion, DEFAULT_CONFIG, type GenConfig } from "./diffusion.ts";
 import { removeSilence, fadeAndPad, peakNormalize } from "./audioPost.ts";
+import { attributeWords, type WordTiming } from "./alignment.ts";
 
 export const SAMPLE_RATE = 24000;
 
@@ -225,7 +226,11 @@ export class OmniVoice {
     audio = fadeAndPad(audio, SAMPLE_RATE);
     peakNormalize(audio, 0.5);
 
-    return { audio, sampleRate: SAMPLE_RATE, targetTokens: target, generateMs, transformerMs, hostMs };
+    // Word timings in FINAL-audio seconds: word shares placed on the speech-energy envelope of
+    // the finished audio — see alignment.ts for what "estimated" means here.
+    const words: WordTiming[] = attributeWords(ipa, audio, SAMPLE_RATE);
+
+    return { audio, sampleRate: SAMPLE_RATE, words, targetTokens: target, generateMs, transformerMs, hostMs };
   }
 
   private async runTransformer(ids: BigInt64Array, audioMask: Uint8Array,

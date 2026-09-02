@@ -98,7 +98,11 @@ async function ensureDownloaded(url: string, onProgress?: (p: DownloadProgress) 
 export async function fetchModel(url: string, onProgress?: (p: DownloadProgress) => void): Promise<ArrayBuffer> {
   const meta = await ensureDownloaded(url, onProgress);
   const cache = await caches.open(CACHE);
-  const out = new Uint8Array(cachedBytes(meta));
+  // `total`, not `cachedBytes`: a COMPLETED meta written before `sizes` existed is still a valid
+  // cache (every chunk is present and total was set from Content-Length), and it returns from
+  // ensureDownloaded before the legacy check — summing its absent `sizes` threw here and made a
+  // fully-cached model unloadable until the cache was cleared by hand.
+  const out = new Uint8Array(meta.total);
   let off = 0;
   for (let i = 0; i < meta.chunks; i++) {
     const r = await cache.match(chunkKey(url, i));

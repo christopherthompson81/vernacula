@@ -50,7 +50,7 @@ const RE_PUNCT = /\p{Pc}|\p{Pd}|\p{Ps}|\p{Pe}|\p{Pi}|\p{Pf}|\p{Po}|\p{Sm}|\p{Sc}
 const RE_SPACE = /\p{Zs}|\p{Zl}|\p{Zp}/u;
 const RE_DIGIT = /\p{Nd}|\p{Nl}|\p{No}/u;
 
-function charWeight(code: number): number {
+export function charWeight(code: number): number {
   if ((code >= 65 && code <= 90) || (code >= 97 && code <= 122)) return WEIGHTS.latin;
   if (code === 32) return WEIGHTS.space;
   if (code === 0x0640) return WEIGHTS.mark; // Arabic Tatweel

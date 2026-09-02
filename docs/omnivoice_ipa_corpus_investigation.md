@@ -3728,3 +3728,98 @@ a shifted silence, and an energy-threshold detector counts stop closures as phra
 
 Scope: one listener, one language, six utterances, one checkpoint pair. Enough to justify the change,
 not to quantify it.
+
+## Run 53 — 2026-09-02 — Phonemizer drift against the alignment DB: 1.17%, and two defects it exposed
+
+**Question:** the DB's `ipa` was last derived 2026-08-22 (Run 51). 322 phonemizer commits have landed
+since. How much of the corpus has drifted, how much of that is inside the 28 training languages, and
+does a v7 follow?
+
+### The measurement is only clean on one slice, and that is the slice that was used
+
+`read_text_src` partitions the DB three ways and only ONE supports an isolated comparison:
+
+    fleurs_raw  249,430   ipa derived by rederive_read_text.mts from read_text on 08-22   <- comparable
+    auto         22,159   ipa came through the byid / phonemize-fleurs path
+    hand            209   human-authored; rederive must never touch them
+
+Re-running `rederive_read_text.mts` on the fleurs_raw rows' own `read_text` therefore varies the
+ENGINE and nothing else. The `auto` rows were run separately and, reassuringly, came back
+byte-identical on cmn_hans_cn (2,871), am_et (2,501), my_mm (2,290) and th_th (1,947) — so the
+pipeline confound I had budgeted for is nil, and their drift (660 rows) is real too.
+
+⚠ **The determinism control ran BEFORE the numbers were read**, per Run 52's lesson. Two full
+re-derivations of the 12,051 rows in the five worst-moving languages are byte-identical, so every
+difference below is engine change rather than sampling noise. 249k rows re-derive in ~9 minutes,
+which is why this was measured whole rather than sampled.
+
+### Where it landed
+
+    WHOLE CORPUS       3,170 / 271,589   1.17%
+    28 TRAINING LANGS    340 /  77,507   0.44%
+
+    pa_in  81.1%   ne_np 11.1%   sl_si 5.7%   ckb_iq 5.6%   vi_vn 4.0%   mr_in 3.6%
+    mi_nz   2.9%   en_us  2.7%   lo_la 2.5%   xh_za 2.0%    zu_za 1.9%   …56 langs in all
+
+The heaviest movers are languages the model is NOT trained on. Inside the training set only four
+exceed 1%: vi_vn 4.0, en_us 2.7, xh_za 2.0, zu_za 1.9. Sixteen of the 28 did not move at all.
+
+### ⚠ THE BIGGEST MOVER IS NOT A DEFECT, AND I CALLED IT ONE FIRST
+
+xh/zu numerals now read in English — `kʼutʰˈaːtʰu kʼuɬˈaːnu` → `θɹˈiː pʰɔᶦnt fˈaᶦv`. That reads as an
+obvious regression and is not: `numeral_register.mts` is measured corpus policy (zu 95% closer, xh
+91%, scored against a phone recognizer over the whole digit-bearing corpus), and #875 extended it to
+CLOCK and DECIMAL forms at 21:37 on 08-22 — hours after the snapshot. The engine called directly
+still emits the Xhosa numerals; the register is applied to the text before it. Checking the mechanism
+before reporting is what separated this from the next section.
+
+### Defect 1 — #1098 traded a half reading for a leak, and a corpus cannot afford that trade
+
+`afda7429` (#1093/#1098, 08-27) made an unreadable rate DECLINE rather than half-read, on the stated
+principle that "a half reading is worse than a visible leak". Fleet-wide it took 290 half readings to
+29. In the corpus it does this:
+
+    et_ee   160 km/h        kˈilomeːtrit  ->  km
+    mt_mt   160km/siegħa    kɪlɔmɛtru     ->  km
+    oc_fr   165 km/h        kilumɛtɾes    ->  km
+    ig_ng   83km/awa        kilomita      ->  km
+    cs_cz   600 Mbit/s      strˈana       ->  s
+    vi_vn   160km/h         kˈi˧ lˈo˧ mˈɛ˧˥t̪  ->  ˈʊkm
+    cmn     133 m/s         mi˨˩˦         ->  ˈɛm      (米 → the ENGLISH letter name)
+
+128 changed rows carry a rate; **99 rows gained raw Latin text inside their IPA against 19 that lost
+some — net +80.** For several languages every single changed row is a rate row (oc_fr 18/18, ast_es
+12/12, ig_ng 8/8, jv_id 5/5).
+
+⚠ **THE PRINCIPLE IS RIGHT FOR THE ENGINE AND WRONG FOR THE CORPUS, and that is the whole finding.**
+A leak is loud and a half reading is silent — true when a human reads the output. Here nothing reads
+it: the leaked `km` goes into the training tensor as literal Latin characters, teaching the model to
+voice them. The corpus wants the half reading, and really wants the full one. cmn is worse still: it
+has no leak to decline TO, so it voices `ˈɛm` — precisely the failure the commit message documents
+avoiding for a Japanese golden (`12.8 km/秒` → `kʰˈeᶦəm`). The guard is at "ASCII-Latin denominator",
+and Vietnamese and Chinese with `/h` and `/s` sit on the wrong side of it. Bisected to the commit;
+`160 km` and `5km` still expand correctly, so it is the rate form alone.
+
+### Defect 2 — pa_in's 81% is mostly right, on an arbitrary tie-break that is sometimes wrong
+
+`39050bf7` (#898, 08-23) wired the three Punjabi lexicons into the shipped `text()` path. Most of what
+follows is a real gain — ਬਹੁਤ `bˈəɦʊt̪` → `bɔː˩˥t` is the correct tonal reading. But
+`build-pa-guru-lexicon.mts` stores `gs[0]`, the FIRST wikipron reading, and **34 of 217 entries come
+from a word with more than one distinct reading**, so for those the shipped value is scrape order:
+
+    ਵਿੱਚ  ships bɪt͡ʃːɪ̆   alternatives ɪt͡ʃːɪ̆, ʋɪt͡ʃːɪ̆     — "in", among the commonest words in the language
+    ਵੱਲ   ships əllɪ̆      alternative  ʋəllɪ̆              — the initial ʋ dropped entirely
+
+Both are high-frequency function words, which is why one lexicon change moved 81% of the language's
+rows. Two further oddities in the same file: bare combining marks (`ਂ`, `ੰ`) are keyed as words, and
+four letter-name entries carry alternatives containing a literal U+25CC dotted circle.
+
+### What this does NOT support
+
+**Not a v7 on drift alone.** 340 rows in 77,507 is 0.44%, and 41 of en_us's 71 diffs are a single
+comma appearing — prosody, of the class Run 52 established every automated metric is blind to and
+which needed an ear to adjudicate. Retraining now would also bake in Defect 1, which touches cmn_hans_cn,
+vi_vn and cs_cz inside the training set.
+
+Order, unchanged from the Run 51 restructure and from what the memory of this campaign keeps saying:
+fix upstream, re-derive, re-QC, then decide on a fine-tune — never the other way round.

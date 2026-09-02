@@ -119,7 +119,9 @@ c, m = codes[utt], meta[utt]      # c: (8, 170) int16 ; m["ipa"]: the IPA string
 
 Derived from [FLEURS](https://huggingface.co/datasets/google/fleurs) (CC-BY-4.0); this corpus is
 released under the same license. Codec tokens are produced by the Higgs codec from
-[k2-fsa/OmniVoice](https://huggingface.co/k2-fsa/OmniVoice) (Apache-2.0).
+[k2-fsa/OmniVoice](https://huggingface.co/k2-fsa/OmniVoice), whose CODE is Apache-2.0 but whose
+pre-trained WEIGHTS are CC-BY-NC-4.0 ("due to constraints from its training data (e.g., Emilia)").
+Anything you build from those weights inherits the NonCommercial term.
 """
 
 

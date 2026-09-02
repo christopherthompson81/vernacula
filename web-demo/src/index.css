@@ -38,9 +38,39 @@ audio { width: 100%; }
 .pair { display: inline-flex; flex-direction: column; align-items: flex-start; padding: .15rem 0; }
 .ortho { font-size: .92rem; }
 .ipa { font-size: 1.02rem; color: var(--accent); }
+/* Karaoke: the word under the playhead. Timings are estimates, so a soft highlight rather than a
+   hard-edged one — it should read as "about here", not as a claim of precision. */
+.pair, .word { border-radius: 4px; padding: .15rem .2rem; margin: 0 -.2rem; cursor: pointer;
+               transition: background-color .08s; }
+.pair.active, .word.active { background: color-mix(in srgb, var(--accent) 22%, transparent); }
+.word.active { color: var(--accent); }
 .note { background: var(--warn-bg); color: var(--warn); border: 1px solid currentColor;
         border-radius: 7px; padding: .6rem .75rem; margin: 1rem 0; font-size: .86rem; }
 .note.small { font-size: .8rem; }
 .error { color: #b3261e; font-size: .88rem; white-space: pre-wrap; }
 footer { margin-top: 3rem; padding-top: 1.25rem; border-top: 1px solid var(--line); }
 a { color: var(--accent); }
+
+/* Language picker: an input plus a filtered listbox, because a 193-row <select> is unusable. */
+.picker { position: relative; }
+.picker input { width: 15rem; font: inherit; border: 1px solid var(--line); border-radius: 7px;
+                background: var(--card); color: var(--fg); padding: .5rem .6rem; }
+.options { position: absolute; z-index: 20; top: calc(100% + 3px); left: 0; width: 29rem; max-width: 92vw;
+           max-height: 17rem; overflow-y: auto; margin: 0; padding: .25rem; list-style: none;
+           background: var(--card); border: 1px solid var(--line); border-radius: 8px;
+           box-shadow: 0 8px 24px rgba(0,0,0,.16); }
+.options li { display: flex; align-items: baseline; gap: .45rem; padding: .3rem .45rem;
+              border-radius: 5px; cursor: pointer; font-size: .87rem; }
+.options li.active { background: color-mix(in srgb, var(--accent) 16%, transparent); }
+.options li.empty { color: var(--muted); cursor: default; }
+.options .nm { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The endonym sits beside the English name; everything from the code rightward is pushed to the far
+   edge by .cd's auto margin rather than by .nm growing, so the 18 rows with no endonym align the
+   same way as the 175 with one. */
+.options .nat { flex: 0 1 auto; min-width: 0; color: var(--muted); font-size: .82rem;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.options .cd { margin-left: auto; padding-left: .3rem; color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .78rem; }
+.options .sz { color: var(--muted); font-size: .75rem; min-width: 3.2rem; text-align: right; }
+.badge { font-size: .68rem; text-transform: uppercase; letter-spacing: .04em; padding: .05rem .3rem;
+         border: 1px solid var(--line); border-radius: 4px; color: var(--muted); }
+.badge.trained { color: var(--accent); border-color: currentColor; }
