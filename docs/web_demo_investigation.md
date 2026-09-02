@@ -1137,3 +1137,64 @@ sentence and the audio score carries the whole decision. Recorded as such in doc
 **Verified:** 171 voices, every id has codes of exactly `refLen × 8`, no language has two defaults,
 and the replay gate still passes 187/187. Previews under
 /tmp/vernacula-tts-listen/cv-voices/ — the unvalidated-split ones deserve the closest listen.
+
+## Run 24 — 2026-09-02, sourcing beyond Common Voice: 102 → 165 native voices
+
+**Where it started:** 102 languages had a FLEURS voice and 91 read with a donor from a neighbouring
+language. **Where it ended: 165 native, 28 on donors.** Six sources, four of them needing a tool
+that did not exist yet.
+
+| source | licence | languages |
+|---|---|---|
+| Common Voice 22 (HuggingFace mirror) | CC0 | 26 |
+| Common Voice 26 (Mozilla Data Collective) | CC0 | 4 native + 3 donor upgrades |
+| Omnilingual ASR | CC BY 4.0 | 12 |
+| Vaani (ARTPARK-IISc) | CC BY 4.0 | 6 |
+| WaxalNLP · OpenBibleTTS · Ravnursson · qirimtatar · WenetSpeech-Wu | CC BY/BY-SA/Apache | 9 |
+| OpenSLR 83 / 158 / 44 · LibriVox | CC BY-SA / public domain | 5 |
+
+**The bugs are the content of this run.** Every one silently produced a plausible-looking result:
+
+1. **`peak > 0.98` rejects normalisation, not just clipping.** Every Vaani clip peaks at exactly 1.0
+   because the corpus is peak-normalised — 0.001% of samples at the ceiling, longest flat run one
+   sample. Haryanvi was blocked entirely. Real clipping FLATTENS the wave, so that is what to
+   measure.
+2. **A corpus with no duration field skipped the length filter.** A 48 s Ewe clip was accepted and
+   `make-voices.mjs` cut 40 s of silence from it, leaving 7.5 s of audio against a transcript for
+   the whole thing. The bound is now enforced on the DECODED audio.
+3. **Equal sentence and pause counts do not prove a cut is safe.** A speaker pauses mid-sentence and
+   runs two together; one Hawaiian clip paired 8 words with 13.2 s of audio. `trim-to-sentences.mjs`
+   now also checks speaking rate against the shipped references (6.4-13.7 IPA chars/s).
+4. **A transcript containing a newline broke voices.jsonc** — the `// "…"` comment left its tail as
+   bare text. Omnilingual separates sentences that way.
+5. **Two runs shared one temp filename** in the phonemizer directory; one deleted the module while
+   the other imported it. Per-process names now.
+6. **`"(\w+)"` does not match a two-word script name**, so Santali ("Ol Chiki") and Sylheti
+   ("Syloti Nagri") skipped the script check and were prefilled with ENGLISH sample sentences.
+7. **`s[0] !== s[0].toLowerCase()`** — "starts with a capital" — is false for every caseless script,
+   which rejected every candidate sentence in Ethiopic, Tibetan, Sinhala, Myanmar, Arabic, Ol Chiki
+   and Syloti Nagri.
+
+**Three findings worth keeping:**
+
+- **The gap analysis matched codes literally**, so Akan was missed for weeks: Common Voice files Twi
+  under `tw`. European Portuguese was likewise called unsourceable because the `accents` column is
+  nearly empty for `pt` — the `variant` column separates the standards, in readable labels
+  ("Portuguese (Portugal)"), not codes.
+- **LibriVox openings need an ASR to cut.** The English announcement and a line of Caesar are the
+  same length, so silence structure cannot separate them. `find-english-intro.py` runs the English
+  CTC bundle: boilerplate decodes cleanly, Latin decodes as noise. It also VERIFIED the pairing —
+  the decode of the chosen clip, "Gala omnissa in partte trees … nostra gallipellantum", maps word
+  for word onto the printed opening of De Bello Gallico.
+- **A donor's language may have no phonemizer at all.** Copainalá Zoque, Dagbani and Iñupiaq now
+  read for Totontepec Mixe, Mossi and Greenlandic; `--phon-lang` renders their transcripts through
+  the target's engine, which shares a compatible Latin orthography. The IPA approximates what the
+  speaker says — a deliberate trade against Spanish reading Mixe and Danish reading Greenlandic.
+
+**What is left is genuinely hard.** Of 28 donors: 3 are licence-blocked (Xiang and Gan are
+CC BY-NC-ND, Hakka is TRAIL), 5 are accent variants reading the same written language, and 20 have
+no acceptable open recording anywhere. Common Voice 26 has none of them. Greenlandic is the sharpest
+case: CC BY audio exists on Wikimedia Commons and no transcript for it exists anywhere.
+
+⚠ Mozilla Data Collective requires terms accepted **per dataset, in a browser**, with no API route
+and a rate limit of about one per minute. Budget for that before planning a CV-26 sweep.
