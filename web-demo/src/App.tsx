@@ -22,12 +22,13 @@ function pairTokens(text: string, words: WordTiming[]): Token[] | null {
   return ortho.map((t, i) => ({ text: t, ipa: ipaWords[i].ipa, start: ipaWords[i].start, end: ipaWords[i].end }));
 }
 
-/** Index of the word under the playhead: the last one that has started. Between words there is
- *  no gap (punctuation tokens fill the pauses), so this is also the one that has not ended. */
-function activeIndex(tokens: { start?: number }[], t: number): number {
-  let i = -1;
-  for (let k = 0; k < tokens.length; k++) if (tokens[k].start !== undefined && tokens[k].start! <= t) i = k;
-  return i;
+/** Index of the word under the playhead, or -1 in a pause: nothing is being said, so nothing is lit. */
+function activeIndex(tokens: { start?: number; end?: number }[], t: number): number {
+  for (let k = 0; k < tokens.length; k++) {
+    const { start, end } = tokens[k];
+    if (start !== undefined && end !== undefined && start <= t && t < end) return k;
+  }
+  return -1;
 }
 
 export default function App() {

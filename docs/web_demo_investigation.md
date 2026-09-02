@@ -927,3 +927,37 @@ click-to-seek.
 ms is expected and the CSS says so (a soft tint, not a hard edge). A real alignment would mean
 shipping an aligner model — `Vernacula.Base.Alignment.NemoNfaAligner` exists on the desktop side —
 and is the upgrade path if the estimate proves not good enough.
+
+## Run 20 — 2026-09-01 18:40, karaoke: place words on the speech envelope, not on the clock
+
+**User report on Run 19:** highlight "kicks in too early and then finishes too late".
+
+**Cause:** proportional attribution over the raw generation assumes speech fills the whole span
+uniformly. It does not — the model leaves onset silence, and a low-level breathy tail that sits above
+the −50 dBFS silence threshold and so survives `removeSilence`. Every word inherited an early shift
+from the onset, and the last word was stretched across the tail.
+
+**Fix:** `alignment.ts` now measures a 10 ms RMS envelope over the FINAL audio and places each
+word's weight share on the cumulative count of SPEECH frames (within −35 dB of the loudest frame)
+rather than on seconds. Pauses and the tail consume no word weight; punctuation tokens carry zero
+weight for alignment (their pause is what the envelope already skips); in a gap nothing is lit.
+The `KeptRun` map from Run 19 is no longer needed for timing — the envelope is measured after all
+post-processing — though `removeSilenceMapped` stays as the implementation of `removeSilence`.
+
+**Browser** (same English sentence, 5.68 s, 50 ms sampling of the lit word):
+
+    0.13 The · 1.24 quick · 1.64 brown · 2.14 fox · 2.59 jumps · 3.25 over · 3.60 the ·
+    3.75 lazy · 4.15 dog. · 5.51 end
+
+Onset and end now sit on the speech. "The" holding 0.13→1.24 is the fine-tune's known leading
+transient: it is loud, so it counts as speech, and the gap after it is skipped — the first word's
+*share* is right but its *start* is the transient. User: "It does seem better after your fix."
+
+**Forced alignment, since the desktop has one** (`Vernacula.Base.Alignment.NemoNfaAligner`):
+the Viterbi core (`CtcForcedAlignment.cs`, 189 lines) ports to TypeScript in an afternoon, but the
+acoustic model is `stt_en_fastconformer_hybrid_large_pc` — 458 MB fp32, ENGLISH ONLY, sentencepiece
+over English orthography. It cannot align Welsh, Japanese or the other 28 languages the demo
+offers, and it takes text, not IPA. A browser aligner for this demo would need a multilingual
+PHONEME-level CTC model (e.g. wav2vec2-xlsr-53-espeak-cv-ft, ~300 MB int8, emits espeak-style
+IPA) plus a symbol fold from vernacula-phonemizer's IPA onto its inventory. That is a separate
+spike: another download of the transformer's order of size, for a highlight bar.

@@ -17,7 +17,7 @@ import { Qwen3Tokenizer } from "./qwen3Tokenizer.ts";
 import { addPunctuation, prepare, NUM_CODEBOOKS } from "./textPrep.ts";
 import { estimateTargetTokens } from "./duration.ts";
 import { runDiffusion, DEFAULT_CONFIG, type GenConfig } from "./diffusion.ts";
-import { removeSilenceMapped, fadeAndPad, peakNormalize, PAD_SEC } from "./audioPost.ts";
+import { removeSilence, fadeAndPad, peakNormalize } from "./audioPost.ts";
 import { attributeWords, type WordTiming } from "./alignment.ts";
 
 export const SAMPLE_RATE = 24000;
@@ -221,16 +221,14 @@ export class OmniVoice {
     //
     // The desktop CLI keeps Python's behaviour exactly; this is a demo-only choice, made because a
     // demo with silent languages is worse than one that is not bit-faithful to the post-chain.
-    const rawSamples = audio.length;
     peakNormalize(audio, 0.5);
-    const cut = removeSilenceMapped(audio, SAMPLE_RATE, 500, 100, 100);
-    audio = fadeAndPad(cut.audio, SAMPLE_RATE);
+    audio = removeSilence(audio, SAMPLE_RATE, 500, 100, 100);
+    audio = fadeAndPad(audio, SAMPLE_RATE);
     peakNormalize(audio, 0.5);
 
-    // Word timings in FINAL-audio seconds: estimated over the raw audio, then carried through the
-    // silence cuts and the leading pad — see alignment.ts for what "estimated" means here.
-    const words: WordTiming[] = attributeWords(ipa, rawSamples, SAMPLE_RATE, cut.runs,
-                                               Math.trunc(PAD_SEC * SAMPLE_RATE));
+    // Word timings in FINAL-audio seconds: word shares placed on the speech-energy envelope of
+    // the finished audio — see alignment.ts for what "estimated" means here.
+    const words: WordTiming[] = attributeWords(ipa, audio, SAMPLE_RATE);
 
     return { audio, sampleRate: SAMPLE_RATE, words, targetTokens: target, generateMs, transformerMs, hostMs };
   }
