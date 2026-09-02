@@ -5,6 +5,13 @@
 // matching code arrays live in voice-codes.json, keyed by `id` — change an `id` here and you
 // must change it there too.
 //
+//
+// ⚠ TWO ENTRIES ARE FILED UNDER A VARIETY, NOT THE PLAIN CODE. FLEURS's Spanish is `es_419`
+//   (Latin American) and its Portuguese is `pt_br` (Brazilian) — those are different varieties, not
+//   accents of the same standard, so they are the NATIVE voice for `es-419`/`pt-BR` and a donor for
+//   Castilian `es` / European `pt`. FLEURS's Arabic is `ar_eg`, which is MSA read by an Egyptian
+//   speaker, so it stays the native `ar` voice.
+//
 // ⚠ refIpa is the IPA the model was TRAINED with for this clip. Do not re-phonemize it; it is
 //   what the model saw alongside these codes.
 // ⚠ `source` identifies the exact FLEURS clip, so a noisy exemplar can be traced and replaced:
@@ -77,7 +84,7 @@
   {"id":"en","lang":"en","label":"en · FEMALE · 8.0s","refIpa":"fɔːɹ ə fjˈuː pʰˈɛniz sˈʌm t͡ʃˈɪɫdɹən wɪɫ tʰˈɛɫ juː ðə stˈɔːɹi .","refLen":200,"refRms":0.01995,"source":{"dataset":"google/fleurs","lang":"en_us","file":"7690116150461205123.wav","split":"train","sentenceId":"729","gender":"FEMALE","durationS":8,"candidateIndex":0,"text":"For a few pennies some children will tell you the story."}},
   // es — es_419 train · MALE · 8.0s · candidate 0
   // "Luego de reconquistar Danelaw, Inglaterra había disfrutado de un prolongado período pacífico."
-  {"id":"es","lang":"es","default":true,"label":"es · MALE · 8.0s","refIpa":"lwˈeɣo ðe rekonkistˈaɾ ðanelˈaw , inɡlatˈera aβˈia ðisfɾutˈaðo ðe un pɾolonɡˈaðo peɾˈioðo pasˈifiko .","refLen":200,"refRms":0.05229,"source":{"dataset":"google/fleurs","lang":"es_419","file":"18193575960561485385.wav","split":"train","sentenceId":"382","gender":"MALE","durationS":8,"candidateIndex":0,"text":"Luego de reconquistar Danelaw, Inglaterra había disfrutado de un prolongado período pacífico."}},
+  {"id":"es","lang":"es-419","default":true,"label":"es-419 · MALE · 8.0s","refIpa":"lwˈeɣo ðe rekonkistˈaɾ ðanelˈaw , inɡlatˈera aβˈia ðisfɾutˈaðo ðe un pɾolonɡˈaðo peɾˈioðo pasˈifiko .","refLen":200,"refRms":0.05229,"source":{"dataset":"google/fleurs","lang":"es_419","file":"18193575960561485385.wav","split":"train","sentenceId":"382","gender":"MALE","durationS":8,"candidateIndex":0,"text":"Luego de reconquistar Danelaw, Inglaterra había disfrutado de un prolongado período pacífico."}},
   // et — et_ee train · MALE · 8.0s · candidate 0
   // "Paljudes maailma osades on lehvitamine sõbralik žest, mis tähistab teretust."
   {"id":"et","lang":"et","default":true,"label":"et · MALE · 8.0s","refIpa":"pˈɑljudes mˈɑːilmɑ ˈosɑdes ˈon lˈehvitɑmine sˈɤbrɑlik ʒˈest , mˈis tˈæhistɑb tˈeretust .","refLen":200,"refRms":0.02487,"source":{"dataset":"google/fleurs","lang":"et_ee","file":"4915450042861382568.wav","split":"train","sentenceId":"974","gender":"MALE","durationS":8,"candidateIndex":0,"text":"Paljudes maailma osades on lehvitamine sõbralik žest, mis tähistab teretust."}},
@@ -245,7 +252,7 @@
   {"id":"ps","lang":"ps","default":true,"label":"ps · MALE · 8.0s","refIpa":"pˈə nɑrəˈi kˈe d̪ˈə simˈe mosmˈi xorɑkˈonə jˈɑ d̪ˈə kˈorbə d͡zɑnəɡɻˈi xorˈɑk ʃˈɑməl ˈoɪ .","refLen":200,"refRms":0.00081,"source":{"dataset":"google/fleurs","lang":"ps_af","file":"5299111151456166817.wav","split":"train","sentenceId":"748","gender":"MALE","durationS":8,"candidateIndex":0,"text":"په ناری کې د سیمې موسمي خوراکونه یا د کوربه ځانګړي خوراک شامل وي."}},
   // pt — pt_br train · FEMALE · 8.0s · candidate 0
   // "Os computadores de hoje são usados para manipular fotos e vídeos."
-  {"id":"pt","lang":"pt","default":true,"label":"pt · FEMALE · 8.0s","refIpa":"os kõputadˈoɾis de ˈoʒi sˈɐ̃w̃ uzˈadus pˈaɾɐ manipulˈaɾ fˈotus e vˈid͡ʒjus .","refLen":200,"refRms":0.00853,"source":{"dataset":"google/fleurs","lang":"pt_br","file":"2959682152840307688.wav","split":"train","sentenceId":"611","gender":"FEMALE","durationS":8,"candidateIndex":0,"text":"Os computadores de hoje são usados para manipular fotos e vídeos."}},
+  {"id":"pt","lang":"pt-BR","default":true,"label":"pt-BR · FEMALE · 8.0s","refIpa":"os kõputadˈoɾis de ˈoʒi sˈɐ̃w̃ uzˈadus pˈaɾɐ manipulˈaɾ fˈotus e vˈid͡ʒjus .","refLen":200,"refRms":0.00853,"source":{"dataset":"google/fleurs","lang":"pt_br","file":"2959682152840307688.wav","split":"train","sentenceId":"611","gender":"FEMALE","durationS":8,"candidateIndex":0,"text":"Os computadores de hoje são usados para manipular fotos e vídeos."}},
   // ro — ro_ro train · FEMALE · 8.0s · candidate 0
   // "După sosirea reprezentantului oficial, apartamentul a explodat."
   {"id":"ro","lang":"ro","default":true,"label":"ro · FEMALE · 8.0s","refIpa":"ˈdupə sosiˈre̯a reprezentaˈntuluj ofiˈt͡ʃal , apartameˈntul ˈa eksploˈdat .","refLen":200,"refRms":0.0283,"source":{"dataset":"google/fleurs","lang":"ro_ro","file":"6221180769122890229.wav","split":"train","sentenceId":"211","gender":"FEMALE","durationS":8,"candidateIndex":0,"text":"După sosirea reprezentantului oficial, apartamentul a explodat."}},

@@ -40,7 +40,7 @@
  "an": {
   "name": "Aragonese",
   "sample": "Se dividen a mes a efectos administrativos en parroquias.",
-  "voice": "es"
+  "voice": "es-419"
  },
  "apc": {
   "name": "North Levantine Arabic",
@@ -226,12 +226,12 @@
  },
  "es": {
   "name": "Spanish (Castilian)",
-  "sample": "El tiempo está muy agradable hoy en la costa."
+  "sample": "El tiempo está muy agradable hoy en la costa.",
+  "voice": "es-419"
  },
  "es-419": {
   "name": "Spanish (Latin America)",
-  "sample": "Una caballería es una fuerza de combate montada a caballo.",
-  "voice": "es"
+  "sample": "Una caballería es una fuerza de combate montada a caballo."
  },
  "et": {
   "name": "Estonian",
@@ -240,7 +240,7 @@
  "eu": {
   "name": "Basque",
   "sample": "Hypancistrus contradens Hypancistrus generoko animalia da.",
-  "voice": "es"
+  "voice": "es-419"
  },
  "fa": {
   "name": "Persian",
@@ -289,7 +289,7 @@
  "gn": {
   "name": "Guaraní",
   "sample": "Opaite nunga tekove oikóva ipype oĩ Yjere Mbenĩ yrembe'ýre.",
-  "voice": "es"
+  "voice": "es-419"
  },
  "grc": {
   "name": "Ancient Greek",
@@ -537,7 +537,7 @@
  },
  "mto": {
   "name": "Totontepec Mixe",
-  "voice": "es"
+  "voice": "es-419"
  },
  "my": {
   "name": "Burmese",
@@ -559,7 +559,7 @@
  "nci": {
   "name": "Classical Nahuatl",
   "sample": "Ītech pōhui in tlācatl, auh momoloca in imman īmiyaquiliz.",
-  "voice": "es"
+  "voice": "es-419"
  },
  "ne": {
   "name": "Nepali",
@@ -600,7 +600,7 @@
  "pap": {
   "name": "Papiamentu",
   "sample": "E edificio tin un arkitectura unico den su sorto na Aruba.",
-  "voice": "es"
+  "voice": "es-419"
  },
  "pbt": {
   "name": "Pashto (Southern)",
@@ -627,21 +627,21 @@
  },
  "pt": {
   "name": "Portuguese (European)",
-  "sample": "O tempo está muito agradável hoje na costa."
+  "sample": "O tempo está muito agradável hoje na costa.",
+  "voice": "pt-BR"
  },
  "pt-BR": {
   "name": "Portuguese (Brazil)",
-  "sample": "Então, Lakkha Singh tomou a frente para cantar os bhajans.",
-  "voice": "pt"
+  "sample": "Então, Lakkha Singh tomou a frente para cantar os bhajans."
  },
  "qu": {
   "name": "Quechua",
   "sample": "Taytan: Samuel Nowlin Reeves, Jr.; Maman: Patricia Taylor.",
-  "voice": "es"
+  "voice": "es-419"
  },
  "quc": {
   "name": "K'iche'",
-  "voice": "es"
+  "voice": "es-419"
  },
  "rkt": {
   "name": "Rangpuri",

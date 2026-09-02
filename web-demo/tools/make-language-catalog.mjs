@@ -46,6 +46,12 @@ const rows = Object.entries(meta)
     const voice = nativeVoice.has(code) ? undefined : m.voice;
     if (!nativeVoice.has(code) && !voice)
       throw new Error(`${code} has neither a native voice nor a donor in language-meta.json`);
+    // ⚠ A donor that owns no voice is worse than no donor: `voiceFor` falls back to the ENGLISH
+    // voice, so the language would quietly be read by an English speaker with nothing in the UI
+    // saying so. This fired for real when the Spanish and Portuguese voices were re-filed under the
+    // varieties they actually are (es-419, pt-BR) and thirteen donors still pointed at es/pt.
+    if (voice && !nativeVoice.has(voice))
+      throw new Error(`${code}'s donor voice "${voice}" has no entry in voices.jsonc`);
     return {
       code, name: m.name,
       mb: Math.round(((dirs[code]?.bytes ?? 0) / 1e6) * 100) / 100,
