@@ -3,7 +3,7 @@ import { MODELS, NUM_STEPS } from "./inference/config.ts";
 import { DONOR_NAMES, LANGUAGE_BY_CODE, voiceLangOf, type LanguageOption } from "./inference/languages.ts";
 import { LanguagePicker } from "./LanguagePicker.tsx";
 import { phonemize } from "./inference/phonemizer.ts";
-import { OmniVoice, voiceFor, voicesFor, type Voice } from "./inference/omnivoice.ts";
+import { OmniVoice, parseJsonc, voiceFor, voicesFor, type Voice } from "./inference/omnivoice.ts";
 import type { WordTiming } from "./inference/alignment.ts";
 import { encodeWav } from "./inference/audioPost.ts";
 import { fetchModel } from "./inference/modelCache.ts";
@@ -47,11 +47,31 @@ export default function App() {
   const [stats, setStats] = useState<string>("");
   const [ep, setEp] = useState<string>("");
   const [voiceId, setVoiceId] = useState<string | undefined>();
-  const [langVoices, setLangVoices] = useState<Voice[]>([]);
+  /**
+   * The whole voice catalogue, fetched on mount.
+   *
+   * ⚠ NOT taken from the loaded engine, which is what it used to be. The engine only exists after
+   * the 472 MB model has downloaded, so the voice picker stayed hidden through the entire first
+   * session — you could not see which voices a language had until after you had already generated
+   * with one. Choosing a voice needs the metadata file (labels and languages), not the model.
+   */
+  const [allVoices, setAllVoices] = useState<Voice[]>([]);
   const engine = useRef<OmniVoice | null>(null);
   const voice = useRef<Voice | null>(null);
 
   useEffect(() => () => { if (audioUrl) URL.revokeObjectURL(audioUrl); }, [audioUrl]);
+
+  useEffect(() => {
+    let live = true;
+    fetch(MODELS.voicesUrl)
+      .then((r) => r.text())
+      .then((t) => { if (live) setAllVoices(parseJsonc<Voice[]>(t)); })
+      .catch(() => { /* the picker just stays hidden; generation still works */ });
+    return () => { live = false; };
+  }, []);
+
+  /** Voices offered for the selected language — its own, or its donor's. */
+  const langVoices = useMemo(() => voicesFor(allVoices, voiceLangOf(lang)), [allVoices, lang]);
 
   const langOpt = useMemo(() => LANGUAGE_BY_CODE.get(lang) as LanguageOption, [lang]);
   const trained = langOpt.trained === true;
@@ -72,7 +92,6 @@ export default function App() {
     });
     engine.current = ov;
     setEp(ov.backend.ep);
-    setLangVoices(voicesFor(ov.voices, voiceLangOf(lang)));
     return ov;
   }, [lang]);
 
@@ -90,7 +109,6 @@ export default function App() {
       // speaker's accent, so reusing an English voice for German is audibly wrong.
       const v = voiceFor(ov.voices, voiceLangOf(lang), voiceId);
       voice.current = v;
-      setLangVoices(voicesFor(ov.voices, voiceLangOf(lang)));
       const r = await ov.synthesize(out, v, { numStep: NUM_STEPS },
         (step, total) => setProgress({ stage: "generating", fraction: step / total, detail: `step ${step}/${total}` }));
 
@@ -147,7 +165,6 @@ export default function App() {
             // A voice belongs to a language; carrying one across would reintroduce the accent bleed
             // that per-language references exist to remove.
             setVoiceId(undefined);
-            setLangVoices(engine.current ? voicesFor(engine.current.voices, voiceLangOf(c)) : []);
           }} />
         </label>
         {langVoices.length > 1 && (
@@ -242,12 +259,14 @@ export default function App() {
           speech from an IPA fine-tune of <a href="https://huggingface.co/k2-fsa/OmniVoice">k2-fsa/OmniVoice</a>,
           quantized to <a href="https://huggingface.co/christopherthompson81/omnivoice-ipa-onnx">472 MB</a> and
           cached in your browser after the first load.
-          {/* ⚠ The MODEL WEIGHTS are NonCommercial — upstream licenses its code Apache-2.0 but its
-              pre-trained weights CC-BY-NC, "due to constraints from its training data". A visitor
-              who downloads 472 MB of weights through this page should be told before they build on
-              them. It says nothing about the phonemizer or this demo's own code. */}
-          {" "}The model weights are <a href="https://creativecommons.org/licenses/by-nc/4.0/">CC-BY-NC-4.0</a>:
-          free to use and share, not in a commercial product.
+          {/* ⚠ TWO UPSTREAMS, TWO LICENCES, and saying only the strict one would be wrong. The
+              TRANSFORMER weights are CC-BY-NC ("due to constraints from its training data").
+              The CODEC is not: OmniVoice ships Boson's tokenizer byte-identical (same sha256), so
+              it carries Boson's own community licence, which permits commercial use below 100k
+              annual active users. Neither says anything about the phonemizer or this demo's code. */}
+          {" "}The transformer weights are <a href="https://creativecommons.org/licenses/by-nc/4.0/">CC-BY-NC</a>;
+          the <a href="https://huggingface.co/bosonai/higgs-audio-v2-tokenizer">Higgs codec</a> is
+          Boson's, under its own licence.
         </p>
       </footer>
     </main>

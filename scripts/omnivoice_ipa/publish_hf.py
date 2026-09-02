@@ -181,30 +181,40 @@ failure byte-for-byte.
 
 ## Attribution & license
 
-⚠ **The weights in this repository are CC-BY-NC-4.0, not Apache-2.0.** Upstream draws the line
-between the two halves of its release, and everything here is on the restricted side:
+⚠ **This repo is licensed PER FILE, and the HuggingFace tag names only the strictest part.** The
+files come from two different upstreams with different terms, and treating them alike would either
+over-restrict the codec or under-restrict the transformer.
+
+| file | origin | licence |
+|---|---|---|
+| `omnivoice_transformer.onnx(.data)`, `ipa_diff.onnx`, `omnivoice_transformer_ipa.int4.onnx(.data)` | k2-fsa/OmniVoice pre-trained weights | **CC-BY-NC-4.0** |
+| `higgs_encoder.onnx`, `higgs_decoder.onnx` | [`bosonai/higgs-audio-v2-tokenizer`](https://huggingface.co/bosonai/higgs-audio-v2-tokenizer) | **Boson Higgs Audio 2 Community License** (commercial use permitted below 100k annual active users) |
+| `tokenizer.json` | the Qwen3 tokenizer | Apache-2.0 |
+
+**Why the codec is not NonCommercial.** Upstream's restriction is on what IT trained:
 
 > "Our code is released under the Apache 2.0 License. The pre-trained model is licensed under the
 > CC-BY-NC due to constraints from its training data (e.g., Emilia)."
 > — [`k2-fsa/OmniVoice`](https://huggingface.co/k2-fsa/OmniVoice)
 
-Every ONNX graph here — the base transformer, the IPA diff, the merged and quantized transformer,
-and the Higgs encoder/decoder — is a format conversion or a fine-tune of those pre-trained weights,
-so the NonCommercial term follows them. **Do not use these files in a commercial product.** An
-earlier version of this card said Apache-2.0; that was wrong, and it applied upstream's CODE licence
-to its weights.
+The codec is not among those parts. `audio_tokenizer/model.safetensors` inside the OmniVoice release
+is **byte-identical** to Boson's published tokenizer — sha256
+`fe7c5e8785e0a05833e1bfc3e002ec7f55af21e306b2e7154a448c1f54ccfb0d` on both — and OmniVoice ships
+Boson's LICENSE file beside it unchanged. Emilia never touched it, so it carries Boson's terms, not
+OmniVoice's.
 
-| file | licence |
-|---|---|
-| every `.onnx` / `.onnx.data` in this repo | CC-BY-NC-4.0 (derivative of the OmniVoice weights) |
-| `tokenizer.json` | Apache-2.0 (the Qwen3 tokenizer, upstream code artefact) |
-| the export and quantization scripts (in the vernacula repo) | Apache-2.0 |
+**What that means for codec OUTPUT.** Reference-voice codes (the few-KB arrays a cloning consumer
+ships instead of the 654 MB encoder) are produced by the Boson codec, not by the OmniVoice
+transformer. They are not encumbered by the NonCommercial term, and they do not need regenerating
+under a different model to be usable commercially. Whatever licence the source AUDIO carries still
+applies to them.
+
+An earlier version of this card said Apache-2.0 for everything. That was wrong twice over: it
+applied upstream's code licence to its weights, and it flattened two different upstreams into one.
 
 - The fine-tune was trained on codec tokens derived from [FLEURS](https://huggingface.co/datasets/google/fleurs) (CC-BY-4.0),
   transcribed to IPA with [vernacula-phonemizer](https://github.com/christopherthompson81/vernacula-phonemizer)
   (see the [token corpus dataset](https://huggingface.co/datasets/christopherthompson81/omnivoice-ipa-corpus)).
-  CC-BY-4.0 attribution is compatible with the NonCommercial term above; the more restrictive one
-  governs the combined artefact.
 """
 
 
