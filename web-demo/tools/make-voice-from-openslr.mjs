@@ -21,32 +21,42 @@ import { join, basename } from "node:path";
 const args = process.argv.slice(2);
 const opt = (k, d) => { const i = args.indexOf(`--${k}`); return i < 0 ? d : args[i + 1]; };
 const URL = opt("url"), LANG = opt("lang");
+/** Skip the download/extract step and read an already-prepared directory of audio + index. */
+const DIR = opt("dir");
 const N = Number(opt("n", 3)), SEP = opt("sep");   // unset = detect per line
 const MIN_SEC = Number(opt("min-sec", 4)), MAX_SEC = Number(opt("max-sec", 14));
 const ENCODER = opt("encoder", "/mnt/data/omnivoice_ipa/onnx_base/higgs_encoder.onnx");
 const PHONEMIZER = "../external/vernacula-phonemizer";
 const WORK = opt("work", `/tmp/slr-voices/${basename(URL ?? "x").replace(/\.\w+$/, "")}`);
-if (!URL || !LANG) { console.error("usage: --url <zip> --lang <demo code> [--n 3]"); process.exit(2); }
+if ((!URL && !DIR) || !LANG) { console.error("usage: (--url <zip> | --dir <path>) --lang <code> [--n 3]"); process.exit(2); }
 
 mkdirSync(join(WORK, "wav"), { recursive: true });
-const archive = join(WORK, basename(URL));
-if (!existsSync(archive)) {
-  console.log(`  fetching ${basename(URL)}…`);
-  execFileSync("curl", ["-sfL", "--max-time", "3600", URL, "-o", archive]);
+if (!DIR) {
+  const archive = join(WORK, basename(URL));
+  if (!existsSync(archive)) {
+    console.log(`  fetching ${basename(URL)}…`);
+    execFileSync("curl", ["-sfL", "--max-time", "3600", URL, "-o", archive]);
+  }
+  console.log(`  ${(statSync(archive).size / 1e6).toFixed(0)} MB; extracting…`);
+  if (!existsSync(join(WORK, "x"))) {
+    mkdirSync(join(WORK, "x"), { recursive: true });
+    if (archive.endsWith(".zip")) execFileSync("unzip", ["-qo", archive, "-d", join(WORK, "x")]);
+    else execFileSync("tar", ["-xf", archive, "-C", join(WORK, "x")]);
+  }
 }
-console.log(`  ${(statSync(archive).size / 1e6).toFixed(0)} MB; extracting…`);
-if (!existsSync(join(WORK, "x"))) {
-  mkdirSync(join(WORK, "x"), { recursive: true });
-  if (archive.endsWith(".zip")) execFileSync("unzip", ["-qo", archive, "-d", join(WORK, "x")]);
-  else execFileSync("tar", ["-xf", archive, "-C", join(WORK, "x")]);
-}
+const ROOT = DIR ?? join(WORK, "x");
 
 /** Every file under a directory, recursively. */
 const walk = (d) => readdirSync(d, { withFileTypes: true }).flatMap((e) =>
   e.isDirectory() ? walk(join(d, e.name)) : [join(d, e.name)]);
-const files = walk(join(WORK, "x"));
-const wavs = new Map(files.filter((f) => /\.(wav|flac|mp3|opus)$/i.test(f))
-  .map((f) => [basename(f).replace(/\.\w+$/, ""), f]));
+const files = walk(ROOT);
+// ⚠ Keyed BOTH ways: some indexes name the file with its extension ("sentence_kaa00000001.wav"),
+// others without it. Registering only the stem made a Karakalpak CSV look like a total mismatch.
+const wavs = new Map();
+for (const f of files.filter((x) => /\.(wav|flac|mp3|opus)$/i.test(x))) {
+  wavs.set(basename(f), f);
+  wavs.set(basename(f).replace(/\.\w+$/, ""), f);
+}
 
 /**
  * ⚠ THE ID IN THE INDEX NEED NOT BE THE FILENAME. Tibetan (SLR158) keys its transcripts
@@ -146,7 +156,7 @@ for (const [i, c] of scored.slice(0, N).entries()) {
       id, lang: LANG, ...(i === 0 ? { default: true } : {}),
       label: `${LANG} · ${c.sec.toFixed(1)}s`,
       refIpa: v.refIpa, refLen: v.refLen, refRms: Number(v.refRms.toFixed(5)),
-      source: { dataset: `openslr:${basename(URL)}`, lang: LANG, file: c.id, split: "all",
+      source: { dataset: URL ? `openslr:${basename(URL)}` : `dir:${basename(ROOT)}`, lang: LANG, file: c.id, split: "all",
                 sentenceId: null, gender: "", durationS: Number(c.sec.toFixed(1)),
                 candidateIndex: i, text: c.text },
     },

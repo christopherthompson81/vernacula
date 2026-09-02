@@ -22,7 +22,7 @@
  "ajp": {
   "name": "South Levantine Arabic",
   "sample": "يجمع الإنترنت بين عناصر كلٍّ من التواصل الجماهيري والشخصي.",
-  "voice": "ar"
+  "voice": "apc"
  },
  "ak": {
   "name": "Akan",
@@ -272,8 +272,7 @@
  },
  "grc": {
   "name": "Ancient Greek",
-  "sample": "Στοιχεία όπως το ασβέστιο και το κάλιο θεωρούνται μέταλλα.",
-  "voice": "el"
+  "sample": "Στοιχεία όπως το ασβέστιο και το κάλιο θεωρούνται μέταλλα."
  },
  "gu": {
   "name": "Gujarati",
@@ -418,8 +417,7 @@
  },
  "la": {
   "name": "Latin",
-  "sample": "Gallia est omnis divisa in partes tres.",
-  "voice": "it"
+  "sample": "Gallia est omnis divisa in partes tres."
  },
  "lb": {
   "name": "Luxembourgish",
@@ -614,7 +612,7 @@
  "rn": {
   "name": "Kirundi",
   "sample": "Brasserie y'i Gitega akaba ariyo ikora ico kinyobwa cane.",
-  "voice": "lg"
+  "voice": "rw"
  },
  "ro": {
   "name": "Romanian",

@@ -52,6 +52,27 @@ if (!DATASET || !LANG) { console.error("usage: --dataset <id> --lang <demo code>
 mkdirSync(join(WORK, "wav"), { recursive: true });
 const ROWS = "https://datasets-server.huggingface.co/rows";
 
+/**
+ * HuggingFace token, for datasets behind an accept-the-terms gate.
+ *
+ * ⚠ PASSED THROUGH A CURL CONFIG FILE, NEVER ON THE COMMAND LINE. Anything in argv is visible in
+ * `ps` to every process on the machine, and this is a credential. The file is written 0600 into the
+ * work directory and removed on exit. It is only ever sent to huggingface.co hosts.
+ */
+const TOKEN = (() => {
+  if (process.env.HF_TOKEN) return process.env.HF_TOKEN.trim();
+  const f = join(process.env.HOME ?? "", ".cache/huggingface/token");
+  try { return readFileSync(f, "utf8").trim(); } catch { return ""; }
+})();
+const CURLRC = join(WORK, ".curlrc");
+if (TOKEN) {
+  writeFileSync(CURLRC, `header = "Authorization: Bearer ${TOKEN}"\n`, { mode: 0o600 });
+  process.on("exit", () => { try { execFileSync("rm", ["-f", CURLRC]); } catch { /* best effort */ } });
+}
+/** curl args for a huggingface.co or datasets-server URL. */
+const auth = (url) => TOKEN && /(^https:\/\/)([\w.-]*\.)?(huggingface\.co|hf\.co)\//u.test(url)
+  ? ["--config", CURLRC] : [];
+
 /** The scripts the phonemizer declares for this language — a transcript in the wrong script would
  *  become confident nonsense as the reference text. Same check the Common Voice tool makes. */
 function declaredScripts(lang) {
@@ -80,7 +101,8 @@ for (let offset = 0; offset < SCAN; offset += 100) {
   const url = `${ROWS}?dataset=${encodeURIComponent(DATASET)}&config=${encodeURIComponent(CONFIG)}`
             + `&split=${encodeURIComponent(SPLIT)}&offset=${offset}&length=100`;
   let page;
-  try { page = JSON.parse(execFileSync("curl", ["-sfL", "--max-time", "120", url], { encoding: "utf8", maxBuffer: 1 << 28 })); }
+  try { page = JSON.parse(execFileSync("curl", ["-sfL", "--max-time", "120", ...auth(url), url],
+                                        { encoding: "utf8", maxBuffer: 1 << 28 })); }
   catch { break; }
   const rows = page.rows ?? [];
   if (!rows.length) break;
@@ -137,7 +159,7 @@ for (const [i, c] of candidates.entries()) {
   try {
     if (!existsSync(wav)) {
       const raw = join(WORK, `c${i}.src`);
-      execFileSync("curl", ["-sfL", "--max-time", "180", c.src, "-o", raw]);
+      execFileSync("curl", ["-sfL", "--max-time", "180", ...auth(c.src), c.src, "-o", raw]);
       execFileSync("ffmpeg", ["-v", "error", "-y", "-i", raw, "-ac", "1", "-ar", "24000", "-sample_fmt", "s16", wav]);
     }
   } catch { continue; }
