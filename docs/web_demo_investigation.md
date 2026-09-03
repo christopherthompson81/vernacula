@@ -1198,3 +1198,296 @@ case: CC BY audio exists on Wikimedia Commons and no transcript for it exists an
 
 ⚠ Mozilla Data Collective requires terms accepted **per dataset, in a browser**, with no API route
 and a rate limit of about one per minute. Budget for that before planning a CV-26 sweep.
+
+## Run 25 — 2026-09-02 10:30, the listening sweep: 318 pairs, and "bad voice" was the wrong diagnosis
+
+**Question:** a listening pass over the demo turned up eleven languages that sounded wrong (an, bal,
+fr-CA, grc, kl, mos, mto, pcm, pnb, rup, si), most of them "short, possibly broken". Which voices
+need re-sourcing — and how does a sweep cover everything without missing what has not been heard yet?
+
+### The sweep has to enumerate PAIRS, not languages
+
+`preview-langs.mjs` renders one clip per language. That is right while sourcing one voice and wrong
+for an audit: 66 of the 193 languages carry more than one voice, so a per-language pass hears **193
+of the 318 pairs a visitor can reach** and silently never plays the other 125. The demo offers every
+voice its language owns, so every voice is reachable and every voice has to be rendered.
+
+### Driving the C# CLI instead of the browser, which needed one small fix
+
+318 puppeteer round-trips need a dev server, a tab, and the reload-after-editing-voices.jsonc
+discipline that has already caused one wrong result this campaign. The CLI is a scriptable loop —
+but `--voice` takes a WAV to encode, and **the demo's 288 voices exist only as codes**; the source
+audio is deliberately not in the repo. So the CLI could not reach a single voice the demo ships.
+
+`--voice-lib` / `--voice-id` closes that: it loads the stored codes and the stored `refIpa` directly,
+which also skips the 654 MB encoder entirely. Parity with the browser is exact — the same codes, the
+same `AddPunctuation(refIpa)`, the same estimator on `refLen`.
+
+⚠ **The stored IPA must not be re-phonemized.** It was produced by the phonemizer when the voice was
+encoded; running it through again reads IPA as if it were orthography. The loader also checks that
+`codes.length == refLen × 8` rather than trusting it — a flat array reshaped against the wrong
+`refLen` still yields a valid-looking [8, T] block, and the failure would be audible rather than
+raised.
+
+### ⚠ TWO DIFFERENT DEFECTS WEAR THE SAME SYMPTOM, and the first two hypotheses were both wrong
+
+**Hypothesis 1, short references.** 51 voices have `refLen` under 125 (5 s), and six of the seven
+"short" languages were among them. It looked decisive and it is not: `pnb` has references of 7.8,
+6.1 and 11.2 s and one of its three still came out at 0.9 s.
+
+⚠ A related near-miss: stored codes cover a median **0.927** of their source duration, and the worst
+is 0.63. That reads like truncation and is not — it is the silence removal that runs before encoding.
+Reporting it as a defect was one measurement away.
+
+**Hypothesis 2, the duration estimator.** Also wrong, and the numbers say so plainly:
+
+    pnb-omnili0   ref 195 codes   target 224 tokens (~9s)   ->  0.9s audio
+    pnb-omnili1   ref 152 codes   target 242 tokens (~9s)   ->  6.6s audio
+
+Both ASKED for about nine seconds. The estimate is fine; the model emitted near-silence for one pair
+and the post-processing silence removal then collapsed it.
+
+**What it actually is.** The same voice, on longer text:
+
+    pnb-omnili0   target 513 tokens  ->  17.5s audio, clean
+    pnb-omnili1   target 554 tokens  ->  20.7s audio, clean
+
+So `pnb-omnili0` is a perfectly good voice that fails on ONE short sentence. The trigger is the
+(voice, text) pair, not the voice — and generation is greedy, so each failure is deterministic and
+reproduces byte-for-byte. Re-sourcing that voice would have "fixed" it by changing the pairing, and
+taught us the wrong lesson.
+
+⚠ This is adjacent to the documented short-input limitation but is NOT it: that one is about having
+no reference at all, and says a reference fixes it. Here there IS a reference and the target is ~9 s,
+which is inside the corpus distribution. Worth its own investigation before any voice is re-sourced.
+
+### The instrument
+
+`tools/preview-all.mjs` renders all 318 into one folder, resumable, and writes `manifest.tsv` plus an
+`index.html` that plays each clip and **remembers which have been listened to** — the actual problem,
+which is not "is this one bad" but "which have I not heard yet". Ticks persist in localStorage and a
+clip marks itself heard when it finishes playing, so an interrupted pass does not restart.
+
+Duration is flagged without listening, against the band `trim-to-sentences.mjs` already calibrated
+(4-30 source characters per second): a clip shorter than `chars/30` cannot contain its sentence
+whatever it sounds like. That catches every one of the reported "short" cases automatically.
+
+⚠ It also caught one that was NOT reported. Reading "mon" as Mongolian was wrong — the report meant
+`mos`, Mossi — but rendering `mn` anyway found it at **0.0 s, near silence**, a language nobody had
+flagged. A sweep that enumerates everything finds the ones no one thought to listen to; that is the
+entire argument for it over a worklist.
+
+### The actual cause of seven of the eleven: a HASH where the transcript should be
+
+Applying the speaking-rate check to the reference library itself — IPA characters per second of
+reference audio, the same instrument `trim-to-sentences.mjs` uses on candidate clips — separates the
+population immediately. Median **10.9 ch/s**, comfortably inside the 6.4-13.7 band measured across
+the shipped references. Then a tail that is not close:
+
+    ipk-common_voice_ipk_42125276    228.8 ch/s     714 IPA chars in  3.1s
+    zoc-common_voice_zoc_42292046    185.3 ch/s     578 IPA chars in  3.1s
+    dag-common_voice_dag_43575127    158.2 ch/s     576 IPA chars in  3.6s
+
+**21 of 288 voices carry a 64-hex hash in place of their transcript**, phonemized into hundreds of
+numeral words. Mossi's Dagbani reference reads as a wall of `tus kobs pis miljõ` — the engine
+faithfully speaking a hexadecimal number — against 5.6 s of audio. The duration estimator is a ratio
+of target IPA to reference IPA, so a reference transcript 15× too long drives the target to **26
+tokens** for a 57-character sentence. One second of audio, exactly as reported.
+
+The affected voice-languages are `an bal dag fr-CA ipk rup zoc`, which is the reported list once the
+three donors are followed: kl←ipk, mos←dag, mto←zoc. **Seven of seven "short, possibly broken"
+languages, one cause.**
+
+⚠ CORRECTED IN RUN 27 — the first attribution here was wrong. I blamed `parquet-clips.py`'s
+name-ordered `pick([...])` on the strength of every bad voice carrying `dataset: "dir:*"`. The `dir:`
+path is `make-voice-from-openslr.mjs --dir`, and the defect is its rule for choosing the transcript
+column: **"the transcript is the longest other column"**. Common Voice's `validated.tsv` leads with
+`client_id`, a 128-character hex speaker identifier, longer than most sentences. All 21 stored strings
+are exactly 128 hex characters. Plausible cause, wrong file — see Run 27 for the measurement that
+settled it.
+
+### Still open, and NOT this cause
+
+`grc` (poor sound), `pcm` (broken), `si` (partially broken) and `pnb-omnili0` all have healthy
+transcripts and healthy rates. `pnb-omnili0` is the near-silence case above and renders 17.5 s cleanly
+on longer text, so it is not a voice defect at all. These need the listening pass, which is what the
+sweep is for.
+
+## Run 26 — 2026-09-02 11:40, the listening pass, and 91 verdicts that were the instrument's fault
+
+All 318 clips reviewed by ear (`/tmp/listen-all/listen_samples.out`). 173 acceptable, 145 not — which
+looked like a great deal of voice work.
+
+### ⚠ THE INSTRUMENT WAS WRONG, AND `refRms` SAYS SO IN ONE TABLE
+
+Joining each verdict to its voice's stored reference RMS separates the population without ambiguity:
+
+    verdict              median refRms    source
+    acceptable              0.0853        mixed
+    "too quiet"             0.0244        46 of 55 FLEURS
+    "inaudible/silence"     0.0072        24 of 24 FLEURS
+    "58 bytes" (empty)      0.0017        12 of 12 FLEURS
+    "short"                 0.0839        normal — a DIFFERENT defect
+
+A 50× spread in reference loudness, monotone with severity, and every catastrophic case from one
+corpus. That is not 91 bad voices; it is one gain stage.
+
+The CLI applies Python's `_post_process_audio`: `Scale(audio, refRms / 0.1)` when `refRms < 0.1`,
+un-boosting a reference that `EncodeReference` boosted for being quiet. **Our references were never
+boosted** — they were encoded from source audio — so the un-boost undoes something that never
+happened, and FLEURS is simply quiet. Measured:
+
+    af   python peak 0.012   demo peak 0.500      42x
+    am   python peak 0.007   demo peak 0.500      71x
+    om   python EMPTY (0.0s) demo peak 0.500      the un-boost drove it under the silence threshold,
+                                                  and RemoveSilence then deleted the utterance
+
+⚠ **THE BROWSER ALREADY FIXED THIS AND SAID SO IN A COMMENT I HAD READ.** `omnivoice.ts` normalises
+BEFORE silence removal and again after the fade, and its comment names Oromo's rms 0.0017 and the
+0.0 s outcome exactly — closing with "the desktop CLI keeps Python's behaviour exactly; this is a
+demo-only choice". Choosing the CLI to audit the DEMO therefore audited a different post-chain, and
+the reviewer spent a full listening pass on 91 clips the deployed page plays fine.
+
+`--post demo|python` now selects the chain; `python` stays the default because Python parity is
+deliberate. `preview-all.mjs` always passes `--post demo`: what is being audited is what a visitor
+hears. The re-render carries the existing verdicts into the index and marks the level-artefact ones
+"re-listen", so the 173 good judgements are not spent twice.
+
+⚠ The lesson is not "check the post-chain". It is that **a sweep tool inherits the defaults of
+whatever it drives**, and those defaults were documented as differing, in a file this campaign had
+already edited. The parity claim ("same codes, same IPA, same estimator") was true and did not cover
+the output stage.
+
+### What is actually left: 64 verdicts, four causes
+
+    hex transcript   21   an bal fr-CA kl mos mto rup     — Run 25's parquet-clips.py column bug
+    noise/artefact   30   acw afb apd cjy cy ee grc he ka pcm sd sr su te ur …
+    short             6   en-GB hy ky pnb sl              — genuinely short or mis-cut references
+    other             7   donor fit (chr), odd prosody (hak), laughter (pnb), sample text (nan)
+
+The noise bucket is the real remaining work and is not one cause: clicks at clip edges, room tone,
+throat-clearing and breath left in by candidate scoring that measures noise FLOOR and speech
+FRACTION but cannot hear an event. `pnb-omnili2` is laughter. Those need cutting, which is the
+manual involvement the reviewer asked for — but on ~35 voices, not 145.
+
+## Run 27 — 2026-09-02 13:20, the hex transcript: one bad rule, and four bugs hiding behind it
+
+Run 25 blamed `parquet-clips.py`'s name-ordered `pick([...])` because every affected voice carried
+`dataset: "dir:*"`. ⚠ **Wrong file.** The `dir:` path is `make-voice-from-openslr.mjs --dir`, and its
+rule was:
+
+    // the transcript is the longest other column
+    const t = parts.filter((p) => p !== id).sort((a, b) => b.length - a.length)[0];
+
+Common Voice's `validated.tsv` leads with `client_id`, a **128-character hex speaker identifier**,
+longer than any sentence in these locales. All 21 stored strings are exactly 128 hex characters —
+the measurement that settled it, and one I could have made before writing Run 25.
+
+The phonemizer then read the hash as a hexadecimal NUMBER: 700 characters of numeral words against a
+5 s clip. The duration estimator is a ratio of target IPA to reference IPA, so every clip those seven
+languages rendered came out about a second long.
+
+**The fix is to stop ranking by length.** The header names the column — Common Voice, Vaani and MDC
+all declare theirs — so a declared name is preferred, and where there is no header the longest column
+that is not an IDENTIFIER wins (hex hash, base64-ish with no spaces, or no letters at all). Verified
+both ways on a Common Voice-shaped fixture before touching real data.
+
+⚠ **`client_id` SHOULD NEVER HAVE BEEN IN THE REPO**, and `make-voice-from-commonvoice.mjs` says so
+in its own comment — "the 64-hex sentence id is truncated and client_id is dropped: neither belongs
+in a repo". The `--dir` path had no such guard. It is a stable per-speaker handle; it is public in
+Mozilla's CC0 release, but it is in git history at `aa381ee` and removing it from HEAD does not
+purge that.
+
+### Four more bugs, three of them older than this one
+
+  · `merge-cv-voices.mjs` removed a replaced voice's JSON line but NOT the `// "<transcript>"` comment
+    above it. Cosmetic drift normally; here it would have left the client_id in the file after a
+    "successful" repair. 42 hex strings, not 21 — the field and the comment.
+  · ⚠ AND ITS REPLACE MATCHED NOTHING AT ALL. `\{"id":"(${lang}-[\w-]+)"` — `[\w-]` does not match a
+    dot, and every Common Voice id ends `.mp3`. The id was captured up to the dot, the removal regex
+    then matched nothing, and the merge APPENDED: 288 voices became 309, every client_id still there,
+    and the tool reported success. Caught only by counting the file afterwards. The captured id is
+    also interpolated into a regex, so its dots are now escaped too.
+  · `voice-codes.json` was never pruned when a voice was replaced. 15 orphans.
+  · The batch script's `find /tmp/mdc/$lang -maxdepth 3 -type d -name "$lang"` matches
+    `/tmp/mdc/$lang` ITSELF, so `rm` of the rejected-row TSVs hit nothing and `invalidated.tsv` was
+    read alongside `validated.tsv`. **Aragonese had been selected from a pool including readings
+    listeners rejected.** Re-encoded from validated rows only.
+  · Mine, and it looked like a parser failure: the rm list assumed `validated.tsv` exists. The fr-CA
+    export ships only `dev/test/train` — which ARE validated subsets — so deleting them left the
+    locale with no transcripts and "0 transcripts matched". Strip those only when validated.tsv is
+    present.
+
+### Where it landed
+
+    288 voices, 0 hex client_ids (0 in comments too), codes 0 orphans / 0 missing
+    reference speaking rate: median 10.6 IPA ch/s, over-20 outliers 32 -> 11 (the rest dense scripts)
+    the 21 clips now render 3.0-9.3 s where they rendered 0.4-1.6 s
+
+⚠ And the sweep's own duration flag was wrong for six of the seven it still raised. The band is in
+SOURCE characters, and one Han character is a syllable — a 12-character Mandarin sentence takes 3.5 s
+legitimately. Exactly the finding corpus Run 51 recorded from the other direction. The floor is now
+relaxed for syllabic and logographic scripts; 318 clips, **one** flag left, and it is `pnb-omnili0`,
+already shown in Run 25 to be a good voice that fails on one short sentence.
+
+## Run 28 — 2026-09-02 15:10, trimming reference edges: 19 flagged voices, 150 changed
+
+The re-listen put 252 of 318 clips at "good". Consolidating the remaining 66 by VOICE rather than by
+clip — several defects were counted twice because `arz` plays `ar`'s voice, `cjy` plays `cmn`'s,
+`chr` the English reference, `za` plays `th`'s — leaves **52 distinct voices**, of which 19 were
+edge defects: noise, a throat-clear, an unvoiced burst, silence.
+
+### The edge can be cut without the source audio, because the codec is invertible
+
+The demo ships voices as codes only; the WAVs are deliberately not in the repo, so there is nothing to
+re-trim and re-encode. But `higgs_decoder` turns [8, refLen] codes back into audio at **exactly 960
+samples per frame**, so the edges can be MEASURED on decoded audio and CUT on the code frames they
+correspond to. 40 ms of granularity, no encoder, no download.
+
+### ⚠ THE FIRST DETECTOR WAS WRONG IN BOTH DIRECTIONS AT ONCE
+
+"Strip leading runs under 400 ms" marched inward through real words — en, fi and cmn each wanted
+41-49% of the clip cut, and only the damage guard stopped it. At the same time `ca`'s trailing silence
+SURVIVED, because three stray frames of room tone above the threshold read as a speech run and
+anchored the span. One missing idea fixed both: a run must last at least 150 ms before it counts as
+speech. Blips stop anchoring; the body stops being eaten.
+
+### And the guard was rejecting a CORRECT trim, which is how the real finding surfaced
+
+    en:  speech 1.82-5.82s  inside an 8.00s reference
+    fi:  speech 1.97-7.39s
+    cmn: speech 0.95-6.58s
+
+A 49% cut on `en` is right — the reference is half silence. Measured across the library:
+
+    fleurs  n=102   median lead 300ms  trail 470ms   28 voices over 25% silence   worst sv 55%
+    other   n=186   median lead 100ms  trail 190ms    0 voices over 25%
+
+⚠ **NO FLEURS VOICE EVER HAD ITS SILENCE REMOVED.** `make-voices.mjs`, the WAV path, runs
+`removeSilence(mid 200 / lead 100 / trail 200)` before encoding. `make-voices-from-corpus.mjs` reads
+codes straight from the corpus `.npz` and bypasses it entirely — the corpus encoded whole utterances,
+which is right for training and wrong for a reference. 102 voices, one missing call, and it is
+invisible in every artifact: the codes are valid, the transcript matches, the QC scores pass. It shows
+up only as a clone that pauses before speaking, in every sentence that language ever says.
+
+⚠ AND IT WOULD NOT HAVE BEEN FOUND FROM THE REVIEWED LIST. Only 19 voices were flagged by ear; 28 more
+carry over a quarter silence and nobody noticed, because a slow start does not sound broken — it
+sounds like a slow speaker. The measurement found what listening did not.
+
+### Two operations, and only one of them is structurally safe
+
+Cutting frames OUTSIDE the first and last qualifying speech run cannot remove speech — that is what
+"qualifying" means — so it needs no fraction guard however much it takes. Dropping a detached short
+burst is a judgement about what that burst IS, so it stays opt-in behind `--drop-events` and keeps a
+speaking-rate check. The blanket "reject a cut over 35%" of the first version was rejecting the
+correct answer on exactly the worst cases.
+
+### Where it landed
+
+    150 voices trimmed (min cut 200 ms; 89 more were under it and left alone)
+    reference audio 2092s -> 1892s — 200 seconds of silence removed
+    refLen/codes mismatches 0, voices 288, codes 288
+    median reference rate 10.6 -> 11.9 IPA ch/s
+
+⚠ The guards bound the damage; they do not prove a cut is right. 170 clips are re-rendering for a
+listening pass, and the before/after WAVs are in /tmp/trim-preview.
