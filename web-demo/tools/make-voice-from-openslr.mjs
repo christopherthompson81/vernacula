@@ -91,21 +91,64 @@ const indexes = files.filter((f) => /line_index|label|\.tsv$|\.csv$|\.txt$|metad
                                  && !/readme|wav\.scp/i.test(f) && !/\.(wav|flac|mp3|opus)$/i.test(f));
 console.log(`  ${wavs.size} audio files, ${indexes.length} index file(s)`);
 
+/**
+ * Is this field an OPAQUE IDENTIFIER rather than a transcript?
+ *
+ * ⚠ THIS GUARD EXISTS BECAUSE ITS ABSENCE SHIPPED 21 BROKEN VOICES AND A PII LEAK. The rule used to
+ * be "the transcript is the longest other column", and Common Voice's `validated.tsv` leads with
+ * `client_id` — a 128-character hex SPEAKER IDENTIFIER, longer than most sentences. So seven locales
+ * (an, bal, dag, fr-CA, ipk, rup, zoc) took the speaker hash as their reference transcript. The
+ * phonemizer then read it as a hexadecimal NUMBER, turning a 5 s reference into 700 characters of
+ * numeral words; the duration estimator is a ratio against that, so every clip those voices rendered
+ * came out about a second long. And `client_id` does not belong in this repo at all — the Common
+ * Voice sourcing tool says so in its own comment.
+ *
+ * Length is exactly the wrong signal. Content is the right one.
+ */
+const isIdentifier = (v) => /^[0-9a-f]{16,}$/iu.test(v)          // hex hash: client_id, sentence_id
+  || /^[A-Za-z0-9_+/=-]{24,}$/u.test(v) && !/\s/u.test(v)        // base64-ish, no spaces
+  || !/\p{L}/u.test(v);                                          // no letters at all
+
+/**
+ * Column names corpora use for the transcript. ⚠ Preferred over ANY heuristic when the file has a
+ * header: Common Voice, Vaani and the Mozilla Data Collective exports all name their columns, and a
+ * declared name beats a guess about content every time.
+ */
+const TEXT_COLS = ["sentence", "transcript", "transcription", "text", "raw_text", "normalized_text"];
+
 // id -> transcript, from whichever index files the corpus ships.
 const text = new Map();
 for (const idx of indexes) {
-  for (const line of readFileSync(idx, "utf8").split("\n")) {
+  const lines = readFileSync(idx, "utf8").split("\n");
+  // Header, if the first line names a transcript column and does NOT itself point at an audio file.
+  let textCol = -1, idCol = -1;
+  {
+    const first = lines.find((l) => l.trim()) ?? "";
+    const sep0 = SEP ?? (first.includes("\t") ? "\t" : ",");
+    const head = first.split(sep0).map((h) => h.trim().replace(/^"|"$/gu, "").toLowerCase());
+    if (!head.some((h) => wavs.has(h))) {
+      textCol = head.findIndex((h) => TEXT_COLS.includes(h));
+      idCol = head.findIndex((h) => ["path", "file", "filename", "audio", "wav", "id", "utt_id"].includes(h));
+    }
+  }
+  if (textCol >= 0) console.log(`  ${idx.split("/").pop()}: header names column ${textCol} as the transcript`);
+  for (const [ln, line] of lines.entries()) {
     if (!line.trim()) continue;
     // Detect the separator per line: a tab when the line has one, else a comma. Passing the wrong
     // one silently yields a single field that matches no audio id — which is how Sundanese came
     // back with "0 transcripts matched" from a perfectly good TSV.
     const sep = SEP ?? (line.includes("\t") ? "\t" : ",");
-    const parts = line.split(sep).map((s) => s.trim().replace(/^"|"$/g, ""));
-    // The id is whichever column matches a wav we have; the transcript is the longest other column.
-    const id = parts.find((p) => wavs.has(p));
+    const parts = line.split(sep).map((s) => s.trim().replace(/^"|"$/gu, ""));
+    if (textCol >= 0 && ln === 0) continue;                       // the header row itself
+    const id = (idCol >= 0 && wavs.has(parts[idCol])) ? parts[idCol] : parts.find((p) => wavs.has(p));
     if (!id) continue;
-    const t = parts.filter((p) => p !== id).sort((a, b) => b.length - a.length)[0];
-    if (t && t.length > 3) text.set(id, t);
+    let t;
+    if (textCol >= 0) t = parts[textCol];
+    else {
+      // No header: the longest column that is not an identifier and not the id itself.
+      t = parts.filter((p) => p !== id && !isIdentifier(p)).sort((a, b) => b.length - a.length)[0];
+    }
+    if (t && t.length > 3 && !isIdentifier(t)) text.set(id, t);
   }
 }
 console.log(`  ${text.size} transcripts matched to audio`);

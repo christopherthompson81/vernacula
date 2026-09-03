@@ -39,6 +39,8 @@ internal static class Program
         string? text = null, textFile = null, outPath = null;
         string? lang = null, refLang = null;
         string? voicePath = null, refText = null;
+        string? voiceLib = null, voiceId = null;
+        string post = "python";
         string? onnxDir = Environment.GetEnvironmentVariable("OMNIVOICE_ONNX_DIR");
         string? modelDir = Environment.GetEnvironmentVariable("OMNIVOICE_MODEL_DIR");
         string? tokenizerJson = null, dataDir = null;
@@ -66,6 +68,9 @@ internal static class Program
                     case "--lang":            lang            = Next(args[i], i); i++; break;
                     case "--ref-lang":        refLang         = Next(args[i], i); i++; break;
                     case "--voice":           voicePath       = Next(args[i], i); i++; break;
+                    case "--voice-lib":       voiceLib        = Next(args[i], i); i++; break;
+                    case "--voice-id":        voiceId         = Next(args[i], i); i++; break;
+                    case "--post":            post            = Next(args[i], i); i++; break;
                     case "--ref-text":        refText         = Next(args[i], i); i++; break;
                     case "--onnx-dir":        onnxDir         = Next(args[i], i); i++; break;
                     case "--model-dir":       modelDir        = Next(args[i], i); i++; break;
@@ -104,6 +109,13 @@ internal static class Program
         }
 
         // ── Validate ──────────────────────────────────────────────────────────────────────────
+        if (voiceId == "list")
+        {
+            try { StoredVoice.Load(voiceLib ?? Path.Combine(AppContext.BaseDirectory,
+                      "..", "..", "..", "..", "..", "web-demo", "public", "models"), "list"); }
+            catch (Exception ex) { Console.Error.WriteLine(ex.Message); return 1; }
+            return 0;
+        }
         if (text is null == (textFile is null))
         {
             Console.Error.WriteLine("Give exactly one of --text or --text-file.");
@@ -142,6 +154,24 @@ internal static class Program
             Console.Error.WriteLine("Voice cloning needs the reference transcript: pass --ref-text \"...\". "
                 + "(With --ipa it must itself be IPA; otherwise it is phonemized with --ref-lang, "
                 + "defaulting to --lang.)");
+            return 2;
+        }
+        if (voiceId is not null && voicePath is not null)
+        {
+            Console.Error.WriteLine("--voice-id and --voice are two ways to give the same thing: "
+                + "a stored voice, or a WAV to encode. Pass one.");
+            return 2;
+        }
+        if (voiceId is not null && refText is not null)
+        {
+            Console.Error.WriteLine("--ref-text describes --voice. A stored voice carries its own reference "
+                + "transcript as IPA, so --voice-id needs none.");
+            return 2;
+        }
+        if (voiceLib is not null && voiceId is null)
+        {
+            Console.Error.WriteLine("--voice-lib needs --voice-id to say which voice to use. "
+                + "`--voice-id list` prints what the library holds.");
             return 2;
         }
         if (refText is not null && voicePath is null)
@@ -261,7 +291,24 @@ internal static class Program
         // Parity with create_voice_clone_prompt: the reference transcript gets add_punctuation, and
         // the punctuated form feeds BOTH the duration estimate and the combined text. The IPA
         // stream keeps its , . ! ? — they carry prosody, and the fine-tune trained on them.
+        StoredVoice? stored = null;
+        if (voiceId is not null)
+        {
+            // Default to the web demo's library so the CLI and the browser render the SAME voice —
+            // the point of the flag is to hear what a visitor hears, without a browser.
+            string libDir = voiceLib ?? Path.Combine(AppContext.BaseDirectory,
+                "..", "..", "..", "..", "..", "web-demo", "public", "models");
+            try { stored = StoredVoice.Load(libDir, voiceId); }
+            catch (Exception ex) { Console.Error.WriteLine(ex.Message); return 1; }
+            if (stored is null) return 0;                       // `--voice-id list` printed the library
+        }
+
         string? condRefText = refText is null ? null : OmniVoiceTextPrep.AddPunctuation(ipaRefText);
+        // ⚠ A STORED VOICE'S TRANSCRIPT IS ALREADY IPA and must NOT be re-phonemized — it was produced
+        // by the phonemizer when the voice was encoded, and running it through again would read the
+        // IPA as if it were orthography. Punctuation still applies: parity with the browser, which
+        // does addPunctuation(voice.refIpa) before both the duration estimate and the combined text.
+        if (stored is not null) condRefText = OmniVoiceTextPrep.AddPunctuation(stored.RefIpa);
 
         if (printIpa || verbose)
         {
@@ -274,7 +321,7 @@ internal static class Program
             ? e => Console.WriteLine($"  {e.FileName}: {e.ElapsedMs} ms  ep={(e.UsedCuda ? "cuda" : "cpu/dml")}")
             : null;
 
-        string mode = voicePath is not null ? "clone" : "auto";
+        string mode = stored is not null ? $"clone:{stored.Id}" : voicePath is not null ? "clone" : "auto";
         Console.WriteLine($"vernacula-tts: mode={mode}  lang={(rawIpa ? "(raw IPA)" : lang)}  steps={numStep}  ep={ep}"
             + $"  diff={(diffPath is null ? "none" : Path.GetFileName(diffPath))}");
 
@@ -285,7 +332,16 @@ internal static class Program
         long[,]? refCodes = null;
         int refTokens = 25;
         float? refRms = null;   // pre-boost reference RMS, for the output un-boost below
-        if (voicePath is not null)
+        if (stored is not null)
+        {
+            // Already encoded: no WAV, and no 654 MB encoder needed. The stored RMS is the one
+            // measured on the source audio before boosting, which is what the un-boost below wants.
+            refCodes = stored.Codes;
+            refTokens = refCodes.GetLength(1);
+            refRms = stored.RefRms;
+            Console.WriteLine($"reference: {stored.Id} ({stored.Label}) -> {refTokens} codes");
+        }
+        else if (voicePath is not null)
         {
             float[] refWav = Load24kMono(voicePath);
             refRms = Rms(refWav);
@@ -299,7 +355,8 @@ internal static class Program
         // self-consistent when both sides are the same representation, and IPA-on-both is the
         // pacing the fine-tune was listen-accepted with (gen_accept_test.py: no duration forcing).
         int target = targetTokens
-            ?? OmniVoiceDuration.EstimateTargetTokens(ipaText, condRefText, voicePath is not null ? refTokens : null);
+            ?? OmniVoiceDuration.EstimateTargetTokens(ipaText, condRefText,
+                   (voicePath is not null || stored is not null) ? refTokens : null);
         if (verbose) Console.WriteLine($"target tokens: {target}");
         if (target > 1500)
             Console.Error.WriteLine($"WARNING: estimated {target} tokens (~{target / 25}s) in one shot. Long-form "
@@ -332,14 +389,41 @@ internal static class Program
             Console.WriteLine($"diffusion ({numStep} steps): transformer {tts.LastTransformerMs:f0} ms, "
                 + $"host {tts.LastHostMs:f0} ms");
 
-        // Output post-processing, in the order Python's _post_process_audio uses: remove silence →
-        // volume → fade-in/out + zero-pad. Volume: with a reference, un-boost a reference that
-        // EncodeReference boosted for being quiet; without one, peak-normalise to 0.5.
-        audio = OmniVoiceAudioPost.RemoveSilence(audio, OmniVoiceTts.SampleRate,
-            midSilMs: 500, leadSilMs: 100, trailSilMs: 100);
-        if (refRms is float rr) { if (rr < 0.1f) Scale(audio, rr / 0.1f); }
-        else Normalize(audio, 0.5f);
-        audio = OmniVoiceAudioPost.FadeAndPad(audio, OmniVoiceTts.SampleRate);
+        // Output post-processing. `--post python` (the default) is the order Python's
+        // _post_process_audio uses: remove silence → volume → fade-in/out + zero-pad. Volume: with a
+        // reference, un-boost a reference that EncodeReference boosted for being quiet; without one,
+        // peak-normalise to 0.5.
+        //
+        // ⚠ `--post demo` IS WHAT THE BROWSER SHIPS, AND IT IS NOT THE SAME AUDIO. The web demo
+        // deliberately deviates in both gain and order (web-demo/src/inference/omnivoice.ts), because
+        // the un-boost undoes a boost that never happened to OUR references — they were encoded from
+        // source audio, not boosted at encode time — and the corpus references span rms 0.0017-0.099,
+        // a 58× spread. At the quiet end the un-boost drives the whole utterance below the silence
+        // threshold and RemoveSilence then deletes it: Oromo's rms 0.0017 reference yields 0.0 s.
+        //
+        // So an audit of what a VISITOR hears must pass --post demo. Rendering the demo's voices under
+        // Python's chain reports quiet-source languages as broken when the deployed page plays them
+        // fine — 91 of 318 clips in the first sweep, all of them FLEURS, whose audio is simply quiet.
+        if (post == "demo")
+        {
+            // Normalise BEFORE silence removal, and again after the fade: the fine-tune emits a
+            // leading transient inside the first 0.1 s, so normalising only before the fade lets that
+            // transient take the headroom and the fade then removes it.
+            Normalize(audio, 0.5f);
+            audio = OmniVoiceAudioPost.RemoveSilence(audio, OmniVoiceTts.SampleRate,
+                midSilMs: 500, leadSilMs: 100, trailSilMs: 100);
+            audio = OmniVoiceAudioPost.FadeAndPad(audio, OmniVoiceTts.SampleRate);
+            Normalize(audio, 0.5f);
+        }
+        else if (post == "python")
+        {
+            audio = OmniVoiceAudioPost.RemoveSilence(audio, OmniVoiceTts.SampleRate,
+                midSilMs: 500, leadSilMs: 100, trailSilMs: 100);
+            if (refRms is float rr) { if (rr < 0.1f) Scale(audio, rr / 0.1f); }
+            else Normalize(audio, 0.5f);
+            audio = OmniVoiceAudioPost.FadeAndPad(audio, OmniVoiceTts.SampleRate);
+        }
+        else { Console.Error.WriteLine($"--post must be \"python\" or \"demo\", not \"{post}\"."); return 2; }
 
         var fmt = WaveFormat.CreateIeeeFloatWaveFormat(OmniVoiceTts.SampleRate, 1);
         using (var w = new WaveFileWriter(outPath, fmt)) w.WriteSamples(audio, 0, audio.Length);
