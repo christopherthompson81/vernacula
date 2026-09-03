@@ -72,7 +72,16 @@ for (const [lang, entries] of Object.entries(byLang).sort()) {
   const cv = entries[0].voice.source.lang;
   const block = `  // ${lang} — Common Voice ${cv} (CC0). Sourced because FLEURS has no ${lang} speaker.\n`
     + entries.map((e) => `  // "${oneLine(e.voice.source.text)}"\n  ${json(e.voice)},\n`).join("");
-  text = text.replace("  // af — af_za", block + "  // af — af_za");
+  // ⚠ THE ANCHOR IS CHECKED. `text.replace` on a missing needle returns the string unchanged, so a
+  // renamed first entry would silently drop every new voice from voices.jsonc while its codes were
+  // still written to voice-codes.json — leaving orphaned codes and a language with no voice at all.
+  const ANCHOR = "  // af — af_za";
+  if (!text.includes(ANCHOR)) {
+    console.error(`ABORTED: insertion anchor ${JSON.stringify(ANCHOR)} not found in ${VP}. `
+      + "Nothing was written; fix the anchor rather than letting the merge no-op.");
+    process.exit(1);
+  }
+  text = text.replace(ANCHOR, block + ANCHOR);
   for (const e of entries) { codes[e.voice.id] = e.codes; added++; }
   if (meta[lang]) delete meta[lang].voice;
 }

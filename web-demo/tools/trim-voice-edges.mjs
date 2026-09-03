@@ -29,7 +29,8 @@ const opt = (k, d) => { const i = args.indexOf(`--${k}`); return i < 0 ? d : arg
 const has = (k) => args.includes(`--${k}`);
 const DECODER = opt("decoder", "/mnt/data/omnivoice_ipa/onnx/higgs_decoder.onnx");
 const OUT = opt("out", "/tmp/trim-preview");
-const SR = 24000, HOP = 960;             // one code frame = 960 samples = 40 ms, exactly
+const SR = 24000, HOP = 960;
+const MIN_CUT_MS = Number(opt("min-cut", 200));             // one code frame = 960 samples = 40 ms, exactly
 
 const VP = "public/models/voices.jsonc", CP = "public/models/voice-codes.json";
 const raw = readFileSync(VP, "utf8");
@@ -153,8 +154,9 @@ for (const id of ids) {
   // ⚠ A MINIMUM CUT, so a fleet-wide pass does not rewrite 89 voices to shave 40 ms off each. Below
   // this the change is inaudible and the churn — a new refLen and refRms on every line — costs more
   // in review than it buys in audio.
-  const MIN_CUT_MS = Number(opt("min-cut", 200));
-  if (v.refLen - newLen < MIN_CUT_MS / 40) {
+  // A zero-frame cut is not a change, whatever --min-cut says; `--min-cut 0` otherwise rewrites the
+  // line to the values it already holds.
+  if (newLen >= v.refLen || v.refLen - newLen < MIN_CUT_MS / 40) {
     if (has("verbose")) console.log(`  ${id}: ${(v.refLen - newLen) * 40} ms at the edges — under --min-cut`);
     continue;
   }
@@ -188,18 +190,36 @@ for (const id of ids) {
 
 if (!has("apply")) { console.log(`\n${changes.length} would change. Listen in ${OUT}, then re-run with --apply.`); process.exit(0); }
 
+/**
+ * ⚠ THE TEXT REWRITE IS VERIFIED BEFORE ANYTHING IS WRITTEN, and both files are written together.
+ *
+ * The codes and `refLen` are one fact in two places: `codes.length` must equal `refLen × 8`. This
+ * loop shortens the codes and edits refLen with a regex, and a regex that fails to match returns the
+ * string UNCHANGED — which would leave truncated codes beside a refLen still claiming the old length.
+ * Silent, and it corrupts exactly the invariant every consumer relies on. So each replacement is
+ * checked, and a miss aborts the whole run with nothing written rather than half-applying.
+ */
 let text = raw;
+const newCodes = {};
 for (const c of changes) {
   const v = byId.get(c.id);
   const flat = codes[c.id];
   const out = [];
   for (let cb = 0; cb < 8; cb++)
     for (let t = c.startFrame; t < c.startFrame + c.newLen; t++) out.push(flat[cb * v.refLen + t]);
-  codes[c.id] = out;
+  newCodes[c.id] = out;
   // Rewrite refLen and refRms in place, on this voice's line only.
-  const line = new RegExp(`(\\{"id":"${c.id.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")}"[^\\n]*?)"refLen":\\d+([^\\n]*?)"refRms":[\\d.]+`, "u");
-  text = text.replace(line, `$1"refLen":${c.newLen}$2"refRms":${c.refRms}`);
+  const esc = c.id.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+  const line = new RegExp(`(\\{"id":"${esc}"[^\\n]*?)"refLen":\\d+([^\\n]*?)"refRms":[\\d.]+`, "u");
+  const next = text.replace(line, `$1"refLen":${c.newLen}$2"refRms":${c.refRms}`);
+  if (next === text) {
+    console.error(`ABORTED: could not rewrite refLen/refRms for ${c.id} — its entry does not match the`
+      + ` expected shape (refLen before refRms on one line). Nothing was written.`);
+    process.exit(1);
+  }
+  text = next;
 }
+for (const [id, arr] of Object.entries(newCodes)) codes[id] = arr;
 writeFileSync(VP, text);
 writeFileSync(CP, JSON.stringify(codes));
 console.log(`\napplied ${changes.length} trims. Re-render those languages and LISTEN — the guards bound the damage, they do not prove the cut is right.`);
