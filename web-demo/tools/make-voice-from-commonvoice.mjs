@@ -199,7 +199,9 @@ function score(wavPath) {
   const floor = sorted[Math.floor(m * 0.1)], top = sorted[m - 1];
   const speech = db.filter((v) => v > top - 25);
   const mean = speech.reduce((a, b2) => a + b2, 0) / (speech.length || 1);
-  return { snr: mean - floor, speechFrac: speech.length / m, peak, clip: clipping(x) };
+  let sq = 0;
+  for (let i = 0; i < n; i++) sq += x[i] * x[i];
+  return { snr: mean - floor, speechFrac: speech.length / m, peak, rms: Math.sqrt(sq / n), clip: clipping(x) };
 }
 
 const present = new Set(readdirSync(WORK, { recursive: true }).map(String).filter((f) => f.endsWith(".mp3")));
@@ -210,22 +212,72 @@ let considered = 0;
 for (const r of shortlist) {
   const mp3 = byName.get(r.path);
   if (!mp3) continue;
-  if (PREFIX_MB && ++considered > 40) break;
+  // ⚠ SCORE UNTIL THERE ARE ENOUGH DISTINCT SPEAKERS, not until a flat count. In a thin locale one
+  // contributor dominates the archive — every one of the first forty `pa-IN` clips was the same man —
+  // so a fixed cap returns three sentences in one voice and calls them alternates.
+  if (PREFIX_MB && ++considered > 40
+      && (new Set(scored.map((x) => x.client_id)).size >= N || considered > 400)) break;
   const wav = join(WORK, "wav", r.path.replace(/\.mp3$/, ".wav"));
   execFileSync("ffmpeg", ["-v", "error", "-y", "-i", join(WORK, String(mp3)), "-ac", "1", "-ar", "24000",
                           "-sample_fmt", "s16", wav]);
   const s = score(wav);
   // Clipping is unrecoverable and a mostly-silent clip wastes the reference; both are hard rejects.
-  if (!CLIPS.length && (s.clip.run >= 3 || s.clip.frac > 0.0005 || s.speechFrac < 0.45)) continue;
+  // ⚠ AND A LEVEL FLOOR. Not a PEAK test — that is the check that silently discarded the whole Vaani
+  // corpus, because peak-normalised audio all peaks at 1.0 — but an RMS one. `tr-17344946` scored 71 dB
+  // and came back at peak 0.02 / rms 0.0035: 30 dB below every usable reference, and nothing in the
+  // screen could see it. The quiet FLEURS voices (ar 0.030, hi 0.020, am 0.007) are the same class.
+  if (!CLIPS.length && (s.clip.run >= 3 || s.clip.frac > 0.0005 || s.speechFrac < 0.45 || s.rms < 0.02)) continue;
   scored.push({ ...r, wav, ...s, ms: durs[r.path] });
 }
 // Quiet is fine (the output chain normalises); noisy is not, and neither is a clip that is half pause.
-if (!CLIPS.length) scored.sort((a, b) => (b.snr + 40 * b.speechFrac) - (a.snr + 40 * a.speechFrac));
-console.log(`  ${scored.length} scored; best:`);
-for (const s of scored.slice(0, N))
-  console.log(`    ${s.path}  snr ${s.snr.toFixed(0)} dB  speech ${(s.speechFrac * 100).toFixed(0)}%  peak ${s.peak.toFixed(2)}  ${s.gender || "?"} ${s.age || "?"}`);
+/**
+ * ⚠ CAP THE SNR TERM. A digitally GATED clip reports 100+ dB because its 10th-percentile frame is
+ * true zero, and uncapped that outranks every genuinely clean recording — it put a 45%-speech clip
+ * top for `pa-IN` and a peak-0.99 one top for `tr`. Above ~45 dB the number stops describing the
+ * recording and starts describing the noise gate, so it is worth nothing more.
+ */
+const SNR_CAP = 45;
+if (!CLIPS.length) scored.sort((a, b) =>
+  (Math.min(b.snr, SNR_CAP) + 40 * b.speechFrac) - (Math.min(a.snr, SNR_CAP) + 40 * a.speechFrac));
+console.log(`  ${scored.length} scored`);
 
-const chosen = scored.slice(0, N);
+/**
+ * ⚠ ALTERNATES SHOULD BE DIFFERENT PEOPLE. The picker offers a language's voices as a choice, and a
+ * choice between three recordings of one speaker is not one. `client_id` identifies the contributor,
+ * so at most `--per-speaker` clips are taken from any one of them, best first, and the cap is only
+ * relaxed if that cannot fill N.
+ *
+ * ⚠ THE ID IS USED HERE AND STORED NOWHERE. It is a stable per-speaker handle and does not belong in
+ * this repo — see the source block below, which records the clip and drops the contributor.
+ */
+const PER_SPEAKER = Number(opt("per-speaker", 1));
+function pick(list, cap) {
+  const seen = new Map(), out = [];
+  for (const c of list) {
+    const k = c.client_id ?? `?${out.length}`;
+    const n = seen.get(k) ?? 0;
+    if (n >= cap) continue;
+    seen.set(k, n + 1); out.push(c);
+    if (out.length >= N) break;
+  }
+  return out;
+}
+let chosen = CLIPS.length ? scored.slice(0, N) : pick(scored, PER_SPEAKER);
+if (chosen.length < N && !CLIPS.length) {
+  const relaxed = pick(scored, PER_SPEAKER + 1);
+  if (relaxed.length > chosen.length) {
+    console.log(`  only ${new Set(scored.map((x) => x.client_id)).size} distinct speaker(s) available — `
+      + `allowing ${PER_SPEAKER + 1} clip(s) each to fill ${N}`);
+    chosen = relaxed;
+  }
+}
+// ⚠ REPORT WHAT WAS CHOSEN, NOT WHAT SCORED BEST. These are different lists once the per-speaker cap
+// applies, and printing the score order while encoding the picked order made the tool describe clips
+// it had not taken — I selected four ids off the printed list and two of them did not exist.
+console.log(`  chosen: ${chosen.length} clip(s) from ${new Set(chosen.map((c) => c.client_id)).size} speaker(s)`);
+for (const s2 of chosen)
+  console.log(`    ${s2.path}  snr ${s2.snr.toFixed(0)} dB  speech ${(s2.speechFrac * 100).toFixed(0)}%  `
+    + `peak ${s2.peak.toFixed(2)}  rms ${s2.rms.toFixed(3)}  ${s2.gender || "?"} ${s2.age || "?"}`);
 const entries = [];
 for (const [i, c] of chosen.entries()) {
   const ipaPath = join(WORK, `${c.path}.ipa`);

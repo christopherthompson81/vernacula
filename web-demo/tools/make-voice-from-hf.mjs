@@ -36,6 +36,29 @@ const SCAN = Number(opt("scan", 300));            // rows to look at
 const TEXT_FIELD = opt("text"), AUDIO_FIELD = opt("audio", "audio"), DUR_FIELD = opt("duration");
 const FILTER_FIELD = opt("filter-field"), FILTER_RE = opt("filter") ? new RegExp(opt("filter"), "iu") : null;
 /**
+ * ⚠ REQUIRE THE TRANSCRIPT TO STAY INSIDE THE LANGUAGE'S OWN ALPHABET.
+ *
+ * A reference is a claim that THIS audio realises THIS IPA. A foreign proper noun breaks the claim
+ * in a way no audio metric can see: Hawaiian has no /d/ and no /s/, so the phonemizer correctly
+ * nativises "Indonesia" to *inkonekia* — and the speaker, just as correctly, says it the Indonesian
+ * way. The reference then teaches the model that Hawaiian /k/ sounds like [d] and [ʒ]. The stored
+ * clip was flagged by ear as "a lot of noise in the middle"; the mismatch is a likelier cause than
+ * the microphone.
+ *
+ * The check cannot be derived from the phonemizer's own manifests — those deliberately MAP the loan
+ * letters (t→k, s→k, d/g→k) so that loanwords read sensibly, so harvesting their grapheme keys hands
+ * back the whole Latin alphabet. It has to be the language's NATIVE inventory, passed in.
+ *
+ *   --letters "aeiouāēīōūhklmnpwʻ"
+ */
+const LETTERS = opt("letters") ? new Set([...opt("letters").toLowerCase()]) : null;
+const outsideAlphabet = (t) => {
+  if (!LETTERS) return [];
+  const bad = new Set();
+  for (const ch of t.toLowerCase()) if (/\p{L}/u.test(ch) && !LETTERS.has(ch)) bad.add(ch);
+  return [...bad];
+};
+/**
  * Cut over-long clips at a pause, keeping the sentences that precede it.
  *
  * ⚠ Only where the cut is PROVABLE — `trim-to-sentences.mjs` proceeds when the transcript's sentence
@@ -97,6 +120,7 @@ const inScript = (s) => !SCRIPTS.length || SCRIPTS.some((re) => re.test(s));
 
 console.log(`${DATASET} [${CONFIG}/${SPLIT}] -> demo language ${LANG}`);
 const candidates = [];
+const skippedForeign = [];
 for (let offset = 0; offset < SCAN; offset += 100) {
   const url = `${ROWS}?dataset=${encodeURIComponent(DATASET)}&config=${encodeURIComponent(CONFIG)}`
             + `&split=${encodeURIComponent(SPLIT)}&offset=${offset}&length=100`;
@@ -113,6 +137,8 @@ for (let offset = 0; offset < SCAN; offset += 100) {
     if (!text || !src) continue;
     if (FILTER_RE && !FILTER_RE.test(String(row[FILTER_FIELD] ?? ""))) continue;
     if (!inScript(text)) continue;
+    const foreign = outsideAlphabet(text);
+    if (foreign.length) { skippedForeign.push([text.slice(0, 60), foreign.join("")]); continue; }
     const dur = Number(row[DUR_FIELD ?? "duration"] ?? row.duration_seconds ?? 0);
     // With --trim a long clip is a candidate: it may still yield a short prefix that ends on a pause.
     if (dur && (dur < MIN_SEC || (dur > MAX_SEC && !TRIM))) continue;
@@ -125,6 +151,9 @@ function guessText(row) {
     if (typeof row[k] === "string") return k;
   return "text";
 }
+if (skippedForeign.length)
+  console.log(`  ${skippedForeign.length} rejected for letters outside --letters `
+    + `(e.g. "${skippedForeign[0][0]}" -> ${skippedForeign[0][1]})`);
 console.log(`  ${candidates.length} candidates in ${MIN_SEC}-${MAX_SEC}s`);
 if (!candidates.length) { console.error("  nothing matched — widen --min-sec/--max-sec or raise --scan"); process.exit(1); }
 
