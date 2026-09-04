@@ -127,6 +127,13 @@ def build_lang(lang, repeat, exclusions):
             train_rows.extend(g)
     assert not ({r["sentence_id"] for r in dev_rows} & {r["sentence_id"] for r in train_rows}), \
         f"{lang}: dev/train share a sentence_id"
+    # ⚠ AND CHECK THE SPLIT PRODUCED A TRAIN SET AT ALL. Groups are assigned WHOLE, so a manifest
+    # whose rows all carry the same sentence_id (a directory ingest that left it None) is ONE group
+    # -- it goes entirely to dev and train comes out empty. The disjointness assert above passes
+    # happily on an empty train set, so the language is dropped from the run in silence.
+    assert train_rows, (
+        f"{lang}: split produced an EMPTY train set from {len(manifest)} rows in {len(groups)} "
+        f"sentence group(s) -- every row likely shares one sentence_id")
     train_n, train_secs = _write_shard(lang_dir, "train", train_rows, codes)
     dev_n, dev_secs = _write_shard(lang_dir, "dev", dev_rows, codes)
     # _write_shard already wrote data_train.lst / data_dev.lst as single-entry

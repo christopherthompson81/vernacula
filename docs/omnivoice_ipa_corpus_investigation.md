@@ -3960,3 +3960,83 @@ with no overlap. Real rhoticity would not sort by sex. That is the recognizer su
 at a sex-dependent rate — instrument bias — and it is why the absolute number cannot be thresholded
 and only the within-sex spread carries information. A gate built on the raw count would have
 "discovered" that all 29 male readers are rhotic.
+
+## Run 56 — 2026-09-03 — v7: en_gb enters the epoch, and a split that would have dropped it
+
+**Question.** v6 trained on 28 languages. Adding `en_gb` makes v7 a different experiment, not a
+strict improvement — so what exactly changes, and does the en-GB data actually reach the model?
+
+### POP_ORDER 28 -> 29, and why it perturbs nothing
+
+`POP_ORDER` is not a list of languages, it is a **greedy-cover ownership order**: a primitive is
+attributed to the first, biggest-population language that carries it, and each language's
+oversampling weight is set so its scarcest OWNED primitive reaches `N_TOKENS`. Inserting a language
+can therefore steal ownership and move everyone's weight.
+
+It does not here, and the reason is worth writing down: `phon_of` maps a corpus key to a census key
+with `split("_")[0]`, so `en_gb` -> `en` — **the same key as `en_us`**. The sweep gives `en_gb` an
+owned set of exactly nothing, a weight of 1.0, and no influence on any other language's weight.
+
+Measured against the v6 weights: **not one existing language's utterance count or weight changed.**
+
+```
+v6 28 langs -> v7 29 langs
+  NEW  en_gb: n_utts=1281 weight=1.0 owned=0 effective=1235
+  changed languages: 0        dropped: none
+  utterances 75,902 -> 77,183     en_gb share of the epoch: 1.60%
+```
+
+(`effective_utts` sits below `n_utts` at weight 1.0 because `scale = natural_total / weight_sum`
+keeps the epoch the same size — weighting redistributes exposure rather than inflating it. Not a bug;
+it caught my eye and is recorded so it does not catch the next reader's.)
+
+### The offglide pairings nothing else was checking
+
+The sampling budget only guarantees exposure for **owned census primitives**, and the census is 142
+single phones and diacritics — the offglide PAIRINGS this data exists for are not in it. So no gate
+in the pipeline verifies the thing the corpus addition was for. Measured directly, per epoch, with
+repeat factors applied:
+
+```
+  unit          v6      from en_gb      v7
+  əᶷ  GOAT      155      +1,029       1,184
+  ɛə  SQUARE     36        +392         428
+  ʊə  CURE      106        +231         337
+  aᶦə / aᶷə  199 / 32  +100 / +267   299 / 299
+  ɔᶦə / əᶷɪ / ɪɒ  41 / 3 / 0  +142/+141/+116   183 / 144 / 116
+```
+
+`əᶷ` — the vowel behind "smoke" -> "smik" — goes from 155 exposures per epoch to 1,184.
+
+⚠ **`en_gb` is deliberately left at repeat=1.** Giving it 2 would push the last three units over 300,
+but those are archive-exhausted: repeating shows the SAME few clips again rather than adding variety,
+which trains memorisation of those recordings instead of the pairing. A number that reaches target by
+repetition is not the same number.
+
+### The bug that would have wasted the run
+
+`build_lang` splits train/dev by GROUPING on `sentence_id`, because FLEURS records one sentence with
+~2.2 speakers and a plain row slice put the same sentence in both splits (73-99% of every dev set,
+Run 40). `ingest_dir.py` wrote **`sentence_id=None` for every en_gb row**. All 1,281 collapse into one
+group; groups are assigned WHOLE; the first group fills dev — so **every en_gb row went to dev and the
+train set came out EMPTY**. The language would have contributed nothing to v7, silently, and the
+existing disjointness assert passes happily on an empty train set.
+
+Fixed at the source (`sentence_id` = the utterance id: one recording per id, nothing to repeat — the
+same convention `asr_align_dir.py` uses), the existing manifest patched in place, and a guard added:
+
+    assert train_rows, f"{lang}: split produced an EMPTY train set from {n} rows in {g} group(s)"
+
+Verified the guard fires on the pre-fix shape, then rebuilt: **en_gb train 1,243 / dev 38**.
+
+### v7 corpus
+
+```
+29 languages · 75,022 train rows · 259.8 h · 1,009 defective-audio utterances excluded
+data_config diff vs v6: en_gb added; every other language's repeat copies IDENTICAL
+```
+
+**Process note, twice now.** A `nohup ... &` inside a background wrapper detached and died, leaving a
+0-byte log while the harness reported exit 0. Caught by checking `data_config.json`'s mtime rather
+than the exit code. Earlier the same day a render was reported as "starting" without being launched.
+An exit code is not evidence that work happened; the artifact's timestamp is.
