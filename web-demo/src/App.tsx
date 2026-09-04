@@ -149,6 +149,9 @@ export default function App() {
   return (
     <main>
       <header>
+        {/* Decorative, so alt="" — the h1 beside it already names the page, and a screen reader
+            announcing "bat with waveform wings" before the title is noise, not information. */}
+        <img className="mark" src="/vern-waveform.png" alt="" width={340} height={133} />
         <h1>vernacula-tts</h1>
         <p className="sub">
           Text → canonical IPA → speech, entirely in your browser. Nothing is uploaded.
