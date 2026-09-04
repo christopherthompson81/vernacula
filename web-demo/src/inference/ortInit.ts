@@ -22,6 +22,46 @@ export type Ort = typeof OrtNS;
 const VERSION = "1.29.0";   // keep in step with package.json's onnxruntime-web
 const BASE = `https://cdn.jsdelivr.net/npm/onnxruntime-web@${VERSION}/dist/`;
 
+/**
+ * How many WASM threads to give ORT.
+ *
+ * ⚠ NOT `navigator.hardwareConcurrency`, AND NOT THE DEFAULT. Left unset, ORT ran the transformer
+ * single-threaded: 14.1 s per forward, ~450 s for a 32-step generation. Measured on an i7-10700K
+ * (8 physical cores, 16 logical) against the int4 web model, one forward at S=200:
+ *
+ *     threads   1      2      4      8      12     16
+ *     ms     14078   7120   3729   2279   2568   2553
+ *
+ * Scaling is near-linear to 8 (6.2x) and then REVERSES. 8 is one thread per PHYSICAL core; beyond
+ * that two compute-bound threads share a core's execution units and contend, costing ~12%. But
+ * `hardwareConcurrency` reports 16 on this machine — the logical count — so using it directly picks
+ * the slowest of the three and takes the whole CPU while doing it. Half, capped at 8, approximates
+ * the physical count on an SMT machine and leaves the rest of the system usable.
+ *
+ * ⚠ And threads need SharedArrayBuffer, which needs CROSS-ORIGIN ISOLATION (the COOP/COEP pair in
+ * vite.config.ts and netlify.toml) AND a secure context. Over plain HTTP to a LAN address neither
+ * holds, so this correctly returns 1 rather than requesting threads that cannot be created.
+ */
+function wasmThreads(): number {
+  if (!globalThis.crossOriginIsolated || typeof SharedArrayBuffer === "undefined") return 1;
+  return Math.max(1, Math.min(8, Math.floor((navigator.hardwareConcurrency ?? 2) / 2)));
+}
+
+/**
+ * Why inference is single-threaded, for the UI. Null when threads are available.
+ *
+ * A const, not a function: it reads only globals fixed for the document's lifetime, and as a
+ * function the JSX called it twice on every render. It also deliberately does NOT repeat the
+ * "use localhost or https" remedy — the cache notice says that, and on a plain-HTTP LAN origin both
+ * notices appear together, so the reader would be told the same thing twice in consecutive lines.
+ * The two causes are genuinely different (a secure context vs the COOP/COEP pair) and can occur
+ * apart, so this names its own.
+ */
+export const threadingUnavailableReason: string | null =
+  globalThis.crossOriginIsolated && typeof SharedArrayBuffer !== "undefined" ? null
+    : "single-threaded — WASM threads need SharedArrayBuffer, so a cross-origin-isolated page "
+      + "(COOP/COEP) served from a secure context. Generation is several times slower without them.";
+
 let cached: Promise<Ort> | undefined;
 
 /** The ORT module, loaded once. Await this instead of importing onnxruntime-web directly. */
@@ -31,6 +71,12 @@ export function getOrt(): Promise<Ort> {
     const ort = (await import(/* @vite-ignore */ url)) as unknown as Ort;
     ort.env.wasm.wasmPaths = BASE;
     ort.env.logLevel = "warning";
+    ort.env.wasm.numThreads = wasmThreads();
+    // ⚠ RUN THE WASM IN A WORKER. Without this the session executes on the MAIN thread, so a
+    // generation freezes the page for its whole duration and Firefox raises "this tab is slowing
+    // Firefox down" — which is true, and which no amount of threading fixes, because the threads
+    // ORT spawns still join back on a blocked main thread. `proxy` moves the session itself off it.
+    ort.env.wasm.proxy = true;
     return ort;
   })();
   return cached;

@@ -11,6 +11,10 @@
 body { margin: 0; background: var(--bg); color: var(--fg);
   font: 15px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
 main { max-width: 46rem; margin: 0 auto; padding: 2.5rem 1.25rem 4rem; }
+header { text-align: center; }
+/* Width and height are on the element too, so the header does not reflow when the image lands.
+   max-width keeps it from overflowing a narrow phone; the intrinsic 680px is a 2x asset. */
+.mark { display: block; margin: 0 auto .35rem; width: 340px; max-width: 100%; height: auto; }
 h1 { font-size: 1.6rem; margin: 0 0 .2rem; letter-spacing: -.01em; }
 h2 { font-size: .8rem; text-transform: uppercase; letter-spacing: .07em;
      color: var(--muted); margin: 0 0 .5rem; font-weight: 600; }
@@ -48,6 +52,7 @@ audio { width: 100%; }
         border-radius: 7px; padding: .6rem .75rem; margin: 1rem 0; font-size: .86rem; }
 .note.small { font-size: .8rem; }
 .error { color: #b3261e; font-size: .88rem; white-space: pre-wrap; }
+.notice { color: var(--muted); font-size: .82rem; margin: .5rem 0 0; }
 footer { margin-top: 3rem; padding-top: 1.25rem; border-top: 1px solid var(--line); }
 a { color: var(--accent); }
 

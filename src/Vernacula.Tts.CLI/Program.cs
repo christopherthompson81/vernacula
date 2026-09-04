@@ -121,14 +121,25 @@ internal static class Program
             Console.Error.WriteLine("Give exactly one of --text or --text-file.");
             return 2;
         }
-        if (outPath is null) { Console.Error.WriteLine("--out <wav> is required."); return 2; }
-        if (onnxDir is null)
+        // ⚠ --print-ipa ALONE IS A VALID INVOCATION. Requiring --out meant there was no way to ask
+        // this binary what IPA it produces without also loading 2.45 GB of ONNX and synthesising a
+        // wav — so nobody asked, and the C# engine silently drifted six commits behind the TS one
+        // while the demo fed the model a convention it had been trained away from. A one-second
+        // question deserves a one-second answer.
+        if (outPath is null && !printIpa)
+        {
+            Console.Error.WriteLine("--out <wav> is required (or --print-ipa alone, to print the IPA and stop).");
+            return 2;
+        }
+        // Phonemize-only needs no models, so it needs no --onnx-dir either.
+        if (onnxDir is null && outPath is not null)
         {
             Console.Error.WriteLine("--onnx-dir <dir> is required (or set OMNIVOICE_ONNX_DIR). It holds "
                 + $"{OmniVoice.TransformerFile} (+ .onnx.data), {OmniVoice.EncoderFile}, {OmniVoice.DecoderFile}.");
             return 2;
         }
-        if (!Directory.Exists(onnxDir)) { Console.Error.WriteLine($"--onnx-dir not found: {onnxDir}"); return 1; }
+        if (outPath is not null && !Directory.Exists(onnxDir))
+        { Console.Error.WriteLine($"--onnx-dir not found: {onnxDir}"); return 1; }
         if (!rawIpa && lang is null)
         {
             Console.Error.WriteLine("--lang <code> is required (the phonemizer language, e.g. en, cy, cmn). "
@@ -180,58 +191,65 @@ internal static class Program
             return 2;
         }
 
-        // Qwen3 tokenizer: --tokenizer-json, else tokenizer.json beside the graphs, else in --model-dir.
-        tokenizerJson ??= FirstExisting(
-            Path.Combine(onnxDir, "tokenizer.json"),
-            modelDir is null ? null : Path.Combine(modelDir, "tokenizer.json"));
-        if (tokenizerJson is null)
+        // ⚠ EVERYTHING IN THIS BLOCK IS RENDER-ONLY SETUP: the tokenizer, the fine-tune diff, the
+        // execution provider. --print-ipa without --out needs none of it, and guarding each check
+        // individually just moves the crash to the next one (three were patched that way before
+        // this became obvious). One condition, stated once.
+        ExecutionProvider epEnum = ExecutionProvider.Auto;
+        if (outPath is not null)
         {
-            Console.Error.WriteLine("Qwen3 tokenizer.json not found. Pass --model-dir <k2-fsa-OmniVoice "
-                + "snapshot> (or OMNIVOICE_MODEL_DIR), or --tokenizer-json <path>.");
-            return 2;
-        }
-        if (!File.Exists(tokenizerJson))
-        {
-            Console.Error.WriteLine($"--tokenizer-json not found: {tokenizerJson}"); return 1;
-        }
-
-        // ── The IPA fine-tune diff ────────────────────────────────────────────────────────────
-        // Default it ON when the versioned diff sits beside the graphs: without it this is stock
-        // OmniVoice, which reads IPA as if it were orthography and produces confident nonsense.
-        // That failure is only audible, so a silent fallback is the wrong default.
-        if (!noDiff)
-        {
-            diffPath ??= FirstExisting(Path.Combine(onnxDir, IpaFineTune.DefaultDiffFile));
-            if (diffPath is null)
+            // Qwen3 tokenizer: --tokenizer-json, else tokenizer.json beside the graphs, else in --model-dir.
+            tokenizerJson ??= FirstExisting(
+                Path.Combine(onnxDir, "tokenizer.json"),
+                modelDir is null ? null : Path.Combine(modelDir, "tokenizer.json"));
+            if (tokenizerJson is null)
             {
-                Console.Error.WriteLine($"IPA fine-tune diff not found: {Path.Combine(onnxDir, IpaFineTune.DefaultDiffFile)}\n"
-                    + "  Pass --diff <path>, or --no-diff to run the base (orthographic) model knowing that\n"
-                    + "  IPA input will not be interpreted as phonemes.");
-                return 1;
-            }
-        }
-        else if (diffPath is not null)
-        {
-            Console.Error.WriteLine("--diff and --no-diff are mutually exclusive."); return 2;
-        }
-        if (diffPath is not null && !File.Exists(diffPath))
-        {
-            Console.Error.WriteLine($"--diff not found: {diffPath}"); return 1;
-        }
-
-        // ⚠ Reject an unrecognised value rather than falling through to Auto. `--ep cud` or
-        // `--ep gpu` would otherwise silently run somewhere the caller did not ask for — and the
-        // gap between providers here is ~20x, so it reads as "this is just slow".
-        // Chatterbox.CLI errors on the same input; match it.
-        ExecutionProvider epEnum;
-        switch (ep)
-        {
-            case "cpu": epEnum = ExecutionProvider.Cpu; break;
-            case "cuda": epEnum = ExecutionProvider.Cuda; break;
-            case "auto": epEnum = ExecutionProvider.Auto; break;
-            default:
-                Console.Error.WriteLine($"--ep must be cpu, cuda or auto (got \"{ep}\").");
+                Console.Error.WriteLine("Qwen3 tokenizer.json not found. Pass --model-dir <k2-fsa-OmniVoice "
+                    + "snapshot> (or OMNIVOICE_MODEL_DIR), or --tokenizer-json <path>.");
                 return 2;
+            }
+            if (!File.Exists(tokenizerJson))
+            {
+                Console.Error.WriteLine($"--tokenizer-json not found: {tokenizerJson}"); return 1;
+            }
+
+            // ── The IPA fine-tune diff ────────────────────────────────────────────────────────────
+            // Default it ON when the versioned diff sits beside the graphs: without it this is stock
+            // OmniVoice, which reads IPA as if it were orthography and produces confident nonsense.
+            // That failure is only audible, so a silent fallback is the wrong default.
+            if (!noDiff)
+            {
+                diffPath ??= FirstExisting(Path.Combine(onnxDir, IpaFineTune.DefaultDiffFile));
+                if (diffPath is null)
+                {
+                    Console.Error.WriteLine($"IPA fine-tune diff not found: {Path.Combine(onnxDir, IpaFineTune.DefaultDiffFile)}\n"
+                        + "  Pass --diff <path>, or --no-diff to run the base (orthographic) model knowing that\n"
+                        + "  IPA input will not be interpreted as phonemes.");
+                    return 1;
+                }
+            }
+            else if (diffPath is not null)
+            {
+                Console.Error.WriteLine("--diff and --no-diff are mutually exclusive."); return 2;
+            }
+            if (diffPath is not null && !File.Exists(diffPath))
+            {
+                Console.Error.WriteLine($"--diff not found: {diffPath}"); return 1;
+            }
+
+            // ⚠ Reject an unrecognised value rather than falling through to Auto. `--ep cud` or
+            // `--ep gpu` would otherwise silently run somewhere the caller did not ask for — and the
+            // gap between providers here is ~20x, so it reads as "this is just slow".
+            // Chatterbox.CLI errors on the same input; match it.
+            switch (ep)
+            {
+                case "cpu": epEnum = ExecutionProvider.Cpu; break;
+                case "cuda": epEnum = ExecutionProvider.Cuda; break;
+                case "auto": epEnum = ExecutionProvider.Auto; break;
+                default:
+                    Console.Error.WriteLine($"--ep must be cpu, cuda or auto (got \"{ep}\").");
+                    return 2;
+            }
         }
 
         // ⚠ THE DIFF MUST BE APPLIED TO THE GENUINE BASE, and nothing here can check that for you.
@@ -315,6 +333,8 @@ internal static class Program
             if (condRefText is not null) Console.WriteLine($"ref IPA: {condRefText}");
             Console.WriteLine($"IPA:     {ipaText}");
         }
+        // Phonemize-only: everything below this point loads models and renders audio.
+        if (outPath is null) return 0;
 
         // ── Model ─────────────────────────────────────────────────────────────────────────────
         SessionLoadObserver? onLoad = verbose
@@ -479,7 +499,8 @@ internal static class Program
                                   reads the IPA alone.
           --ipa                   --text (and --ref-text) are already IPA; skip the phonemizer.
                                   Mutually exclusive with --lang.
-          --print-ipa             Print the IPA that will be fed to the model.
+          --print-ipa             Print the IPA that will be fed to the model. Without --out, print
+                                  it and stop — no model load, no synthesis.
           --data-dir <path>       vernacula-phonemizer data/ tree. Defaults to the submodule at
                                   external/vernacula-phonemizer/data.
 

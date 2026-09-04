@@ -4,7 +4,7 @@
    "languages/english"
   ],
   "core": [],
-  "bytes": 14615418,
+  "bytes": 15095059,
   "exclude": []
  },
  "en-GB": {
@@ -13,7 +13,7 @@
    "languages/english-gb"
   ],
   "core": [],
-  "bytes": 14641204,
+  "bytes": 15120845,
   "exclude": []
  },
  "en-IN": {
@@ -21,7 +21,7 @@
    "languages/english"
   ],
   "core": [],
-  "bytes": 14615418,
+  "bytes": 15095059,
   "exclude": []
  },
  "cmn": {
@@ -380,7 +380,7 @@
    "languages/tajik"
   ],
   "core": [],
-  "bytes": 13526,
+  "bytes": 14170,
   "exclude": []
  },
  "zu": {
@@ -785,7 +785,7 @@
    "languages/javanese"
   ],
   "core": [],
-  "bytes": 22048,
+  "bytes": 22328,
   "exclude": []
  },
  "sw": {
