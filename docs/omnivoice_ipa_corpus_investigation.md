@@ -4055,3 +4055,78 @@ sequence (`ɒɔᶦ`) that occurs nowhere else in the corpus, which is not worth 
 so the wav2vec2 gate cannot see this class of defect at all — which is worth remembering before
 treating `verified` as "every word in this utterance is right". The gate finds utterances that are
 wrong overall; a single wrong word hides inside a correct sentence.
+
+## Run 57 — 2026-09-03 — v7 trained, and three wrong answers before one honest one
+
+**The run.** 6000/6000 in 2h07m, 29 languages. Final eval **3.9693** against v6's **3.9777**; at the
+step-matched point (4000) they are identical (3.9798 vs 3.9777). The 29th language costs nothing
+globally — which is expected, since en_gb is 1.6% of the epoch and its benefit is local to English
+vowels, where a global loss cannot see it.
+
+**First: the adapter provably touches only the text path.** Merging warns about missing adapter keys
+for `audio_tokenizer.semantic_model.*` — the target modules match `q_proj`/`k_proj`/`v_proj` by SUFFIX
+NAME, so peft wraps the audio tokenizer at inference even though training never saved those. Verified
+rather than assumed: after `merge_and_unload()` the audio-tokenizer weights are BIT-IDENTICAL
+(max|delta| = 0) while the LLM `q_proj` moved by 1.96e-2. `init_lora_weights: True` zero-initialises
+`lora_B`, so an unloaded adapter contributes exactly nothing. The warning is cosmetic and the A/B is
+valid.
+
+### Three wrong answers, in order
+
+1. **"Dramatic improvement" — wrong comparison.** base -> v7 improved every probe (GB mean
+   0.539 -> 0.309). But the base model has never been IPA-fine-tuned at all, so this measures "fine
+   tuning works", which v6 already established. The tell was that the US CONTROL improved MORE than
+   GB (-0.279 vs -0.230). The question needs **v6 vs v7**, both IPA-tuned, differing only in en_gb.
+
+2. **"No effect" — noise.** v6 vs v7 gave GB -0.010 (SE 0.022). But `generate()` is stochastic
+   (32 diffusion steps) and I had run ONE sample per condition. Six repeats of one probe give
+   sd 0.012-0.022; the single `square` v7 sample scored 0.333 against a 6-render mean of 0.221,
+   outside the entire observed range. Per-probe deltas of ±0.05 were sampling variance being read
+   as findings.
+
+3. **"Still no effect" — a metric blind to its own subject.** ⚠ `fold()` DELETES modifier letters,
+   and the offglides ARE modifier letters:
+
+       target  smˈəᶷk    -> smək      the offglide is removed
+       heard   s m oʊ k  -> smoʊk
+
+   So a CORRECT rendering scored as a miss, and a wrong monophthong (`smək`) would have scored as a
+   hit. The metric was inverted with respect to the one thing being tested. This is Run 36's
+   modifier-letter bug — the one that emptied ga_ie's investigate list — reappearing inside my own
+   analysis, which is worth recording precisely because it had already been found once.
+
+### The honest answer
+
+Expanding the offglide instead of deleting it (`ᶦ->ɪ ᶷ->ʊ ᵊ->ə`) moved the GB mean from -0.022 to
+-0.056, but sentence-level distance still dilutes a vowel-level effect, and every correct GOAT token
+keeps a nucleus mismatch because the recognizer writes `oʊ` where the expanded target is `əʊ`. The
+raw recognized strings are far more informative than any aggregate:
+
+```
+smoke: "White smoke rose from the plant"
+  v6   w ʌ s w ʌ t ɡ ɚ z f ɹ ʌ m ð ə p l ɑː n t        "white smoke rose" destroyed, no oʊ at all
+  v7   w aɪ t s m oʊ k ɹ oʊ z f ɹ ʌ m ð ə p l æ n t    correct, oʊ twice
+goat_dense: "...on the road home"
+  v6   ... ð ə ɹ d h ɔ m         "road" has NO VOWEL
+  v7   ... ð ə ɹ oʊ d h oʊ m     both correct
+```
+
+So the measure that answers the question is **GOAT-position offglide realisation**, N=5 renders:
+
+```
+  probe            want   v6 mean   v7 mean
+  smoke_reported      2      1.20      2.00     v7 correct in 5/5
+  televisions         2      1.40      2.00     v7 correct in 5/5
+  goat_dense          4      1.80      3.40
+  show_reported       2      1.00      0.20     WORSE
+  hour                1      1.00      0.60     worse
+  v6 32/55 = 58%      v7 41/55 = 75%
+```
+
+**Mixed, and real where it counts.** The two failures actually reported — "smoke" and "televisions" —
+are robustly fixed: v7 produces the correct diphthong in every one of 5 renders where v6 managed it
+about half the time. `show` regressed and `hour` slipped. Aggregate +17pp is z~1.8 over 5 probes with
+correlated renders: suggestive, not conclusive, and not worth dressing up as more.
+
+⚠ **A single-sample version of this same table read 27% -> 91%.** v6 had simply drawn badly. Any
+future generation A/B on this model needs repeats; one render per condition cannot support a claim.
