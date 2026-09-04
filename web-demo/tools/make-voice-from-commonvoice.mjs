@@ -66,9 +66,31 @@ const CLIPS = (opt("clip", "") || "").split(",").filter(Boolean);
 const ENCODER = opt("encoder", "/mnt/data/omnivoice_ipa/onnx_base/higgs_encoder.onnx");
 const PHONEMIZER = "../external/vernacula-phonemizer";
 const WORK = opt("work", `${process.env.TMPDIR ?? "/tmp"}/cv-voices/${CV}`);
-if (!CV) { console.error("usage: --cv <locale> [--lang <demo code>] [--n 3] [--split test] [--write]"); process.exit(2); }
+if (!CV) { console.error("usage: --cv <locale> [--lang <demo code>] [--n 3] [--split test] [--from-dir <cv tree>] [--write]"); process.exit(2); }
 
 const HF = "https://huggingface.co/datasets/fsicoli/common_voice_22_0/resolve/main";
+/**
+ * Read an ALREADY-DOWNLOADED Common Voice tree instead of fetching CV 22 from HuggingFace.
+ *
+ * ⚠ Mozilla Data Collective has no API route for accepting terms — they are accepted per dataset in
+ * a browser — so a CV 26 corpus arrives as a local tarball rather than a URL. The alternative was
+ * `make-voice-from-openslr.mjs --dir`, which reads a local tree but knows nothing about Common
+ * Voice's columns: no up/down votes, no `variant`, and critically NO `client_id`, so its "top N by
+ * audio score" can return three clips from one contributor and call them alternates. Everything
+ * that makes CV selection sound lives in THIS file; only the transport differs.
+ *
+ * The layout is Common Voice's own: <root>/clip_durations.tsv, <root>/<split>.tsv, <root>/clips/*.mp3.
+ */
+const FROM_DIR = opt("from-dir");
+/**
+ * What gets recorded as the voice's provenance.
+ *
+ * ⚠ THIS WAS HARDCODED to `mozilla/common_voice_22_0`. With --from-dir that is simply false — an MDC
+ * export is Common Voice 26 — and provenance that lies is worse than none: the licence, the version
+ * and the row a clip came from are all read off this field. Defaults to the HF corpus this tool
+ * fetches, and to the local tree's own name otherwise.
+ */
+const DATASET = opt("dataset", FROM_DIR ? `mdc:${FROM_DIR.replace(/\/+$/, "").split("/").pop()}` : "mozilla/common_voice_22_0");
 mkdirSync(join(WORK, "wav"), { recursive: true });
 
 /**
@@ -117,9 +139,63 @@ console.log(`Common Voice ${CV} -> demo language ${LANG}`);
 const SCRIPTS = declaredScripts(LANG).map(scriptRe);
 if (!SCRIPTS.length) console.warn(`  ⚠ ${LANG} declares no script — sentences not script-checked`);
 const inScript = (s) => !SCRIPTS.length || SCRIPTS.some((re) => re.test(s));
-const durs = Object.fromEntries(tsv(fetchTo(`${HF}/transcript/${CV}/clip_durations.tsv`, join(WORK, "durations.tsv")))
-  .map((r) => [r.clip, Number(r["duration[ms]"])]));
-const rows = tsv(fetchTo(`${HF}/transcript/${CV}/${SPLIT}.tsv`, join(WORK, `${SPLIT}.tsv`)));
+const cvFile = (name, cached) => FROM_DIR ? join(FROM_DIR, name) : fetchTo(`${HF}/transcript/${CV}/${name}`, join(WORK, cached));
+const rows = tsv(cvFile(`${SPLIT}.tsv`, `${SPLIT}.tsv`));
+
+/**
+ * clip -> duration in ms.
+ *
+ * ⚠ AN MDC EXPORT HAS NO `clip_durations.tsv`. The HuggingFace mirror ships one; the Mozilla Data
+ * Collective tarballs do not, and the duration window is what narrows 73,020 rows to a shortlist —
+ * without it every clip looks eligible and the audio scorer decodes the whole corpus. ffprobe can
+ * answer, but not 73,020 times, so probe a SPEAKER-DIVERSE prefix instead of the file order: Common
+ * Voice is dominated by a handful of prolific contributors, and probing the first N rows would spend
+ * the whole budget on two or three voices.
+ */
+// Where the mp3s actually are: extracted under WORK for the HF path, already on disk for --from-dir.
+// ⚠ The two paths index at DIFFERENT times. The HF path shortlists first and extracts only the
+// chosen clips, so the index cannot exist until after extraction. --from-dir has every clip on disk
+// from the start and NEEDS the index first, to probe durations. One function, called at whichever
+// point the path allows.
+const CLIP_ROOT = FROM_DIR ?? WORK;
+const indexClips = () =>
+  new Set(readdirSync(CLIP_ROOT, { recursive: true }).map(String).filter((f) => f.endsWith(".mp3")));
+
+const PROBE_MAX = Number(opt("probe", 800));
+function probeDurations(cands) {
+  const bySpk = new Map();
+  for (const r of cands) (bySpk.get(r.client_id) ?? bySpk.set(r.client_id, []).get(r.client_id)).push(r);
+  const queues = [...bySpk.values()];
+  const order = [];
+  for (let i = 0; order.length < Math.min(PROBE_MAX, cands.length); i++) {
+    let any = false;
+    for (const q of queues) { if (q[i]) { order.push(q[i]); any = true; if (order.length >= PROBE_MAX) break; } }
+    if (!any) break;
+  }
+  console.log(`  probing ${order.length} clips for duration across ${bySpk.size} contributors (no clip_durations.tsv)`);
+  const out = {};
+  for (const r of order) {
+    const f = byName.get(r.path);
+    if (!f) continue;
+    try {
+      out[r.path] = Math.round(1000 * Number(execFileSync("ffprobe",
+        ["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", join(CLIP_ROOT, String(f))],
+        { encoding: "utf8" }).trim()));
+    } catch { /* unreadable clip: leave it out, the duration filter then drops it */ }
+  }
+  return out;
+}
+const HAVE_DURATIONS = !FROM_DIR || existsSync(join(FROM_DIR, "clip_durations.tsv"));
+let byName;   // clip basename -> path under CLIP_ROOT; set once, by whichever path gets there first
+let durs;
+if (HAVE_DURATIONS) {
+  durs = Object.fromEntries(tsv(cvFile("clip_durations.tsv", "durations.tsv"))
+    .map((r) => [r.clip, Number(r["duration[ms]"])]));
+} else {
+  byName = new Map([...indexClips()].map((f) => [f.split("/").pop(), f]));
+  durs = probeDurations(rows.filter((r) => Number(r.up_votes || 0) >= VOTES
+                                        && Number(r.down_votes || 0) === 0 && inScript(r.sentence)));
+}
 
 // Metadata pass: right length, validated by at least two listeners, rejected by none.
 const shortlist = CLIPS.length ? CLIPS.map((c) => rows.find((r) => r.path === c)).filter(Boolean)
@@ -141,12 +217,15 @@ console.log(`  script check: ${SCRIPTS.length ? declaredScripts(LANG).join("+") 
           + (VARIANT ? `, variant filter ${VARIANT}` : ""));
 const tarUrl = `${HF}/audio/${CV}/${SPLIT}/${CV}_${SPLIT}_0.tar`;
 const tar = join(WORK, `${SPLIT}_0.tar`);
-if (!existsSync(tar)) {
+if (FROM_DIR) {
+  console.log(`  local tree: ${FROM_DIR} (no download, no extract)`);
+} else if (!existsSync(tar)) {
   if (PREFIX_MB) {
     console.log(`  fetching first ${PREFIX_MB} MB of ${SPLIT}_0.tar…`);
     execFileSync("curl", ["-sfL", "--max-time", "1800", "-r", `0-${PREFIX_MB * 1000000 - 1}`, tarUrl, "-o", tar]);
   } else fetchTo(tarUrl, tar);
 }
+if (!FROM_DIR) {
 console.log("  extracting…");
 try {
   // A truncated tar makes tar exit non-zero AFTER extracting every whole member — which is exactly
@@ -156,6 +235,7 @@ try {
 } catch (e) { if (!PREFIX_MB) throw e; }
 // The split archives run to hundreds of MB each and 26 languages will not fit on a scratch disk.
 if (!args.includes("--keep-tar")) execFileSync("rm", ["-f", tar]);
+}
 
 
 /**
@@ -204,8 +284,8 @@ function score(wavPath) {
   return { snr: mean - floor, speechFrac: speech.length / m, peak, rms: Math.sqrt(sq / n), clip: clipping(x) };
 }
 
-const present = new Set(readdirSync(WORK, { recursive: true }).map(String).filter((f) => f.endsWith(".mp3")));
-const byName = new Map([...present].map((f) => [f.split("/").pop(), f]));
+byName ??= new Map([...indexClips()].map((f) => [f.split("/").pop(), f]));
+const present = byName;
 if (PREFIX_MB) console.log(`  ${present.size} clips inside the prefix, ${shortlist.filter((r) => byName.has(r.path)).length} of them candidates`);
 const scored = [];
 let considered = 0;
@@ -218,7 +298,7 @@ for (const r of shortlist) {
   if (PREFIX_MB && ++considered > 40
       && (new Set(scored.map((x) => x.client_id)).size >= N || considered > 400)) break;
   const wav = join(WORK, "wav", r.path.replace(/\.mp3$/, ".wav"));
-  execFileSync("ffmpeg", ["-v", "error", "-y", "-i", join(WORK, String(mp3)), "-ac", "1", "-ar", "24000",
+  execFileSync("ffmpeg", ["-v", "error", "-y", "-i", join(CLIP_ROOT, String(mp3)), "-ac", "1", "-ar", "24000",
                           "-sample_fmt", "s16", wav]);
   const s = score(wav);
   // Clipping is unrecoverable and a mostly-silent clip wastes the reference; both are hard rejects.
@@ -305,7 +385,7 @@ for (const [i, c] of chosen.entries()) {
       label: `${LANG} · ${gender || "unknown"} · ${(c.ms / 1000).toFixed(1)}s`,
       refIpa: v.refIpa, refLen: v.refLen, refRms: Number(v.refRms.toFixed(5)),
       source: {
-        dataset: "mozilla/common_voice_22_0", lang: CV, file: c.path, split: SPLIT,
+        dataset: DATASET, lang: CV, file: c.path, split: SPLIT,
         // ⚠ The 64-hex sentence id is truncated and client_id is dropped: neither belongs in a
         // published file, and 12 hex is enough to find the row again in the dataset.
         sentenceId: (c.sentence_id ?? "").slice(0, 12), gender,
