@@ -494,7 +494,7 @@ internal static class Program
           --model-dir <dir>       k2-fsa-OmniVoice snapshot, for tokenizer.json. Env: OMNIVOICE_MODEL_DIR.
           --tokenizer-json <path> Qwen3 tokenizer.json, if it is somewhere else.
           --diff <path>           IPA fine-tune diff, folded onto the base transformer at load.
-                                  Defaults to ipa_diff_v6.onnx in --onnx-dir.
+                                  Defaults to ipa_diff_v7.onnx in --onnx-dir.
           --no-diff               Run the stock orthographic model. IPA input will NOT be read as
                                   phonemes; this is for A/B comparison, not for synthesis.
           --transformer-file <p>  The transformer to use; an absolute path is honoured. With --diff

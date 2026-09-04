@@ -36,45 +36,74 @@ TESTS = [
 ]
 
 
-def pick(lang: str, prims: list[str]) -> tuple[str, str, str, str]:
-    """(ref_id, ref_ipa, tgt_id, tgt_ipa) — richest dev utterance for the target, longest for the ref.
+# The model warns above 20 s and recommends 3-10 s. Both ends are real: a 2 s clip carries too little
+# speaker evidence, and a 30 s one degrades cloning -- and because the penalty applies to BOTH
+# checkpoints it flattens the very comparison the reference is there to support.
+REF_MIN_S, REF_MAX_S = 4.0, 15.0
 
-    The reference is the model's only evidence of the speaker, so a short clip clones badly and would
-    read as a difference between checkpoints that is really a difference in reference.
+
+def pick(lang: str, prims: list[str], dur: dict[str, float]) -> tuple[str, str, str, str]:
+    """(ref_id, ref_ipa, tgt_id, tgt_ipa) — richest dev utterance for the target, best-sized for the ref.
+
+    ⚠ NOT simply the longest. Choosing the longest dev utterance to avoid a thin reference produced
+    29.6 s clips and the model's own ">20s degrades voice cloning" warning. Longest WITHIN the usable
+    band, falling back to whatever is closest to it if nothing lands inside.
     """
     rows = [json.loads(l) for l in open(f"{ROOT}/train/shards/{lang}/dev.jsonl") if l.strip()]
     score = lambda r: sum(r["text"].count(p) for p in prims)
     tgt = max(rows, key=score)
-    ref = max((r for r in rows if r["id"] != tgt["id"]), key=lambda r: len(r["text"]))
+    cands = [r for r in rows if r["id"] != tgt["id"] and r["id"] in dur]
+    ok = [r for r in cands if REF_MIN_S <= dur[r["id"]] <= REF_MAX_S]
+    ref = (max(ok, key=lambda r: dur[r["id"]]) if ok
+           else min(cands, key=lambda r: abs(dur[r["id"]] - REF_MAX_S)))
     return ref["id"], ref["text"], tgt["id"], tgt["text"]
+
+
+def durations(lang: str) -> dict[str, float]:
+    return {r["id"]: r["dur_s"] for r in
+            (json.loads(l) for l in open(f"{ROOT}/corpus/tokens/manifest_{lang}.jsonl", encoding="utf8")
+             if l.strip())}
 
 
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--adapter", required=True)
+    # ⚠ THE BASELINE FOR A REGRESSION IS THE PREVIOUS FINE-TUNE, NOT THE BASE MODEL. Base has never
+    # been IPA-tuned, so base-vs-new measures "fine-tuning works" and would hide a loss against the
+    # run actually being replaced. Same mistake cost a wrong answer on the en-GB probes (Run 57).
+    ap.add_argument("--baseline", default=None,
+                    help="adapter to compare against (default: unadapted base weights)")
     ap.add_argument("--out", default=f"{ROOT}/train/rare_test")
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
 
     cases = []
     for lang, label, prims in TESTS:
-        ref_id, ref_ipa, tgt_id, tgt_ipa = pick(lang, prims)
+        ref_id, ref_ipa, tgt_id, tgt_ipa = pick(lang, prims, durations(lang))
         codes = np.load(f"{ROOT}/corpus/tokens/codes_{lang}.npz")
         ref_wav = decode_codes(codes[ref_id])
         sf.write(f"{a.out}/{lang}_{label}_ref.wav", ref_wav, SR)
         sf.write(f"{a.out}/{lang}_{label}_groundtruth.wav", decode_codes(codes[tgt_id]), SR)
         hits = {p: tgt_ipa.count(p) for p in prims if p in tgt_ipa}
         cases.append((lang, label, ref_wav, ref_ipa, tgt_ipa))
-        print(f"{lang} [{label}] target {tgt_id}: {hits}")
+        print(f"{lang} [{label}] ref {len(ref_wav)/SR:.1f}s, target {tgt_id}: {hits}")
         if not hits:
             print(f"  ⚠ no target primitive present in any {lang} dev utterance — this case proves nothing")
 
     # Base FIRST: merge_and_unload() is destructive, so one process cannot return to base weights.
-    print("\nloading base ...")
+    base_tag = "v6" if a.baseline else "base"
+    print(f"\nloading {base_tag} ...")
     model = OmniVoice.from_pretrained(BASE, device_map="cuda", dtype=torch.float16).eval()
+    if a.baseline:
+        from peft import PeftModel as _P
+        model = _P.from_pretrained(model, a.baseline).merge_and_unload().eval()
     for lang, label, ref_wav, ref_ipa, tgt_ipa in cases:
-        sf.write(f"{a.out}/{lang}_{label}_base.wav", gen(model, tgt_ipa, ref_wav, ref_ipa), SR)
-        print(f"  base {lang}/{label}")
+        sf.write(f"{a.out}/{lang}_{label}_{base_tag}.wav", gen(model, tgt_ipa, ref_wav, ref_ipa), SR)
+        print(f"  {base_tag} {lang}/{label}")
+    # merge_and_unload() is destructive, so the second model needs clean base weights.
+    del model
+    torch.cuda.empty_cache()
+    model = OmniVoice.from_pretrained(BASE, device_map="cuda", dtype=torch.float16).eval()
 
     print("merging adapter ...")
     from peft import PeftModel

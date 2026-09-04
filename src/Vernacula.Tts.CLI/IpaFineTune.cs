@@ -12,7 +12,10 @@ internal static class IpaFineTune
     /// <summary>Default diff filename inside --onnx-dir. Bump alongside the checkpoint; the
     /// version is in the name precisely so a stale diff cannot masquerade as current
     /// (see commit "diff: version the IPA fine-tune patch").</summary>
-    public const string DefaultDiffFile = "ipa_diff_v6.onnx";
+    // ⚠ Bump this with each fine-tune. The filename is versioned precisely so a stale diff cannot
+    // masquerade as current -- but a default that is never bumped reintroduces exactly that.
+    // v7 adds the en-GB offglide pairings (əᶷ eᶦ aᶦ aᶷ) the v6 model rendered as monophthongs.
+    public const string DefaultDiffFile = "ipa_diff_v7.onnx";
 
     /// <summary>
     /// The 28 languages v6 actually trained on, as vernacula-phonemizer codes.
