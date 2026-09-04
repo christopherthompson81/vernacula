@@ -6,7 +6,7 @@ import { phonemize } from "./inference/phonemizer.ts";
 import { OmniVoice, parseJsonc, voiceFor, voicesFor, type Voice } from "./inference/omnivoice.ts";
 import type { WordTiming } from "./inference/alignment.ts";
 import { encodeWav } from "./inference/audioPost.ts";
-import { fetchModel } from "./inference/modelCache.ts";
+import { cacheUnavailableReason, fetchModel } from "./inference/modelCache.ts";
 import type { Progress, Token } from "./types.ts";
 
 /** Pair each orthographic word with its timed IPA word, positionally.
@@ -220,6 +220,10 @@ export default function App() {
       )}
 
       {progress.stage === "error" && <p className="error">{progress.detail}</p>}
+
+      {/* Shown once, not on error: the page works here, it just cannot KEEP the model. Saying so up
+          front beats letting someone re-download 472 MB twice before wondering why. */}
+      {cacheUnavailableReason && <p className="notice">{cacheUnavailableReason}</p>}
 
       {ipa && (
         <section className="result">

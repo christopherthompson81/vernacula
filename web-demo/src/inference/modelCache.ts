@@ -9,7 +9,25 @@
 const CACHE = "vernacula-tts-models";
 const CHUNK = 32 * 1024 * 1024;
 
+/**
+ * Is the Cache API available at all?
+ *
+ * ⚠ `caches` EXISTS ONLY IN A SECURE CONTEXT — https, or a localhost origin. Serving the dev server
+ * to another machine (`npm run dev -- --host`, then http://192.168.x.x:5173) is NOT one, so the
+ * global is simply undefined and every function here threw `caches is not defined` — surfaced in the
+ * UI as those three words, which say nothing about the cause or the fix. The page otherwise works
+ * fine over plain HTTP: phonemizing, inference and playback need no secure context, and only the
+ * 472 MB model cache does. So degrade instead of failing — download it, hold it in memory, and say
+ * why it will not persist.
+ */
+const CACHE_OK = typeof caches !== "undefined";
+
 if (navigator.storage?.persist) void navigator.storage.persist();
+
+/** Why persistence is unavailable, for the UI to show once. Null when the cache works. */
+export const cacheUnavailableReason: string | null = CACHE_OK ? null
+  : `no model cache on ${location.origin} — the Cache API needs https or localhost, `
+    + "so the model is re-downloaded each load. Open the demo on localhost, or serve it over https.";
 
 export interface DownloadProgress { url: string; loaded: number; total: number; cached: boolean; }
 /**
@@ -94,8 +112,28 @@ async function ensureDownloaded(url: string, onProgress?: (p: DownloadProgress) 
   return meta;
 }
 
+/** Stream a model straight into memory, for origins with no Cache API. No resume, no persistence. */
+async function fetchUncached(url: string, onProgress?: (p: DownloadProgress) => void): Promise<ArrayBuffer> {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`fetch ${url} -> ${res.status}`);
+  const total = Number(res.headers.get("Content-Length") ?? 0);
+  const reader = res.body!.getReader();
+  const parts: Uint8Array[] = [];
+  let loaded = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    parts.push(value); loaded += value.byteLength;
+    onProgress?.({ url, loaded, total: total || loaded, cached: false });
+  }
+  const out = new Uint8Array(loaded);
+  let o = 0; for (const p of parts) { out.set(p, o); o += p.byteLength; }
+  return out.buffer;
+}
+
 /** Fetch a model file, resuming and caching, and return it whole. */
 export async function fetchModel(url: string, onProgress?: (p: DownloadProgress) => void): Promise<ArrayBuffer> {
+  if (!CACHE_OK) return fetchUncached(url, onProgress);
   const meta = await ensureDownloaded(url, onProgress);
   const cache = await caches.open(CACHE);
   // `total`, not `cachedBytes`: a COMPLETED meta written before `sizes` existed is still a valid
@@ -114,4 +152,6 @@ export async function fetchModel(url: string, onProgress?: (p: DownloadProgress)
   return out.buffer;
 }
 
-export async function clearModelCache(): Promise<void> { await caches.delete(CACHE); }
+export async function clearModelCache(): Promise<void> {
+  if (CACHE_OK) await caches.delete(CACHE);
+}
