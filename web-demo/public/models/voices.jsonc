@@ -252,7 +252,6 @@
   {"id":"fo-ravnur1","lang":"fo","sex":"M","label":"fo · 9.2s","refIpa":"saiːnast eːk hɔiɻɖɪ han seːkɪ han seːk tɔɑːma føːɹɔiaɹ suːm lant ɹeːjɪn heːvʊɹ fɪɲt͡ʃɪ teːlɛfɔnɪna ʊiː hɔntɪnɪ","refLen":202,"refRms":0.09278,"source":{"dataset":"carlosdanielhernandezmena/ravnursson_asr","lang":"ravnursson_asr","file":"0-8","split":"train","sentenceId":null,"gender":"","durationS":9.2,"candidateIndex":1,"text":"seinast eg hoyrdi hann segði hann seg dáma føroyar sum land regin hevur fingið telefonina í hondini"}},
   // "spurdi omman eg orki ikki ein bita afturat segði drongurin jú ein afturat gongur nokk ger so væl góði"
   {"id":"fo-ravnur2","lang":"fo","sex":"M","label":"fo · 9.5s","refIpa":"spʊɻɖɪ ɔman eːk ɔɹt͡ʃɪ ɪt͡ʃɪ aiːn piːta aftʊɹat seːkɪ tɹɔŋkʊɹɪn jʉuː aiːn aftʊɹat kɔŋkʊɹ nɔk t͡ʃeːɹ soː vɛaːl kɔuːjɪ","refLen":214,"refRms":0.08407,"source":{"dataset":"carlosdanielhernandezmena/ravnursson_asr","lang":"ravnursson_asr","file":"0-6","split":"train","sentenceId":null,"gender":"","durationS":9.5,"candidateIndex":2,"text":"spurdi omman eg orki ikki ein bita afturat segði drongurin jú ein afturat gongur nokk ger so væl góði"}},
-  // haw — Common Voice haw_Latn (CC0). Sourced because FLEURS has no haw speaker.
   // hil — Common Voice Hiligaynon (CC0). Sourced because FLEURS has no hil speaker.
   // "Luwasa ako sa mga nagadaogdaog sa akon para matuman ko ang imo mga pagsulundan."
   {"id":"hil-open-b0","lang":"hil","sex":"F","default":true,"label":"hil · 7.6s","refIpa":"luwˈasa ʔˈako sˈa mˈaŋa naɡadaʔoɡdˈaʔoɡ sˈa ʔˈakon pˈaɾa matˈuman kˈo ʔˈaŋ ʔˈimo mˈaŋa paɡsulˈundan .","refLen":176,"refRms":0.13934,"source":{"dataset":"multilingual-tts/open-bible","lang":"Hiligaynon","file":"0-8","split":"train","sentenceId":null,"gender":"","durationS":7.6,"candidateIndex":0,"text":"Luwasa ako sa mga nagadaogdaog sa akon para matuman ko ang imo mga pagsulundan."}},
@@ -267,18 +266,6 @@
   {"id":"hne-open-b1","lang":"hne","sex":"M","label":"hne · 7.1s","refIpa":"kˈəɦuː̃ kˈoːnoː mˈənkʰeː ɦˈə ˈəpən d̪ˈaːiː jˈaː d̪ˈəd̪aː lˈaː mˈaːɾt̪ʰeː pˈiːʈt̪ʰeː , ɪkːˈiːs bˈəd͡ʒkəɾ pˈə̃n̪d̪ɾəɦ mˈɪnəʈ jˈaː mˈaːɾ ɖˈaːɾt̪ʰeː t̪ˈə ˈoːlaː mˈaːɾ ɖˈaːɾeː d͡ʒˈaːʋəj .","refLen":147,"refRms":0.10568,"source":{"dataset":"multilingual-tts/open-bible","lang":"Chhattisgarhi","file":"0-12","split":"train","sentenceId":null,"gender":"","durationS":7.1,"candidateIndex":1,"text":"“कहूं कोनो मनखे ह अपन दाई या ददा ला मारथे-पीटथे, + 21:15 या मार डारथे त ओला मार डारे जावय।"}},
   // "ओमन अपन कठोर हिरदय ला बंद कर लेथें, अऊ ओमन के मुहूं ले घमंड के बात निकलथे।"
   {"id":"hne-open-b2","lang":"hne","sex":"M","label":"hne · 7.4s","refIpa":"ˈoːmən ˈəpən kəʈʰˈoːɾ ɦˈɪɾd̪əj lˈaː bˈə̃n̪d̪ kˈəɾ lˈeːt̪ʰeː̃ , ˈəuː ˈoːmən kˈeː mˈʊɦuː̃ lˈeː ɡʱəmˈə̃ɳɖ kˈeː bˈaːt̪ nɪkˈəlt̪ʰeː .","refLen":168,"refRms":0.11106,"source":{"dataset":"multilingual-tts/open-bible","lang":"Chhattisgarhi","file":"0-5","split":"train","sentenceId":null,"gender":"","durationS":7.4,"candidateIndex":2,"text":"ओमन अपन कठोर हिरदय ला बंद कर लेथें, अऊ ओमन के मुहूं ले घमंड के बात निकलथे।"}},
-  // ki — Common Voice kik_tts (CC0). Sourced because FLEURS has no ki speaker.
-  // "https://en.m.wikipedia.org/wiki/Poverty_in_Kenya Akenya aingĩ monaga irio cia o riita rĩmwe mũthenya na makagũmirwo mũno nĩmũrigo wa magoti ĩmaingĩ. Kenya niĩkoretwo ĩgĩtia magooti maingĩ kũrĩ mũingĩ na gũcũngĩrĩria thogora wa mũtũrĩre kuongerereka."
-  // "Njũkĩ ithatũ cia rangi wa ngoikoni na mĩcoora ĩtatũ mĩirũ, na mathagu ma mburuu theũku irahũũnga irũa mahũainĩ matatũ ma rangi mũtune. Mĩmera ĩrĩa ĩna mahũa maya ĩna mathangũ ma rangi wa nyeki."
-  // "Maya nĩ macungwa matatũ . Macungwa meerĩ nĩ magima no icungwa rĩmwe rĩrĩa rĩigĩtwo mbere ya Maya meerĩ nĩitinie nuthu."
-  // pbt — Common Voice pbt_Arab (CC0). Sourced because FLEURS has no pbt speaker.
-  // "وروستی شی چې مې وخوړ، چپس وو. د جوړولو طریقه یې داسې ده: کچالو پوست او میده یي کړئ. په اوبو کې یې پریږدئ. وچ کړئ او په غوړو کې یې واچوی . وروسته په کاغذ کې ایښودل ترڅو غوړ یي جذب شي. مالګه او مرچ اضافه کړئ چی مزه داره سۍ بیا نوش جان."
-  // "مږی یاموش‌خرما د ژمي لپاره خوراکونه لکه مغزي مواد او مېوې راټولوي او په غارونو کې یې زېرمه کوي. هغوی زیات خوراک کوي ترڅو د بدن غوړ زیات سي، او بیا ژمی د اوږده خوب په حالت کې تېروي."
-  // "آسمان څکالی یا خفاش د شپې په تیاره کې د ایکو لوکېشن په وسیله لاره معلوموي: هغه ږغونه خپروي، چې کله له کوم شی سره ولګیږي، بېرته ورته راګرځي؛ له دې ږغونه نه د فاصله، لوري او شکل معلومات ترلاسه کوي."
-  // pcm — Common Voice pcm_tts (CC0). Sourced because FLEURS has no pcm speaker.
-  // "People wey dn be Naija presido na Olusegun Obasanjo,Umaru Musa Yar'Adua,Goodluck Jonathan, Buhari and Bola Tinubu"
-  // "National Youth Service Corps (NYSC) na where fresh graduates go serve di country for one year before dem enter real work life."
-  // "Lagos na one place wey people plenty like mad"
   // pt — Common Voice pt (CC0). Sourced because FLEURS has no pt speaker.
   // "a casa é asilo inviolável do indivíduo, ninguém nela podendo penetrar sem consentimento"
   {"id":"pt-35002098","lang":"pt","sex":"M","default":true,"label":"pt · unknown · 8.5s","refIpa":"a kˈazɐ ˈɛ ɐzˈilu ĩvjulˈavɛɫ do ĩdivˈidwu , nĩɡˈɐ̃j̃ nˈɛlɐ pudˈẽdu pɨnɨtɾˈaɾ sˈɐ̃j̃ kõsẽtimˈẽtu","refLen":172,"refRms":0.07255,"source":{"dataset":"mozilla/common_voice_22_0","lang":"pt","file":"common_voice_pt_35002098.mp3","split":"dev","sentenceId":"c90f3d437483","gender":"","durationS":8.5,"candidateIndex":0,"text":"a casa é asilo inviolável do indivíduo, ninguém nela podendo penetrar sem consentimento"}},
@@ -414,13 +401,6 @@
   {"id":"syl-00005.wav","lang":"syl","sex":"M","label":"syl · 5.2s","refIpa":"i pʰɔʈot̪ fˈoᶷt̬oᶷ t̪ɔ iɡu ekʈa ɾaʃt̪a banaibaɾ meʃin məʃˈiːn d̪ækʰa d͡ʒaɾ .","refLen":129,"refRms":0.13762,"source":{"dataset":"dir:syl","lang":"syl","file":"00005.wav","split":"all","sentenceId":null,"gender":"","durationS":5.2,"candidateIndex":1,"text":"<noise> ই ফটোত {photo} ত ইগু একটা রাস্তা বানাইবার মেশিন {machine} দেখা যার। </noise>"}},
   // "<static_noise> ইখানে একটি <noise> মাঠ </noise> দেখা যাচ্ছে <noise> মাঠের চারিপাশে </noise> বিল্ডিং {building} দেখা যাচ্ছে। </static_noise>"
   {"id":"syl-00004.wav","lang":"syl","label":"syl · 5.1s","refIpa":"ikʰane ækʈi maʈʰ d̪ækʰa d͡ʒat͡ʃʰːe maʈʰeɾ t͡ʃaɾipaʃe bilɖiŋ bˈɪɫdɪŋ d̪ækʰa d͡ʒat͡ʃʰːe .","refLen":126,"refRms":0.17231,"source":{"dataset":"dir:syl","lang":"syl","file":"00004.wav","split":"all","sentenceId":null,"gender":"","durationS":5.1,"candidateIndex":2,"text":"<static_noise> ইখানে একটি <noise> মাঠ </noise> দেখা যাচ্ছে <noise> মাঠের চারিপাশে </noise> বিল্ডিং {building} দেখা যাচ্ছে। </static_noise>"}},
-  // rup — Common Voice rup (CC0). Sourced because FLEURS has no rup speaker.
-  // an — Common Voice an (CC0). Sourced because FLEURS has no an speaker.
-  // fr-CA — Common Voice fr-CA (CC0). Sourced because FLEURS has no fr-CA speaker.
-  // zoc — Common Voice zoc (CC0). Sourced because FLEURS has no zoc speaker.
-  // dag — Common Voice dag (CC0). Sourced because FLEURS has no dag speaker.
-  // ipk — Common Voice ipk (CC0). Sourced because FLEURS has no ipk speaker.
-  // bal — Common Voice bal (CC0). Sourced because FLEURS has no bal speaker.
   // an — Common Voice an (CC0). Sourced because FLEURS has no an speaker.
   // "Ella almorzaba dimpués sola, sin prisa de nengún tipo."
   {"id":"an-common_voice_an_42718312.mp3","lang":"an","sex":"F","default":true,"label":"an · 4.7s","refIpa":"eʎa almoɾθaba dimpwes sola , sin pɾisa de nenɡun tipo .","refLen":76,"refRms":0.1717,"source":{"dataset":"dir:an","lang":"an","file":"common_voice_an_42718312.mp3","split":"all","sentenceId":null,"gender":"","durationS":4.7,"candidateIndex":0,"text":"Ella almorzaba dimpués sola, sin prisa de nengún tipo."}},
@@ -491,7 +471,6 @@
   {"id":"hi-26021895","lang":"hi","label":"hi · unknown · 7.3s","refIpa":"bɪɦˈaːɾ mˈeː̃ nˈəksəliː ɦˈəmleː kˈeː bˈaːd̪ bə̃ŋɡˈaːl , d͡ʒʱaːɾkʰˈə̃ɳɖ mˈeː̃ əlˈəɾʈ , jˈaːt̪ɾiː kʰɔːpʰˈəd͡ʒd̪aː","refLen":175,"refRms":0.17593,"source":{"dataset":"mozilla/common_voice_22_0","lang":"hi","file":"common_voice_hi_26021895.mp3","split":"train","sentenceId":"8efcc55fe840","gender":"","durationS":7.3,"candidateIndex":1,"text":"बिहार में नक्सली हमले के बाद बंगाल, झारखंड में अलर्ट, यात्री खौफजदा"}},
   // "अब गंगा नदी में थूका या कूड़ा फेंका तो हो सकती है जेल"
   {"id":"hi-26021954","lang":"hi","label":"hi · unknown · 5.4s","refIpa":"ˈəb ɡˈə̃ŋɡaː nˈəd̪iː mˈeː̃ t̪ʰˈuːkaː jˈaː kˈuːɽaː pʰˈeː̃ŋkaː t̪ˈoː ɦˈoː sˈəkt̪iː ɦˈɛː d͡ʒˈeːl","refLen":134,"refRms":0.18027,"source":{"dataset":"mozilla/common_voice_22_0","lang":"hi","file":"common_voice_hi_26021954.mp3","split":"train","sentenceId":"8c967d5de405","gender":"","durationS":5.4,"candidateIndex":2,"text":"अब गंगा नदी में थूका या कूड़ा फेंका तो हो सकती है जेल"}},
-  // pa — Common Voice pa-IN (CC0). Sourced because FLEURS has no pa speaker.
   // pa — Common Voice pa-IN (CC0). Sourced because FLEURS has no pa speaker.
   // "ਪਰ ਇਹ ਦਰਦ ਮਰਦਾ ਦਾ ਮਹਿਸੂਸ ਕਰਦੀ ਸੀ"
   {"id":"pa-25183738","lang":"pa","sex":"M","default":true,"label":"pa · MALE · 4.6s","refIpa":"pˈəɾ eː˥ d̪ˈəɾəd̪ mˈəɾd̪aː d̪ˈaː məɦɪsˈuːs kˈəɾd̪iː sˈiː","refLen":93,"refRms":0.07231,"source":{"dataset":"mozilla/common_voice_22_0","lang":"pa-IN","file":"common_voice_pa-IN_25183738.mp3","split":"test","sentenceId":"2d3d17919048","gender":"MALE","durationS":4.6,"candidateIndex":0,"text":"ਪਰ ਇਹ ਦਰਦ ਮਰਦਾ ਦਾ ਮਹਿਸੂਸ ਕਰਦੀ ਸੀ"}},
@@ -1139,7 +1118,6 @@
   // am — am_et train · MALE · 8.0s · candidate 0
   // "በብረት መወጠር ምክንያት የብረት መርፌው በውሃው ላይ ይንሳፈፋል።"
   {"id":"am","lang":"am","sex":"M","default":true,"label":"am · MALE · 8.0s","refIpa":"bəbɨɾət məwətʼəɾ mɨknjat jəbɨɾət məɾfew bəwhaw laj jɨnsafəfal","refLen":200,"refRms":0.00891,"source":{"dataset":"google/fleurs","lang":"am_et","file":"9890017105257617903.wav","split":"train","sentenceId":"352","gender":"MALE","durationS":8,"candidateIndex":0,"text":"በብረት መወጠር ምክንያት የብረት መርፌው በውሃው ላይ ይንሳፈፋል።"}},
-  // ar — ar_eg train · FEMALE · 8.0s · candidate 0
   // as — as_in train · MALE · 8.0s · candidate 0
   // "ডে'নলও পুনৰ দখল কৰাৰ পাছত ইংলেণ্ড দীৰ্ঘ সময় ধৰি শান্তিত আছিল।"
   {"id":"as","lang":"as","sex":"M","default":true,"label":"as · MALE · 8.0s","refIpa":"de nɔlɔo punɔɹ dɔkʰɔl kɔɹaɹ pasɔt iŋlendo diɹɡʱo xɔmɔj dʱɔɹi xantit asil","refLen":166,"refRms":0.0124,"source":{"dataset":"google/fleurs","lang":"as_in","file":"1000865672623428715.wav","split":"train","sentenceId":"382","gender":"MALE","durationS":8,"candidateIndex":0,"text":"ডে'নলও পুনৰ দখল কৰাৰ পাছত ইংলেণ্ড দীৰ্ঘ সময় ধৰি শান্তিত আছিল।"}},
@@ -1167,14 +1145,9 @@
   // ceb — ceb_ph train · MALE · 8.0s · candidate 0
   // "Apan, nakaangkon ang drayber og grabeng samad sa iyahang ulo."
   {"id":"ceb","lang":"ceb","sex":"M","default":true,"label":"ceb · MALE · 8.0s","refIpa":"ʔˈapan , nakaʔˈaŋkon ʔˈaŋ dɾˈajbeɾ ʔˈoɡ ɡɾˈabeŋ sˈamad sˈa ʔijˈahaŋ ʔˈulo .","refLen":160,"refRms":0.03583,"source":{"dataset":"google/fleurs","lang":"ceb_ph","file":"4170518529725037585.wav","split":"train","sentenceId":"1146","gender":"MALE","durationS":8,"candidateIndex":0,"text":"Apan, nakaangkon ang drayber og grabeng samad sa iyahang ulo."}},
-  // ckb — ckb_iq train · FEMALE · 8.0s · candidate 0
   // cmn — cmn_hans_cn train · FEMALE · 8.0s · candidate 0
   // "时间也是我们用来比较事件持续时间（长度）的方式。"
   {"id":"cmn","lang":"cmn","sex":"F","default":true,"label":"cmn · FEMALE · 8.0s","refIpa":"ʂʐ̩˧˥ t͡ɕiɛn˥˥ jiɛ˨˩˦ ʂʐ̩˥˩ wo˨˩˦ mən joŋ˥˩ laⁱ˧˥ pi˨˩˦ t͡ɕjɑᵘ˥˩ ʂʐ̩˥˩ t͡ɕiɛn˥˩ ʈ͡ʂʰʐ̩˧˥ ɕy˥˩ ʂʐ̩˧˥ t͡ɕiɛn˥˥ ʈ͡ʂɑŋ˨˩˦ tu˥˩ tɤ fɑŋ˥˥ ʂʐ̩˥˩","refLen":144,"refRms":0.11048,"source":{"dataset":"google/fleurs","lang":"cmn_hans_cn","file":"12692238939190263232.wav","split":"train","sentenceId":"609","gender":"FEMALE","durationS":8,"candidateIndex":0,"text":"时间也是我们用来比较事件持续时间（长度）的方式。"}},
-  // cs — cs_cz train · MALE · 8.0s · candidate 0
-  // cy — cy_gb train · FEMALE · 8.0s · candidate 0
-  // da — da_dk train · FEMALE · 8.0s · candidate 0
-  // de — de_de train · MALE · 8.0s · candidate 0
   // el — el_gr train · FEMALE · 8.0s · candidate 0
   // "Αρκετοί όμηροι έχουν διασωθεί και έχουν επιβεβαιωθεί ως τώρα τουλάχιστον 6 νεκροί."
   {"id":"el","lang":"el","default":true,"label":"el · FEMALE · 8.0s","refIpa":"aɾceti omiɾi exun ðiasoθi ce exun epiveveoθi os toɾa tulaçiston eksi nekɾi .","refLen":194,"refRms":0.18269,"source":{"dataset":"google/fleurs","lang":"el_gr","file":"13671207366276224782.wav","split":"train","sentenceId":"1208","gender":"FEMALE","durationS":8,"candidateIndex":0,"text":"Αρκετοί όμηροι έχουν διασωθεί και έχουν επιβεβαιωθεί ως τώρα τουλάχιστον 6 νεκροί."}},
@@ -1192,9 +1165,6 @@
   // es — es_419 train · MALE · 8.0s · candidate 0
   // "Luego de reconquistar Danelaw, Inglaterra había disfrutado de un prolongado período pacífico."
   {"id":"es","lang":"es-419","sex":"M","default":true,"label":"es-419 · MALE · 8.0s","refIpa":"lwˈeɣo ðe rekonkistˈaɾ ðanelˈaw , inɡlatˈera aβˈia ðisfɾutˈaðo ðe un pɾolonɡˈaðo peɾˈioðo pasˈifiko .","refLen":200,"refRms":0.05229,"source":{"dataset":"google/fleurs","lang":"es_419","file":"18193575960561485385.wav","split":"train","sentenceId":"382","gender":"MALE","durationS":8,"candidateIndex":0,"text":"Luego de reconquistar Danelaw, Inglaterra había disfrutado de un prolongado período pacífico."}},
-  // et — et_ee train · MALE · 8.0s · candidate 0
-  // fa — fa_ir train · FEMALE · 8.0s · candidate 0
-  // ff — ff_sn train · FEMALE · 8.0s · candidate 0
   // fi — fi_fi train · MALE · 8.0s · candidate 0
   // "Kylmä sää on ehkä ainut oikea vaara, jonka valmistautumaton kohtaa."
   {"id":"fi","lang":"fi","sex":"M","default":true,"label":"fi · MALE · 8.0s","refIpa":"kylmæ sæː on ehkæ ɑi̯nut oi̯keɑ ʋɑːrɑ , joŋkɑ ʋɑlmistɑu̯tumɑton kohtɑː .","refLen":140,"refRms":0.07623,"source":{"dataset":"google/fleurs","lang":"fi_fi","file":"14889064884728589470.wav","split":"train","sentenceId":"656","gender":"MALE","durationS":8,"candidateIndex":0,"text":"Kylmä sää on ehkä ainut oikea vaara, jonka valmistautumaton kohtaa."}},
@@ -1213,11 +1183,9 @@
   // gu — gu_in train · FEMALE · 8.0s · candidate 0
   // "હુહાને અને પ્રાઇસને 16 ફેબ્રુઆરીએ વેસ્ટમિન્સ્ટર મેજિસ્ટ્રેટ કોર્ટમાં હાજર થવાનું છે."
   {"id":"gu","lang":"gu","sex":"F","default":true,"label":"gu · FEMALE · 8.0s","refIpa":"ɦˈuɦane ˈəne pɾaˈisne sˈoɭ pʰˈebɾuaɾie ʋesʈəmˈinsʈəɾ med͡ʒˈisʈɾeʈ kˈoɾʈəmã ɦˈad͡ʒəɾ t̪ʰˈəʋanũ t͡ʃʰˈe .","refLen":173,"refRms":0.03501,"source":{"dataset":"google/fleurs","lang":"gu_in","file":"4526516391847227846.wav","split":"train","sentenceId":"1110","gender":"FEMALE","durationS":8,"candidateIndex":0,"text":"હુહાને અને પ્રાઇસને 16 ફેબ્રુઆરીએ વેસ્ટમિન્સ્ટર મેજિસ્ટ્રેટ કોર્ટમાં હાજર થવાનું છે."}},
-  // ha — ha_ng train · FEMALE · 8.0s · candidate 0
   // he — he_il train · FEMALE · 8.0s · candidate 0
   // "מרוצ'ידורה סיימה בראש, בפער של שש נקודות מנוזה במקום השני."
   {"id":"he","lang":"he","default":true,"label":"he · FEMALE · 8.0s","refIpa":"mʁvt͡ʃjdvʁ sijma beʁoʃ , bepaʔaʁ ʃel ʃeʃ nkudot menuza bamakom haʃeni .","refLen":195,"refRms":0.04958,"source":{"dataset":"google/fleurs","lang":"he_il","file":"2903963519130674267.wav","split":"train","sentenceId":"79","gender":"FEMALE","durationS":8,"candidateIndex":0,"text":"מרוצ'ידורה סיימה בראש, בפער של שש נקודות מנוזה במקום השני."}},
-  // hi — hi_in train · MALE · 8.0s · candidate 0
   // hr — hr_hr train · FEMALE · 8.0s · candidate 0
   // "Vlasti su službeno samo potvrdile uhićenje."
   {"id":"hr","lang":"hr","default":true,"label":"hr · FEMALE · 8.0s","refIpa":"ʋlˈaː˩˥sti su slˈu˥˩ʒbeno sˈa˥˩mo pˈotʋrdile ˈuxit͡ɕeɲe .","refLen":200,"refRms":0.00793,"source":{"dataset":"google/fleurs","lang":"hr_hr","file":"10521880704077861190.wav","split":"train","sentenceId":"89","gender":"FEMALE","durationS":8,"candidateIndex":0,"text":"Vlasti su službeno samo potvrdile uhićenje."}},
@@ -1236,7 +1204,6 @@
   // is — is_is train · MALE · 8.0s · candidate 0
   // "Þar af leiðandi Delhi Belly plágan, bölvun farósins, hefnd Montezuma og fjölmargir vinir þeirra."
   {"id":"is","lang":"is","sex":"M","default":true,"label":"is · MALE · 8.0s","refIpa":"θˈar ˈav lˈeiðantɪ tˈɛlhɪ pˈɛtlɪ hplˈauɣan , pˈœlvʏn fˈarousɪns , hˈɛpnt mˈɔntɛsʏma ˈɔɣ fjˈœlmarcɪr vˈɪnɪr θˈeira .","refLen":172,"refRms":0.02081,"source":{"dataset":"google/fleurs","lang":"is_is","file":"7352111378790356599.wav","split":"train","sentenceId":"865","gender":"MALE","durationS":8,"candidateIndex":0,"text":"Þar af leiðandi Delhi Belly plágan, bölvun farósins, hefnd Montezuma og fjölmargir vinir þeirra."}},
-  // it — it_it train · FEMALE · 8.0s · candidate 0
   // ja — ja_jp train · FEMALE · 8.0s · candidate 0
   // "最初の経済改革は、鄧小平の指導の下で進められました。"
   {"id":"ja","lang":"ja","sex":"F","default":true,"label":"ja · FEMALE · 8.0s","refIpa":"säiɕo̞no̞ ke̞ːzäikäikäkɯᵝwä to̞ːko̞däiɾäno̞ ɕido̞ːno̞ mo̞to̞ꜜde̞ sɯᵝsɯᵝme̞ɾäɾe̞mäɕitä","refLen":165,"refRms":0.06116,"source":{"dataset":"google/fleurs","lang":"ja_jp","file":"1216710518092786233.wav","split":"train","sentenceId":"320","gender":"FEMALE","durationS":8,"candidateIndex":0,"text":"最初の経済改革は、鄧小平の指導の下で進められました。"}},
@@ -1264,35 +1231,27 @@
   // ko — ko_kr train · MALE · 8.0s · candidate 0
   // "그는 1998년에 자신의 이야기를 책으려 펴냈다."
   {"id":"ko","lang":"ko","sex":"M","default":true,"label":"ko · MALE · 8.0s","refIpa":"kɯnˈɯn t͡ɕʰˈɘnɡubɛk̚k͈usip̚pʰɐɭɭjɘne t͡ɕɐsˈinɯi ijɐɡiɾˈɯɭ t͡ɕʰˈɛɡɯɾjɘ pʰjɘnˈɛt̚t͈ɐ .","refLen":200,"refRms":0.09928,"source":{"dataset":"google/fleurs","lang":"ko_kr","file":"13280558185022109643.wav","split":"train","sentenceId":"304","gender":"MALE","durationS":8,"candidateIndex":0,"text":"그는 1998년에 자신의 이야기를 책으려 펴냈다."}},
-  // ky — ky_kg train · FEMALE · 8.0s · candidate 0
   // lb — lb_lu train · MALE · 8.0s · candidate 0
   // "D'Hangi ginn dacks verwent, fir en traditionellt Owesiessen am Brotstil ze kachen."
   {"id":"lb","lang":"lb","sex":"M","default":true,"label":"lb · MALE · 8.0s","refIpa":"dhˈaŋi ɡˈin dˈaks fərvˈænt , fˈir ˈæn trˈaditionəlt ˈovəziəsən ˈam brˈotstil t͡sˈæ kˈaχən .","refLen":131,"refRms":0.03355,"source":{"dataset":"google/fleurs","lang":"lb_lu","file":"7488618567752180619.wav","split":"train","sentenceId":"852","gender":"MALE","durationS":8,"candidateIndex":0,"text":"D'Hangi ginn dacks verwent, fir en traditionellt Owesiessen am Brotstil ze kachen."}},
-  // lg — lg_ug train · MALE · 8.0s · candidate 0
   // ln — ln_cd train · MALE · 8.0s · candidate 0
   // "Balobaki ete liwa wana eutaki na maladi ya kansere ya kati ya poumon."
   {"id":"ln","lang":"ln","sex":"M","default":true,"label":"ln · MALE · 8.0s","refIpa":"ba˩lo˩ba˩ki˩ e˩te˩ li˩wa˩ wa˩na˩ e˩u˩ta˩ki˩ na˩ ma˩la˩di˩ ja˩ ka˩ⁿse˩ɾe˩ ja˩ ka˩ti˩ ja˩ po˩u˩mo˩n .","refLen":187,"refRms":0.02284,"source":{"dataset":"google/fleurs","lang":"ln_cd","file":"7008067350844064265.wav","split":"train","sentenceId":"307","gender":"MALE","durationS":8,"candidateIndex":0,"text":"Balobaki ete liwa wana eutaki na maladi ya kansere ya kati ya poumon."}},
   // lo — lo_la train · MALE · 8.0s · candidate 0
   // "ບາງຄົນອາດຈະບໍ່ເຫັນດີນຳແຕ່ຂ້ອຍບໍ່ສົນໃຈ."
   {"id":"lo","lang":"lo","sex":"M","default":true,"label":"lo · MALE · 8.0s","refIpa":"baː˩ŋ.kʰo˧˥n.ʔaː˧˩t̚.t͡ɕa˧˥.bɔː˧.he˩n.diː˩.na˧˥m.tɛː˧.kʰɔː˧˩j.bɔː˧.so˩n.t͡ɕa˩j .","refLen":190,"refRms":0.008,"source":{"dataset":"google/fleurs","lang":"lo_la","file":"13044865807630795012.wav","split":"train","sentenceId":"245","gender":"MALE","durationS":8,"candidateIndex":0,"text":"ບາງຄົນອາດຈະບໍ່ເຫັນດີນຳແຕ່ຂ້ອຍບໍ່ສົນໃຈ."}},
-  // lt — lt_lt train · MALE · 8.0s · candidate 0
-  // luo — luo_ke train · MALE · 8.0s · candidate 0
   // lv — lv_lv train · MALE · 8.0s · candidate 0
   // "Pirms plānotās svētdienas spēles pret ¨Bologna¨ viņš palika komandas viesnīcā."
   {"id":"lv","lang":"lv","sex":"M","default":true,"label":"lv · MALE · 8.0s","refIpa":"pˈirms plˈaːnuɔ̯taːs svˈɛːtdiɛnas spˈɛːlɛs prˈɛt bˈuɔ̯luɔ̯ɡna vˈiɲʃ pˈalika kˈuɔ̯mandas vˈiɛsniːt͡saː .","refLen":183,"refRms":0.06142,"source":{"dataset":"google/fleurs","lang":"lv_lv","file":"591128999568697143.wav","split":"train","sentenceId":"186","gender":"MALE","durationS":8,"candidateIndex":0,"text":"Pirms plānotās svētdienas spēles pret ¨Bologna¨ viņš palika komandas viesnīcā."}},
   // mi — mi_nz train · FEMALE · 8.0s · candidate 0
   // ""E oho mauri ana mātou katoa," te kōrero a te whaea."
   {"id":"mi","lang":"mi","sex":"F","default":true,"label":"mi · FEMALE · 8.0s","refIpa":"e oho mauɾi ana maːtou katoa , te koːɾeɾo a te ɸaea .","refLen":200,"refRms":0.02484,"source":{"dataset":"google/fleurs","lang":"mi_nz","file":"8816399537992464850.wav","split":"train","sentenceId":"235","gender":"FEMALE","durationS":8,"candidateIndex":0,"text":"\"E oho mauri ana mātou katoa,\" te kōrero a te whaea."}},
-  // mk — mk_mk train · FEMALE · 8.0s · candidate 0
   // ml — ml_in train · MALE · 8.0s · candidate 0
   // "ഒരു പ്രത്യേക രോഗലക്ഷണത്തിന്റെ പല തരങ്ങൾ കാണിക്കുന്ന വ്യക്തികൾ പോളിമോർഫിക് ആണ്."
   {"id":"ml","lang":"ml","default":true,"label":"ml · MALE · 8.0s","refIpa":"ˈoɾu pɾˈat̪jeːɡa ɾˈoːɡalakʂaɳat̪ːinre pˈala t̪ˈaɾaŋːaɭ kˈaːɳikːunːa ʋjˈakt̪iɡaɭ pˈoːɭimoːɾpʰikɨ ˈaːɳɨ .","refLen":182,"refRms":0.03038,"source":{"dataset":"google/fleurs","lang":"ml_in","file":"11512956132294487135.wav","split":"train","sentenceId":"572","gender":"MALE","durationS":8,"candidateIndex":0,"text":"ഒരു പ്രത്യേക രോഗലക്ഷണത്തിന്റെ പല തരങ്ങൾ കാണിക്കുന്ന വ്യക്തികൾ പോളിമോർഫിക് ആണ്."}},
-  // mn — mn_mn train · FEMALE · 8.0s · candidate 0
-  // mr — mr_in train · FEMALE · 8.0s · candidate 0
   // ms — ms_my train · FEMALE · 8.0s · candidate 0
   // "Penjara Abu Ghraib di Iraq telah dijilat api ketika sebuah rusuhan."
   {"id":"ms","lang":"ms","sex":"F","default":true,"label":"ms · FEMALE · 8.0s","refIpa":"pənd͡ʒˈara ˈabu ɣrˈaib dˈi ˈiraʔ təlˈah did͡ʒˈilat ˈapi kətˈika səbˈuah rusˈuhan .","refLen":200,"refRms":0.0064,"source":{"dataset":"google/fleurs","lang":"ms_my","file":"13813047758959826376.wav","split":"train","sentenceId":"30","gender":"FEMALE","durationS":8,"candidateIndex":0,"text":"Penjara Abu Ghraib di Iraq telah dijilat api ketika sebuah rusuhan."}},
-  // mt — mt_mt train · MALE · 8.0s · candidate 0
   // my — my_mm train · MALE · 8.0s · candidate 0
   // "ပါရှန်းစကားမှာ အတော်လေး လွယ်ကူပြီး အများစုမှာ သမားရိုးကျ သဒ္ဒါ ဖြစ်ပါသည်။"
   {"id":"my","lang":"my","default":true,"label":"my · MALE · 8.0s","refIpa":"pa˨ʃa˥˩ɴ zəɡa˥˩ m̥a˨ ʔətɔ˨ le˥˩ la˨ku˨pji˥˩ ʔəmja˥˩zu˥ˀ m̥a˨ θəma˥˩ jo˥˩t͡ɕa˥ˀ ðəda˨ pʰjɪʔpa˨θi˨","refLen":122,"refRms":0.00615,"source":{"dataset":"google/fleurs","lang":"my_mm","file":"11324658165973707028.wav","split":"train","sentenceId":"1186","gender":"MALE","durationS":8,"candidateIndex":0,"text":"ပါရှန်းစကားမှာ အတော်လေး လွယ်ကူပြီး အများစုမှာ သမားရိုးကျ သဒ္ဒါ ဖြစ်ပါသည်။"}},
@@ -1302,7 +1261,6 @@
   // ne — ne_np train · FEMALE · 8.0s · candidate 0
   // "त्यस समयमा उक्त क्षेत्रबाट करिब 100 बासिन्दाहरूलाई बाहिर निकालियो।"
   {"id":"ne","lang":"ne","sex":"F","default":true,"label":"ne · FEMALE · 8.0s","refIpa":"t̪jˈʌs sʌmˈʌjma ˈukt̪ʌ ksˈet̪ɾʌbaʈ kˈʌɾib ˈek sˈʌj basind̪ˈaɦɾulai bˈaɦiɾ nˈikalijo","refLen":154,"refRms":0.00571,"source":{"dataset":"google/fleurs","lang":"ne_np","file":"6533370452354513102.wav","split":"train","sentenceId":"214","gender":"FEMALE","durationS":8,"candidateIndex":0,"text":"त्यस समयमा उक्त क्षेत्रबाट करिब 100 बासिन्दाहरूलाई बाहिर निकालियो।"}},
-  // nl — nl_nl train · FEMALE · 8.0s · candidate 0
   // nso — nso_za train · FEMALE · 8.0s · candidate 0
   // "Ka moka ba tšabetše morago moo kotsi e diregilego."
   {"id":"nso","lang":"nso","sex":"F","default":true,"label":"nso · FEMALE · 8.0s","refIpa":"kʼa mokʼa ba t͡ʃʼabet͡ʃʼe moraxo moo kʼot͡sʼi e direxilexo .","refLen":105,"refRms":0.03061,"source":{"dataset":"google/fleurs","lang":"nso_za","file":"494613524960521405.wav","split":"train","sentenceId":"1473","gender":"FEMALE","durationS":8,"candidateIndex":0,"text":"Ka moka ba tšabetše morago moo kotsi e diregilego."}},
@@ -1318,21 +1276,15 @@
   // or — or_in train · MALE · 8.0s · candidate 0
   // "କାଟାଲାନର ରାଜଧାନୀକୁ ଯିବା ପରଠାରୁ ଭିଡାଲ କ୍ଲବ ପାଇଁ ୪୯ ଟି ଖେଳ ଖେଳିସାରିଲେଣି ।"
   {"id":"or","lang":"or","sex":"M","default":true,"label":"or · MALE · 8.0s","refIpa":"kˈaʈalan̪ɔɾɔ ˈɾad͡ʒɔd̪ʱan̪iku d͡ʒˈiba pˈɔɾɔʈʰaɾu bʱˈiɖalɔ klˈɔbɔ pˈaĩ ˈɔɳɔt͡ʃasɔ ʈˈi kʰˈeɭɔ kʰˈeɭisaɾileɳi","refLen":173,"refRms":0.03323,"source":{"dataset":"google/fleurs","lang":"or_in","file":"18399407860647008563.wav","split":"train","sentenceId":"7","gender":"MALE","durationS":8,"candidateIndex":0,"text":"କାଟାଲାନର ରାଜଧାନୀକୁ ଯିବା ପରଠାରୁ ଭିଡାଲ କ୍ଲବ ପାଇଁ ୪୯ ଟି ଖେଳ ଖେଳିସାରିଲେଣି ।"}},
-  // pa — pa_in train · FEMALE · 8.0s · candidate 0
-  // pl — pl_pl train · MALE · 8.0s · candidate 0
-  // ps — ps_af train · MALE · 8.0s · candidate 0
   // pt — pt_br train · FEMALE · 8.0s · candidate 0
   // "Os computadores de hoje são usados para manipular fotos e vídeos."
   {"id":"pt","lang":"pt-BR","default":true,"label":"pt-BR · FEMALE · 8.0s","refIpa":"os kõputadˈoɾis de ˈoʒi sˈɐ̃w̃ uzˈadus pˈaɾɐ manipulˈaɾ fˈotus e vˈid͡ʒjus .","refLen":200,"refRms":0.00853,"source":{"dataset":"google/fleurs","lang":"pt_br","file":"2959682152840307688.wav","split":"train","sentenceId":"611","gender":"FEMALE","durationS":8,"candidateIndex":0,"text":"Os computadores de hoje são usados para manipular fotos e vídeos."}},
-  // ro — ro_ro train · FEMALE · 8.0s · candidate 0
   // ru — ru_ru train · FEMALE · 8.0s · candidate 0
   // "Местные СМИ сообщают, что в аэропорту по пути на вызов перевернулась пожарная машина."
   {"id":"ru","lang":"ru","sex":"F","default":true,"label":"ru · FEMALE · 8.0s","refIpa":"mʲˈestnɨje smʲi səɐpɕːˈæjʊt , ʂto f ɐɪrɐpˈortʊ po pʊtʲˈi na vˈɨzəf pʲɪrʲɪvʲɪrnˈuɫəsʲ pɐʐˈarnəjə mɐʂˈɨnə .","refLen":152,"refRms":0.0426,"source":{"dataset":"google/fleurs","lang":"ru_ru","file":"10164478778441729831.wav","split":"train","sentenceId":"5","gender":"FEMALE","durationS":8,"candidateIndex":0,"text":"Местные СМИ сообщают, что в аэропорту по пути на вызов перевернулась пожарная машина."}},
   // sd — sd_in train · MALE · 8.0s · candidate 0
   // "پٽ مين صلاح ڏني تہ ايندڙ هفتي تائين حالتون بهتر نہ ٿينديون."
   {"id":"sd","lang":"sd","sex":"M","default":true,"label":"sd · MALE · 8.0s","refIpa":"pˈʊʈʊ mˈiːnə sʊlˈaːhʊ ɗˈəniː t̪ˈə ʊˈɛːnd̪ɪɽʊ hˈɪft̪iː t̪aːˈiːnʊ hˈaːlt̪uːnʊ bˈeːʰt̪əɾ nˈə t̪ʰˈeːnd̪iːuːnʊ .","refLen":200,"refRms":0.0519,"source":{"dataset":"google/fleurs","lang":"sd_in","file":"12722547757843827439.wav","split":"train","sentenceId":"86","gender":"MALE","durationS":8,"candidateIndex":0,"text":"پٽ مين صلاح ڏني تہ ايندڙ هفتي تائين حالتون بهتر نہ ٿينديون."}},
-  // sk — sk_sk train · MALE · 8.0s · candidate 0
-  // sl — sl_si train · FEMALE · 8.0s · candidate 0
   // sn — sn_zw train · MALE · 8.0s · candidate 0
   // "Unogona kuona mitambo mishoma kuno, pane dzimwe nguva dzegore."
   {"id":"sn","lang":"sn","sex":"M","default":true,"label":"sn · MALE · 8.0s","refIpa":"unoɡona kuona mitaᵐbo miʃoma kuno , pane d͡zimwe ᵑɡuʋa d͡zeɡore .","refLen":126,"refRms":0.00794,"source":{"dataset":"google/fleurs","lang":"sn_zw","file":"11787810573186180901.wav","split":"train","sentenceId":"1366","gender":"MALE","durationS":8,"candidateIndex":0,"text":"Unogona kuona mitambo mishoma kuno, pane dzimwe nguva dzegore."}},
@@ -1345,22 +1297,15 @@
   // sv — sv_se train · MALE · 8.0s · candidate 0
   // "Zayat klarade sig oskadd ur olyckan."
   {"id":"sv","lang":"sv","sex":"M","default":true,"label":"sv · MALE · 8.0s","refIpa":"sˈɑ̀ːʏat klˈɑ̀ːradɛ sɛj ˈùːskˌadː ʉːr ˈùːlˌʏkːan .","refLen":93,"refRms":0.01552,"source":{"dataset":"google/fleurs","lang":"sv_se","file":"4166010889213679075.wav","split":"train","sentenceId":"341","gender":"MALE","durationS":8,"candidateIndex":0,"text":"Zayat klarade sig oskadd ur olyckan."}},
-  // sw — sw_ke train · FEMALE · 8.0s · candidate 0
   // ta — ta_in train · FEMALE · 8.0s · candidate 0
   // """"நாங்கள் அனைவரும் வெறுமனே அதிர்ச்சியில் இருந்தோம்,"" என்று தாய் கூறினார்.""
   {"id":"ta","lang":"ta","sex":"F","default":true,"label":"ta · FEMALE · 8.0s","refIpa":"n̪ˈaːŋɡɐɭ ˈanaᶦʋˌɐɾʊm ʋˈerʊmˌɐneː ˈad̪ɪrt͡ɕːˌɪjɪl ˈɪɾʊn̪d̪oːm , ˈenrʊ t̪ˈaːj kˈuːrɪnaːr .","refLen":131,"refRms":0.11909,"source":{"dataset":"google/fleurs","lang":"ta_in","file":"11656272741337264502.wav","split":"train","sentenceId":"235","gender":"FEMALE","durationS":8,"candidateIndex":0,"text":"\"\"\"நாங்கள் அனைவரும் வெறுமனே அதிர்ச்சியில் இருந்தோம்,\"\" என்று தாய் கூறினார்.\""}},
-  // te — te_in train · FEMALE · 8.0s · candidate 0
   // tg — tg_tj train · FEMALE · 8.0s · candidate 0
   // "Ҳуҷайра аз калимаи лотинии "cella" гирифта шуда, маънояш ҳуҷраи хурд мебошад."
   {"id":"tg","lang":"tg","default":true,"label":"tg · FEMALE · 8.0s","refIpa":"hud͡ʒajrˈa ˈaz kalimajˈi lɔtinijˈi sˈɛlə ɡiriftˈa ʃudˈa , maʔnɔjˈaʃ hud͡ʒrajˈi χˈurd mebɔʃˈad .","refLen":195,"refRms":0.00241,"source":{"dataset":"google/fleurs","lang":"tg_tj","file":"9139656488310288776.wav","split":"train","sentenceId":"597","gender":"FEMALE","durationS":8,"candidateIndex":0,"text":"Ҳуҷайра аз калимаи лотинии \"cella\" гирифта шуда, маънояш ҳуҷраи хурд мебошад."}},
-  // th — th_th train · FEMALE · 8.0s · candidate 0
-  // tr — tr_tr train · MALE · 8.0s · candidate 0
-  // uk — uk_ua train · MALE · 8.0s · candidate 0
   // umb — umb_ao train · FEMALE · 7.8s · candidate 0
   // "Vamwe citava okuti kavatava, pole ame sicĩ."
   {"id":"umb","lang":"umb","sex":"F","default":true,"label":"umb · FEMALE · 7.8s","refIpa":"vamwe t͡ʃitava okuti kavatava , pole ame sit͡ʃĩ .","refLen":183,"refRms":0.05046,"source":{"dataset":"google/fleurs","lang":"umb_ao","file":"6031985340885847298.wav","split":"train","sentenceId":"245","gender":"FEMALE","durationS":7.8,"candidateIndex":0,"text":"Vamwe citava okuti kavatava, pole ame sicĩ."}},
-  // ur — ur_pk train · MALE · 8.0s · candidate 0
-  // uz — uz_uz train · MALE · 8.0s · candidate 0
   // vi — vi_vn train · FEMALE · 8.0s · candidate 0
   // "Tế bào là đơn vị chức năng và cấu tạo nhỏ nhất trong cơ thể (vật) sống."
   {"id":"vi","lang":"vi","default":true,"label":"vi · FEMALE · 8.0s","refIpa":"t̪ˈe˧˥ bˈaː˨˩w lˈaː˨˩ ɗˈəː˧n vˈi˨˩ˀ t͡ɕˈɨ˧˥k nˈa˧ŋ vˈaː˨˩ kˈə˧˥w t̪ˈaː˨˩ˀw ɲˈɔ˧˩˧ ɲˈə˧˥t̪ t͡ɕˈɔ˧ŋ kˈəː˧ tʰˈe˧˩˧ vˈə˨˩ˀt̪ sˈo˧˥ŋ .","refLen":142,"refRms":0.02891,"source":{"dataset":"google/fleurs","lang":"vi_vn","file":"6453348556370090500.wav","split":"train","sentenceId":"596","gender":"FEMALE","durationS":8,"candidateIndex":0,"text":"Tế bào là đơn vị chức năng và cấu tạo nhỏ nhất trong cơ thể (vật) sống."}},
@@ -1373,7 +1318,6 @@
   // yo — yo_ng train · FEMALE · 8.0s · candidate 0
   // "O gba “Akọni Soviet Union” oyè tó ga jú ní Soviet Union, fún iṣẹ́ rẹ̀."
   {"id":"yo","lang":"yo","sex":"F","default":true,"label":"yo · FEMALE · 8.0s","refIpa":"o˧ ɡ͡ba˧ a˧kɔ˧ni˧ so˧vi˧e˧t u˧ni˧õ˧ o˧je˩ to˥ ɡa˧ d͡ʒu˥ ni˥ so˧vi˧e˧t u˧ni˧õ˧ , fũ˥ i˧ʃɛ˥ ɾɛ˩ .","refLen":147,"refRms":0.02853,"source":{"dataset":"google/fleurs","lang":"yo_ng","file":"6633159996658837957.wav","split":"train","sentenceId":"255","gender":"FEMALE","durationS":8,"candidateIndex":0,"text":"O gba “Akọni Soviet Union” oyè tó ga jú ní Soviet Union, fún iṣẹ́ rẹ̀."}},
-  // yue — yue_hant_hk train · FEMALE · 8.0s · candidate 0
   // zu — zu_za train · MALE · 7.9s · candidate 0
   // "Ama-phothon mancane kakhulu kunezinto ezenza ama-athomu!"
   {"id":"zu","lang":"zu","sex":"M","default":true,"label":"zu · MALE · 7.9s","refIpa":"ˈaːma pʰˈɔːtʰɔn maŋǀˈaːnɛ kʼa˩kʰˈuː˥˩lu˩ kʼunɛz̤ˈiːntʼɔ ɛz̤ˈɛːnz̤a ˈaːma atʰˈɔːmu !","refLen":120,"refRms":0.10961,"source":{"dataset":"google/fleurs","lang":"zu_za","file":"6255021533175448824.wav","split":"train","sentenceId":"362","gender":"MALE","durationS":7.92,"candidateIndex":0,"text":"Ama-phothon mancane kakhulu kunezinto ezenza ama-athomu!"}}
