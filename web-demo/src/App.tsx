@@ -225,7 +225,7 @@ export default function App() {
       {/* Shown once, not on error: the page works here, it just cannot KEEP the model. Saying so up
           front beats letting someone re-download 472 MB twice before wondering why. */}
       {cacheUnavailableReason && <p className="notice">{cacheUnavailableReason}</p>}
-      {threadingUnavailableReason() && <p className="notice">{threadingUnavailableReason()}</p>}
+      {threadingUnavailableReason && <p className="notice">{threadingUnavailableReason}</p>}
 
       {ipa && (
         <section className="result">

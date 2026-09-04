@@ -118,13 +118,28 @@ async function fetchUncached(url: string, onProgress?: (p: DownloadProgress) => 
   if (!res.ok) throw new Error(`fetch ${url} -> ${res.status}`);
   const total = Number(res.headers.get("Content-Length") ?? 0);
   const reader = res.body!.getReader();
+  // ⚠ WRITE STRAIGHT INTO THE FINAL BUFFER when the length is known. Collecting chunks and copying
+  // them afterwards holds the model TWICE — ~940 MB at the join for a 470 MB transformer, on the
+  // path taken by machines that already lack the cache. Falling back to chunk-collection only when
+  // the server sends no Content-Length keeps that cost for the case that cannot avoid it.
+  if (total > 0) {
+    const out = new Uint8Array(total);
+    let loaded = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      out.set(value, loaded); loaded += value.byteLength;
+      onProgress?.({ url, loaded, total, cached: false });
+    }
+    return out.buffer;
+  }
   const parts: Uint8Array[] = [];
   let loaded = 0;
   for (;;) {
     const { done, value } = await reader.read();
     if (done) break;
     parts.push(value); loaded += value.byteLength;
-    onProgress?.({ url, loaded, total: total || loaded, cached: false });
+    onProgress?.({ url, loaded, total: loaded, cached: false });
   }
   const out = new Uint8Array(loaded);
   let o = 0; for (const p of parts) { out.set(p, o); o += p.byteLength; }

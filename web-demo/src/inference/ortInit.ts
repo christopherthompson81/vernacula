@@ -47,12 +47,20 @@ function wasmThreads(): number {
   return Math.max(1, Math.min(8, Math.floor((navigator.hardwareConcurrency ?? 2) / 2)));
 }
 
-/** Why inference is single-threaded, for the UI. Null when threads are available. */
-export function threadingUnavailableReason(): string | null {
-  if (globalThis.crossOriginIsolated && typeof SharedArrayBuffer !== "undefined") return null;
-  return `single-threaded on ${location.origin} — WASM threads need cross-origin isolation and a `
-    + "secure context, so generation is several times slower here. Use localhost or https.";
-}
+/**
+ * Why inference is single-threaded, for the UI. Null when threads are available.
+ *
+ * A const, not a function: it reads only globals fixed for the document's lifetime, and as a
+ * function the JSX called it twice on every render. It also deliberately does NOT repeat the
+ * "use localhost or https" remedy — the cache notice says that, and on a plain-HTTP LAN origin both
+ * notices appear together, so the reader would be told the same thing twice in consecutive lines.
+ * The two causes are genuinely different (a secure context vs the COOP/COEP pair) and can occur
+ * apart, so this names its own.
+ */
+export const threadingUnavailableReason: string | null =
+  globalThis.crossOriginIsolated && typeof SharedArrayBuffer !== "undefined" ? null
+    : "single-threaded — WASM threads need SharedArrayBuffer, so a cross-origin-isolated page "
+      + "(COOP/COEP) served from a secure context. Generation is several times slower without them.";
 
 let cached: Promise<Ort> | undefined;
 
