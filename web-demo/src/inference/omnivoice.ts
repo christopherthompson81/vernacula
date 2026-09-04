@@ -239,16 +239,22 @@ export class OmniVoice {
 
   private async runTransformer(ids: BigInt64Array, audioMask: Uint8Array,
                                attn: Uint8Array, seq: number): Promise<Float32Array> {
-    // ⚠ COPY THE INPUT, DO NOT HAND OVER THE LIVE BUFFER. The diffusion loop mutates input_ids in
+    // ⚠ COPY EVERY INPUT, DO NOT HAND OVER A LIVE BUFFER. The diffusion loop mutates input_ids in
     // place every step and would otherwise pass the same backing array each time. The C# port hit
     // exactly this on CUDA: a bound tensor uploads to the device ONCE, and in-place mutation
     // between runs is ignored, so every step silently re-ran on the step-0 all-mask input
     // (docs/omnivoice_onnx_investigation.md, "IO-binding root cause"). A fresh copy per call costs
     // a few hundred KB and removes the whole class of bug.
+    //
+    // ⚠ `attention_mask` USED TO BE THE EXCEPTION, on the reasoning that it is never mutated. That
+    // held until `env.wasm.proxy` moved the session into a worker: ORT TRANSFERS input buffers
+    // across, which DETACHES them, so the second step threw "attempting to access detached
+    // ArrayBuffer" and every generation died after step 1. Not-mutated was never the property that
+    // mattered; not-detached is. seq² bytes per step is nothing beside a forward pass.
     const feeds = {
       input_ids: new this.ort.Tensor("int64", ids.slice(), [1, NUM_CODEBOOKS, seq]),
       audio_mask: new this.ort.Tensor("bool", audioMask.slice(), [1, seq]),
-      attention_mask: new this.ort.Tensor("bool", attn, [1, 1, seq, seq]),
+      attention_mask: new this.ort.Tensor("bool", attn.slice(), [1, 1, seq, seq]),
     };
     const out = await this.transformer.run(feeds);
     return out.logits.data as Float32Array;
