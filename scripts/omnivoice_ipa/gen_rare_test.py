@@ -1,66 +1,107 @@
 #!/usr/bin/env python3
-"""Rare-primitive validation: does the IPA adapter render sounds English LACKS —
-the phones the 24-lang corpus was balanced for? Base vs fine-tuned, natural duration,
-on held-out dev utterances that contain each distinctive primitive.
+"""Rare-primitive regression test: does the adapter still render the sounds English LACKS?
 
-Not full-sentence intelligibility (unjudgeable for these langs) but presence/absence of
-the characteristic sound (click / ejective / prenasal / tone), audible + spectrally checkable.
+The corpus is balanced so specific languages OWN specific primitives — Zulu the clicks (ǀ ǁ ǃ) and
+breathy voice, Hausa and Amharic the ejectives, Sindhi the implosives. A fine-tune that improves
+English can quietly cost those, and nothing in the loss curve would say so. This renders held-out dev
+utterances that contain each primitive, base vs fine-tuned, for a listening and spectral check.
+
+Not full-sentence intelligibility (unjudgeable for these languages) but presence or absence of the
+characteristic sound, which is audible.
+
+⚠ UTTERANCES ARE SELECTED BY PRIMITIVE CONTENT, NOT BY HARDCODED ID. The previous version pinned
+eight dev ids; grouping the train/dev split by `sentence_id` (so the splits are text-disjoint)
+reshuffled every dev set and FIVE OF THE EIGHT ids no longer existed. A test that names its fixtures
+by id silently stops testing what it claims the moment the split changes -- and this one had also
+gone stale against `gen()`, which lost its `duration` parameter when duration forcing was dropped,
+so it raised TypeError before it got as far as the missing ids.
+
+  python3 -m scripts.omnivoice_ipa.gen_rare_test --adapter .../checkpoints_v7/checkpoint-6000
 """
-import json, os
+import argparse, json, os
+
 import numpy as np
 import soundfile as sf
 import torch
 from omnivoice.models.omnivoice import OmniVoice
-from scripts.omnivoice_ipa.gen_accept_test import decode_codes, gen, BASE, ROOT, SR
 
-OUT = f"{ROOT}/train/rare_test_v2"
-ADAPTER = f"{ROOT}/train/checkpoints_v2/checkpoint-4000"
+from scripts.omnivoice_ipa.gen_accept_test import (BASE, ROOT, SR, REF_MAX_S, REF_MIN_S,
+                                                   decode_codes, durations, gen, pick_reference)
 
-# (lang, ref_id, target_id, label) — v2 focus: Sindhi implosives (incl newly-covered ɠ),
-# Hausa retest, Amharic ejectives (new lang), Zulu clicks (no-regression check).
+# (lang, label, the primitives that language is the greedy-cover OWNER of)
 TESTS = [
-    ("sd_in", "10374408950024345416", "10051174211934897563", "implosives_g"),
-    ("ha_ng", "10314810220142301751", "10102412684314580007", "implosive_ejective"),
-    ("am_et", "10117353659503784748", "10372921613758145905", "ejectives"),
-    ("zu_za", "10386821834488770056", "10120271725404688148", "clicks_regression"),
+    ("sd_in", "implosives",         ["ɓ", "ɗ", "ʄ", "ɠ"]),
+    ("ha_ng", "implosive_ejective", ["ɓ", "ɗ", "kʼ", "sʼ"]),
+    ("am_et", "ejectives",          ["pʼ", "tʼ", "kʼ", "sʼ", "t͡ʃʼ"]),
+    ("zu_za", "clicks",             ["ǀ", "ǁ", "ǃ", "ɮ", "̤"]),
 ]
 
 
-def load_case(lang, ref_id, target_id):
-    codes = np.load(f"{ROOT}/corpus/tokens/codes_{lang}.npz")
-    ipa = {json.loads(l)["id"]: json.loads(l)["text"]
-           for l in open(f"{ROOT}/train/shards/{lang}/dev.jsonl")}
-    ref_wav = decode_codes(codes[ref_id])
-    return ref_wav, ipa[ref_id], ipa[target_id], decode_codes(codes[target_id])
+def pick(lang: str, prims: list[str], dur: dict[str, float]) -> tuple[str, str, str, str]:
+    """(ref_id, ref_ipa, tgt_id, tgt_ipa) — richest dev utterance for the target, best-sized for the ref.
+
+    ⚠ NOT simply the longest. Choosing the longest dev utterance to avoid a thin reference produced
+    29.6 s clips and the model's own ">20s degrades voice cloning" warning. Longest WITHIN the usable
+    band, falling back to whatever is closest to it if nothing lands inside.
+    """
+    rows = [json.loads(l) for l in open(f"{ROOT}/train/shards/{lang}/dev.jsonl") if l.strip()]
+    score = lambda r: sum(r["text"].count(p) for p in prims)
+    tgt = max(rows, key=score)
+    ref = pick_reference(rows, dur, exclude_id=tgt["id"])
+    return ref["id"], ref["text"], tgt["id"], tgt["text"]
 
 
-def main():
-    os.makedirs(OUT, exist_ok=True)
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--adapter", required=True)
+    # ⚠ THE BASELINE FOR A REGRESSION IS THE PREVIOUS FINE-TUNE, NOT THE BASE MODEL. Base has never
+    # been IPA-tuned, so base-vs-new measures "fine-tuning works" and would hide a loss against the
+    # run actually being replaced. Same mistake cost a wrong answer on the en-GB probes (Run 57).
+    ap.add_argument("--baseline", default=None,
+                    help="adapter to compare against (default: unadapted base weights)")
+    ap.add_argument("--out", default=f"{ROOT}/train/rare_test")
+    a = ap.parse_args()
+    os.makedirs(a.out, exist_ok=True)
+
     cases = []
-    for lang, ref_id, target_id, label in TESTS:
-        ref_wav, ref_ipa, tgt_ipa, tgt_gt = load_case(lang, ref_id, target_id)
-        sf.write(f"{OUT}/{lang}_{label}_ref.wav", ref_wav, SR)
-        sf.write(f"{OUT}/{lang}_{label}_groundtruth.wav", tgt_gt, SR)
+    for lang, label, prims in TESTS:
+        ref_id, ref_ipa, tgt_id, tgt_ipa = pick(lang, prims, durations(lang))
+        codes = np.load(f"{ROOT}/corpus/tokens/codes_{lang}.npz")
+        ref_wav = decode_codes(codes[ref_id])
+        sf.write(f"{a.out}/{lang}_{label}_ref.wav", ref_wav, SR)
+        sf.write(f"{a.out}/{lang}_{label}_groundtruth.wav", decode_codes(codes[tgt_id]), SR)
+        hits = {p: tgt_ipa.count(p) for p in prims if p in tgt_ipa}
         cases.append((lang, label, ref_wav, ref_ipa, tgt_ipa))
-        print(f"{lang} [{label}]: tgt={tgt_ipa[:70]}")
+        print(f"{lang} [{label}] ref {len(ref_wav)/SR:.1f}s, target {tgt_id}: {hits}")
+        if not hits:
+            print(f"  ⚠ no target primitive present in any {lang} dev utterance — this case proves nothing")
 
-    print("\nloading base ...")
+    # Base FIRST: merge_and_unload() is destructive, so one process cannot return to base weights.
+    base_tag = "v6" if a.baseline else "base"
+    print(f"\nloading {base_tag} ...")
     model = OmniVoice.from_pretrained(BASE, device_map="cuda", dtype=torch.float16).eval()
+    if a.baseline:
+        from peft import PeftModel as _P
+        model = _P.from_pretrained(model, a.baseline).merge_and_unload().eval()
     for lang, label, ref_wav, ref_ipa, tgt_ipa in cases:
-        print(f"  base gen {lang}/{label} ...")
-        w = gen(model, tgt_ipa, ref_wav, ref_ipa, duration=None)
-        sf.write(f"{OUT}/{lang}_{label}_base.wav", w, SR)
+        sf.write(f"{a.out}/{lang}_{label}_{base_tag}.wav", gen(model, tgt_ipa, ref_wav, ref_ipa), SR)
+        print(f"  {base_tag} {lang}/{label}")
+    # merge_and_unload() is destructive, so the second model needs clean base weights.
+    del model
+    torch.cuda.empty_cache()
+    model = OmniVoice.from_pretrained(BASE, device_map="cuda", dtype=torch.float16).eval()
 
     print("merging adapter ...")
     from peft import PeftModel
-    model = PeftModel.from_pretrained(model, ADAPTER).merge_and_unload().eval()
+    model = PeftModel.from_pretrained(model, a.adapter).merge_and_unload().eval()
     for lang, label, ref_wav, ref_ipa, tgt_ipa in cases:
-        print(f"  finetuned gen {lang}/{label} ...")
-        w = gen(model, tgt_ipa, ref_wav, ref_ipa, duration=None)
-        sf.write(f"{OUT}/{lang}_{label}_finetuned.wav", w, SR)
+        sf.write(f"{a.out}/{lang}_{label}_finetuned.wav", gen(model, tgt_ipa, ref_wav, ref_ipa), SR)
+        print(f"  finetuned {lang}/{label}")
 
-    print(f"\n-> {OUT}")
+    print(f"\n-> {a.out}")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

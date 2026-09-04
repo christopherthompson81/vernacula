@@ -33,7 +33,13 @@ import pandas as pd
 # minimal-set langs + am/om/sd/xh inserted at their population slots (am~57M, om~37M,
 # sd~30M, xh~8M) — added to reinforce ejectives (am/om/xh) and implosives (sd: closes
 # ɠ, 2nd ʄ source). si excluded: no FLEURS audio.
-POP_ORDER = ["en_us", "cmn_hans_cn", "hi_in", "es_419", "ar_eg", "fr_fr", "pt_br",
+# ⚠ `en_gb` IS A COVERAGE PATCH, NOT A POPULATION ENTRY. It sits beside en_us because it is the same
+# language, and `phon_of` maps both to the census key `en` — so the greedy sweep gives it an OWNED set
+# of exactly nothing and a weight of 1.0. That is the intended outcome: it contributes the en-GB vowel
+# units en_us never carried (`əᶷ` 192 -> 1,221, `ɛə` 37 -> 429) at natural frequency, without stealing
+# ownership from any language or perturbing anyone else's weight. Adding it still makes v7 a DIFFERENT
+# experiment than v6 -- 29 languages, not 28 -- which is a deliberate choice, not a free improvement.
+POP_ORDER = ["en_us", "en_gb", "cmn_hans_cn", "hi_in", "es_419", "ar_eg", "fr_fr", "pt_br",
              "ru_ru", "de_de", "ja_jp", "tr_tr", "vi_vn", "ta_in", "ko_kr", "ha_ng",
              "th_th", "am_et", "om_et", "sd_in", "ff_sn", "kk_kz", "zu_za", "cs_cz",
              "sv_se", "xh_za", "ca_es", "ga_ie", "cy_gb"]

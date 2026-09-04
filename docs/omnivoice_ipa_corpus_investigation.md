@@ -3960,3 +3960,173 @@ with no overlap. Real rhoticity would not sort by sex. That is the recognizer su
 at a sex-dependent rate — instrument bias — and it is why the absolute number cannot be thresholded
 and only the within-sex spread carries information. A gate built on the raw count would have
 "discovered" that all 29 male readers are rhotic.
+
+## Run 56 — 2026-09-03 — v7: en_gb enters the epoch, and a split that would have dropped it
+
+**Question.** v6 trained on 28 languages. Adding `en_gb` makes v7 a different experiment, not a
+strict improvement — so what exactly changes, and does the en-GB data actually reach the model?
+
+### POP_ORDER 28 -> 29, and why it perturbs nothing
+
+`POP_ORDER` is not a list of languages, it is a **greedy-cover ownership order**: a primitive is
+attributed to the first, biggest-population language that carries it, and each language's
+oversampling weight is set so its scarcest OWNED primitive reaches `N_TOKENS`. Inserting a language
+can therefore steal ownership and move everyone's weight.
+
+It does not here, and the reason is worth writing down: `phon_of` maps a corpus key to a census key
+with `split("_")[0]`, so `en_gb` -> `en` — **the same key as `en_us`**. The sweep gives `en_gb` an
+owned set of exactly nothing, a weight of 1.0, and no influence on any other language's weight.
+
+Measured against the v6 weights: **not one existing language's utterance count or weight changed.**
+
+```
+v6 28 langs -> v7 29 langs
+  NEW  en_gb: n_utts=1281 weight=1.0 owned=0 effective=1235
+  changed languages: 0        dropped: none
+  utterances 75,902 -> 77,183     en_gb share of the epoch: 1.60%
+```
+
+(`effective_utts` sits below `n_utts` at weight 1.0 because `scale = natural_total / weight_sum`
+keeps the epoch the same size — weighting redistributes exposure rather than inflating it. Not a bug;
+it caught my eye and is recorded so it does not catch the next reader's.)
+
+### The offglide pairings nothing else was checking
+
+The sampling budget only guarantees exposure for **owned census primitives**, and the census is 142
+single phones and diacritics — the offglide PAIRINGS this data exists for are not in it. So no gate
+in the pipeline verifies the thing the corpus addition was for. Measured directly, per epoch, with
+repeat factors applied:
+
+```
+  unit          v6      from en_gb      v7
+  əᶷ  GOAT      155      +1,029       1,184
+  ɛə  SQUARE     36        +392         428
+  ʊə  CURE      106        +231         337
+  aᶦə / aᶷə  199 / 32  +100 / +267   299 / 299
+  ɔᶦə / əᶷɪ / ɪɒ  41 / 3 / 0  +142/+141/+116   183 / 144 / 116
+```
+
+`əᶷ` — the vowel behind "smoke" -> "smik" — goes from 155 exposures per epoch to 1,184.
+
+⚠ **`en_gb` is deliberately left at repeat=1.** Giving it 2 would push the last three units over 300,
+but those are archive-exhausted: repeating shows the SAME few clips again rather than adding variety,
+which trains memorisation of those recordings instead of the pairing. A number that reaches target by
+repetition is not the same number.
+
+### The bug that would have wasted the run
+
+`build_lang` splits train/dev by GROUPING on `sentence_id`, because FLEURS records one sentence with
+~2.2 speakers and a plain row slice put the same sentence in both splits (73-99% of every dev set,
+Run 40). `ingest_dir.py` wrote **`sentence_id=None` for every en_gb row**. All 1,281 collapse into one
+group; groups are assigned WHOLE; the first group fills dev — so **every en_gb row went to dev and the
+train set came out EMPTY**. The language would have contributed nothing to v7, silently, and the
+existing disjointness assert passes happily on an empty train set.
+
+Fixed at the source (`sentence_id` = the utterance id: one recording per id, nothing to repeat — the
+same convention `asr_align_dir.py` uses), the existing manifest patched in place, and a guard added:
+
+    assert train_rows, f"{lang}: split produced an EMPTY train set from {n} rows in {g} group(s)"
+
+Verified the guard fires on the pre-fix shape, then rebuilt: **en_gb train 1,243 / dev 38**.
+
+### v7 corpus
+
+```
+29 languages · 75,022 train rows · 259.8 h · 1,009 defective-audio utterances excluded
+data_config diff vs v6: en_gb added; every other language's repeat copies IDENTICAL
+```
+
+**Process note, twice now.** A `nohup ... &` inside a background wrapper detached and died, leaving a
+0-byte log while the harness reported exit 0. Caught by checking `data_config.json`'s mtime rather
+than the exit code. Earlier the same day a render was reported as "starting" without being launched.
+An exit code is not evidence that work happened; the artifact's timestamp is.
+
+### Postscript — a bad lexicon entry the alignment pass could not see
+
+Spotted by eye in an `en_gb` dev line: **"Croydon" phonemizes to `kɹˈɒɔᶦdɒn`** under `en-GB`. It is
+wrong twice — a spurious `ɒ` before the diphthong, and `ɒn` where the final syllable should reduce to
+`ən`. US is correct (`kɹˈɔᶦd̬ən`), and the general rules are both fine (`Snowdon` -> `snˈəᶷdən`,
+`boy`/`Lloyd`/`Boyd` -> `ɔᶦ`), so this is one bad dictionary entry, not a rule failure.
+
+12 tokens across 8 of 1,281 utterances (0.6%). Left in v7: the model learns a spurious mapping for a
+sequence (`ɒɔᶦ`) that occurs nowhere else in the corpus, which is not worth restarting a run for.
+
+⚠ **All 8 are labelled `verified`.** One mispronounced word does not move a sentence-level distance,
+so the wav2vec2 gate cannot see this class of defect at all — which is worth remembering before
+treating `verified` as "every word in this utterance is right". The gate finds utterances that are
+wrong overall; a single wrong word hides inside a correct sentence.
+
+## Run 57 — 2026-09-03 — v7 trained, and three wrong answers before one honest one
+
+**The run.** 6000/6000 in 2h07m, 29 languages. Final eval **3.9693** against v6's **3.9777**; at the
+step-matched point (4000) they are identical (3.9798 vs 3.9777). The 29th language costs nothing
+globally — which is expected, since en_gb is 1.6% of the epoch and its benefit is local to English
+vowels, where a global loss cannot see it.
+
+**First: the adapter provably touches only the text path.** Merging warns about missing adapter keys
+for `audio_tokenizer.semantic_model.*` — the target modules match `q_proj`/`k_proj`/`v_proj` by SUFFIX
+NAME, so peft wraps the audio tokenizer at inference even though training never saved those. Verified
+rather than assumed: after `merge_and_unload()` the audio-tokenizer weights are BIT-IDENTICAL
+(max|delta| = 0) while the LLM `q_proj` moved by 1.96e-2. `init_lora_weights: True` zero-initialises
+`lora_B`, so an unloaded adapter contributes exactly nothing. The warning is cosmetic and the A/B is
+valid.
+
+### Three wrong answers, in order
+
+1. **"Dramatic improvement" — wrong comparison.** base -> v7 improved every probe (GB mean
+   0.539 -> 0.309). But the base model has never been IPA-fine-tuned at all, so this measures "fine
+   tuning works", which v6 already established. The tell was that the US CONTROL improved MORE than
+   GB (-0.279 vs -0.230). The question needs **v6 vs v7**, both IPA-tuned, differing only in en_gb.
+
+2. **"No effect" — noise.** v6 vs v7 gave GB -0.010 (SE 0.022). But `generate()` is stochastic
+   (32 diffusion steps) and I had run ONE sample per condition. Six repeats of one probe give
+   sd 0.012-0.022; the single `square` v7 sample scored 0.333 against a 6-render mean of 0.221,
+   outside the entire observed range. Per-probe deltas of ±0.05 were sampling variance being read
+   as findings.
+
+3. **"Still no effect" — a metric blind to its own subject.** ⚠ `fold()` DELETES modifier letters,
+   and the offglides ARE modifier letters:
+
+       target  smˈəᶷk    -> smək      the offglide is removed
+       heard   s m oʊ k  -> smoʊk
+
+   So a CORRECT rendering scored as a miss, and a wrong monophthong (`smək`) would have scored as a
+   hit. The metric was inverted with respect to the one thing being tested. This is Run 36's
+   modifier-letter bug — the one that emptied ga_ie's investigate list — reappearing inside my own
+   analysis, which is worth recording precisely because it had already been found once.
+
+### The honest answer
+
+Expanding the offglide instead of deleting it (`ᶦ->ɪ ᶷ->ʊ ᵊ->ə`) moved the GB mean from -0.022 to
+-0.056, but sentence-level distance still dilutes a vowel-level effect, and every correct GOAT token
+keeps a nucleus mismatch because the recognizer writes `oʊ` where the expanded target is `əʊ`. The
+raw recognized strings are far more informative than any aggregate:
+
+```
+smoke: "White smoke rose from the plant"
+  v6   w ʌ s w ʌ t ɡ ɚ z f ɹ ʌ m ð ə p l ɑː n t        "white smoke rose" destroyed, no oʊ at all
+  v7   w aɪ t s m oʊ k ɹ oʊ z f ɹ ʌ m ð ə p l æ n t    correct, oʊ twice
+goat_dense: "...on the road home"
+  v6   ... ð ə ɹ d h ɔ m         "road" has NO VOWEL
+  v7   ... ð ə ɹ oʊ d h oʊ m     both correct
+```
+
+So the measure that answers the question is **GOAT-position offglide realisation**, N=5 renders:
+
+```
+  probe            want   v6 mean   v7 mean
+  smoke_reported      2      1.20      2.00     v7 correct in 5/5
+  televisions         2      1.40      2.00     v7 correct in 5/5
+  goat_dense          4      1.80      3.40
+  show_reported       2      1.00      0.20     WORSE
+  hour                1      1.00      0.60     worse
+  v6 32/55 = 58%      v7 41/55 = 75%
+```
+
+**Mixed, and real where it counts.** The two failures actually reported — "smoke" and "televisions" —
+are robustly fixed: v7 produces the correct diphthong in every one of 5 renders where v6 managed it
+about half the time. `show` regressed and `hour` slipped. Aggregate +17pp is z~1.8 over 5 probes with
+correlated renders: suggestive, not conclusive, and not worth dressing up as more.
+
+⚠ **A single-sample version of this same table read 27% -> 91%.** v6 had simply drawn badly. Any
+future generation A/B on this model needs repeats; one render per condition cannot support a claim.

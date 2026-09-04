@@ -111,22 +111,38 @@ function verdict(sec, text) {
 }
 
 const BIN = opt("bin") ?? "../src/Vernacula.Tts.CLI/bin/Release/net10.0/vernacula-tts";
-const ONNX = opt("onnx-dir") ?? process.env.OMNIVOICE_ONNX_DIR ?? "/mnt/data/omnivoice_ipa/onnx";
+// ⚠ onnx_base/, NOT onnx/. Those two directories hold DIFFERENT 2.45 GB .onnx.data files under
+// byte-identical graph protos, and only onnx_base/ matches the upstream checkpoint (publish_hf.py
+// verifies it by sha256; the onnx/ copy differs in all 151,676 embedding rows). The diff carries
+// ABSOLUTE REPLACEMENT embed rows, so applying it to the wrong base yields a plausible-looking
+// model that is quietly wrong -- and nothing in the diff or the audio can flag it. This defaulted
+// to onnx/, so the whole 318-clip listening sweep was judged on the wrong base.
+const ONNX = opt("onnx-dir") ?? process.env.OMNIVOICE_ONNX_DIR ?? "/mnt/data/omnivoice_ipa/onnx_base";
 const MODEL = opt("model-dir") ?? process.env.OMNIVOICE_MODEL_DIR ?? "/mnt/data/models/omnivoice/k2-fsa-OmniVoice";
+// ⚠ NAME THE DIFF. Leaving it to the CLI's default meant the sweep silently rendered whatever
+// version happened to be the fallback; a sweep that cannot say which model it heard is not evidence.
+const DIFF = opt("diff") ?? process.env.OMNIVOICE_DIFF ?? "/mnt/data/omnivoice_ipa/onnx/ipa_diff_v7.onnx";
+console.log(`model: ${ONNX.split("/").pop()} + ${DIFF.split("/").pop()}`);
 
 if (!has("index-only")) {
   let done = 0, skipped = 0, failed = 0;
   const t0 = Date.now();
   const todo = pairs.filter((p) => (!only || only.includes(p.lang.code))
     && (has("force") || !existsSync(join(outDir, p.file))));
-  console.log(`${todo.length} to render (${pairs.length - todo.length} already present)`);
+  // ⚠ "already present" means ON DISK, not "everything else". With --only, pairs.length - todo.length
+  // counts every filtered-out language too, so a 3-pair run reported "609 already present" when 609
+  // had never been rendered — a resumable sweep whose progress line lies about what it has is worse
+  // than one with no progress line.
+  const inScope = pairs.filter((p) => !only || only.includes(p.lang.code));
+  console.log(`${todo.length} to render (${inScope.length - todo.length} already present`
+    + (only ? `, ${pairs.length - inScope.length} filtered out by --only` : "") + ")");
   for (const p of todo) {
     const out = join(outDir, p.file);
     let log;
     try {
       log = execFileSync(BIN, [
         "--lang", p.lang.code, "--text", p.lang.sample,
-        "--onnx-dir", ONNX, "--model-dir", MODEL,
+        "--onnx-dir", ONNX, "--model-dir", MODEL, "--diff", DIFF,
         "--voice-lib", "public/models", "--voice-id", p.voice.id,
         // ⚠ --post demo, ALWAYS. The CLI's default is Python's post-chain, which un-boosts the
         // output by the reference's RMS; the browser deliberately does not. Rendering the demo's

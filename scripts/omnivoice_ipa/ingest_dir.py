@@ -172,7 +172,13 @@ def main() -> int:
             n_skip += 1
             continue
         codes_out[key] = codes.astype(np.int16)
-        manifest.append(dict(id=key, sentence_id=None, lang=a.lang, ipa=ipa, gender=None,
+        # ⚠ sentence_id IS THE UTTERANCE ID, NOT None. build_webdataset splits train/dev by
+        # GROUPING ON sentence_id to keep the two text-disjoint; None makes every row of the corpus
+        # one group, which the split then assigns whole -- putting all 1,281 en_gb rows in dev and
+        # leaving train EMPTY, silently discarding the entire language. FLEURS repeats a sentence
+        # across speakers and needs a real key; a directory corpus has one recording per id, so the
+        # id IS the sentence key. Same convention asr_align_dir.py uses.
+        manifest.append(dict(id=key, sentence_id=key, lang=a.lang, ipa=ipa, gender=None,
                              dur_s=round(len(wav) / SR_OUT, 2), n_frames=int(codes.shape[-1]),
                              # ⚠ NOT "hand", NOT "" — this row's IPA has never been checked against
                              # the audio. A consumer can tell it apart from a DB-derived row.

@@ -1491,3 +1491,67 @@ correct answer on exactly the worst cases.
 
 ⚠ The guards bound the damage; they do not prove a cut is right. 170 clips are re-rendering for a
 listening pass, and the before/after WAVs are in /tmp/trim-preview.
+
+## Run 29 — 2026-09-03 — "'eports": two stale pins, and every listening pass before this one
+
+**Report.** en-GB renders say *"eports"* for "reports". Earlier the same voice produced
+*"televisi'epots"*. The natural reading is a synthesis fault — a dropped onset.
+
+**It was not.** `--print-ipa` shows what the renderer was actually handed:
+
+```
+IPA:  tʰˈɛləvˌɪʒən ᵻpʰˈɔːts ʃˈəʊ wˈaɪt smˈəʊk kʰˈʌmɪŋ fɹʌm ðə plˈɑːnt .
+                   ^^ no ɹ  ^^^^ ^^^^  ^^^^^ pre-#1252 digraphs
+```
+
+The `ɹ` is missing **from the IPA**. The model rendered exactly what it was given. And the
+same line exposes a second problem: `əʊ`/`aɪ` rather than `əᶷ`/`aᶦ` — the demo was feeding
+v7 the very convention v7 was trained AWAY from.
+
+The current TS engine gives `ɹᵻpʰˈɔːts ʃˈəᶷ wˈaᶦt smˈəᶷk`. So the demo's phonemizer was old.
+
+### Three stale things, stacked
+
+1. **The submodule pin was six commits behind.** `external/vernacula-phonemizer` sat at
+   `34541a5b` (#1248), predating #1249, #1250, **#1252 (the en-GB offglides)**, #1255, #1257.
+2. **Moving the pin changed nothing on its own.** The CLI compiles the phonemizer from
+   `external/vernacula-phonemizer/csharp/`, so the BINARY still held the old rules. The
+   re-check after updating the pin printed the same wrong IPA, which is what sent me
+   looking further rather than declaring victory.
+3. **`preview-all.mjs` rendered on the WRONG ONNX BASE.** It defaulted to
+   `/mnt/data/omnivoice_ipa/onnx`, but `publish_hf.py` records that only `onnx_base/`
+   matches the upstream checkpoint — the two hold different 2.45 GB `.onnx.data` files
+   under byte-identical graph protos, and the `onnx/` copy differs in all 151,676 embedding
+   rows. The diff carries ABSOLUTE REPLACEMENT embed rows, so applying it to the other one
+   "yields a plausible-looking model that is quietly wrong, and nothing in the diff can
+   detect that". It also passed no `--diff`, so the CLI fell back to `ipa_diff_v6.onnx`
+   found inside that wrong directory.
+
+Verified by sha256 against the value published in the model card: `onnx_base` matches,
+`onnx` does not.
+
+**After the pin + rebuild**, the C# phonemizer matches the TS engine byte-for-byte, and the
+`ɹ` is audible:
+
+```
+BEFORE  … ʒ ə n   ə p oː t s …     "eports"
+AFTER   … ʒ ə n ɹ ɪ p oː t s …     "reports"
+```
+
+### What this invalidates
+
+⚠ **Every listening pass before this one was compromised by at least one of the three.** The
+318-clip sweep was judged on the wrong base; the en-GB clips were additionally phonemized
+with pre-#1252 rules. Faults heard in those passes cannot be attributed to the model, and
+the residual "source audio / donor accent / alignment" bucket should be re-derived rather
+than carried forward.
+
+**Fixes.** Pin moved to `70ca36a5`; CLI rebuilt; `preview-all.mjs` defaults to `onnx_base`,
+names its diff explicitly, and PRINTS `model: <base> + <diff>` at the top — a sweep that
+cannot say which model it heard is not evidence. `IpaFineTune.DefaultDiffFile` bumped to
+`ipa_diff_v7.onnx`, with the diff copied beside the base so the default resolves.
+
+**Also**: 13 of 526 `refIpa` values had drifted from the current phonemizer — 3 en-GB
+offglides, 9 gaining the trailing punctuation that carries prosody, 1 `cmn` aspiration and
+tone fix. Updated in place; `voice-codes.json` untouched, so no voice was re-selected or
+re-encoded. `dag`/`ipk`/`zoc` (9 voices) have no registered phonemizer and were left alone.
