@@ -33,8 +33,21 @@ t = time.time()
 m = onnx.load(src)
 g = m.graph
 init = {i.name: i for i in g.initializer}
+# Both lookups are model-specific, so say so rather than dying with KeyError / StopIteration on a
+# graph that simply names things differently.
+if NAME not in init:
+    raise SystemExit(f"{src}: no initializer named {NAME} — is this an OmniVoice transformer export?")
 E = numpy_helper.to_array(init[NAME]).astype(np.float32)
-gather = next(n for n in g.node if n.op_type == "Gather" and n.input[0] == NAME)
+# ⚠ REFUSE AN ALREADY-COMPRESSED TABLE. After a first pass the initializer and its Gather both
+# still exist — only the dtype changed — so "is the Gather still there" does NOT detect a repeat.
+# Running twice quantizes int8-of-int8, and the size moves 471.8 -> 472.4 MB, which is invisible.
+if init[NAME].data_type != TensorProto.FLOAT:
+    raise SystemExit(f"{src}: {NAME} is already "
+                     f"{TensorProto.DataType.Name(init[NAME].data_type)}, not fp32 — "
+                     "this graph has been through quantize_embedding already.")
+gather = next((n for n in g.node if n.op_type == "Gather" and n.input[0] == NAME), None)
+if gather is None:
+    raise SystemExit(f"{src}: {NAME} exists but no Gather consumes it")
 out, ids = gather.output[0], gather.input[1]
 
 g.initializer.remove(init[NAME])

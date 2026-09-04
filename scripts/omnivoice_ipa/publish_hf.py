@@ -33,10 +33,28 @@ BASE_SNAPSHOT = "/mnt/data/models/omnivoice/k2-fsa-OmniVoice"
 BASE_SHA256 = "2ea0980e184bbf8457048fbb3ed2a01f8f8c3816a8ee9fbff3ce0886c1aeeb4a"
 
 
+# The one version built before browser builds were versioned by directory. Anything else MUST have
+# its own directory.
+LEGACY_WEB_VERSION = "v6"
+
+
 def webfile(version, name):
-    """The browser build for `version`, falling back to the flat onnx_web/ layout that predates it."""
+    """The browser build for `version`.
+
+    ⚠ NO SILENT FALLBACK. Returning the flat `onnx_web/` copy whenever `onnx_web/<version>/` is
+    absent means `--version v8` with no v8 build publishes the V6 browser model while the card
+    announces v8 — a stale artifact shipped under a fresh name, which is the exact bug already fixed
+    three times in this pipeline (extract_diff, apply_diff, and this script's own diff selection).
+    The flat layout is honoured only for the version that predates the directory scheme.
+    """
     v = f"{ONNX_WEB}/{version}/{name}"
-    return v if os.path.exists(v) else f"{ONNX_WEB}/{name}"
+    if os.path.exists(v):
+        return v
+    if version == LEGACY_WEB_VERSION:
+        return f"{ONNX_WEB}/{name}"
+    raise SystemExit(f"no browser build for {version}: expected {v}\n"
+                     f"  build it first, or pass --version {LEGACY_WEB_VERSION} to publish the "
+                     f"pre-versioning layout.")
 
 
 def files(version):
