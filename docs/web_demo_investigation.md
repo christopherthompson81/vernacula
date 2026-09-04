@@ -1595,3 +1595,59 @@ say whether it is stale with respect to `voices.jsonc`.
 
 **Still unlistened:** the 18 clips that postdate the pass — 6 new es-419 and the 12 re-rendered
 `pap`/`quc` donors.
+
+## Run 31 — 2026-09-04 — v7 to the browser, and a recipe that lived in /tmp
+
+**Task.** The HF repo's `ipa_diff.onnx` was replaced with the v7 extraction, but the browser demo
+does not use the diff — it fetches `omnivoice_transformer_ipa.int4.onnx`, the merged-and-quantized
+build, which was dated Sep 1 and therefore still **v6**. Rebuilding it from v7 turned up three
+things worth recording.
+
+### The shipped recipe could not be rebuilt from this repo
+
+Run 4 locked the config as "w4 block-32 weight-only + int8 per-row embedding = 471.8 MB". Two parts
+of that were not actually reproducible:
+
+1. `quantize_lm.py` has no `nodes_to_exclude`, so it cannot express the audio-heads exemption Run 3
+   went to the trouble of testing.
+2. The embedding compressor existed **only as `/tmp/quant_embed.py`**, with v6-shaped paths baked
+   in as constants. The 472 MB artifact the demo has served for two months came out of a scratch
+   file. That is how a recipe becomes folklore.
+
+Both are now in `scripts/_export_utils/` with the paths as arguments.
+
+### ⚠ The shipped v6 build QUANTIZES the audio heads — the locked-config line omits it
+
+Building v7 with `--exclude /model/audio_heads/MatMul` gave **500.1 MB**, not 471.8. The 28 MB gap
+is exactly Run 3's heads-fp32 premium (965.5 vs 937.1 MB before the embedding step). Arithmetic
+settles which one shipped: 937.1 − 621 + 155 = 471.1 ≈ **471.8**, so the artifact in production has
+the heads quantized, despite Run 3 arguing the exemption is "nearly free" and worth having.
+
+Rebuilt without the exclusion, so v7 differs from v6 in exactly one variable. Whether the heads
+should be exempt is a real question — Run 4's listening test found both fine — but it is a SEPARATE
+change and bundling it into a model swap would make any regression unattributable.
+
+### ⚠ `onnx.save` CONCATENATES to an existing external-data file
+
+The second build came out at **968 MB** — the first run's 500 MB sidecar plus the new one. It still
+loaded, which is the dangerous part. `quantize_lm.py` already carried a guard and a comment saying
+exactly this; the embedding script did not, because it had never been run twice over one
+destination. Guard added.
+
+### And the sidecar name is recorded INSIDE the .onnx
+
+A build named `..._v7.int4.onnx` looks for `..._v7.int4.onnx.data`, so it cannot simply be uploaded
+under the canonical name — the demo passes the canonical sidecar and the load fails. Versions are
+therefore built in their own directory with canonical filenames inside; `publish_hf.py` prefers
+`onnx_web/<version>/` and falls back to the flat v6 layout.
+
+**Published and verified by sha256 against the local sources:**
+
+```
+omnivoice_transformer_ipa.int4.onnx        1.6 MB    match
+omnivoice_transformer_ipa.int4.onnx.data 470.2 MB    match   (byte-identical SIZE to v6 — like-for-like)
+ipa_diff.onnx                             32.1 MB    match
+```
+
+v7 int4 loads, runs, and is demonstrably not a copy of v6: 0.00% identical logit elements,
+max|Δ| 18.7, argmax agreement 9.25%. Both CLI and browser are now on v7.

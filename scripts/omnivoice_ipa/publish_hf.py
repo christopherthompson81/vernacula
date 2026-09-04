@@ -33,6 +33,12 @@ BASE_SNAPSHOT = "/mnt/data/models/omnivoice/k2-fsa-OmniVoice"
 BASE_SHA256 = "2ea0980e184bbf8457048fbb3ed2a01f8f8c3816a8ee9fbff3ce0886c1aeeb4a"
 
 
+def webfile(version, name):
+    """The browser build for `version`, falling back to the flat onnx_web/ layout that predates it."""
+    v = f"{ONNX_WEB}/{version}/{name}"
+    return v if os.path.exists(v) else f"{ONNX_WEB}/{name}"
+
+
 def files(version):
     """(local path, path-in-repo) for one diff version."""
     return [
@@ -47,8 +53,14 @@ def files(version):
         (f"{ONNX}/ipa_diff_{version}.onnx", "ipa_diff.onnx"),
         # Browser build: the fine-tune already merged in, then quantized. Ships alone — no base,
         # no diff, no fold. Its sidecar name is recorded inside the .onnx, so both keep these names.
-        (f"{ONNX_WEB}/omnivoice_transformer_ipa.int4.onnx", "omnivoice_transformer_ipa.int4.onnx"),
-        (f"{ONNX_WEB}/omnivoice_transformer_ipa.int4.onnx.data", "omnivoice_transformer_ipa.int4.onnx.data"),
+        #
+        # ⚠ VERSIONED BY DIRECTORY, NOT BY FILENAME, and that is forced: the .onnx records its
+        # sidecar's filename INTERNALLY, so a build named `..._v7.int4.onnx` looks for
+        # `..._v7.int4.onnx.data` and cannot simply be uploaded under the canonical name — the demo
+        # passes the canonical one and the load fails. So each version is built under its own
+        # directory with the canonical filenames inside it. `onnx_web/` itself remains the v6 build.
+        (webfile(version, "omnivoice_transformer_ipa.int4.onnx"), "omnivoice_transformer_ipa.int4.onnx"),
+        (webfile(version, "omnivoice_transformer_ipa.int4.onnx.data"), "omnivoice_transformer_ipa.int4.onnx.data"),
         # The Qwen3 tokenizer, straight from the upstream snapshot. Needed by any consumer that
         # synthesises text rather than replaying captured ids, and a browser has nowhere else to
         # get it. Apache-2.0, like the upstream CODE — the WEIGHTS in this repo are not; see the

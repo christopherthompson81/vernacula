@@ -111,7 +111,8 @@ def quantize_int8_dynamic(input_path: Path, output_path: Path) -> None:
     print(f"[int8] done in {time.time() - t0:.1f}s")
 
 
-def quantize_int4(input_path: Path, output_path: Path, block_size: int = 32) -> None:
+def quantize_int4(input_path: Path, output_path: Path, block_size: int = 32,
+                  exclude: list[str] | None = None) -> None:
     # RTN (round-to-nearest) weight-only 4-bit MatMul quantization.
     # accuracy_level=4 = "int8 activations during the int4 MatMul"
     # (vs 0=fp32, 1=fp16, 2=bf16, 3=int4 activations). int8 acts give
@@ -129,12 +130,19 @@ def quantize_int4(input_path: Path, output_path: Path, block_size: int = 32) -> 
     print(f"[int4] running MatMulNBitsQuantizer (RTN, block_size={block_size}) ...")
     t0 = time.time()
     cfg = RTNWeightOnlyQuantConfig()
+    # ⚠ SOME MatMuls MUST STAY fp32, and the quantizer takes every one it can reach by default.
+    # For OmniVoice that is `/model/audio_heads/MatMul`: its logits over the 1025-token audio
+    # vocabulary drive the top-k unmask decision on EVERY diffusion step, so error there flips token
+    # choices outright rather than being smoothed downstream. One node, ~8.4M params, 34 MB fp32 —
+    # exempting it costs ~28 MB of the 472 MB build (web demo Run 3). Without this flag the shipped
+    # recipe cannot be reproduced from this repo at all.
     q = MatMulNBitsQuantizer(
         model=model,
         block_size=block_size,
         is_symmetric=True,  # symmetric = simpler kernels, slightly worse quality
         accuracy_level=4,
         algo_config=cfg,
+        nodes_to_exclude=list(exclude or []),
     )
     q.process()
     print(f"[int4] done in {time.time() - t0:.1f}s; saving ...")
@@ -157,6 +165,8 @@ def main() -> int:
     ap.add_argument("--output", required=True, type=Path, help="Destination quantized .onnx")
     ap.add_argument("--mode", required=True, choices=["fp16", "int8", "int4"])
     ap.add_argument("--block-size", type=int, default=32, help="int4 RTN block size (default 32)")
+    ap.add_argument("--exclude", default="", help="[int4] comma-separated node names to leave fp32, "
+                                                 "e.g. /model/audio_heads/MatMul")
     ap.add_argument(
         "--no-keep-io-types",
         action="store_true",
@@ -180,7 +190,8 @@ def main() -> int:
     elif args.mode == "int8":
         quantize_int8_dynamic(args.input, args.output)
     elif args.mode == "int4":
-        quantize_int4(args.input, args.output, block_size=args.block_size)
+        quantize_int4(args.input, args.output, block_size=args.block_size,
+                      exclude=[n for n in args.exclude.split(",") if n.strip()])
     else:
         print(f"ERROR: unknown mode {args.mode}", file=sys.stderr)
         return 1
