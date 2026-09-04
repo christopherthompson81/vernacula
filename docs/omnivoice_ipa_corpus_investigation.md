@@ -4040,3 +4040,18 @@ data_config diff vs v6: en_gb added; every other language's repeat copies IDENTI
 0-byte log while the harness reported exit 0. Caught by checking `data_config.json`'s mtime rather
 than the exit code. Earlier the same day a render was reported as "starting" without being launched.
 An exit code is not evidence that work happened; the artifact's timestamp is.
+
+### Postscript — a bad lexicon entry the alignment pass could not see
+
+Spotted by eye in an `en_gb` dev line: **"Croydon" phonemizes to `kɹˈɒɔᶦdɒn`** under `en-GB`. It is
+wrong twice — a spurious `ɒ` before the diphthong, and `ɒn` where the final syllable should reduce to
+`ən`. US is correct (`kɹˈɔᶦd̬ən`), and the general rules are both fine (`Snowdon` -> `snˈəᶷdən`,
+`boy`/`Lloyd`/`Boyd` -> `ɔᶦ`), so this is one bad dictionary entry, not a rule failure.
+
+12 tokens across 8 of 1,281 utterances (0.6%). Left in v7: the model learns a spurious mapping for a
+sequence (`ɒɔᶦ`) that occurs nowhere else in the corpus, which is not worth restarting a run for.
+
+⚠ **All 8 are labelled `verified`.** One mispronounced word does not move a sentence-level distance,
+so the wav2vec2 gate cannot see this class of defect at all — which is worth remembering before
+treating `verified` as "every word in this utterance is right". The gate finds utterances that are
+wrong overall; a single wrong word hides inside a correct sentence.
