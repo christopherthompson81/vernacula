@@ -1555,3 +1555,43 @@ cannot say which model it heard is not evidence. `IpaFineTune.DefaultDiffFile` b
 offglides, 9 gaining the trailing punctuation that carries prosody, 1 `cmn` aspiration and
 tone fix. Updated in place; `voice-codes.json` untouched, so no voice was re-selected or
 re-encoded. `dag`/`ipk`/`zoc` (9 voices) have no registered phonemizer and were left alone.
+
+## Run 30 — 2026-09-04 — the first sweep that was evidence, and it came back nearly clean
+
+**The sweep.** 621 language-voice pairs rendered on a stack that was, for the first time, coherent
+end to end: `onnx_base` (the base whose sha256 matches the model card, not the `onnx/` copy that
+differs in all 151,676 embedding rows), the phonemizer submodule at `70ca36a5` with the CLI rebuilt
+against it, `ipa_diff_v7`, and `refIpa` realigned to the current engine. 1 clip flagged on duration,
+0 failures.
+
+**Verdict after listening: es-419 was the only issue worth fixing.**
+
+That is the headline, and it is worth stating plainly against what came before. Run 29 established
+that every earlier listening pass was compromised — the wrong ONNX base throughout, and pre-#1252
+phonemizer rules on top of that for en-GB. Those passes produced a standing worklist of "source
+audio / donor accent / refIpa alignment" faults across many languages. **On a correct stack that
+list collapses to one language.** Most of what had accumulated was instrument, not corpus.
+
+The two lessons generalise past this project:
+
+  * A sweep that cannot name the model it heard is not evidence. `preview-all.mjs` now prints
+    `model: <base> + <diff>` before rendering anything, because the alternative is a worklist whose
+    provenance nobody can reconstruct a week later.
+  * Three independent stale pins (ONNX base, submodule, built binary) each produced output that
+    LOOKED fine. `publish_hf.py` had already written down that the wrong base yields "a
+    plausible-looking model that is quietly wrong, and nothing in the diff can detect that" — the
+    warning existed and was still walked into, because nothing enforced it at the point of use.
+    Defaults now point at the correct base.
+
+**es-419, the one real fault**, was recording quality in all three voices: two CV-22 clips and the
+FLEURS read that was serving as the default. Replaced with six Common Voice 26 Mexican Spanish
+voices from Mozilla Data Collective (3M/3F, one speaker each, source SNR 41-50 dB). es-419 had had
+no Common Voice male at all. Sex confirmed by pitch, not assumed: 6/6 agreement with the F0 pass.
+
+⚠ **Replacing es-419 invalidated `pap` and `quc` too** — both borrow it as their donor language, so
+12 further clips were silently stale. Re-rendered. The sweep now holds 0 clips referencing a voice
+that no longer exists, which is the check worth automating next: a sweep directory should be able to
+say whether it is stale with respect to `voices.jsonc`.
+
+**Still unlistened:** the 18 clips that postdate the pass — 6 new es-419 and the 12 re-rendered
+`pap`/`quc` donors.
