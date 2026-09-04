@@ -44,6 +44,10 @@ export interface Voice {
   refLen: number;
   /** RMS of the reference waveform before encoding, for the output un-boost (Python parity). */
   refRms: number;
+  /** Speaker sex, from a median-F0 measurement of the decoded reference (tools/measure-voice-gender.mjs).
+   *  Absent where the pitch sat in the ambiguous 155-185 Hz band. A listener's correction overrides it —
+   *  edit voices.jsonc directly; nothing re-derives this field. */
+  sex?: "M" | "F";
 }
 
 export interface Backend { ep: "webgpu" | "wasm"; }
