@@ -12,9 +12,11 @@ Written for OpenSLR SLR83 (UK/Ireland English dialects, CC BY-SA 4.0) so `en_gb`
 fine-tune, but it takes any `<id>\t<transcript>` index beside audio files.
 
 ⚠ IPA COMES FROM THE PHONEMIZER, PER UTTERANCE, and the rows are marked `ipa_src="phonemizer"`.
-There is no alignment-DB entry for this audio yet, so nothing here has been checked against what the
-reader actually said. That is a weaker guarantee than the FLEURS path gives and the manifest says so,
-rather than letting a consumer assume every row was QC'd.
+That is IPA PROVENANCE and it stays true regardless of QC — it is not a quality verdict. Freshly
+ingested rows have never been checked against what the reader actually said, which is a weaker
+guarantee than the FLEURS path gives, and they say so by carrying an EMPTY `status`: no verdict, not
+"clean". Run the alignment pass (`asr_align_dir.py` in vernacula-phonemizer) and propagate its labels
+into `status` before treating these rows as QC'd.
 
   python3 ingest_dir.py --dir /path/to/slr83/southern_english_female --lang en_gb --phon-lang en-GB
 """
@@ -140,6 +142,15 @@ def main() -> int:
 
     providers = ["CUDAExecutionProvider", "CPUExecutionProvider"] if a.provider == "cuda" else ["CPUExecutionProvider"]
     sess = ort.InferenceSession(ENCODER, providers=providers)
+    # ⚠ ORT FALLS BACK TO CPU SILENTLY. Requesting CUDAExecutionProvider when the installed wheel is
+    # plain `onnxruntime` rather than `onnxruntime-gpu` logs a warning and runs on CPU anyway -- and
+    # this script's output is normally piped through a `grep -v Warning`, so the flag looked honoured.
+    # Measured cost of not noticing: 5.14 s/utterance instead of 0.10, 110 min instead of 2.
+    active = sess.get_providers()[0]
+    if a.provider == "cuda" and active != "CUDAExecutionProvider":
+        print(f"  ⚠ --provider cuda REQUESTED BUT RUNNING ON {active} -- expect ~50x slower.\n"
+              f"    pip install onnxruntime-gpu (uninstall onnxruntime first; they collide).",
+              file=sys.stderr, flush=True)
     in_name = sess.get_inputs()[0].name
     codes_out, manifest = {}, []
     n_skip = 0
@@ -156,6 +167,10 @@ def main() -> int:
         x = np.pad(wav, (0, pad)).reshape(1, 1, -1).astype(np.float32)
         codes = sess.run(["audio_codes"], {in_name: x})[0][0]
         key = os.path.splitext(os.path.basename(audio[uid]))[0]
+        if key in codes_out:      # two files, one stem: silently keeping the last would be a lie
+            print(f"  ⚠ duplicate id {key}, keeping the first", file=sys.stderr)
+            n_skip += 1
+            continue
         codes_out[key] = codes.astype(np.int16)
         manifest.append(dict(id=key, sentence_id=None, lang=a.lang, ipa=ipa, gender=None,
                              dur_s=round(len(wav) / SR_OUT, 2), n_frames=int(codes.shape[-1]),
@@ -166,20 +181,40 @@ def main() -> int:
             print(f"    {len(manifest):,} encoded…", flush=True)
 
     cp, mp = f"{OUT}/codes_{a.lang}.npz", f"{OUT}/manifest_{a.lang}.jsonl"
-    if a.append and os.path.exists(cp):
+    # ⚠ BOTH files, not just the npz: guarding on `cp` alone crashed in `open(mp)` below when a
+    # previous run had been interrupted between the two writes.
+    if a.append and os.path.exists(cp) and os.path.exists(mp):
         prev = np.load(cp)
         merged = {k: prev[k] for k in prev.files}
         dup = sum(1 for k in codes_out if k in merged)
         merged.update(codes_out)
         codes_out = merged
         old_rows = [json.loads(l) for l in open(mp, encoding="utf8") if l.strip()]
+        old_by_id = {r["id"]: r for r in old_rows}
+        # ⚠ RE-INGESTING A ROW MUST NOT DISCARD ITS VERDICT. `status` is a review decision that came
+        # from the alignment pass or from a person; `ipa`, `codes` and `n_frames` are derivations of
+        # the audio. Replacing the whole row reset 1,265 `verified` labels to "" on a re-run, and an
+        # empty status reads as NO VERDICT, so nothing downstream would have flagged the loss.
+        # Same lesson corpus_filter records: label at build, decide later, never fuse the two.
+        kept = 0
+        for r in manifest:
+            was = old_by_id.get(r["id"])
+            if was and was.get("status") and not r.get("status"):
+                r["status"] = was["status"]
+                kept += 1
         seen = {r["id"] for r in manifest}
         manifest = [r for r in old_rows if r["id"] not in seen] + manifest
-        print(f"  appended to {len(old_rows):,} existing rows ({dup} ids replaced)")
-    np.savez_compressed(cp, **codes_out)
-    with open(mp, "w", encoding="utf8") as f:
+        print(f"  appended to {len(old_rows):,} existing rows ({dup} ids replaced, "
+              f"{kept} verdicts carried forward)")
+    # ⚠ Write both, THEN publish both. These two files are one artifact -- a manifest row without its
+    # codes is unusable and codes without a row are invisible -- and this is a long GPU job that has
+    # been interrupted before. Writing in place left them disagreeing on exactly that failure.
+    np.savez_compressed(cp + ".tmp.npz", **codes_out)
+    with open(mp + ".tmp", "w", encoding="utf8") as f:
         for r in manifest:
             f.write(json.dumps(r, ensure_ascii=False) + "\n")
+    os.replace(cp + ".tmp.npz", cp)
+    os.replace(mp + ".tmp", mp)
     print(f"  {len(manifest):,} rows, {n_skip:,} skipped -> {os.path.basename(cp)} "
           f"({os.path.getsize(cp)/1e6:.0f} MB), {time.time()-t0:.0f}s")
     return 0
