@@ -33,6 +33,30 @@ BASE_SNAPSHOT = "/mnt/data/models/omnivoice/k2-fsa-OmniVoice"
 BASE_SHA256 = "2ea0980e184bbf8457048fbb3ed2a01f8f8c3816a8ee9fbff3ce0886c1aeeb4a"
 
 
+# The one version built before browser builds were versioned by directory. Anything else MUST have
+# its own directory.
+LEGACY_WEB_VERSION = "v6"
+
+
+def webfile(version, name):
+    """The browser build for `version`.
+
+    ⚠ NO SILENT FALLBACK. Returning the flat `onnx_web/` copy whenever `onnx_web/<version>/` is
+    absent means `--version v8` with no v8 build publishes the V6 browser model while the card
+    announces v8 — a stale artifact shipped under a fresh name, which is the exact bug already fixed
+    three times in this pipeline (extract_diff, apply_diff, and this script's own diff selection).
+    The flat layout is honoured only for the version that predates the directory scheme.
+    """
+    v = f"{ONNX_WEB}/{version}/{name}"
+    if os.path.exists(v):
+        return v
+    if version == LEGACY_WEB_VERSION:
+        return f"{ONNX_WEB}/{name}"
+    raise SystemExit(f"no browser build for {version}: expected {v}\n"
+                     f"  build it first, or pass --version {LEGACY_WEB_VERSION} to publish the "
+                     f"pre-versioning layout.")
+
+
 def files(version):
     """(local path, path-in-repo) for one diff version."""
     return [
@@ -47,8 +71,14 @@ def files(version):
         (f"{ONNX}/ipa_diff_{version}.onnx", "ipa_diff.onnx"),
         # Browser build: the fine-tune already merged in, then quantized. Ships alone — no base,
         # no diff, no fold. Its sidecar name is recorded inside the .onnx, so both keep these names.
-        (f"{ONNX_WEB}/omnivoice_transformer_ipa.int4.onnx", "omnivoice_transformer_ipa.int4.onnx"),
-        (f"{ONNX_WEB}/omnivoice_transformer_ipa.int4.onnx.data", "omnivoice_transformer_ipa.int4.onnx.data"),
+        #
+        # ⚠ VERSIONED BY DIRECTORY, NOT BY FILENAME, and that is forced: the .onnx records its
+        # sidecar's filename INTERNALLY, so a build named `..._v7.int4.onnx` looks for
+        # `..._v7.int4.onnx.data` and cannot simply be uploaded under the canonical name — the demo
+        # passes the canonical one and the load fails. So each version is built under its own
+        # directory with the canonical filenames inside it. `onnx_web/` itself remains the v6 build.
+        (webfile(version, "omnivoice_transformer_ipa.int4.onnx"), "omnivoice_transformer_ipa.int4.onnx"),
+        (webfile(version, "omnivoice_transformer_ipa.int4.onnx.data"), "omnivoice_transformer_ipa.int4.onnx.data"),
         # The Qwen3 tokenizer, straight from the upstream snapshot. Needed by any consumer that
         # synthesises text rather than replaying captured ids, and a browser has nowhere else to
         # get it. Apache-2.0, like the upstream CODE — the WEIGHTS in this repo are not; see the
