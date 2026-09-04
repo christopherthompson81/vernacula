@@ -45,7 +45,11 @@ const json = (o) => JSON.stringify(o, null, 0);
  */
 const oneLine = (t) => String(t).replace(/\s+/gu, " ").trim();
 let added = 0, replaced = 0;
-for (const [lang, entries] of Object.entries(byLang).sort()) {
+// Hoisted: this is one decision about the whole run, and reading it inside the per-language loop
+// made it look like something that could vary by language.
+const ADD = process.argv.includes("--add");
+for (const [lang, entries0] of Object.entries(byLang).sort()) {
+  let entries = entries0;
   // Replace any existing block for this language rather than appending a second one.
   // ⚠ `[\w-]+` DOES NOT MATCH A DOT, and every Common Voice voice id ends in `.mp3`. The id was
   // captured up to the dot, the removal regex below then matched nothing, and a re-source APPENDED a
@@ -55,7 +59,20 @@ for (const [lang, entries] of Object.entries(byLang).sort()) {
   // `ar`, `en`, `cmn` for the first FLEURS voice and `ar-1`, `ar-2` for alternates, so a pattern of
   // `<lang>-...` misses exactly the one that is usually the DEFAULT. Re-sourcing Arabic left the old
   // muffled `ar` in place beside its replacement, with two entries claiming `"default":true`.
-  const existing = new Set([...text.matchAll(new RegExp(`\\{"id":"(${lang}|${lang}-[^"]+)"`, "g"))].map((m) => m[1]));
+  // ⚠ `--add` KEEPS what the language already has. Replacing a whole block is right when a bad voice
+  // is being swapped out; it is wrong when the goal is to ADD the gender a language is missing, and
+  // doing it by hand means re-supplying every existing entry's codes just to keep them.
+  const existing = ADD ? new Set()
+    : new Set([...text.matchAll(new RegExp(`\\{"id":"(${lang}|${lang}-[^"]+)"`, "g"))].map((m) => m[1]));
+  if (ADD) {
+    const have = new Set([...text.matchAll(/\{"id":"([^"]+)"/gu)].map((m) => m[1]));
+    const before = entries.length;
+    entries = entries.filter((e) => !have.has(e.voice.id));
+    if (entries.length !== before) console.log(`  ${lang}: ${before - entries.length} already present, skipped`);
+    if (!entries.length) { console.log(`  ${lang}: nothing new to add`); continue; }
+    // The language already has a default; an added voice must not claim it too.
+    for (const e of entries) delete e.voice.default;
+  }
   for (const id of existing) {
     // ⚠ REMOVE THE COMMENT LINE WITH THE ENTRY. Each voice is written as a `// "<transcript>"` line
     // followed by its JSON line, and dropping only the JSON left the old transcript behind as an

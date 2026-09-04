@@ -172,7 +172,11 @@ export default function App() {
             Voice
             <select value={voiceId ?? langVoices[0].id} disabled={busy}
                     onChange={(e) => setVoiceId(e.target.value)}>
-              {langVoices.map((v) => <option key={v.id} value={v.id}>{v.label}</option>)}
+              {langVoices.map((v) => (
+                <option key={v.id} value={v.id}>
+                  {v.sex ? `${v.sex === "F" ? "♀" : "♂"} ` : ""}{v.label}
+                </option>
+              ))}
             </select>
           </label>
         )}

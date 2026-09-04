@@ -1,0 +1,3164 @@
+{
+ "ab-29828647": {
+  "lang": "ab",
+  "f0": 205,
+  "sex": "F",
+  "labelled": "FEMALE"
+ },
+ "ab-29259038": {
+  "lang": "ab",
+  "f0": 125,
+  "sex": "M",
+  "labelled": "FEMALE"
+ },
+ "ab-29314594": {
+  "lang": "ab",
+  "f0": 133,
+  "sex": "M",
+  "labelled": "MALE"
+ },
+ "ba-25608503": {
+  "lang": "ba",
+  "f0": 178,
+  "sex": "uncertain",
+  "labelled": null
+ },
+ "ba-25519991": {
+  "lang": "ba",
+  "f0": 216,
+  "sex": "F",
+  "labelled": null
+ },
+ "ba-25456360": {
+  "lang": "ba",
+  "f0": 190,
+  "sex": "F",
+  "labelled": null
+ },
+ "chv-22979874": {
+  "lang": "chv",
+  "f0": 235,
+  "sex": "F",
+  "labelled": null
+ },
+ "chv-23150442": {
+  "lang": "chv",
+  "f0": 229,
+  "sex": "F",
+  "labelled": null
+ },
+ "chv-22979877": {
+  "lang": "chv",
+  "f0": 222,
+  "sex": "F",
+  "labelled": null
+ },
+ "es-18576439": {
+  "lang": "es",
+  "f0": 110,
+  "sex": "M",
+  "labelled": "MALE"
+ },
+ "es-19618282": {
+  "lang": "es",
+  "f0": 190,
+  "sex": "F",
+  "labelled": "FEMALE"
+ },
+ "es-19131990": {
+  "lang": "es",
+  "f0": 163,
+  "sex": "uncertain",
+  "labelled": "FEMALE"
+ },
+ "eu-40095609": {
+  "lang": "eu",
+  "f0": 103,
+  "sex": "M",
+  "labelled": null
+ },
+ "eu-39567410": {
+  "lang": "eu",
+  "f0": 190,
+  "sex": "F",
+  "labelled": null
+ },
+ "eu-39850609": {
+  "lang": "eu",
+  "f0": 190,
+  "sex": "F",
+  "labelled": null
+ },
+ "gn-27378715": {
+  "lang": "gn",
+  "f0": 178,
+  "sex": "uncertain",
+  "labelled": null
+ },
+ "gn-27378387": {
+  "lang": "gn",
+  "f0": 186,
+  "sex": "F",
+  "labelled": null
+ },
+ "gn-27419798": {
+  "lang": "gn",
+  "f0": 186,
+  "sex": "F",
+  "labelled": null
+ },
+ "ht-42512355": {
+  "lang": "ht",
+  "f0": 131,
+  "sex": "M",
+  "labelled": null
+ },
+ "ht-42512361": {
+  "lang": "ht",
+  "f0": 143,
+  "sex": "M",
+  "labelled": null
+ },
+ "ht-42512357": {
+  "lang": "ht",
+  "f0": 133,
+  "sex": "M",
+  "labelled": null
+ },
+ "hyw-29100889": {
+  "lang": "hyw",
+  "f0": 100,
+  "sex": "M",
+  "labelled": null
+ },
+ "hyw-29100885": {
+  "lang": "hyw",
+  "f0": 107,
+  "sex": "M",
+  "labelled": null
+ },
+ "hyw-26059215": {
+  "lang": "hyw",
+  "f0": 258,
+  "sex": "F",
+  "labelled": null
+ },
+ "kmr-24842226": {
+  "lang": "kmr",
+  "f0": 121,
+  "sex": "M",
+  "labelled": null
+ },
+ "kmr-36449362": {
+  "lang": "kmr",
+  "f0": 190,
+  "sex": "F",
+  "labelled": "FEMALE"
+ },
+ "kmr-34969923": {
+  "lang": "kmr",
+  "f0": 82,
+  "sex": "M",
+  "labelled": "MALE"
+ },
+ "ltg-40175469": {
+  "lang": "ltg",
+  "f0": 250,
+  "sex": "F",
+  "labelled": null
+ },
+ "ltg-42736545": {
+  "lang": "ltg",
+  "f0": 190,
+  "sex": "F",
+  "labelled": null
+ },
+ "ltg-40364198": {
+  "lang": "ltg",
+  "f0": 229,
+  "sex": "F",
+  "labelled": null
+ },
+ "nan-38067593": {
+  "lang": "nan",
+  "f0": 182,
+  "sex": "uncertain",
+  "labelled": null
+ },
+ "nan-41882109": {
+  "lang": "nan",
+  "f0": 178,
+  "sex": "uncertain",
+  "labelled": null
+ },
+ "nci-42622070": {
+  "lang": "nci",
+  "f0": 242,
+  "sex": "F",
+  "labelled": "FEMALE"
+ },
+ "nci-42622068": {
+  "lang": "nci",
+  "f0": 250,
+  "sex": "F",
+  "labelled": "FEMALE"
+ },
+ "nci-42622062": {
+  "lang": "nci",
+  "f0": 235,
+  "sex": "F",
+  "labelled": "FEMALE"
+ },
+ "qu-42076490": {
+  "lang": "qu",
+  "f0": 136,
+  "sex": "M",
+  "labelled": null
+ },
+ "qu-42076480": {
+  "lang": "qu",
+  "f0": 133,
+  "sex": "M",
+  "labelled": null
+ },
+ "qu-42076379": {
+  "lang": "qu",
+  "f0": 127,
+  "sex": "M",
+  "labelled": null
+ },
+ "rw-22504776": {
+  "lang": "rw",
+  "f0": 118,
+  "sex": "M",
+  "labelled": null
+ },
+ "rw-21069683": {
+  "lang": "rw",
+  "f0": 136,
+  "sex": "M",
+  "labelled": "MALE"
+ },
+ "rw-22470732": {
+  "lang": "rw",
+  "f0": 114,
+  "sex": "M",
+  "labelled": null
+ },
+ "sat-30513708": {
+  "lang": "sat",
+  "f0": 151,
+  "sex": "M",
+  "labelled": "MALE"
+ },
+ "sat-29802947": {
+  "lang": "sat",
+  "f0": 154,
+  "sex": "M",
+  "labelled": "MALE"
+ },
+ "shi-40593215": {
+  "lang": "shi",
+  "f0": 99,
+  "sex": "M",
+  "labelled": "MALE"
+ },
+ "skr-36847491": {
+  "lang": "skr",
+  "f0": 121,
+  "sex": "M",
+  "labelled": "MALE"
+ },
+ "skr-36465135": {
+  "lang": "skr",
+  "f0": 174,
+  "sex": "uncertain",
+  "labelled": null
+ },
+ "skr-33213107": {
+  "lang": "skr",
+  "f0": 127,
+  "sex": "M",
+  "labelled": "MALE"
+ },
+ "sq-40601066": {
+  "lang": "sq",
+  "f0": 129,
+  "sex": "M",
+  "labelled": null
+ },
+ "sq-40959973": {
+  "lang": "sq",
+  "f0": 114,
+  "sex": "M",
+  "labelled": null
+ },
+ "sq-40600934": {
+  "lang": "sq",
+  "f0": 129,
+  "sex": "M",
+  "labelled": null
+ },
+ "st-42503018": {
+  "lang": "st",
+  "f0": 127,
+  "sex": "M",
+  "labelled": "MALE"
+ },
+ "st-42513795": {
+  "lang": "st",
+  "f0": 138,
+  "sex": "M",
+  "labelled": "MALE"
+ },
+ "st-42513785": {
+  "lang": "st",
+  "f0": 140,
+  "sex": "M",
+  "labelled": "MALE"
+ },
+ "ti-38950594": {
+  "lang": "ti",
+  "f0": 145,
+  "sex": "M",
+  "labelled": null
+ },
+ "ti-40428452": {
+  "lang": "ti",
+  "f0": 100,
+  "sex": "M",
+  "labelled": null
+ },
+ "ti-40428476": {
+  "lang": "ti",
+  "f0": 94,
+  "sex": "M",
+  "labelled": null
+ },
+ "tk-37781914": {
+  "lang": "tk",
+  "f0": 138,
+  "sex": "M",
+  "labelled": null
+ },
+ "tk-37777717": {
+  "lang": "tk",
+  "f0": 186,
+  "sex": "F",
+  "labelled": null
+ },
+ "tk-37782378": {
+  "lang": "tk",
+  "f0": 127,
+  "sex": "M",
+  "labelled": "MALE"
+ },
+ "tn-41399472": {
+  "lang": "tn",
+  "f0": 105,
+  "sex": "M",
+  "labelled": null
+ },
+ "tn-41399464": {
+  "lang": "tn",
+  "f0": 96,
+  "sex": "M",
+  "labelled": null
+ },
+ "tn-41399454": {
+  "lang": "tn",
+  "f0": 95,
+  "sex": "M",
+  "labelled": null
+ },
+ "tt-17650059": {
+  "lang": "tt",
+  "f0": 145,
+  "sex": "M",
+  "labelled": "MALE"
+ },
+ "tt-17360345": {
+  "lang": "tt",
+  "f0": 129,
+  "sex": "M",
+  "labelled": null
+ },
+ "tt-17701169": {
+  "lang": "tt",
+  "f0": 195,
+  "sex": "F",
+  "labelled": null
+ },
+ "ug-26407689": {
+  "lang": "ug",
+  "f0": 154,
+  "sex": "M",
+  "labelled": null
+ },
+ "ug-26407688": {
+  "lang": "ug",
+  "f0": 151,
+  "sex": "M",
+  "labelled": null
+ },
+ "ug-26407686": {
+  "lang": "ug",
+  "f0": 154,
+  "sex": "M",
+  "labelled": null
+ },
+ "ak-35280567": {
+  "lang": "ak",
+  "f0": 108,
+  "sex": "M",
+  "labelled": "MALE"
+ },
+ "ak-35280534": {
+  "lang": "ak",
+  "f0": 116,
+  "sex": "M",
+  "labelled": "MALE"
+ },
+ "ak-35280523": {
+  "lang": "ak",
+  "f0": 119,
+  "sex": "M",
+  "labelled": "MALE"
+ },
+ "acm-omnili0": {
+  "lang": "acm",
+  "f0": 250,
+  "sex": "F",
+  "labelled": null
+ },
+ "acm-omnili1": {
+  "lang": "acm",
+  "f0": 211,
+  "sex": "F",
+  "labelled": null
+ },
+ "acm-omnili2": {
+  "lang": "acm",
+  "f0": 222,
+  "sex": "F",
+  "labelled": null
+ },
+ "acw-omnili0": {
+  "lang": "acw",
+  "f0": 101,
+  "sex": "M",
+  "labelled": null
+ },
+ "acw-s01-6": {
+  "lang": "acw",
+  "f0": 107,
+  "sex": "M",
+  "labelled": null
+ },
+ "acw-omnili2": {
+  "lang": "acw",
+  "f0": 235,
+  "sex": "F",
+  "labelled": null
+ },
+ "afb-omnili0": {
+  "lang": "afb",
+  "f0": 100,
+  "sex": "M",
+  "labelled": null
+ },
+ "afb-omnili1": {
+  "lang": "afb",
+  "f0": 103,
+  "sex": "M",
+  "labelled": null
+ },
+ "afb-omnili2": {
+  "lang": "afb",
+  "f0": 98,
+  "sex": "M",
+  "labelled": null
+ },
+ "apc-omnili0": {
+  "lang": "apc",
+  "f0": 140,
+  "sex": "M",
+  "labelled": null
+ },
+ "apc-omnili1": {
+  "lang": "apc",
+  "f0": 160,
+  "sex": "uncertain",
+  "labelled": null
+ },
+ "apc-omnili2": {
+  "lang": "apc",
+  "f0": 182,
+  "sex": "uncertain",
+  "labelled": null
+ },
+ "apd-omnili0": {
+  "lang": "apd",
+  "f0": 116,
+  "sex": "M",
+  "labelled": null
+ },
+ "apd-omnili1": {
+  "lang": "apd",
+  "f0": 113,
+  "sex": "M",
+  "labelled": null
+ },
+ "apd-omnili2": {
+  "lang": "apd",
+  "f0": 104,
+  "sex": "M",
+  "labelled": null
+ },
+ "ary-omnili0": {
+  "lang": "ary",
+  "f0": 113,
+  "sex": "M",
+  "labelled": null
+ },
+ "ary-omnili1": {
+  "lang": "ary",
+  "f0": 119,
+  "sex": "M",
+  "labelled": null
+ },
+ "ary-omnili2": {
+  "lang": "ary",
+  "f0": 118,
+  "sex": "M",
+  "labelled": null
+ },
+ "ayl-omnili0": {
+  "lang": "ayl",
+  "f0": 133,
+  "sex": "M",
+  "labelled": null
+ },
+ "ayl-omnili1": {
+  "lang": "ayl",
+  "f0": 216,
+  "sex": "F",
+  "labelled": null
+ },
+ "bho-omnili0": {
+  "lang": "bho",
+  "f0": 211,
+  "sex": "F",
+  "labelled": null
+ },
+ "bho-omnili1": {
+  "lang": "bho",
+  "f0": 235,
+  "sex": "F",
+  "labelled": null
+ },
+ "bho-omnili2": {
+  "lang": "bho",
+  "f0": 250,
+  "sex": "F",
+  "labelled": null
+ },
+ "crh-qirimt0": {
+  "lang": "crh",
+  "f0": 118,
+  "sex": "M",
+  "labelled": null
+ },
+ "crh-qirimt1": {
+  "lang": "crh",
+  "f0": 131,
+  "sex": "M",
+  "labelled": null
+ },
+ "crh-qirimt2": {
+  "lang": "crh",
+  "f0": 114,
+  "sex": "M",
+  "labelled": null
+ },
+ "fo-ravnur0": {
+  "lang": "fo",
+  "f0": 104,
+  "sex": "M",
+  "labelled": null
+ },
+ "fo-ravnur1": {
+  "lang": "fo",
+  "f0": 104,
+  "sex": "M",
+  "labelled": null
+ },
+ "fo-ravnur2": {
+  "lang": "fo",
+  "f0": 104,
+  "sex": "M",
+  "labelled": null
+ },
+ "hil-open-b0": {
+  "lang": "hil",
+  "f0": 222,
+  "sex": "F",
+  "labelled": null
+ },
+ "hil-open-b1": {
+  "lang": "hil",
+  "f0": 167,
+  "sex": "uncertain",
+  "labelled": null
+ },
+ "hil-open-b2": {
+  "lang": "hil",
+  "f0": 195,
+  "sex": "F",
+  "labelled": null
+ },
+ "hne-open-b0": {
+  "lang": "hne",
+  "f0": 154,
+  "sex": "M",
+  "labelled": null
+ },
+ "hne-open-b1": {
+  "lang": "hne",
+  "f0": 125,
+  "sex": "M",
+  "labelled": null
+ },
+ "hne-open-b2": {
+  "lang": "hne",
+  "f0": 148,
+  "sex": "M",
+  "labelled": null
+ },
+ "pt-35002098": {
+  "lang": "pt",
+  "f0": 94,
+  "sex": "M",
+  "labelled": null
+ },
+ "pt-35120687": {
+  "lang": "pt",
+  "f0": 99,
+  "sex": "M",
+  "labelled": "MALE"
+ },
+ "pt-35002132": {
+  "lang": "pt",
+  "f0": 103,
+  "sex": "M",
+  "labelled": null
+ },
+ "si-omnili0": {
+  "lang": "si",
+  "f0": 235,
+  "sex": "F",
+  "labelled": null
+ },
+ "si-omnili1": {
+  "lang": "si",
+  "f0": 235,
+  "sex": "F",
+  "labelled": null
+ },
+ "bo-006_01_006_180": {
+  "lang": "bo",
+  "f0": 195,
+  "sex": "F",
+  "labelled": null
+ },
+ "bo-006_01_006_90": {
+  "lang": "bo",
+  "f0": 222,
+  "sex": "F",
+  "labelled": null
+ },
+ "bo-006_01_006_225": {
+  "lang": "bo",
+  "f0": 242,
+  "sex": "F",
+  "labelled": null
+ },
+ "en-GB-sof_06136_00175867465": {
+  "lang": "en-GB",
+  "f0": 186,
+  "sex": "F",
+  "labelled": null
+ },
+ "en-GB-sof_02121_00420474926": {
+  "lang": "en-GB",
+  "f0": 190,
+  "sex": "F",
+  "labelled": null
+ },
+ "en-GB-sof_00610_01593329385": {
+  "lang": "en-GB",
+  "f0": 186,
+  "sex": "F",
+  "labelled": null
+ },
+ "su-suf_00297_00113221565": {
+  "lang": "su",
+  "f0": 222,
+  "sex": "F",
+  "labelled": null
+ },
+ "su-suf_00297_00275367079": {
+  "lang": "su",
+  "f0": 258,
+  "sex": "F",
+  "labelled": null
+ },
+ "su-suf_00297_00058959617": {
+  "lang": "su",
+  "f0": 258,
+  "sex": "F",
+  "labelled": null
+ },
+ "ee-waxaln0": {
+  "lang": "ee",
+  "f0": 148,
+  "sex": "M",
+  "labelled": null
+ },
+ "ee-waxaln1": {
+  "lang": "ee",
+  "f0": 200,
+  "sex": "F",
+  "labelled": null
+ },
+ "ee-waxaln2": {
+  "lang": "ee",
+  "f0": 205,
+  "sex": "F",
+  "labelled": null
+ },
+ "ki-waxaln0": {
+  "lang": "ki",
+  "f0": 111,
+  "sex": "M",
+  "labelled": null
+ },
+ "ki-waxaln1": {
+  "lang": "ki",
+  "f0": 216,
+  "sex": "F",
+  "labelled": null
+ },
+ "ki-waxaln2": {
+  "lang": "ki",
+  "f0": 216,
+  "sex": "F",
+  "labelled": null
+ },
+ "pcm-waxaln0": {
+  "lang": "pcm",
+  "f0": 96,
+  "sex": "M",
+  "labelled": null
+ },
+ "pcm-waxaln1": {
+  "lang": "pcm",
+  "f0": 95,
+  "sex": "M",
+  "labelled": null
+ },
+ "pcm-waxaln2": {
+  "lang": "pcm",
+  "f0": 94,
+  "sex": "M",
+  "labelled": null
+ },
+ "mg-waxaln0": {
+  "lang": "mg",
+  "f0": 136,
+  "sex": "M",
+  "labelled": null
+ },
+ "mg-waxaln1": {
+  "lang": "mg",
+  "f0": 229,
+  "sex": "F",
+  "labelled": null
+ },
+ "mg-waxaln2": {
+  "lang": "mg",
+  "f0": 182,
+  "sex": "uncertain",
+  "labelled": null
+ },
+ "pbt-omnili0": {
+  "lang": "pbt",
+  "f0": 140,
+  "sex": "M",
+  "labelled": null
+ },
+ "pbt-omnili1": {
+  "lang": "pbt",
+  "f0": 200,
+  "sex": "F",
+  "labelled": null
+ },
+ "pbt-omnili2": {
+  "lang": "pbt",
+  "f0": 200,
+  "sex": "F",
+  "labelled": null
+ },
+ "pnb-omnili0": {
+  "lang": "pnb",
+  "f0": 229,
+  "sex": "F",
+  "labelled": null
+ },
+ "pnb-omnili1": {
+  "lang": "pnb",
+  "f0": 229,
+  "sex": "F",
+  "labelled": null
+ },
+ "pnb-omnili2": {
+  "lang": "pnb",
+  "f0": 222,
+  "sex": "F",
+  "labelled": null
+ },
+ "en-IN-19547898": {
+  "lang": "en-IN",
+  "f0": 145,
+  "sex": "M",
+  "labelled": "MALE"
+ },
+ "en-IN-17877327": {
+  "lang": "en-IN",
+  "f0": 151,
+  "sex": "M",
+  "labelled": "MALE"
+ },
+ "en-IN-18855072": {
+  "lang": "en-IN",
+  "f0": 125,
+  "sex": "M",
+  "labelled": "MALE"
+ },
+ "grc-grc_ref.wav": {
+  "lang": "grc",
+  "f0": 216,
+  "sex": "F",
+  "labelled": null
+ },
+ "la-latin_ref.wav": {
+  "lang": "la",
+  "f0": 123,
+  "sex": "M",
+  "labelled": null
+ },
+ "awa-00000.wav": {
+  "lang": "awa",
+  "f0": 154,
+  "sex": "M",
+  "labelled": null
+ },
+ "awa-00004.wav": {
+  "lang": "awa",
+  "f0": 111,
+  "sex": "M",
+  "labelled": null
+ },
+ "awa-00005.wav": {
+  "lang": "awa",
+  "f0": 100,
+  "sex": "M",
+  "labelled": null
+ },
+ "wuu-00012.wav": {
+  "lang": "wuu",
+  "f0": 205,
+  "sex": "F",
+  "labelled": null
+ },
+ "wuu-00011.wav": {
+  "lang": "wuu",
+  "f0": 195,
+  "sex": "F",
+  "labelled": null
+ },
+ "wuu-00001.wav": {
+  "lang": "wuu",
+  "f0": 127,
+  "sex": "M",
+  "labelled": null
+ },
+ "mai-00002.wav": {
+  "lang": "mai",
+  "f0": 170,
+  "sex": "uncertain",
+  "labelled": null
+ },
+ "mai-00001.wav": {
+  "lang": "mai",
+  "f0": 190,
+  "sex": "F",
+  "labelled": null
+ },
+ "bgc-00001.wav": {
+  "lang": "bgc",
+  "f0": 216,
+  "sex": "F",
+  "labelled": null
+ },
+ "bgc-00004.wav": {
+  "lang": "bgc",
+  "f0": 229,
+  "sex": "F",
+  "labelled": null
+ },
+ "bgc-00000.wav": {
+  "lang": "bgc",
+  "f0": 235,
+  "sex": "F",
+  "labelled": null
+ },
+ "mag-00014.wav": {
+  "lang": "mag",
+  "f0": 211,
+  "sex": "F",
+  "labelled": null
+ },
+ "mag-00026.wav": {
+  "lang": "mag",
+  "f0": 136,
+  "sex": "M",
+  "labelled": null
+ },
+ "mag-00022.wav": {
+  "lang": "mag",
+  "f0": 151,
+  "sex": "M",
+  "labelled": null
+ },
+ "rkt-00009.wav": {
+  "lang": "rkt",
+  "f0": 127,
+  "sex": "M",
+  "labelled": null
+ },
+ "rkt-00004.wav": {
+  "lang": "rkt",
+  "f0": 129,
+  "sex": "M",
+  "labelled": null
+ },
+ "rkt-00000.wav": {
+  "lang": "rkt",
+  "f0": 119,
+  "sex": "M",
+  "labelled": null
+ },
+ "syl-00003.wav": {
+  "lang": "syl",
+  "f0": 129,
+  "sex": "M",
+  "labelled": null
+ },
+ "syl-00005.wav": {
+  "lang": "syl",
+  "f0": 131,
+  "sex": "M",
+  "labelled": null
+ },
+ "syl-00004.wav": {
+  "lang": "syl",
+  "f0": 170,
+  "sex": "uncertain",
+  "labelled": null
+ },
+ "an-common_voice_an_42718312.mp3": {
+  "lang": "an",
+  "f0": 216,
+  "sex": "F",
+  "labelled": null
+ },
+ "an-common_voice_an_42718316.mp3": {
+  "lang": "an",
+  "f0": 222,
+  "sex": "F",
+  "labelled": null
+ },
+ "an-common_voice_an_42718314.mp3": {
+  "lang": "an",
+  "f0": 211,
+  "sex": "F",
+  "labelled": null
+ },
+ "bal-common_voice_bgp_47951495.mp3": {
+  "lang": "bal",
+  "f0": 145,
+  "sex": "M",
+  "labelled": null
+ },
+ "bal-common_voice_bgp_47951500.mp3": {
+  "lang": "bal",
+  "f0": 151,
+  "sex": "M",
+  "labelled": null
+ },
+ "bal-common_voice_bgp_47951504.mp3": {
+  "lang": "bal",
+  "f0": 148,
+  "sex": "M",
+  "labelled": null
+ },
+ "dag-common_voice_dag_48868556.mp3": {
+  "lang": "dag",
+  "f0": 170,
+  "sex": "uncertain",
+  "labelled": null
+ },
+ "dag-common_voice_dag_41299474.mp3": {
+  "lang": "dag",
+  "f0": 200,
+  "sex": "F",
+  "labelled": null
+ },
+ "dag-common_voice_dag_41371636.mp3": {
+  "lang": "dag",
+  "f0": 82,
+  "sex": "M",
+  "labelled": null
+ },
+ "fr-CA-common_voice_fr_23351095.mp3": {
+  "lang": "fr-CA",
+  "f0": 110,
+  "sex": "M",
+  "labelled": null
+ },
+ "fr-CA-common_voice_fr_23351099.mp3": {
+  "lang": "fr-CA",
+  "f0": 114,
+  "sex": "M",
+  "labelled": null
+ },
+ "fr-CA-common_voice_fr_23351093.mp3": {
+  "lang": "fr-CA",
+  "f0": 114,
+  "sex": "M",
+  "labelled": null
+ },
+ "ipk-common_voice_ipk_42161801.mp3": {
+  "lang": "ipk",
+  "f0": 229,
+  "sex": "F",
+  "labelled": null
+ },
+ "ipk-common_voice_ipk_42161623.mp3": {
+  "lang": "ipk",
+  "f0": 229,
+  "sex": "F",
+  "labelled": null
+ },
+ "ipk-common_voice_ipk_42161690.mp3": {
+  "lang": "ipk",
+  "f0": 216,
+  "sex": "F",
+  "labelled": null
+ },
+ "rup-common_voice_rup_43506051.mp3": {
+  "lang": "rup",
+  "f0": 140,
+  "sex": "M",
+  "labelled": null
+ },
+ "rup-common_voice_rup_43506050.mp3": {
+  "lang": "rup",
+  "f0": 145,
+  "sex": "M",
+  "labelled": null
+ },
+ "rup-common_voice_rup_43506049.mp3": {
+  "lang": "rup",
+  "f0": 129,
+  "sex": "M",
+  "labelled": null
+ },
+ "zoc-common_voice_zoc_41957003.mp3": {
+  "lang": "zoc",
+  "f0": 205,
+  "sex": "F",
+  "labelled": null
+ },
+ "zoc-common_voice_zoc_42470895.mp3": {
+  "lang": "zoc",
+  "f0": 195,
+  "sex": "F",
+  "labelled": null
+ },
+ "zoc-common_voice_zoc_41980072.mp3": {
+  "lang": "zoc",
+  "f0": 163,
+  "sex": "uncertain",
+  "labelled": null
+ },
+ "haw-omnili0": {
+  "lang": "haw",
+  "f0": 170,
+  "sex": "uncertain",
+  "labelled": null
+ },
+ "haw-omnili1": {
+  "lang": "haw",
+  "f0": 167,
+  "sex": "uncertain",
+  "labelled": null
+ },
+ "haw-omnili2": {
+  "lang": "haw",
+  "f0": 157,
+  "sex": "uncertain",
+  "labelled": null
+ },
+ "ar-24044579": {
+  "lang": "ar",
+  "f0": 118,
+  "sex": "M",
+  "labelled": null
+ },
+ "ar-24044834": {
+  "lang": "ar",
+  "f0": 123,
+  "sex": "M",
+  "labelled": null
+ },
+ "ar-24044528": {
+  "lang": "ar",
+  "f0": 114,
+  "sex": "M",
+  "labelled": null
+ },
+ "hi-26010468": {
+  "lang": "hi",
+  "f0": 148,
+  "sex": "M",
+  "labelled": null
+ },
+ "hi-26021895": {
+  "lang": "hi",
+  "f0": 160,
+  "sex": "uncertain",
+  "labelled": null
+ },
+ "hi-26021954": {
+  "lang": "hi",
+  "f0": 170,
+  "sex": "uncertain",
+  "labelled": null
+ },
+ "pa-25183738": {
+  "lang": "pa",
+  "f0": 114,
+  "sex": "M",
+  "labelled": "MALE"
+ },
+ "pa-27646071": {
+  "lang": "pa",
+  "f0": 121,
+  "sex": "M",
+  "labelled": null
+ },
+ "pa-25108566": {
+  "lang": "pa",
+  "f0": 133,
+  "sex": "M",
+  "labelled": null
+ },
+ "pa-25109777": {
+  "lang": "pa",
+  "f0": 110,
+  "sex": "M",
+  "labelled": null
+ },
+ "tr-24606484": {
+  "lang": "tr",
+  "f0": 129,
+  "sex": "M",
+  "labelled": null
+ },
+ "tr-18564068": {
+  "lang": "tr",
+  "f0": 113,
+  "sex": "M",
+  "labelled": null
+ },
+ "tr-26125503": {
+  "lang": "tr",
+  "f0": 195,
+  "sex": "F",
+  "labelled": "FEMALE"
+ },
+ "tr-18967997": {
+  "lang": "tr",
+  "f0": 114,
+  "sex": "M",
+  "labelled": "MALE"
+ },
+ "ur-38657511": {
+  "lang": "ur",
+  "f0": 154,
+  "sex": "M",
+  "labelled": "MALE"
+ },
+ "ur-40117283": {
+  "lang": "ur",
+  "f0": 114,
+  "sex": "M",
+  "labelled": "MALE"
+ },
+ "ur-35294301": {
+  "lang": "ur",
+  "f0": 242,
+  "sex": "F",
+  "labelled": null
+ },
+ "ur-38425380": {
+  "lang": "ur",
+  "f0": 235,
+  "sex": "F",
+  "labelled": "FEMALE"
+ },
+ "th-31866965": {
+  "lang": "th",
+  "f0": 138,
+  "sex": "M",
+  "labelled": "MALE"
+ },
+ "th-25691244": {
+  "lang": "th",
+  "f0": 143,
+  "sex": "M",
+  "labelled": null
+ },
+ "th-27811321": {
+  "lang": "th",
+  "f0": 119,
+  "sex": "M",
+  "labelled": null
+ },
+ "th-25774874": {
+  "lang": "th",
+  "f0": 242,
+  "sex": "F",
+  "labelled": null
+ },
+ "mr-31069674": {
+  "lang": "mr",
+  "f0": 211,
+  "sex": "F",
+  "labelled": null
+ },
+ "mr-31045768": {
+  "lang": "mr",
+  "f0": 222,
+  "sex": "F",
+  "labelled": null
+ },
+ "mr-30605565": {
+  "lang": "mr",
+  "f0": 178,
+  "sex": "uncertain",
+  "labelled": "FEMALE"
+ },
+ "te-tef_05994_01779241029": {
+  "lang": "te",
+  "f0": 235,
+  "sex": "F",
+  "labelled": null
+ },
+ "te-tef_06928_01219375780": {
+  "lang": "te",
+  "f0": 216,
+  "sex": "F",
+  "labelled": null
+ },
+ "te-tem_05425_00692767676": {
+  "lang": "te",
+  "f0": 138,
+  "sex": "M",
+  "labelled": null
+ },
+ "te-tem_04272_00085680040": {
+  "lang": "te",
+  "f0": 174,
+  "sex": "uncertain",
+  "labelled": null
+ },
+ "ha-26716489": {
+  "lang": "ha",
+  "f0": 145,
+  "sex": "M",
+  "labelled": null
+ },
+ "ha-32855168": {
+  "lang": "ha",
+  "f0": 114,
+  "sex": "M",
+  "labelled": "MALE"
+ },
+ "ha-26718713": {
+  "lang": "ha",
+  "f0": 160,
+  "sex": "uncertain",
+  "labelled": null
+ },
+ "ha-27001998": {
+  "lang": "ha",
+  "f0": 145,
+  "sex": "M",
+  "labelled": null
+ },
+ "yue-33084411": {
+  "lang": "yue",
+  "f0": 133,
+  "sex": "M",
+  "labelled": null
+ },
+ "yue-40673656": {
+  "lang": "yue",
+  "f0": 178,
+  "sex": "uncertain",
+  "labelled": "FEMALE"
+ },
+ "yue-32334293": {
+  "lang": "yue",
+  "f0": 138,
+  "sex": "M",
+  "labelled": null
+ },
+ "yue-33033514": {
+  "lang": "yue",
+  "f0": 133,
+  "sex": "M",
+  "labelled": null
+ },
+ "cy-24466846": {
+  "lang": "cy",
+  "f0": 157,
+  "sex": "uncertain",
+  "labelled": null
+ },
+ "cy-25031325": {
+  "lang": "cy",
+  "f0": 110,
+  "sex": "M",
+  "labelled": null
+ },
+ "cy-39714783": {
+  "lang": "cy",
+  "f0": 111,
+  "sex": "M",
+  "labelled": null
+ },
+ "cy-37259892": {
+  "lang": "cy",
+  "f0": 127,
+  "sex": "M",
+  "labelled": null
+ },
+ "ff-omnili4": {
+  "lang": "ff",
+  "f0": 136,
+  "sex": "M",
+  "labelled": null
+ },
+ "ff-omnili2": {
+  "lang": "ff",
+  "f0": 151,
+  "sex": "M",
+  "labelled": null
+ },
+ "ff-omnili1": {
+  "lang": "ff",
+  "f0": 138,
+  "sex": "M",
+  "labelled": null
+ },
+ "ff-omnili5": {
+  "lang": "ff",
+  "f0": 131,
+  "sex": "M",
+  "labelled": null
+ },
+ "mt-22088359": {
+  "lang": "mt",
+  "f0": 118,
+  "sex": "M",
+  "labelled": null
+ },
+ "mt-21293933": {
+  "lang": "mt",
+  "f0": 182,
+  "sex": "uncertain",
+  "labelled": "FEMALE"
+ },
+ "mt-22354905": {
+  "lang": "mt",
+  "f0": 111,
+  "sex": "M",
+  "labelled": null
+ },
+ "mt-22275425": {
+  "lang": "mt",
+  "f0": 123,
+  "sex": "M",
+  "labelled": null
+ },
+ "luo-40831233": {
+  "lang": "luo",
+  "f0": 216,
+  "sex": "F",
+  "labelled": null
+ },
+ "luo-40992192": {
+  "lang": "luo",
+  "f0": 178,
+  "sex": "uncertain",
+  "labelled": "FEMALE"
+ },
+ "luo-40643586": {
+  "lang": "luo",
+  "f0": 107,
+  "sex": "M",
+  "labelled": null
+ },
+ "mn-18580938": {
+  "lang": "mn",
+  "f0": 116,
+  "sex": "M",
+  "labelled": null
+ },
+ "mn-39378687": {
+  "lang": "mn",
+  "f0": 123,
+  "sex": "M",
+  "labelled": null
+ },
+ "mn-25207431": {
+  "lang": "mn",
+  "f0": 136,
+  "sex": "M",
+  "labelled": "MALE"
+ },
+ "mn-20452246": {
+  "lang": "mn",
+  "f0": 131,
+  "sex": "M",
+  "labelled": null
+ },
+ "ps-40390072": {
+  "lang": "ps",
+  "f0": 167,
+  "sex": "uncertain",
+  "labelled": null
+ },
+ "ps-42448920": {
+  "lang": "ps",
+  "f0": 125,
+  "sex": "M",
+  "labelled": null
+ },
+ "ps-40481886": {
+  "lang": "ps",
+  "f0": 105,
+  "sex": "M",
+  "labelled": null
+ },
+ "ps-42091691": {
+  "lang": "ps",
+  "f0": 151,
+  "sex": "M",
+  "labelled": null
+ },
+ "lt-32433690": {
+  "lang": "lt",
+  "f0": 105,
+  "sex": "M",
+  "labelled": null
+ },
+ "lt-40830186": {
+  "lang": "lt",
+  "f0": 211,
+  "sex": "F",
+  "labelled": null
+ },
+ "lt-25111945": {
+  "lang": "lt",
+  "f0": 113,
+  "sex": "M",
+  "labelled": null
+ },
+ "lt-25756239": {
+  "lang": "lt",
+  "f0": 111,
+  "sex": "M",
+  "labelled": null
+ },
+ "ckb-42611328": {
+  "lang": "ckb",
+  "f0": 174,
+  "sex": "uncertain",
+  "labelled": null
+ },
+ "ckb-40014667": {
+  "lang": "ckb",
+  "f0": 123,
+  "sex": "M",
+  "labelled": null
+ },
+ "ckb-40044317": {
+  "lang": "ckb",
+  "f0": 94,
+  "sex": "M",
+  "labelled": null
+ },
+ "ckb-40011675": {
+  "lang": "ckb",
+  "f0": 111,
+  "sex": "M",
+  "labelled": null
+ },
+ "da-42638711": {
+  "lang": "da",
+  "f0": 113,
+  "sex": "M",
+  "labelled": null
+ },
+ "da-32356554": {
+  "lang": "da",
+  "f0": 211,
+  "sex": "F",
+  "labelled": null
+ },
+ "da-31176203": {
+  "lang": "da",
+  "f0": 136,
+  "sex": "M",
+  "labelled": "MALE"
+ },
+ "da-42288199": {
+  "lang": "da",
+  "f0": 216,
+  "sex": "F",
+  "labelled": "MALE"
+ },
+ "sl-42534929": {
+  "lang": "sl",
+  "f0": 174,
+  "sex": "uncertain",
+  "labelled": null
+ },
+ "sl-42527241": {
+  "lang": "sl",
+  "f0": 170,
+  "sex": "uncertain",
+  "labelled": null
+ },
+ "sl-41890307": {
+  "lang": "sl",
+  "f0": 182,
+  "sex": "uncertain",
+  "labelled": null
+ },
+ "sl-42607363": {
+  "lang": "sl",
+  "f0": 186,
+  "sex": "F",
+  "labelled": null
+ },
+ "ky-17629876": {
+  "lang": "ky",
+  "f0": 105,
+  "sex": "M",
+  "labelled": null
+ },
+ "ky-23393117": {
+  "lang": "ky",
+  "f0": 267,
+  "sex": "F",
+  "labelled": null
+ },
+ "ky-17830138": {
+  "lang": "ky",
+  "f0": 143,
+  "sex": "M",
+  "labelled": null
+ },
+ "ky-17963648": {
+  "lang": "ky",
+  "f0": 101,
+  "sex": "M",
+  "labelled": null
+ },
+ "sk-28552541": {
+  "lang": "sk",
+  "f0": 235,
+  "sex": "F",
+  "labelled": null
+ },
+ "sk-41912720": {
+  "lang": "sk",
+  "f0": 99,
+  "sex": "M",
+  "labelled": null
+ },
+ "sk-41534481": {
+  "lang": "sk",
+  "f0": 92,
+  "sex": "M",
+  "labelled": null
+ },
+ "sk-38616204": {
+  "lang": "sk",
+  "f0": 174,
+  "sex": "uncertain",
+  "labelled": null
+ },
+ "cs-20458106": {
+  "lang": "cs",
+  "f0": 131,
+  "sex": "M",
+  "labelled": null
+ },
+ "cs-22402318": {
+  "lang": "cs",
+  "f0": 111,
+  "sex": "M",
+  "labelled": null
+ },
+ "cs-22381059": {
+  "lang": "cs",
+  "f0": 138,
+  "sex": "M",
+  "labelled": null
+ },
+ "cs-20462649": {
+  "lang": "cs",
+  "f0": 138,
+  "sex": "M",
+  "labelled": "MALE"
+ },
+ "pl-42662044": {
+  "lang": "pl",
+  "f0": 129,
+  "sex": "M",
+  "labelled": null
+ },
+ "pl-20603762": {
+  "lang": "pl",
+  "f0": 127,
+  "sex": "M",
+  "labelled": null
+ },
+ "pl-20667391": {
+  "lang": "pl",
+  "f0": 107,
+  "sex": "M",
+  "labelled": null
+ },
+ "pl-20604122": {
+  "lang": "pl",
+  "f0": 111,
+  "sex": "M",
+  "labelled": null
+ },
+ "it-19972982": {
+  "lang": "it",
+  "f0": 76,
+  "sex": "M",
+  "labelled": null
+ },
+ "it-19986148": {
+  "lang": "it",
+  "f0": 140,
+  "sex": "M",
+  "labelled": null
+ },
+ "it-19991640": {
+  "lang": "it",
+  "f0": 136,
+  "sex": "M",
+  "labelled": null
+ },
+ "de-20043474": {
+  "lang": "de",
+  "f0": 105,
+  "sex": "M",
+  "labelled": null
+ },
+ "de-19119155": {
+  "lang": "de",
+  "f0": 78,
+  "sex": "M",
+  "labelled": null
+ },
+ "de-19275763": {
+  "lang": "de",
+  "f0": 140,
+  "sex": "M",
+  "labelled": null
+ },
+ "de-19618761": {
+  "lang": "de",
+  "f0": 174,
+  "sex": "uncertain",
+  "labelled": null
+ },
+ "mk-41845152": {
+  "lang": "mk",
+  "f0": 178,
+  "sex": "uncertain",
+  "labelled": null
+ },
+ "mk-41954743": {
+  "lang": "mk",
+  "f0": 216,
+  "sex": "F",
+  "labelled": null
+ },
+ "mk-41956729": {
+  "lang": "mk",
+  "f0": 131,
+  "sex": "M",
+  "labelled": null
+ },
+ "mk-41949173": {
+  "lang": "mk",
+  "f0": 113,
+  "sex": "M",
+  "labelled": null
+ },
+ "fa-38729071": {
+  "lang": "fa",
+  "f0": 125,
+  "sex": "M",
+  "labelled": null
+ },
+ "fa-23996332": {
+  "lang": "fa",
+  "f0": 96,
+  "sex": "M",
+  "labelled": null
+ },
+ "fa-18614343": {
+  "lang": "fa",
+  "f0": 116,
+  "sex": "M",
+  "labelled": null
+ },
+ "fa-37417068": {
+  "lang": "fa",
+  "f0": 119,
+  "sex": "M",
+  "labelled": null
+ },
+ "lg-28753901": {
+  "lang": "lg",
+  "f0": 205,
+  "sex": "F",
+  "labelled": null
+ },
+ "lg-25489993": {
+  "lang": "lg",
+  "f0": 114,
+  "sex": "M",
+  "labelled": null
+ },
+ "lg-23711991": {
+  "lang": "lg",
+  "f0": 119,
+  "sex": "M",
+  "labelled": null
+ },
+ "lg-28532647": {
+  "lang": "lg",
+  "f0": 148,
+  "sex": "M",
+  "labelled": null
+ },
+ "nl-32643528": {
+  "lang": "nl",
+  "f0": 140,
+  "sex": "M",
+  "labelled": null
+ },
+ "nl-43191144": {
+  "lang": "nl",
+  "f0": 140,
+  "sex": "M",
+  "labelled": null
+ },
+ "nl-43214607": {
+  "lang": "nl",
+  "f0": 140,
+  "sex": "M",
+  "labelled": null
+ },
+ "nl-43206179": {
+  "lang": "nl",
+  "f0": 138,
+  "sex": "M",
+  "labelled": null
+ },
+ "et-21747789": {
+  "lang": "et",
+  "f0": 178,
+  "sex": "uncertain",
+  "labelled": null
+ },
+ "et-24624555": {
+  "lang": "et",
+  "f0": 174,
+  "sex": "uncertain",
+  "labelled": null
+ },
+ "et-22042121": {
+  "lang": "et",
+  "f0": 200,
+  "sex": "F",
+  "labelled": null
+ },
+ "et-21903932": {
+  "lang": "et",
+  "f0": 242,
+  "sex": "F",
+  "labelled": null
+ },
+ "sw-28978334": {
+  "lang": "sw",
+  "f0": 178,
+  "sex": "uncertain",
+  "labelled": null
+ },
+ "sw-31442996": {
+  "lang": "sw",
+  "f0": 182,
+  "sex": "uncertain",
+  "labelled": null
+ },
+ "sw-39215547": {
+  "lang": "sw",
+  "f0": 170,
+  "sex": "uncertain",
+  "labelled": "MALE"
+ },
+ "sw-37647595": {
+  "lang": "sw",
+  "f0": 222,
+  "sex": "F",
+  "labelled": "FEMALE"
+ },
+ "uz-31930098": {
+  "lang": "uz",
+  "f0": 136,
+  "sex": "M",
+  "labelled": "MALE"
+ },
+ "uz-28892955": {
+  "lang": "uz",
+  "f0": 123,
+  "sex": "M",
+  "labelled": null
+ },
+ "uz-31998906": {
+  "lang": "uz",
+  "f0": 118,
+  "sex": "M",
+  "labelled": "MALE"
+ },
+ "uz-31869682": {
+  "lang": "uz",
+  "f0": 103,
+  "sex": "M",
+  "labelled": null
+ },
+ "ro-36974682": {
+  "lang": "ro",
+  "f0": 119,
+  "sex": "M",
+  "labelled": "MALE"
+ },
+ "ro-38366474": {
+  "lang": "ro",
+  "f0": 131,
+  "sex": "M",
+  "labelled": null
+ },
+ "ro-26972328": {
+  "lang": "ro",
+  "f0": 129,
+  "sex": "M",
+  "labelled": null
+ },
+ "ro-40968668": {
+  "lang": "ro",
+  "f0": 116,
+  "sex": "M",
+  "labelled": null
+ },
+ "uk-38571086": {
+  "lang": "uk",
+  "f0": 151,
+  "sex": "M",
+  "labelled": "MALE"
+ },
+ "uk-38339259": {
+  "lang": "uk",
+  "f0": 160,
+  "sex": "uncertain",
+  "labelled": null
+ },
+ "uk-38317837": {
+  "lang": "uk",
+  "f0": 116,
+  "sex": "M",
+  "labelled": null
+ },
+ "uk-40172644": {
+  "lang": "uk",
+  "f0": 170,
+  "sex": "uncertain",
+  "labelled": null
+ },
+ "cmn-33410210": {
+  "lang": "cmn",
+  "f0": 121,
+  "sex": "M",
+  "labelled": null
+ },
+ "cmn-22110266": {
+  "lang": "cmn",
+  "f0": 133,
+  "sex": "M",
+  "labelled": null
+ },
+ "es-419-19658604": {
+  "lang": "es-419",
+  "f0": 211,
+  "sex": "F",
+  "labelled": null
+ },
+ "es-419-19634388": {
+  "lang": "es-419",
+  "f0": 195,
+  "sex": "F",
+  "labelled": null
+ },
+ "yue-31276813": {
+  "lang": "yue",
+  "f0": 200,
+  "sex": "F",
+  "labelled": null
+ },
+ "en-19261373": {
+  "lang": "en",
+  "f0": 105,
+  "sex": "M",
+  "labelled": null
+ },
+ "en-18160827": {
+  "lang": "en",
+  "f0": 116,
+  "sex": "M",
+  "labelled": null
+ },
+ "rw-20331696": {
+  "lang": "rw",
+  "f0": 195,
+  "sex": "F",
+  "labelled": "FEMALE"
+ },
+ "uz-28892867": {
+  "lang": "uz",
+  "f0": 195,
+  "sex": "F",
+  "labelled": null
+ },
+ "uz-28911992": {
+  "lang": "uz",
+  "f0": 195,
+  "sex": "F",
+  "labelled": null
+ },
+ "apc-21715042": {
+  "lang": "apc",
+  "f0": 200,
+  "sex": "F",
+  "labelled": null
+ },
+ "apc-24206548": {
+  "lang": "apc",
+  "f0": 216,
+  "sex": "F",
+  "labelled": null
+ },
+ "ar-21715042": {
+  "lang": "ar",
+  "f0": 200,
+  "sex": "F",
+  "labelled": null
+ },
+ "ar-22714476": {
+  "lang": "ar",
+  "f0": 195,
+  "sex": "F",
+  "labelled": null
+ },
+ "bn-31667408": {
+  "lang": "bn",
+  "f0": 235,
+  "sex": "F",
+  "labelled": null
+ },
+ "fi-27422832": {
+  "lang": "fi",
+  "f0": 205,
+  "sex": "F",
+  "labelled": null
+ },
+ "fi-36643513": {
+  "lang": "fi",
+  "f0": 190,
+  "sex": "F",
+  "labelled": "FEMALE"
+ },
+ "ca-30874842": {
+  "lang": "ca",
+  "f0": 229,
+  "sex": "F",
+  "labelled": null
+ },
+ "ca-30816689": {
+  "lang": "ca",
+  "f0": 205,
+  "sex": "F",
+  "labelled": null
+ },
+ "be-26826848": {
+  "lang": "be",
+  "f0": 83,
+  "sex": "M",
+  "labelled": null
+ },
+ "be-26771278": {
+  "lang": "be",
+  "f0": 107,
+  "sex": "M",
+  "labelled": null
+ },
+ "fr-19624500": {
+  "lang": "fr",
+  "f0": 308,
+  "sex": "F",
+  "labelled": null
+ },
+ "fr-19599621": {
+  "lang": "fr",
+  "f0": 200,
+  "sex": "F",
+  "labelled": null
+ },
+ "ja-23237855": {
+  "lang": "ja",
+  "f0": 110,
+  "sex": "M",
+  "labelled": null
+ },
+ "ja-36502515": {
+  "lang": "ja",
+  "f0": 119,
+  "sex": "M",
+  "labelled": null
+ },
+ "ug-35087686": {
+  "lang": "ug",
+  "f0": 258,
+  "sex": "F",
+  "labelled": null
+ },
+ "sw-36008883": {
+  "lang": "sw",
+  "f0": 133,
+  "sex": "M",
+  "labelled": "MALE"
+ },
+ "sw-31365653": {
+  "lang": "sw",
+  "f0": 125,
+  "sex": "M",
+  "labelled": null
+ },
+ "gl-39842226": {
+  "lang": "gl",
+  "f0": 216,
+  "sex": "F",
+  "labelled": null
+ },
+ "gl-39830536": {
+  "lang": "gl",
+  "f0": 250,
+  "sex": "F",
+  "labelled": null
+ },
+ "lv-40714164": {
+  "lang": "lv",
+  "f0": 186,
+  "sex": "F",
+  "labelled": null
+ },
+ "lv-38849368": {
+  "lang": "lv",
+  "f0": 229,
+  "sex": "F",
+  "labelled": null
+ },
+ "ka-21365371": {
+  "lang": "ka",
+  "f0": 205,
+  "sex": "F",
+  "labelled": null
+ },
+ "ru-23625872": {
+  "lang": "ru",
+  "f0": 103,
+  "sex": "M",
+  "labelled": null
+ },
+ "ru-26138951": {
+  "lang": "ru",
+  "f0": 145,
+  "sex": "M",
+  "labelled": null
+ },
+ "pt-BR-38118356": {
+  "lang": "pt-BR",
+  "f0": 136,
+  "sex": "M",
+  "labelled": null
+ },
+ "pt-BR-23439040": {
+  "lang": "pt-BR",
+  "f0": 140,
+  "sex": "M",
+  "labelled": null
+ },
+ "ta-24991796": {
+  "lang": "ta",
+  "f0": 125,
+  "sex": "M",
+  "labelled": null
+ },
+ "ta-22930483": {
+  "lang": "ta",
+  "f0": 121,
+  "sex": "M",
+  "labelled": "MALE"
+ },
+ "nl-24604078": {
+  "lang": "nl",
+  "f0": 205,
+  "sex": "F",
+  "labelled": null
+ },
+ "nl-27231460": {
+  "lang": "nl",
+  "f0": 195,
+  "sex": "F",
+  "labelled": null
+ },
+ "hu-37326746": {
+  "lang": "hu",
+  "f0": 133,
+  "sex": "M",
+  "labelled": null
+ },
+ "hu-23236172": {
+  "lang": "hu",
+  "f0": 131,
+  "sex": "M",
+  "labelled": null
+ },
+ "acm-24256989": {
+  "lang": "acm",
+  "f0": 133,
+  "sex": "M",
+  "labelled": null
+ },
+ "acm-24231514": {
+  "lang": "acm",
+  "f0": 108,
+  "sex": "M",
+  "labelled": null
+ },
+ "afb-21715042": {
+  "lang": "afb",
+  "f0": 200,
+  "sex": "F",
+  "labelled": null
+ },
+ "afb-22714476": {
+  "lang": "afb",
+  "f0": 195,
+  "sex": "F",
+  "labelled": null
+ },
+ "apd-21715042": {
+  "lang": "apd",
+  "f0": 200,
+  "sex": "F",
+  "labelled": null
+ },
+ "apd-24206548": {
+  "lang": "apd",
+  "f0": 216,
+  "sex": "F",
+  "labelled": null
+ },
+ "cs-22705405": {
+  "lang": "cs",
+  "f0": 205,
+  "sex": "F",
+  "labelled": "MALE"
+ },
+ "cs-23403233": {
+  "lang": "cs",
+  "f0": 235,
+  "sex": "F",
+  "labelled": "MALE"
+ },
+ "et-21291588": {
+  "lang": "et",
+  "f0": 94,
+  "sex": "M",
+  "labelled": null
+ },
+ "ltg-42592509": {
+  "lang": "ltg",
+  "f0": 129,
+  "sex": "M",
+  "labelled": null
+ },
+ "ltg-41917998": {
+  "lang": "ltg",
+  "f0": 148,
+  "sex": "M",
+  "labelled": null
+ },
+ "ro-23916881": {
+  "lang": "ro",
+  "f0": 205,
+  "sex": "F",
+  "labelled": null
+ },
+ "el-24569248": {
+  "lang": "el",
+  "f0": 118,
+  "sex": "M",
+  "labelled": null
+ },
+ "el-23950626": {
+  "lang": "el",
+  "f0": 113,
+  "sex": "M",
+  "labelled": null
+ },
+ "bg-37396431": {
+  "lang": "bg",
+  "f0": 195,
+  "sex": "F",
+  "labelled": "MALE"
+ },
+ "hi-30689928": {
+  "lang": "hi",
+  "f0": 190,
+  "sex": "F",
+  "labelled": null
+ },
+ "sr-37529546": {
+  "lang": "sr",
+  "f0": 190,
+  "sex": "F",
+  "labelled": null
+ },
+ "sr-37051784": {
+  "lang": "sr",
+  "f0": 190,
+  "sex": "F",
+  "labelled": "FEMALE"
+ },
+ "vi-23891882": {
+  "lang": "vi",
+  "f0": 133,
+  "sex": "M",
+  "labelled": "MALE"
+ },
+ "vi-27501155": {
+  "lang": "vi",
+  "f0": 205,
+  "sex": "F",
+  "labelled": null
+ },
+ "vi-23377235": {
+  "lang": "vi",
+  "f0": 121,
+  "sex": "M",
+  "labelled": null
+ },
+ "vi-22750206": {
+  "lang": "vi",
+  "f0": 242,
+  "sex": "F",
+  "labelled": null
+ },
+ "mt-40329916": {
+  "lang": "mt",
+  "f0": 205,
+  "sex": "F",
+  "labelled": null
+ },
+ "he-40137983": {
+  "lang": "he",
+  "f0": 111,
+  "sex": "M",
+  "labelled": "MALE"
+ },
+ "he-41616580": {
+  "lang": "he",
+  "f0": 195,
+  "sex": "F",
+  "labelled": null
+ },
+ "he-38883186": {
+  "lang": "he",
+  "f0": 127,
+  "sex": "M",
+  "labelled": null
+ },
+ "gn-26661436": {
+  "lang": "gn",
+  "f0": 143,
+  "sex": "M",
+  "labelled": null
+ },
+ "gn-30637972": {
+  "lang": "gn",
+  "f0": 145,
+  "sex": "M",
+  "labelled": null
+ },
+ "skr-33094826": {
+  "lang": "skr",
+  "f0": 195,
+  "sex": "F",
+  "labelled": null
+ },
+ "ha-26738817": {
+  "lang": "ha",
+  "f0": 229,
+  "sex": "F",
+  "labelled": "FEMALE"
+ },
+ "yo-37376115": {
+  "lang": "yo",
+  "f0": 111,
+  "sex": "M",
+  "labelled": null
+ },
+ "yo-40956594": {
+  "lang": "yo",
+  "f0": 119,
+  "sex": "M",
+  "labelled": null
+ },
+ "tn-41373252": {
+  "lang": "tn",
+  "f0": 216,
+  "sex": "F",
+  "labelled": "FEMALE"
+ },
+ "tn-41532767": {
+  "lang": "tn",
+  "f0": 205,
+  "sex": "F",
+  "labelled": "FEMALE"
+ },
+ "ml-37449022": {
+  "lang": "ml",
+  "f0": 138,
+  "sex": "M",
+  "labelled": "MALE"
+ },
+ "ml-37570258": {
+  "lang": "ml",
+  "f0": 154,
+  "sex": "M",
+  "labelled": "MALE"
+ },
+ "ml-37927781": {
+  "lang": "ml",
+  "f0": 195,
+  "sex": "F",
+  "labelled": null
+ },
+ "de-30066112": {
+  "lang": "de",
+  "f0": 190,
+  "sex": "F",
+  "labelled": null
+ },
+ "fa-37416301": {
+  "lang": "fa",
+  "f0": 222,
+  "sex": "F",
+  "labelled": null
+ },
+ "it-18370587": {
+  "lang": "it",
+  "f0": 186,
+  "sex": "F",
+  "labelled": "MALE"
+ },
+ "it-39641526": {
+  "lang": "it",
+  "f0": 186,
+  "sex": "F",
+  "labelled": null
+ },
+ "ba-36500115": {
+  "lang": "ba",
+  "f0": 118,
+  "sex": "M",
+  "labelled": null
+ },
+ "ba-25386095": {
+  "lang": "ba",
+  "f0": 108,
+  "sex": "M",
+  "labelled": null
+ },
+ "pt-39870563": {
+  "lang": "pt",
+  "f0": 222,
+  "sex": "F",
+  "labelled": "FEMALE"
+ },
+ "pt-40474810": {
+  "lang": "pt",
+  "f0": 267,
+  "sex": "F",
+  "labelled": null
+ },
+ "pl-28085422": {
+  "lang": "pl",
+  "f0": 216,
+  "sex": "F",
+  "labelled": null
+ },
+ "ckb-41480189": {
+  "lang": "ckb",
+  "f0": 235,
+  "sex": "F",
+  "labelled": null
+ },
+ "cy-39951864": {
+  "lang": "cy",
+  "f0": 205,
+  "sex": "F",
+  "labelled": "FEMALE"
+ },
+ "cy-25064610": {
+  "lang": "cy",
+  "f0": 190,
+  "sex": "F",
+  "labelled": null
+ },
+ "uk-23568343": {
+  "lang": "uk",
+  "f0": 190,
+  "sex": "F",
+  "labelled": null
+ },
+ "uk-23983294": {
+  "lang": "uk",
+  "f0": 235,
+  "sex": "F",
+  "labelled": null
+ },
+ "mn-18961230": {
+  "lang": "mn",
+  "f0": 186,
+  "sex": "F",
+  "labelled": null
+ },
+ "mn-26215877": {
+  "lang": "mn",
+  "f0": 216,
+  "sex": "F",
+  "labelled": null
+ },
+ "sl-41893557": {
+  "lang": "sl",
+  "f0": 148,
+  "sex": "M",
+  "labelled": null
+ },
+ "sl-41833014": {
+  "lang": "sl",
+  "f0": 133,
+  "sex": "M",
+  "labelled": null
+ },
+ "sq-40873383": {
+  "lang": "sq",
+  "f0": 229,
+  "sex": "F",
+  "labelled": null
+ },
+ "gu-gum_08758_02002057667": {
+  "lang": "gu",
+  "f0": 145,
+  "sex": "M",
+  "labelled": null
+ },
+ "gu-gum_00856_01735073089": {
+  "lang": "gu",
+  "f0": 143,
+  "sex": "M",
+  "labelled": null
+ },
+ "kn-knm_05066_00884053721": {
+  "lang": "kn",
+  "f0": 127,
+  "sex": "M",
+  "labelled": null
+ },
+ "kn-knm_09140_00720736851": {
+  "lang": "kn",
+  "f0": 133,
+  "sex": "M",
+  "labelled": null
+ },
+ "my-bur_3260_8853590661": {
+  "lang": "my",
+  "f0": 205,
+  "sex": "F",
+  "labelled": null
+ },
+ "my-bur_5932_8780690358": {
+  "lang": "my",
+  "f0": 216,
+  "sex": "F",
+  "labelled": null
+ },
+ "ko-common_voice_ko_39813694.mp3": {
+  "lang": "ko",
+  "f0": 195,
+  "sex": "F",
+  "labelled": null
+ },
+ "ko-common_voice_ko_39832629.mp3": {
+  "lang": "ko",
+  "f0": 205,
+  "sex": "F",
+  "labelled": null
+ },
+ "af-common_voice_af_42432304.mp3": {
+  "lang": "af",
+  "f0": 136,
+  "sex": "M",
+  "labelled": null
+ },
+ "af-common_voice_af_41681538.mp3": {
+  "lang": "af",
+  "f0": 116,
+  "sex": "M",
+  "labelled": null
+ },
+ "as-common_voice_as_22085170.mp3": {
+  "lang": "as",
+  "f0": 211,
+  "sex": "F",
+  "labelled": null
+ },
+ "az-common_voice_az_43516603.mp3": {
+  "lang": "az",
+  "f0": 92,
+  "sex": "M",
+  "labelled": null
+ },
+ "az-common_voice_az_28841731.mp3": {
+  "lang": "az",
+  "f0": 118,
+  "sex": "M",
+  "labelled": null
+ },
+ "ga-common_voice_ga-IE_23100921.mp3": {
+  "lang": "ga",
+  "f0": 186,
+  "sex": "F",
+  "labelled": null
+ },
+ "ga-common_voice_ga-IE_27998480.mp3": {
+  "lang": "ga",
+  "f0": 200,
+  "sex": "F",
+  "labelled": null
+ },
+ "ht-common_voice_ht_39791295.mp3": {
+  "lang": "ht",
+  "f0": 186,
+  "sex": "F",
+  "labelled": null
+ },
+ "ht-common_voice_ht_39791296.mp3": {
+  "lang": "ht",
+  "f0": 190,
+  "sex": "F",
+  "labelled": null
+ },
+ "hy-common_voice_hy-AM_48769825.mp3": {
+  "lang": "hy",
+  "f0": 216,
+  "sex": "F",
+  "labelled": null
+ },
+ "hy-common_voice_hy-AM_39987413.mp3": {
+  "lang": "hy",
+  "f0": 216,
+  "sex": "F",
+  "labelled": null
+ },
+ "ig-common_voice_ig_32108263.mp3": {
+  "lang": "ig",
+  "f0": 113,
+  "sex": "M",
+  "labelled": null
+ },
+ "ig-common_voice_ig_32174772.mp3": {
+  "lang": "ig",
+  "f0": 125,
+  "sex": "M",
+  "labelled": null
+ },
+ "kk-common_voice_kk_43541876.mp3": {
+  "lang": "kk",
+  "f0": 138,
+  "sex": "M",
+  "labelled": null
+ },
+ "kk-common_voice_kk_39872169.mp3": {
+  "lang": "kk",
+  "f0": 136,
+  "sex": "M",
+  "labelled": null
+ },
+ "ms-common_voice_ms_43508876.mp3": {
+  "lang": "ms",
+  "f0": 121,
+  "sex": "M",
+  "labelled": null
+ },
+ "ms-common_voice_ms_41077418.mp3": {
+  "lang": "ms",
+  "f0": 116,
+  "sex": "M",
+  "labelled": null
+ },
+ "xh-common_voice_xh_40488266.mp3": {
+  "lang": "xh",
+  "f0": 110,
+  "sex": "M",
+  "labelled": null
+ },
+ "xh-common_voice_xh_40488259.mp3": {
+  "lang": "xh",
+  "f0": 114,
+  "sex": "M",
+  "labelled": null
+ },
+ "ne-common_voice_ne-NP_43494692.mp3": {
+  "lang": "ne",
+  "f0": 136,
+  "sex": "M",
+  "labelled": null
+ },
+ "ne-common_voice_ne-NP_37870041.mp3": {
+  "lang": "ne",
+  "f0": 127,
+  "sex": "M",
+  "labelled": null
+ },
+ "oc-common_voice_oc_36677806.mp3": {
+  "lang": "oc",
+  "f0": 186,
+  "sex": "F",
+  "labelled": null
+ },
+ "oc-common_voice_oc_38752369.mp3": {
+  "lang": "oc",
+  "f0": 229,
+  "sex": "F",
+  "labelled": null
+ },
+ "tg-common_voice_tg_43311787.mp3": {
+  "lang": "tg",
+  "f0": 110,
+  "sex": "M",
+  "labelled": null
+ },
+ "tg-common_voice_tg_43311794.mp3": {
+  "lang": "tg",
+  "f0": 113,
+  "sex": "M",
+  "labelled": null
+ },
+ "ti-common_voice_ti_33434918.mp3": {
+  "lang": "ti",
+  "f0": 235,
+  "sex": "F",
+  "labelled": null
+ },
+ "zu-common_voice_zu_43578302.mp3": {
+  "lang": "zu",
+  "f0": 200,
+  "sex": "F",
+  "labelled": null
+ },
+ "zu-common_voice_zu_43561205.mp3": {
+  "lang": "zu",
+  "f0": 205,
+  "sex": "F",
+  "labelled": null
+ },
+ "am-common_voice_am_37897074.mp3": {
+  "lang": "am",
+  "f0": 190,
+  "sex": "F",
+  "labelled": null
+ },
+ "am-common_voice_am_37897073.mp3": {
+  "lang": "am",
+  "f0": 186,
+  "sex": "F",
+  "labelled": null
+ },
+ "af": {
+  "lang": "af",
+  "f0": 211,
+  "sex": "F",
+  "labelled": "FEMALE"
+ },
+ "am": {
+  "lang": "am",
+  "f0": 127,
+  "sex": "M",
+  "labelled": "MALE"
+ },
+ "as": {
+  "lang": "as",
+  "f0": 127,
+  "sex": "M",
+  "labelled": "MALE"
+ },
+ "ast": {
+  "lang": "ast",
+  "f0": 235,
+  "sex": "F",
+  "labelled": "FEMALE"
+ },
+ "az": {
+  "lang": "az",
+  "f0": 242,
+  "sex": "F",
+  "labelled": "FEMALE"
+ },
+ "be": {
+  "lang": "be",
+  "f0": 222,
+  "sex": "F",
+  "labelled": "FEMALE"
+ },
+ "bg": {
+  "lang": "bg",
+  "f0": 96,
+  "sex": "M",
+  "labelled": "MALE"
+ },
+ "bn": {
+  "lang": "bn",
+  "f0": 140,
+  "sex": "M",
+  "labelled": "MALE"
+ },
+ "bs": {
+  "lang": "bs",
+  "f0": 163,
+  "sex": "uncertain",
+  "labelled": "FEMALE"
+ },
+ "ca": {
+  "lang": "ca",
+  "f0": 140,
+  "sex": "M",
+  "labelled": "MALE"
+ },
+ "ceb": {
+  "lang": "ceb",
+  "f0": 143,
+  "sex": "M",
+  "labelled": "MALE"
+ },
+ "cmn": {
+  "lang": "cmn",
+  "f0": 200,
+  "sex": "F",
+  "labelled": "FEMALE"
+ },
+ "el": {
+  "lang": "el",
+  "f0": 167,
+  "sex": "uncertain",
+  "labelled": "FEMALE"
+ },
+ "en-reference": {
+  "lang": "en",
+  "f0": 205,
+  "sex": "F",
+  "labelled": null
+ },
+ "en": {
+  "lang": "en",
+  "f0": 200,
+  "sex": "F",
+  "labelled": "FEMALE"
+ },
+ "es": {
+  "lang": "es-419",
+  "f0": 116,
+  "sex": "M",
+  "labelled": "MALE"
+ },
+ "fi": {
+  "lang": "fi",
+  "f0": 94,
+  "sex": "M",
+  "labelled": "MALE"
+ },
+ "tl": {
+  "lang": "tl",
+  "f0": 267,
+  "sex": "F",
+  "labelled": "FEMALE"
+ },
+ "fr": {
+  "lang": "fr",
+  "f0": 143,
+  "sex": "M",
+  "labelled": "MALE"
+ },
+ "ga": {
+  "lang": "ga",
+  "f0": 110,
+  "sex": "M",
+  "labelled": "MALE"
+ },
+ "gl": {
+  "lang": "gl",
+  "f0": 123,
+  "sex": "M",
+  "labelled": "MALE"
+ },
+ "gu": {
+  "lang": "gu",
+  "f0": 229,
+  "sex": "F",
+  "labelled": "FEMALE"
+ },
+ "he": {
+  "lang": "he",
+  "f0": 178,
+  "sex": "uncertain",
+  "labelled": "FEMALE"
+ },
+ "hr": {
+  "lang": "hr",
+  "f0": 174,
+  "sex": "uncertain",
+  "labelled": "FEMALE"
+ },
+ "hu": {
+  "lang": "hu",
+  "f0": 211,
+  "sex": "F",
+  "labelled": "FEMALE"
+ },
+ "hy": {
+  "lang": "hy",
+  "f0": 129,
+  "sex": "M",
+  "labelled": "MALE"
+ },
+ "id": {
+  "lang": "id",
+  "f0": 136,
+  "sex": "M",
+  "labelled": "MALE"
+ },
+ "ig": {
+  "lang": "ig",
+  "f0": 200,
+  "sex": "F",
+  "labelled": "FEMALE"
+ },
+ "is": {
+  "lang": "is",
+  "f0": 107,
+  "sex": "M",
+  "labelled": "MALE"
+ },
+ "ja": {
+  "lang": "ja",
+  "f0": 186,
+  "sex": "F",
+  "labelled": "FEMALE"
+ },
+ "jv": {
+  "lang": "jv",
+  "f0": 119,
+  "sex": "M",
+  "labelled": "MALE"
+ },
+ "ka": {
+  "lang": "ka",
+  "f0": 125,
+  "sex": "M",
+  "labelled": "MALE"
+ },
+ "kam": {
+  "lang": "kam",
+  "f0": 190,
+  "sex": "F",
+  "labelled": "FEMALE"
+ },
+ "kea": {
+  "lang": "kea",
+  "f0": 167,
+  "sex": "uncertain",
+  "labelled": "FEMALE"
+ },
+ "kk": {
+  "lang": "kk",
+  "f0": 190,
+  "sex": "F",
+  "labelled": "FEMALE"
+ },
+ "km": {
+  "lang": "km",
+  "f0": 111,
+  "sex": "M",
+  "labelled": "MALE"
+ },
+ "kn": {
+  "lang": "kn",
+  "f0": 216,
+  "sex": "F",
+  "labelled": "FEMALE"
+ },
+ "ko": {
+  "lang": "ko",
+  "f0": 118,
+  "sex": "M",
+  "labelled": "MALE"
+ },
+ "lb": {
+  "lang": "lb",
+  "f0": 121,
+  "sex": "M",
+  "labelled": "MALE"
+ },
+ "ln": {
+  "lang": "ln",
+  "f0": 95,
+  "sex": "M",
+  "labelled": "MALE"
+ },
+ "lo": {
+  "lang": "lo",
+  "f0": 111,
+  "sex": "M",
+  "labelled": "MALE"
+ },
+ "lv": {
+  "lang": "lv",
+  "f0": 123,
+  "sex": "M",
+  "labelled": "MALE"
+ },
+ "mi": {
+  "lang": "mi",
+  "f0": 205,
+  "sex": "F",
+  "labelled": "FEMALE"
+ },
+ "ml": {
+  "lang": "ml",
+  "f0": 167,
+  "sex": "uncertain",
+  "labelled": "MALE"
+ },
+ "ms": {
+  "lang": "ms",
+  "f0": 205,
+  "sex": "F",
+  "labelled": "FEMALE"
+ },
+ "my": {
+  "lang": "my",
+  "f0": 163,
+  "sex": "uncertain",
+  "labelled": "MALE"
+ },
+ "nb": {
+  "lang": "nb",
+  "f0": 138,
+  "sex": "M",
+  "labelled": "MALE"
+ },
+ "ne": {
+  "lang": "ne",
+  "f0": 222,
+  "sex": "F",
+  "labelled": "FEMALE"
+ },
+ "nso": {
+  "lang": "nso",
+  "f0": 190,
+  "sex": "F",
+  "labelled": "FEMALE"
+ },
+ "nya": {
+  "lang": "nya",
+  "f0": 105,
+  "sex": "M",
+  "labelled": "MALE"
+ },
+ "oc": {
+  "lang": "oc",
+  "f0": 113,
+  "sex": "M",
+  "labelled": "MALE"
+ },
+ "om": {
+  "lang": "om",
+  "f0": 229,
+  "sex": "F",
+  "labelled": "FEMALE"
+ },
+ "or": {
+  "lang": "or",
+  "f0": 151,
+  "sex": "M",
+  "labelled": "MALE"
+ },
+ "pt": {
+  "lang": "pt-BR",
+  "f0": 167,
+  "sex": "uncertain",
+  "labelled": "FEMALE"
+ },
+ "ru": {
+  "lang": "ru",
+  "f0": 195,
+  "sex": "F",
+  "labelled": "FEMALE"
+ },
+ "sd": {
+  "lang": "sd",
+  "f0": 140,
+  "sex": "M",
+  "labelled": "MALE"
+ },
+ "sn": {
+  "lang": "sn",
+  "f0": 131,
+  "sex": "M",
+  "labelled": "MALE"
+ },
+ "so": {
+  "lang": "so",
+  "f0": 186,
+  "sex": "F",
+  "labelled": "FEMALE"
+ },
+ "sr": {
+  "lang": "sr",
+  "f0": 123,
+  "sex": "M",
+  "labelled": "FEMALE"
+ },
+ "sv": {
+  "lang": "sv",
+  "f0": 91,
+  "sex": "M",
+  "labelled": "MALE"
+ },
+ "ta": {
+  "lang": "ta",
+  "f0": 205,
+  "sex": "F",
+  "labelled": "FEMALE"
+ },
+ "tg": {
+  "lang": "tg",
+  "f0": 178,
+  "sex": "uncertain",
+  "labelled": "FEMALE"
+ },
+ "umb": {
+  "lang": "umb",
+  "f0": 250,
+  "sex": "F",
+  "labelled": "FEMALE"
+ },
+ "vi": {
+  "lang": "vi",
+  "f0": 167,
+  "sex": "uncertain",
+  "labelled": "FEMALE"
+ },
+ "wo": {
+  "lang": "wo",
+  "f0": 229,
+  "sex": "F",
+  "labelled": "FEMALE"
+ },
+ "xh": {
+  "lang": "xh",
+  "f0": 178,
+  "sex": "uncertain",
+  "labelled": "FEMALE"
+ },
+ "yo": {
+  "lang": "yo",
+  "f0": 190,
+  "sex": "F",
+  "labelled": "FEMALE"
+ },
+ "zu": {
+  "lang": "zu",
+  "f0": 108,
+  "sex": "M",
+  "labelled": "MALE"
+ }
+}
