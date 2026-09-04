@@ -16,7 +16,7 @@ by id silently stops testing what it claims the moment the split changes -- and 
 gone stale against `gen()`, which lost its `duration` parameter when duration forcing was dropped,
 so it raised TypeError before it got as far as the missing ids.
 
-  python3 -m scripts.omnivoice_ipa.gen_rare_test --adapter .../checkpoints_v7/checkpoint-4000
+  python3 -m scripts.omnivoice_ipa.gen_rare_test --adapter .../checkpoints_v7/checkpoint-6000
 """
 import argparse, json, os
 
@@ -25,7 +25,8 @@ import soundfile as sf
 import torch
 from omnivoice.models.omnivoice import OmniVoice
 
-from scripts.omnivoice_ipa.gen_accept_test import BASE, ROOT, SR, decode_codes, gen
+from scripts.omnivoice_ipa.gen_accept_test import (BASE, ROOT, SR, REF_MAX_S, REF_MIN_S,
+                                                   decode_codes, durations, gen, pick_reference)
 
 # (lang, label, the primitives that language is the greedy-cover OWNER of)
 TESTS = [
@@ -34,12 +35,6 @@ TESTS = [
     ("am_et", "ejectives",          ["pʼ", "tʼ", "kʼ", "sʼ", "t͡ʃʼ"]),
     ("zu_za", "clicks",             ["ǀ", "ǁ", "ǃ", "ɮ", "̤"]),
 ]
-
-
-# The model warns above 20 s and recommends 3-10 s. Both ends are real: a 2 s clip carries too little
-# speaker evidence, and a 30 s one degrades cloning -- and because the penalty applies to BOTH
-# checkpoints it flattens the very comparison the reference is there to support.
-REF_MIN_S, REF_MAX_S = 4.0, 15.0
 
 
 def pick(lang: str, prims: list[str], dur: dict[str, float]) -> tuple[str, str, str, str]:
@@ -52,17 +47,9 @@ def pick(lang: str, prims: list[str], dur: dict[str, float]) -> tuple[str, str, 
     rows = [json.loads(l) for l in open(f"{ROOT}/train/shards/{lang}/dev.jsonl") if l.strip()]
     score = lambda r: sum(r["text"].count(p) for p in prims)
     tgt = max(rows, key=score)
-    cands = [r for r in rows if r["id"] != tgt["id"] and r["id"] in dur]
-    ok = [r for r in cands if REF_MIN_S <= dur[r["id"]] <= REF_MAX_S]
-    ref = (max(ok, key=lambda r: dur[r["id"]]) if ok
-           else min(cands, key=lambda r: abs(dur[r["id"]] - REF_MAX_S)))
+    ref = pick_reference(rows, dur, exclude_id=tgt["id"])
     return ref["id"], ref["text"], tgt["id"], tgt["text"]
 
-
-def durations(lang: str) -> dict[str, float]:
-    return {r["id"]: r["dur_s"] for r in
-            (json.loads(l) for l in open(f"{ROOT}/corpus/tokens/manifest_{lang}.jsonl", encoding="utf8")
-             if l.strip())}
 
 
 def main() -> int:

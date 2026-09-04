@@ -31,6 +31,29 @@ def decode_codes(codes):
     return np.asarray(rec).reshape(-1).astype(np.float32)
 
 
+# ⚠ A REFERENCE IS BOUNDED AT BOTH ENDS, and picking "the longest" satisfies neither. A 2 s clip
+# carries too little speaker evidence; past 20 s the model itself warns that cloning degrades — and
+# because that penalty lands on EVERY checkpoint equally, it flattens the very comparison the
+# reference exists to support. Choosing the longest dev utterance produced a 29.6 s clip in
+# gen_rare_test; --ref_lang zu_za would have produced 23.2 s in the offglide test.
+REF_MIN_S, REF_MAX_S = 4.0, 15.0
+
+
+def durations(lang: str) -> dict[str, float]:
+    """{id: dur_s} from the ingest manifest — dev.jsonl carries only id and text."""
+    return {r["id"]: r["dur_s"] for r in
+            (json.loads(l) for l in open(f"{ROOT}/corpus/tokens/manifest_{lang}.jsonl", encoding="utf8")
+             if l.strip())}
+
+
+def pick_reference(rows: list[dict], dur: dict[str, float], exclude_id: str | None = None) -> dict:
+    """Longest dev utterance WITHIN the usable band; nearest to it if nothing lands inside."""
+    cands = [r for r in rows if r["id"] != exclude_id and r["id"] in dur]
+    inside = [r for r in cands if REF_MIN_S <= dur[r["id"]] <= REF_MAX_S]
+    return (max(inside, key=lambda r: dur[r["id"]]) if inside
+            else min(cands, key=lambda r: abs(dur[r["id"]] - REF_MAX_S)))
+
+
 def gen(model, text, ref_wav, ref_text):
     # NO duration forcing (user decision, Run 30): forcing ground-truth clip length handed the
     # model the human's pause time + lead/trail silence as speech budget, which it filled with
@@ -50,7 +73,11 @@ def main():
     ap.add_argument("--lang", default="en_us")
     ap.add_argument("--ref_id", default="903")
     ap.add_argument("--target_id", default="279")
-    ap.add_argument("--adapter", default=f"{ROOT}/train/checkpoints/checkpoint-3000")
+    # ⚠ NOT `checkpoints/checkpoint-3000`. That default pointed at the July run — older than v5, v6
+    # and v7 — so an acceptance test invoked without --adapter silently judged a model nobody was
+    # shipping. Same stale-pin bug already fixed in extract_diff.py, apply_diff.py and publish_hf.py;
+    # a default that is never bumped is how it comes back. This tracks the CURRENT fine-tune.
+    ap.add_argument("--adapter", default=f"{ROOT}/train/checkpoints_v7/checkpoint-6000")
     a = ap.parse_args()
     os.makedirs(OUT, exist_ok=True)
 

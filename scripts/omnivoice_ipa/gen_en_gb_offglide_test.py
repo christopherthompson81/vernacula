@@ -18,7 +18,7 @@ the US line well and the GB line badly. If the fine-tune has worked, the GB line
 WITHOUT the US line regressing. A GB improvement bought by a US regression is not a fix, and only
 rendering the GB side would hide that.
 
-  python3 gen_en_gb_offglide_test.py --adapter .../checkpoints_v7/checkpoint-4000
+  python3 gen_en_gb_offglide_test.py --adapter .../checkpoints_v7/checkpoint-6000
   python3 gen_en_gb_offglide_test.py --adapter ... --ref_lang en_us   # cross-accent reference
 """
 import argparse, json, os
@@ -28,7 +28,8 @@ import soundfile as sf
 import torch
 from omnivoice.models.omnivoice import OmniVoice
 
-from scripts.omnivoice_ipa.gen_accept_test import BASE, ROOT, SR, decode_codes, gen
+from scripts.omnivoice_ipa.gen_accept_test import (BASE, ROOT, SR, decode_codes, durations,
+                                                   gen, pick_reference)
 
 PROBES = f"{ROOT}/train/en_gb_probes.json"
 
@@ -36,15 +37,15 @@ PROBES = f"{ROOT}/train/en_gb_probes.json"
 def pick_ref(lang: str, ref_id: str | None) -> tuple[str, str]:
     """(id, ipa) of the dev utterance used as the voice-clone reference.
 
-    Default is the LONGEST dev utterance: a reference clip is the model's only evidence of the
-    speaker, and the shortest ones in a dev split are a couple of seconds, which clones badly and
-    would show up as a difference between checkpoints that is really a difference in reference.
+    Bounded at BOTH ends (see pick_reference): the shortest dev clips are a couple of seconds and
+    clone badly, and anything past 20 s trips the model's own cloning-degradation warning. Picking
+    simply "the longest" fails the upper bound -- --ref_lang zu_za would select a 23.2 s clip.
     """
     rows = [json.loads(l) for l in open(f"{ROOT}/train/shards/{lang}/dev.jsonl") if l.strip()]
     by_id = {r["id"]: r["text"] for r in rows}
     if ref_id:
         return ref_id, by_id[ref_id]
-    best = max(rows, key=lambda r: len(r["text"]))
+    best = pick_reference(rows, durations(lang))
     return best["id"], best["text"]
 
 

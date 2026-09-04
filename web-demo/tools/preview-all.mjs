@@ -129,7 +129,13 @@ if (!has("index-only")) {
   const t0 = Date.now();
   const todo = pairs.filter((p) => (!only || only.includes(p.lang.code))
     && (has("force") || !existsSync(join(outDir, p.file))));
-  console.log(`${todo.length} to render (${pairs.length - todo.length} already present)`);
+  // ⚠ "already present" means ON DISK, not "everything else". With --only, pairs.length - todo.length
+  // counts every filtered-out language too, so a 3-pair run reported "609 already present" when 609
+  // had never been rendered — a resumable sweep whose progress line lies about what it has is worse
+  // than one with no progress line.
+  const inScope = pairs.filter((p) => !only || only.includes(p.lang.code));
+  console.log(`${todo.length} to render (${inScope.length - todo.length} already present`
+    + (only ? `, ${pairs.length - inScope.length} filtered out by --only` : "") + ")");
   for (const p of todo) {
     const out = join(outDir, p.file);
     let log;
