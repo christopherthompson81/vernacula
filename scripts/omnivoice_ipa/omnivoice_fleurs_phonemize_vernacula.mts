@@ -44,6 +44,8 @@ const VARIETY: Record<string, string> = {
   ar_eg: "arz",      // Egyptian Arabic — dedicated egy diacritizer + variety data
   es_419: "es-419",  // Latin American Spanish (seseo, yeísmo)
   pt_br: "pt-BR",    // Brazilian Portuguese
+  fil_ph: "tl",      // FLEURS calls it Filipino; the registry ships it under its ISO 639-1 code, tl (Tagalog)
+  ny_mw: "nya",      // Chichewa/Nyanja: FLEURS uses the 639-1 code `ny`, the registry the 639-3 code `nya`
 };
 
 /** Registry code for a FLEURS code. */

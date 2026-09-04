@@ -56,8 +56,38 @@ disappears entirely — but only because we checked.
 A phone-recognizer pass over the whole corpus, comparing recognized phones against our own
 phonemization per utterance, then flagging utterances whose **phones-per-second implied by the
 transcript** was an outlier relative to that language's own median (3×MAD, not a fixed threshold).
-Welsh was the only language where the outliers concentrated — the same detection over the other 27
-languages found at most a dozen each (sd_in 12, ff_sn 9, ar_eg 2, am_et 2, ta_in 1).
+
+## The detector is not simply aggressive
+
+The same detector, unchanged, has since been run over **102 FLEURS languages / 270,106 utterances** —
+essentially the whole dataset. Outside `cy_gb` and one milder case it flags almost nothing:
+
+    cy_gb                        585 / 3,427    = 17.1%
+    oc_fr                         94 / 3,379    =  2.8%   (a different, milder defect — see below)
+    every other language          64 / 263,300  =  0.024%
+
+The full tail after those two, in order: sd_in 12, ff_sn 9, ny_mw 6, fa_ir 5, ckb_iq 4, ceb_ph 4, so_so 4,
+then a dozen languages with 2 or fewer. No language other than Welsh and Occitan reaches even 0.5% of its
+own split.
+
+**`oc_fr` is not a second instance of this defect**, and is called out here so it is not mistaken for one.
+Its 94 files are short for their transcripts, but they contain the *beginning of the correct sentence* at a
+normal speaking rate — scored against the best-matching prefix of the expected phone string they reach
+0.634 against an Occitan baseline of 0.639, whereas the Welsh files reach only 0.231 against a baseline of
+0.696. They also end in silence (last 100 ms at 3% of overall RMS) rather than being cut mid-signal, where
+half the Welsh files stop at full amplitude. And the Occitan population is a *continuous* left tail with no
+gap, while Welsh is cleanly bimodal — 583 files below 0.3 of their implied duration, then a gap, then the
+healthy split. Occitan looks like audio that stops early; Welsh looks like the wrong audio entirely.
+
+Against the 100 languages that are not Welsh or Occitan the gap is nearly three orders of magnitude, and
+it is the reason this report is about `cy_gb` specifically rather than about a threshold. A detector tuned
+too tightly would light up everywhere; this one is near-silent across 100 languages and then finds a sixth
+of the Welsh split.
+
+(One unrelated defect shows up at comparable scale and is **not** the same problem: `es_419` ships 490
+files that are full-length and **empty** — normal duration, no signal. Their phones-per-second is
+unremarkable, so this detector cannot see them; they were found by measuring the waveform directly.
+Mentioned only so the 490 is not mistaken for a second instance of the truncation.)
 
 ## Reproduction
 

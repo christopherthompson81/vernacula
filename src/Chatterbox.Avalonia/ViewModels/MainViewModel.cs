@@ -209,6 +209,49 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             RefreshKokoroVoices();
         }
         finally { _loadingSettings = false; }
+        UpdatePrerequisiteStatus();
+    }
+
+    /// <summary>
+    /// Explains a disabled Synthesize button. The path checks in
+    /// <see cref="CanSynthesize"/> keep the app from failing deep inside
+    /// model loading, but a greyed-out button with no reason is its own
+    /// dead end — so name the missing path here. Silent when the config is
+    /// fine, so it never overwrites a synthesis/playback status.
+    /// </summary>
+    /// <summary>The last message <see cref="UpdatePrerequisiteStatus"/> put on screen, so it can
+    /// take it back down without clobbering a status written by anything else.</summary>
+    private string? _prerequisiteStatus;
+
+    private void UpdatePrerequisiteStatus()
+    {
+        if (IsBusy) return;
+        string? missing = SelectedBackend switch
+        {
+            TtsBackendKind.Kokoro =>
+                !DirExists(KokoroModelDir) ? $"Kokoro model dir not found: {Describe(KokoroModelDir)}"
+                : !DirExists(KokoroDataDir) ? $"espeak-ng data dir not found: {Describe(KokoroDataDir)}"
+                : string.IsNullOrWhiteSpace(KokoroVoice) ? "No Kokoro voice selected."
+                : null,
+            _ =>
+                !DirExists(OnnxBundleDir) ? $"ONNX bundle dir not found: {Describe(OnnxBundleDir)}"
+                : !FileExists(VoicePath) ? $"Reference voice clip not found: {Describe(VoicePath)}"
+                : null,
+        };
+        // ⚠ CLEAR OUR OWN MESSAGE WHEN IT IS RESOLVED. Only setting it left the old
+        // "not found" text on screen after the user fixed the path -- the button went
+        // live while the status still said it could not run, which reads as a bug in
+        // the button. Only a message this method wrote is cleared, so a synthesis or
+        // playback status set elsewhere is never stepped on.
+        if (missing is not null) { StatusMessage = missing; _prerequisiteStatus = missing; }
+        else if (_prerequisiteStatus is not null && StatusMessage == _prerequisiteStatus)
+        {
+            StatusMessage = string.Empty;
+            _prerequisiteStatus = null;
+        }
+
+        static string Describe(string? path) =>
+            string.IsNullOrWhiteSpace(path) ? "(not set)" : path;
     }
 
     private void PersistSettings()
@@ -227,11 +270,16 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     // Generated [ObservableProperty] partials let us hook each setter
     // for the autosave + (for model dirs) cached-service invalidation.
-    partial void OnVoicePathChanged(string value) => PersistSettings();
+    partial void OnVoicePathChanged(string value)
+    {
+        PersistSettings();
+        UpdatePrerequisiteStatus();
+    }
     partial void OnOnnxBundleDirChanged(string value)
     {
         InvalidateSynthService();
         PersistSettings();
+        UpdatePrerequisiteStatus();
     }
     partial void OnRenderMarkdownChanged(bool value) => PersistSettings();
     // Live structured preview: rebuild the karaoke blocks as the source text changes
@@ -244,19 +292,26 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     {
         InvalidateSynthService();
         PersistSettings();
+        UpdatePrerequisiteStatus();
     }
     partial void OnKokoroModelDirChanged(string value)
     {
         InvalidateSynthService();
         RefreshKokoroVoices();
         PersistSettings();
+        UpdatePrerequisiteStatus();
     }
     partial void OnKokoroDataDirChanged(string value)
     {
         InvalidateSynthService();
         PersistSettings();
+        UpdatePrerequisiteStatus();
     }
-    partial void OnKokoroVoiceChanged(string value) => PersistSettings();
+    partial void OnKokoroVoiceChanged(string value)
+    {
+        PersistSettings();
+        UpdatePrerequisiteStatus();
+    }
     partial void OnKokoroSpeedChanged(float value) => PersistSettings();
 
     // Discover Kokoro voices by scanning <modelDir>/voices/*.bin (produced by
@@ -486,6 +541,10 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         }
         catch (Exception ex)
         {
+            // The status label is a single line and easy to miss; the full
+            // exception goes to stderr so a failure is diagnosable from the
+            // terminal without reproducing it under a debugger.
+            Console.Error.WriteLine($"[Synthesize] failed: {ex}");
             StatusMessage = $"Synthesis failed: {ex.Message}";
         }
         finally
@@ -500,14 +559,25 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         return SelectedBackend switch
         {
             TtsBackendKind.Kokoro =>
-                !string.IsNullOrWhiteSpace(KokoroModelDir)
-                && !string.IsNullOrWhiteSpace(KokoroDataDir)
+                DirExists(KokoroModelDir)
+                && DirExists(KokoroDataDir)
                 && !string.IsNullOrWhiteSpace(KokoroVoice),
             _ =>
-                !string.IsNullOrWhiteSpace(VoicePath)
-                && !string.IsNullOrWhiteSpace(OnnxBundleDir),
+                FileExists(VoicePath)
+                && DirExists(OnnxBundleDir),
         };
     }
+
+    // Existence checks, not just non-empty checks. settings.json holds
+    // absolute paths from whenever the user last picked them, so a moved
+    // repo or an unmounted drive leaves a plausible-looking string behind.
+    // Without these, Synthesize stays enabled and fails deep inside model
+    // loading, which reads to the user as "the button did nothing".
+    private static bool DirExists(string? path) =>
+        !string.IsNullOrWhiteSpace(path) && Directory.Exists(path);
+
+    private static bool FileExists(string? path) =>
+        !string.IsNullOrWhiteSpace(path) && File.Exists(path);
 
     /// <summary>Cancels in-flight synthesis. Cancellation is checked
     /// at chunk boundaries — the LM rollout for the chunk that's
