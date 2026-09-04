@@ -3823,3 +3823,140 @@ vi_vn and cs_cz inside the training set.
 
 Order, unchanged from the Run 51 restructure and from what the memory of this campaign keeps saying:
 fix upstream, re-derive, re-QC, then decide on a fine-tune — never the other way round.
+
+## Run 54 — 2026-09-03 — en-GB enters the corpus as a coverage patch, not a language
+
+**Question.** Upstream #1252 moved `en-GB` onto the superscript offglide convention (`əᶷ eᶦ aᶦ aᶷ`),
+which is what the model was already trained on for `en`. But the *units* en-GB produces are not the
+units en-US produces, and the v6 model has never seen most of them — hence "smoke" → "smik". What is
+the smallest amount of en-GB audio that closes that gap?
+
+**Framing.** The instruction was to add "what's needed to handle the diphthongs, triphthongs or
+offglide pairings that didn't appear in en-US, and limit to an accent that matches our
+phonemization." So this is deliberately *not* an `en_gb` corpus in the sense the other 28
+`POP_ORDER` entries are. It is a patch sized to a measured hole. Two consequences follow:
+
+- Only the two **southern** SLR83 archives are in scope. The other five dialects (Irish, Scottish,
+  Welsh, northern, midlands) phonemize to units `en-GB` does not emit — Run 53's r-colouring measure
+  separated them cleanly (southern 1.51 vs Irish 2.34 rhotic marks per utterance). Training on audio
+  whose realised vowels disagree with the IPA beside them is the exact drift this pipeline keeps
+  getting bitten by.
+- Utterance selection is greedy set-cover over *vowel units*, not a random sample.
+
+**Method.** Phonemized all 8,492 southern transcripts (4,161 female + 4,331 male) through `en-GB`,
+extracted vowel units with `[V]ː?[Vᶦᶷᵊ]ː?[Vᶦᶷᵊ]?`, counted the same units across the 28 `POP_ORDER`
+languages in the alignment DB, and greedily picked utterances maximising coverage of units sitting
+below `sampling_budget.N_TOKENS` (300).
+
+**Result — 1,281 of 8,492 utterances (759 female, 522 male):**
+
+```
+  unit      avail  trained   added   total
+  əᶷ        5,807      192   1,029   1,221
+  ɛə        1,830       37     392     429
+  aᶷə         524       33     267     300
+  ʊə          447       69     231     300
+  aᶦə         424      200     100     300
+  iːə         191      178     122     300
+  ɔᶦə         142       39     142     181   <- archive exhausted
+  əᶷɪ         141        6     141     147   <- archive exhausted
+  ɪɒ          116        0     116     116   <- archive exhausted
+```
+
+`əᶷ` — GOAT, the vowel in "smoke", the one that started this — goes from 192 occurrences to 1,221.
+`ɛə` (SQUARE) from 37 to 429.
+
+**Negative results worth keeping.**
+
+- **The female archive alone was not enough.** A first pass over the 4,161 female utterances left
+  `aᶷə` at 292 and `ʊə` at 287 with the archive exhausted — the units simply are not in those
+  transcripts. Adding the male archive closed both to exactly 300. The gender balance in the
+  selection (759F/522M) is a *consequence* of that, not a target I set; the male archive got picked
+  because it carried units the female one had run out of.
+- **43 units cannot reach 300 and never will.** They are rare in English itself (<100 occurrences in
+  8,492 utterances). `ɪɒ` has 116 available and 0 trained. No amount of data fixes this, and it
+  should not be fixed: a model that sees `əᶷɪ` rarely matches a world where `əᶷɪ` *is* rare.
+  The stopping point here is a judgement call, not a computed one.
+- **`ingest_dir.py` needs the export venv,** not `/mnt/data/omnivoice_ipa/venv` — that one has
+  neither `onnxruntime` nor `soundfile`.
+- **The encode was silently running on CPU at 0.69x realtime.** `--provider cuda` asks for
+  `CUDAExecutionProvider`, but both venvs had plain `onnxruntime`, not `onnxruntime-gpu` — ORT logs a
+  warning and falls back to CPU, and the warning was inside the `grep -v Warning` this script's
+  output is normally piped through. Measured: **5.14 s/utterance on CPU vs 0.10 s on GPU, 51x**, or
+  110 min vs 2 min for this job. `pip install onnxruntime-gpu` (1.29.0) into `export_venv` after
+  uninstalling `onnxruntime` — they collide on the module name, and the GPU wheel is a superset that
+  still provides the CPU EP. Worth checking `sess.get_providers()[0]` rather than trusting the flag.
+
+**Ingested.** 1,281 rows, 0 skipped, 2.40 h of audio, 759F/522M, in 133 s on GPU. Manifest ids match
+the npz keys exactly, every array is `[8, n_frames]` with `n_frames` agreeing with the manifest, and
+all 1,281 rows carry `ipa_src="phonemizer"`. A sample row shows the convention landing as intended —
+`kəntɹˈəᶷɫd` for "controlled", `lˈəᶷəd` for "lowered", the superscript offglide `əᶷ` the v6 model
+has only 192 examples of.
+
+**Caveat carried forward, in the manifest itself.** These rows are marked `ipa_src="phonemizer"`,
+not `"hand"` and not `""` — that is IPA *provenance*, and it stays true regardless of QC. The
+alignment verdict lives in `status`, which the pass below fills in.
+
+**Open decision for v7.** Adding `en_gb` takes `POP_ORDER` from 28 languages to 29, which makes v7 a
+different experiment than v6 rather than a strict improvement on it. That is a deliberate choice to
+put to the user before any fine-tune starts.
+
+
+## Run 55 — 2026-09-03 — Listening to the en-GB ingest: alignment, and rhoticity as an accent gate
+
+**Pass.** `asr_align_dir.py` — a new sibling of `asr_align_corpus.py`, written for the same reason
+`ingest_dir.py` is a sibling of `ingest_fleurs.py`: that script is bound to FLEURS in three places
+(streams audio out of `train.tar.gz`, reads a FLEURS TSV for sentence id and transcript, looks IPA up
+in `byid/<lang>.tsv`) and a directory-ingested corpus has none of them — it has a manifest already
+carrying `id`, `text` and `ipa`. Everything that decides what a score *means* is deliberately
+identical: same model, same fp16-on-cuda, same batching, same `INSERT OR REPLACE` into the same `utt`
+table, same resume-by-default. Two things differ, both forced by the corpus: the audio is **resampled**
+rather than skipped (the FLEURS path skips anything not already 16 kHz because an odd rate there means
+a broken member; SLR83 is 48 kHz, so skipping would align nothing), and `sentence_id` is the utterance
+id (FLEURS repeats a sentence across speakers; a directory corpus has one recording per id).
+
+**1,281 utterances in 22 s at 57/s. All 1,281 manifest rows matched audio, 0 unreadable, 0 short.**
+
+```
+lang     n      short  median  within-3MAD    investigate
+en_us    2601   0      0.1795  2436 (93.7%)   165
+en_gb    1281   0      0.2048  1265 (98.8%)    16
+```
+
+**The headline is that 0.2048 is boring**, and it had to be checked rather than assumed. The
+recognizer is en-US flavoured: it writes `oʊ` where we write `əᶷ` and `ɚ` where we write `ə`, and
+`fold()` drops modifier letters (category Lm) — so our `əᶷ` folds to one phone while its `oʊ` folds to
+two. That asymmetry is exactly the shape of Run 36's `ga_ie` bug, where a uniform per-utterance
+penalty flattened the distribution until the investigate list came out EMPTY. It did not happen here:
+en_gb sits 0.026 from en_us with a 1.2% tail, so the offset is real but too small to hide outliers.
+
+**The 16 flagged rows are category 3, not our bugs.** Spot-checked six: our IPA is correct in all of
+them and the recognizer is what failed — one emits "including bog" *before* "brought", another renders
+"snowing" as `s t n ɑː v ɛ n ɪ n`. Labelled `verified`/`investigate` by `asr_align_label.py --apply`;
+`corpus_filter` keeps `investigate` in (only `defective_audio` is excluded unconditionally), which is
+the right posture for an instrument that is roughly 75% accurate — a hint, not a verdict.
+
+### Rhoticity as an accent gate — the useful thing to do with an unreliable instrument
+
+The target accent is non-rhotic southern; a rhotic reader in the archive would teach the model an
+alignment our `en-GB` IPA never writes. Asking "did the recognizer hear a rhotic" is useless (it hears
+them everywhere, being en-US flavoured). Asking **which speakers hear more rhotics than their own IPA
+predicts, relative to each other**, is not. Per speaker, over `[ɹɻrɚɝ]` (Run 53's fix — the plain
+`[ɹɻr]` class is blind to r-coloured vowels): excess = (heard − ours) / utterance, scored by 3×MAD.
+
+**57 speakers, median excess 1.35, MAD 0.19. Exactly one outlier, and it is in the safe direction:**
+
+```
+  som_04766   18 utts  heard 4.44  ours 2.28  excess 2.17  z +2.96   (highest, still inside)
+  som_00610   21 utts  heard 2.67  ours 2.29  excess 0.38  z -3.48   <- most NON-rhotic
+```
+
+No speaker rejected. This is the first *evidence* the two archives are non-rhotic rather than merely
+*labelled* southern, which is what "limit to an accent that matches our phonemization" actually needed.
+
+**And a negative result that stops this from being over-read.** The ranking sorts almost perfectly by
+SEX: every `som_` (male) sits above every `sof_` (female), male excess 1.5–2.2 against female 1.0–1.5,
+with no overlap. Real rhoticity would not sort by sex. That is the recognizer substituting `ɚ` for `ə`
+at a sex-dependent rate — instrument bias — and it is why the absolute number cannot be thresholded
+and only the within-sex spread carries information. A gate built on the raw count would have
+"discovered" that all 29 male readers are rhotic.
