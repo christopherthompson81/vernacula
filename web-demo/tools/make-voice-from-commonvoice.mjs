@@ -79,7 +79,9 @@ const HF = "https://huggingface.co/datasets/fsicoli/common_voice_22_0/resolve/ma
  * audio score" can return three clips from one contributor and call them alternates. Everything
  * that makes CV selection sound lives in THIS file; only the transport differs.
  *
- * The layout is Common Voice's own: <root>/clip_durations.tsv, <root>/<split>.tsv, <root>/clips/*.mp3.
+ * The layout is Common Voice's own: <root>/<split>.tsv beside <root>/clips/*.mp3. Note that an MDC
+ * export does NOT ship `clip_durations.tsv` even though the HuggingFace mirror does — see
+ * probeDurations for what stands in for it.
  */
 const FROM_DIR = opt("from-dir");
 /**
@@ -193,8 +195,14 @@ if (HAVE_DURATIONS) {
     .map((r) => [r.clip, Number(r["duration[ms]"])]));
 } else {
   byName = new Map([...indexClips()].map((f) => [f.split("/").pop(), f]));
+  // ⚠ THE SAME FILTERS THE SHORTLIST WILL APPLY, minus duration. Probing rows that --accent or
+  // --variant is about to reject spends the budget on clips that can never be chosen — and for a
+  // locale where the wanted variant is a minority, that can consume it entirely.
   durs = probeDurations(rows.filter((r) => Number(r.up_votes || 0) >= VOTES
-                                        && Number(r.down_votes || 0) === 0 && inScript(r.sentence)));
+                                        && Number(r.down_votes || 0) === 0
+                                        && (!ACCENT || ACCENT.test(r.accents ?? ""))
+                                        && (!VARIANT || VARIANT.test(r.variant ?? ""))
+                                        && inScript(r.sentence)));
 }
 
 // Metadata pass: right length, validated by at least two listeners, rejected by none.
@@ -285,8 +293,7 @@ function score(wavPath) {
 }
 
 byName ??= new Map([...indexClips()].map((f) => [f.split("/").pop(), f]));
-const present = byName;
-if (PREFIX_MB) console.log(`  ${present.size} clips inside the prefix, ${shortlist.filter((r) => byName.has(r.path)).length} of them candidates`);
+if (PREFIX_MB) console.log(`  ${byName.size} clips inside the prefix, ${shortlist.filter((r) => byName.has(r.path)).length} of them candidates`);
 const scored = [];
 let considered = 0;
 for (const r of shortlist) {
