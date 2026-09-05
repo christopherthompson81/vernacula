@@ -12,10 +12,10 @@
 
   <ItemGroup>
     <!-- .Gpu includes the CPU provider as fallback; covers both EP modes. -->
-    <PackageReference Include="Microsoft.ML.OnnxRuntime.Gpu" Version="1.29.0" />
+    <PackageReference Include="Microsoft.ML.OnnxRuntime.Gpu" Version="$(OnnxRuntimeVersion)" />
     <!-- Vernacula.Phonemizer pins a plain (CPU) runtime; without this suppression it lands
          beside the GPU one and the managed assembly meets the wrong native. -->
-    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.29.0" ExcludeAssets="all" />
+    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="$(OnnxRuntimeVersion)" ExcludeAssets="all" />
     <PackageReference Include="NAudio" Version="2.2.1" />
   </ItemGroup>
 

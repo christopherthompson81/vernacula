@@ -179,16 +179,35 @@ public static class HardwareInfo
             {
                 if (!NativeLibrary.TryLoad(file, out var byPath)) continue;
                 NativeLibrary.Free(byPath);
-                Console.Error.WriteLine(
-                    $"[HardwareInfo] CUDA {RequiredCudaMajor} found at {file} but not on the loader "
-                    + "path, so the CUDA execution provider cannot load it. Add its directory to "
-                    + "/etc/ld.so.conf.d (then run ldconfig) or to LD_LIBRARY_PATH.");
+                Note($"CUDA {RequiredCudaMajor} was found at {file} but is not on the loader path, "
+                     + "so the CUDA execution provider cannot load it. Add its directory to "
+                     + "/etc/ld.so.conf.d (then run ldconfig) or to LD_LIBRARY_PATH.");
                 return false;
             }
+
+            if (SafeGetFiles(dir, $"libcudart.so.{RequiredCudaMajor}*").Any())
+                Note($"CUDA {RequiredCudaMajor} was found in {dir} but could not be loaded even by "
+                     + "full path, which usually means one of its own dependencies is missing.");
         }
 
+        if (CudaProbeNote is null)
+            Note($"No CUDA {RequiredCudaMajor} runtime found. This build links CUDA "
+                 + $"{RequiredCudaMajor}; an older CUDA cannot load it.");
         return false;
     });
+
+    /// <summary>
+    /// Why CUDA was not available, when we know. Set by the probe and readable by a UI: the desktop
+    /// apps have no console, so a message written only to stderr never reaches the person who needs
+    /// it, and the settings window would show a bare "no CUDA" with no way to act on it.
+    /// </summary>
+    public static string? CudaProbeNote { get; private set; }
+
+    private static void Note(string message)
+    {
+        CudaProbeNote = message;
+        Console.Error.WriteLine($"[HardwareInfo] {message}");
+    }
 
     private static IEnumerable<string> SafeGetFiles(string dir, string pattern)
     {
@@ -241,16 +260,35 @@ public static class HardwareInfo
             return _windowsCudaScan.Value.HasCudnn;
 
         if (OperatingSystem.IsLinux())
-        {
-            foreach (var dir in GetLinuxCudaLibraryDirs())
-            {
-                if (HasFile(dir, "libcudnn.so") || HasFile(dir, "libcudnn.so.*"))
-                    return true;
-            }
-        }
+            return _linuxCudnnLoadable.Value;
 
         return false;
     }
+
+    /// <summary>
+    /// Whether the loader can open cuDNN, asked the same way as the CUDA runtime.
+    ///
+    /// ⚠ A FILESYSTEM MATCH WAS NOT ENOUGH, AND WAS ACTIVELY MISLEADING. The directories searched
+    /// include the toolkit that /usr/local/cuda and CUDA_PATH point at, which on a side-by-side
+    /// install is usually the OLDER one -- so a cuDNN sitting in the CUDA 12 tree answered for a
+    /// runtime that links CUDA 13, and the provider then failed to load it with the failure
+    /// swallowed. Asking the loader at least means the answer describes a library that can actually
+    /// be opened.
+    ///
+    /// It still cannot tell which CUDA major a given cuDNN was built against -- the soname is
+    /// libcudnn.so.9 either way -- so a wrong-major cuDNN that is on the loader path will still get
+    /// past this and fail at provider init.
+    /// </summary>
+    private static readonly Lazy<bool> _linuxCudnnLoadable = new(() =>
+    {
+        foreach (var soname in new[] { "libcudnn.so.9", "libcudnn.so" })
+        {
+            if (!NativeLibrary.TryLoad(soname, out var handle)) continue;
+            NativeLibrary.Free(handle);
+            return true;
+        }
+        return false;
+    });
 
     /// <summary>
     /// True when the current machine appears capable of initializing CUDA execution:
@@ -511,13 +549,18 @@ public static class HardwareInfo
                     // search path of a runtime that links CUDA 13. cuFFT and cuRAND version
                     // independently (CUDA 12 ships cuFFT 11, CUDA 13 ships 12), so gating on them
                     // would match nothing at all; they live in the same directory as cudart anyway.
-                    bool isCudaDep = isCudart || isCudnn
+                    bool isCudaDep = isCudart
                         || name.StartsWith($"cublas64_{RequiredCudaMajor}", StringComparison.OrdinalIgnoreCase)
                         || name.StartsWith($"cublasLt64_{RequiredCudaMajor}", StringComparison.OrdinalIgnoreCase)
                         || name.StartsWith($"nvrtc64_{RequiredCudaMajor}", StringComparison.OrdinalIgnoreCase);
 
                     if (isCudart) hasCudart = true;
                     if (isCudnn)  hasCudnn  = true;
+                    // ⚠ cuDNN DOES NOT SELECT A DIRECTORY. Its file name carries no CUDA major, and
+                    // NVIDIA's documented install copies it into the toolkit's bin -- so letting it
+                    // qualify a directory would add a CUDA 12 bin to the search path of a CUDA 13
+                    // runtime. The major-versioned libraries identify the directory; cuDNN is found
+                    // there anyway.
                     if (isCudaDep)
                     {
                         var dir = Path.GetDirectoryName(file);

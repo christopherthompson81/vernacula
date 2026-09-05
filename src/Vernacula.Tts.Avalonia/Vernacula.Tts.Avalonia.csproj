@@ -40,10 +40,10 @@
        runtime variant explicitly via the EP property — matches the
        pattern Vernacula.Tts.Backends.CLI uses. -->
   <ItemGroup Condition="'$(EP)' == 'Cuda'">
-    <PackageReference Include="Microsoft.ML.OnnxRuntime.Gpu" Version="1.29.0" />
+    <PackageReference Include="Microsoft.ML.OnnxRuntime.Gpu" Version="$(OnnxRuntimeVersion)" />
   </ItemGroup>
   <ItemGroup Condition="'$(EP)' == 'Cpu'">
-    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.29.0" />
+    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="$(OnnxRuntimeVersion)" />
   </ItemGroup>
 
   <!--
@@ -53,19 +53,13 @@
     silently ends up on the CPU runtime. A DIRECT reference outranks the transitive one, and
     ExcludeAssets="all" then contributes nothing, so the EP package is the only runtime shipped.
   -->
-  <ItemGroup Condition="'$(EP)' == 'Cuda'">
-    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.29.0" ExcludeAssets="all" />
-  </ItemGroup>
-  <!-- ⚠ MATCHED TO THE NATIVE RUNTIME EACH EP SHIPS, NOT TO THE NEWEST. The suppression
-       reference still takes part in version resolution, so it decides which
-       Microsoft.ML.OnnxRuntime.Managed is used. DirectML's newest release is 1.24.4;
-       pairing it with a 1.29 managed assembly asks the native runtime for an API version
-       it cannot answer, and the first session throws. -->
+  <!-- The version comes from OnnxRuntimeVersion in Directory.Build.props, which is
+       what keeps it equal to the native runtime this EP ships. -->
   <ItemGroup Condition="'$(EP)' == 'DirectML'">
-    <!-- The native runtime itself, which this project was missing: EP=DirectML resolved a managed
-         assembly and no ONNX Runtime at all, so the first session threw DllNotFoundException. -->
-    <PackageReference Include="Microsoft.ML.OnnxRuntime.DirectML" Version="1.24.4" />
-    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.24.4" ExcludeAssets="all" />
+    <PackageReference Include="Microsoft.ML.OnnxRuntime.DirectML" Version="$(OnnxRuntimeVersion)" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(EP)' != 'Cpu'">
+    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="$(OnnxRuntimeVersion)" ExcludeAssets="all" />
   </ItemGroup>
 
   <ItemGroup>

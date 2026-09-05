@@ -89,8 +89,7 @@ public static class OrtSessionBuilder
                 catch (Exception ex)
                 {
                     throw new InvalidOperationException(
-                        "DirectML EP not available. Build with -p:EP=DirectML (the desktop app also needs "
-                        + "-p:UseDirectML=true).", ex);
+                        "DirectML EP not available. Build with -p:EP=DirectML (Windows only).", ex);
                 }
                 break;
 

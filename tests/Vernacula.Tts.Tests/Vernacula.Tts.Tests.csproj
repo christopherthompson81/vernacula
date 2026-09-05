@@ -20,7 +20,7 @@
     <PackageReference Include="xunit.runner.visualstudio" Version="3.0.0" />
     <!-- CPU ORT for the (opt-in) OmniVoice graph-parity integration test. Vernacula.Tts.Base
          marks its own ORT package PrivateAssets=all, so consumers bring their own. -->
-    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.29.0" />
+    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="$(OnnxRuntimeVersion)" />
   </ItemGroup>
 
   <ItemGroup>

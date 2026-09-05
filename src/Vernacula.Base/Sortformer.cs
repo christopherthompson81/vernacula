@@ -74,8 +74,7 @@ public sealed class SortformerStreamer : IDisposable
             case ExecutionProvider.DirectML:
                 try { opts.AppendExecutionProvider_DML(0); }
                 catch (EntryPointNotFoundException)
-                { throw new InvalidOperationException("DirectML EP not available. Build with -p:EP=DirectML "
-                    + "(the desktop app also needs -p:UseDirectML=true)."); }
+                { throw new InvalidOperationException("DirectML EP not available. Build with -p:EP=DirectML (Windows only)."); }
                 break;
             case ExecutionProvider.Cpu:
                 break;

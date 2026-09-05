@@ -5,6 +5,20 @@
     quietly miss one.
   -->
 
+  <!-- ⚠ ONE VERSION, DECIDED ONCE. Every project that references ONNX Runtime has to agree with
+       the native runtime its EP ships, or the managed assembly asks for an API version the native
+       cannot answer and the first session throws. Hard-coding the number per project meant each
+       new project was another chance to get it wrong, and several did. DirectML's newest release
+       is 1.24.4, so a DirectML build pins the whole stack there.
+
+       macOS x64 is deliberately not covered: it is stuck on 1.19.2, the last build shipping
+       osx-x64 natives, and those references stay literal. -->
+  <PropertyGroup>
+    <EP Condition="'$(EP)' == ''">Cuda</EP>
+    <OnnxRuntimeVersion Condition="'$(EP)' == 'DirectML'">1.24.4</OnnxRuntimeVersion>
+    <OnnxRuntimeVersion Condition="'$(OnnxRuntimeVersion)' == ''">1.29.0</OnnxRuntimeVersion>
+  </PropertyGroup>
+
   <!-- ⚠ DirectML IS WINDOWS-ONLY, AND USED TO FAIL LATE. Its package carries no Linux or macOS
        natives, so `-p:EP=DirectML` on those platforms restored no ONNX Runtime at all: the build
        succeeded, and the first session threw DllNotFoundException. Say so at build time instead. -->
