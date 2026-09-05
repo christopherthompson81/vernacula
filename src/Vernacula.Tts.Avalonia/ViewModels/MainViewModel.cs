@@ -92,20 +92,29 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     [NotifyCanExecuteChangedFor(nameof(SynthesizeCommand))]
     private string _omniVoiceVoiceLib = "";
 
+    // The language: the persisted truth is the CODE (OmniVoiceLang). The picker is a type-ahead
+    // over LanguageCatalog -- its text (OmniVoiceLangQuery) drives LanguageMatches, and choosing a
+    // row sets OmniVoiceLanguage, which sets the code. Typing a code exactly ("cy") sets it too,
+    // without a row having to be chosen.
     [ObservableProperty]
     [NotifyCanExecuteChangedFor(nameof(SynthesizeCommand))]
     private string _omniVoiceLang = "en";
 
+    [ObservableProperty] private string _omniVoiceLangQuery = "";
+    [ObservableProperty] private LanguageOption? _omniVoiceLanguage;
+    public ObservableCollection<LanguageOption> LanguageMatches { get; } = new();
+
+    // The voice: the library's voices for the language (else its donor's, else all of them --
+    // any voice can read any language's IPA), narrowed by the picker's text.
     [ObservableProperty]
     [NotifyCanExecuteChangedFor(nameof(SynthesizeCommand))]
     private StoredVoice.Info? _omniVoiceVoice;
 
-    [ObservableProperty] private int _omniVoiceNumStep = 32;
-
-    /// <summary>The library's voices for <see cref="OmniVoiceLang"/> — or all of them when the
-    /// language has none, since any voice can read any language's IPA.</summary>
+    [ObservableProperty] private string _omniVoiceVoiceQuery = "";
     public ObservableCollection<StoredVoice.Info> OmniVoiceVoices { get; } = new();
     private IReadOnlyList<StoredVoice.Info> _allOmniVoiceVoices = Array.Empty<StoredVoice.Info>();
+
+    [ObservableProperty] private int _omniVoiceNumStep = 32;
 
     // Text input — either typed/pasted in the UI or loaded from a .md file.
     [ObservableProperty]
@@ -259,8 +268,11 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             OmniVoiceVoiceLib = StoredVoice.IsLibrary(_settings.Current.OmniVoiceVoiceLib)
                 ? _settings.Current.OmniVoiceVoiceLib : (StoredVoice.ResolveDefaultLibrary() ?? "");
             OmniVoiceLang = string.IsNullOrWhiteSpace(_settings.Current.OmniVoiceLang) ? "en" : _settings.Current.OmniVoiceLang;
+            OmniVoiceLanguage = LanguageCatalog.ByCode(OmniVoiceLang);
+            OmniVoiceLangQuery = OmniVoiceLanguage?.Name ?? OmniVoiceLang;
             OmniVoiceNumStep = _settings.Current.OmniVoiceNumStep is > 0 and <= 64 ? _settings.Current.OmniVoiceNumStep : 32;
             RefreshOmniVoiceVoices(_settings.Current.OmniVoiceVoice);
+            OmniVoiceVoiceQuery = OmniVoiceVoice?.ToString() ?? "";
         }
         finally { _loadingSettings = false; }
         UpdatePrerequisiteStatus();
@@ -296,7 +308,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
                 : !PhonemizerData.IsDataRoot(PhonemizerDataDir) ? $"vernacula-phonemizer data dir not found: {Describe(PhonemizerDataDir)}"
                 : !StoredVoice.IsLibrary(OmniVoiceVoiceLib) ? $"Voice library not found: {Describe(OmniVoiceVoiceLib)}"
                 : OmniVoiceVoice is null ? "No OmniVoice voice selected."
-                : string.IsNullOrWhiteSpace(OmniVoiceLang) ? "No phonemizer language set."
+                : LanguageCatalog.ByCode(OmniVoiceLang) is null ? $"Unknown language \"{OmniVoiceLang}\" — pick one from the list."
                 : null,
             _ =>
                 !DirExists(OnnxBundleDir) ? $"ONNX bundle dir not found: {Describe(OnnxBundleDir)}"
@@ -403,11 +415,29 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         PersistSettings();
         UpdatePrerequisiteStatus();
     }
+    partial void OnOmniVoiceLanguageChanged(LanguageOption? value)
+    {
+        if (value is not null && value.Code != OmniVoiceLang) OmniVoiceLang = value.Code;
+    }
+    partial void OnOmniVoiceLangQueryChanged(string value)
+    {
+        // The chosen language's own name means "nothing typed yet": offer the whole list, so
+        // focusing the box and opening the drop-down shows everything, not the one current row.
+        var q = value?.Trim() ?? "";
+        var matches = q.Length == 0 || q == OmniVoiceLanguage?.Name ? LanguageCatalog.All : LanguageCatalog.Search(q);
+        LanguageMatches.Clear();
+        foreach (var l in matches) LanguageMatches.Add(l);
+        // A code typed exactly counts without a row being chosen.
+        if (LanguageCatalog.ByCode(q) is { } byCode && byCode.Code != OmniVoiceLang
+            && string.Equals(byCode.Code, q, StringComparison.OrdinalIgnoreCase))
+            OmniVoiceLang = byCode.Code;
+    }
     partial void OnOmniVoiceVoiceChanged(StoredVoice.Info? value)
     {
         PersistSettings();
         UpdatePrerequisiteStatus();
     }
+    partial void OnOmniVoiceVoiceQueryChanged(string value) => NarrowOmniVoiceVoices();
     partial void OnOmniVoiceNumStepChanged(int value) => PersistSettings();
 
     /// <summary>The tokenizer the OmniVoice backend will use: the picked file if set, else
@@ -416,21 +446,18 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         FileExists(OmniVoiceTokenizerJson) ? OmniVoiceTokenizerJson
         : DirExists(OmniVoiceOnnxDir) ? OmniVoiceIpaTts.LocateTokenizerJson(OmniVoiceOnnxDir) : null;
 
-    // Voices for the current language from the library, keeping the selection when it is still
-    // listed; otherwise the language's `default` entry, else the first. A language with no voice
-    // of its own shows the whole library: the model reads IPA, so any voice can read any language.
+    // Reload the library and re-pick: keep the selection when it is still a candidate for the
+    // language; otherwise the language's `default` entry, else the first candidate.
     private void RefreshOmniVoiceVoices(string? keepId)
     {
         _allOmniVoiceVoices = StoredVoice.IsLibrary(OmniVoiceVoiceLib)
             ? SafeListVoices(OmniVoiceVoiceLib) : Array.Empty<StoredVoice.Info>();
-        var lang = (OmniVoiceLang ?? "").Trim();
-        var forLang = _allOmniVoiceVoices.Where(v => string.Equals(v.Lang, lang, StringComparison.OrdinalIgnoreCase)).ToList();
-        var shown = forLang.Count > 0 ? forLang : _allOmniVoiceVoices.ToList();
-        OmniVoiceVoices.Clear();
-        foreach (var v in shown) OmniVoiceVoices.Add(v);
-        OmniVoiceVoice = shown.FirstOrDefault(v => v.Id == keepId)
-            ?? shown.FirstOrDefault(v => v.IsDefault)
-            ?? shown.FirstOrDefault();
+        var candidates = VoiceCandidates();
+        OmniVoiceVoice = candidates.FirstOrDefault(v => v.Id == keepId)
+            ?? candidates.FirstOrDefault(v => v.IsDefault)
+            ?? candidates.FirstOrDefault();
+        OmniVoiceVoiceQuery = OmniVoiceVoice?.ToString() ?? "";
+        NarrowOmniVoiceVoices();
 
         static IReadOnlyList<StoredVoice.Info> SafeListVoices(string dir)
         {
@@ -440,6 +467,45 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
                 Console.Error.WriteLine($"[OmniVoice] voice library unreadable: {ex.Message}");
                 return Array.Empty<StoredVoice.Info>();
             }
+        }
+    }
+
+    // The voices that can read the current language: its own, else its donor's (the web demo's
+    // voiceLangOf -- Faroese read by the Icelandic voice), else the whole library.
+    private List<StoredVoice.Info> VoiceCandidates()
+    {
+        var lang = (OmniVoiceLang ?? "").Trim();
+        List<StoredVoice.Info> For(string code) =>
+            _allOmniVoiceVoices.Where(v => string.Equals(v.Lang, code, StringComparison.OrdinalIgnoreCase)).ToList();
+        var own = For(lang);
+        if (own.Count > 0) return own;
+        var donor = For(LanguageCatalog.VoiceLangOf(lang));
+        return donor.Count > 0 ? donor : _allOmniVoiceVoices.ToList();
+    }
+
+    // The voice picker's rows: the candidates, narrowed by its text. The chosen voice's own label
+    // means "nothing typed yet" and shows every candidate, as the language picker does.
+    private void NarrowOmniVoiceVoices()
+    {
+        var candidates = VoiceCandidates();
+        var q = (OmniVoiceVoiceQuery ?? "").Trim();
+        IEnumerable<StoredVoice.Info> shown = q.Length == 0 || q == OmniVoiceVoice?.ToString()
+            ? candidates
+            : candidates.Select(v => (score: VoiceScore(v, q.ToLowerInvariant()), v))
+                .Where(t => t.score >= 0).OrderBy(t => t.score).ThenBy(t => t.v.Id, StringComparer.Ordinal)
+                .Select(t => t.v);
+        OmniVoiceVoices.Clear();
+        foreach (var v in shown) OmniVoiceVoices.Add(v);
+
+        static int VoiceScore(StoredVoice.Info v, string q)
+        {
+            var id = v.Id.ToLowerInvariant(); var label = v.Label.ToLowerInvariant();
+            if (id == q) return 0;
+            if (id.StartsWith(q, StringComparison.Ordinal)) return 1;
+            if (label.StartsWith(q, StringComparison.Ordinal)) return 2;
+            if (id.Contains(q, StringComparison.Ordinal) || label.Contains(q, StringComparison.Ordinal)
+                || v.Lang.Equals(q, StringComparison.OrdinalIgnoreCase)) return 3;
+            return -1;
         }
     }
     partial void OnKokoroVoiceChanged(string value)
