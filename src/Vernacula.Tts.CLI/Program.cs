@@ -198,9 +198,16 @@ internal static class Program
         ExecutionProvider epEnum = ExecutionProvider.Auto;
         if (outPath is not null)
         {
+            // The two required-argument gates above already rejected a null onnxDir on this path, but
+            // that reasoning spans an if/else the compiler does not follow — so it warned CS8604 four
+            // times on the Path.Combine calls below. Naming the invariant once is better than four
+            // suppressions, and it fails loudly rather than dereferencing null if the gates ever move.
+            var onnxRoot = onnxDir ?? throw new InvalidOperationException(
+                "--onnx-dir must be validated before the render path");
+
             // Qwen3 tokenizer: --tokenizer-json, else tokenizer.json beside the graphs, else in --model-dir.
             tokenizerJson ??= FirstExisting(
-                Path.Combine(onnxDir, "tokenizer.json"),
+                Path.Combine(onnxRoot, "tokenizer.json"),
                 modelDir is null ? null : Path.Combine(modelDir, "tokenizer.json"));
             if (tokenizerJson is null)
             {
@@ -219,10 +226,10 @@ internal static class Program
             // That failure is only audible, so a silent fallback is the wrong default.
             if (!noDiff)
             {
-                diffPath ??= FirstExisting(Path.Combine(onnxDir, IpaFineTune.DefaultDiffFile));
+                diffPath ??= FirstExisting(Path.Combine(onnxRoot, IpaFineTune.DefaultDiffFile));
                 if (diffPath is null)
                 {
-                    Console.Error.WriteLine($"IPA fine-tune diff not found: {Path.Combine(onnxDir, IpaFineTune.DefaultDiffFile)}\n"
+                    Console.Error.WriteLine($"IPA fine-tune diff not found: {Path.Combine(onnxRoot, IpaFineTune.DefaultDiffFile)}\n"
                         + "  Pass --diff <path>, or --no-diff to run the base (orthographic) model knowing that\n"
                         + "  IPA input will not be interpreted as phonemes.");
                     return 1;
@@ -346,7 +353,12 @@ internal static class Program
             + $"  diff={(diffPath is null ? "none" : Path.GetFileName(diffPath))}");
 
         var sw = Stopwatch.StartNew();
-        using var tts = new OmniVoiceTts(onnxDir, tokenizerJson, epEnum, onLoad, transformerFile, diffPath);
+        // Same invariant as the setup block: everything from here is render-only, and both were
+        // validated there. Stated rather than suppressed, so a future reordering fails loudly.
+        using var tts = new OmniVoiceTts(
+            onnxDir ?? throw new InvalidOperationException("--onnx-dir must be validated before render"),
+            tokenizerJson ?? throw new InvalidOperationException("tokenizer must be resolved before render"),
+            epEnum, onLoad, transformerFile, diffPath);
         Console.WriteLine($"load: {sw.ElapsedMilliseconds} ms");
 
         long[,]? refCodes = null;
