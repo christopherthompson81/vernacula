@@ -18,6 +18,10 @@ public sealed class App : Application
             {
                 DataContext = new MainViewModel(),
             };
+            // Let Program know the dispatcher is on its way out, so a D-Bus disconnect racing
+            // the teardown is treated as a clean exit rather than an unhandled crash.
+            desktop.ShutdownRequested += (_, _) => Program.BeginShutdown();
+            desktop.Exit += (_, _) => Program.BeginShutdown();
         }
         base.OnFrameworkInitializationCompleted();
     }
