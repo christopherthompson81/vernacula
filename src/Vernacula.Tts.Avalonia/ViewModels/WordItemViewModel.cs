@@ -143,10 +143,11 @@ public sealed partial class WordItemViewModel : ObservableObject
     /// the factor has to clear that. IPA needs the room anyway: it stacks tie bars and tone letters
     /// above the letters and marks below them.
     /// </summary>
-    private const double LineBox = 1.7;
+    private double LineBox => ScriptFonts.LineBoxFor(Text);
 
     /// <summary>
-    /// A fixed line box for the word, so every word in a line sits on the same baseline.
+    /// A fixed line box for the word, so every word in a line sits on the same baseline. Its size
+    /// depends on the script (see <see cref="ScriptFonts.LineBoxFor"/>).
     ///
     /// ⚠ EACH WORD IS ITS OWN CONTROL, so nothing aligns them for us. Left to size themselves they
     /// do not agree: IPA and many scripts fall back font by font, and a fallback's ascent and
@@ -159,9 +160,15 @@ public sealed partial class WordItemViewModel : ObservableObject
     /// </summary>
     public double LineHeight => Math.Ceiling(FontSize * LineBox);
 
-    /// <summary>The font this word is set in: the UI font, unless its script needs a specific
-    /// face (see <see cref="ScriptFonts"/>).</summary>
-    public FontFamily FontFamily => ScriptFonts.For(Text);
+    /// <summary>
+    /// The font this word is set in: monospace for inline code, else the UI font unless the word's
+    /// script needs a specific face (see <see cref="ScriptFonts"/>).
+    ///
+    /// ⚠ CODE IS DECIDED HERE, NOT IN A STYLE. A font set on the control beats one set by a style,
+    /// so a `.code` style setter would be ignored the moment this property exists; keeping both
+    /// decisions in one place is what stops them from silently disagreeing.
+    /// </summary>
+    public FontFamily FontFamily => IsCode ? ScriptFonts.Mono : ScriptFonts.For(Text);
 
     /// <summary>The ruby line's fixed height, on the same reasoning.</summary>
     public double IpaLineHeight => Math.Ceiling(IpaFontSize * LineBox);

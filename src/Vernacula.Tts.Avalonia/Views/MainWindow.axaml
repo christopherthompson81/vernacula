@@ -116,7 +116,7 @@
                                                                                TextAlignment="Center" />
                                                                     <TextBlock Text="{Binding Text}"
                                                                                FontFamily="{Binding FontFamily}"
-                                                                               MinHeight="{Binding LineHeight}"
+                                                                               LineHeight="{Binding LineHeight}"
                                                                                HorizontalAlignment="Center" />
                                                                 </StackPanel>
                                                                 <!-- Written without spaces (Japanese, Chinese):
@@ -150,7 +150,7 @@
                                                                                     <TextBlock Text="{Binding Text}"
                                                                                                FontSize="{Binding Word.FontSize}"
                                                                                                FontFamily="{Binding Word.FontFamily}"
-                                                                                               MinHeight="{Binding Word.LineHeight}"
+                                                                                               LineHeight="{Binding Word.LineHeight}"
                                                                                                HorizontalAlignment="Center" />
                                                                                 </StackPanel>
                                                                             </Border>
@@ -168,17 +168,14 @@
                             </ItemsControl.ItemTemplate>
                         </ItemsControl>
                     </ScrollViewer>
-                    <!-- The markdown view builds its own text controls, so the font is set through
-                         a style rather than on the viewer itself. -->
+                    <!-- ⚠ NO FONT OVERRIDE HERE. The markdown view builds its own text controls,
+                         and a blanket TextBlock style reaches the code blocks too, taking their
+                         monospace face away; binding one through the viewer's styles also left the
+                         pane rendering nothing at all. The karaoke view is where a script font is
+                         needed, and it sets the font per word. -->
                     <md:MarkdownScrollViewer IsVisible="{Binding RenderMarkdown}"
                                              FlowDirection="{Binding TextFlowDirection}"
-                                             Markdown="{Binding Text}">
-                        <md:MarkdownScrollViewer.Styles>
-                            <Style Selector="TextBlock">
-                                <Setter Property="FontFamily" Value="{Binding TextFontFamily}" />
-                            </Style>
-                        </md:MarkdownScrollViewer.Styles>
-                    </md:MarkdownScrollViewer>
+                                             Markdown="{Binding Text}" />
                 </Panel>
             </Grid>
         </Border>
@@ -483,9 +480,8 @@
         </Style>
 
         <!-- Inline code: monospace + subtle chip. -->
-        <Style Selector="Button.word.code">
-            <Setter Property="FontFamily" Value="Cascadia Code,Consolas,Menlo,monospace" />
-        </Style>
+        <!-- The monospace face itself comes from WordItemViewModel.FontFamily: a font set on the
+             control beats one set by a style, so it has to be decided in one place. -->
         <Style Selector="Button.word.code /template/ ContentPresenter">
             <Setter Property="Background" Value="#1affffff" />
         </Style>

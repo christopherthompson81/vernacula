@@ -233,15 +233,17 @@ public static class IpaAnnotator
         if (text.Count < 2) return null;
 
         // The reading breaks after each run of tone letters.
+        // Trimmed: a reading whose syllables are separated by spaces would otherwise carry the
+        // separator into the next syllable, which shows (the ruby is centred) and skews its weight.
         var read = new List<string>();
         start = 0;
         for (var i = 0; i < ipa.Length; i++)
             if (IsToneLetter(ipa[i]) && (i + 1 == ipa.Length || !IsToneLetter(ipa[i + 1])))
             {
-                read.Add(ipa[start..(i + 1)]);
+                read.Add(ipa[start..(i + 1)].Trim());
                 start = i + 1;
             }
-        if (start < ipa.Length) read.Add(ipa[start..]);
+        if (ipa[start..].Trim() is { Length: > 0 } tail) read.Add(tail);
 
         if (read.Count != text.Count) return null;
         return text.Zip(read).ToList();

@@ -144,6 +144,15 @@ public class IpaAnnotatorTests
     }
 
     [Fact]
+    public void TibetanSyllableReadingsCarryNoStraySpace()
+    {
+        // The ruby is centred, so a leading space visibly shifts the reading off its syllable, and
+        // it would count towards the syllable's share of the audio.
+        var pieces = Ruby("བུམ་པ་དེ་བུམ་པ་ཞེས་བརྗོད་པའི་སྒྲའི་བརྗོད་བྱ་ཡིན་པ་བཞིན་ནོ།", "bo")[0].Pieces;
+        Assert.All(pieces, p => Assert.Equal(p.Ipa.Trim(), p.Ipa));
+    }
+
+    [Fact]
     public void UnsegmentableScriptStaysWhole()
     {
         // Thai has no token boundaries here: three groups for fifteen characters. Rather than
