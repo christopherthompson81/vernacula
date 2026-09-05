@@ -22,6 +22,10 @@ const STEPS = Number(process.argv[4] ?? 16);
 const WARM = Number(process.env.WARM ?? 3);
 const ITERS = Number(process.env.ITERS ?? 10);
 const RAISE = process.env.RAISE === "1" ? "true" : "false";
+// PROFILE=1: ORT's WebGPU kernel profiler — per-kernel GPU time from timestamp queries — so a
+// forward's wall time can be split into GPU kernel time and everything else (dispatch, readback,
+// host). That split is the difference between "fuse the graph" and "make the kernels faster".
+const PROFILE = process.env.PROFILE === "1" ? "true" : "false";
 const DIST = path.resolve("node_modules/onnxruntime-web/dist");
 const PORT = 8791;
 const DATA_NAME = MODEL.split("/").pop() + ".data";
@@ -32,7 +36,9 @@ const say = (o) => fetch("/result", {method:"POST", body: JSON.stringify(o)});
 try {
   if (!navigator.gpu) throw new Error("navigator.gpu absent");
   const ad = await navigator.gpu.requestAdapter();
-  const info = ad ? (ad.info ? \`\${ad.info.vendor} \${ad.info.architecture}\` : "adapter ok") : "no adapter";
+  const ai = ad ? (ad.info ?? (ad.requestAdapterInfo ? await ad.requestAdapterInfo() : null)) : null;
+  const info = ad ? (ai ? \`\${ai.vendor} \${ai.architecture} \${ai.device||""} \${ai.description||""}\` : "adapter ok")
+    + (ad.isFallbackAdapter ? " [FALLBACK/software]" : "") + " ts=" + ad.features.has("timestamp-query") : "no adapter";
   const lim = ad.limits;
   await say({note:"limits", maxBuffer: lim.maxBufferSize, maxStorageBinding: lim.maxStorageBufferBindingSize});
   // ⚠ WebGPU grants DEFAULT limits (maxBufferSize 268 MB) unless you ask for more, whatever the
@@ -40,14 +46,24 @@ try {
   // embedding, or 310 MB at fp16 -- kills the device with "Out of memory" on a card with 23 GB
   // free. Build the device ourselves with the adapter's maximum and hand it to ORT.
   const raise = ${RAISE};
-  const dev0 = await ad.requestDevice(raise ? { requiredLimits: {
+  // The profiler needs the device created WITH timestamp-query, or it reports nothing at all.
+  const feats = (${PROFILE} && ad.features.has("timestamp-query")) ? ["timestamp-query"] : [];
+  const dev0 = await ad.requestDevice(raise ? { requiredFeatures: feats, requiredLimits: {
       maxBufferSize: ad.limits.maxBufferSize,
-      maxStorageBufferBindingSize: ad.limits.maxStorageBufferBindingSize } } : undefined);
+      maxStorageBufferBindingSize: ad.limits.maxStorageBufferBindingSize } } : { requiredFeatures: feats });
   dev0.lost.then(i => say({ok:false, error: "GPU DEVICE LOST: reason=" + i.reason + " msg=" + i.message}));
   if (raise) ort.env.webgpu.device = dev0;
   await say({note:"device", maxBuffer: dev0.limits.maxBufferSize, raised: raise});
   ort.env.wasm.wasmPaths = "/dist/";
   ort.env.logLevel = "error";
+  // Profiling is configured BEFORE the session exists: the backend reads it at initialisation.
+  const prof = new Map();
+  if (${PROFILE}) {
+    ort.env.webgpu.profiling = { mode: "default", ondata: (d) => {
+      const e = prof.get(d.kernelType) ?? { n: 0, ms: 0 };
+      e.n++; e.ms += (d.endTime - d.startTime) / 1e6; prof.set(d.kernelType, e);
+    } };
+  }
   let t = performance.now();
   const sess = await ort.InferenceSession.create("/model.onnx", {
     executionProviders: ["webgpu"], graphOptimizationLevel: "all",
@@ -67,9 +83,12 @@ try {
   // and any downward drift across a longer series is the fixed overhead amortizing.
   const warm=[];
   for (let i=0;i<${WARM};i++){ t=performance.now(); await sess.run(feeds); warm.push(performance.now()-t); }
+  prof.clear(); let profRuns = 0;   // the warm-ups are not counted
   const times=[];
-  for (let i=0;i<${ITERS};i++){ t=performance.now(); await sess.run(feeds); times.push(performance.now()-t); }
-  say({ok:true, info, load, warm, times, S:${S}, steps:${STEPS}});
+  for (let i=0;i<${ITERS};i++){ t=performance.now(); await sess.run(feeds); times.push(performance.now()-t); profRuns++; }
+  if (${PROFILE}) ort.env.webgpu.profiling = { mode: "" };
+  say({ok:true, info, load, warm, times, S:${S}, steps:${STEPS},
+       profile: ${PROFILE} ? { runs: profRuns, kernels: [...prof.entries()].map(([k,v]) => ({ k, n: v.n, ms: v.ms })) } : null});
 } catch (e) {
   let d;
   try { d = JSON.stringify(e, Object.getOwnPropertyNames(Object(e))); } catch { d = ""; }
@@ -101,6 +120,14 @@ const server = http.createServer((req, res) => {
       console.log(`load: ${(r.load / 1000).toFixed(1)}s`);
       console.log(`forward @S=${r.S}: ${per.toFixed(0)} ms  (runs: ${r.times.map(x => x.toFixed(0)).join(", ")})`);
       console.log(`=> ${r.steps} steps ≈ ${(per * r.steps / 1000).toFixed(1)}s per generation`);
+      if (r.profile) {
+        const ks = r.profile.kernels.map(k => ({ ...k, n: k.n / r.profile.runs, ms: k.ms / r.profile.runs }))
+          .sort((a, b) => b.ms - a.ms);
+        const total = ks.reduce((a, k) => a + k.ms, 0), count = ks.reduce((a, k) => a + k.n, 0);
+        console.log(`profile: ${count.toFixed(0)} kernels/forward, ${total.toFixed(0)} ms GPU time/forward `
+          + `(wall ${per.toFixed(0)} ms → ${(per - total).toFixed(0)} ms not in kernels)`);
+        for (const k of ks.slice(0, 14)) console.log(`  ${k.ms.toFixed(1).padStart(8)} ms  ${String(k.n.toFixed(0)).padStart(5)}×  ${k.k}`);
+      }
       done(0);
     });
     return;

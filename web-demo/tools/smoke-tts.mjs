@@ -52,6 +52,14 @@ try{
   if (${JSON.stringify(process.env.EP ?? null)}) mod.setForcedEp(${JSON.stringify(process.env.EP ?? null)});
   if (${JSON.stringify(process.env.GRAPH_OPT ?? null)}) mod.setGraphOpt(${JSON.stringify(process.env.GRAPH_OPT ?? null)});
   if (${JSON.stringify(process.env.DECODER_EP ?? null)}) mod.setDecoderEp(${JSON.stringify(process.env.DECODER_EP ?? null)});
+  const prof = new Map(); let forwards = 0;
+  if (${JSON.stringify(process.env.PROFILE === "1")}) {
+    const ortMod = await import("https://cdn.jsdelivr.net/npm/onnxruntime-web@1.29.0/dist/ort.all.bundle.min.mjs");
+    ortMod.env.webgpu.profiling = { mode: "default", ondata: (d) => {
+      const e = prof.get(d.kernelType) ?? { n: 0, ms: 0 };
+      e.n++; e.ms += (d.endTime - d.startTime) / 1e6; prof.set(d.kernelType, e);
+    } };
+  }
   const t0 = performance.now();
   const ov = await mod.OmniVoice.load({
     transformerUrl: "/models/${MODEL_NAME}",
@@ -61,7 +69,7 @@ try{
     voicesUrl: "/models/voices.jsonc",
     voiceCodesUrl: "/models/voice-codes.json",
     fetchBytes: async (u) => (await fetch(u)).arrayBuffer(),
-    onProgress: (d) => log.push("  " + d),
+    onProgress: (d) => { log.push("  " + d); fetch("/p", { method: "POST", body: d }); },
   });
   log.push("load: " + ((performance.now()-t0)/1000).toFixed(1) + "s   ep=" + ov.backend.ep);
 
@@ -72,13 +80,20 @@ try{
   say({ok:true, log, ipa, ep: ov.backend.ep,
        targetTokens: r.targetTokens, seconds: a.length/r.sampleRate,
        generateMs: r.generateMs, transformerMs: r.transformerMs, hostMs: r.hostMs,
+       profile: prof.size ? [...prof.entries()].map(([k,v]) => ({ k, n: v.n, ms: v.ms })) : null,
        peak, rms: Math.sqrt(sum/a.length),
        wav: Array.from(new Uint8Array(new Float32Array(a).buffer))});
 }catch(e){ say({ok:false, log, error:[String(e), e&&e.stack].join(" | ")}); }
 </script>`;
 
 const iso = {"Cross-Origin-Opener-Policy":"same-origin","Cross-Origin-Embedder-Policy":"require-corp"};
+const T0 = Date.now();
 http.createServer((req,res)=>{
+  if (req.method==="POST" && req.url==="/p") {
+    let b=""; req.on("data",c=>b+=c); req.on("end",()=>{ res.writeHead(200,iso); res.end("ok");
+      console.log(`  [${((Date.now()-T0)/1000).toFixed(1)}s] ${b}`); });
+    return;
+  }
   if (req.method==="POST" && req.url==="/r") {
     let b=""; req.on("data",c=>b+=c);
     req.on("end",()=>{ res.writeHead(200,iso); res.end("ok");
@@ -90,6 +105,15 @@ http.createServer((req,res)=>{
       console.log(`  ep=${r.ep}  targetTokens=${r.targetTokens}  audio=${r.seconds.toFixed(2)}s`);
       console.log(`  generate ${(r.generateMs/1000).toFixed(1)}s  (transformer ${(r.transformerMs/1000).toFixed(1)}s, host ${(r.hostMs/1000).toFixed(1)}s)`);
       console.log(`  peak=${r.peak.toFixed(4)} rms=${r.rms.toFixed(4)}  -> ${out}`);
+      if (r.profile) {
+        // Per generation; the transformer ran STEPS times (B=2 CFG pairs in one forward) plus the
+        // decoder once — so per-forward figures are per-generation / STEPS, near enough.
+        const ks = r.profile.sort((a, b) => b.ms - a.ms);
+        const total = ks.reduce((a, k) => a + k.ms, 0), count = ks.reduce((a, k) => a + k.n, 0);
+        console.log(`  profile: ${count} kernels, ${(total/1000).toFixed(1)}s GPU time per generation `
+          + `(transformer wall ${(r.transformerMs/1000).toFixed(1)}s → ${((r.transformerMs-total)/1000).toFixed(1)}s not in kernels); per forward ≈ ${(count/STEPS).toFixed(0)} kernels, ${(total/STEPS).toFixed(0)} ms`);
+        for (const k of ks.slice(0, 14)) console.log(`    ${(k.ms/STEPS).toFixed(1).padStart(8)} ms  ${String(Math.round(k.n/STEPS)).padStart(5)}×  ${k.k}`);
+      }
       done(0); });
     return;
   }
