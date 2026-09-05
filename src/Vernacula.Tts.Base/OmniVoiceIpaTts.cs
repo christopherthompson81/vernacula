@@ -144,7 +144,12 @@ public sealed class OmniVoiceIpaTts : IDisposable
         // lang: null is the IPA fine-tune's conditioning — the language never reaches the model.
         var tokens = _tts.GenerateTokens(ipa, target, CondRefIpa, Voice?.Codes, lang: null, instruct: null,
             new OmniVoiceTts.GenConfig(NumStep: numStep));
-        var audio = OmniVoiceAudioPost.Finish(_tts.DecodeTokens(tokens), SampleRate, Voice?.RefRms);
+        // A stored voice was never boosted at encode time, so Python's un-boost would just make a
+        // quiet source quieter; an encoded reference WAS boosted and needs it undone.
+        var decoded = _tts.DecodeTokens(tokens);
+        var audio = Voice is null
+            ? OmniVoiceAudioPost.Finish(decoded, SampleRate, refRms: null)
+            : OmniVoiceAudioPost.FinishStoredVoice(decoded, SampleRate);
 
         return new OmniVoiceIpaSpeech(audio, OmniVoiceIpaAlignment.Proportional(text, trace, audio.Length / (double)SampleRate));
     }
