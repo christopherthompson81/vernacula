@@ -175,7 +175,8 @@ public static class HardwareInfo
         // but worth saying out loud, because the fix is one ldconfig line rather than an install.
         foreach (var dir in GetLinuxCudaLibraryDirs())
         {
-            foreach (var file in SafeGetFiles(dir, $"libcudart.so.{RequiredCudaMajor}*"))
+            var candidates = SafeGetFiles(dir, $"libcudart.so.{RequiredCudaMajor}*").ToList();
+            foreach (var file in candidates)
             {
                 if (!NativeLibrary.TryLoad(file, out var byPath)) continue;
                 NativeLibrary.Free(byPath);
@@ -185,7 +186,7 @@ public static class HardwareInfo
                 return false;
             }
 
-            if (SafeGetFiles(dir, $"libcudart.so.{RequiredCudaMajor}*").Any())
+            if (candidates.Count > 0)
                 Note($"CUDA {RequiredCudaMajor} was found in {dir} but could not be loaded even by "
                      + "full path, which usually means one of its own dependencies is missing.");
         }
@@ -208,12 +209,17 @@ public static class HardwareInfo
     /// The explanation to give when the CUDA execution provider will not start. One place, because
     /// four call sites threw their own version of it and only one of them said anything useful.
     /// </summary>
-    public static string CudaUnavailableMessage() =>
-        "Could not initialise the CUDA execution provider. This build links CUDA "
+    public static string CudaUnavailableMessage()
+    {
+        // Force the probe: on the explicit-CUDA path nothing else has run it, so without this the
+        // note is null precisely when the message is thrown. Cached, so this costs nothing twice.
+        _ = IsCudaToolkitInstalled();
+        return "Could not initialise the CUDA execution provider. This build links CUDA "
         + $"{RequiredCudaMajor}, and an older CUDA runtime cannot load it (the major version is part "
         + "of the library name), so that is the first thing to check; a missing driver, no visible "
         + "GPU, or a CPU-only build of ONNX Runtime reports the same failure."
-        + (CudaProbeNote is null ? "" : $" Probe found: {CudaProbeNote}");
+            + (CudaProbeNote is null ? "" : $" Probe found: {CudaProbeNote}");
+    }
 
     private static void Note(string message)
     {
@@ -298,6 +304,17 @@ public static class HardwareInfo
             if (!NativeLibrary.TryLoad(soname, out var handle)) continue;
             NativeLibrary.Free(handle);
             return true;
+        }
+
+        // Same diagnostic the runtime probe gives: without it, a machine whose CUDA loads fine and
+        // whose cuDNN sits off the loader path reports "cannot use CUDA" and says nothing about why.
+        foreach (var dir in GetLinuxCudaLibraryDirs())
+        {
+            if (!SafeGetFiles(dir, "libcudnn.so*").Any()) continue;
+            Note($"cuDNN was found in {dir} but is not on the loader path, so the CUDA execution "
+                 + "provider cannot load it. Add its directory to /etc/ld.so.conf.d (then run "
+                 + "ldconfig) or to LD_LIBRARY_PATH.");
+            return false;
         }
         return false;
     });
@@ -544,11 +561,7 @@ public static class HardwareInfo
                                   | FileAttributes.System,
         };
 
-        // Per directory, so the decisions below can be made about a DIRECTORY rather than about
-        // one file at a time -- which is what the cuDNN rule needs.
-        var cudartDirs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var depDirs    = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var cudnnDirs  = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        bool hasCudart = false, hasCudnn = false;
 
         foreach (var root in GetWindowsCudaSearchRoots())
         {
@@ -557,51 +570,25 @@ public static class HardwareInfo
                 foreach (var file in Directory.EnumerateFiles(root, "*.dll", options))
                 {
                     var name = Path.GetFileName(file);
-                    var dir = Path.GetDirectoryName(file);
-                    if (string.IsNullOrEmpty(dir)) continue;
+                    bool isCudart = name.StartsWith("cudart64_", StringComparison.OrdinalIgnoreCase);
+                    bool isCudnn  = name.StartsWith("cudnn",     StringComparison.OrdinalIgnoreCase);
+                    bool isCudaDep = isCudart || isCudnn
+                        || name.StartsWith("cublas", StringComparison.OrdinalIgnoreCase)
+                        || name.StartsWith("cufft",  StringComparison.OrdinalIgnoreCase)
+                        || name.StartsWith("nvrtc",  StringComparison.OrdinalIgnoreCase);
 
-                    // cudart64_13.dll, not any cudart64_*.dll: see RequiredCudaMajor.
-                    if (name.StartsWith($"cudart64_{RequiredCudaMajor}", StringComparison.OrdinalIgnoreCase))
-                    { cudartDirs.Add(dir); depDirs.Add(dir); continue; }
-
-                    // The other libraries whose name tracks the CUDA major. cuFFT and cuRAND
-                    // version independently (CUDA 12 ships cuFFT 11, CUDA 13 ships 12), so gating
-                    // on them would match nothing; they sit beside cudart anyway.
-                    if (name.StartsWith($"cublas64_{RequiredCudaMajor}", StringComparison.OrdinalIgnoreCase)
-                        || name.StartsWith($"cublasLt64_{RequiredCudaMajor}", StringComparison.OrdinalIgnoreCase)
-                        || name.StartsWith($"nvrtc64_{RequiredCudaMajor}", StringComparison.OrdinalIgnoreCase))
-                    { depDirs.Add(dir); continue; }
-
-                    if (name.StartsWith("cudnn", StringComparison.OrdinalIgnoreCase))
-                        cudnnDirs.Add(dir);
+                    if (isCudart) hasCudart = true;
+                    if (isCudnn)  hasCudnn  = true;
+                    if (isCudaDep)
+                    {
+                        var dir = Path.GetDirectoryName(file);
+                        if (!string.IsNullOrEmpty(dir))
+                            dllDirs.Add(dir);
+                    }
                 }
             }
             catch { }
         }
-
-        // ⚠ cuDNN'S FILE NAME SAYS NOTHING ABOUT WHICH CUDA IT IS FOR, so the directory has to.
-        // Two shapes are legitimate: NVIDIA's standalone tree, which names the CUDA version in the
-        // directory itself (…\CUDNN9.xin.0\), and the documented copy-into-the-toolkit
-        // install, where cuDNN sits beside a matching cudart. Anything else -- typically a cuDNN
-        // left in an older toolkit's bin -- is neither counted as cuDNN nor added to the search
-        // path, because loading it would fail against a runtime that links CUDA 13.
-        //
-        // Excluding cuDNN from the search path outright, as an earlier pass did, broke the
-        // standalone tree: that directory holds cudnn64_9.dll and nothing else, so it stopped being
-        // registered at all and the provider could not resolve cuDNN on a correctly set up machine.
-        bool IsForRequiredMajor(string dir) =>
-            cudartDirs.Contains(dir)
-            || Path.GetFileName(dir).StartsWith($"{RequiredCudaMajor}.", StringComparison.Ordinal);
-
-        bool hasCudart = cudartDirs.Count > 0;
-        bool hasCudnn = false;
-        foreach (var dir in cudnnDirs.Where(IsForRequiredMajor))
-        {
-            hasCudnn = true;
-            depDirs.Add(dir);
-        }
-
-        foreach (var dir in depDirs) dllDirs.Add(dir);
 
         return new WindowsCudaScan(hasCudart, hasCudnn, dllDirs);
     }
