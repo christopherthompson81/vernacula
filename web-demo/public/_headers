@@ -18,6 +18,15 @@
 /models/*
   Cache-Control: public, max-age=300, must-revalidate
 
-# Content-addressed by build, safe to cache hard.
+# ⚠ NOT content-addressed, and NOT safe to cache hard. These filenames are plain — welsh.jsonc,
+# lexicon.tsv, phonology.jsonc — so a deploy that updates the phonemizer leaves returning visitors on
+# the OLD data until the cache expires. That is the exact failure this project just spent a session
+# on (a stale phonemizer pin produced "eports" for "reports" and pre-#1252 digraphs, and invalidated
+# every listening pass), reintroduced with a timer. Same reasoning as /models/ above: revalidate.
+# Cost is a conditional request that answers 304 for unchanged files, which is nearly free.
 /vphon-data/*
-  Cache-Control: public, max-age=86400
+  Cache-Control: public, max-age=300, must-revalidate
+
+# The transpiled engine is not hashed either, and must not outlive the data it reads.
+/vphon/*
+  Cache-Control: public, max-age=300, must-revalidate
