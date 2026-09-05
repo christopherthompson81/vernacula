@@ -39,13 +39,21 @@
     <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.24.4" />
   </ItemGroup>
 
+  <!--
+    Vernacula.Phonemizer (via Vernacula.Tts.Base) takes a plain (CPU) Microsoft.ML.OnnxRuntime
+    reference. Left alone it flows into this app's output next to the EP variant above and both
+    ship a native onnxruntime library — whichever lands last wins, which is how a CUDA build
+    silently ends up on the CPU runtime. A DIRECT reference outranks the transitive one, and
+    ExcludeAssets="all" then contributes nothing, so the EP package is the only runtime shipped.
+  -->
+  <ItemGroup Condition="'$(EP)' != 'Cpu'">
+    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.24.4" ExcludeAssets="all" />
+  </ItemGroup>
+
   <ItemGroup>
     <!-- Matches Vernacula.Avalonia.csproj's ProjectReference style:
          no Private attribute (defaults to true). EP property flows
          through to base projects via SetConfiguration. -->
-    <!-- Kokoro's G2P frontend. Direct rather than transitive through Vernacula.Tts.Base — see the
-         PrivateAssets note on that project's reference to it. -->
-    <ProjectReference Include="..\..\external\espeak-ng-portable\csharp\src\Vernacula.Phonemizer\Vernacula.Phonemizer.csproj" />
     <ProjectReference Include="..\Vernacula.Tts.Base\Vernacula.Tts.Base.csproj">
       <SetConfiguration>EP=$(EP)</SetConfiguration>
     </ProjectReference>

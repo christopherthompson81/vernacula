@@ -1,4 +1,4 @@
-namespace Vernacula.Tts.CLI;
+namespace Vernacula.Tts.Base;
 
 /// <summary>
 /// Locates the vernacula-phonemizer `data/` tree and hands it to the phonemizer.
@@ -6,11 +6,12 @@ namespace Vernacula.Tts.CLI;
 /// The phonemizer's own DataPath finds the tree by walking up from AppContext.BaseDirectory for an
 /// ancestor holding `data/core/phonology.jsonc` — which works when you run from inside the
 /// phonemizer repo, and does not work here: our build output is
-/// src/Vernacula.Tts.CLI/bin/&lt;cfg&gt;/net10.0, and this repo has no top-level `data/`. The tree
-/// lives one level in, under the submodule. So we resolve it ourselves and set
-/// VERNACULA_DATA_DIR, which DataPath honours ahead of the walk.
+/// src/&lt;project&gt;/bin/&lt;cfg&gt;/net10.0, and this repo has no top-level `data/`. The tree lives one
+/// level in, under the submodule. So we resolve it ourselves and set VERNACULA_DATA_DIR, which
+/// DataPath honours ahead of the walk. Shared by every consumer of the phonemizer here — the IPA
+/// path in Vernacula.Tts.CLI and the Kokoro frontend (<see cref="KokoroPhonemizer"/>).
 /// </summary>
-internal static class PhonemizerData
+public static class PhonemizerData
 {
     private const string Sentinel = "core/phonology.jsonc";
     private const string SubmoduleData = "external/vernacula-phonemizer/data";
@@ -39,13 +40,12 @@ internal static class PhonemizerData
 
     /// <summary>The same sentinel check DataPath uses — the file, not just a `data` directory, so
     /// an unrelated `data/` on the walk cannot match.</summary>
-    private static bool IsDataRoot(string dir) =>
+    public static bool IsDataRoot(string dir) =>
         File.Exists(Path.Combine(dir, Sentinel.Replace('/', Path.DirectorySeparatorChar)));
 
     public static string NotFoundMessage() =>
         "Could not locate the vernacula-phonemizer data tree (looked for "
         + $"{SubmoduleData}/{Sentinel} above \"{AppContext.BaseDirectory}\").\n"
         + "  If the submodule isn't checked out:  git submodule update --init external/vernacula-phonemizer\n"
-        + "  Otherwise point at it explicitly:    --data-dir <path to vernacula-phonemizer/data>\n"
-        + "  Or pass --ipa to skip phonemization and supply IPA directly.";
+        + "  Otherwise point at it explicitly:    --data-dir <path to vernacula-phonemizer/data>";
 }

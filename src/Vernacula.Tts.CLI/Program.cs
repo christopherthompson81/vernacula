@@ -287,7 +287,8 @@ internal static class Program
         {
             if (PhonemizerData.Resolve(dataDir) is not { } root)
             {
-                Console.Error.WriteLine(PhonemizerData.NotFoundMessage());
+                Console.Error.WriteLine(PhonemizerData.NotFoundMessage()
+                    + "\n  Or pass --ipa to skip phonemization and supply IPA directly.");
                 return 1;
             }
             if (verbose) Console.WriteLine($"phonemizer data: {root}");

@@ -35,7 +35,8 @@ bool    verbose       = false;
 bool?   useIoBinding  = null;
 float   exaggeration  = ChatterboxConstants.DefaultExaggeration;
 // Kokoro backend (--backend kokoro): --voice is a voice name (af_heart), --onnx-dir is
-// the kokoro model dir (kokoro.onnx + voices/), --data-dir is the espeak-ng-portable data/.
+// the kokoro model dir (kokoro.onnx + voices/), --data-dir the vernacula-phonemizer data/
+// (optional: resolved from the submodule when omitted).
 string  backend       = "chatterbox";
 string? dataDir       = null;
 float   speed         = 1.0f;
@@ -215,13 +216,11 @@ if (backend == "kokoro")
         Console.Error.WriteLine("--backend kokoro requires --voice <voice name, e.g. af_heart>.");
         return 2;
     }
-    if (dataDir is null)
+    if (dataDir is not null)
     {
-        Console.Error.WriteLine("--backend kokoro requires --data-dir <espeak-ng-portable data/ dir>.");
-        return 2;
+        dataDir = ExpandHome(dataDir);
+        if (!Directory.Exists(dataDir)) { Console.Error.WriteLine($"--data-dir not found: {dataDir}"); return 1; }
     }
-    dataDir = ExpandHome(dataDir);
-    if (!Directory.Exists(dataDir)) { Console.Error.WriteLine($"--data-dir not found: {dataDir}"); return 1; }
     if (textFile is not null && !File.Exists(textFile)) { Console.Error.WriteLine($"--text-file not found: {textFile}"); return 1; }
 
     string kText;
@@ -694,8 +693,8 @@ static void PrintUsage()
           --help / -h              Show this message.
 
         Backends (--backend <name>, default "chatterbox"):
-          kokoro     Kokoro-82M. --voice is a voice name (e.g. af_heart); requires
-                     --data-dir <espeak-ng-portable data/>.
+          kokoro     Kokoro-82M. --voice is a voice name (e.g. af_heart). --data-dir is the
+                     vernacula-phonemizer data/ (resolved from the submodule when omitted).
           omnivoice  OmniVoice diffusion TTS. --onnx-dir holds omnivoice_transformer
                      [_fp16].onnx + higgs_encoder/decoder.onnx; --tokenizer-json is the
                      Qwen3 tokenizer.json (required). Modes:

@@ -24,13 +24,13 @@ namespace Vernacula.Tts.App.Services;
 public sealed class KokoroSynthesisService : ITtsBackend
 {
     private readonly string _onnxDir;
-    private readonly string _dataDir;
+    private readonly string? _dataDir;
     private readonly ExecutionProvider _ep;
 
     private KokoroTts? _tts;
     private readonly object _gate = new();
 
-    public KokoroSynthesisService(string onnxDir, string phonemizerDataDir,
+    public KokoroSynthesisService(string onnxDir, string? phonemizerDataDir,
                                   ExecutionProvider ep = ExecutionProvider.Auto)
     {
         _onnxDir = onnxDir;

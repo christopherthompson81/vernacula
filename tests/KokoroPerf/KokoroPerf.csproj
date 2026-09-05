@@ -13,12 +13,12 @@
   <ItemGroup>
     <!-- .Gpu includes the CPU provider as fallback; covers both EP modes. -->
     <PackageReference Include="Microsoft.ML.OnnxRuntime.Gpu" Version="1.24.4" />
+    <!-- Outranks the plain CPU ORT that Vernacula.Phonemizer pulls in transitively; see
+         Vernacula.Tts.Base.csproj. -->
+    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.24.4" ExcludeAssets="all" />
   </ItemGroup>
 
   <ItemGroup>
-    <!-- Kokoro's G2P frontend. Direct rather than transitive through Vernacula.Tts.Base — see the
-         PrivateAssets note on that project's reference to it. -->
-    <ProjectReference Include="..\..\external\espeak-ng-portable\csharp\src\Vernacula.Phonemizer\Vernacula.Phonemizer.csproj" />
     <ProjectReference Include="..\..\src\Vernacula.Tts.Base\Vernacula.Tts.Base.csproj">
       <Private>true</Private>
       <SetConfiguration>EP=Cuda</SetConfiguration>
