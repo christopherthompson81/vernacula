@@ -24,7 +24,7 @@
                       PrivateAssets="all" />
   </ItemGroup>
   <ItemGroup Condition="'$(EP)' == 'DirectML'">
-    <PackageReference Include="Microsoft.ML.OnnxRuntime.DirectML" Version="1.21.1"
+    <PackageReference Include="Microsoft.ML.OnnxRuntime.DirectML" Version="1.24.4"
                       PrivateAssets="all" />
   </ItemGroup>
   <ItemGroup Condition="'$(EP)' == 'Cpu' AND !($([MSBuild]::IsOSPlatform('OSX')) AND $([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture) == 'X64')">

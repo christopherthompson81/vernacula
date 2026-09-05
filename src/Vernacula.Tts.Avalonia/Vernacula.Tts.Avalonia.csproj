@@ -62,6 +62,9 @@
        pairing it with a 1.29 managed assembly asks the native runtime for an API version
        it cannot answer, and the first session throws. -->
   <ItemGroup Condition="'$(EP)' == 'DirectML'">
+    <!-- The native runtime itself, which this project was missing: EP=DirectML resolved a managed
+         assembly and no ONNX Runtime at all, so the first session threw DllNotFoundException. -->
+    <PackageReference Include="Microsoft.ML.OnnxRuntime.DirectML" Version="1.24.4" />
     <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.24.4" ExcludeAssets="all" />
   </ItemGroup>
 

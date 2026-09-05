@@ -29,7 +29,7 @@
 
   <!-- DirectML execution provider (any DX12 GPU: AMD, Intel, NVIDIA) -->
   <ItemGroup Condition="'$(EP)' == 'DirectML'">
-    <PackageReference Include="Microsoft.ML.OnnxRuntime.DirectML" Version="1.21.1" />
+    <PackageReference Include="Microsoft.ML.OnnxRuntime.DirectML" Version="1.24.4" />
   </ItemGroup>
 
   <!-- CPU-only baseline -->

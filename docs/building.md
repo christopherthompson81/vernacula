@@ -8,7 +8,7 @@ All projects are built with `dotnet build`. The `EP` property selects the ONNX R
 |---|---|---|
 | `Cuda` | NVIDIA GPU | Default. Requires the **CUDA 13** runtime (ONNX Runtime 1.29 links CUDA 13; CUDA 12 will not load it). |
 | `Cpu` | Any CPU | No GPU required. Slower. |
-| `DirectML` | Windows only | Uses DirectX 12; works on AMD/Intel/NVIDIA. Pinned to ONNX Runtime 1.24.4, the newest DirectML release. |
+| `DirectML` | Windows only | Uses DirectX 12; works on AMD/Intel/NVIDIA. Pinned to ONNX Runtime 1.24.4 throughout — the newest DirectML release — because the managed assembly has to match the native runtime it ships with. |
 
 See [Installation](installation.md) for the underlying runtime prerequisites (CUDA runtime, FFmpeg, etc.).
 

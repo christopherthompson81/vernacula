@@ -218,6 +218,12 @@ public static class HardwareInfo
     /// the CUDA runtime is installed, cuDNN is present, and at least one NVIDIA GPU
     /// is visible through NVML.
     /// </summary>
+    /// <remarks>
+    /// cuDNN is still required, even though ONNX Runtime 1.29 loads it lazily rather than linking
+    /// it: the models here run convolutions in the codec decoder, which is exactly what the CUDA
+    /// provider needs cuDNN for. A machine with CUDA but no cuDNN would load the provider and then
+    /// fail on the first session, which is a worse place to find out.
+    /// </remarks>
     public static bool CanProbeCudaExecutionProvider()
     {
         if (!OperatingSystem.IsWindows() && !OperatingSystem.IsLinux())
@@ -321,6 +327,17 @@ public static class HardwareInfo
 
         dirs.Add("/usr/local/cuda/lib64");
         dirs.Add("/usr/local/cuda/lib");
+
+        // ⚠ VERSIONED ROOTS TOO, NOT JUST THE `cuda` SYMLINK. Installing CUDA 13 beside an existing
+        // CUDA 12 leaves /usr/local/cuda (and often CUDA_PATH) pointing at the older toolkit, so a
+        // machine that DOES meet the requirement would look like it does not, and fall to the CPU
+        // for the same invisible reason the major check exists to prevent.
+        foreach (var root in SafeGetDirectories("/usr/local", $"cuda-{RequiredCudaMajor}*"))
+        {
+            dirs.Add(Path.Combine(root, "lib64"));
+            dirs.Add(Path.Combine(root, "lib"));
+            dirs.Add(Path.Combine(root, "targets", "x86_64-linux", "lib"));
+        }
         dirs.Add("/usr/lib/x86_64-linux-gnu");
         dirs.Add("/usr/lib/wsl/lib");
         dirs.Add("/usr/lib64");
@@ -450,10 +467,13 @@ public static class HardwareInfo
                     // cudart64_13.dll, not any cudart64_*.dll: see RequiredCudaMajor.
                     bool isCudart = name.StartsWith($"cudart64_{RequiredCudaMajor}", StringComparison.OrdinalIgnoreCase);
                     bool isCudnn  = name.StartsWith("cudnn",     StringComparison.OrdinalIgnoreCase);
+                    // Versioned like cudart: a CUDA 12 bin directory must not be added to the
+                    // search path for a runtime that links CUDA 13.
                     bool isCudaDep = isCudart || isCudnn
-                        || name.StartsWith("cublas", StringComparison.OrdinalIgnoreCase)
-                        || name.StartsWith("cufft",  StringComparison.OrdinalIgnoreCase)
-                        || name.StartsWith("nvrtc",  StringComparison.OrdinalIgnoreCase);
+                        || name.StartsWith($"cublas64_{RequiredCudaMajor}", StringComparison.OrdinalIgnoreCase)
+                        || name.StartsWith($"cublasLt64_{RequiredCudaMajor}", StringComparison.OrdinalIgnoreCase)
+                        || name.StartsWith($"cufft64_{RequiredCudaMajor}", StringComparison.OrdinalIgnoreCase)
+                        || name.StartsWith($"nvrtc64_{RequiredCudaMajor}", StringComparison.OrdinalIgnoreCase);
 
                     if (isCudart) hasCudart = true;
                     if (isCudnn)  hasCudnn  = true;
