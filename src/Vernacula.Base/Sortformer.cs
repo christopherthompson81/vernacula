@@ -69,12 +69,12 @@ public sealed class SortformerStreamer : IDisposable
             case ExecutionProvider.Cuda:
                 try { opts.AppendExecutionProvider_CUDA(0); }
                 catch (EntryPointNotFoundException)
-                { throw new InvalidOperationException(HardwareInfo.CudaUnavailableMessage()); }
+                { throw new InvalidOperationException("CUDA EP not available in current OnnxRuntime build."); }
                 break;
             case ExecutionProvider.DirectML:
                 try { opts.AppendExecutionProvider_DML(0); }
                 catch (EntryPointNotFoundException)
-                { throw new InvalidOperationException("DirectML EP not available. Build with -p:EP=DirectML (Windows only)."); }
+                { throw new InvalidOperationException("DirectML EP not available. Build with -p:UseDirectML=true."); }
                 break;
             case ExecutionProvider.Cpu:
                 break;

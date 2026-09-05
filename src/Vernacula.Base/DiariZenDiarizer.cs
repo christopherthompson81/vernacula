@@ -1151,7 +1151,7 @@ public sealed class DiariZenDiarizer : IDisposable
             case ExecutionProvider.Cuda:
                 try { opts.AppendExecutionProvider_CUDA(0); }
                 catch (EntryPointNotFoundException)
-                { throw new InvalidOperationException(HardwareInfo.CudaUnavailableMessage()); }
+                { throw new InvalidOperationException("CUDA EP not available."); }
                 break;
             case ExecutionProvider.DirectML:
                 try { opts.AppendExecutionProvider_DML(0); }

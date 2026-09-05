@@ -75,8 +75,7 @@ public static class OrtSessionBuilder
                 catch (Exception ex)
                 {
                     throw new InvalidOperationException(
-                        HardwareInfo.CudaUnavailableMessage() + " Run on the CPU instead with the "
-                        + "application's Cpu execution-provider setting, or build with -p:EP=Cpu.", ex);
+                        "CUDA EP not available in the current ONNX Runtime build.", ex);
                 }
                 break;
 
@@ -85,7 +84,7 @@ public static class OrtSessionBuilder
                 catch (Exception ex)
                 {
                     throw new InvalidOperationException(
-                        "DirectML EP not available. Build with -p:EP=DirectML (Windows only).", ex);
+                        "DirectML EP not available. Build with -p:UseDirectML=true.", ex);
                 }
                 break;
 

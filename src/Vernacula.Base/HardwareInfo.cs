@@ -145,146 +145,15 @@ public static class HardwareInfo
             return _windowsCudaScan.Value.HasCudart;
 
         if (OperatingSystem.IsLinux())
-            return _linuxCudaRuntimeLoadable.Value;
-
-        return false;
-    }
-
-    /// <summary>
-    /// Whether the dynamic loader can open the CUDA runtime this build needs.
-    ///
-    /// ⚠ ASK THE LOADER, NOT THE FILESYSTEM. The CUDA provider dlopens libcudart by soname, so the
-    /// only question that matters is whether the loader can find it -- which is not the same as the
-    /// file existing somewhere. A side-by-side CUDA 13 that is not in the ldconfig cache or on
-    /// LD_LIBRARY_PATH is a file the provider cannot open, and answering "installed" for it puts us
-    /// back to trying CUDA and silently landing on the CPU.
-    ///
-    /// ⚠ CACHED, like the Windows scan beside it. <see cref="CanProbeCudaExecutionProvider"/> is
-    /// called at every model-init site, and this does a dlopen plus a directory sweep; without the
-    /// cache a diarization run would repeat both dozens of times, and print the diagnostic each time.
-    /// </summary>
-    private static Lazy<bool> _linuxCudaRuntimeLoadable = new(LoadLinuxCudaRuntime);
-
-    private static bool LoadLinuxCudaRuntime()
-    {
-        if (NativeLibrary.TryLoad($"libcudart.so.{RequiredCudaMajor}", out var handle))
         {
-            NativeLibrary.Free(handle);
-            return true;
-        }
-
-        // Present but unreachable. Still false -- the provider will fail exactly as we just did --
-        // but worth saying out loud, because the fix is one ldconfig line rather than an install.
-        foreach (var dir in GetLinuxCudaLibraryDirs())
-        {
-            var candidates = SafeGetFiles(dir, $"libcudart.so.{RequiredCudaMajor}*").ToList();
-            foreach (var file in candidates)
+            foreach (var dir in GetLinuxCudaLibraryDirs())
             {
-                if (!NativeLibrary.TryLoad(file, out var byPath)) continue;
-                NativeLibrary.Free(byPath);
-                NoteRuntime($"CUDA {RequiredCudaMajor} was found at {file} but is not on the loader path, "
-                     + "so the CUDA execution provider cannot load it. Add its directory to "
-                     + "/etc/ld.so.conf.d (then run ldconfig) or to LD_LIBRARY_PATH.");
-                return false;
+                if (HasFile(dir, "libcudart.so") || HasFile(dir, "libcudart.so.*"))
+                    return true;
             }
-
-            if (candidates.Count > 0)
-                NoteRuntime($"CUDA {RequiredCudaMajor} was found in {dir} but could not be loaded even by "
-                     + "full path, which usually means one of its own dependencies is missing.");
         }
 
-        if (CudaRuntimeNote is null)
-            NoteRuntime($"No CUDA {RequiredCudaMajor} runtime found. This build links CUDA "
-                 + $"{RequiredCudaMajor}; an older CUDA cannot load it.");
         return false;
-    }
-
-    /// <summary>
-    /// Why CUDA was not available, when the probe worked it out — a library present but off the
-    /// loader path, say. Null until <see cref="IsCudaToolkitInstalled"/> has run, and only ever set
-    /// on Linux; <see cref="CudaUnavailableMessage"/> folds it into the error a caller throws, so
-    /// the reason reaches a user who has no console to read stderr from.
-    /// </summary>
-    public static string? CudaProbeNote
-    {
-        get
-        {
-            var notes = new[] { CudaRuntimeNote, CudnnNote }.Where(n => n is not null).ToArray();
-            return notes.Length == 0 ? null : string.Join(" ", notes);
-        }
-    }
-
-    /// <summary>Why the CUDA runtime could not be loaded, when the probe worked it out.</summary>
-    public static string? CudaRuntimeNote { get; private set; }
-
-    /// <summary>Why cuDNN could not be loaded, when the probe worked it out. Kept apart from
-    /// <see cref="CudaRuntimeNote"/> so a cuDNN problem is never reported as the reason the CUDA
-    /// runtime failed, which one shared field did.</summary>
-    public static string? CudnnNote { get; private set; }
-
-    /// <summary>
-    /// The explanation to give when the CUDA execution provider will not start. One place, because
-    /// four call sites threw their own version of it and only one of them said anything useful.
-    /// </summary>
-    public static string CudaUnavailableMessage()
-    {
-        // Force the probe: on the explicit-CUDA path nothing else has run it, so without this the
-        // note is null precisely when the message is thrown. Cached, so this costs nothing twice.
-        _ = IsCudaToolkitInstalled();
-        return "Could not initialise the CUDA execution provider. This build links CUDA "
-        + $"{RequiredCudaMajor}, and an older CUDA runtime cannot load it (the major version is part "
-        + "of the library name), so that is the first thing to check; a missing driver, no visible "
-        + "GPU, or a CPU-only build of ONNX Runtime reports the same failure."
-            + (CudaProbeNote is null ? "" : $" Probe found: {CudaProbeNote}");
-    }
-
-    private static void NoteRuntime(string message)
-    {
-        CudaRuntimeNote = message;
-        Console.Error.WriteLine($"[HardwareInfo] {message}");
-    }
-
-    private static void NoteCudnn(string message)
-    {
-        CudnnNote = message;
-        Console.Error.WriteLine($"[HardwareInfo] {message}");
-    }
-
-    private static IEnumerable<string> SafeGetFiles(string dir, string pattern)
-    {
-        try { return Directory.Exists(dir) ? Directory.GetFiles(dir, pattern) : Array.Empty<string>(); }
-        catch { return Array.Empty<string>(); }
-    }
-
-    /// <summary>
-    /// The CUDA major version the bundled ONNX Runtime links against.
-    ///
-    /// ⚠ THE MAJOR IS PART OF THE ANSWER, NOT A DETAIL. ONNX Runtime moved from CUDA 12 to CUDA 13
-    /// at 1.27, and the two are not interchangeable: the provider library names its dependencies
-    /// (libcudart.so.13, libcublas.so.13) with the major in the soname, so a machine with only
-    /// CUDA 12 cannot load it. Reporting "CUDA is installed" from a bare libcudart.so of ANY major
-    /// meant <see cref="ExecutionProvider.Auto"/> tried CUDA, failed to load the provider, silently
-    /// fell back to CPU, and left the user wondering why their GPU was idle.
-    /// </summary>
-    public const int RequiredCudaMajor = 13;
-
-    /// <summary>
-    /// Throw away what the probes found, so the next call asks again.
-    ///
-    /// ⚠ THE CACHE IS PER PROCESS, AND THE UI PROMISES OTHERWISE. The settings window's "Re-check"
-    /// button, and the help text describing it, say detection re-runs without restarting the
-    /// application -- which a permanently cached answer quietly broke. Installing cuDNN or running
-    /// ldconfig while the app is open is exactly when someone presses that button.
-    ///
-    /// (An LD_LIBRARY_PATH change still needs a restart: the loader read it at process start.)
-    /// </summary>
-    public static void InvalidateCudaProbes()
-    {
-        CudaRuntimeNote = null;
-        CudnnNote = null;
-        _linuxCudaRuntimeLoadable = new Lazy<bool>(LoadLinuxCudaRuntime);
-        _linuxCudnnLoadable = new Lazy<bool>(LoadLinuxCudnn);
-        _windowsCudaScan = new Lazy<WindowsCudaScan>(ScanWindowsCuda);
     }
 
     /// <summary>Returns the configured CUDA toolkit root for the current platform, or null if none is known.</summary>
@@ -320,51 +189,14 @@ public static class HardwareInfo
             return _windowsCudaScan.Value.HasCudnn;
 
         if (OperatingSystem.IsLinux())
-            return _linuxCudnnLoadable.Value;
-
-        return false;
-    }
-
-    /// <summary>
-    /// Whether the loader can open cuDNN, asked the same way as the CUDA runtime.
-    ///
-    /// ⚠ A FILESYSTEM MATCH WAS NOT ENOUGH, AND WAS ACTIVELY MISLEADING. The directories searched
-    /// include the toolkit that /usr/local/cuda and CUDA_PATH point at, which on a side-by-side
-    /// install is usually the OLDER one -- so a cuDNN sitting in the CUDA 12 tree answered for a
-    /// runtime that links CUDA 13, and the provider then failed to load it with the failure
-    /// swallowed. Asking the loader at least means the answer describes a library that can actually
-    /// be opened.
-    ///
-    /// It still cannot tell which CUDA major a given cuDNN was built against -- the soname is
-    /// libcudnn.so.9 either way -- so a wrong-major cuDNN that is on the loader path will still get
-    /// past this and fail at provider init.
-    /// </summary>
-    private static Lazy<bool> _linuxCudnnLoadable = new(LoadLinuxCudnn);
-
-    private static bool LoadLinuxCudnn()
-    {
-        foreach (var soname in new[] { "libcudnn.so.9", "libcudnn.so" })
         {
-            if (!NativeLibrary.TryLoad(soname, out var handle)) continue;
-            NativeLibrary.Free(handle);
-            return true;
+            foreach (var dir in GetLinuxCudaLibraryDirs())
+            {
+                if (HasFile(dir, "libcudnn.so") || HasFile(dir, "libcudnn.so.*"))
+                    return true;
+            }
         }
 
-        // Same diagnostic the runtime probe gives: without it, a machine whose CUDA loads fine and
-        // whose cuDNN sits off the loader path reports "cannot use CUDA" and says nothing about why.
-        foreach (var dir in GetLinuxCudaLibraryDirs())
-        {
-            if (!SafeGetFiles(dir, "libcudnn.so*").Any()) continue;
-            NoteCudnn($"cuDNN was found in {dir} but is not on the loader path, so the CUDA execution "
-                 + "provider cannot load it. Add its directory to /etc/ld.so.conf.d (then run "
-                 + "ldconfig) or to LD_LIBRARY_PATH.");
-            return false;
-        }
-
-        // Absent everywhere: the commonest reason a correctly installed CUDA box still cannot use
-        // the GPU, and until now the one the message said nothing about.
-        NoteCudnn("No cuDNN was found. The CUDA execution provider needs cuDNN 9 built for CUDA "
-                  + $"{RequiredCudaMajor}.");
         return false;
     }
 
@@ -373,12 +205,6 @@ public static class HardwareInfo
     /// the CUDA runtime is installed, cuDNN is present, and at least one NVIDIA GPU
     /// is visible through NVML.
     /// </summary>
-    /// <remarks>
-    /// cuDNN is still required, even though ONNX Runtime 1.29 loads it lazily rather than linking
-    /// it: the models here run convolutions in the codec decoder, which is exactly what the CUDA
-    /// provider needs cuDNN for. A machine with CUDA but no cuDNN would load the provider and then
-    /// fail on the first session, which is a worse place to find out.
-    /// </remarks>
     public static bool CanProbeCudaExecutionProvider()
     {
         if (!OperatingSystem.IsWindows() && !OperatingSystem.IsLinux())
@@ -482,17 +308,6 @@ public static class HardwareInfo
 
         dirs.Add("/usr/local/cuda/lib64");
         dirs.Add("/usr/local/cuda/lib");
-
-        // ⚠ VERSIONED ROOTS TOO, NOT JUST THE `cuda` SYMLINK. Installing CUDA 13 beside an existing
-        // CUDA 12 leaves /usr/local/cuda (and often CUDA_PATH) pointing at the older toolkit, so a
-        // machine that DOES meet the requirement would look like it does not, and fall to the CPU
-        // for the same invisible reason the major check exists to prevent.
-        foreach (var root in SafeGetDirectories("/usr/local", $"cuda-{RequiredCudaMajor}*"))
-        {
-            dirs.Add(Path.Combine(root, "lib64"));
-            dirs.Add(Path.Combine(root, "lib"));
-            dirs.Add(Path.Combine(root, "targets", "x86_64-linux", "lib"));
-        }
         dirs.Add("/usr/lib/x86_64-linux-gnu");
         dirs.Add("/usr/lib/wsl/lib");
         dirs.Add("/usr/lib64");
@@ -587,7 +402,7 @@ public static class HardwareInfo
     // appear or vanish mid-run), and CanProbeCudaExecutionProvider fans this query out
     // across every ONNX model-init site — so the recursive scan is done once and cached,
     // mirroring _bf16Cache below. A newly-installed CUDA is picked up on next launch.
-    private static Lazy<WindowsCudaScan> _windowsCudaScan = new(ScanWindowsCuda);
+    private static readonly Lazy<WindowsCudaScan> _windowsCudaScan = new(ScanWindowsCuda);
 
     private static WindowsCudaScan ScanWindowsCuda()
     {
@@ -653,4 +468,15 @@ public static class HardwareInfo
         catch { return Array.Empty<string>(); }
     }
 
+    private static bool HasFile(string dir, string pattern)
+    {
+        try
+        {
+            return Directory.Exists(dir) && Directory.GetFiles(dir, pattern).Length > 0;
+        }
+        catch
+        {
+            return false;
+        }
+    }
 }
