@@ -467,21 +467,16 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         FileExists(OmniVoiceTokenizerJson) ? OmniVoiceTokenizerJson
         : DirExists(OmniVoiceOnnxDir) ? OmniVoiceIpaTts.LocateTokenizerJson(OmniVoiceOnnxDir) : null;
 
-    // Reload the library and re-pick: keep the selection when it is still a candidate for the
-    // language (and a keepId was given); otherwise the language's `default` entry, its donor's,
-    // any default, else the first candidate.
+    // Reload the library and re-pick: keep the selection when a keepId was given and it is still
+    // a candidate for the language; otherwise the candidates' `default` entry (the candidates are
+    // already one language tier, so that is the language's own default, or its donor's), else the
+    // first candidate.
     private void RefreshOmniVoiceVoices(string? keepId)
     {
         _allOmniVoiceVoices = StoredVoice.IsLibrary(OmniVoiceVoiceLib)
             ? SafeListVoices(OmniVoiceVoiceLib) : Array.Empty<StoredVoice.Info>();
         var candidates = VoiceCandidates();
-        var lang = (OmniVoiceLang ?? "").Trim();
-        var donor = LanguageCatalog.VoiceLangOf(lang);
-        bool IsDefaultFor(StoredVoice.Info v, string code) =>
-            v.IsDefault && string.Equals(v.Lang, code, StringComparison.OrdinalIgnoreCase);
         OmniVoiceVoice = (keepId is null ? null : candidates.FirstOrDefault(v => v.Id == keepId))
-            ?? candidates.FirstOrDefault(v => IsDefaultFor(v, lang))
-            ?? candidates.FirstOrDefault(v => IsDefaultFor(v, donor))
             ?? candidates.FirstOrDefault(v => v.IsDefault)
             ?? candidates.FirstOrDefault();
         OmniVoiceVoiceQuery = OmniVoiceVoice?.ToString() ?? "";
