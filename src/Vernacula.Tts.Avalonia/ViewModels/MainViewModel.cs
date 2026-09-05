@@ -137,6 +137,14 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     // IPA above each word in the karaoke view, the way furigana sits above kanji. Persisted.
     [ObservableProperty] private bool _showIpaAnnotation;
 
+    // Why the annotation is blank, when it is. Shown under the checkbox rather than in
+    // StatusMessage, which belongs to synthesis and playback.
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(HasIpaAnnotationNotice))]
+    private string _ipaAnnotationNotice = "";
+
+    public bool HasIpaAnnotationNotice => !string.IsNullOrEmpty(IpaAnnotationNotice);
+
     // Status line below the synthesize button.
     [ObservableProperty] private string _statusMessage = "Ready.";
 
@@ -232,7 +240,10 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         _playback.PlaybackStopped += _ =>
         {
             if (_currentWordIndex >= 0 && _currentWordIndex < Words.Count)
+            {
                 Words[_currentWordIndex].IsCurrent = false;
+                Words[_currentWordIndex].ClearPieceHighlight();
+            }
             _currentWordIndex = -1;
             // Don't overwrite synthesis-in-progress status with "stopped".
             if (!IsBusy) StatusMessage = "Playback stopped.";
@@ -385,13 +396,14 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     partial void OnShowIpaAnnotationChanged(bool value)
     {
         PersistSettings();
+        if (!value) IpaAnnotationNotice = "";
         RefreshIpaAnnotation();
     }
     // Live structured preview: rebuild the karaoke blocks as the source text changes
     // (skip during synthesis — the stream is filling the words and the box is disabled).
     partial void OnTextChanged(string value)
     {
-        if (!IsBusy) { BuildDisplayStructure(value); _streamWordCursor = 0; RefreshIpaAnnotation(); }
+        if (!IsBusy) { BuildDisplayStructure(value); _streamWordCursor = 0; }
     }
     partial void OnSelectedBackendChanged(TtsBackendKind value)
     {
@@ -410,6 +422,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     partial void OnPhonemizerDataDirChanged(string value)
     {
         InvalidateSynthService();
+        RefreshIpaAnnotation();   // pointing at a valid data/ root fixes a blank annotation
         PersistSettings();
         UpdatePrerequisiteStatus();
     }
@@ -1008,6 +1021,11 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             current.Words.Add(w);
             Words.Add(w);
         }
+
+        // The words are new objects, so any annotation on the old ones went with them. Rebuilding
+        // it here covers every caller -- editing the text AND starting a synthesis, which also
+        // rebuilds; the annotation used to vanish for the whole run that followed.
+        RefreshIpaAnnotation();
     }
 
     // ── IPA annotation (furigana-style ruby text above each word) ──────
@@ -1035,10 +1053,11 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private void RefreshIpaAnnotation()
     {
         _annotationCts?.Cancel();
+        _annotationCts?.Dispose();
         _annotationCts = null;
         if (!ShowIpaAnnotation)
         {
-            foreach (var w in Words) w.Ipa = null;
+            foreach (var w in Words) w.SetRuby(null);
             return;
         }
         if (Words.Count == 0) return;
@@ -1069,15 +1088,19 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
                         await Dispatcher.UIThread.InvokeAsync(() =>
                         {
                             if (token.IsCancellationRequested) return;
-                            foreach (var w in Words) w.Ipa = null;
-                            StatusMessage = $"IPA annotation unavailable for language \"{lang}\".";
+                            foreach (var w in Words) w.SetRuby(null);
+                            // Its own line, not StatusMessage: this re-fires on every keystroke for
+                            // a language that cannot be attributed, and it must not scribble over
+                            // synthesis progress or a prerequisite error.
+                            IpaAnnotationNotice = $"No IPA annotation for language \"{lang}\".";
                         });
                         return;
                     }
                     await Dispatcher.UIThread.InvokeAsync(() =>
                     {
                         if (token.IsCancellationRequested) return;
-                        for (var i = 0; i < block.Count; i++) block[i].Ipa = ipa[i];
+                        IpaAnnotationNotice = "";
+                        for (var i = 0; i < block.Count; i++) block[i].SetRuby(ipa[i]);
                     });
                 }
             }
@@ -1150,10 +1173,17 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         if (idx != _currentWordIndex)
         {
             if (_currentWordIndex >= 0 && _currentWordIndex < Words.Count)
+            {
                 Words[_currentWordIndex].IsCurrent = false;
+                Words[_currentWordIndex].ClearPieceHighlight();
+            }
             _currentWordIndex = idx;
-            if (idx >= 0 && idx < Words.Count) Words[idx].IsCurrent = true;
+            // A split word highlights piece by piece instead of all at once: lighting a whole
+            // Japanese sentence says nothing about where in it the voice has got to.
+            if (idx >= 0 && idx < Words.Count) Words[idx].IsCurrent = !Words[idx].HasPieces;
         }
+        // Every tick, not just on a word change: the piece moves within the word.
+        if (idx >= 0 && idx < Words.Count) Words[idx].HighlightPieceAt(posSec);
         // Use the live playback total — it grows as chunks append during
         // streaming, and matches _lastAlignment.AudioDurationSeconds once
         // synthesis finishes. (Reading _lastAlignment alone would show
@@ -1216,6 +1246,9 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     {
         _synthCts?.Cancel();
         _synthCts?.Dispose();
+        // An annotation still in its debounce would post to a dispatcher that is shutting down.
+        _annotationCts?.Cancel();
+        _annotationCts?.Dispose();
         _playback.Dispose();
         _synthService?.Dispose();
     }

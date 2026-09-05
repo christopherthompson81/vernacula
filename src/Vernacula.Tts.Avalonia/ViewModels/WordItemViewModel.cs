@@ -1,5 +1,8 @@
 using System;
+using System.Collections.Generic;
+using System.Linq;
 using Avalonia.Media;
+using Vernacula.Tts.Base;
 using Vernacula.Tts.Base.Markdown;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
@@ -50,7 +53,61 @@ public sealed partial class WordItemViewModel : ObservableObject
     [NotifyPropertyChangedFor(nameof(HasIpa))]
     private string? _ipa;
 
-    public bool HasIpa => !string.IsNullOrEmpty(Ipa);
+    /// <summary>
+    /// The word's sub-parts, when it is written without spaces between its words (Japanese,
+    /// Chinese) and the phonemizer could say where the boundaries are. Empty for ordinary words,
+    /// which render as one piece of text with one reading above it.
+    /// </summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(HasPieces))]
+    [NotifyPropertyChangedFor(nameof(HasIpa))]
+    private IReadOnlyList<RubyPieceViewModel> _pieces = Array.Empty<RubyPieceViewModel>();
+
+    public bool HasPieces => Pieces.Count > 0;
+
+    /// <summary>A split word's reading is drawn piece by piece, so the whole-word line is not.</summary>
+    public bool HasIpa => !HasPieces && !string.IsNullOrEmpty(Ipa);
+
+    /// <summary>Attach (or with null, clear) the annotation for this word.</summary>
+    public void SetRuby(WordRuby? ruby)
+    {
+        Ipa = ruby?.Ipa;
+        Pieces = ruby is null || ruby.Pieces.Count == 0
+            ? Array.Empty<RubyPieceViewModel>()
+            : ruby.Pieces.Select(p => new RubyPieceViewModel(this, p.Text, p.Ipa, p.Weight)).ToList();
+    }
+
+    /// <summary>
+    /// Light the piece being spoken at <paramref name="posSec"/>. The aligner times this word as a
+    /// whole -- a Japanese sentence with no spaces is one aligned word -- so its span is divided
+    /// among the pieces in proportion to how much speech each one's reading is worth, the same
+    /// weighting the duration model uses. That is an estimate within the word, not a measurement.
+    /// </summary>
+    public void HighlightPieceAt(double posSec)
+    {
+        if (!HasPieces) return;
+        var total = Pieces.Sum(p => p.Weight);
+        var span = EndSeconds - StartSeconds;
+        var current = -1;
+        if (total > 0 && span > 0)
+        {
+            var at = StartSeconds;
+            for (var i = 0; i < Pieces.Count; i++)
+            {
+                var end = at + span * Pieces[i].Weight / total;
+                if (posSec < end) { current = i; break; }
+                at = end;
+            }
+            if (current < 0 && posSec >= StartSeconds && posSec <= EndSeconds) current = Pieces.Count - 1;
+        }
+        for (var i = 0; i < Pieces.Count; i++) Pieces[i].IsCurrent = i == current;
+    }
+
+    /// <summary>Drop the piece highlight (the word is no longer the one being spoken).</summary>
+    public void ClearPieceHighlight()
+    {
+        foreach (var p in Pieces) p.IsCurrent = false;
+    }
 
     // ── Self-describing display properties (bound directly by the word button) ──
     public double FontSize => BlockKind == BlockKind.Heading
@@ -72,4 +129,27 @@ public sealed partial class WordItemViewModel : ObservableObject
 
     [RelayCommand]
     private void Click() => _onClicked?.Invoke(this);
+}
+
+/// <summary>
+/// One sub-part of a split word: the characters and their reading, plus whether it is the piece
+/// being spoken. Font sizes come from the owning word, so a piece inside a heading scales with it.
+/// </summary>
+public sealed partial class RubyPieceViewModel : ObservableObject
+{
+    public RubyPieceViewModel(WordItemViewModel word, string text, string ipa, double weight)
+    {
+        Word = word;
+        Text = text;
+        Ipa = ipa;
+        Weight = weight;
+    }
+
+    public WordItemViewModel Word { get; }
+    public string Text { get; }
+    public string Ipa { get; }
+    public double Weight { get; }
+    public bool HasIpa => !string.IsNullOrEmpty(Ipa);
+
+    [ObservableProperty] private bool _isCurrent;
 }

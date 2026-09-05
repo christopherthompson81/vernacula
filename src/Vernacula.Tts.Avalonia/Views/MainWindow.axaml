@@ -86,18 +86,54 @@
                                                                  without one (punctuation) and
                                                                  the whole view with annotation
                                                                  off keep their normal height. -->
-                                                            <StackPanel Orientation="Vertical" Spacing="0">
-                                                                <TextBlock Text="{Binding Ipa}"
-                                                                           IsVisible="{Binding HasIpa}"
-                                                                           FontSize="{Binding IpaFontSize}"
-                                                                           FontWeight="Normal"
-                                                                           FontStyle="Normal"
-                                                                           Classes="ruby"
-                                                                           HorizontalAlignment="Center"
-                                                                           TextAlignment="Center" />
-                                                                <TextBlock Text="{Binding Text}"
-                                                                           HorizontalAlignment="Center" />
-                                                            </StackPanel>
+                                                            <Panel>
+                                                                <!-- Ordinary word: one reading over one word. -->
+                                                                <StackPanel Orientation="Vertical" Spacing="0"
+                                                                            IsVisible="{Binding !HasPieces}">
+                                                                    <TextBlock Text="{Binding Ipa}"
+                                                                               IsVisible="{Binding HasIpa}"
+                                                                               FontSize="{Binding IpaFontSize}"
+                                                                               FontWeight="Normal"
+                                                                               FontStyle="Normal"
+                                                                               Classes="ruby"
+                                                                               HorizontalAlignment="Center"
+                                                                               TextAlignment="Center" />
+                                                                    <TextBlock Text="{Binding Text}"
+                                                                               HorizontalAlignment="Center" />
+                                                                </StackPanel>
+                                                                <!-- Written without spaces (Japanese, Chinese):
+                                                                     the phonemizer's own segmentation is drawn
+                                                                     piece by piece, each with its own reading,
+                                                                     and the highlight moves through them. -->
+                                                                <ItemsControl ItemsSource="{Binding Pieces}"
+                                                                              IsVisible="{Binding HasPieces}">
+                                                                    <ItemsControl.ItemsPanel>
+                                                                        <ItemsPanelTemplate>
+                                                                            <WrapPanel Orientation="Horizontal" />
+                                                                        </ItemsPanelTemplate>
+                                                                    </ItemsControl.ItemsPanel>
+                                                                    <ItemsControl.ItemTemplate>
+                                                                        <DataTemplate x:DataType="vm:RubyPieceViewModel">
+                                                                            <Border Classes="piece"
+                                                                                    Classes.current="{Binding IsCurrent}">
+                                                                                <StackPanel Orientation="Vertical" Spacing="0">
+                                                                                    <TextBlock Text="{Binding Ipa}"
+                                                                                               IsVisible="{Binding HasIpa}"
+                                                                                               FontSize="{Binding Word.IpaFontSize}"
+                                                                                               FontWeight="Normal"
+                                                                                               FontStyle="Normal"
+                                                                                               Classes="ruby"
+                                                                                               HorizontalAlignment="Center"
+                                                                                               TextAlignment="Center" />
+                                                                                    <TextBlock Text="{Binding Text}"
+                                                                                               FontSize="{Binding Word.FontSize}"
+                                                                                               HorizontalAlignment="Center" />
+                                                                                </StackPanel>
+                                                                            </Border>
+                                                                        </DataTemplate>
+                                                                    </ItemsControl.ItemTemplate>
+                                                                </ItemsControl>
+                                                            </Panel>
                                                         </Button>
                                                     </DataTemplate>
                                                 </ItemsControl.ItemTemplate>
@@ -286,6 +322,9 @@
             <CheckBox IsChecked="{Binding ShowIpaAnnotation}"
                       Content="IPA above each word"
                       ToolTip.Tip="Shows each word's phonemizer reading above it, the way furigana sits above kanji. Uses the current backend's language." />
+            <TextBlock Text="{Binding IpaAnnotationNotice}"
+                       IsVisible="{Binding HasIpaAnnotationNotice}"
+                       TextWrapping="Wrap" FontSize="11" Opacity="0.7" Margin="24,0,0,0" />
             <Button Content="Load text/markdown file…"
                     Command="{Binding PickTextFileCommand}"
                     IsEnabled="{Binding !IsBusy}"
@@ -376,6 +415,31 @@
             <Setter Property="Opacity" Value="0.62" />
             <Setter Property="Margin" Value="0,0,0,-1" />
             <Setter Property="Foreground" Value="#cde" />
+        </Style>
+
+        <!-- The ruby lights up with the word it annotates: dimmed text that stayed dim while its
+             word was highlighted read as if the annotation had stopped following the audio. -->
+        <Style Selector="Button.word.current TextBlock.ruby">
+            <Setter Property="Opacity" Value="1" />
+            <Setter Property="Foreground" Value="#aef" />
+        </Style>
+
+        <!-- A piece of a split word. Segmentation is a claim about where the words are, so the
+             pieces are spaced apart enough to read as separate units without looking like a gap
+             in the sentence. -->
+        <Style Selector="Border.piece">
+            <Setter Property="Padding" Value="2,0" />
+            <Setter Property="Margin" Value="0,0,3,0" />
+            <Setter Property="CornerRadius" Value="3" />
+        </Style>
+        <Style Selector="Border.piece.current">
+            <Setter Property="Background" Value="#3355aadd" />
+        </Style>
+        <Style Selector="Border.piece.current TextBlock">
+            <Setter Property="Foreground" Value="#aef" />
+        </Style>
+        <Style Selector="Border.piece.current TextBlock.ruby">
+            <Setter Property="Opacity" Value="1" />
         </Style>
 
         <!-- Inline code: monospace + subtle chip. -->
