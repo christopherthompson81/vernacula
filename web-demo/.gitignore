@@ -6,3 +6,4 @@ public/*.wasm
 public/vphon/
 public/vphon-data/
 build-smoke/
+.vite/

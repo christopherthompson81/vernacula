@@ -7,7 +7,7 @@
  * deadline of its own instead of waiting for a timeout to expire on a page that will never post.
  *
  *   MODEL=<int4.onnx> EP=webgpu|wasm STEPS=32 TEXT="..." LANG_CODE=en DEADLINE=300 \
- *     node tools/pw-tts.mjs
+ *     [DECODER=<higgs_decoder.onnx> TOKENIZER=<tokenizer.json> OUT=<wav> PROFILE=1] node tools/pw-tts.mjs
  */
 import http from "node:http"; import fs from "node:fs"; import path from "node:path";
 import { chromium } from "playwright";
@@ -17,8 +17,8 @@ const MODEL = process.env.MODEL ?? "/mnt/data/omnivoice_ipa/onnx_web/omnivoice_t
 const NAME = MODEL.split("/").pop();
 const FILES = {
   [`/models/${NAME}`]: MODEL, [`/models/${NAME}.data`]: MODEL + ".data",
-  "/models/higgs_decoder.onnx": "/mnt/data/Programming/vernacula/scripts/omnivoice_export/onnx/higgs_decoder.onnx",
-  "/models/tokenizer.json": "/mnt/data/models/omnivoice/k2-fsa-OmniVoice/tokenizer.json",
+  "/models/higgs_decoder.onnx": process.env.DECODER ?? "/mnt/data/Programming/vernacula/scripts/omnivoice_export/onnx/higgs_decoder.onnx",
+  "/models/tokenizer.json": process.env.TOKENIZER ?? "/mnt/data/models/omnivoice/k2-fsa-OmniVoice/tokenizer.json",
 };
 const TEXT = process.env.TEXT ?? "The quick brown fox jumps over the lazy dog, and the weather today is remarkably pleasant.";
 const LANG = process.env.LANG_CODE ?? "en", STEPS = Number(process.env.STEPS ?? 32);
@@ -68,7 +68,8 @@ try {
   window.__result = { ok: true, ep: ov.backend.ep, targetTokens: r.targetTokens, seconds: a.length / r.sampleRate,
     generateMs: r.generateMs, transformerMs: r.transformerMs, hostMs: r.hostMs, peak, rms: Math.sqrt(sum / a.length),
     profile: prof.size ? [...prof.entries()].map(([k, v]) => ({ k, n: v.n, ms: v.ms })) : null,
-    wav: Array.from(new Uint8Array(new Float32Array(a).buffer)) };
+    // base64, not a JSON array of bytes: 7 s of audio is 2.8 MB of samples and 10 MB as digits.
+    wav: btoa(Array.from(new Uint8Array(new Float32Array(a).buffer), (b) => String.fromCharCode(b)).join("")) };
 } catch (e) { window.__result = { ok: false, error: String(e && e.stack || e) }; }
 </script>`;
 
@@ -109,7 +110,7 @@ while (Date.now() - T0 < DEADLINE) {
 }
 if (!r) { console.log(`${at()} DEADLINE (${DEADLINE / 1000}s) with no result — hung`); await finish(4); }
 if (!r.ok) { console.log(`${at()} FAILED: ${r.error}`); await finish(3); }
-const f32 = new Float32Array(new Uint8Array(r.wav).buffer);
+const f32 = new Float32Array(Uint8Array.from(Buffer.from(r.wav, "base64")).buffer);
 const wav = (s, sr) => { const b = Buffer.alloc(44 + s.length * 4); b.write("RIFF", 0); b.writeUInt32LE(36 + s.length * 4, 4); b.write("WAVEfmt ", 8); b.writeUInt32LE(16, 16); b.writeUInt16LE(3, 20); b.writeUInt16LE(1, 22); b.writeUInt32LE(sr, 24); b.writeUInt32LE(sr * 4, 28); b.writeUInt16LE(4, 32); b.writeUInt16LE(32, 34); b.write("data", 36); b.writeUInt32LE(s.length * 4, 40); Buffer.from(s.buffer).copy(b, 44); return b; };
 fs.writeFileSync(OUT, wav(f32, 24000));
 console.log(`${at()} ep=${r.ep} targetTokens=${r.targetTokens} audio=${r.seconds.toFixed(2)}s  generate ${(r.generateMs / 1000).toFixed(1)}s (transformer ${(r.transformerMs / 1000).toFixed(1)}s, host ${(r.hostMs / 1000).toFixed(1)}s)  peak=${r.peak.toFixed(3)} rms=${r.rms.toFixed(4)} -> ${OUT}`);
