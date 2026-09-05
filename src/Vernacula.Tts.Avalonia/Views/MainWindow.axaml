@@ -103,7 +103,9 @@
                                                                          left to right over a word that
                                                                          does not. -->
                                                                     <TextBlock Text="{Binding Ipa}"
-                                                                               IsVisible="{Binding HasIpa}"
+                                                                               IsVisible="{Binding HasRubyRow}"
+                                                                               Height="{Binding IpaLineHeight}"
+                                                                               LineHeight="{Binding IpaLineHeight}"
                                                                                FontSize="{Binding IpaFontSize}"
                                                                                FontWeight="Normal"
                                                                                FontStyle="Normal"
@@ -112,6 +114,7 @@
                                                                                HorizontalAlignment="Center"
                                                                                TextAlignment="Center" />
                                                                     <TextBlock Text="{Binding Text}"
+                                                                               LineHeight="{Binding LineHeight}"
                                                                                HorizontalAlignment="Center" />
                                                                 </StackPanel>
                                                                 <!-- Written without spaces (Japanese, Chinese):
@@ -132,7 +135,9 @@
                                                                                     Classes.current="{Binding IsCurrent}">
                                                                                 <StackPanel Orientation="Vertical" Spacing="0">
                                                                                     <TextBlock Text="{Binding Ipa}"
-                                                                                               IsVisible="{Binding HasIpa}"
+                                                                                               IsVisible="{Binding Word.HasRubyRow}"
+                                                                                               Height="{Binding Word.IpaLineHeight}"
+                                                                                               LineHeight="{Binding Word.IpaLineHeight}"
                                                                                                FontSize="{Binding Word.IpaFontSize}"
                                                                                                FontWeight="Normal"
                                                                                                FontStyle="Normal"
@@ -142,6 +147,7 @@
                                                                                                TextAlignment="Center" />
                                                                                     <TextBlock Text="{Binding Text}"
                                                                                                FontSize="{Binding Word.FontSize}"
+                                                                                               LineHeight="{Binding Word.LineHeight}"
                                                                                                HorizontalAlignment="Center" />
                                                                                 </StackPanel>
                                                                             </Border>
@@ -431,6 +437,13 @@
             <Setter Property="Opacity" Value="0.62" />
             <Setter Property="Margin" Value="0,0,0,-1" />
             <Setter Property="Foreground" Value="#cde" />
+            <!-- ⚠ ONE FONT FOR THE WHOLE RUBY LINE. The UI font has no tie bar, superscript
+                 offglide, tone letter or downstep mark, so each reading fell back per string to
+                 whatever font did — and a fallback brings its own ascent, so "bɹˈaᶷn" sat lower
+                 than "kwˈɪk" and the line rippled. These families cover the IPA the phonemizer
+                 emits; the first one present is used for every reading alike. -->
+            <Setter Property="FontFamily"
+                    Value="Charis SIL, Doulos SIL, Gentium Plus, DejaVu Sans, Segoe UI, Arial Unicode MS, sans-serif" />
         </Style>
 
         <!-- The ruby lights up with the word it annotates: dimmed text that stayed dim while its

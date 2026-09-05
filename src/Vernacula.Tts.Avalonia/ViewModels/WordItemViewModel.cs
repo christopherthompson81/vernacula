@@ -65,6 +65,10 @@ public sealed partial class WordItemViewModel : ObservableObject
 
     public bool HasPieces => Pieces.Count > 0;
 
+    /// <summary>Whether this word reserves the ruby line. True once an annotation has been attached
+    /// — with the annotation off there is no row at all, and no space held for one.</summary>
+    [ObservableProperty] private bool _hasRubyRow;
+
     /// <summary>
     /// Which way this word's own pieces are laid out. The block's direction mirrors everything
     /// inside it, which is right for the words but not for the pieces of a word from the other
@@ -80,6 +84,9 @@ public sealed partial class WordItemViewModel : ObservableObject
     /// <summary>Attach (or with null, clear) the annotation for this word.</summary>
     public void SetRuby(WordRuby? ruby)
     {
+        // The row is reserved for every annotated word, including one with no reading of its own
+        // (punctuation): a word that skipped the row would sit higher than the rest of its line.
+        HasRubyRow = ruby is not null;
         Ipa = ruby?.Ipa;
         Pieces = ruby is null || ruby.Pieces.Count == 0
             ? Array.Empty<RubyPieceViewModel>()
@@ -130,6 +137,21 @@ public sealed partial class WordItemViewModel : ObservableObject
     /// <summary>Ruby size: small enough to read as an annotation, never so small it is unreadable
     /// under a heading's larger body text.</summary>
     public double IpaFontSize => Math.Max(10.0, FontSize * 0.6);
+
+    /// <summary>
+    /// A fixed line box for the word, so every word in a line sits on the same baseline.
+    ///
+    /// ⚠ EACH WORD IS ITS OWN CONTROL, so nothing aligns them for us. Left to size themselves they
+    /// do not agree: IPA and many scripts fall back to different fonts glyph by glyph, and a
+    /// fallback's ascent and descent are its own, so "d͡ʒˈʌmps" measures taller than "ðə" and the
+    /// words beneath them ride up and down by a few pixels. Fixing the line heights takes the
+    /// fallback's metrics out of the layout.
+    /// </summary>
+    public double LineHeight => Math.Ceiling(FontSize * 1.4);
+
+    /// <summary>The ruby line's fixed height. Generous, because IPA stacks marks above and below
+    /// the letters — tie bars, length marks, superscript offglides, tone letters.</summary>
+    public double IpaLineHeight => Math.Ceiling(IpaFontSize * 1.7);
 
     public FontStyle FontStyle => Style.HasFlag(InlineStyle.Italic) ? FontStyle.Italic : FontStyle.Normal;
 
