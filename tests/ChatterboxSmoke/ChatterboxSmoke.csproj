@@ -14,8 +14,13 @@
     <!-- .Gpu includes CPU as fallback; covers both EP modes (cpu and cuda). -->
     <PackageReference Include="Microsoft.ML.OnnxRuntime.Gpu" Version="$(OnnxRuntimeVersion)" />
     <!-- Vernacula.Phonemizer pins a plain (CPU) runtime; without this suppression it lands
-         beside the GPU one and the managed assembly meets the wrong native. -->
-    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="$(OnnxRuntimeVersion)" ExcludeAssets="all" />
+         beside the GPU one and the managed assembly meets the wrong native.
+
+         ⚠ ONLY WHERE THE GPU PACKAGE HAS A NATIVE TO OFFER. Microsoft.ML.OnnxRuntime.Gpu carries
+         win-x64 and linux-x64 only, so on osx-arm64 or linux-arm64 the transitive CPU runtime is
+         the sole source of a native library, and suppressing it leaves the test with none. -->
+    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="$(OnnxRuntimeVersion)" ExcludeAssets="all"
+                      Condition="$([MSBuild]::IsOSPlatform('Windows')) OR ($([MSBuild]::IsOSPlatform('Linux')) AND '$([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture)' == 'X64')" />
     <PackageReference Include="NAudio" Version="2.2.1" />
   </ItemGroup>
 

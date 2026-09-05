@@ -19,6 +19,28 @@
     <OnnxRuntimeVersion Condition="'$(OnnxRuntimeVersion)' == ''">1.29.0</OnnxRuntimeVersion>
   </PropertyGroup>
 
+  <!-- ⚠ A REFERENCED PROJECT MUST USE THE REFERENCING PROJECT'S VERSION. Eight projects override
+       EP on a ProjectReference, and SetConfiguration really does override EP in the inner build
+       (verified by having the inner build report it). Without this the referenced library would
+       evaluate this property from a DIFFERENT EP and compile against a different managed assembly
+       than the one shipped beside it. Passing the resolved version down keeps one output directory
+       to one version. -->
+  <ItemDefinitionGroup>
+    <ProjectReference>
+      <AdditionalProperties>OnnxRuntimeVersion=$(OnnxRuntimeVersion)</AdditionalProperties>
+    </ProjectReference>
+  </ItemDefinitionGroup>
+
+  <!-- ⚠ AN UNRECOGNISED EP SILENTLY GIVES YOU THE CPU. Every package group is conditioned on a
+       spelling, and a value matching none of them selects no GPU package: the build succeeds and
+       runs on whatever plain runtime arrives transitively, so someone who typed `-p:EP=Cudaa` gets
+       a working CPU build and no hint that their GPU flag did nothing. (Case is not the hazard:
+       MSBuild compares strings case-insensitively, so `-p:EP=cuda` selects CUDA correctly.) -->
+  <Target Name="RejectUnknownExecutionProvider" BeforeTargets="BeforeBuild"
+          Condition="'$(EP)' != 'Cuda' AND '$(EP)' != 'Cpu' AND '$(EP)' != 'DirectML'">
+    <Error Text="EP=$(EP) is not a known execution provider. Use Cuda, Cpu or DirectML. An unrecognised value selects no GPU package, so the build would quietly run on the CPU." />
+  </Target>
+
   <!-- ⚠ DirectML IS WINDOWS-ONLY, AND USED TO FAIL LATE. Its package carries no Linux or macOS
        natives, so `-p:EP=DirectML` on those platforms restored no ONNX Runtime at all: the build
        succeeded, and the first session threw DllNotFoundException. Say so at build time instead. -->

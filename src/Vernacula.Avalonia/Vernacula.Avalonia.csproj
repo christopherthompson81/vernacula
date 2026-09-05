@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk" InitialTargets="RequireDirectMlExecutionProvider">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
@@ -85,36 +85,19 @@
     <ErrorOnDuplicatePublishOutputFiles>false</ErrorOnDuplicatePublishOutputFiles>
   </PropertyGroup>
 
-  <!-- ⚠ UseDirectML ALONE IS NOT ENOUGH, AND USED TO FAIL QUIETLY. This project selects DirectML on
-       UseDirectML, but Vernacula.Base selects its runtime on EP, and a property set here does not
-       reach a ProjectReference. So -p:UseDirectML=true built the shared library against the CUDA
-       runtime's managed assembly while the app shipped DirectML's: a version skew that surfaces
-       as a failure at the first session. Both have to be passed. -->
-  <!-- InitialTargets, not BeforeBuild: with UseDirectML alone, OnnxRuntimeVersion is
-       still the CUDA one and restore fails on a DirectML package that has no such
-       version, so a BeforeBuild guard never got the chance to explain. -->
-  <Target Name="RequireDirectMlExecutionProvider"
-          Condition="'$(UseDirectML)' == 'true' AND '$(EP)' != 'DirectML'">
-    <Error Text="Building with UseDirectML=true also needs -p:EP=DirectML, so the shared library resolves the same ONNX Runtime the app ships. Pass both: dotnet build -p:UseDirectML=true -p:EP=DirectML" />
-  </Target>
-
-  <!-- EP=DirectML on its own is the spelling the docs use, and it has to work: it used to satisfy
-       none of the package conditions below, so the app built clean with no ONNX Runtime native at
-       all and threw DllNotFoundException at the first session. Either spelling now selects the
-       DirectML runtime here; the guard above still fires for UseDirectML without EP, because that
-       one leaves Vernacula.Base on a different runtime and no condition here can fix it. -->
-  <PropertyGroup>
-    <_SelectDirectML Condition="'$(UseDirectML)' == 'true' OR '$(EP)' == 'DirectML'">true</_SelectDirectML>
-  </PropertyGroup>
+  <!-- DirectML is selected by EP, like every other execution provider. An earlier UseDirectML
+       switch existed alongside it, but it did not reach Vernacula.Base (which selects on EP), so
+       the two halves could ship different runtimes; and a guard for that misfired on inner builds
+       whose EP a ProjectReference had overridden. One spelling avoids both. -->
 
   <ItemGroup>
     <!-- Platform-specific ONNX Runtime, selected by EP build property -->
-    <PackageReference Include="Microsoft.ML.OnnxRuntime.Gpu" Version="$(OnnxRuntimeVersion)" Condition="'$(EP)' == 'Cuda' AND '$(_SelectDirectML)' != 'true' AND ($([MSBuild]::IsOSPlatform('Windows')) OR $([MSBuild]::IsOSPlatform('Linux')))" />
-    <PackageReference Include="Microsoft.ML.OnnxRuntime.DirectML" Version="$(OnnxRuntimeVersion)" Condition="'$(_SelectDirectML)' == 'true' AND $([MSBuild]::IsOSPlatform('Windows'))" />
+    <PackageReference Include="Microsoft.ML.OnnxRuntime.Gpu" Version="$(OnnxRuntimeVersion)" Condition="'$(EP)' == 'Cuda' AND ($([MSBuild]::IsOSPlatform('Windows')) OR $([MSBuild]::IsOSPlatform('Linux')))" />
+    <PackageReference Include="Microsoft.ML.OnnxRuntime.DirectML" Version="$(OnnxRuntimeVersion)" Condition="'$(EP)' == 'DirectML' AND $([MSBuild]::IsOSPlatform('Windows'))" />
     <!-- macOS x64 (Intel): 1.24.x dropped osx-x64 native support; 1.19.2 is the last version that includes it -->
     <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.19.2" Condition="$([MSBuild]::IsOSPlatform('OSX')) AND $([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture) == 'X64'" />
     <!-- CPU runtime for all other platforms: EP=Cpu override, or macOS arm64 -->
-    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="$(OnnxRuntimeVersion)" Condition="!($([MSBuild]::IsOSPlatform('OSX')) AND $([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture) == 'X64') AND ('$(EP)' == 'Cpu' OR ('$(_SelectDirectML)' != 'true' AND !$([MSBuild]::IsOSPlatform('Windows')) AND !$([MSBuild]::IsOSPlatform('Linux'))))" />
+    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="$(OnnxRuntimeVersion)" Condition="!($([MSBuild]::IsOSPlatform('OSX')) AND $([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture) == 'X64') AND ('$(EP)' == 'Cpu' OR ('$(EP)' != 'DirectML' AND !$([MSBuild]::IsOSPlatform('Windows')) AND !$([MSBuild]::IsOSPlatform('Linux'))))" />
   </ItemGroup>
 
   <ItemGroup>
