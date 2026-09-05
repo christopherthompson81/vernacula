@@ -1,6 +1,7 @@
 using System;
 using System.Collections.ObjectModel;
 using System.IO;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Avalonia.Controls;
@@ -42,22 +43,28 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     [NotifyCanExecuteChangedFor(nameof(SynthesizeCommand))]
     [NotifyPropertyChangedFor(nameof(IsChatterbox))]
     [NotifyPropertyChangedFor(nameof(IsKokoro))]
+    [NotifyPropertyChangedFor(nameof(IsOmniVoice))]
+    [NotifyPropertyChangedFor(nameof(NeedsPhonemizer))]
     private TtsBackendKind _selectedBackend;
 
     public bool IsChatterbox => SelectedBackend == TtsBackendKind.Chatterbox;
     public bool IsKokoro => SelectedBackend == TtsBackendKind.Kokoro;
+    public bool IsOmniVoice => SelectedBackend == TtsBackendKind.OmniVoice;
+    /// <summary>Kokoro and OmniVoice both phonemize through vernacula-phonemizer.</summary>
+    public bool NeedsPhonemizer => IsKokoro || IsOmniVoice;
     public IReadOnlyList<TtsBackendKind> Backends { get; } =
-        new[] { TtsBackendKind.Chatterbox, TtsBackendKind.Kokoro };
+        new[] { TtsBackendKind.Chatterbox, TtsBackendKind.Kokoro, TtsBackendKind.OmniVoice };
 
-    // Kokoro config: model dir (kokoro.onnx + voices/), phonemizer data dir,
-    // named voice, and speed. Voices are discovered from the model dir.
+    // vernacula-phonemizer data/ root — shared by the two phonemizing backends.
+    [ObservableProperty]
+    [NotifyCanExecuteChangedFor(nameof(SynthesizeCommand))]
+    private string _phonemizerDataDir = "";
+
+    // Kokoro config: model dir (kokoro.onnx + voices/), named voice, and speed.
+    // Voices are discovered from the model dir.
     [ObservableProperty]
     [NotifyCanExecuteChangedFor(nameof(SynthesizeCommand))]
     private string _kokoroModelDir = "";
-
-    [ObservableProperty]
-    [NotifyCanExecuteChangedFor(nameof(SynthesizeCommand))]
-    private string _kokoroDataDir = "";
 
     [ObservableProperty]
     [NotifyCanExecuteChangedFor(nameof(SynthesizeCommand))]
@@ -66,6 +73,34 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     [ObservableProperty] private float _kokoroSpeed = 1.0f;
 
     public ObservableCollection<string> KokoroVoices { get; } = new();
+
+    // OmniVoice-IPA config: the ONNX dir (base transformer + codec + versioned diff), an
+    // optional explicit tokenizer.json (auto-located otherwise), the stored-voice library,
+    // the phonemizer language, the voice, and the diffusion step count.
+    [ObservableProperty]
+    [NotifyCanExecuteChangedFor(nameof(SynthesizeCommand))]
+    private string _omniVoiceOnnxDir = "";
+
+    [ObservableProperty] private string _omniVoiceTokenizerJson = "";
+
+    [ObservableProperty]
+    [NotifyCanExecuteChangedFor(nameof(SynthesizeCommand))]
+    private string _omniVoiceVoiceLib = "";
+
+    [ObservableProperty]
+    [NotifyCanExecuteChangedFor(nameof(SynthesizeCommand))]
+    private string _omniVoiceLang = "en";
+
+    [ObservableProperty]
+    [NotifyCanExecuteChangedFor(nameof(SynthesizeCommand))]
+    private StoredVoice.Info? _omniVoiceVoice;
+
+    [ObservableProperty] private int _omniVoiceNumStep = 32;
+
+    /// <summary>The library's voices for <see cref="OmniVoiceLang"/> — or all of them when the
+    /// language has none, since any voice can read any language's IPA.</summary>
+    public ObservableCollection<StoredVoice.Info> OmniVoiceVoices { get; } = new();
+    private IReadOnlyList<StoredVoice.Info> _allOmniVoiceVoices = Array.Empty<StoredVoice.Info>();
 
     // Text input — either typed/pasted in the UI or loaded from a .md file.
     [ObservableProperty]
@@ -202,13 +237,25 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             SelectedBackend = Enum.TryParse<TtsBackendKind>(_settings.Current.TtsBackend, out var b)
                 ? b : TtsBackendKind.Chatterbox;
             KokoroModelDir = _settings.Current.KokoroModelDir;
-            // A saved dir that is not a phonemizer data root is a path from before the Kokoro
-            // frontend moved to vernacula-phonemizer; re-resolve rather than fail at load time.
-            KokoroDataDir = PhonemizerData.IsDataRoot(_settings.Current.KokoroDataDir ?? "")
-                ? _settings.Current.KokoroDataDir : (PhonemizerData.Resolve(null) ?? "");
+            // The saved root, else the pre-rename Kokoro one, else the submodule. A saved dir
+            // that is not a data root is a path from before the frontend moved to
+            // vernacula-phonemizer; re-resolve rather than fail at load time.
+            PhonemizerDataDir = PhonemizerData.IsDataRoot(_settings.Current.PhonemizerDataDir)
+                ? _settings.Current.PhonemizerDataDir
+                : PhonemizerData.IsDataRoot(_settings.Current.KokoroDataDir)
+                ? _settings.Current.KokoroDataDir
+                : (PhonemizerData.Resolve(null) ?? "");
             KokoroVoice = _settings.Current.KokoroVoice;
             KokoroSpeed = _settings.Current.KokoroSpeed > 0 ? _settings.Current.KokoroSpeed : 1.0f;
             RefreshKokoroVoices();
+            OmniVoiceOnnxDir = string.IsNullOrWhiteSpace(_settings.Current.OmniVoiceOnnxDir)
+                ? (Environment.GetEnvironmentVariable("OMNIVOICE_ONNX_DIR") ?? "") : _settings.Current.OmniVoiceOnnxDir;
+            OmniVoiceTokenizerJson = _settings.Current.OmniVoiceTokenizerJson ?? "";
+            OmniVoiceVoiceLib = StoredVoice.IsLibrary(_settings.Current.OmniVoiceVoiceLib)
+                ? _settings.Current.OmniVoiceVoiceLib : (StoredVoice.ResolveDefaultLibrary() ?? "");
+            OmniVoiceLang = string.IsNullOrWhiteSpace(_settings.Current.OmniVoiceLang) ? "en" : _settings.Current.OmniVoiceLang;
+            OmniVoiceNumStep = _settings.Current.OmniVoiceNumStep is > 0 and <= 64 ? _settings.Current.OmniVoiceNumStep : 32;
+            RefreshOmniVoiceVoices(_settings.Current.OmniVoiceVoice);
         }
         finally { _loadingSettings = false; }
         UpdatePrerequisiteStatus();
@@ -232,8 +279,19 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         {
             TtsBackendKind.Kokoro =>
                 !DirExists(KokoroModelDir) ? $"Kokoro model dir not found: {Describe(KokoroModelDir)}"
-                : !PhonemizerData.IsDataRoot(KokoroDataDir) ? $"vernacula-phonemizer data dir not found: {Describe(KokoroDataDir)}"
+                : !PhonemizerData.IsDataRoot(PhonemizerDataDir) ? $"vernacula-phonemizer data dir not found: {Describe(PhonemizerDataDir)}"
                 : string.IsNullOrWhiteSpace(KokoroVoice) ? "No Kokoro voice selected."
+                : null,
+            TtsBackendKind.OmniVoice =>
+                !DirExists(OmniVoiceOnnxDir) ? $"OmniVoice ONNX dir not found: {Describe(OmniVoiceOnnxDir)}"
+                : !FileExists(Path.Combine(OmniVoiceOnnxDir, IpaFineTune.DefaultDiffFile))
+                    ? $"IPA fine-tune diff not found: {Path.Combine(OmniVoiceOnnxDir, IpaFineTune.DefaultDiffFile)}"
+                : OmniVoiceTokenizerPath() is null
+                    ? "Qwen3 tokenizer.json not found (put it beside the graphs, set OMNIVOICE_MODEL_DIR, or pick it)."
+                : !PhonemizerData.IsDataRoot(PhonemizerDataDir) ? $"vernacula-phonemizer data dir not found: {Describe(PhonemizerDataDir)}"
+                : !StoredVoice.IsLibrary(OmniVoiceVoiceLib) ? $"Voice library not found: {Describe(OmniVoiceVoiceLib)}"
+                : OmniVoiceVoice is null ? "No OmniVoice voice selected."
+                : string.IsNullOrWhiteSpace(OmniVoiceLang) ? "No phonemizer language set."
                 : null,
             _ =>
                 !DirExists(OnnxBundleDir) ? $"ONNX bundle dir not found: {Describe(OnnxBundleDir)}"
@@ -263,10 +321,16 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         _settings.Current.OnnxBundleDir = OnnxBundleDir;
         _settings.Current.RenderMarkdown = RenderMarkdown;
         _settings.Current.TtsBackend = SelectedBackend.ToString();
+        _settings.Current.PhonemizerDataDir = PhonemizerDataDir;
         _settings.Current.KokoroModelDir = KokoroModelDir;
-        _settings.Current.KokoroDataDir = KokoroDataDir;
         _settings.Current.KokoroVoice = KokoroVoice;
         _settings.Current.KokoroSpeed = KokoroSpeed;
+        _settings.Current.OmniVoiceOnnxDir = OmniVoiceOnnxDir;
+        _settings.Current.OmniVoiceTokenizerJson = OmniVoiceTokenizerJson;
+        _settings.Current.OmniVoiceVoiceLib = OmniVoiceVoiceLib;
+        _settings.Current.OmniVoiceLang = OmniVoiceLang;
+        _settings.Current.OmniVoiceVoice = OmniVoiceVoice?.Id ?? "";
+        _settings.Current.OmniVoiceNumStep = OmniVoiceNumStep;
         _settings.Save();
     }
 
@@ -303,11 +367,75 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         PersistSettings();
         UpdatePrerequisiteStatus();
     }
-    partial void OnKokoroDataDirChanged(string value)
+    partial void OnPhonemizerDataDirChanged(string value)
     {
         InvalidateSynthService();
         PersistSettings();
         UpdatePrerequisiteStatus();
+    }
+    partial void OnOmniVoiceOnnxDirChanged(string value)
+    {
+        InvalidateSynthService();
+        PersistSettings();
+        UpdatePrerequisiteStatus();
+    }
+    partial void OnOmniVoiceTokenizerJsonChanged(string value)
+    {
+        InvalidateSynthService();
+        PersistSettings();
+        UpdatePrerequisiteStatus();
+    }
+    partial void OnOmniVoiceVoiceLibChanged(string value)
+    {
+        InvalidateSynthService();
+        RefreshOmniVoiceVoices(OmniVoiceVoice?.Id);
+        PersistSettings();
+        UpdatePrerequisiteStatus();
+    }
+    partial void OnOmniVoiceLangChanged(string value)
+    {
+        RefreshOmniVoiceVoices(OmniVoiceVoice?.Id);
+        PersistSettings();
+        UpdatePrerequisiteStatus();
+    }
+    partial void OnOmniVoiceVoiceChanged(StoredVoice.Info? value)
+    {
+        PersistSettings();
+        UpdatePrerequisiteStatus();
+    }
+    partial void OnOmniVoiceNumStepChanged(int value) => PersistSettings();
+
+    /// <summary>The tokenizer the OmniVoice backend will use: the picked file if set, else
+    /// what <see cref="OmniVoiceIpaTts.LocateTokenizerJson"/> finds. Null when neither exists.</summary>
+    private string? OmniVoiceTokenizerPath() =>
+        FileExists(OmniVoiceTokenizerJson) ? OmniVoiceTokenizerJson
+        : DirExists(OmniVoiceOnnxDir) ? OmniVoiceIpaTts.LocateTokenizerJson(OmniVoiceOnnxDir) : null;
+
+    // Voices for the current language from the library, keeping the selection when it is still
+    // listed; otherwise the language's `default` entry, else the first. A language with no voice
+    // of its own shows the whole library: the model reads IPA, so any voice can read any language.
+    private void RefreshOmniVoiceVoices(string? keepId)
+    {
+        _allOmniVoiceVoices = StoredVoice.IsLibrary(OmniVoiceVoiceLib)
+            ? SafeListVoices(OmniVoiceVoiceLib) : Array.Empty<StoredVoice.Info>();
+        var lang = (OmniVoiceLang ?? "").Trim();
+        var forLang = _allOmniVoiceVoices.Where(v => string.Equals(v.Lang, lang, StringComparison.OrdinalIgnoreCase)).ToList();
+        var shown = forLang.Count > 0 ? forLang : _allOmniVoiceVoices.ToList();
+        OmniVoiceVoices.Clear();
+        foreach (var v in shown) OmniVoiceVoices.Add(v);
+        OmniVoiceVoice = shown.FirstOrDefault(v => v.Id == keepId)
+            ?? shown.FirstOrDefault(v => v.IsDefault)
+            ?? shown.FirstOrDefault();
+
+        static IReadOnlyList<StoredVoice.Info> SafeListVoices(string dir)
+        {
+            try { return StoredVoice.ListVoices(dir); }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"[OmniVoice] voice library unreadable: {ex.Message}");
+                return Array.Empty<StoredVoice.Info>();
+            }
+        }
     }
     partial void OnKokoroVoiceChanged(string value)
     {
@@ -362,10 +490,32 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     }
 
     [RelayCommand]
-    private async Task PickKokoroDataDirAsync()
+    private async Task PickPhonemizerDataDirAsync()
     {
         var path = await PickFolderAsync("Pick the vernacula-phonemizer data/ directory");
-        if (path is not null) KokoroDataDir = path;
+        if (path is not null) PhonemizerDataDir = path;
+    }
+
+    [RelayCommand]
+    private async Task PickOmniVoiceOnnxDirAsync()
+    {
+        var path = await PickFolderAsync("Pick the OmniVoice ONNX directory (transformer + Higgs codec + ipa_diff)");
+        if (path is not null) OmniVoiceOnnxDir = path;
+    }
+
+    [RelayCommand]
+    private async Task PickOmniVoiceTokenizerAsync()
+    {
+        var path = await PickFileAsync("Pick the Qwen3 tokenizer.json",
+            new FilePickerFileType("tokenizer.json") { Patterns = new[] { "tokenizer.json", "*.json" } });
+        if (path is not null) OmniVoiceTokenizerJson = path;
+    }
+
+    [RelayCommand]
+    private async Task PickOmniVoiceVoiceLibAsync()
+    {
+        var path = await PickFolderAsync("Pick the voice library (voices.jsonc + voice-codes.json)");
+        if (path is not null) OmniVoiceVoiceLib = path;
     }
 
     [RelayCommand]
@@ -412,19 +562,25 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         {
             _synthService ??= SelectedBackend switch
             {
-                TtsBackendKind.Kokoro => new KokoroSynthesisService(KokoroModelDir, KokoroDataDir),
+                TtsBackendKind.Kokoro => new KokoroSynthesisService(KokoroModelDir, PhonemizerDataDir),
+                TtsBackendKind.OmniVoice => new OmniVoiceSynthesisService(OmniVoiceOnnxDir,
+                    FileExists(OmniVoiceTokenizerJson) ? OmniVoiceTokenizerJson : null, PhonemizerDataDir, OmniVoiceVoiceLib),
                 _ => new SynthesisService(OnnxBundleDir),
             };
 
             // ms precision avoids collisions when the user re-Synthesizes
             // (or clicks Play, below) twice in the same second.
             string outWav = Path.Combine(Path.GetTempPath(),
-                $"chatterbox_app_{DateTime.UtcNow:yyyyMMddHHmmss_fff}.wav");
+                $"vernacula_tts_{DateTime.UtcNow:yyyyMMddHHmmss_fff}.wav");
             bool streamingStarted = false;
 
-            var request = SelectedBackend == TtsBackendKind.Kokoro
-                ? new TtsRequest(Text, outWav, KokoroVoice, KokoroSpeed)
-                : new TtsRequest(Text, outWav, VoicePath);
+            var request = SelectedBackend switch
+            {
+                TtsBackendKind.Kokoro => new TtsRequest(Text, outWav, KokoroVoice, KokoroSpeed),
+                TtsBackendKind.OmniVoice => new TtsRequest(Text, outWav, OmniVoiceVoice!.Id,
+                    Lang: OmniVoiceLang.Trim(), NumStep: OmniVoiceNumStep),
+                _ => new TtsRequest(Text, outWav, VoicePath),
+            };
 
             var result = await _synthService.SynthesizeStreamingAsync(
                 request,
@@ -548,8 +704,16 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         {
             TtsBackendKind.Kokoro =>
                 DirExists(KokoroModelDir)
-                && DirExists(KokoroDataDir)
+                && DirExists(PhonemizerDataDir)
                 && !string.IsNullOrWhiteSpace(KokoroVoice),
+            TtsBackendKind.OmniVoice =>
+                DirExists(OmniVoiceOnnxDir)
+                && FileExists(Path.Combine(OmniVoiceOnnxDir, IpaFineTune.DefaultDiffFile))
+                && OmniVoiceTokenizerPath() is not null
+                && DirExists(PhonemizerDataDir)
+                && StoredVoice.IsLibrary(OmniVoiceVoiceLib)
+                && OmniVoiceVoice is not null
+                && !string.IsNullOrWhiteSpace(OmniVoiceLang),
             _ =>
                 FileExists(VoicePath)
                 && DirExists(OnnxBundleDir),

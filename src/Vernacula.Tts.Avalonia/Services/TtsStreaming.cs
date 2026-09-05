@@ -14,6 +14,10 @@ public enum TtsBackendKind
 
     /// <summary>Kokoro-82M, named voice + speed, duration-based word alignment.</summary>
     Kokoro,
+
+    /// <summary>OmniVoice IPA fine-tune via vernacula-phonemizer: any of its languages, a stored
+    /// voice from the web demo's library, proportional (estimated) word alignment.</summary>
+    OmniVoice,
 }
 
 /// <summary>Final synthesis output: the written WAV path + the alignment sidecar.</summary>
@@ -39,10 +43,12 @@ public sealed record ProgressEvent(string Phase, int? ChunkIndex = null, int? To
 
 /// <summary>
 /// A backend-agnostic synthesis request. <see cref="Voice"/> is interpreted by the
-/// backend: a voice-WAV path for Chatterbox, a named voice (e.g. "af_heart") for Kokoro.
-/// <see cref="Speed"/> applies to Kokoro; Chatterbox ignores it.
+/// backend: a voice-WAV path for Chatterbox, a named voice (e.g. "af_heart") for Kokoro, a
+/// library voice id for OmniVoice. <see cref="Speed"/> applies to Kokoro; <see cref="Lang"/>
+/// (a vernacula-phonemizer code) and <see cref="NumStep"/> (diffusion steps) to OmniVoice.
 /// </summary>
-public sealed record TtsRequest(string Text, string OutWavPath, string Voice, float Speed = 1.0f);
+public sealed record TtsRequest(string Text, string OutWavPath, string Voice, float Speed = 1.0f,
+                                string? Lang = null, int NumStep = 32);
 
 /// <summary>
 /// A streaming TTS backend. Implementations lazily load their models on the first call

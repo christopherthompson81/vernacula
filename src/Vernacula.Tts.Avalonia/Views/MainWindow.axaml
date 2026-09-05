@@ -132,6 +132,19 @@
                 </Grid>
             </StackPanel>
 
+            <!-- ── Phonemizer (Kokoro + OmniVoice) ─────────────────── -->
+            <StackPanel Spacing="10" IsVisible="{Binding NeedsPhonemizer}">
+                <TextBlock Text="Phonemizer data dir (vernacula-phonemizer/data)"
+                           FontWeight="SemiBold" Margin="0,8,0,0" />
+                <Grid ColumnDefinitions="*,Auto">
+                    <TextBox Text="{Binding PhonemizerDataDir}" IsReadOnly="True"
+                             Watermark="No data dir picked" />
+                    <Button Grid.Column="1" Content="Pick…"
+                            Command="{Binding PickPhonemizerDataDirCommand}"
+                            IsEnabled="{Binding !IsBusy}" Margin="6,0,0,0" />
+                </Grid>
+            </StackPanel>
+
             <!-- ── Kokoro config ─────────────────────────────────── -->
             <StackPanel Spacing="10" IsVisible="{Binding IsKokoro}">
                 <TextBlock Text="Kokoro model dir (kokoro.onnx + voices/)"
@@ -141,16 +154,6 @@
                              Watermark="No model dir picked" />
                     <Button Grid.Column="1" Content="Pick…"
                             Command="{Binding PickKokoroModelDirCommand}"
-                            IsEnabled="{Binding !IsBusy}" Margin="6,0,0,0" />
-                </Grid>
-
-                <TextBlock Text="Phonemizer data dir (vernacula-phonemizer/data)"
-                           FontWeight="SemiBold" Margin="0,8,0,0" />
-                <Grid ColumnDefinitions="*,Auto">
-                    <TextBox Text="{Binding KokoroDataDir}" IsReadOnly="True"
-                             Watermark="No data dir picked" />
-                    <Button Grid.Column="1" Content="Pick…"
-                            Command="{Binding PickKokoroDataDirCommand}"
                             IsEnabled="{Binding !IsBusy}" Margin="6,0,0,0" />
                 </Grid>
 
@@ -164,6 +167,55 @@
                            FontWeight="SemiBold" Margin="0,8,0,0" />
                 <Slider Minimum="0.5" Maximum="2.0" Value="{Binding KokoroSpeed}"
                         IsEnabled="{Binding !IsBusy}" TickFrequency="0.1" />
+            </StackPanel>
+
+            <!-- ── OmniVoice-IPA config ──────────────────────────── -->
+            <StackPanel Spacing="10" IsVisible="{Binding IsOmniVoice}">
+                <TextBlock Text="OmniVoice ONNX dir (transformer + Higgs codec + ipa_diff)"
+                           FontWeight="SemiBold" Margin="0,8,0,0" />
+                <Grid ColumnDefinitions="*,Auto">
+                    <TextBox Text="{Binding OmniVoiceOnnxDir}" IsReadOnly="True"
+                             Watermark="No ONNX dir picked" />
+                    <Button Grid.Column="1" Content="Pick…"
+                            Command="{Binding PickOmniVoiceOnnxDirCommand}"
+                            IsEnabled="{Binding !IsBusy}" Margin="6,0,0,0" />
+                </Grid>
+
+                <TextBlock Text="Qwen3 tokenizer.json (optional — auto-located)"
+                           FontWeight="SemiBold" Margin="0,8,0,0" />
+                <Grid ColumnDefinitions="*,Auto">
+                    <TextBox Text="{Binding OmniVoiceTokenizerJson}" IsReadOnly="True"
+                             Watermark="Beside the graphs / OMNIVOICE_MODEL_DIR / HF cache" />
+                    <Button Grid.Column="1" Content="Pick…"
+                            Command="{Binding PickOmniVoiceTokenizerCommand}"
+                            IsEnabled="{Binding !IsBusy}" Margin="6,0,0,0" />
+                </Grid>
+
+                <TextBlock Text="Voice library (voices.jsonc + voice-codes.json)"
+                           FontWeight="SemiBold" Margin="0,8,0,0" />
+                <Grid ColumnDefinitions="*,Auto">
+                    <TextBox Text="{Binding OmniVoiceVoiceLib}" IsReadOnly="True"
+                             Watermark="No library picked" />
+                    <Button Grid.Column="1" Content="Pick…"
+                            Command="{Binding PickOmniVoiceVoiceLibCommand}"
+                            IsEnabled="{Binding !IsBusy}" Margin="6,0,0,0" />
+                </Grid>
+
+                <TextBlock Text="Language (vernacula-phonemizer code: en, en-GB, cy, cmn, …)"
+                           FontWeight="SemiBold" Margin="0,8,0,0" />
+                <TextBox Text="{Binding OmniVoiceLang}" Watermark="en"
+                         IsEnabled="{Binding !IsBusy}" />
+
+                <TextBlock Text="Voice" FontWeight="SemiBold" Margin="0,8,0,0" />
+                <ComboBox ItemsSource="{Binding OmniVoiceVoices}"
+                          SelectedItem="{Binding OmniVoiceVoice}"
+                          IsEnabled="{Binding !IsBusy}"
+                          HorizontalAlignment="Stretch" />
+
+                <TextBlock Text="{Binding OmniVoiceNumStep, StringFormat='Diffusion steps: {0}'}"
+                           FontWeight="SemiBold" Margin="0,8,0,0" />
+                <Slider Minimum="8" Maximum="48" Value="{Binding OmniVoiceNumStep}"
+                        IsEnabled="{Binding !IsBusy}" TickFrequency="4" IsSnapToTickEnabled="True" />
             </StackPanel>
 
             <TextBlock Text="Text source" FontWeight="SemiBold" Margin="0,12,0,0" />

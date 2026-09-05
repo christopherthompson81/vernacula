@@ -1,13 +1,14 @@
-namespace Vernacula.Tts.CLI;
+namespace Vernacula.Tts.Base;
 
 /// <summary>
-/// Facts about the shipped OmniVoice IPA fine-tune that the CLI needs at runtime.
+/// Facts about the shipped OmniVoice IPA fine-tune that its consumers (Vernacula.Tts.CLI, the
+/// reader) need at runtime.
 ///
 /// These describe a FROZEN artifact (the v6 LoRA checkpoint), not a live configuration, which is
 /// why they are literals here rather than read from the training tree — the training tree lives on
 /// the machine that produced the checkpoint and is not part of a user install.
 /// </summary>
-internal static class IpaFineTune
+public static class IpaFineTune
 {
     /// <summary>Default diff filename inside --onnx-dir. Bump alongside the checkpoint; the
     /// version is in the name precisely so a stale diff cannot masquerade as current
