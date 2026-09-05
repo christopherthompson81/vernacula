@@ -106,6 +106,15 @@ as text input — so the phonemizer, not the model, owns the linguistic G2P: dic
 stress, pitch accent, and text normalization (numbers, %, currency, units spoken in-language) all
 happen before the model sees a token.
 
+## Try it
+
+**[vernacula.netlify.app](https://vernacula.netlify.app/)** runs this model entirely in your
+browser — 193 languages, no upload, no server inference. It downloads the quantized build below
+(472 MB, cached after the first load) and does the phonemization locally too.
+
+The same pipeline also ships as a desktop app and a command-line renderer in
+[vernacula](https://github.com/christopherthompson81/vernacula).
+
 ## Files
 
 | File | Size | What |

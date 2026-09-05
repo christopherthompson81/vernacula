@@ -1,3 +1,11 @@
+# ⚠ THIS FILE DOES NOT REACH THE DEPLOYED SITE. Netlify reads netlify.toml from the REPOSITORY
+# ROOT (or a configured base directory), and this copy lives in web-demo/ — so its headers were
+# never applied: `curl -I https://vernacula.netlify.app/` returned no Cross-Origin-* at all, the
+# page was not cross-origin isolated, and WASM inference silently ran on one thread.
+#
+# The headers that DO reach production are in public/_headers, which ships inside the publish
+# directory. Edit BOTH, or edit that one. This file is kept for `netlify dev`.
+
 [build]
   command = "npm run build"
   publish = "dist"
@@ -19,8 +27,14 @@
   [headers.values]
     Cache-Control = "public, max-age=300, must-revalidate"
 
-# The transpiled phonemizer IS content-addressed by build and safe to cache hard.
+# ⚠ NOT content-addressed — the filenames are plain (welsh.jsonc, lexicon.tsv), so caching hard
+# leaves a returning visitor on stale phoneme data after a phonemizer deploy. See public/_headers.
 [[headers]]
   for = "/vphon-data/*"
   [headers.values]
-    Cache-Control = "public, max-age=86400"
+    Cache-Control = "public, max-age=300, must-revalidate"
+
+[[headers]]
+  for = "/vphon/*"
+  [headers.values]
+    Cache-Control = "public, max-age=300, must-revalidate"

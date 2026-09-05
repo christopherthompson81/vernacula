@@ -268,7 +268,12 @@ export default function App() {
           </p>
         )}
         <p className="small">
-          Phonemes from <a href="https://github.com/christopherthompson81/vernacula-phonemizer">vernacula-phonemizer</a>;
+          {/* ⚠ vernacula FIRST. This page is a demo OF something, and a reader who wants the thing
+              rather than the parts should not have to infer it from a phonemizer link. The
+              components follow, because they are what the sentence after this one is about. */}
+          A browser demo of <a href="https://github.com/christopherthompson81/vernacula">vernacula</a>,
+          which also ships a desktop app and a command-line renderer.
+          {" "}Phonemes from <a href="https://github.com/christopherthompson81/vernacula-phonemizer">vernacula-phonemizer</a>;
           speech from an IPA fine-tune of <a href="https://huggingface.co/k2-fsa/OmniVoice">k2-fsa/OmniVoice</a>,
           quantized to <a href="https://huggingface.co/christopherthompson81/omnivoice-ipa-onnx">472 MB</a> and
           cached in your browser after the first load.

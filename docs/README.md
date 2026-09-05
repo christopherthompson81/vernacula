@@ -20,4 +20,5 @@ User and reference documentation for Vernacula. Start with [Installation](instal
 ## Project
 
 - [Licensing](licensing.md) — per-component license attribution
+- [A model of our own](own_model_plan.md) — **shelved** plan for unencumbered weights and precomputed voices, kept for its rejected alternatives
 - [Developer notes](dev/) — internal investigations and design notes

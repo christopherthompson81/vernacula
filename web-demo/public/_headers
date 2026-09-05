@@ -1,0 +1,32 @@
+# ⚠ THIS FILE, NOT ONLY netlify.toml. Netlify reads netlify.toml from the REPOSITORY ROOT (or a
+# configured base directory), and this project's copy lives in web-demo/ — so its headers were
+# never applied to the deployed site. Measured: `curl -I https://vernacula.netlify.app/` returned
+# no Cross-Origin-* headers at all, the page was therefore not cross-origin isolated,
+# SharedArrayBuffer was withheld, and WASM inference silently fell back to ONE thread — roughly 6x
+# slower than the 8 the machine can run.
+#
+# A `_headers` file is deployed as part of the publish directory itself, so it applies whatever the
+# base directory is set to and however the deploy was made. netlify.toml is kept in step for local
+# `netlify dev`, but this is the one that reaches production.
+
+/*
+  Cross-Origin-Opener-Policy: same-origin
+  Cross-Origin-Embedder-Policy: require-corp
+
+# Hand-editable and regenerated together; a stale voices.jsonc against a fresh voice-codes.json
+# lands as `voice "x" has no codes`.
+/models/*
+  Cache-Control: public, max-age=300, must-revalidate
+
+# ⚠ NOT content-addressed, and NOT safe to cache hard. These filenames are plain — welsh.jsonc,
+# lexicon.tsv, phonology.jsonc — so a deploy that updates the phonemizer leaves returning visitors on
+# the OLD data until the cache expires. That is the exact failure this project just spent a session
+# on (a stale phonemizer pin produced "eports" for "reports" and pre-#1252 digraphs, and invalidated
+# every listening pass), reintroduced with a timer. Same reasoning as /models/ above: revalidate.
+# Cost is a conditional request that answers 304 for unchanged files, which is nearly free.
+/vphon-data/*
+  Cache-Control: public, max-age=300, must-revalidate
+
+# The transpiled engine is not hashed either, and must not outlive the data it reads.
+/vphon/*
+  Cache-Control: public, max-age=300, must-revalidate
