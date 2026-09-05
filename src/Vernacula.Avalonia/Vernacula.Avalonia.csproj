@@ -59,13 +59,12 @@
 
   <ItemGroup>
     <PackageReference Include="Avalonia" Version="11.3.9" />
-    <PackageReference Include="Markdown.Avalonia" Version="11.0.2" />
     <PackageReference Include="Markdig" Version="0.34.0" />
     <PackageReference Include="Avalonia.Desktop" Version="11.3.9" />
     <PackageReference Include="Avalonia.Themes.Fluent" Version="11.3.9" />
     <PackageReference Include="Avalonia.Fonts.Inter" Version="11.3.9" />
     <PackageReference Include="Avalonia.Controls.DataGrid" Version="11.3.9" />
-    <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.0" />
+    <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.2" />
     <PackageReference Include="FFmpeg.AutoGen" Version="6.1.0.1" />
 
     <PackageReference Include="MathNet.Numerics" Version="5.0.0" />
