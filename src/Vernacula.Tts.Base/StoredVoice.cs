@@ -1,6 +1,6 @@
 using System.Text.Json;
 
-namespace Vernacula.Tts.CLI;
+namespace Vernacula.Tts.Base;
 
 /// <summary>
 /// A reference voice that is already encoded — Higgs codec codes plus the IPA transcript they were
@@ -28,6 +28,52 @@ public sealed class StoredVoice
 
     private const int NumCodebooks = 8;
 
+    /// <summary>One library entry, without its codes — what a voice picker needs.</summary>
+    public sealed record Info(string Id, string Lang, string Label, bool IsDefault)
+    {
+        public override string ToString() => $"{Id} — {Label}";
+    }
+
+    private static readonly JsonDocumentOptions Jsonc =
+        new() { CommentHandling = JsonCommentHandling.Skip, AllowTrailingCommas = true };
+
+    /// <summary>True if <paramref name="dir"/> holds a voice library (both files present).</summary>
+    public static bool IsLibrary(string? dir) =>
+        !string.IsNullOrWhiteSpace(dir)
+        && File.Exists(Path.Combine(dir, "voices.jsonc")) && File.Exists(Path.Combine(dir, "voice-codes.json"));
+
+    /// <summary>
+    /// The web demo's library, found by walking up from the executable — the default for every
+    /// consumer, so the CLI, the reader and the browser render the SAME voice. Null when this is
+    /// not running inside the repo.
+    /// </summary>
+    public static string? ResolveDefaultLibrary()
+    {
+        for (var d = new DirectoryInfo(AppContext.BaseDirectory); d is not null; d = d.Parent)
+        {
+            var candidate = Path.Combine(d.FullName, "web-demo", "public", "models");
+            if (IsLibrary(candidate)) return candidate;
+        }
+        return null;
+    }
+
+    /// <summary>Every voice in the library at <paramref name="dir"/>, in file order.</summary>
+    public static IReadOnlyList<Info> ListVoices(string dir)
+    {
+        string voicesPath = Path.Combine(dir, "voices.jsonc");
+        if (!File.Exists(voicesPath))
+            throw new FileNotFoundException($"voice library not found: {voicesPath}");
+        using var doc = JsonDocument.Parse(File.ReadAllText(voicesPath), Jsonc);
+        var list = new List<Info>();
+        foreach (var e in doc.RootElement.EnumerateArray())
+            list.Add(new Info(
+                e.GetProperty("id").GetString() ?? "",
+                e.GetProperty("lang").GetString() ?? "",
+                e.TryGetProperty("label", out var lb) ? lb.GetString() ?? "" : "",
+                e.TryGetProperty("default", out var df) && df.ValueKind == JsonValueKind.True));
+        return list;
+    }
+
     /// <summary>
     /// Load one voice by id. Returns null when <paramref name="voiceId"/> is "list", having printed
     /// the library — a lookup failure on 288 entries is otherwise a guessing game.
@@ -43,8 +89,7 @@ public sealed class StoredVoice
 
         // ⚠ voices.jsonc is JSONC — the comments in it carry the provenance of each voice and are
         // meant to stay. Skip them at parse time rather than asking the file to become JSON.
-        var opts = new JsonDocumentOptions { CommentHandling = JsonCommentHandling.Skip, AllowTrailingCommas = true };
-        using var voicesDoc = JsonDocument.Parse(File.ReadAllText(voicesPath), opts);
+        using var voicesDoc = JsonDocument.Parse(File.ReadAllText(voicesPath), Jsonc);
 
         if (voiceId == "list")
         {

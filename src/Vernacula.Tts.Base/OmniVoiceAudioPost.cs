@@ -144,4 +144,26 @@ public static class OmniVoiceAudioPost
         Array.Copy(proc, 0, outArr, pad, proc.Length);
         return outArr;
     }
+
+    /// <summary>
+    /// The finishing chain in the order Python's <c>_post_process_audio</c> applies it: remove
+    /// silence → volume → fade-in/out + zero-pad. Volume: with a reference (<paramref name="refRms"/>
+    /// is its RMS before any boost), un-boost a reference that <see cref="OmniVoiceTts.EncodeReference"/>
+    /// boosted for being quiet; without one, peak-normalise to 0.5.
+    /// </summary>
+    public static float[] Finish(float[] audio, int sr, float? refRms)
+    {
+        audio = RemoveSilence(audio, sr, midSilMs: 500, leadSilMs: 100, trailSilMs: 100);
+        if (refRms is float rr)
+        {
+            if (rr < 0.1f) { float g = rr / 0.1f; for (int i = 0; i < audio.Length; i++) audio[i] *= g; }
+        }
+        else
+        {
+            float max = 0;
+            foreach (var v in audio) max = Math.Max(max, Math.Abs(v));
+            if (max >= 1e-6f) { float g = 0.5f / max; for (int i = 0; i < audio.Length; i++) audio[i] *= g; }
+        }
+        return FadeAndPad(audio, sr);
+    }
 }

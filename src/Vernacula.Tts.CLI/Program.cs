@@ -111,8 +111,7 @@ internal static class Program
         // ── Validate ──────────────────────────────────────────────────────────────────────────
         if (voiceId == "list")
         {
-            try { StoredVoice.Load(voiceLib ?? Path.Combine(AppContext.BaseDirectory,
-                      "..", "..", "..", "..", "..", "web-demo", "public", "models"), "list"); }
+            try { StoredVoice.Load(voiceLib ?? StoredVoice.ResolveDefaultLibrary() ?? "web-demo/public/models", "list"); }
             catch (Exception ex) { Console.Error.WriteLine(ex.Message); return 1; }
             return 0;
         }
@@ -322,8 +321,7 @@ internal static class Program
         {
             // Default to the web demo's library so the CLI and the browser render the SAME voice —
             // the point of the flag is to hear what a visitor hears, without a browser.
-            string libDir = voiceLib ?? Path.Combine(AppContext.BaseDirectory,
-                "..", "..", "..", "..", "..", "web-demo", "public", "models");
+            string libDir = voiceLib ?? StoredVoice.ResolveDefaultLibrary() ?? "web-demo/public/models";
             try { stored = StoredVoice.Load(libDir, voiceId); }
             catch (Exception ex) { Console.Error.WriteLine(ex.Message); return 1; }
             if (stored is null) return 0;                       // `--voice-id list` printed the library
@@ -450,11 +448,7 @@ internal static class Program
         }
         else if (post == "python")
         {
-            audio = OmniVoiceAudioPost.RemoveSilence(audio, OmniVoiceTts.SampleRate,
-                midSilMs: 500, leadSilMs: 100, trailSilMs: 100);
-            if (refRms is float rr) { if (rr < 0.1f) Scale(audio, rr / 0.1f); }
-            else Normalize(audio, 0.5f);
-            audio = OmniVoiceAudioPost.FadeAndPad(audio, OmniVoiceTts.SampleRate);
+            audio = OmniVoiceAudioPost.Finish(audio, OmniVoiceTts.SampleRate, refRms);
         }
         else { Console.Error.WriteLine($"--post must be \"python\" or \"demo\", not \"{post}\"."); return 2; }
 
@@ -483,11 +477,6 @@ internal static class Program
         foreach (var v in x) max = Math.Max(max, Math.Abs(v));
         if (max < 1e-6f) return;
         float g = peak / max;
-        for (int i = 0; i < x.Length; i++) x[i] *= g;
-    }
-
-    private static void Scale(float[] x, float g)
-    {
         for (int i = 0; i < x.Length; i++) x[i] *= g;
     }
 

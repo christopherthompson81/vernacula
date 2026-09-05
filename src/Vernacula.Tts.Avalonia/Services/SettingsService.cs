@@ -71,13 +71,22 @@ public sealed class ReaderSettings
     public string OnnxBundleDir { get; set; } = "";
     public bool RenderMarkdown { get; set; } = false;
 
-    // TTS backend selection + Kokoro config. TtsBackend stores the
-    // TtsBackendKind enum name ("Chatterbox" / "Kokoro").
+    // TTS backend selection. TtsBackend stores the TtsBackendKind enum name
+    // ("Chatterbox" / "Kokoro" / "OmniVoice").
     public string TtsBackend { get; set; } = "Chatterbox";
-    public string KokoroModelDir { get; set; } = "";
+    // vernacula-phonemizer data/ root, shared by Kokoro and OmniVoice. (Was KokoroDataDir
+    // when Kokoro was the only phonemizer user; that field is still read as a fallback.)
+    public string PhonemizerDataDir { get; set; } = "";
     public string KokoroDataDir { get; set; } = "";
+    public string KokoroModelDir { get; set; } = "";
     public string KokoroVoice { get; set; } = "";
     public float KokoroSpeed { get; set; } = 1.0f;
+    public string OmniVoiceOnnxDir { get; set; } = "";
+    public string OmniVoiceTokenizerJson { get; set; } = "";
+    public string OmniVoiceVoiceLib { get; set; } = "";
+    public string OmniVoiceLang { get; set; } = "en";
+    public string OmniVoiceVoice { get; set; } = "";
+    public int OmniVoiceNumStep { get; set; } = 32;
     // (Older settings.json files may contain a NfaBundleDir field —
     // System.Text.Json silently ignores unknown JSON properties, so the
     // old field is dropped harmlessly on load. New saves omit it.)
