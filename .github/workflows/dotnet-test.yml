@@ -1,0 +1,55 @@
+name: dotnet-test
+
+on:
+  push:
+    # ⚠ BOTH LONG-RUNNING BRANCHES. Every PR in this repo targets omnivoice-onnx-export, not main,
+    # so listing main alone meant post-merge CI never ran on the branch that holds the product —
+    # `pull_request` checks each PR in isolation, but nothing checked the merge RESULT, which is
+    # where two individually-green changes collide.
+    branches:
+      - main
+      - omnivoice-onnx-export
+  pull_request:
+
+jobs:
+  test:
+    name: Tests (CPU)
+    runs-on: ubuntu-latest
+    steps:
+      # ⚠ SUBMODULES ARE REQUIRED, and actions/checkout does not fetch them by default.
+      # Chatterbox.Base has a ProjectReference into external/espeak-ng-portable and
+      # Vernacula.Tts.CLI into external/vernacula-phonemizer, so without these the build fails
+      # with MSB9008 (referenced project does not exist) followed by CS0234 on the namespace —
+      # an error that looks like a missing package and is really a missing checkout.
+      # It passed on main only because main has neither reference.
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Set up .NET 10
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Build solution (EP=Cpu)
+        run: dotnet build Vernacula.slnx -p:EP=Cpu
+
+      # --no-build -p:Platform=x64 reuses the artifacts the step above produced
+      # (bin/x64/...). Without it dotnet test rebuilds into bin/, so the job
+      # builds the solution twice and tests something other than what it built.
+      - name: Test Vernacula.Base
+        run: dotnet test tests/Vernacula.Tests --no-build -p:Platform=x64 -p:EP=Cpu
+
+      - name: Test Chatterbox
+        run: dotnet test tests/Chatterbox.Tests --no-build -p:Platform=x64 -p:EP=Cpu
+
+      - name: Test AsrBackendCoverage
+        run: dotnet test tests/AsrBackendCoverage --no-build -p:Platform=x64 -p:EP=Cpu
+
+      # Every test here is gated on the IndicConformer ONNX package and the
+      # test_audio/ tree, neither of which exists on a hosted runner: this step
+      # reports 23 skips and passes. It is kept for the skip count, not as
+      # coverage -- the real run happens on a dev box via scripts/ci_local.sh.
+      - name: Test IndicConformerTest (skips without model assets)
+        run: dotnet test tests/IndicConformerTest --no-build -p:Platform=x64 -p:EP=Cpu
