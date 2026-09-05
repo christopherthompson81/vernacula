@@ -18,8 +18,8 @@
 
 using System.Diagnostics;
 using System.Globalization;
-using Chatterbox.Base;
-using Chatterbox.Base.Markdown;
+using Vernacula.Tts.Base;
+using Vernacula.Tts.Base.Markdown;
 using NAudio.Wave;
 using Vernacula.Base;
 using Vernacula.Base.Models;
@@ -247,7 +247,7 @@ internal static class Program
             // ⚠ Reject an unrecognised value rather than falling through to Auto. `--ep cud` or
             // `--ep gpu` would otherwise silently run somewhere the caller did not ask for — and the
             // gap between providers here is ~20x, so it reads as "this is just slow".
-            // Chatterbox.CLI errors on the same input; match it.
+            // Vernacula.Tts.Backends.CLI errors on the same input; match it.
             switch (ep)
             {
                 case "cpu": epEnum = ExecutionProvider.Cpu; break;

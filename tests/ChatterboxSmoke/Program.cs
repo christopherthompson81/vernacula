@@ -1,7 +1,7 @@
 // Chatterbox TTS — C# smoke test.
 //
 // Originally a monolithic port of scripts/chatterbox_export/.../listen_test.py;
-// now a thin CLI on top of Chatterbox.Base (SpeakerEmbedder + AcousticLM +
+// now a thin CLI on top of Vernacula.Tts.Base (SpeakerEmbedder + AcousticLM +
 // Vocoder + ChatterboxPipeline). Keeps the per-stage timing prints that make
 // the smoke test useful for perf+parity checks.
 //
@@ -14,11 +14,11 @@
 //       --ep    cuda
 
 using System.Diagnostics;
-using Chatterbox.Base;
+using Vernacula.Tts.Base;
 using Microsoft.ML.OnnxRuntime;
 using Microsoft.ML.OnnxRuntime.Tensors;
-using Chatterbox.Base.AudioIo;
-using Chatterbox.Base.Tokenization;
+using Vernacula.Tts.Base.AudioIo;
+using Vernacula.Tts.Base.Tokenization;
 using NAudio.Wave;
 using Vernacula.Base.Inference;
 using Vernacula.Base.Models;

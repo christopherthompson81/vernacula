@@ -7,7 +7,7 @@
  * every generation be voice-cloned — which matters because with no reference, input under ~5 s is
  * out of the fine-tune's distribution and can emit noise rather than degrade.
  *
- * Mirrors Chatterbox.Base.OmniVoiceTts.EncodeReference exactly: RMS-boost a quiet clip, remove
+ * Mirrors Vernacula.Tts.Base.OmniVoiceTts.EncodeReference exactly: RMS-boost a quiet clip, remove
  * silence (mid 200 / lead 100 / trail 200 — NOT the output chain's 500/100/100), clip to a hop
  * multiple, then encode.
  *

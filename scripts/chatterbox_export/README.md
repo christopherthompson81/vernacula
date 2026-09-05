@@ -1,7 +1,7 @@
 # Chatterbox → ONNX export
 
 Exports ResembleAI's Chatterbox TTS into the four-graph ONNX package
-consumed by `Chatterbox.Base` (forthcoming) and eventually folded into
+consumed by `Vernacula.Tts.Base` (forthcoming) and eventually folded into
 `Vernacula.Avalonia`. See [chatterbox.scratch.md](../../chatterbox.scratch.md)
 for the project context and [docs/chatterbox_investigation.md](../../docs/chatterbox_investigation.md)
 for the running design log.

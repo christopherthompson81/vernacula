@@ -17,7 +17,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       # ⚠ SUBMODULES ARE REQUIRED, and actions/checkout does not fetch them by default.
-      # Chatterbox.Base has a ProjectReference into external/espeak-ng-portable and
+      # Vernacula.Tts.Base has a ProjectReference into external/espeak-ng-portable and
       # Vernacula.Tts.CLI into external/vernacula-phonemizer, so without these the build fails
       # with MSB9008 (referenced project does not exist) followed by CS0234 on the namespace —
       # an error that looks like a missing package and is really a missing checkout.
@@ -41,8 +41,8 @@ jobs:
       - name: Test Vernacula.Base
         run: dotnet test tests/Vernacula.Tests --no-build -p:Platform=x64 -p:EP=Cpu
 
-      - name: Test Chatterbox
-        run: dotnet test tests/Chatterbox.Tests --no-build -p:Platform=x64 -p:EP=Cpu
+      - name: Test Vernacula.Tts.Base
+        run: dotnet test tests/Vernacula.Tts.Tests --no-build -p:Platform=x64 -p:EP=Cpu
 
       - name: Test AsrBackendCoverage
         run: dotnet test tests/AsrBackendCoverage --no-build -p:Platform=x64 -p:EP=Cpu

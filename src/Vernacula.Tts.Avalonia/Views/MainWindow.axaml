@@ -1,0 +1,285 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:vm="using:Vernacula.Tts.App.ViewModels"
+        xmlns:md="clr-namespace:Markdown.Avalonia;assembly=Markdown.Avalonia"
+        x:Class="Vernacula.Tts.App.Views.MainWindow"
+        x:DataType="vm:MainViewModel"
+        mc:Ignorable="d"
+        Width="1100" Height="720" MinWidth="800" MinHeight="500"
+        Title="Vernacula TTS Reader">
+
+    <Grid ColumnDefinitions="*,360" Margin="12">
+
+        <!-- ── Left pane: input + source view (toggleable) ────────────── -->
+        <Border Grid.Column="0" BorderBrush="#33ffffff" BorderThickness="1"
+                CornerRadius="4" Padding="12" Margin="0,0,12,0">
+            <Grid RowDefinitions="Auto,Auto,*">
+                <Grid Grid.Row="0" ColumnDefinitions="*,Auto" Margin="0,0,0,4">
+                    <TextBlock Text="Source text" FontWeight="SemiBold" VerticalAlignment="Center" />
+                    <CheckBox Grid.Column="1" Content="Render markdown"
+                              IsChecked="{Binding RenderMarkdown}"
+                              VerticalAlignment="Center" />
+                </Grid>
+
+                <TextBox Grid.Row="1" Text="{Binding Text}"
+                         AcceptsReturn="True" TextWrapping="Wrap"
+                         MinHeight="120" MaxHeight="220"
+                         IsEnabled="{Binding !IsBusy}"
+                         Watermark="Paste markdown or text here, or pick a file from the right pane." />
+
+                <!-- Source view: switches between the word-by-word highlight
+                     grid (for click-to-seek + reading along with playback)
+                     and a Markdown.Avalonia rendering of the raw input.
+                     Word-highlight only fires in the words view; the
+                     markdown view doesn't carry source-position mapping
+                     (deferred — needs a follow-up issue). -->
+                <Panel Grid.Row="2" Margin="0,12,0,0">
+                    <!-- Structured karaoke view: markdown blocks (headings, paragraphs,
+                         list items, quotes) each rendered as a wrapping flow of word
+                         buttons. Per-word font size/weight/style come from the word VM;
+                         block kind drives bullets / quote indent / spacing. -->
+                    <ScrollViewer IsVisible="{Binding !RenderMarkdown}">
+                        <ItemsControl ItemsSource="{Binding DisplayBlocks}">
+                            <ItemsControl.ItemsPanel>
+                                <ItemsPanelTemplate>
+                                    <StackPanel Orientation="Vertical" />
+                                </ItemsPanelTemplate>
+                            </ItemsControl.ItemsPanel>
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate x:DataType="vm:BlockItemViewModel">
+                                    <Border Classes.heading="{Binding IsHeading}"
+                                            Classes.quote="{Binding IsQuote}"
+                                            Classes.listitem="{Binding IsListItem}"
+                                            Classes.paragraph="{Binding IsParagraph}">
+                                        <Grid ColumnDefinitions="Auto,*">
+                                            <TextBlock Grid.Column="0" Text="•"
+                                                       IsVisible="{Binding IsListItem}"
+                                                       FontSize="18" Margin="2,2,8,0"
+                                                       VerticalAlignment="Top" Opacity="0.6" />
+                                            <ItemsControl Grid.Column="1" ItemsSource="{Binding Words}">
+                                                <ItemsControl.ItemsPanel>
+                                                    <ItemsPanelTemplate>
+                                                        <WrapPanel Orientation="Horizontal" />
+                                                    </ItemsPanelTemplate>
+                                                </ItemsControl.ItemsPanel>
+                                                <ItemsControl.ItemTemplate>
+                                                    <DataTemplate x:DataType="vm:WordItemViewModel">
+                                                        <!-- Borderless Button → click-to-seek.
+                                                             Font props come from the word VM
+                                                             (heading size, bold/italic); the
+                                                             code/link/current classes layer on. -->
+                                                        <Button Command="{Binding ClickCommand}"
+                                                                Content="{Binding Text}"
+                                                                Classes="word"
+                                                                FontSize="{Binding FontSize}"
+                                                                FontWeight="{Binding FontWeight}"
+                                                                FontStyle="{Binding FontStyle}"
+                                                                Classes.code="{Binding IsCode}"
+                                                                Classes.link="{Binding IsLink}"
+                                                                Classes.current="{Binding IsCurrent}" />
+                                                    </DataTemplate>
+                                                </ItemsControl.ItemTemplate>
+                                            </ItemsControl>
+                                        </Grid>
+                                    </Border>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </ScrollViewer>
+                    <md:MarkdownScrollViewer IsVisible="{Binding RenderMarkdown}"
+                                             Markdown="{Binding Text}" />
+                </Panel>
+            </Grid>
+        </Border>
+
+        <!-- ── Right pane: pickers, synthesize, playback ────────────── -->
+        <StackPanel Grid.Column="1" Spacing="10">
+            <!-- Pickers are disabled during synthesis. Changing the
+                 ONNX bundle mid-run would dispose the SynthesisService
+                 the running task is still calling into → use-after-dispose.
+                 Gating the buttons is cheaper than deferring invalidation.
+                 (Earlier versions also required a separate NFA bundle for
+                 word-highlight alignment; word timings now come from the
+                 Chatterbox LM's own cross-attention so only the one bundle
+                 is needed — see ChatterboxAttentionAligner.) -->
+            <!-- TTS backend picker. Switching flips the config panels below. -->
+            <TextBlock Text="TTS backend" FontWeight="SemiBold" />
+            <ComboBox ItemsSource="{Binding Backends}"
+                      SelectedItem="{Binding SelectedBackend}"
+                      IsEnabled="{Binding !IsBusy}"
+                      HorizontalAlignment="Stretch" />
+
+            <!-- ── Chatterbox config ─────────────────────────────── -->
+            <StackPanel Spacing="10" IsVisible="{Binding IsChatterbox}">
+                <TextBlock Text="Voice (.wav)" FontWeight="SemiBold" Margin="0,8,0,0" />
+                <Grid ColumnDefinitions="*,Auto">
+                    <TextBox Text="{Binding VoicePath}" IsReadOnly="True"
+                             Watermark="No voice picked" />
+                    <Button Grid.Column="1" Content="Pick…"
+                            Command="{Binding PickVoiceCommand}"
+                            IsEnabled="{Binding !IsBusy}" Margin="6,0,0,0" />
+                </Grid>
+
+                <TextBlock Text="Chatterbox ONNX bundle" FontWeight="SemiBold" Margin="0,8,0,0" />
+                <Grid ColumnDefinitions="*,Auto">
+                    <TextBox Text="{Binding OnnxBundleDir}" IsReadOnly="True"
+                             Watermark="No bundle picked" />
+                    <Button Grid.Column="1" Content="Pick…"
+                            Command="{Binding PickOnnxBundleCommand}"
+                            IsEnabled="{Binding !IsBusy}" Margin="6,0,0,0" />
+                </Grid>
+            </StackPanel>
+
+            <!-- ── Kokoro config ─────────────────────────────────── -->
+            <StackPanel Spacing="10" IsVisible="{Binding IsKokoro}">
+                <TextBlock Text="Kokoro model dir (kokoro.onnx + voices/)"
+                           FontWeight="SemiBold" Margin="0,8,0,0" />
+                <Grid ColumnDefinitions="*,Auto">
+                    <TextBox Text="{Binding KokoroModelDir}" IsReadOnly="True"
+                             Watermark="No model dir picked" />
+                    <Button Grid.Column="1" Content="Pick…"
+                            Command="{Binding PickKokoroModelDirCommand}"
+                            IsEnabled="{Binding !IsBusy}" Margin="6,0,0,0" />
+                </Grid>
+
+                <TextBlock Text="Phonemizer data dir (espeak-ng-portable/data)"
+                           FontWeight="SemiBold" Margin="0,8,0,0" />
+                <Grid ColumnDefinitions="*,Auto">
+                    <TextBox Text="{Binding KokoroDataDir}" IsReadOnly="True"
+                             Watermark="No data dir picked" />
+                    <Button Grid.Column="1" Content="Pick…"
+                            Command="{Binding PickKokoroDataDirCommand}"
+                            IsEnabled="{Binding !IsBusy}" Margin="6,0,0,0" />
+                </Grid>
+
+                <TextBlock Text="Voice" FontWeight="SemiBold" Margin="0,8,0,0" />
+                <ComboBox ItemsSource="{Binding KokoroVoices}"
+                          SelectedItem="{Binding KokoroVoice}"
+                          IsEnabled="{Binding !IsBusy}"
+                          HorizontalAlignment="Stretch" />
+
+                <TextBlock Text="{Binding KokoroSpeed, StringFormat='Speed: {0:F2}×'}"
+                           FontWeight="SemiBold" Margin="0,8,0,0" />
+                <Slider Minimum="0.5" Maximum="2.0" Value="{Binding KokoroSpeed}"
+                        IsEnabled="{Binding !IsBusy}" TickFrequency="0.1" />
+            </StackPanel>
+
+            <TextBlock Text="Text source" FontWeight="SemiBold" Margin="0,12,0,0" />
+            <Button Content="Load text/markdown file…"
+                    Command="{Binding PickTextFileCommand}"
+                    IsEnabled="{Binding !IsBusy}"
+                    HorizontalAlignment="Stretch" />
+
+            <Separator Margin="0,12,0,0" />
+
+            <!-- ── Synthesis ─────────────────────────────────────── -->
+            <TextBlock Text="Synthesis" FontWeight="SemiBold"
+                       Margin="0,4,0,2" />
+            <StackPanel Orientation="Horizontal" Spacing="6">
+                <Button Content="Synthesize"
+                        Command="{Binding SynthesizeCommand}"
+                        FontWeight="SemiBold" MinWidth="110" />
+                <!-- Cancel only enabled mid-run. Cancellation takes effect
+                     after the current chunk (the LM rollout is not
+                     interruptible); any chunks completed before cancel
+                     are saved as a partial WAV that Play can use. -->
+                <Button Content="Cancel"
+                        Command="{Binding CancelSynthesisCommand}"
+                        MinWidth="80" />
+            </StackPanel>
+            <!-- Determinate once TotalChunks > 0 (set by the "chunked into
+                 N paragraphs" progress event); indeterminate during the
+                 model-load + chunking prefix. -->
+            <ProgressBar IsVisible="{Binding IsBusy}"
+                         IsIndeterminate="{Binding !TotalChunks}"
+                         Minimum="0"
+                         Maximum="{Binding TotalChunks}"
+                         Value="{Binding ChunksDone}"
+                         ShowProgressText="True"
+                         ProgressTextFormat="{}{0:0} / {3:0} chunks"
+                         Height="14" Margin="0,4,0,0" />
+
+            <Separator Margin="0,12,0,0" />
+
+            <!-- ── Playback ──────────────────────────────────────── -->
+            <TextBlock Text="Playback" FontWeight="SemiBold"
+                       Margin="0,4,0,2" />
+            <StackPanel Orientation="Horizontal" Spacing="6">
+                <!-- Single toggle: label changes between ▶ Play /
+                     ⏸ Pause / ▶ Resume based on PlaybackService state. -->
+                <Button Content="{Binding PlayPauseLabel}"
+                        Command="{Binding PlayPauseCommand}"
+                        MinWidth="100" />
+                <Button Content="■ Stop" Command="{Binding StopCommand}"
+                        MinWidth="80" />
+            </StackPanel>
+            <TextBlock Text="{Binding PositionLabel}" Margin="0,4,0,0"
+                       Foreground="#999" />
+
+            <Separator Margin="0,12,0,0" />
+            <TextBlock Text="{Binding StatusMessage}" TextWrapping="Wrap"
+                       Foreground="#bbb" />
+        </StackPanel>
+
+    </Grid>
+
+    <Window.Styles>
+        <!-- Word buttons: borderless, transparent, click-to-seek. The
+             .current class is the highlight applied while the audio is
+             on that word. -->
+        <Style Selector="Button.word">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderBrush" Value="Transparent" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Padding" Value="2,1" />
+            <Setter Property="Margin" Value="0,0,2,0" />
+            <Setter Property="MinHeight" Value="0" />
+            <Setter Property="VerticalAlignment" Value="Center" />
+            <Setter Property="Cursor" Value="Hand" />
+        </Style>
+        <Style Selector="Button.word:pointerover /template/ ContentPresenter">
+            <Setter Property="Background" Value="#22ffffff" />
+        </Style>
+        <!-- Highlight (current spoken word). Foreground isn't bound per-word, so this
+             overrides regardless of heading/bold weight. -->
+        <Style Selector="Button.word.current /template/ ContentPresenter">
+            <Setter Property="Background" Value="#3355aadd" />
+        </Style>
+        <Style Selector="Button.word.current">
+            <Setter Property="Foreground" Value="#aef" />
+        </Style>
+        <!-- Inline code: monospace + subtle chip. -->
+        <Style Selector="Button.word.code">
+            <Setter Property="FontFamily" Value="Cascadia Code,Consolas,Menlo,monospace" />
+        </Style>
+        <Style Selector="Button.word.code /template/ ContentPresenter">
+            <Setter Property="Background" Value="#1affffff" />
+        </Style>
+        <!-- Links: accent + underline. -->
+        <Style Selector="Button.word.link">
+            <Setter Property="Foreground" Value="#6cf" />
+            <Setter Property="TextBlock.TextDecorations" Value="Underline" />
+        </Style>
+
+        <!-- Block containers: spacing (line breaks), quote indent. -->
+        <Style Selector="Border.heading">
+            <Setter Property="Margin" Value="0,14,0,2" />
+        </Style>
+        <Style Selector="Border.paragraph">
+            <Setter Property="Margin" Value="0,4,0,4" />
+        </Style>
+        <Style Selector="Border.listitem">
+            <Setter Property="Margin" Value="0,1,0,1" />
+        </Style>
+        <Style Selector="Border.quote">
+            <Setter Property="Margin" Value="0,6,0,6" />
+            <Setter Property="Padding" Value="10,2,0,2" />
+            <Setter Property="BorderThickness" Value="3,0,0,0" />
+            <Setter Property="BorderBrush" Value="#445" />
+            <Setter Property="Opacity" Value="0.85" />
+        </Style>
+    </Window.Styles>
+
+</Window>

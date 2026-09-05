@@ -1,5 +1,5 @@
 /**
- * Output post-processing — the TypeScript port of `Chatterbox.Base.OmniVoiceAudioPost`
+ * Output post-processing — the TypeScript port of `Vernacula.Tts.Base.OmniVoiceAudioPost`
  * (OmniVoice's `_post_process_audio`, via pydub).
  *
  * Order matters and is the Python order: remove silence -> volume -> fade + pad. Silence detection

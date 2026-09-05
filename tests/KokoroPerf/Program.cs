@@ -9,7 +9,7 @@
 // fp16/int8 quantization phase.
 
 using System.Diagnostics;
-using Chatterbox.Base;
+using Vernacula.Tts.Base;
 using Vernacula.Base.Models;
 
 string onnxDir = "/home/chris/Programming/vernacula/scripts/kokoro_export/external/kokoro_onnx";

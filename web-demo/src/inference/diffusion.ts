@@ -1,6 +1,6 @@
 /**
  * The greedy iterative-unmasking loop — the TypeScript port of
- * `Chatterbox.Base.OmniVoiceTts.RunDiffusion`.
+ * `Vernacula.Tts.Base.OmniVoiceTts.RunDiffusion`.
  *
  * Each step runs the transformer twice (classifier-free guidance), scores every masked
  * (codebook, position) slot, and commits the top-k most confident. Ported faithfully: the

@@ -11,7 +11,7 @@ namespace Vernacula.Base.Alignment;
 /// document this word came from) is deliberately NOT here — that's
 /// caller-side concern. The word-highlighting consumer in the
 /// Avalonia app combines these timings with the
-/// <see cref="Chatterbox.Base.Markdown.MarkdownTextExtractor"/>'s
+/// <see cref="Vernacula.Tts.Base.Markdown.MarkdownTextExtractor"/>'s
 /// source-range index by matching the aligner's emitted word text
 /// against the extracted text's word stream.
 /// </summary>
