@@ -2,13 +2,12 @@ name: dotnet-test
 
 on:
   push:
-    # ⚠ BOTH LONG-RUNNING BRANCHES. Every PR in this repo targets omnivoice-onnx-export, not main,
-    # so listing main alone meant post-merge CI never ran on the branch that holds the product —
-    # `pull_request` checks each PR in isolation, but nothing checked the merge RESULT, which is
-    # where two individually-green changes collide.
+    # `pull_request` checks each PR in isolation; this checks the merge RESULT on main, which is
+    # where two individually-green changes collide. (omnivoice-onnx-export was listed here too
+    # while it was the long-running branch every PR targeted; main fast-forwarded to it on
+    # 2026-09-05 and PRs target main again.)
     branches:
       - main
-      - omnivoice-onnx-export
   pull_request:
 
 jobs:
