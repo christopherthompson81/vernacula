@@ -144,7 +144,7 @@
                             IsEnabled="{Binding !IsBusy}" Margin="6,0,0,0" />
                 </Grid>
 
-                <TextBlock Text="Phonemizer data dir (espeak-ng-portable/data)"
+                <TextBlock Text="Phonemizer data dir (vernacula-phonemizer/data)"
                            FontWeight="SemiBold" Margin="0,8,0,0" />
                 <Grid ColumnDefinitions="*,Auto">
                     <TextBox Text="{Binding KokoroDataDir}" IsReadOnly="True"

@@ -4,7 +4,7 @@ namespace Vernacula.Tts.Base;
 /// Phoneme → token-id map for hexgrad/Kokoro-82M (the model's <c>vocab</c>,
 /// 114 entries, ids sparse over 1..177; id 0 is the padding token used to
 /// bracket the sequence). Keys are single Kokoro-alphabet phoneme codepoints
-/// as produced by <c>Vernacula.Phonemizer.KokoroFormat.Render</c>.
+/// as produced by <see cref="KokoroFormat.Render"/>.
 ///
 /// GENERATED from <c>KModel.vocab</c> by
 /// <c>scripts/kokoro_export/export_voices.py</c>'s sibling vocab dump

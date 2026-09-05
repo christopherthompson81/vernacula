@@ -19,7 +19,7 @@ public sealed record KokoroOutput(float[] Audio, long[] PredDur, long[] InputIds
 ///
 /// The graph entry point is <c>forward_with_tokens</c> — the G2P frontend is
 /// outside the graph. Callers supply a Kokoro-alphabet phoneme string (from
-/// <c>Vernacula.Phonemizer.KokoroFormat.Render</c>); this class handles
+/// <see cref="KokoroFormat.Render"/>); this class handles
 /// tokenization (<see cref="KokoroVocab"/>), voice-style selection, and the
 /// ONNX run. See scripts/kokoro_export and docs/kokoro_onnx_investigation.md.
 ///

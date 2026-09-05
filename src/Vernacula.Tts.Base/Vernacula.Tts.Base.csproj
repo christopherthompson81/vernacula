@@ -8,7 +8,7 @@
     <AssemblyName>Vernacula.Tts.Base</AssemblyName>
     <!--
       EP is passed by consuming projects (Vernacula.Tts.Backends.CLI, Vernacula.Tts.Avalonia,
-      and the ChatterboxSmoke test). Mirrors the pattern in Vernacula.Base —
+      Vernacula.Tts.CLI and the smoke tests). Mirrors the pattern in Vernacula.Base —
       PrivateAssets="all" keeps the package out of consumers' output; each
       consumer brings its own OnnxRuntime variant.
     -->
@@ -52,19 +52,16 @@
       <Private>true</Private>
       <SetConfiguration>EP=$(EP)</SetConfiguration>
     </ProjectReference>
-    <!-- Kokoro G2P frontend: pure-C# espeak-ng port + KokoroFormat render target.
-         Vendored as a git submodule under external/ (data/ language files ship
-         with it). Used by KokoroTts to turn text into Kokoro phonemes.
+    <!-- The phonemizer: canonical IPA for the IPA-conditioned OmniVoice path (Vernacula.Tts.CLI) and,
+         rendered through KokoroFormat, Kokoro's G2P. Vendored as a git submodule under external/;
+         its data/ tree is located at runtime by PhonemizerData.
 
-         ⚠ PrivateAssets="all" — DO NOT DROP. This assembly is named Vernacula.Phonemizer, and so
-         is the SEPARATE, newer external/vernacula-phonemizer that Vernacula.Tts.CLI uses. When
-         both reach one output directory they are the same filename: the copy silently wins,
-         no warning, and whichever library lost fails at runtime with a TypeLoadException.
-         KokoroTts is the only thing in this repo that touches these types, so nothing needs the
-         reference transitively — the three projects that USE Kokoro carry their own direct
-         reference instead (Vernacula.Tts.Backends.CLI, Vernacula.Tts.Avalonia, tests/KokoroPerf). -->
-    <ProjectReference Include="..\..\external\espeak-ng-portable\csharp\src\Vernacula.Phonemizer\Vernacula.Phonemizer.csproj"
-                      PrivateAssets="all" />
+         ⚠ Its Microsoft.ML.OnnxRuntime reference is a PLAIN (CPU) one, not PrivateAssets="all"
+         like the EP-selected package above, so it flows transitively into every consumer of this
+         project. A Cuda/DirectML consumer must outrank it with a direct ExcludeAssets="all"
+         reference or the CPU native library lands next to the GPU one and whichever copies last
+         wins — see Vernacula.Tts.CLI.csproj for the block and the explanation. -->
+    <ProjectReference Include="..\..\external\vernacula-phonemizer\csharp\Vernacula.Phonemizer\Vernacula.Phonemizer.csproj" />
   </ItemGroup>
 
 </Project>

@@ -2,9 +2,6 @@ using System.Text;
 using System.Text.RegularExpressions;
 using Vernacula.Tts.Base.Markdown;
 using Vernacula.Base.Models;
-using Vernacula.Phonemizer;
-using Vernacula.Phonemizer.Data;
-using Vernacula.Phonemizer.Types;
 
 namespace Vernacula.Tts.Base;
 
@@ -15,33 +12,25 @@ public sealed record KokoroWord(string Text, double StartSec, double EndSec);
 public sealed record KokoroSpeech(float[] Audio, IReadOnlyList<KokoroWord> Words);
 
 /// <summary>
-/// End-to-end Kokoro-82M text-to-speech: text → phonemes → audio. Composes the
-/// pure-C# espeak-ng port (<see cref="Phonemize"/>), the Kokoro render format
-/// (<see cref="KokoroFormat"/>), and the ONNX inference path (<see cref="Kokoro"/>).
-///
-/// G2P uses the misaki-style frontend for English: phonemize to IPA, then render
-/// to Kokoro's alphabet. The phonemizer needs its language data directory (the
-/// <c>data/</c> tree shipped with the espeak-ng-portable submodule) — pass its
-/// path as <c>phonemizerDataDir</c>; en/en-gb subfolders are loaded from there.
+/// End-to-end Kokoro-82M text-to-speech: text → phonemes → audio. Composes the G2P frontend
+/// (<see cref="KokoroPhonemizer"/>: vernacula-phonemizer IPA rendered into Kokoro's alphabet by
+/// <see cref="KokoroFormat"/>) and the ONNX inference path (<see cref="Kokoro"/>).
 ///
 /// Not thread-safe (wraps <see cref="Kokoro"/> / ORT). One instance per caller.
 /// </summary>
 public sealed class KokoroTts : IDisposable
 {
     private readonly Kokoro _kokoro;
-    private readonly string _dataDir;
-    private readonly Language _enUs;
-    private Language? _enGb;
+    private readonly KokoroPhonemizer _g2p;
 
     /// <param name="onnxDir">Directory holding kokoro.onnx and voices/.</param>
-    /// <param name="phonemizerDataDir">The espeak-ng-portable <c>data/</c> directory
-    /// (contains <c>en/</c>, <c>en-gb/</c>, …).</param>
-    public KokoroTts(string onnxDir, string phonemizerDataDir, ExecutionProvider ep,
+    /// <param name="phonemizerDataDir">The vernacula-phonemizer <c>data/</c> root, or null to
+    /// resolve it (VERNACULA_DATA_DIR, then the submodule — see <see cref="PhonemizerData"/>).</param>
+    public KokoroTts(string onnxDir, string? phonemizerDataDir, ExecutionProvider ep,
                      SessionLoadObserver? onLoad = null)
     {
+        _g2p = new KokoroPhonemizer(phonemizerDataDir);   // before the model: the cheaper failure first
         _kokoro = new Kokoro(onnxDir, ep, onLoad);
-        _dataDir = phonemizerDataDir;
-        _enUs = LanguageLoader.Load("en", Path.Combine(_dataDir, "en"));
     }
 
     /// <summary>Output sample rate (24 kHz).</summary>
@@ -65,7 +54,7 @@ public sealed class KokoroTts : IDisposable
     /// </summary>
     public KokoroSpeech SpeakAligned(string text, string voice, float speed = 1.0f, bool british = false)
     {
-        var (phonemes, groupSourceWords) = ToPhonemesWithSourceMap(text, british);
+        var (phonemes, groupSourceWords) = _g2p.Phonemize(text, british);
         var o = _kokoro.SynthesizeWithDurations(phonemes, voice, speed);
         if (o.Audio.Length == 0)
             return new KokoroSpeech([], []);
@@ -96,7 +85,7 @@ public sealed class KokoroTts : IDisposable
         var sourceWords = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
         var words = new List<KokoroWord>(sourceWords.Length);
 
-        if (runs.Count == groupSourceWords.Count && sourceWords.Length > 0)
+        if (groupSourceWords is not null && runs.Count == groupSourceWords.Count && sourceWords.Length > 0)
         {
             // Collect each source word's group span. A word's groups are contiguous and in
             // time order, so first start / last end gives its [start, end].
@@ -158,8 +147,7 @@ public sealed class KokoroTts : IDisposable
     }
 
     /// <summary>Inner phoneme-token count (excludes the 2 pad tokens) for <paramref name="text"/>.</summary>
-    public int CountTokens(string text, bool british = false)
-        => System.Math.Max(0, KokoroVocab.Encode(ToPhonemes(text, british)).Length - 2);
+    public int CountTokens(string text, bool british = false) => _g2p.CountTokens(text, british);
 
     private void SplitToTokenBudget(string chunk, bool british, List<string> output)
     {
@@ -224,48 +212,7 @@ public sealed class KokoroTts : IDisposable
     /// Text → Kokoro-alphabet phoneme string, without running the vocoder. Useful
     /// for inspection, caching, or feeding <see cref="Kokoro.Synthesize"/> directly.
     /// </summary>
-    public string ToPhonemes(string text, bool british = false)
-        => ToPhonemesWithSourceMap(text, british).Phonemes;
-
-    // Phonemize + render + punctuation re-injection, also returning one source-word index
-    // per output phoneme group. Render (per-char) and ReinjectPunctuation (clause join)
-    // preserve group order and count, so the map stays 1:1 with the final token runs.
-    private (string Phonemes, IReadOnlyList<int> GroupSourceWords) ToPhonemesWithSourceMap(string text, bool british)
-    {
-        var lang = british ? (_enGb ??= LanguageLoader.Load("en-gb", Path.Combine(_dataDir, "en-gb"))) : _enUs;
-        var (ipa, groupSourceWords) = Phonemize.RunWithSourceWords(text, lang);
-        var kok = KokoroFormat.Render(ipa, british);
-        return (ReinjectPunctuation(kok, text), groupSourceWords);
-    }
-
-    // The phonemizer collapses every clause/sentence punctuation mark to a single
-    // '\n' and drops the final one — but Kokoro's vocab carries punctuation tokens
-    // (',' '.' ';' …) that drive its prosodic pauses. Re-inject them by correlating
-    // the source text's clause punctuation (in order) with the '\n' breaks: the i-th
-    // break and the trailing position get the i-th source mark. Number-internal dots
-    // (e.g. "3.14", normalized to words upstream) produce no break and are excluded
-    // so the alignment holds. Defaults to a comma if a mark is somehow missing.
-    private static readonly Regex ClausePunctRe = new(@"[,;:!?…—]|(?<![0-9])\.(?![0-9])", RegexOptions.Compiled);
-
-    private static string ReinjectPunctuation(string kokoro, string sourceText)
-    {
-        var clauses = kokoro.Split('\n');
-        if (clauses.Length == 1 && !ClausePunctRe.IsMatch(sourceText))
-            return kokoro;
-
-        var marks = ClausePunctRe.Matches(sourceText);
-        var sb = new StringBuilder(kokoro.Length + clauses.Length);
-        for (var i = 0; i < clauses.Length; i++)
-        {
-            sb.Append(clauses[i]);
-            var mark = i < marks.Count ? marks[i].Value : (i < clauses.Length - 1 ? "," : "");
-            if (mark.Length == 1 && KokoroVocab.Contains(mark[0]))
-                sb.Append(mark);
-            if (i < clauses.Length - 1)
-                sb.Append(' ');
-        }
-        return sb.ToString();
-    }
+    public string ToPhonemes(string text, bool british = false) => _g2p.ToPhonemes(text, british);
 
     public void Dispose() => _kokoro.Dispose();
 }

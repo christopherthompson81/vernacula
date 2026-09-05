@@ -202,8 +202,10 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             SelectedBackend = Enum.TryParse<TtsBackendKind>(_settings.Current.TtsBackend, out var b)
                 ? b : TtsBackendKind.Chatterbox;
             KokoroModelDir = _settings.Current.KokoroModelDir;
-            KokoroDataDir = string.IsNullOrWhiteSpace(_settings.Current.KokoroDataDir)
-                ? (ResolveDefaultKokoroDataDir() ?? "") : _settings.Current.KokoroDataDir;
+            // A saved dir that is not a phonemizer data root is a path from before the Kokoro
+            // frontend moved to vernacula-phonemizer; re-resolve rather than fail at load time.
+            KokoroDataDir = PhonemizerData.IsDataRoot(_settings.Current.KokoroDataDir ?? "")
+                ? _settings.Current.KokoroDataDir : (PhonemizerData.Resolve(null) ?? "");
             KokoroVoice = _settings.Current.KokoroVoice;
             KokoroSpeed = _settings.Current.KokoroSpeed > 0 ? _settings.Current.KokoroSpeed : 1.0f;
             RefreshKokoroVoices();
@@ -230,7 +232,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         {
             TtsBackendKind.Kokoro =>
                 !DirExists(KokoroModelDir) ? $"Kokoro model dir not found: {Describe(KokoroModelDir)}"
-                : !DirExists(KokoroDataDir) ? $"espeak-ng data dir not found: {Describe(KokoroDataDir)}"
+                : !PhonemizerData.IsDataRoot(KokoroDataDir) ? $"vernacula-phonemizer data dir not found: {Describe(KokoroDataDir)}"
                 : string.IsNullOrWhiteSpace(KokoroVoice) ? "No Kokoro voice selected."
                 : null,
             _ =>
@@ -328,20 +330,6 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             KokoroVoice = KokoroVoices[0];
     }
 
-    // Best-effort default for the phonemizer data dir: walk up from the app
-    // base dir looking for the espeak-ng-portable submodule's data/ tree.
-    private static string? ResolveDefaultKokoroDataDir()
-    {
-        var dir = AppContext.BaseDirectory;
-        for (var i = 0; i < 8 && dir is not null; i++)
-        {
-            var candidate = Path.Combine(dir, "external", "espeak-ng-portable", "data");
-            if (Directory.Exists(candidate)) return candidate;
-            dir = Path.GetDirectoryName(dir.TrimEnd(Path.DirectorySeparatorChar));
-        }
-        return null;
-    }
-
     private void InvalidateSynthService()
     {
         var stale = _synthService;
@@ -376,7 +364,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     [RelayCommand]
     private async Task PickKokoroDataDirAsync()
     {
-        var path = await PickFolderAsync("Pick the espeak-ng-portable data/ directory");
+        var path = await PickFolderAsync("Pick the vernacula-phonemizer data/ directory");
         if (path is not null) KokoroDataDir = path;
     }
 

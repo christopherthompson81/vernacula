@@ -1,7 +1,7 @@
 // Kokoro TTS performance harness — latency / real-time-factor across providers.
 //
 //   dotnet run -c Release --project tests/KokoroPerf -- \
-//       --onnx-dir <dir> --data-dir <espeak data/> --ep cuda --iters 10
+//       --onnx-dir <dir> [--data-dir <vernacula-phonemizer data/>] --ep cuda --iters 10
 //
 // Reports session-load time and steady-state per-utterance latency + RTF
 // (audio_seconds / inference_seconds; higher = faster than real time) over a
@@ -13,7 +13,7 @@ using Vernacula.Tts.Base;
 using Vernacula.Base.Models;
 
 string onnxDir = "/home/chris/Programming/vernacula/scripts/kokoro_export/external/kokoro_onnx";
-string dataDir = "/home/chris/Programming/vernacula/external/espeak-ng-portable/data";
+string? dataDir = null;   // vernacula-phonemizer data/; null = resolve from the submodule
 var ep = ExecutionProvider.Cuda;
 var voice = "af_heart";
 var iters = 10;

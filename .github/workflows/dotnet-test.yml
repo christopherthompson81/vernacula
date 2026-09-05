@@ -17,11 +17,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       # ⚠ SUBMODULES ARE REQUIRED, and actions/checkout does not fetch them by default.
-      # Vernacula.Tts.Base has a ProjectReference into external/espeak-ng-portable and
-      # Vernacula.Tts.CLI into external/vernacula-phonemizer, so without these the build fails
+      # Vernacula.Tts.Base and Vernacula.Tts.CLI have ProjectReferences into
+      # external/vernacula-phonemizer, so without it the build fails
       # with MSB9008 (referenced project does not exist) followed by CS0234 on the namespace —
       # an error that looks like a missing package and is really a missing checkout.
-      # It passed on main only because main has neither reference.
+      # It passed on main only because main has no such reference.
       - name: Checkout
         uses: actions/checkout@v7
         with:
