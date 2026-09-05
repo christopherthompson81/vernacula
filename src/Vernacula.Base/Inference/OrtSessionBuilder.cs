@@ -75,11 +75,7 @@ public static class OrtSessionBuilder
                 catch (Exception ex)
                 {
                     throw new InvalidOperationException(
-                        "Could not initialise the CUDA execution provider. This build links CUDA "
-                        + $"{HardwareInfo.RequiredCudaMajor}, and an older CUDA runtime cannot load it "
-                        + "(the major version is part of the library name), so that is the first thing "
-                        + "to check; a missing driver, no visible GPU, or a CPU-only build of ONNX "
-                        + "Runtime will report the same failure. Run on the CPU instead with the "
+                        HardwareInfo.CudaUnavailableMessage() + " Run on the CPU instead with the "
                         + "application's Cpu execution-provider setting, or build with -p:EP=Cpu.", ex);
                 }
                 break;

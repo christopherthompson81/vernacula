@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk" InitialTargets="RequireDirectMlExecutionProvider">
 
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
@@ -90,7 +90,10 @@
        reach a ProjectReference. So -p:UseDirectML=true built the shared library against the CUDA
        runtime's managed assembly while the app shipped DirectML's: a version skew that surfaces
        as a failure at the first session. Both have to be passed. -->
-  <Target Name="RequireDirectMlExecutionProvider" BeforeTargets="BeforeBuild"
+  <!-- InitialTargets, not BeforeBuild: with UseDirectML alone, OnnxRuntimeVersion is
+       still the CUDA one and restore fails on a DirectML package that has no such
+       version, so a BeforeBuild guard never got the chance to explain. -->
+  <Target Name="RequireDirectMlExecutionProvider"
           Condition="'$(UseDirectML)' == 'true' AND '$(EP)' != 'DirectML'">
     <Error Text="Building with UseDirectML=true also needs -p:EP=DirectML, so the shared library resolves the same ONNX Runtime the app ships. Pass both: dotnet build -p:UseDirectML=true -p:EP=DirectML" />
   </Target>

@@ -303,7 +303,7 @@ public sealed class VoxLinguaLid : IDisposable
             case ExecutionProvider.Cuda:
                 try { opts.AppendExecutionProvider_CUDA(0); }
                 catch (EntryPointNotFoundException)
-                { throw new InvalidOperationException("CUDA EP not available."); }
+                { throw new InvalidOperationException(HardwareInfo.CudaUnavailableMessage()); }
                 break;
             case ExecutionProvider.DirectML:
                 try { opts.AppendExecutionProvider_DML(0); }
