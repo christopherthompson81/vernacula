@@ -159,6 +159,10 @@ public sealed partial class WordItemViewModel : ObservableObject
     /// </summary>
     public double LineHeight => Math.Ceiling(FontSize * LineBox);
 
+    /// <summary>The font this word is set in: the UI font, unless its script needs a specific
+    /// face (see <see cref="ScriptFonts"/>).</summary>
+    public FontFamily FontFamily => ScriptFonts.For(Text);
+
     /// <summary>The ruby line's fixed height, on the same reasoning.</summary>
     public double IpaLineHeight => Math.Ceiling(IpaFontSize * LineBox);
 

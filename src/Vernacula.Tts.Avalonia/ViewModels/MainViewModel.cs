@@ -134,6 +134,10 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     // across runs.
     [ObservableProperty] private bool _renderMarkdown;
 
+    // The font the source box and the markdown view are set in — the UI font, unless the document
+    // is in a script that needs a specific face.
+    [ObservableProperty] private Avalonia.Media.FontFamily _textFontFamily = ScriptFonts.Default;
+
     // Which way the source box and the markdown view read. Same rule as the karaoke blocks, so a
     // Persian document is edited right to left instead of being typed into a left-aligned box.
     [ObservableProperty] private Avalonia.Media.FlowDirection _textFlowDirection
@@ -408,6 +412,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     // (skip during synthesis — the stream is filling the words and the box is disabled).
     partial void OnTextChanged(string value)
     {
+        TextFontFamily = ScriptFonts.For(value);
         TextFlowDirection = TextDirection.Resolve(value, LanguageCatalog.IsRightToLeft(AnnotationLang))
             ? Avalonia.Media.FlowDirection.RightToLeft : Avalonia.Media.FlowDirection.LeftToRight;
         if (!IsBusy) { BuildDisplayStructure(value); _streamWordCursor = 0; }
