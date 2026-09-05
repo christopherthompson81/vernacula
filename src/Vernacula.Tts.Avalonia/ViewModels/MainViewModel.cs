@@ -420,7 +420,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     }
     partial void OnOmniVoiceLangChanged(string value)
     {
-        RefreshOmniVoiceVoices(OmniVoiceVoice?.Id);
+        // A new language gets its default voice, not whichever voice the last language left behind.
+        RefreshOmniVoiceVoices(keepId: null);
         PersistSettings();
         UpdatePrerequisiteStatus();
     }
@@ -466,14 +467,16 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         FileExists(OmniVoiceTokenizerJson) ? OmniVoiceTokenizerJson
         : DirExists(OmniVoiceOnnxDir) ? OmniVoiceIpaTts.LocateTokenizerJson(OmniVoiceOnnxDir) : null;
 
-    // Reload the library and re-pick: keep the selection when it is still a candidate for the
-    // language; otherwise the language's `default` entry, else the first candidate.
+    // Reload the library and re-pick: keep the selection when a keepId was given and it is still
+    // a candidate for the language; otherwise the candidates' `default` entry (the candidates are
+    // already one language tier, so that is the language's own default, or its donor's), else the
+    // first candidate.
     private void RefreshOmniVoiceVoices(string? keepId)
     {
         _allOmniVoiceVoices = StoredVoice.IsLibrary(OmniVoiceVoiceLib)
             ? SafeListVoices(OmniVoiceVoiceLib) : Array.Empty<StoredVoice.Info>();
         var candidates = VoiceCandidates();
-        OmniVoiceVoice = candidates.FirstOrDefault(v => v.Id == keepId)
+        OmniVoiceVoice = (keepId is null ? null : candidates.FirstOrDefault(v => v.Id == keepId))
             ?? candidates.FirstOrDefault(v => v.IsDefault)
             ?? candidates.FirstOrDefault();
         OmniVoiceVoiceQuery = OmniVoiceVoice?.ToString() ?? "";
