@@ -12,7 +12,7 @@
  * almost exclusively. Shipping precomputed reference codes fixes that AND drops 654 MB.
  */
 import type * as ort from "onnxruntime-web";
-import { getOrt, type Ort } from "./ortInit.ts";
+import { getOrt, type Ort, pickExecutionProvider, type Ep } from "./ortInit.ts";
 import { Qwen3Tokenizer } from "./qwen3Tokenizer.ts";
 import { addPunctuation, prepare, NUM_CODEBOOKS } from "./textPrep.ts";
 import { estimateTargetTokens } from "./duration.ts";
@@ -50,11 +50,12 @@ export interface Voice {
   sex?: "M" | "F";
 }
 
-export interface Backend { ep: "webgpu" | "wasm"; }
+export interface Backend { ep: Ep; }
 
 /** Force an execution provider (tests/debugging). Unset = auto. */
-export let forcedEp: "webgpu" | "wasm" | undefined;
-export function setForcedEp(ep: "webgpu" | "wasm" | undefined) { forcedEp = ep; }
+// The EP choice lives in ortInit.ts, because ORT's proxy setting depends on it and must be made
+// before the first session; re-exported so the smoke tools keep their hooks.
+export { forcedEp, setForcedEp, pickExecutionProvider } from "./ortInit.ts";
 
 /**
  * Execution provider for the DECODER only.
@@ -73,8 +74,8 @@ export function setForcedEp(ep: "webgpu" | "wasm" | undefined) { forcedEp = ep; 
  * The cost is negligible: the transformer runs 64 times per generation (32 steps x 2 CFG passes)
  * and the decoder once, so this buys correctness for about 1 s out of 20.
  */
-export let decoderEp: "webgpu" | "wasm" | undefined = "wasm";
-export function setDecoderEp(ep: "webgpu" | "wasm" | undefined) { decoderEp = ep; }
+export let decoderEp: Ep | undefined = "wasm";
+export function setDecoderEp(ep: Ep | undefined) { decoderEp = ep; }
 
 /** Graph optimization level override (tests/debugging). Fusions change numerics, and this loop is
  *  precision-sensitive — the C# CUDA path disables TF32 for the same reason. */
@@ -143,7 +144,7 @@ export class OmniVoice {
 
   static async load(o: LoadOptions): Promise<OmniVoice> {
     const ORT = await getOrt();
-    const ep = forcedEp ?? await pickExecutionProvider();
+    const ep = await pickExecutionProvider();
     if (ep === "webgpu") await useMaxLimitsDevice();
     o.onProgress?.(`execution provider: ${ep}`);
 
@@ -324,10 +325,3 @@ async function useMaxLimitsDevice(): Promise<void> {
   } catch { /* fall back to ORT's own default-limits device */ }
 }
 
-export async function pickExecutionProvider(): Promise<"webgpu" | "wasm"> {
-  try {
-    const gpu = (navigator as unknown as { gpu?: { requestAdapter(): Promise<unknown> } }).gpu;
-    if (gpu && (await gpu.requestAdapter())) return "webgpu";
-  } catch { /* fall through to wasm */ }
-  return "wasm";
-}

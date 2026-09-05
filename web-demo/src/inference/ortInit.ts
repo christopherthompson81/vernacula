@@ -62,6 +62,26 @@ export const threadingUnavailableReason: string | null =
     : "single-threaded — WASM threads need SharedArrayBuffer, so a cross-origin-isolated page "
       + "(COOP/COEP) served from a secure context. Generation is several times slower without them.";
 
+/**
+ * Which execution provider the TTS session will use: WebGPU where an adapter exists, WASM
+ * otherwise. Decided HERE, before ORT is configured, because one ORT setting depends on it (below).
+ * The difference is not cosmetic — measured on an RTX 3090 at 16 steps: WebGPU/Chrome 177 ms per
+ * forward (~2.8 s per phrase) against 1295 ms on 8-thread WASM (~20.7 s).
+ */
+export type Ep = "webgpu" | "wasm";
+export let forcedEp: Ep | undefined;
+/** Test hook: override the adapter probe. Must be called before the first getOrt(). */
+export function setForcedEp(ep: Ep | undefined) { forcedEp = ep; }
+
+export async function pickExecutionProvider(): Promise<Ep> {
+  if (forcedEp) return forcedEp;
+  try {
+    const gpu = (navigator as unknown as { gpu?: { requestAdapter(): Promise<unknown> } }).gpu;
+    if (gpu && (await gpu.requestAdapter())) return "webgpu";
+  } catch { /* fall through to wasm */ }
+  return "wasm";
+}
+
 let cached: Promise<Ort> | undefined;
 
 /** The ORT module, loaded once. Await this instead of importing onnxruntime-web directly. */
@@ -72,11 +92,19 @@ export function getOrt(): Promise<Ort> {
     ort.env.wasm.wasmPaths = BASE;
     ort.env.logLevel = "warning";
     ort.env.wasm.numThreads = wasmThreads();
-    // ⚠ RUN THE WASM IN A WORKER. Without this the session executes on the MAIN thread, so a
-    // generation freezes the page for its whole duration and Firefox raises "this tab is slowing
-    // Firefox down" — which is true, and which no amount of threading fixes, because the threads
-    // ORT spawns still join back on a blocked main thread. `proxy` moves the session itself off it.
-    ort.env.wasm.proxy = true;
+    // ⚠ RUN THE WASM IN A WORKER — BUT ONLY ON THE WASM PATH. Without `proxy` a WASM session
+    // executes on the MAIN thread, so a generation freezes the page for its whole duration and
+    // Firefox raises "this tab is slowing Firefox down" — true, and no amount of threading fixes
+    // it, because the threads ORT spawns still join back on a blocked main thread.
+    //
+    // ⚠ AND `proxy` MUST BE OFF FOR WEBGPU. In proxy mode ORT posts its `env` to the worker, and
+    // the GPUDevice that useMaxLimitsDevice puts in `env.webgpu.device` cannot be cloned:
+    // `DataCloneError: GPUDevice object could not be cloned` → "no available backend found" →
+    // the demo could not generate at all on any browser with a WebGPU adapter (Chrome, and
+    // Firefox with dom.webgpu.enabled) from the commit that turned proxy on until this one. The
+    // GPU does its work asynchronously, so the WebGPU path does not need the worker to keep the
+    // tab responsive; only the CPU path does.
+    ort.env.wasm.proxy = (await pickExecutionProvider()) === "wasm";
     return ort;
   })();
   return cached;
