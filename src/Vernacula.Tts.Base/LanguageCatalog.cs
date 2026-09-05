@@ -33,6 +33,14 @@ public static partial class LanguageCatalog
     /// acoustic: the reference carries the speaker's accent, so a donor is always a near neighbour
     /// (Faroese read by Icelandic, Sesotho by Sepedi) rather than a default English voice.
     /// </summary>
+    /// <summary>
+    /// True when <paramref name="code"/> is written right to left. Read from the language's own
+    /// endonym, which is written in its own script -- so this stays correct as the catalog is
+    /// regenerated, with no list of right-to-left codes to maintain alongside it.
+    /// </summary>
+    public static bool IsRightToLeft(string? code) =>
+        ByCode(code ?? "") is { Native: var native } && TextDirection.IsRightToLeft(native);
+
     public static string VoiceLangOf(string code) => ByCode(code)?.Voice ?? code;
 
     /// <summary>
