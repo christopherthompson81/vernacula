@@ -5,7 +5,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <IsPackable>false</IsPackable>
-    <!-- CPU-only test host. Same convention as tests/Chatterbox.Tests:
+    <!-- CPU-only test host. Same convention as tests/Vernacula.Tts.Tests:
          override the Vernacula.Base EP to Cpu so the test process doesn't
          need CUDA at runtime. CtcForcedAlignment is pure-CPU. -->
     <Platforms>x64</Platforms>

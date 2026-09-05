@@ -35,7 +35,7 @@ TEST_ARGS=(--no-build -p:Platform=x64 -p:EP=Cpu)
 # their skips are a deliberate default, not rot.
 PROJECTS=(
   "tests/Vernacula.Tests	0"
-  "tests/Chatterbox.Tests	0"
+  "tests/Vernacula.Tts.Tests	0"
   "tests/AsrBackendCoverage	0"
   "tests/IndicConformerTest	1"
 )

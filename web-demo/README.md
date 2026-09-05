@@ -67,7 +67,7 @@ language rather than shipping the 151 MB tree.
 
 ### Work item 2 — the diffusion loop in TypeScript
 
-`Chatterbox.Base.OmniVoiceTts.RunDiffusion` has to be ported: CFG batch, shifted-timestep schedule,
+`Vernacula.Tts.Base.OmniVoiceTts.RunDiffusion` has to be ported: CFG batch, shifted-timestep schedule,
 guidance log-prob mix, layer penalty, top-k unmask, scatter. It is the one genuinely novel port; the
 graphs themselves are just `session.run`.
 

@@ -9,10 +9,10 @@
   <Project Path="src/Vernacula.Base/Vernacula.Base.csproj">
     <Platform Project="x64" />
   </Project>
-  <Project Path="src/Chatterbox.Base/Chatterbox.Base.csproj">
+  <Project Path="src/Vernacula.Tts.Base/Vernacula.Tts.Base.csproj">
     <Platform Project="x64" />
   </Project>
-  <Project Path="src/Chatterbox.CLI/Chatterbox.CLI.csproj">
+  <Project Path="src/Vernacula.Tts.Backends.CLI/Vernacula.Tts.Backends.CLI.csproj">
     <Platform Project="x64" />
   </Project>
   <Project Path="src/Vernacula.Tts.CLI/Vernacula.Tts.CLI.csproj">
@@ -24,7 +24,7 @@
   <Project Path="src/Vernacula.Avalonia/Vernacula.Avalonia.csproj">
     <Platform Project="x64" />
   </Project>
-  <Project Path="src/Chatterbox.Avalonia/Chatterbox.Avalonia.csproj">
+  <Project Path="src/Vernacula.Tts.Avalonia/Vernacula.Tts.Avalonia.csproj">
     <Platform Project="x64" />
   </Project>
   <Project Path="tests/IndicConformerTest/IndicConformerTest.csproj">
@@ -33,7 +33,7 @@
   <Project Path="tests/AsrBackendCoverage/AsrBackendCoverage.csproj">
     <Platform Project="x64" />
   </Project>
-  <Project Path="tests/Chatterbox.Tests/Chatterbox.Tests.csproj">
+  <Project Path="tests/Vernacula.Tts.Tests/Vernacula.Tts.Tests.csproj">
     <Platform Project="x64" />
   </Project>
   <Project Path="tests/Vernacula.Tests/Vernacula.Tests.csproj">

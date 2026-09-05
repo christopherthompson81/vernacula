@@ -1,7 +1,7 @@
 // OmniVoice TTS — C# end-to-end smoke test.
 //
 // Drives the full C# pipeline (Qwen3 tokenizer + duration estimate + text prep + the three
-// ONNX graphs + the greedy diffusion loop in Chatterbox.Base.OmniVoiceTts) to synthesise a
+// ONNX graphs + the greedy diffusion loop in Vernacula.Tts.Base.OmniVoiceTts) to synthesise a
 // WAV, for the listen-test against the Python reference. Defaults reproduce the Phase-1
 // capture (capture/ref_voice.wav + transcript, English, num_step 16) so outputs line up.
 //
@@ -14,7 +14,7 @@
 //       --text "Hello, ..." --out /tmp/omnivoice_cs.wav --ep cpu --num-step 16
 
 using System.Diagnostics;
-using Chatterbox.Base;
+using Vernacula.Tts.Base;
 using NAudio.Wave;
 using Vernacula.Base;
 using Vernacula.Base.Inference;
@@ -176,7 +176,7 @@ internal static class Program
             "cpu" => ExecutionProvider.Cpu,
             _ => ExecutionProvider.Auto,
         };
-        var diff = new Chatterbox.Base.OmniVoiceDiff();
+        var diff = new Vernacula.Tts.Base.OmniVoiceDiff();
         var opts = OrtSessionBuilder.Create(epEnum,
             Microsoft.ML.OnnxRuntime.GraphOptimizationLevel.ORT_ENABLE_ALL,
             enableProfiling: false, out _, disableTf32: true);

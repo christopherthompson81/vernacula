@@ -1,6 +1,6 @@
 /**
  * Rule-based estimate of how many audio tokens a target text needs — the TypeScript port of
- * `Chatterbox.Base.OmniVoiceDuration` (OmniVoice's RuleDurationEstimator). "Duration" here is
+ * `Vernacula.Tts.Base.OmniVoiceDuration` (OmniVoice's RuleDurationEstimator). "Duration" here is
  * measured in audio-token counts, at 25 tokens/second.
  *
  * ⚠ FEED IT THE IPA, NOT THE ORTHOGRAPHY. The estimate is a RATIO — target script-weight ÷

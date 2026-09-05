@@ -1,0 +1,70 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>Vernacula.Tts.Base</RootNamespace>
+    <AssemblyName>Vernacula.Tts.Base</AssemblyName>
+    <!--
+      EP is passed by consuming projects (Vernacula.Tts.Backends.CLI, Vernacula.Tts.Avalonia,
+      and the ChatterboxSmoke test). Mirrors the pattern in Vernacula.Base —
+      PrivateAssets="all" keeps the package out of consumers' output; each
+      consumer brings its own OnnxRuntime variant.
+    -->
+    <EP Condition="'$(EP)' == ''">Cuda</EP>
+  </PropertyGroup>
+
+  <ItemGroup Condition="'$(EP)' == 'Cuda'">
+    <PackageReference Include="Microsoft.ML.OnnxRuntime.Gpu" Version="1.24.4"
+                      PrivateAssets="all" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(EP)' == 'Cpu'">
+    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.24.4"
+                      PrivateAssets="all" />
+  </ItemGroup>
+
+  <!-- NAudio: voice-prompt WAV decode + resample to 24 kHz mono. -->
+  <ItemGroup>
+    <PackageReference Include="NAudio" Version="2.2.1" />
+  </ItemGroup>
+
+  <!-- Markdig: markdown AST for MarkdownTextExtractor. Matches the version
+       Vernacula.Avalonia is already on so two copies don't end up in a
+       composite app (cf. Markdown.Avalonia → Markdig). -->
+  <ItemGroup>
+    <PackageReference Include="Markdig" Version="0.34.0" />
+  </ItemGroup>
+
+  <!-- ONNX protobuf: read the base transformer graph (initializer external-data
+       offsets + MatMul-node→weight map) and the IPA diff .onnx, to fold the
+       fine-tune onto the base at load (OmniVoiceDiff). Grpc.Tools compiles
+       proto/onnx.proto -> C# (messages only, no gRPC); build-time only. -->
+  <ItemGroup>
+    <PackageReference Include="Google.Protobuf" Version="3.28.3" />
+    <PackageReference Include="Grpc.Tools" Version="2.68.1" PrivateAssets="all" />
+    <Protobuf Include="proto/onnx.proto" GrpcServices="None" ProtoRoot="proto" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Shared ORT plumbing: OrtSessionBuilder, ExecutionProvider enum, etc. -->
+    <ProjectReference Include="..\Vernacula.Base\Vernacula.Base.csproj">
+      <Private>true</Private>
+      <SetConfiguration>EP=$(EP)</SetConfiguration>
+    </ProjectReference>
+    <!-- Kokoro G2P frontend: pure-C# espeak-ng port + KokoroFormat render target.
+         Vendored as a git submodule under external/ (data/ language files ship
+         with it). Used by KokoroTts to turn text into Kokoro phonemes.
+
+         ⚠ PrivateAssets="all" — DO NOT DROP. This assembly is named Vernacula.Phonemizer, and so
+         is the SEPARATE, newer external/vernacula-phonemizer that Vernacula.Tts.CLI uses. When
+         both reach one output directory they are the same filename: the copy silently wins,
+         no warning, and whichever library lost fails at runtime with a TypeLoadException.
+         KokoroTts is the only thing in this repo that touches these types, so nothing needs the
+         reference transitively — the three projects that USE Kokoro carry their own direct
+         reference instead (Vernacula.Tts.Backends.CLI, Vernacula.Tts.Avalonia, tests/KokoroPerf). -->
+    <ProjectReference Include="..\..\external\espeak-ng-portable\csharp\src\Vernacula.Phonemizer\Vernacula.Phonemizer.csproj"
+                      PrivateAssets="all" />
+  </ItemGroup>
+
+</Project>

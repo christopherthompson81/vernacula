@@ -25,7 +25,7 @@ four test projects against the artifacts it just built:
 | Project | On a hosted runner |
 | --- | --- |
 | `tests/Vernacula.Tests` | 22 tests — runs |
-| `tests/Chatterbox.Tests` | 35 tests — runs |
+| `tests/Vernacula.Tts.Tests` | 35 tests — runs |
 | `tests/AsrBackendCoverage` | 63 tests — runs; this is the fan-out backstop |
 | `tests/IndicConformerTest` | 23 tests — **all skip** |
 

@@ -23,7 +23,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\..\src\Chatterbox.Base\Chatterbox.Base.csproj">
+    <ProjectReference Include="..\..\src\Vernacula.Tts.Base\Vernacula.Tts.Base.csproj">
       <SetConfiguration>EP=$(EP)</SetConfiguration>
     </ProjectReference>
     <ProjectReference Include="..\..\src\Vernacula.Base\Vernacula.Base.csproj">
