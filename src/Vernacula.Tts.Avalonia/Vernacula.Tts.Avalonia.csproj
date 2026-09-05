@@ -14,13 +14,17 @@
 
   <PropertyGroup>
     <AvaloniaUseCompiledBindingsByDefault>true</AvaloniaUseCompiledBindingsByDefault>
-    <NuGetAudit>false</NuGetAudit>
   </PropertyGroup>
 
   <!-- Avalonia 11.3 + Fluent theme + Markdown rendering, mirroring
        Vernacula.Avalonia's stack so a future merge is mechanical. -->
   <ItemGroup>
     <PackageReference Include="Avalonia"                    Version="11.3.9" />
+    <!-- ⚠ TRANSITIVE PIN, NOT A FEATURE. Avalonia 11.3.9 resolves Tmds.DBus.Protocol
+         0.21.2, which carries a high-severity advisory (GHSA-xrw6-gwf8-vvr9); 0.21.3 is the
+         patched release on that line. Drop this line once Avalonia itself resolves 0.21.3
+         or later. -->
+    <PackageReference Include="Tmds.DBus.Protocol" Version="0.21.3" />
     <PackageReference Include="Avalonia.Desktop"            Version="11.3.9" />
     <PackageReference Include="Avalonia.Themes.Fluent"      Version="11.3.9" />
     <PackageReference Include="Avalonia.Fonts.Inter"        Version="11.3.9" />

@@ -14,7 +14,6 @@
 
   <PropertyGroup>
     <AvaloniaUseCompiledBindingsByDefault>false</AvaloniaUseCompiledBindingsByDefault>
-    <NuGetAudit>false</NuGetAudit>
   </PropertyGroup>
 
   <ItemGroup>
@@ -60,6 +59,11 @@
   <ItemGroup>
     <PackageReference Include="Avalonia" Version="11.3.9" />
     <PackageReference Include="Markdig" Version="0.34.0" />
+    <!-- ⚠ TRANSITIVE PIN, NOT A FEATURE. Avalonia 11.3.9 resolves Tmds.DBus.Protocol
+         0.21.2, which carries a high-severity advisory (GHSA-xrw6-gwf8-vvr9); 0.21.3 is the
+         patched release on that line. Drop this line once Avalonia itself resolves 0.21.3
+         or later. -->
+    <PackageReference Include="Tmds.DBus.Protocol" Version="0.21.3" />
     <PackageReference Include="Avalonia.Desktop" Version="11.3.9" />
     <PackageReference Include="Avalonia.Themes.Fluent" Version="11.3.9" />
     <PackageReference Include="Avalonia.Fonts.Inter" Version="11.3.9" />
@@ -68,7 +72,7 @@
     <PackageReference Include="FFmpeg.AutoGen" Version="6.1.0.1" />
 
     <PackageReference Include="MathNet.Numerics" Version="5.0.0" />
-    <PackageReference Include="Microsoft.Data.Sqlite" Version="9.0.4" />
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.11" />
     <PackageReference Include="NAudio" Version="2.2.1" />
     <PackageReference Include="SoundTouch.Net" Version="2.1.2" />
     <PackageReference Include="ClosedXML" Version="0.104.1" />
