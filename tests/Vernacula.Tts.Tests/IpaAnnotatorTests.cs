@@ -122,6 +122,37 @@ public class IpaAnnotatorTests
     }
 
     [Fact]
+    public void TibetanPairsSyllableWithSyllable()
+    {
+        // Tibetan writes no spaces but marks every syllable with a tsheg, and its reading marks
+        // every syllable with a tone letter. The whole sentence arrives as one token, so without
+        // this it carries its entire reading in one unreadable run.
+        var pieces = Ruby("བུམ་པ་དེ་བུམ་པ་ཞེས་བརྗོད་པའི་སྒྲའི་བརྗོད་བྱ་ཡིན་པ་བཞིན་ནོ།", "bo")[0].Pieces;
+        Assert.Equal(15, pieces.Count);
+        Assert.Equal("བུམ་", pieces[0].Text);
+        Assert.Equal("pʰum˩", pieces[0].Ipa);
+        Assert.Equal("ནོ།", pieces[^1].Text);      // the shad ends the sentence, not a syllable
+        Assert.Equal("no˥", pieces[^1].Ipa);
+    }
+
+    [Fact]
+    public void TibetanPiecesSpellTheSentenceBack()
+    {
+        const string sentence = "བུམ་པ་དེ་བུམ་པ་ཞེས་བརྗོད་པའི་སྒྲའི་བརྗོད་བྱ་ཡིན་པ་བཞིན་ནོ།";
+        var pieces = Ruby(sentence, "bo")[0].Pieces;
+        Assert.Equal(sentence, string.Concat(pieces.Select(p => p.Text)));
+    }
+
+    [Fact]
+    public void TibetanSyllableReadingsCarryNoStraySpace()
+    {
+        // The ruby is centred, so a leading space visibly shifts the reading off its syllable, and
+        // it would count towards the syllable's share of the audio.
+        var pieces = Ruby("བུམ་པ་དེ་བུམ་པ་ཞེས་བརྗོད་པའི་སྒྲའི་བརྗོད་བྱ་ཡིན་པ་བཞིན་ནོ།", "bo")[0].Pieces;
+        Assert.All(pieces, p => Assert.Equal(p.Ipa.Trim(), p.Ipa));
+    }
+
+    [Fact]
     public void UnsegmentableScriptStaysWhole()
     {
         // Thai has no token boundaries here: three groups for fifteen characters. Rather than

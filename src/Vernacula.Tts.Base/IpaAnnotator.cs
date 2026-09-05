@@ -184,10 +184,15 @@ public static class IpaAnnotator
             var groups = ipa.Split(' ', StringSplitOptions.RemoveEmptyEntries);
             if (slice.Length > 1 && groups.Length == slice.Length && slice.All(IsHan))
                 for (var k = 0; k < slice.Length; k++)
-                    pieces.Add(new RubyPiece(slice[k].ToString(), groups[k], OmniVoiceDuration.TotalWeight(groups[k])));
+                    Add(slice[k].ToString(), groups[k]);
+            else if (TibetanSyllables(slice, ipa) is { } syllables)
+                foreach (var (text, reading) in syllables) Add(text, reading);
             else
-                pieces.Add(new RubyPiece(slice, ipa, ipa.Length == 0 ? 0 : OmniVoiceDuration.TotalWeight(ipa)));
+                Add(slice, ipa);
         }
+
+        void Add(string text, string ipa) =>
+            pieces.Add(new RubyPiece(text, ipa, ipa.Length == 0 ? 0 : OmniVoiceDuration.TotalWeight(ipa)));
     }
 
     /// <summary>Scripts written without spaces between words, where the render has to be segmented
@@ -197,7 +202,59 @@ public static class IpaAnnotator
         || c is >= (char)0x3040 and <= (char)0x30FF      // hiragana + katakana
         || c is >= (char)0x0E00 and <= (char)0x0EFF      // Thai, Lao
         || c is >= (char)0x1000 and <= (char)0x109F      // Myanmar
+        || c is >= (char)0x0F00 and <= (char)0x0FFF      // Tibetan
         || c is >= (char)0x1780 and <= (char)0x17FF;     // Khmer
+
+    /// <summary>
+    /// Tibetan paired syllable by syllable, or null when it does not pair.
+    ///
+    /// Tibetan writes no spaces between words but does mark every syllable, with a tsheg (་), and
+    /// its reading marks every syllable too, with a tone letter. When the two counts agree the
+    /// pairing is unambiguous, and a sentence that would otherwise carry its whole reading in one
+    /// unreadable run gets a reading over each syllable — which is how Tibetan is annotated on the
+    /// page. When they disagree (a number that reads as several syllables, say) this declines and
+    /// the reading stays whole rather than sliding out of step.
+    /// </summary>
+    private static List<(string Text, string Ipa)>? TibetanSyllables(string slice, string ipa)
+    {
+        if (!slice.Any(IsTibetanLetter)) return null;
+
+        // The tsheg follows its syllable, so it stays with it; so does any closing punctuation
+        // (the shad ། ends a sentence, not a syllable of its own).
+        var text = new List<string>();
+        var start = 0;
+        for (var i = 0; i < slice.Length; i++)
+            if (slice[i] == '\u0F0B' && i + 1 < slice.Length)   // TIBETAN MARK INTERSYLLABIC TSHEG
+            {
+                text.Add(slice[start..(i + 1)]);
+                start = i + 1;
+            }
+        if (start < slice.Length) text.Add(slice[start..]);
+        if (text.Count < 2) return null;
+
+        // The reading breaks after each run of tone letters.
+        // Trimmed: a reading whose syllables are separated by spaces would otherwise carry the
+        // separator into the next syllable, which shows (the ruby is centred) and skews its weight.
+        var read = new List<string>();
+        start = 0;
+        for (var i = 0; i < ipa.Length; i++)
+            if (IsToneLetter(ipa[i]) && (i + 1 == ipa.Length || !IsToneLetter(ipa[i + 1])))
+            {
+                read.Add(ipa[start..(i + 1)].Trim());
+                start = i + 1;
+            }
+        if (ipa[start..].Trim() is { Length: > 0 } tail) read.Add(tail);
+
+        if (read.Count != text.Count) return null;
+        return text.Zip(read).ToList();
+    }
+
+    /// <summary>Tibetan consonants and vowel signs — not its punctuation, which is what the tsheg
+    /// and the shad are.</summary>
+    private static bool IsTibetanLetter(char c) => c is >= (char)0x0F40 and <= (char)0x0FBC;
+
+    /// <summary>The tone letters the phonemizer ends a tonal syllable with (˥˦˧˨˩).</summary>
+    private static bool IsToneLetter(char c) => c is >= (char)0x02E5 and <= (char)0x02E9;
 
     /// <summary>CJK ideographs -- the characters that carry one syllable each in Chinese.</summary>
     private static bool IsHan(char c) =>

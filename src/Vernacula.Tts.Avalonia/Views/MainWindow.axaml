@@ -29,6 +29,7 @@
                          MinHeight="120" MaxHeight="220"
                          IsEnabled="{Binding !IsBusy}"
                          FlowDirection="{Binding TextFlowDirection}"
+                         FontFamily="{Binding TextFontFamily}"
                          Watermark="Paste markdown or text here, or pick a file from the right pane." />
 
                 <!-- Source view: switches between the word-by-word highlight
@@ -114,6 +115,7 @@
                                                                                HorizontalAlignment="Center"
                                                                                TextAlignment="Center" />
                                                                     <TextBlock Text="{Binding Text}"
+                                                                               FontFamily="{Binding FontFamily}"
                                                                                LineHeight="{Binding LineHeight}"
                                                                                HorizontalAlignment="Center" />
                                                                 </StackPanel>
@@ -147,6 +149,7 @@
                                                                                                TextAlignment="Center" />
                                                                                     <TextBlock Text="{Binding Text}"
                                                                                                FontSize="{Binding Word.FontSize}"
+                                                                                               FontFamily="{Binding Word.FontFamily}"
                                                                                                LineHeight="{Binding Word.LineHeight}"
                                                                                                HorizontalAlignment="Center" />
                                                                                 </StackPanel>
@@ -165,6 +168,11 @@
                             </ItemsControl.ItemTemplate>
                         </ItemsControl>
                     </ScrollViewer>
+                    <!-- ⚠ NO FONT OVERRIDE HERE. The markdown view builds its own text controls,
+                         and a blanket TextBlock style reaches the code blocks too, taking their
+                         monospace face away; binding one through the viewer's styles also left the
+                         pane rendering nothing at all. The karaoke view is where a script font is
+                         needed, and it sets the font per word. -->
                     <md:MarkdownScrollViewer IsVisible="{Binding RenderMarkdown}"
                                              FlowDirection="{Binding TextFlowDirection}"
                                              Markdown="{Binding Text}" />
@@ -472,9 +480,8 @@
         </Style>
 
         <!-- Inline code: monospace + subtle chip. -->
-        <Style Selector="Button.word.code">
-            <Setter Property="FontFamily" Value="Cascadia Code,Consolas,Menlo,monospace" />
-        </Style>
+        <!-- The monospace face itself comes from WordItemViewModel.FontFamily: a font set on the
+             control beats one set by a style, so it has to be decided in one place. -->
         <Style Selector="Button.word.code /template/ ContentPresenter">
             <Setter Property="Background" Value="#1affffff" />
         </Style>
