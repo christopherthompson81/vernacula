@@ -49,9 +49,7 @@ public sealed partial class WordItemViewModel : ObservableObject
     /// Null or empty means nothing is drawn — punctuation has no reading, and the annotation is
     /// cleared wholesale when the option is off or the text changes under it.
     /// </summary>
-    [ObservableProperty]
-    [NotifyPropertyChangedFor(nameof(HasIpa))]
-    private string? _ipa;
+    [ObservableProperty] private string? _ipa;
 
     /// <summary>
     /// The word's sub-parts, when it is written without spaces between its words (Japanese,
@@ -60,7 +58,6 @@ public sealed partial class WordItemViewModel : ObservableObject
     /// </summary>
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(HasPieces))]
-    [NotifyPropertyChangedFor(nameof(HasIpa))]
     private IReadOnlyList<RubyPieceViewModel> _pieces = Array.Empty<RubyPieceViewModel>();
 
     public bool HasPieces => Pieces.Count > 0;
@@ -77,9 +74,6 @@ public sealed partial class WordItemViewModel : ObservableObject
     /// </summary>
     public FlowDirection PieceFlowDirection =>
         TextDirection.StrongDirectionOf(Text) == true ? FlowDirection.RightToLeft : FlowDirection.LeftToRight;
-
-    /// <summary>A split word's reading is drawn piece by piece, so the whole-word line is not.</summary>
-    public bool HasIpa => !HasPieces && !string.IsNullOrEmpty(Ipa);
 
     /// <summary>Attach (or with null, clear) the annotation for this word.</summary>
     public void SetRuby(WordRuby? ruby)
@@ -139,19 +133,34 @@ public sealed partial class WordItemViewModel : ObservableObject
     public double IpaFontSize => Math.Max(10.0, FontSize * 0.6);
 
     /// <summary>
+    /// How tall a line box is, as a multiple of its font size.
+    ///
+    /// ⚠ GENEROUS ON PURPOSE, AND IT HAS TO BE. Avalonia only centres a run in the box while the
+    /// box is taller than the run's natural height; ask for less and it clamps the box and pins the
+    /// baseline to the ascent, leaving the descent to spill out below — over the row beneath, since
+    /// a TextBlock does not clip. Devanagari and Thai fallbacks run to about 1.5 em before their
+    /// line gap, and a mixed run takes the tallest ascent and deepest descent of any font in it, so
+    /// the factor has to clear that. IPA needs the room anyway: it stacks tie bars and tone letters
+    /// above the letters and marks below them.
+    /// </summary>
+    private const double LineBox = 1.7;
+
+    /// <summary>
     /// A fixed line box for the word, so every word in a line sits on the same baseline.
     ///
     /// ⚠ EACH WORD IS ITS OWN CONTROL, so nothing aligns them for us. Left to size themselves they
-    /// do not agree: IPA and many scripts fall back to different fonts glyph by glyph, and a
-    /// fallback's ascent and descent are its own, so "d͡ʒˈʌmps" measures taller than "ðə" and the
-    /// words beneath them ride up and down by a few pixels. Fixing the line heights takes the
-    /// fallback's metrics out of the layout.
+    /// do not agree: IPA and many scripts fall back font by font, and a fallback's ascent and
+    /// descent are its own, so "d͡ʒˈʌmps" measures taller than "ðə" and the word beneath it rides
+    /// down. A fixed box takes that out of the LAYOUT — the box no longer grows, so no word moves
+    /// its neighbours. It does not make every font sit identically inside the box: Avalonia centres
+    /// the run there, so fonts of different ascent/descent asymmetry still place their glyphs a
+    /// little differently. That is why the ruby line also names a font that covers IPA outright,
+    /// rather than relying on the box alone.
     /// </summary>
-    public double LineHeight => Math.Ceiling(FontSize * 1.4);
+    public double LineHeight => Math.Ceiling(FontSize * LineBox);
 
-    /// <summary>The ruby line's fixed height. Generous, because IPA stacks marks above and below
-    /// the letters — tie bars, length marks, superscript offglides, tone letters.</summary>
-    public double IpaLineHeight => Math.Ceiling(IpaFontSize * 1.7);
+    /// <summary>The ruby line's fixed height, on the same reasoning.</summary>
+    public double IpaLineHeight => Math.Ceiling(IpaFontSize * LineBox);
 
     public FontStyle FontStyle => Style.HasFlag(InlineStyle.Italic) ? FontStyle.Italic : FontStyle.Normal;
 
@@ -180,7 +189,6 @@ public sealed partial class RubyPieceViewModel : ObservableObject
     public string Text { get; }
     public string Ipa { get; }
     public double Weight { get; }
-    public bool HasIpa => !string.IsNullOrEmpty(Ipa);
 
     [ObservableProperty] private bool _isCurrent;
 }
