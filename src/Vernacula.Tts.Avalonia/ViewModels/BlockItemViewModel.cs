@@ -74,9 +74,18 @@ public sealed partial class BlockItemViewModel : ObservableObject
             var strong = TextDirection.StrongDirectionOf(w.Text);
             if (strong is null)
             {
-                // A neutral takes its direction from what surrounds it, so it cannot be placed
-                // until the next strong word says which side of the boundary it fell on.
-                if (run.Count == 0) Display.Add(w); else pending.Add(w);
+                if (run.Count == 0) Display.Add(w);
+                else if (TextDirection.IsNumberWord(w.Text))
+                {
+                    // A number keeps company with the word before it -- "iPhone 15" stays "iPhone
+                    // 15" -- so it joins the run rather than waiting to see what follows.
+                    run.AddRange(pending);
+                    pending.Clear();
+                    run.Add(w);
+                }
+                // Any other neutral takes its direction from what surrounds it, so it cannot be
+                // placed until the next strong word says which side of the boundary it fell on.
+                else pending.Add(w);
             }
             else if (strong == rtl)
             {

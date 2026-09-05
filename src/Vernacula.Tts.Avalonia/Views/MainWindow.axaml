@@ -119,7 +119,8 @@
                                                                      piece by piece, each with its own reading,
                                                                      and the highlight moves through them. -->
                                                                 <ItemsControl ItemsSource="{Binding Pieces}"
-                                                                              IsVisible="{Binding HasPieces}">
+                                                                              IsVisible="{Binding HasPieces}"
+                                                                              FlowDirection="{Binding PieceFlowDirection}">
                                                                     <ItemsControl.ItemsPanel>
                                                                         <ItemsPanelTemplate>
                                                                             <WrapPanel Orientation="Horizontal" />

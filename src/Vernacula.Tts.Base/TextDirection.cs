@@ -25,10 +25,8 @@ public static class TextDirection
         if (!string.IsNullOrEmpty(text))
             foreach (var rune in text.EnumerateRunes())
             {
-                bool isRtl;
-                if (IsStrongRtl(rune.Value)) isRtl = true;
-                else if (Rune.IsLetter(rune)) isRtl = false;
-                else continue;
+                if (!Rune.IsLetter(rune)) continue;   // digits, punctuation and marks are not strong
+                var isRtl = IsRtlScript(rune.Value);
                 first ??= isRtl;
                 if (isRtl) rtl = true; else ltr = true;
             }
@@ -64,24 +62,39 @@ public static class TextDirection
     {
         if (string.IsNullOrEmpty(word)) return null;
         foreach (var rune in word.EnumerateRunes())
-        {
-            if (IsStrongRtl(rune.Value)) return true;
-            if (Rune.IsLetter(rune)) return false;
-        }
+            if (Rune.IsLetter(rune))
+                return IsRtlScript(rune.Value);
         return null;
     }
 
     /// <summary>
-    /// The scripts written right to left. Digits and punctuation are deliberately absent: they are
-    /// weak or neutral, take their direction from the text around them, and counting them would let
-    /// a phone number decide a paragraph's direction.
+    /// A word that is a number rather than a word — no letters, at least one digit.
+    ///
+    /// ⚠ NOT THE SAME AS NEUTRAL. Punctuation between two scripts belongs to whichever surrounds
+    /// it, but a number after a left-to-right word stays with it: "iPhone 15" in a Persian line
+    /// reads "iPhone 15", not "15 iPhone". That is the bidirectional algorithm's W7, and treating
+    /// digits as neutral put the number on the wrong side of the phrase.
     /// </summary>
-    private static bool IsStrongRtl(int c) =>
-        // Arabic-Indic and extended Arabic-Indic digits, and the separators that go with them, sit
-        // inside the Arabic block but are NUMBERS, not letters: Unicode gives them a weak class
-        // and they take direction from their surroundings like any other digit.
-        !(c is >= 0x0660 and <= 0x066C or >= 0x06F0 and <= 0x06F9)
-        && c is >= 0x0590 and <= 0x05FF     // Hebrew
+    public static bool IsNumberWord(string? word)
+    {
+        if (string.IsNullOrEmpty(word)) return false;
+        var digit = false;
+        foreach (var rune in word.EnumerateRunes())
+        {
+            if (Rune.IsLetter(rune)) return false;
+            digit |= Rune.IsDigit(rune);
+        }
+        return digit;
+    }
+
+    /// <summary>
+    /// The scripts written right to left, as blocks. Callers ask this only about LETTERS, which is
+    /// what keeps the Arabic-Indic digits, the Arabic comma and question mark, and the Hebrew
+    /// pointing marks out of the answer: they live in these blocks but are numbers, neutrals and
+    /// combining marks, and none of them says which way the text around them runs.
+    /// </summary>
+    private static bool IsRtlScript(int c) =>
+        c is >= 0x0590 and <= 0x05FF        // Hebrew
         or >= 0x0600 and <= 0x06FF          // Arabic
         or >= 0x0700 and <= 0x074F          // Syriac
         or >= 0x0750 and <= 0x077F          // Arabic Supplement
