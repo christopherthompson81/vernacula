@@ -29,6 +29,43 @@ export const cacheUnavailableReason: string | null = CACHE_OK ? null
   : `no model cache on ${location.origin} — the Cache API needs https or localhost, `
     + "so the model is re-downloaded each load. Open the demo on localhost, or serve it over https.";
 
+/**
+ * Fired once, with a reason string, when the cache REFUSED the model mid-download and the load
+ * carried on in memory. The page subscribes and shows it as a notice.
+ *
+ * ⚠ THIS IS THE "Quota exceeded" FAILURE. Chrome's `cache.put` throws `QuotaExceededError`
+ * ("Failed to execute 'put' on 'Cache': Quota exceeded.") when the site's storage allowance cannot
+ * hold the next 32 MiB chunk of a 472 MB model — a small disk, an incognito window, or another
+ * site's data in the same allowance — and that DOMException used to surface verbatim as the
+ * demo's error, with the download abandoned at whatever point it had reached. Nothing about the
+ * model needs to be PERSISTED to run it; the cache only saves the next visit's download. So a
+ * full cache is the uncached path with a better message, not a failure.
+ */
+export const cacheEvents = new EventTarget();
+export type CacheFallbackEvent = CustomEvent<string>;
+
+const isQuotaError = (e: unknown) =>
+  (e instanceof DOMException && e.name === "QuotaExceededError")
+  || /quota/i.test(e instanceof Error ? e.message : String(e));
+
+async function quotaReason(needBytes: number): Promise<string> {
+  let numbers = "";
+  try {
+    const est = await navigator.storage?.estimate?.();
+    if (est?.quota) numbers = ` (this site's storage allowance is ${(est.quota / 1e6).toFixed(0)} MB, ${((est.usage ?? 0) / 1e6).toFixed(0)} MB used)`;
+  } catch { /* the message is still right without the figures */ }
+  return `model cache full — the browser refused to store the ${(needBytes / 1e6).toFixed(0)} MB model${numbers}. `
+    + "It is held in memory for this session and will be downloaded again next load. "
+    + "Free disk space, close other tabs of this site, or leave a private window to let it persist.";
+}
+
+/** Drop every cached piece of one url — after a quota failure the partial set is only dead weight. */
+async function forget(url: string, chunks: number) {
+  const c = await caches.open(CACHE);
+  await c.delete(metaKey(url));
+  await Promise.all(Array.from({ length: chunks }, (_, i) => c.delete(chunkKey(url, i))));
+}
+
 export interface DownloadProgress { url: string; loaded: number; total: number; cached: boolean; }
 /**
  * ⚠ `sizes` holds each chunk's ACTUAL byte length, and that is load-bearing. `flush()` fires once
@@ -57,7 +94,8 @@ async function putMeta(u: string, m: Meta) {
   }));
 }
 
-async function ensureDownloaded(url: string, onProgress?: (p: DownloadProgress) => void): Promise<Meta> {
+/** The completed cache entry, or — when the cache ran out of room part-way — the bytes themselves. */
+async function ensureDownloaded(url: string, onProgress?: (p: DownloadProgress) => void): Promise<Meta | ArrayBuffer> {
   let meta = await getMeta(url);
   if (meta?.done) return meta;
   // A meta written before `sizes` existed cannot be resumed correctly — its offset is unknowable.
@@ -92,11 +130,33 @@ async function ensureDownloaded(url: string, onProgress?: (p: DownloadProgress) 
   const reader = res.body!.getReader();
   const cache = await caches.open(CACHE);
   let parts: Uint8Array[] = [], partBytes = 0, loaded = start, idx = meta.chunks;
+  // Set when the cache refuses a chunk: from then on every byte — those already cached, those
+  // accumulated, and those still to come — is kept here instead, and the caller gets the buffer.
+  // (An object, not a `let`: it is assigned inside `flush`, and TypeScript's flow analysis does
+  // not see closure writes, so a plain variable reads as `never` after the loop.)
+  const fallback: { memory: Uint8Array[] | null } = { memory: null };
   const flush = async () => {
+    if (fallback.memory) { fallback.memory.push(...parts); parts = []; partBytes = 0; return; }
     const buf = new Uint8Array(partBytes);
     let o = 0; for (const p of parts) { buf.set(p, o); o += p.byteLength; }
-    await cache.put(chunkKey(url, idx), new Response(new Blob([buf.buffer as ArrayBuffer])));
-    idx++; meta!.chunks = idx; meta!.sizes.push(buf.byteLength); await putMeta(url, meta!);
+    try {
+      await cache.put(chunkKey(url, idx), new Response(new Blob([buf.buffer as ArrayBuffer])));
+      idx++; meta!.chunks = idx; meta!.sizes.push(buf.byteLength); await putMeta(url, meta!);
+    } catch (e) {
+      if (!isQuotaError(e)) throw e;
+      // Pull what was cached back into memory BEFORE forgetting it: the download resumes from
+      // wherever it is, so the earlier chunks exist nowhere else.
+      const memory: Uint8Array[] = [];
+      for (let i = 0; i < idx; i++) {
+        const r = await cache.match(chunkKey(url, i));
+        if (!r) throw new Error(`missing cached chunk ${i} of ${url} while falling back to memory`);
+        memory.push(new Uint8Array(await r.arrayBuffer()));
+      }
+      memory.push(buf);
+      fallback.memory = memory;
+      await forget(url, idx);
+      cacheEvents.dispatchEvent(new CustomEvent("fallback", { detail: await quotaReason(meta!.total) }));
+    }
     parts = []; partBytes = 0;
   };
   for (;;) {
@@ -107,6 +167,12 @@ async function ensureDownloaded(url: string, onProgress?: (p: DownloadProgress) 
     if (partBytes >= CHUNK) await flush();
   }
   if (partBytes > 0) await flush();
+  if (fallback.memory) {
+    const size = fallback.memory.reduce((a, b) => a + b.byteLength, 0);
+    const out = new Uint8Array(size);
+    let o = 0; for (const p of fallback.memory) { out.set(p, o); o += p.byteLength; }
+    return out.buffer;
+  }
   meta.done = true; meta.total = cachedBytes(meta);
   await putMeta(url, meta);
   return meta;
@@ -150,6 +216,7 @@ async function fetchUncached(url: string, onProgress?: (p: DownloadProgress) => 
 export async function fetchModel(url: string, onProgress?: (p: DownloadProgress) => void): Promise<ArrayBuffer> {
   if (!CACHE_OK) return fetchUncached(url, onProgress);
   const meta = await ensureDownloaded(url, onProgress);
+  if (meta instanceof ArrayBuffer) return meta;   // the cache ran out of room; see cacheEvents
   const cache = await caches.open(CACHE);
   // `total`, not `cachedBytes`: a COMPLETED meta written before `sizes` existed is still a valid
   // cache (every chunk is present and total was set from Content-Length), and it returns from

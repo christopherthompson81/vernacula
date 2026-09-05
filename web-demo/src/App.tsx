@@ -6,7 +6,7 @@ import { phonemize } from "./inference/phonemizer.ts";
 import { OmniVoice, parseJsonc, voiceFor, voicesFor, type Voice } from "./inference/omnivoice.ts";
 import type { WordTiming } from "./inference/alignment.ts";
 import { encodeWav } from "./inference/audioPost.ts";
-import { cacheUnavailableReason, fetchModel } from "./inference/modelCache.ts";
+import { cacheEvents, cacheUnavailableReason, fetchModel, type CacheFallbackEvent } from "./inference/modelCache.ts";
 import { threadingUnavailableReason } from "./inference/ortInit.ts";
 import type { Progress, Token } from "./types.ts";
 
@@ -57,10 +57,18 @@ export default function App() {
    * with one. Choosing a voice needs the metadata file (labels and languages), not the model.
    */
   const [allVoices, setAllVoices] = useState<Voice[]>([]);
+  // Set when the model cache ran out of room mid-download and the load finished in memory.
+  const [cacheFallback, setCacheFallback] = useState<string | null>(null);
   const engine = useRef<OmniVoice | null>(null);
   const voice = useRef<Voice | null>(null);
 
   useEffect(() => () => { if (audioUrl) URL.revokeObjectURL(audioUrl); }, [audioUrl]);
+
+  useEffect(() => {
+    const on = (e: Event) => setCacheFallback((e as CacheFallbackEvent).detail);
+    cacheEvents.addEventListener("fallback", on);
+    return () => cacheEvents.removeEventListener("fallback", on);
+  }, []);
 
   useEffect(() => {
     let live = true;
@@ -225,6 +233,7 @@ export default function App() {
       {/* Shown once, not on error: the page works here, it just cannot KEEP the model. Saying so up
           front beats letting someone re-download 472 MB twice before wondering why. */}
       {cacheUnavailableReason && <p className="notice">{cacheUnavailableReason}</p>}
+      {cacheFallback && <p className="notice">{cacheFallback}</p>}
       {threadingUnavailableReason && <p className="notice">{threadingUnavailableReason}</p>}
 
       {ipa && (
