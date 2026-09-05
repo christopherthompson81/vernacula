@@ -72,14 +72,33 @@
                                                              (heading size, bold/italic); the
                                                              code/link/current classes layer on. -->
                                                         <Button Command="{Binding ClickCommand}"
-                                                                Content="{Binding Text}"
                                                                 Classes="word"
                                                                 FontSize="{Binding FontSize}"
                                                                 FontWeight="{Binding FontWeight}"
                                                                 FontStyle="{Binding FontStyle}"
                                                                 Classes.code="{Binding IsCode}"
                                                                 Classes.link="{Binding IsLink}"
-                                                                Classes.current="{Binding IsCurrent}" />
+                                                                Classes.current="{Binding IsCurrent}">
+                                                            <!-- Ruby text: the word's IPA above
+                                                                 the word, furigana style. The
+                                                                 annotation row collapses when
+                                                                 there is no reading, so a word
+                                                                 without one (punctuation) and
+                                                                 the whole view with annotation
+                                                                 off keep their normal height. -->
+                                                            <StackPanel Orientation="Vertical" Spacing="0">
+                                                                <TextBlock Text="{Binding Ipa}"
+                                                                           IsVisible="{Binding HasIpa}"
+                                                                           FontSize="{Binding IpaFontSize}"
+                                                                           FontWeight="Normal"
+                                                                           FontStyle="Normal"
+                                                                           Classes="ruby"
+                                                                           HorizontalAlignment="Center"
+                                                                           TextAlignment="Center" />
+                                                                <TextBlock Text="{Binding Text}"
+                                                                           HorizontalAlignment="Center" />
+                                                            </StackPanel>
+                                                        </Button>
                                                     </DataTemplate>
                                                 </ItemsControl.ItemTemplate>
                                             </ItemsControl>
@@ -264,6 +283,9 @@
             </StackPanel>
 
             <TextBlock Text="Text source" FontWeight="SemiBold" Margin="0,12,0,0" />
+            <CheckBox IsChecked="{Binding ShowIpaAnnotation}"
+                      Content="IPA above each word"
+                      ToolTip.Tip="Shows each word's phonemizer reading above it, the way furigana sits above kanji. Uses the current backend's language." />
             <Button Content="Load text/markdown file…"
                     Command="{Binding PickTextFileCommand}"
                     IsEnabled="{Binding !IsBusy}"
@@ -348,6 +370,14 @@
         <Style Selector="Button.word.current">
             <Setter Property="Foreground" Value="#aef" />
         </Style>
+        <!-- Ruby (IPA) line above a word: dimmer and lighter than the text it annotates, so the
+             written line still reads as the primary one. -->
+        <Style Selector="TextBlock.ruby">
+            <Setter Property="Opacity" Value="0.62" />
+            <Setter Property="Margin" Value="0,0,0,-1" />
+            <Setter Property="Foreground" Value="#cde" />
+        </Style>
+
         <!-- Inline code: monospace + subtle chip. -->
         <Style Selector="Button.word.code">
             <Setter Property="FontFamily" Value="Cascadia Code,Consolas,Menlo,monospace" />

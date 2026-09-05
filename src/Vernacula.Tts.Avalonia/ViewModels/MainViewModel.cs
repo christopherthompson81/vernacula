@@ -134,6 +134,9 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     // across runs.
     [ObservableProperty] private bool _renderMarkdown;
 
+    // IPA above each word in the karaoke view, the way furigana sits above kanji. Persisted.
+    [ObservableProperty] private bool _showIpaAnnotation;
+
     // Status line below the synthesize button.
     [ObservableProperty] private string _statusMessage = "Ready.";
 
@@ -201,6 +204,9 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     // The structured (markdown-styled) karaoke view: blocks of words.
     public ObservableCollection<BlockItemViewModel> DisplayBlocks { get; } = new();
 
+    // Cancels the in-flight IPA annotation when the text, language, or toggle changes.
+    private CancellationTokenSource? _annotationCts;
+
     // How many streamed alignment words have had their timing attached so far.
     private int _streamWordCursor;
 
@@ -257,6 +263,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             VoicePath = _settings.Current.VoicePath;
             OnnxBundleDir = _settings.Current.OnnxBundleDir;
             RenderMarkdown = _settings.Current.RenderMarkdown;
+            ShowIpaAnnotation = _settings.Current.ShowIpaAnnotation;
             SelectedBackend = Enum.TryParse<TtsBackendKind>(_settings.Current.TtsBackend, out var b)
                 ? b : TtsBackendKind.Chatterbox;
             KokoroModelDir = _settings.Current.KokoroModelDir;
@@ -346,6 +353,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         _settings.Current.VoicePath = VoicePath;
         _settings.Current.OnnxBundleDir = OnnxBundleDir;
         _settings.Current.RenderMarkdown = RenderMarkdown;
+        _settings.Current.ShowIpaAnnotation = ShowIpaAnnotation;
         _settings.Current.TtsBackend = SelectedBackend.ToString();
         _settings.Current.PhonemizerDataDir = PhonemizerDataDir;
         _settings.Current.KokoroModelDir = KokoroModelDir;
@@ -374,17 +382,23 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         UpdatePrerequisiteStatus();
     }
     partial void OnRenderMarkdownChanged(bool value) => PersistSettings();
+    partial void OnShowIpaAnnotationChanged(bool value)
+    {
+        PersistSettings();
+        RefreshIpaAnnotation();
+    }
     // Live structured preview: rebuild the karaoke blocks as the source text changes
     // (skip during synthesis — the stream is filling the words and the box is disabled).
     partial void OnTextChanged(string value)
     {
-        if (!IsBusy) { BuildDisplayStructure(value); _streamWordCursor = 0; }
+        if (!IsBusy) { BuildDisplayStructure(value); _streamWordCursor = 0; RefreshIpaAnnotation(); }
     }
     partial void OnSelectedBackendChanged(TtsBackendKind value)
     {
         InvalidateSynthService();
         PersistSettings();
         UpdatePrerequisiteStatus();
+        RefreshIpaAnnotation();   // the reading language follows the backend
     }
     partial void OnKokoroModelDirChanged(string value)
     {
@@ -420,6 +434,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     }
     partial void OnOmniVoiceLangChanged(string value)
     {
+        RefreshIpaAnnotation();
         // A new language gets its default voice, not whichever voice the last language left behind.
         RefreshOmniVoiceVoices(keepId: null);
         PersistSettings();
@@ -536,6 +551,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     {
         PersistSettings();
         UpdatePrerequisiteStatus();
+        RefreshIpaAnnotation();   // bf_/bm_ voices read as en-GB
     }
     partial void OnKokoroSpeedChanged(float value) => PersistSettings();
 
@@ -992,6 +1008,85 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             current.Words.Add(w);
             Words.Add(w);
         }
+    }
+
+    // ── IPA annotation (furigana-style ruby text above each word) ──────
+
+    /// <summary>The language the annotation is read in: OmniVoice's picked language, Kokoro's
+    /// en/en-GB (its British voices are the bf_/bm_ ones), and en for Chatterbox, which is
+    /// English-only.</summary>
+    private string AnnotationLang => SelectedBackend switch
+    {
+        TtsBackendKind.OmniVoice => string.IsNullOrWhiteSpace(OmniVoiceLang) ? "en" : OmniVoiceLang.Trim(),
+        TtsBackendKind.Kokoro => KokoroVoice.StartsWith("bf_", StringComparison.Ordinal)
+            || KokoroVoice.StartsWith("bm_", StringComparison.Ordinal) ? "en-GB" : "en",
+        _ => "en",
+    };
+
+    /// <summary>
+    /// Recompute the ruby text over every word, or clear it when the option is off.
+    ///
+    /// Runs off the UI thread and per block: phonemizing a whole document takes long enough to
+    /// stutter typing, and a block is the largest unit whose reading is self-contained. Each call
+    /// cancels the one before it, so holding a key down does not queue a run per keystroke, and a
+    /// result that arrives after its text has changed is dropped rather than drawn over the new
+    /// words.
+    /// </summary>
+    private void RefreshIpaAnnotation()
+    {
+        _annotationCts?.Cancel();
+        _annotationCts = null;
+        if (!ShowIpaAnnotation)
+        {
+            foreach (var w in Words) w.Ipa = null;
+            return;
+        }
+        if (Words.Count == 0) return;
+
+        var cts = new CancellationTokenSource();
+        _annotationCts = cts;
+        var token = cts.Token;
+        var lang = AnnotationLang;
+        var dataDir = PhonemizerDataDir;
+        // Snapshot on the UI thread: the collections are rebuilt from under us on the next edit.
+        var blocks = DisplayBlocks.Select(b => b.Words.ToList()).ToList();
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                // Settle first: typing rebuilds the words on every keystroke.
+                await Task.Delay(250, token).ConfigureAwait(false);
+                foreach (var block in blocks)
+                {
+                    token.ThrowIfCancellationRequested();
+                    var words = block.Select(w => w.Text).ToList();
+                    var ipa = IpaAnnotator.Annotate(words, lang, dataDir);
+                    if (ipa is null)
+                    {
+                        // The reading could not be attributed (unknown language, no data tree).
+                        // Say so once rather than drawing an annotation that may be off by a word.
+                        await Dispatcher.UIThread.InvokeAsync(() =>
+                        {
+                            if (token.IsCancellationRequested) return;
+                            foreach (var w in Words) w.Ipa = null;
+                            StatusMessage = $"IPA annotation unavailable for language \"{lang}\".";
+                        });
+                        return;
+                    }
+                    await Dispatcher.UIThread.InvokeAsync(() =>
+                    {
+                        if (token.IsCancellationRequested) return;
+                        for (var i = 0; i < block.Count; i++) block[i].Ipa = ipa[i];
+                    });
+                }
+            }
+            catch (OperationCanceledException) { /* superseded by a newer edit */ }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"[IPA] annotation failed: {ex.Message}");
+            }
+        }, token);
     }
 
     /// <summary>Index of the block whose output span contains <paramref name="offset"/>, or -1.</summary>

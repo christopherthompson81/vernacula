@@ -41,6 +41,17 @@ public sealed partial class WordItemViewModel : ObservableObject
 
     [ObservableProperty] private bool _isCurrent;
 
+    /// <summary>
+    /// The word's reading, shown small above it (furigana style) when IPA annotation is on.
+    /// Null or empty means nothing is drawn — punctuation has no reading, and the annotation is
+    /// cleared wholesale when the option is off or the text changes under it.
+    /// </summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(HasIpa))]
+    private string? _ipa;
+
+    public bool HasIpa => !string.IsNullOrEmpty(Ipa);
+
     // ── Self-describing display properties (bound directly by the word button) ──
     public double FontSize => BlockKind == BlockKind.Heading
         ? HeadingLevel switch { 1 => 30, 2 => 24, 3 => 20, 4 => 18, _ => 16 }
@@ -49,6 +60,10 @@ public sealed partial class WordItemViewModel : ObservableObject
     public FontWeight FontWeight =>
         BlockKind == BlockKind.Heading || Style.HasFlag(InlineStyle.Bold)
             ? FontWeight.Bold : FontWeight.Normal;
+
+    /// <summary>Ruby size: small enough to read as an annotation, never so small it is unreadable
+    /// under a heading's larger body text.</summary>
+    public double IpaFontSize => Math.Max(10.0, FontSize * 0.6);
 
     public FontStyle FontStyle => Style.HasFlag(InlineStyle.Italic) ? FontStyle.Italic : FontStyle.Normal;
 
