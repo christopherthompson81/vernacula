@@ -148,13 +148,26 @@ public static class HardwareInfo
         {
             foreach (var dir in GetLinuxCudaLibraryDirs())
             {
-                if (HasFile(dir, "libcudart.so") || HasFile(dir, "libcudart.so.*"))
+                if (HasFile(dir, $"libcudart.so.{RequiredCudaMajor}")
+                    || HasFile(dir, $"libcudart.so.{RequiredCudaMajor}.*"))
                     return true;
             }
         }
 
         return false;
     }
+
+    /// <summary>
+    /// The CUDA major version the bundled ONNX Runtime links against.
+    ///
+    /// ⚠ THE MAJOR IS PART OF THE ANSWER, NOT A DETAIL. ONNX Runtime moved from CUDA 12 to CUDA 13
+    /// at 1.27, and the two are not interchangeable: the provider library names its dependencies
+    /// (libcudart.so.13, libcublas.so.13) with the major in the soname, so a machine with only
+    /// CUDA 12 cannot load it. Reporting "CUDA is installed" from a bare libcudart.so of ANY major
+    /// meant <see cref="ExecutionProvider.Auto"/> tried CUDA, failed to load the provider, silently
+    /// fell back to CPU, and left the user wondering why their GPU was idle.
+    /// </summary>
+    public const int RequiredCudaMajor = 13;
 
     /// <summary>Returns the configured CUDA toolkit root for the current platform, or null if none is known.</summary>
     public static string? GetCudaToolkitPath()
@@ -434,7 +447,8 @@ public static class HardwareInfo
                 foreach (var file in Directory.EnumerateFiles(root, "*.dll", options))
                 {
                     var name = Path.GetFileName(file);
-                    bool isCudart = name.StartsWith("cudart64_", StringComparison.OrdinalIgnoreCase);
+                    // cudart64_13.dll, not any cudart64_*.dll: see RequiredCudaMajor.
+                    bool isCudart = name.StartsWith($"cudart64_{RequiredCudaMajor}", StringComparison.OrdinalIgnoreCase);
                     bool isCudnn  = name.StartsWith("cudnn",     StringComparison.OrdinalIgnoreCase);
                     bool isCudaDep = isCudart || isCudnn
                         || name.StartsWith("cublas", StringComparison.OrdinalIgnoreCase)

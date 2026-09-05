@@ -6,7 +6,13 @@ Vernacula runs on Linux, macOS, and Windows. The desktop app and CLI share the s
 
 - [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0)
 - FFmpeg libraries (`libavformat`, `libavcodec`, `libavutil`, `libswresample`, `libswscale`)
-- **For GPU acceleration:** NVIDIA GPU with CUDA Toolkit installed (Linux/Windows), or DirectML support (Windows)
+- **For GPU acceleration:** NVIDIA GPU with the **CUDA 13** runtime installed (Linux/Windows), or DirectML support (Windows)
+
+> ⚠ **CUDA 13, not 12.** The bundled ONNX Runtime (1.29) links `libcudart.so.13` / `cudart64_13.dll`;
+> the major version is part of the library name, so a CUDA 12 installation cannot load it. Earlier
+> releases of this project used ONNX Runtime 1.24, which linked CUDA 12. If you are upgrading and
+> still have only CUDA 12, install the CUDA 13 runtime — or build with `-p:EP=Cpu`. A CUDA 12 machine
+> now reports no CUDA at startup and runs on the CPU rather than failing silently mid-session.
 
 Install FFmpeg on common Linux distros:
 

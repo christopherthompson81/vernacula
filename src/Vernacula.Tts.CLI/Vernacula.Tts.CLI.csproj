@@ -25,7 +25,7 @@
     <PackageReference Include="Microsoft.ML.OnnxRuntime.Gpu" Version="1.29.0" />
   </ItemGroup>
   <ItemGroup Condition="'$(EP)' == 'DirectML'">
-    <PackageReference Include="Microsoft.ML.OnnxRuntime.DirectML" Version="1.21.1" />
+    <PackageReference Include="Microsoft.ML.OnnxRuntime.DirectML" Version="1.24.4" />
   </ItemGroup>
   <ItemGroup Condition="'$(EP)' == 'Cpu'">
     <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.29.0" />
@@ -40,8 +40,16 @@
     reference outranks the transitive one, and ExcludeAssets="all" then contributes nothing, so
     the EP package above is the only runtime in the output.
   -->
-  <ItemGroup Condition="'$(EP)' != 'Cpu'">
+  <ItemGroup Condition="'$(EP)' == 'Cuda'">
     <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.29.0" ExcludeAssets="all" />
+  </ItemGroup>
+  <!-- ⚠ MATCHED TO THE NATIVE RUNTIME EACH EP SHIPS, NOT TO THE NEWEST. The suppression
+       reference still takes part in version resolution, so it decides which
+       Microsoft.ML.OnnxRuntime.Managed is used. DirectML's newest release is 1.24.4;
+       pairing it with a 1.29 managed assembly asks the native runtime for an API version
+       it cannot answer, and the first session throws. -->
+  <ItemGroup Condition="'$(EP)' == 'DirectML'">
+    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.24.4" ExcludeAssets="all" />
   </ItemGroup>
 
   <ItemGroup>

@@ -75,7 +75,11 @@ public static class OrtSessionBuilder
                 catch (Exception ex)
                 {
                     throw new InvalidOperationException(
-                        "CUDA EP not available in the current ONNX Runtime build.", ex);
+                        "CUDA EP not available in the current ONNX Runtime build. It links CUDA "
+                        + $"{HardwareInfo.RequiredCudaMajor}: a CUDA {HardwareInfo.RequiredCudaMajor - 1} "
+                        + "installation cannot load it, because the provider names the major in the "
+                        + "library soname. Install the CUDA "
+                        + $"{HardwareInfo.RequiredCudaMajor} runtime, or build with --ep Cpu.", ex);
                 }
                 break;
 
