@@ -28,6 +28,7 @@
                          AcceptsReturn="True" TextWrapping="Wrap"
                          MinHeight="120" MaxHeight="220"
                          IsEnabled="{Binding !IsBusy}"
+                         FlowDirection="{Binding TextFlowDirection}"
                          Watermark="Paste markdown or text here, or pick a file from the right pane." />
 
                 <!-- Source view: switches between the word-by-word highlight
@@ -50,16 +51,24 @@
                             </ItemsControl.ItemsPanel>
                             <ItemsControl.ItemTemplate>
                                 <DataTemplate x:DataType="vm:BlockItemViewModel">
+                                    <!-- FlowDirection is what makes an Arabic or Persian block read
+                                         right to left: the words are laid out in logical order and
+                                         the panel mirrors them, so the first word sits on the
+                                         right, the bullet and quote bar move to the right edge,
+                                         and the karaoke highlight follows the same order. -->
                                     <Border Classes.heading="{Binding IsHeading}"
                                             Classes.quote="{Binding IsQuote}"
                                             Classes.listitem="{Binding IsListItem}"
-                                            Classes.paragraph="{Binding IsParagraph}">
+                                            Classes.paragraph="{Binding IsParagraph}"
+                                            FlowDirection="{Binding FlowDirection}">
                                         <Grid ColumnDefinitions="Auto,*">
                                             <TextBlock Grid.Column="0" Text="•"
                                                        IsVisible="{Binding IsListItem}"
                                                        FontSize="18" Margin="2,2,8,0"
                                                        VerticalAlignment="Top" Opacity="0.6" />
-                                            <ItemsControl Grid.Column="1" ItemsSource="{Binding Words}">
+                                            <!-- Display, not Words: visual order, which differs
+                                                 from spoken order where directions mix. -->
+                                            <ItemsControl Grid.Column="1" ItemsSource="{Binding Display}">
                                                 <ItemsControl.ItemsPanel>
                                                     <ItemsPanelTemplate>
                                                         <WrapPanel Orientation="Horizontal" />
@@ -90,12 +99,16 @@
                                                                 <!-- Ordinary word: one reading over one word. -->
                                                                 <StackPanel Orientation="Vertical" Spacing="0"
                                                                             IsVisible="{Binding !HasPieces}">
+                                                                    <!-- IPA is Latin script: it reads
+                                                                         left to right over a word that
+                                                                         does not. -->
                                                                     <TextBlock Text="{Binding Ipa}"
                                                                                IsVisible="{Binding HasIpa}"
                                                                                FontSize="{Binding IpaFontSize}"
                                                                                FontWeight="Normal"
                                                                                FontStyle="Normal"
                                                                                Classes="ruby"
+                                                                               FlowDirection="LeftToRight"
                                                                                HorizontalAlignment="Center"
                                                                                TextAlignment="Center" />
                                                                     <TextBlock Text="{Binding Text}"
@@ -106,7 +119,8 @@
                                                                      piece by piece, each with its own reading,
                                                                      and the highlight moves through them. -->
                                                                 <ItemsControl ItemsSource="{Binding Pieces}"
-                                                                              IsVisible="{Binding HasPieces}">
+                                                                              IsVisible="{Binding HasPieces}"
+                                                                              FlowDirection="{Binding PieceFlowDirection}">
                                                                     <ItemsControl.ItemsPanel>
                                                                         <ItemsPanelTemplate>
                                                                             <WrapPanel Orientation="Horizontal" />
@@ -123,6 +137,7 @@
                                                                                                FontWeight="Normal"
                                                                                                FontStyle="Normal"
                                                                                                Classes="ruby"
+                                                                                               FlowDirection="LeftToRight"
                                                                                                HorizontalAlignment="Center"
                                                                                                TextAlignment="Center" />
                                                                                     <TextBlock Text="{Binding Text}"
@@ -145,6 +160,7 @@
                         </ItemsControl>
                     </ScrollViewer>
                     <md:MarkdownScrollViewer IsVisible="{Binding RenderMarkdown}"
+                                             FlowDirection="{Binding TextFlowDirection}"
                                              Markdown="{Binding Text}" />
                 </Panel>
             </Grid>

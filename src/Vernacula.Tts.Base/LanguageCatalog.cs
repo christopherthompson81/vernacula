@@ -7,7 +7,11 @@ namespace Vernacula.Tts.Base;
 /// where that is the same as the English name, or where no source names this specific variety.</param>
 /// <param name="Trained">In the IPA fine-tune's coverage set. Everything else renders, but extrapolated.</param>
 /// <param name="Voice">Donor language for the reference voice — null when the language has a native one.</param>
-public sealed record LanguageOption(string Code, string Name, string? Native, bool Trained, string? Voice)
+/// <param name="Rtl">Written right to left. Decided when the catalogue is generated, from the
+/// language's own endonym or its sample sentence — both in its own script — so a variety with no
+/// recorded endonym (the Arabic ones, Pashto (Southern)) is still known to be right-to-left.</param>
+public sealed record LanguageOption(string Code, string Name, string? Native, bool Trained,
+    string? Voice, bool Rtl = false)
 {
     public override string ToString() => Name;
 }
@@ -34,6 +38,10 @@ public static partial class LanguageCatalog
     /// (Faroese read by Icelandic, Sesotho by Sepedi) rather than a default English voice.
     /// </summary>
     public static string VoiceLangOf(string code) => ByCode(code)?.Voice ?? code;
+
+    /// <summary>True when <paramref name="code"/> is written right to left; false for an unknown
+    /// code. See <see cref="LanguageOption.Rtl"/> for where the answer comes from.</summary>
+    public static bool IsRightToLeft(string? code) => ByCode(code ?? "")?.Rtl ?? false;
 
     /// <summary>
     /// Rank a language against a type-ahead query. Lower is better; -1 means no match. Port of the

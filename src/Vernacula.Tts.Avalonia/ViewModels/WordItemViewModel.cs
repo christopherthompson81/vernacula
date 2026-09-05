@@ -65,6 +65,15 @@ public sealed partial class WordItemViewModel : ObservableObject
 
     public bool HasPieces => Pieces.Count > 0;
 
+    /// <summary>
+    /// Which way this word's own pieces are laid out. The block's direction mirrors everything
+    /// inside it, which is right for the words but not for the pieces of a word from the other
+    /// direction: a segmented Latin or Japanese word inside an Arabic line would have its pieces
+    /// rendered back to front.
+    /// </summary>
+    public FlowDirection PieceFlowDirection =>
+        TextDirection.StrongDirectionOf(Text) == true ? FlowDirection.RightToLeft : FlowDirection.LeftToRight;
+
     /// <summary>A split word's reading is drawn piece by piece, so the whole-word line is not.</summary>
     public bool HasIpa => !HasPieces && !string.IsNullOrEmpty(Ipa);
 

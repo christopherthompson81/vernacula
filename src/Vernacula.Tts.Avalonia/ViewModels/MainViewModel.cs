@@ -134,6 +134,11 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     // across runs.
     [ObservableProperty] private bool _renderMarkdown;
 
+    // Which way the source box and the markdown view read. Same rule as the karaoke blocks, so a
+    // Persian document is edited right to left instead of being typed into a left-aligned box.
+    [ObservableProperty] private Avalonia.Media.FlowDirection _textFlowDirection
+        = Avalonia.Media.FlowDirection.LeftToRight;
+
     // IPA above each word in the karaoke view, the way furigana sits above kanji. Persisted.
     [ObservableProperty] private bool _showIpaAnnotation;
 
@@ -403,6 +408,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     // (skip during synthesis — the stream is filling the words and the box is disabled).
     partial void OnTextChanged(string value)
     {
+        TextFlowDirection = TextDirection.Resolve(value, LanguageCatalog.IsRightToLeft(AnnotationLang))
+            ? Avalonia.Media.FlowDirection.RightToLeft : Avalonia.Media.FlowDirection.LeftToRight;
         if (!IsBusy) { BuildDisplayStructure(value); _streamWordCursor = 0; }
     }
     partial void OnSelectedBackendChanged(TtsBackendKind value)
@@ -410,6 +417,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         InvalidateSynthService();
         PersistSettings();
         UpdatePrerequisiteStatus();
+        RefreshDirection();
         RefreshIpaAnnotation();   // the reading language follows the backend
     }
     partial void OnKokoroModelDirChanged(string value)
@@ -447,6 +455,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     }
     partial void OnOmniVoiceLangChanged(string value)
     {
+        RefreshDirection();
         RefreshIpaAnnotation();
         // A new language gets its default voice, not whichever voice the last language left behind.
         RefreshOmniVoiceVoices(keepId: null);
@@ -1022,6 +1031,11 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             Words.Add(w);
         }
 
+        // Direction is per block and depends on the words, so it is decided once they are all in.
+        // The reading language breaks the tie in a block that mixes both directions.
+        var langRtl = LanguageCatalog.IsRightToLeft(AnnotationLang);
+        foreach (var b in DisplayBlocks) b.UpdateFlowDirection(langRtl);
+
         // The words are new objects, so any annotation on the old ones went with them. Rebuilding
         // it here covers every caller -- editing the text AND starting a synthesis, which also
         // rebuilds; the annotation used to vanish for the whole run that followed.
@@ -1114,6 +1128,16 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
                 Console.Error.WriteLine($"[IPA] annotation failed: {ex.Message}");
             }
         }, token);
+    }
+
+    /// <summary>Re-decide layout direction after the reading language changes: it is what settles
+    /// a block containing both directions, and the source box with it.</summary>
+    private void RefreshDirection()
+    {
+        var langRtl = LanguageCatalog.IsRightToLeft(AnnotationLang);
+        foreach (var b in DisplayBlocks) b.UpdateFlowDirection(langRtl);
+        TextFlowDirection = TextDirection.Resolve(Text, langRtl)
+            ? Avalonia.Media.FlowDirection.RightToLeft : Avalonia.Media.FlowDirection.LeftToRight;
     }
 
     /// <summary>
