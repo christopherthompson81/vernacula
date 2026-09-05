@@ -70,6 +70,8 @@ public sealed class ReaderSettings
     public string VoicePath { get; set; } = "";
     public string OnnxBundleDir { get; set; } = "";
     public bool RenderMarkdown { get; set; } = false;
+    // IPA shown above each word in the karaoke view, furigana style.
+    public bool ShowIpaAnnotation { get; set; } = false;
 
     // TTS backend selection. TtsBackend stores the TtsBackendKind enum name
     // ("Chatterbox" / "Kokoro" / "OmniVoice").
