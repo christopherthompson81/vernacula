@@ -40,10 +40,10 @@
        runtime variant explicitly via the EP property — matches the
        pattern Vernacula.Tts.Backends.CLI uses. -->
   <ItemGroup Condition="'$(EP)' == 'Cuda'">
-    <PackageReference Include="Microsoft.ML.OnnxRuntime.Gpu" Version="1.24.4" />
+    <PackageReference Include="Microsoft.ML.OnnxRuntime.Gpu" Version="1.29.0" />
   </ItemGroup>
   <ItemGroup Condition="'$(EP)' == 'Cpu'">
-    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.24.4" />
+    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.29.0" />
   </ItemGroup>
 
   <!--
@@ -54,7 +54,7 @@
     ExcludeAssets="all" then contributes nothing, so the EP package is the only runtime shipped.
   -->
   <ItemGroup Condition="'$(EP)' != 'Cpu'">
-    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.24.4" ExcludeAssets="all" />
+    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.29.0" ExcludeAssets="all" />
   </ItemGroup>
 
   <ItemGroup>

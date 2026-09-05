@@ -12,7 +12,7 @@
 
   <ItemGroup>
     <!-- .Gpu includes CPU as fallback; covers both EP modes (cpu and cuda). -->
-    <PackageReference Include="Microsoft.ML.OnnxRuntime.Gpu" Version="1.24.4" />
+    <PackageReference Include="Microsoft.ML.OnnxRuntime.Gpu" Version="1.29.0" />
     <PackageReference Include="NAudio" Version="2.2.1" />
   </ItemGroup>
 

@@ -12,10 +12,10 @@
   </PropertyGroup>
 
   <ItemGroup Condition="'$(EP)' == 'Cuda'">
-    <PackageReference Include="Microsoft.ML.OnnxRuntime.Gpu" Version="1.24.4" />
+    <PackageReference Include="Microsoft.ML.OnnxRuntime.Gpu" Version="1.29.0" />
   </ItemGroup>
   <ItemGroup Condition="'$(EP)' == 'Cpu'">
-    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.24.4" />
+    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.29.0" />
   </ItemGroup>
 
   <ItemGroup>
