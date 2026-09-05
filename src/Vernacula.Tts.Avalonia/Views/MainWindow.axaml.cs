@@ -1,6 +1,8 @@
 using System;
 using Avalonia.Controls;
+using Avalonia.Input;
 using Avalonia.Markup.Xaml;
+using Avalonia.VisualTree;
 
 namespace Vernacula.Tts.App.Views;
 
@@ -9,6 +11,15 @@ public partial class MainWindow : Window
     public MainWindow() => InitializeComponent();
 
     private void InitializeComponent() => AvaloniaXamlLoader.Load(this);
+
+    // The type-ahead pickers: focusing one opens its full list and selects its text, so the next
+    // keystroke starts a fresh search instead of appending to the current choice's name.
+    private void OnPickerGotFocus(object? sender, GotFocusEventArgs e)
+    {
+        if (sender is not AutoCompleteBox box) return;
+        box.FindDescendantOfType<TextBox>()?.SelectAll();
+        box.IsDropDownOpen = true;
+    }
 
     protected override void OnClosed(EventArgs e)
     {

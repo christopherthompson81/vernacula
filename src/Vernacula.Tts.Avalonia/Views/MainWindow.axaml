@@ -4,6 +4,7 @@
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         xmlns:vm="using:Vernacula.Tts.App.ViewModels"
         xmlns:md="clr-namespace:Markdown.Avalonia;assembly=Markdown.Avalonia"
+        xmlns:base="using:Vernacula.Tts.Base"
         x:Class="Vernacula.Tts.App.Views.MainWindow"
         x:DataType="vm:MainViewModel"
         mc:Ignorable="d"
@@ -95,7 +96,11 @@
         </Border>
 
         <!-- ── Right pane: pickers, synthesize, playback ────────────── -->
-        <StackPanel Grid.Column="1" Spacing="10">
+        <!-- Scrolls: with a backend's config panel open the pane is taller than a 720-px
+             window, and the synthesize/playback controls at the bottom were unreachable. -->
+        <ScrollViewer Grid.Column="1" VerticalScrollBarVisibility="Auto"
+                      HorizontalScrollBarVisibility="Disabled">
+        <StackPanel Spacing="10" Margin="0,0,10,0">
             <!-- Pickers are disabled during synthesis. Changing the
                  ONNX bundle mid-run would dispose the SynthesisService
                  the running task is still calling into → use-after-dispose.
@@ -201,16 +206,56 @@
                             IsEnabled="{Binding !IsBusy}" Margin="6,0,0,0" />
                 </Grid>
 
-                <TextBlock Text="Language (vernacula-phonemizer code: en, en-GB, cy, cmn, …)"
-                           FontWeight="SemiBold" Margin="0,8,0,0" />
-                <TextBox Text="{Binding OmniVoiceLang}" Watermark="en"
-                         IsEnabled="{Binding !IsBusy}" />
+                <!-- Type-ahead pickers, like the web demo's: a plain drop-down does not scale to
+                     193 languages or 530 voices, and the codes (how anyone who knows what they
+                     want will search) would not be matched at all. FilterMode=None because the
+                     VM RANKS the matches (exact code first) rather than merely filtering them;
+                     focus opens the full list (code-behind). -->
+                <TextBlock Text="Language" FontWeight="SemiBold" Margin="0,8,0,0" />
+                <AutoCompleteBox Text="{Binding OmniVoiceLangQuery}"
+                                 SelectedItem="{Binding OmniVoiceLanguage}"
+                                 ItemsSource="{Binding LanguageMatches}"
+                                 FilterMode="None" MinimumPrefixLength="0" MinimumPopulateDelay="0"
+                                 MaxDropDownHeight="320"
+                                 Watermark="Search 193 languages by name, code or endonym…"
+                                 IsEnabled="{Binding !IsBusy}"
+                                 GotFocus="OnPickerGotFocus">
+                    <AutoCompleteBox.ItemTemplate>
+                        <DataTemplate x:DataType="base:LanguageOption">
+                            <StackPanel Orientation="Horizontal" Spacing="8">
+                                <TextBlock Text="{Binding Name}" />
+                                <TextBlock Text="{Binding Native}" Opacity="0.7" />
+                                <TextBlock Text="{Binding Code}" Opacity="0.5" FontFamily="monospace" />
+                                <TextBlock Text="trained" IsVisible="{Binding Trained}"
+                                           FontSize="11" Opacity="0.8" Foreground="#8c8" />
+                                <TextBlock Text="{Binding Voice, StringFormat='voice {0}'}"
+                                           IsVisible="{Binding Voice, Converter={x:Static ObjectConverters.IsNotNull}}"
+                                           FontSize="11" Opacity="0.8" Foreground="#cc8" />
+                            </StackPanel>
+                        </DataTemplate>
+                    </AutoCompleteBox.ItemTemplate>
+                </AutoCompleteBox>
 
                 <TextBlock Text="Voice" FontWeight="SemiBold" Margin="0,8,0,0" />
-                <ComboBox ItemsSource="{Binding OmniVoiceVoices}"
-                          SelectedItem="{Binding OmniVoiceVoice}"
-                          IsEnabled="{Binding !IsBusy}"
-                          HorizontalAlignment="Stretch" />
+                <AutoCompleteBox Text="{Binding OmniVoiceVoiceQuery}"
+                                 SelectedItem="{Binding OmniVoiceVoice}"
+                                 ItemsSource="{Binding OmniVoiceVoices}"
+                                 FilterMode="None" MinimumPrefixLength="0" MinimumPopulateDelay="0"
+                                 MaxDropDownHeight="320"
+                                 Watermark="Search the language's voices by id or label…"
+                                 IsEnabled="{Binding !IsBusy}"
+                                 GotFocus="OnPickerGotFocus">
+                    <AutoCompleteBox.ItemTemplate>
+                        <DataTemplate x:DataType="base:StoredVoice+Info">
+                            <StackPanel Orientation="Horizontal" Spacing="8">
+                                <TextBlock Text="{Binding Label}" />
+                                <TextBlock Text="{Binding Id}" Opacity="0.5" FontFamily="monospace" />
+                                <TextBlock Text="default" IsVisible="{Binding IsDefault}"
+                                           FontSize="11" Opacity="0.8" Foreground="#8c8" />
+                            </StackPanel>
+                        </DataTemplate>
+                    </AutoCompleteBox.ItemTemplate>
+                </AutoCompleteBox>
 
                 <TextBlock Text="{Binding OmniVoiceNumStep, StringFormat='Diffusion steps: {0}'}"
                            FontWeight="SemiBold" Margin="0,8,0,0" />
@@ -274,6 +319,7 @@
             <TextBlock Text="{Binding StatusMessage}" TextWrapping="Wrap"
                        Foreground="#bbb" />
         </StackPanel>
+        </ScrollViewer>
 
     </Grid>
 
