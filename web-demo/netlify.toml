@@ -1,3 +1,11 @@
+# ⚠ THIS FILE DOES NOT REACH THE DEPLOYED SITE. Netlify reads netlify.toml from the REPOSITORY
+# ROOT (or a configured base directory), and this copy lives in web-demo/ — so its headers were
+# never applied: `curl -I https://vernacula.netlify.app/` returned no Cross-Origin-* at all, the
+# page was not cross-origin isolated, and WASM inference silently ran on one thread.
+#
+# The headers that DO reach production are in public/_headers, which ships inside the publish
+# directory. Edit BOTH, or edit that one. This file is kept for `netlify dev`.
+
 [build]
   command = "npm run build"
   publish = "dist"

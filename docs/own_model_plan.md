@@ -1,6 +1,9 @@
 # Plan — a model of our own: unencumbered weights, precomputed voices, ~10× faster
 
-**Status:** proposed, not started. Written 2026-09-04, after v7 shipped.
+**Status: SHELVED 2026-09-04.** Written after v7 shipped, then parked the same day once the
+timeline was costed honestly (2–4 months part-time, 200–350 GPU hours — see Timeline). Kept because
+the analysis and the *rejected* alternatives are the expensive part to redo, not the prose. Nothing
+here is being worked on.
 
 Two goals, and it is worth being precise about which is which, because they have different urgency:
 
@@ -74,13 +77,21 @@ as a **precomputed latent** rather than as reference audio in the sequence.
 
 Three independent speed levers, none requiring a new representation:
 
-| lever | from → to | factor |
-|---|---|---|
-| backbone | 600M → ~150M | ~4× |
-| decoding steps | 32 → ~12 (confidence schedule) | ~2.7× |
-| sequence length (reference leaves the context) | ~200 → ~110 | ~1.8× |
+| lever | from → to | factor | available? |
+|---|---|---|---|
+| backbone | 600M → ~150M | ~4× | yes |
+| sequence length (reference leaves the context) | ~200 → ~110 | ~1.8× | yes, measured |
+| decoding steps | 32 → ~12 | ~2.7× | ⚠ **only via distillation** — see below |
 
-Compounded ~19×; assume slippage and plan for **10×**. ~40 s becomes ~4 s.
+⚠ **THE STEP LEVER IS NOT FREE, AND THIS PLAN ORIGINALLY ASSUMED IT WAS.** Lowering the count
+naively has already been tried and rejected by ear: web demo **Run 12** set `NUM_STEPS` to 16 to
+halve browser latency, and every clip called quirky was at 16 while every clip called fine was at 32
+— same text, voice, model and provider, step count the only variable. It was reverted to 32.
+
+So a new model buys **~7×** from the first two levers. Getting the third requires distillation
+(consistency or progressive), and that is true of ANY model here — a fresh 150M would need distilling
+just as v7 does. Distillation is therefore an independent axis worth ~2–2.7×, not a property of this
+design.
 
 The sequence lever is measured, not estimated — `bench-wasm.mjs` on the int4 build at 8 threads:
 S=200 → 2279 ms, S=100 → 1295 ms. Reference clips are `refLen` 100–300 frames against a comparable
@@ -112,14 +123,15 @@ investigation concluded no acceptable open recording exists anywhere.
 
 ## Phases
 
-### Phase 0 — measure before planning around it (hours, free)
+### Phase 0 — already done, and it came back negative
 
-Run v7 at `--num-step` 8, 12, 16 and listen. This costs nothing, the harness exists, and it decides
-whether the 2.7× lever is real. **If 12 steps is acceptable, ship it on v7 immediately** — that is a
-user-visible win independent of everything below.
+⚠ An earlier draft of this plan proposed "run v7 at 8/12/16 steps and listen — free, today". That
+experiment had already been run and recorded (web demo Run 12): 16 steps produced audio the listener
+called quirky, 32 did not, and the change was reverted. Proposing it again was a failure to read our
+own investigation log.
 
-⚠ This is a genuine decision gate. If quality collapses below 32 steps on the current model, the
-step lever is smaller than assumed and the whole speed argument needs re-costing.
+The consequence is recorded above: the step lever exists only through distillation, and the speed
+case for a new model is ~7×, not ~19×.
 
 ### Phase 1 — the corpus (the big chunk)
 
@@ -209,6 +221,27 @@ after 2000 h of processing is a different cost from discovering it after 100 h.
 
 ---
 
+## Timeline
+
+Calibrating from v7: 600M at S≈200 ran 6000 steps in 2 h 07 m on the 3090 = 0.79 steps/s. A 150M
+model at S≈110 is roughly 0.14× the compute per step, so ~4 steps/s after overheads that do not
+scale down.
+
+| phase | GPU time | calendar, part-time |
+|---|---|---|
+| Phase 2 proof (50M, 5 languages, a few runs) | ~20–40 h | 2–3 weeks |
+| Phase 1 corpus (terms, download, encode, align, quality gate) | ~35 h | 3–6 weeks |
+| Phase 3 (500k–1M steps ≈ 40–80 h **per run**, expect 3–5 runs) | ~150–300 h | 3–6 weeks |
+| Phase 4 export and ship | small | days |
+
+**Roughly 2–4 months part-time, 200–350 GPU hours.** ⚠ The single training run is only 2–3.5 days.
+What makes this months is that from-scratch models do not work first time, and that Phase 1 is gated
+on a person clicking through MDC terms at about one per minute.
+
+That cost, against ~7× rather than the ~19× first assumed, is why this is shelved. The speed case
+alone does not carry it. The licence and the offline voice-fitting capability might — that is a
+judgement about what the project is for, not a technical one.
+
 ## Risks, worst first
 
 1. **From-scratch quality at our data scale.** OmniVoice was pretrained on far more audio than we
@@ -223,11 +256,15 @@ after 2000 h of processing is a different cost from discovering it after 100 h.
 5. **Codec fidelity ceiling.** We inherit whatever Higgs loses. Acceptable — v6/v7 already sound fine
    through it — but it bounds the best case.
 
-## Off-ramp
+## The cheaper alternative, which is what shelving this chooses
 
-If Phase 0 or Phase 2 disappoints, **distill v7 to fewer steps instead**. It keeps the NC weights but
-recovers a large share of the speed for a fraction of the effort, and it changes nothing else in the
-stack. That is the fallback, and choosing it is not a failure.
+**Distill v7 to fewer steps.** Weeks rather than months, no corpus work, ~2–2.7×, and it changes
+nothing else in the stack. It keeps the CC-BY-NC weights, which is the whole thing this plan existed
+to escape — so it is a trade, not a strict improvement.
+
+Note the two are not exclusive: distillation applies to a new model as well, and the 7× and the
+2–2.7× compose. If this is ever picked up, distillation is worth doing FIRST, on v7, because it is
+cheap, it is independent, and it de-risks the step assumption for whatever comes after.
 
 ## Open questions
 
