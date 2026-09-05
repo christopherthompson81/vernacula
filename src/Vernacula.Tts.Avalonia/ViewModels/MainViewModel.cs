@@ -81,7 +81,12 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     [NotifyCanExecuteChangedFor(nameof(SynthesizeCommand))]
     private string _omniVoiceOnnxDir = "";
 
-    [ObservableProperty] private string _omniVoiceTokenizerJson = "";
+    // ⚠ This one gates the button too: the tokenizer is auto-located from the ONNX dir, so when it
+    // is NOT found there it is the LAST thing the user picks -- and without this attribute the
+    // button's CanExecute was never re-queried after that pick, so it stayed greyed out.
+    [ObservableProperty]
+    [NotifyCanExecuteChangedFor(nameof(SynthesizeCommand))]
+    private string _omniVoiceTokenizerJson = "";
 
     [ObservableProperty]
     [NotifyCanExecuteChangedFor(nameof(SynthesizeCommand))]
