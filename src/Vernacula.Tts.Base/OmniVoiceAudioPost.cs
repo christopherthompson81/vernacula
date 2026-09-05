@@ -145,14 +145,47 @@ public static class OmniVoiceAudioPost
         return outArr;
     }
 
-    /// <summary>Scale so the loudest sample sits at <paramref name="peak"/>. Silence is left alone.</summary>
+    /// <summary>Scale IN PLACE so the loudest sample sits at <paramref name="peak"/>. Silence is
+    /// left alone.</summary>
     public static void Normalize(float[] x, float peak)
     {
-        float max = 0;
-        foreach (var v in x) max = Math.Max(max, Math.Abs(v));
+        float max = Peak(x);
         if (max < 1e-6f) return;
         float g = peak / max;
         for (int i = 0; i < x.Length; i++) x[i] *= g;
+    }
+
+    /// <summary>Loudest absolute sample, or 0 for an empty or silent buffer.</summary>
+    public static float Peak(float[] a)
+    {
+        float m = 0;
+        foreach (var v in a) m = Math.Max(m, Math.Abs(v));
+        return m;
+    }
+
+    /// <summary>
+    /// Keeps one document's chunks at consistent loudness. A document is synthesized chunk by
+    /// chunk and the pieces are concatenated, so normalising each chunk to the same peak on its own
+    /// would pump: a chunk whose loudest moment is a soft syllable would come out as loud as one
+    /// containing a shouted word. The first chunk sets the level and the rest keep their loudness
+    /// relative to it, which is what the old constant-gain chain did for free.
+    ///
+    /// A leveler is for ONE document. <see cref="OmniVoiceAudioPost.FinishStoredVoice"/> without
+    /// one is the single-utterance case (the CLI, the demo) and normalises outright.
+    /// </summary>
+    public sealed class StoredVoiceLeveler
+    {
+        private float _firstPeak;
+
+        /// <summary>The target peak for a chunk whose decoded peak was <paramref name="rawPeak"/>.
+        /// The first chunk anchors at 0.5; a later chunk that was twice as loud would want 1.0 and
+        /// is capped short of full scale rather than clipped.</summary>
+        internal float TargetFor(float rawPeak)
+        {
+            if (_firstPeak <= 0) _firstPeak = rawPeak;
+            if (_firstPeak <= 0) return 0.5f;
+            return Math.Min(0.95f, 0.5f * rawPeak / _firstPeak);
+        }
     }
 
     /// <summary>
@@ -169,13 +202,19 @@ public static class OmniVoiceAudioPost
     /// Hence: normalise BEFORE silence removal, and again AFTER the fade — the fine-tune emits a
     /// leading transient inside the first 0.1 s, and normalising only before the fade lets that
     /// transient take the headroom which the fade then removes.
+    ///
+    /// The input array is not modified; the caller keeps its decoded audio.
     /// </summary>
-    public static float[] FinishStoredVoice(float[] audio, int sr)
+    /// <param name="leveler">Optional, and shared across one document's chunks so they stay at
+    /// consistent loudness relative to each other. Null finishes a single utterance on its own.</param>
+    public static float[] FinishStoredVoice(float[] audio, int sr, StoredVoiceLeveler? leveler = null)
     {
+        var target = leveler?.TargetFor(Peak(audio)) ?? 0.5f;
+        audio = (float[])audio.Clone();
         Normalize(audio, 0.5f);
         audio = RemoveSilence(audio, sr, midSilMs: 500, leadSilMs: 100, trailSilMs: 100);
         audio = FadeAndPad(audio, sr);
-        Normalize(audio, 0.5f);
+        Normalize(audio, target);
         return audio;
     }
 

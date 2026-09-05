@@ -132,7 +132,10 @@ public sealed class OmniVoiceIpaTts : IDisposable
 
     /// <summary>Synthesize one chunk in the current voice and return audio plus estimated
     /// per-word timings (see the class remarks).</summary>
-    public OmniVoiceIpaSpeech SpeakAligned(string text, string lang, int numStep = 32)
+    /// <param name="leveler">Shared across the chunks of one document so their loudness stays
+    /// consistent; null finishes this chunk as a single utterance.</param>
+    public OmniVoiceIpaSpeech SpeakAligned(string text, string lang, int numStep = 32,
+        OmniVoiceAudioPost.StoredVoiceLeveler? leveler = null)
     {
         var trace = global::Vernacula.Phonemizer.Phonemizer.PhonemizeTrace(text, lang);
         var ipa = Phonemize(text, lang);
@@ -149,7 +152,7 @@ public sealed class OmniVoiceIpaTts : IDisposable
         var decoded = _tts.DecodeTokens(tokens);
         var audio = Voice is null
             ? OmniVoiceAudioPost.Finish(decoded, SampleRate, refRms: null)
-            : OmniVoiceAudioPost.FinishStoredVoice(decoded, SampleRate);
+            : OmniVoiceAudioPost.FinishStoredVoice(decoded, SampleRate, leveler);
 
         return new OmniVoiceIpaSpeech(audio, OmniVoiceIpaAlignment.Proportional(text, trace, audio.Length / (double)SampleRate));
     }

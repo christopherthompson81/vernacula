@@ -40,6 +40,39 @@ public class OmniVoiceAudioPostTests
     }
 
     [Fact]
+    public void ChunksOfOneDocumentKeepTheirLoudnessRelativeToEachOther()
+    {
+        // A document is synthesized in chunks and concatenated. Normalising each to 0.5 on its own
+        // makes a soft chunk as loud as a shouted one -- audible pumping mid-paragraph. With one
+        // leveler, the first chunk anchors the level and a half-as-loud chunk stays half as loud.
+        var leveler = new OmniVoiceAudioPost.StoredVoiceLeveler();
+        var first = OmniVoiceAudioPost.FinishStoredVoice(Tone(0.4f), Sr, leveler);
+        var softer = OmniVoiceAudioPost.FinishStoredVoice(Tone(0.2f), Sr, leveler);
+        Assert.Equal(0.5f, Peak(first), 2);
+        Assert.Equal(0.25f, Peak(softer), 2);
+    }
+
+    [Fact]
+    public void ALouderLaterChunkIsHeldShortOfFullScale()
+    {
+        var leveler = new OmniVoiceAudioPost.StoredVoiceLeveler();
+        OmniVoiceAudioPost.FinishStoredVoice(Tone(0.2f), Sr, leveler);
+        var louder = OmniVoiceAudioPost.FinishStoredVoice(Tone(0.9f), Sr, leveler);
+        Assert.True(Peak(louder) <= 0.95f, $"peak {Peak(louder)} must stay short of clipping");
+        Assert.True(Peak(louder) > 0.5f, "and still be louder than the anchor chunk");
+    }
+
+    [Fact]
+    public void TheDecodedAudioIsNotModified()
+    {
+        // Both chains leave the caller's buffer alone, so raw decoder output stays raw.
+        var raw = Tone(0.3f);
+        var before = (float[])raw.Clone();
+        OmniVoiceAudioPost.FinishStoredVoice(raw, Sr);
+        Assert.Equal(before, raw);
+    }
+
+    [Fact]
     public void PythonChainStillUnBoostsAnEncodedReference()
     {
         // Unchanged for a reference WE boosted at encode time: that boost still has to come off.
