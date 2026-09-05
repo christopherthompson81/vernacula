@@ -102,7 +102,15 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     [ObservableProperty] private string _omniVoiceLangQuery = "";
     [ObservableProperty] private LanguageOption? _omniVoiceLanguage;
-    public ObservableCollection<LanguageOption> LanguageMatches { get; } = new();
+
+    // ⚠ WHOLE-LIST REPLACEMENT, NOT AN ObservableCollection THAT IS CLEARED IN PLACE, and the
+    // replacement is POSTED rather than applied inline. Both halves are required, and the crash
+    // that taught us is worth stating: choosing a row makes AutoCompleteBox call CloseDropDown(),
+    // which sets SelectedItem on its inner list, which fires the query/selection hooks below --
+    // and clearing the bound collection there left the selector enumerating a list it had already
+    // emptied: "Index was out of range" out of SelectingItemsControl.OnSelectionModelSelectionChanged,
+    // killing the app on every language or voice pick.
+    [ObservableProperty] private IReadOnlyList<LanguageOption> _languageMatches = LanguageCatalog.All;
 
     // The voice: the library's voices for the language (else its donor's, else all of them --
     // any voice can read any language's IPA), narrowed by the picker's text.
@@ -111,7 +119,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private StoredVoice.Info? _omniVoiceVoice;
 
     [ObservableProperty] private string _omniVoiceVoiceQuery = "";
-    public ObservableCollection<StoredVoice.Info> OmniVoiceVoices { get; } = new();
+    /// <summary>The voice picker's rows. Replaced wholesale and off the event — see LanguageMatches.</summary>
+    [ObservableProperty] private IReadOnlyList<StoredVoice.Info> _omniVoiceVoices = Array.Empty<StoredVoice.Info>();
     private IReadOnlyList<StoredVoice.Info> _allOmniVoiceVoices = Array.Empty<StoredVoice.Info>();
 
     [ObservableProperty] private int _omniVoiceNumStep = 32;
@@ -425,8 +434,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         // focusing the box and opening the drop-down shows everything, not the one current row.
         var q = value?.Trim() ?? "";
         var matches = q.Length == 0 || q == OmniVoiceLanguage?.Name ? LanguageCatalog.All : LanguageCatalog.Search(q);
-        LanguageMatches.Clear();
-        foreach (var l in matches) LanguageMatches.Add(l);
+        AfterCurrentEvent(() => LanguageMatches = matches);
         // A code typed exactly counts without a row being chosen.
         if (LanguageCatalog.ByCode(q) is { } byCode && byCode.Code != OmniVoiceLang
             && string.Equals(byCode.Code, q, StringComparison.OrdinalIgnoreCase))
@@ -439,6 +447,18 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     }
     partial void OnOmniVoiceVoiceQueryChanged(string value) => NarrowOmniVoiceVoices();
     partial void OnOmniVoiceNumStepChanged(int value) => PersistSettings();
+
+    /// <summary>
+    /// Run <paramref name="action"/> once the control that raised the current change has finished
+    /// with it. Replacing a picker's ItemsSource from inside its own selection commit is what
+    /// crashed the app; a posted replacement lands after the commit unwinds. Outside a dispatcher
+    /// (unit tests, the settings load) it runs inline.
+    /// </summary>
+    private static void AfterCurrentEvent(Action action)
+    {
+        if (Dispatcher.UIThread.CheckAccess()) Dispatcher.UIThread.Post(action, DispatcherPriority.Background);
+        else action();
+    }
 
     /// <summary>The tokenizer the OmniVoice backend will use: the picked file if set, else
     /// what <see cref="OmniVoiceIpaTts.LocateTokenizerJson"/> finds. Null when neither exists.</summary>
@@ -458,6 +478,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             ?? candidates.FirstOrDefault();
         OmniVoiceVoiceQuery = OmniVoiceVoice?.ToString() ?? "";
         NarrowOmniVoiceVoices();
+        return;
 
         static IReadOnlyList<StoredVoice.Info> SafeListVoices(string dir)
         {
@@ -489,13 +510,13 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     {
         var candidates = VoiceCandidates();
         var q = (OmniVoiceVoiceQuery ?? "").Trim();
-        IEnumerable<StoredVoice.Info> shown = q.Length == 0 || q == OmniVoiceVoice?.ToString()
+        IReadOnlyList<StoredVoice.Info> shown = q.Length == 0 || q == OmniVoiceVoice?.ToString()
             ? candidates
             : candidates.Select(v => (score: VoiceScore(v, q.ToLowerInvariant()), v))
                 .Where(t => t.score >= 0).OrderBy(t => t.score).ThenBy(t => t.v.Id, StringComparer.Ordinal)
-                .Select(t => t.v);
-        OmniVoiceVoices.Clear();
-        foreach (var v in shown) OmniVoiceVoices.Add(v);
+                .Select(t => t.v).ToList();
+        AfterCurrentEvent(() => OmniVoiceVoices = shown);
+        return;
 
         static int VoiceScore(StoredVoice.Info v, string q)
         {
