@@ -31,7 +31,13 @@ const say=(o)=>fetch("/r",{method:"POST",body:JSON.stringify(o)});
 const log=[];
 try{
   // 1. phonemize, through the upstream seams
-  const keys = await (await fetch("/vphon-data/_keys.json")).json();
+  // The manifest is the demo's: the engine set plus, per language, its dirs (looked up in
+  // dirs) and core files, minus its excludes (src/inference/phonemizer.ts). Fetch the engine
+  // and this run's language.
+  const m = await (await fetch("/vphon-data/_keys.json")).json();
+  const entry = m.languages[${JSON.stringify(LANG)}] ?? { dirs: [], core: [], exclude: [] };
+  const skip = new Set(entry.exclude ?? []);
+  const keys = [...m.engine, ...entry.dirs.flatMap((d) => m.dirs[d] ?? []), ...(entry.core ?? [])].filter((k) => !skip.has(k));
   const bytes = new Map();
   await Promise.all(keys.map(async k => { const r = await fetch("/vphon-data/"+k); bytes.set(k, new Uint8Array(await r.arrayBuffer())); }));
   const vp = await import("/vphon/src/browser.js");
@@ -52,7 +58,8 @@ try{
     transformerDataUrl: "/models/${MODEL_NAME}.data",
     decoderUrl: "/models/higgs_decoder.onnx",
     tokenizerUrl: "/models/tokenizer.json",
-    voicesUrl: "/models/voices.json",
+    voicesUrl: "/models/voices.jsonc",
+    voiceCodesUrl: "/models/voice-codes.json",
     fetchBytes: async (u) => (await fetch(u)).arrayBuffer(),
     onProgress: (d) => log.push("  " + d),
   });
