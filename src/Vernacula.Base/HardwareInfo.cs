@@ -146,15 +146,42 @@ public static class HardwareInfo
 
         if (OperatingSystem.IsLinux())
         {
+            // ⚠ ASK THE LOADER, NOT THE FILESYSTEM. The CUDA provider dlopens libcudart by soname,
+            // so the only question that matters is whether the dynamic loader can find it -- which
+            // is not the same as the file existing somewhere. A side-by-side CUDA 13 that is not in
+            // the ldconfig cache or LD_LIBRARY_PATH is a file the provider cannot open, and
+            // answering "installed" for it puts us right back to trying CUDA and silently landing
+            // on the CPU.
+            if (NativeLibrary.TryLoad($"libcudart.so.{RequiredCudaMajor}", out var handle))
+            {
+                NativeLibrary.Free(handle);
+                return true;
+            }
+
+            // Not on the loader path, but present: loadable by full path, which tells the caller the
+            // toolkit is there while CanProbeCudaExecutionProvider still refuses to promise CUDA.
             foreach (var dir in GetLinuxCudaLibraryDirs())
             {
-                if (HasFile(dir, $"libcudart.so.{RequiredCudaMajor}")
-                    || HasFile(dir, $"libcudart.so.{RequiredCudaMajor}.*"))
-                    return true;
+                foreach (var file in SafeGetFiles(dir, $"libcudart.so.{RequiredCudaMajor}*"))
+                {
+                    if (!NativeLibrary.TryLoad(file, out var byPath)) continue;
+                    NativeLibrary.Free(byPath);
+                    Console.Error.WriteLine(
+                        $"[HardwareInfo] CUDA {RequiredCudaMajor} found at {file} but not on the "
+                        + "loader path; the CUDA execution provider will not load it. Add its "
+                        + "directory to /etc/ld.so.conf.d (then ldconfig) or LD_LIBRARY_PATH.");
+                    return false;
+                }
             }
         }
 
         return false;
+    }
+
+    private static IEnumerable<string> SafeGetFiles(string dir, string pattern)
+    {
+        try { return Directory.Exists(dir) ? Directory.GetFiles(dir, pattern) : Array.Empty<string>(); }
+        catch { return Array.Empty<string>(); }
     }
 
     /// <summary>

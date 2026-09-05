@@ -85,10 +85,20 @@
     <ErrorOnDuplicatePublishOutputFiles>false</ErrorOnDuplicatePublishOutputFiles>
   </PropertyGroup>
 
+  <!-- ⚠ UseDirectML ALONE IS NOT ENOUGH, AND USED TO FAIL QUIETLY. This project selects DirectML on
+       UseDirectML, but Vernacula.Base selects its runtime on EP, and a property set here does not
+       reach a ProjectReference. So -p:UseDirectML=true built the shared library against the CUDA
+       runtime's managed assembly while the app shipped DirectML's: a version skew that surfaces
+       as a failure at the first session. Both have to be passed. -->
+  <Target Name="RequireDirectMlExecutionProvider" BeforeTargets="BeforeBuild"
+          Condition="'$(UseDirectML)' == 'true' AND '$(EP)' != 'DirectML'">
+    <Error Text="Building with UseDirectML=true also needs -p:EP=DirectML, so the shared library resolves the same ONNX Runtime the app ships. Pass both: dotnet build -p:UseDirectML=true -p:EP=DirectML" />
+  </Target>
+
   <ItemGroup>
     <!-- Platform-specific ONNX Runtime, selected by EP build property -->
     <PackageReference Include="Microsoft.ML.OnnxRuntime.Gpu" Version="1.29.0" Condition="'$(EP)' == 'Cuda' AND '$(UseDirectML)' != 'true' AND ($([MSBuild]::IsOSPlatform('Windows')) OR $([MSBuild]::IsOSPlatform('Linux')))" />
-    <PackageReference Include="Microsoft.ML.OnnxRuntime.DirectML" Version="1.24.4" Condition="'$(UseDirectML)' == 'true' AND $([MSBuild]::IsOSPlatform('Windows'))" />
+    <PackageReference Include="Microsoft.ML.OnnxRuntime.DirectML" Version="1.24.4" Condition="'$(UseDirectML)' == 'true' AND '$(EP)' == 'DirectML' AND $([MSBuild]::IsOSPlatform('Windows'))" />
     <!-- macOS x64 (Intel): 1.24.x dropped osx-x64 native support; 1.19.2 is the last version that includes it -->
     <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.19.2" Condition="$([MSBuild]::IsOSPlatform('OSX')) AND $([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture) == 'X64'" />
     <!-- CPU runtime for all other platforms: EP=Cpu override, or macOS arm64 -->
