@@ -145,6 +145,79 @@ public static class OmniVoiceAudioPost
         return outArr;
     }
 
+    /// <summary>Scale IN PLACE so the loudest sample sits at <paramref name="peak"/>. Silence is
+    /// left alone.</summary>
+    public static void Normalize(float[] x, float peak)
+    {
+        float max = Peak(x);
+        if (max < 1e-6f) return;
+        float g = peak / max;
+        for (int i = 0; i < x.Length; i++) x[i] *= g;
+    }
+
+    /// <summary>Loudest absolute sample, or 0 for an empty or silent buffer.</summary>
+    public static float Peak(float[] a)
+    {
+        float m = 0;
+        foreach (var v in a) m = Math.Max(m, Math.Abs(v));
+        return m;
+    }
+
+    /// <summary>
+    /// Keeps one document's chunks at consistent loudness. A document is synthesized chunk by
+    /// chunk and the pieces are concatenated, so normalising each chunk to the same peak on its own
+    /// would pump: a chunk whose loudest moment is a soft syllable would come out as loud as one
+    /// containing a shouted word. The first chunk sets the level and the rest keep their loudness
+    /// relative to it, which is what the old constant-gain chain did for free.
+    ///
+    /// A leveler is for ONE document. <see cref="OmniVoiceAudioPost.FinishStoredVoice"/> without
+    /// one is the single-utterance case (the CLI, the demo) and normalises outright.
+    /// </summary>
+    public sealed class StoredVoiceLeveler
+    {
+        private float _firstPeak;
+
+        /// <summary>The target peak for a chunk whose decoded peak was <paramref name="rawPeak"/>.
+        /// The first chunk anchors at 0.5; a later chunk that was twice as loud would want 1.0 and
+        /// is capped short of full scale rather than clipped.</summary>
+        internal float TargetFor(float rawPeak)
+        {
+            if (_firstPeak <= 0) _firstPeak = rawPeak;
+            if (_firstPeak <= 0) return 0.5f;
+            return Math.Min(0.95f, 0.5f * rawPeak / _firstPeak);
+        }
+    }
+
+    /// <summary>
+    /// The finishing chain for a STORED voice — the demo's, and the only correct one for a
+    /// reference we did not boost.
+    ///
+    /// ⚠ PYTHON'S VOLUME STEP UN-BOOSTS A REFERENCE THAT WAS BOOSTED AT ENCODE TIME. The stored
+    /// voices never were: they carry the source clip's own level, and the corpus spans rms
+    /// 0.0017–0.099, a 58× spread. Applying the un-boost to them undoes something that never
+    /// happened, so a quiet source plays quiet — af (rms 0.0148) came out at 15% of level — and at
+    /// the very quiet end it drops the whole utterance below the silence threshold, where
+    /// <see cref="RemoveSilence"/> deletes it outright.
+    ///
+    /// Hence: normalise BEFORE silence removal, and again AFTER the fade — the fine-tune emits a
+    /// leading transient inside the first 0.1 s, and normalising only before the fade lets that
+    /// transient take the headroom which the fade then removes.
+    ///
+    /// The input array is not modified; the caller keeps its decoded audio.
+    /// </summary>
+    /// <param name="leveler">Optional, and shared across one document's chunks so they stay at
+    /// consistent loudness relative to each other. Null finishes a single utterance on its own.</param>
+    public static float[] FinishStoredVoice(float[] audio, int sr, StoredVoiceLeveler? leveler = null)
+    {
+        var target = leveler?.TargetFor(Peak(audio)) ?? 0.5f;
+        audio = (float[])audio.Clone();
+        Normalize(audio, 0.5f);
+        audio = RemoveSilence(audio, sr, midSilMs: 500, leadSilMs: 100, trailSilMs: 100);
+        audio = FadeAndPad(audio, sr);
+        Normalize(audio, target);
+        return audio;
+    }
+
     /// <summary>
     /// The finishing chain in the order Python's <c>_post_process_audio</c> applies it: remove
     /// silence → volume → fade-in/out + zero-pad. Volume: with a reference (<paramref name="refRms"/>
@@ -160,9 +233,7 @@ public static class OmniVoiceAudioPost
         }
         else
         {
-            float max = 0;
-            foreach (var v in audio) max = Math.Max(max, Math.Abs(v));
-            if (max >= 1e-6f) { float g = 0.5f / max; for (int i = 0; i < audio.Length; i++) audio[i] *= g; }
+            Normalize(audio, 0.5f);
         }
         return FadeAndPad(audio, sr);
     }

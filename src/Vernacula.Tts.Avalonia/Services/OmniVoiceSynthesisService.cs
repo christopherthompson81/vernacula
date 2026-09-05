@@ -71,6 +71,9 @@ public sealed class OmniVoiceSynthesisService : ITtsBackend
             int totalChunks = chunks.Count;
             onProgress?.Invoke(new ProgressEvent($"chunked into {totalChunks} pieces", null, totalChunks));
 
+            // One leveler for the whole document: the chunks are concatenated, so each one must
+            // not be normalised to the same peak on its own or the level pumps between them.
+            var leveler = new OmniVoiceAudioPost.StoredVoiceLeveler();
             var chunkAudios = new float[totalChunks][];
             var sidecarChunks = new List<ChunkRecord>(totalChunks);
             var allWords = new List<AlignedWord>();
@@ -82,7 +85,7 @@ public sealed class OmniVoiceSynthesisService : ITtsBackend
                 onProgress?.Invoke(new ProgressEvent($"synthesizing ({request.NumStep} steps)", idx + 1, totalChunks));
 
                 string chunkText = chunks[idx];
-                var sp = tts.SpeakAligned(chunkText, lang, request.NumStep);
+                var sp = tts.SpeakAligned(chunkText, lang, request.NumStep, leveler);
                 var wav = sp.Audio;
 
                 chunkAudios[idx] = wav;

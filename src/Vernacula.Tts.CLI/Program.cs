@@ -437,14 +437,7 @@ internal static class Program
         // fine — 91 of 318 clips in the first sweep, all of them FLEURS, whose audio is simply quiet.
         if (post == "demo")
         {
-            // Normalise BEFORE silence removal, and again after the fade: the fine-tune emits a
-            // leading transient inside the first 0.1 s, so normalising only before the fade lets that
-            // transient take the headroom and the fade then removes it.
-            Normalize(audio, 0.5f);
-            audio = OmniVoiceAudioPost.RemoveSilence(audio, OmniVoiceTts.SampleRate,
-                midSilMs: 500, leadSilMs: 100, trailSilMs: 100);
-            audio = OmniVoiceAudioPost.FadeAndPad(audio, OmniVoiceTts.SampleRate);
-            Normalize(audio, 0.5f);
+            audio = OmniVoiceAudioPost.FinishStoredVoice(audio, OmniVoiceTts.SampleRate);
         }
         else if (post == "python")
         {
@@ -469,15 +462,6 @@ internal static class Program
         var (samples, sr, ch) = AudioUtils.ReadAudio(path);
         float[] mono = ch > 1 ? AudioUtils.DownmixToMono(samples, ch) : samples;
         return AudioUtils.ResampleMono(mono, sr, OmniVoiceTts.SampleRate);
-    }
-
-    private static void Normalize(float[] x, float peak)
-    {
-        float max = 0;
-        foreach (var v in x) max = Math.Max(max, Math.Abs(v));
-        if (max < 1e-6f) return;
-        float g = peak / max;
-        for (int i = 0; i < x.Length; i++) x[i] *= g;
     }
 
     private static float Rms(float[] x)
