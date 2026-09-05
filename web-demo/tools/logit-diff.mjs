@@ -12,6 +12,11 @@ process.on("exit",()=>{try{CHILD?.kill("SIGKILL");}catch{}});
 const PORT=8796;
 const MODEL = process.env.MODEL ?? "/mnt/data/omnivoice_ipa/onnx_web/omnivoice_transformer_ipa.int4.onnx";
 const NAME = MODEL.split("/").pop();
+// MODEL2: a DIFFERENT file for the WebGPU side (e.g. an fp16-activation build) against MODEL on
+// WASM as the fp32 reference. Same inputs, one forward — the kernel-level precision question,
+// asked before any listening test. Defaults to MODEL, i.e. the original wasm-vs-webgpu check.
+const MODEL2 = process.env.MODEL2 ?? MODEL;
+const NAME2 = MODEL2.split("/").pop();
 const S = Number(process.env.S ?? 120);
 const PAGE=`<!doctype html><meta charset=utf-8><body><script type="module">
 const say=(o)=>fetch("/r",{method:"POST",body:JSON.stringify(o)});
@@ -20,6 +25,8 @@ try{
   ort.env.wasm.wasmPaths="/ort/"; ort.env.logLevel="error";
   const model=await (await fetch("/m/${NAME}")).arrayBuffer();
   const data=new Uint8Array(await (await fetch("/m/${NAME}.data")).arrayBuffer());
+  const model2=await (await fetch("/m2/${NAME2}")).arrayBuffer();
+  const data2=new Uint8Array(await (await fetch("/m2/${NAME2}.data")).arrayBuffer());
   const B=1,C=8,S=${S};
   const ids=BigInt64Array.from({length:B*C*S},(_,i)=>BigInt((i*7+3)%1024));
   const am=Uint8Array.from({length:B*S},(_,i)=>i%2===0?1:0);
@@ -29,8 +36,8 @@ try{
                     attention_mask:new ort.Tensor("bool",at,[B,1,S,S])});
   const out={};
   for (const ep of ["wasm","webgpu"]) {
-    const s=await ort.InferenceSession.create(model,{executionProviders:[ep],graphOptimizationLevel:"all",
-      externalData:[{path:"${NAME}.data",data}]});
+    const s=await ort.InferenceSession.create(ep==="wasm"?model:model2,{executionProviders:[ep],graphOptimizationLevel:"all",
+      externalData:[{path:ep==="wasm"?"${NAME}.data":"${NAME2}.data",data:ep==="wasm"?data:data2}]});
     const r=await s.run(feeds());
     out[ep]=Array.from(r.logits.data);
   }
@@ -50,11 +57,13 @@ http.createServer((q,res)=>{
     res.writeHead(200,iso);res.end("ok");const r=JSON.parse(b);
     if(!r.ok){console.error("FAILED: "+r.error);done(3);}
     console.log(`  logits: ${r.len} values`);
+    console.log(`  wasm: ${NAME} (${MODEL})  vs  webgpu: ${NAME2} (${MODEL2})`);
     console.log(`  max |wasm-webgpu| = ${r.maxAbs.toFixed(4)}   mean = ${r.meanAbs.toFixed(5)}`);
     console.log(`  argmax agreement  = ${(r.argmaxAgree*100).toFixed(3)}%`);
     done(0);});return;}
   if(q.url==="/"){res.writeHead(200,{...iso,"Content-Type":"text/html"});return res.end(PAGE);}
   let f = q.url===`/m/${NAME}` ? MODEL : q.url===`/m/${NAME}.data` ? MODEL+".data"
+        : q.url===`/m2/${NAME2}` ? MODEL2 : q.url===`/m2/${NAME2}.data` ? MODEL2+".data"
         : q.url.startsWith("/ort/") ? path.join("node_modules/onnxruntime-web/dist",q.url.slice(5)) : null;
   if(f&&fs.existsSync(f)){const ct=/\.(js|mjs)$/.test(f)?"text/javascript":/\.wasm$/.test(f)?"application/wasm":"application/octet-stream";
     res.writeHead(200,{...iso,"Content-Type":ct});return fs.createReadStream(f).pipe(res);}
