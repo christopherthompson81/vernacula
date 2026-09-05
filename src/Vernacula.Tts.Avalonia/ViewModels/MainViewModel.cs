@@ -1058,8 +1058,10 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         if (!ShowIpaAnnotation)
         {
             foreach (var w in Words) w.SetRuby(null);
+            ReapplyCurrentHighlight();
             return;
         }
+        IpaAnnotationNotice = "";   // nothing to annotate is not a failure to annotate
         if (Words.Count == 0) return;
 
         var cts = new CancellationTokenSource();
@@ -1089,6 +1091,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
                         {
                             if (token.IsCancellationRequested) return;
                             foreach (var w in Words) w.SetRuby(null);
+                            ReapplyCurrentHighlight();
                             // Its own line, not StatusMessage: this re-fires on every keystroke for
                             // a language that cannot be attributed, and it must not scribble over
                             // synthesis progress or a prerequisite error.
@@ -1101,6 +1104,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
                         if (token.IsCancellationRequested) return;
                         IpaAnnotationNotice = "";
                         for (var i = 0; i < block.Count; i++) block[i].SetRuby(ipa[i]);
+                        ReapplyCurrentHighlight();
                     });
                 }
             }
@@ -1110,6 +1114,21 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
                 Console.Error.WriteLine($"[IPA] annotation failed: {ex.Message}");
             }
         }, token);
+    }
+
+    /// <summary>
+    /// Put the highlight back on whichever half of the current word now draws it. Gaining pieces
+    /// moves it from the word to a piece and losing them moves it back; without this, turning the
+    /// annotation off mid-playback left the spoken word with no highlight at all until the audio
+    /// reached the next one, and an annotation arriving for the current word lit both.
+    /// </summary>
+    private void ReapplyCurrentHighlight()
+    {
+        if (_currentWordIndex < 0 || _currentWordIndex >= Words.Count) return;
+        var word = Words[_currentWordIndex];
+        word.IsCurrent = !word.HasPieces;
+        if (word.HasPieces) word.HighlightPieceAt(_playback.PositionSeconds);
+        else word.ClearPieceHighlight();
     }
 
     /// <summary>Index of the block whose output span contains <paramref name="offset"/>, or -1.</summary>

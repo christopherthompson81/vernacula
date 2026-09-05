@@ -143,7 +143,11 @@ public class IpaAnnotatorTests
     [Fact]
     public void PiecesSpellTheWordBackExactly()
     {
+        // Including the characters no token covers: Chinese punctuation gets no token at all, and
+        // the pieces REPLACE the word in the render, so anything they drop is text the reader
+        // loses off the screen.
         foreach (var (word, lang) in new[] { ("東京都に住んでいます。", "ja"), ("我喜欢学习中文", "cmn"),
+                                             ("我住在北京。", "cmn"), ("「東京」に住んでいます", "ja"),
                                              ("私は日本語を勉強しています。", "ja") })
         {
             var pieces = Ruby(word, lang)[0].Pieces;

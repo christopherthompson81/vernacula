@@ -123,10 +123,10 @@ public static class IpaAnnotator
                     return null;
                 }
                 var word = oneForOne ? first + (t - i0) : first;
-                // Where this token's own characters sit inside its word, for a sub-word piece.
-                var (ws, we) = oneForOne
-                    ? (Math.Max(spans[t].Start, wordStart[word]), Math.Min(spans[t].End, wordStart[word] + words[word].Length))
-                    : (Math.Max(input.Start, wordStart[word]), Math.Min(input.End, wordStart[word] + words[word].Length));
+                // Which characters of that word this reading covers. Every token in the group
+                // shares the one input span, so this is that span clipped to the word.
+                var ws = Math.Max(input.Start, wordStart[word]);
+                var we = Math.Min(input.End, wordStart[word] + words[word].Length);
                 (parts[word] ??= new List<Contribution>()).Add(new Contribution(ws, we, ipa.Trim()));
             }
             i0 = i1 + 1;
@@ -147,8 +147,14 @@ public static class IpaAnnotator
 
     /// <summary>
     /// The word's sub-pieces, or empty when it does not split. A word splits only when its tokens
-    /// cover DISTINCT, in-order, non-empty ranges of it -- "$3.14" is three readings of one range
-    /// and stays stacked, while 東京都に/住んで/います are three ranges and become three pieces.
+    /// cover DISTINCT, in-order ranges of it -- "$3.14" is three readings of one range and stays
+    /// stacked, while 東京都に/住んで/います are three ranges and become three pieces.
+    ///
+    /// ⚠ THE PIECES MUST SPELL THE WORD BACK, CHARACTER FOR CHARACTER. They replace the word in the
+    /// render, so a character no piece covers is a character the reader loses: Chinese punctuation
+    /// gets no token at all, and 我住在北京。 would have lost its 。 Characters between (or around)
+    /// the tokens become pieces with no reading, which is what they are.
+    ///
     /// A piece that is one all-Han run whose reading has exactly one group per character splits
     /// again, per character: that is pinyin over hanzi, the same annotation Chinese readers expect.
     /// </summary>
@@ -158,26 +164,30 @@ public static class IpaAnnotator
         // readers use, and splitting "hello," into two pieces would churn every English render.
         if (!word.Any(IsContinua)) return Array.Empty<RubyPiece>();
 
+        var wordEnd = wordStart + word.Length;
+        var pieces = new List<RubyPiece>(parts.Count);
         var cursor = wordStart;
         foreach (var c in parts)
         {
-            if (c.Start < cursor || c.End <= c.Start || c.End > wordStart + word.Length) return Array.Empty<RubyPiece>();
+            // Overlapping or out-of-order ranges are not a segmentation of anything; decline.
+            if (c.Start < cursor || c.End <= c.Start || c.End > wordEnd) return Array.Empty<RubyPiece>();
+            if (c.Start > cursor) AddPiece(text[cursor..c.Start], "");   // uncovered: punctuation
+            AddPiece(text[c.Start..c.End], c.Ipa);
             cursor = c.End;
         }
+        if (cursor < wordEnd) AddPiece(text[cursor..wordEnd], "");
+        // One piece is not a segmentation -- that is just the word, and it renders as one.
+        return pieces.Count > 1 ? pieces : Array.Empty<RubyPiece>();
 
-        var pieces = new List<RubyPiece>(parts.Count);
-        foreach (var c in parts)
+        void AddPiece(string slice, string ipa)
         {
-            var slice = text[c.Start..c.End];
-            var groups = c.Ipa.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            var groups = ipa.Split(' ', StringSplitOptions.RemoveEmptyEntries);
             if (slice.Length > 1 && groups.Length == slice.Length && slice.All(IsHan))
                 for (var k = 0; k < slice.Length; k++)
                     pieces.Add(new RubyPiece(slice[k].ToString(), groups[k], OmniVoiceDuration.TotalWeight(groups[k])));
             else
-                pieces.Add(new RubyPiece(slice, c.Ipa, OmniVoiceDuration.TotalWeight(c.Ipa)));
+                pieces.Add(new RubyPiece(slice, ipa, ipa.Length == 0 ? 0 : OmniVoiceDuration.TotalWeight(ipa)));
         }
-        // One piece is not a segmentation -- that is just the word, and it renders as one.
-        return pieces.Count > 1 ? pieces : Array.Empty<RubyPiece>();
     }
 
     /// <summary>Scripts written without spaces between words, where the render has to be segmented
