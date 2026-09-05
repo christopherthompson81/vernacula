@@ -1,0 +1,16 @@
+<Project>
+
+  <!--
+    Repo-wide build guards. Kept here rather than copied into each csproj so a new project cannot
+    quietly miss one.
+  -->
+
+  <!-- ⚠ DirectML IS WINDOWS-ONLY, AND USED TO FAIL LATE. Its package carries no Linux or macOS
+       natives, so `-p:EP=DirectML` on those platforms restored no ONNX Runtime at all: the build
+       succeeded, and the first session threw DllNotFoundException. Say so at build time instead. -->
+  <Target Name="RejectDirectMlOffWindows" BeforeTargets="BeforeBuild"
+          Condition="'$(EP)' == 'DirectML' AND !$([MSBuild]::IsOSPlatform('Windows'))">
+    <Error Text="EP=DirectML is Windows-only: the DirectML package ships no natives for this platform, so the build would produce no ONNX Runtime at all. Use -p:EP=Cuda or -p:EP=Cpu here." />
+  </Target>
+
+</Project>

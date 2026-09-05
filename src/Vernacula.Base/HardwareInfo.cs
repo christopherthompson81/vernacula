@@ -145,38 +145,50 @@ public static class HardwareInfo
             return _windowsCudaScan.Value.HasCudart;
 
         if (OperatingSystem.IsLinux())
-        {
-            // ⚠ ASK THE LOADER, NOT THE FILESYSTEM. The CUDA provider dlopens libcudart by soname,
-            // so the only question that matters is whether the dynamic loader can find it -- which
-            // is not the same as the file existing somewhere. A side-by-side CUDA 13 that is not in
-            // the ldconfig cache or LD_LIBRARY_PATH is a file the provider cannot open, and
-            // answering "installed" for it puts us right back to trying CUDA and silently landing
-            // on the CPU.
-            if (NativeLibrary.TryLoad($"libcudart.so.{RequiredCudaMajor}", out var handle))
-            {
-                NativeLibrary.Free(handle);
-                return true;
-            }
+            return _linuxCudaRuntimeLoadable.Value;
 
-            // Not on the loader path, but present: loadable by full path, which tells the caller the
-            // toolkit is there while CanProbeCudaExecutionProvider still refuses to promise CUDA.
-            foreach (var dir in GetLinuxCudaLibraryDirs())
+        return false;
+    }
+
+    /// <summary>
+    /// Whether the dynamic loader can open the CUDA runtime this build needs.
+    ///
+    /// ⚠ ASK THE LOADER, NOT THE FILESYSTEM. The CUDA provider dlopens libcudart by soname, so the
+    /// only question that matters is whether the loader can find it -- which is not the same as the
+    /// file existing somewhere. A side-by-side CUDA 13 that is not in the ldconfig cache or on
+    /// LD_LIBRARY_PATH is a file the provider cannot open, and answering "installed" for it puts us
+    /// back to trying CUDA and silently landing on the CPU.
+    ///
+    /// ⚠ CACHED, like the Windows scan beside it. <see cref="CanProbeCudaExecutionProvider"/> is
+    /// called at every model-init site, and this does a dlopen plus a directory sweep; without the
+    /// cache a diarization run would repeat both dozens of times, and print the diagnostic each time.
+    /// </summary>
+    private static readonly Lazy<bool> _linuxCudaRuntimeLoadable = new(() =>
+    {
+        if (NativeLibrary.TryLoad($"libcudart.so.{RequiredCudaMajor}", out var handle))
+        {
+            NativeLibrary.Free(handle);
+            return true;
+        }
+
+        // Present but unreachable. Still false -- the provider will fail exactly as we just did --
+        // but worth saying out loud, because the fix is one ldconfig line rather than an install.
+        foreach (var dir in GetLinuxCudaLibraryDirs())
+        {
+            foreach (var file in SafeGetFiles(dir, $"libcudart.so.{RequiredCudaMajor}*"))
             {
-                foreach (var file in SafeGetFiles(dir, $"libcudart.so.{RequiredCudaMajor}*"))
-                {
-                    if (!NativeLibrary.TryLoad(file, out var byPath)) continue;
-                    NativeLibrary.Free(byPath);
-                    Console.Error.WriteLine(
-                        $"[HardwareInfo] CUDA {RequiredCudaMajor} found at {file} but not on the "
-                        + "loader path; the CUDA execution provider will not load it. Add its "
-                        + "directory to /etc/ld.so.conf.d (then ldconfig) or LD_LIBRARY_PATH.");
-                    return false;
-                }
+                if (!NativeLibrary.TryLoad(file, out var byPath)) continue;
+                NativeLibrary.Free(byPath);
+                Console.Error.WriteLine(
+                    $"[HardwareInfo] CUDA {RequiredCudaMajor} found at {file} but not on the loader "
+                    + "path, so the CUDA execution provider cannot load it. Add its directory to "
+                    + "/etc/ld.so.conf.d (then run ldconfig) or to LD_LIBRARY_PATH.");
+                return false;
             }
         }
 
         return false;
-    }
+    });
 
     private static IEnumerable<string> SafeGetFiles(string dir, string pattern)
     {
@@ -494,12 +506,14 @@ public static class HardwareInfo
                     // cudart64_13.dll, not any cudart64_*.dll: see RequiredCudaMajor.
                     bool isCudart = name.StartsWith($"cudart64_{RequiredCudaMajor}", StringComparison.OrdinalIgnoreCase);
                     bool isCudnn  = name.StartsWith("cudnn",     StringComparison.OrdinalIgnoreCase);
-                    // Versioned like cudart: a CUDA 12 bin directory must not be added to the
-                    // search path for a runtime that links CUDA 13.
+                    // Only the libraries whose soname tracks the CUDA major are matched by major,
+                    // and they are what identifies the directory: a CUDA 12 bin must not join the
+                    // search path of a runtime that links CUDA 13. cuFFT and cuRAND version
+                    // independently (CUDA 12 ships cuFFT 11, CUDA 13 ships 12), so gating on them
+                    // would match nothing at all; they live in the same directory as cudart anyway.
                     bool isCudaDep = isCudart || isCudnn
                         || name.StartsWith($"cublas64_{RequiredCudaMajor}", StringComparison.OrdinalIgnoreCase)
                         || name.StartsWith($"cublasLt64_{RequiredCudaMajor}", StringComparison.OrdinalIgnoreCase)
-                        || name.StartsWith($"cufft64_{RequiredCudaMajor}", StringComparison.OrdinalIgnoreCase)
                         || name.StartsWith($"nvrtc64_{RequiredCudaMajor}", StringComparison.OrdinalIgnoreCase);
 
                     if (isCudart) hasCudart = true;

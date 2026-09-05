@@ -23,6 +23,14 @@
     <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.29.0"
                       PrivateAssets="all" />
   </ItemGroup>
+  <!-- Pinned, not inherited. With no group here, an EP=DirectML build compiled against whatever
+       Vernacula.Phonemizer happens to pin transitively: today that is 1.24.4, which is what
+       DirectML wants, but the day the submodule moves to 1.29 these builds would silently acquire
+       the managed-on-older-native skew the rest of this change exists to remove. -->
+  <ItemGroup Condition="'$(EP)' == 'DirectML'">
+    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.24.4"
+                      PrivateAssets="all" />
+  </ItemGroup>
 
   <!-- NAudio: voice-prompt WAV decode + resample to 24 kHz mono. -->
   <ItemGroup>
