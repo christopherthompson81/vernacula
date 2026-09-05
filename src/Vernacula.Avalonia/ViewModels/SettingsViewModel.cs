@@ -655,6 +655,9 @@ internal partial class SettingsViewModel : ObservableObject
                 ? Loc.Instance.T("settings_hw_vram", new() { ["vram"] = $"{totalMb / 1024.0:F1}" })
                 : "";
 
+            // Re-check means re-check: the probes cache for the life of the process, and this is
+            // the button someone presses right after installing cuDNN or running ldconfig.
+            HardwareInfo.InvalidateCudaProbes();
             CudaToolkitInstalled = HardwareInfo.IsCudaToolkitInstalled();
             CudnnInstalled       = HardwareInfo.IsCudnnInstalled();
             (cudaOk, _)          = _modelMgr.CheckCuda();

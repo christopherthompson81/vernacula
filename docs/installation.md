@@ -11,8 +11,12 @@ Vernacula runs on Linux, macOS, and Windows. The desktop app and CLI share the s
 > ⚠ **CUDA 13, not 12.** The bundled ONNX Runtime (1.29) links `libcudart.so.13` / `cudart64_13.dll`;
 > the major version is part of the library name, so a CUDA 12 installation cannot load it. Earlier
 > releases of this project used ONNX Runtime 1.24, which linked CUDA 12. If you are upgrading and
-> still have only CUDA 12, install the CUDA 13 runtime — or build with `-p:EP=Cpu`. A CUDA 12 machine
-> now reports no CUDA at startup and runs on the CPU rather than failing silently mid-session.
+> still have only CUDA 12, install the CUDA 13 runtime — or build with `-p:EP=Cpu`.
+>
+> On **Linux**, a CUDA 12 machine now reports no CUDA at startup and runs on the CPU, with an
+> explanation, rather than appearing to have GPU support that never engages. On **Windows** the
+> detection is not yet CUDA-major aware ([#119](https://github.com/christopherthompson81/vernacula/issues/119)):
+> a CUDA 12 machine still reports CUDA present, then falls back to the CPU silently.
 
 Install FFmpeg on common Linux distros:
 
