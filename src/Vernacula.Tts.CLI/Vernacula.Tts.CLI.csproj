@@ -11,7 +11,7 @@
     <AssemblyName>vernacula-tts</AssemblyName>
 
     <!--
-      Select execution provider at build time, matching Vernacula.CLI / Chatterbox.CLI:
+      Select execution provider at build time, matching Vernacula.CLI / Vernacula.Tts.Backends.CLI:
         dotnet build -c Release -p:EP=Cuda       (default)
         dotnet build -c Release -p:EP=DirectML
         dotnet build -c Release -p:EP=Cpu
@@ -49,7 +49,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\Chatterbox.Base\Chatterbox.Base.csproj">
+    <ProjectReference Include="..\Vernacula.Tts.Base\Vernacula.Tts.Base.csproj">
       <SetConfiguration>EP=$(EP)</SetConfiguration>
     </ProjectReference>
     <ProjectReference Include="..\Vernacula.Base\Vernacula.Base.csproj">

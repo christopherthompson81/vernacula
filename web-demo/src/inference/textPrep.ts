@@ -1,6 +1,6 @@
 /**
  * Builds the diffusion transformer's conditioning input — the TypeScript port of
- * `Chatterbox.Base.OmniVoiceTextPrep`, itself a port of OmniVoice's `_combine_text` /
+ * `Vernacula.Tts.Base.OmniVoiceTextPrep`, itself a port of OmniVoice's `_combine_text` /
  * `_prepare_inference_inputs`.
  *
  * input_ids [8, total] = style ++ text ++ [ref audio codes] ++ masked target. Style and text

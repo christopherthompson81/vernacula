@@ -1,7 +1,7 @@
 /**
  * ONNX session plumbing plus the end-to-end pipeline: IPA -> tokens -> waveform.
  *
- * The TypeScript counterpart of `Chatterbox.Base.OmniVoice` + `OmniVoiceTts`. Only two graphs ship
+ * The TypeScript counterpart of `Vernacula.Tts.Base.OmniVoice` + `OmniVoiceTts`. Only two graphs ship
  * to the browser — the (already IPA-merged, quantized) transformer and the Higgs decoder. The
  * 654 MB Higgs ENCODER does not: it exists only to turn a reference WAV into codec codes, and those
  * codes are a few KB, so they are precomputed offline and fetched as `voices.json`.

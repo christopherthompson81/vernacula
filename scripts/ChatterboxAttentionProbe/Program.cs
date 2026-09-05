@@ -15,8 +15,8 @@
 //     --onnx-dir /path/to/chatterbox_export \
 //     --out /tmp/cs_attn_probe
 
-using Chatterbox.Base;
-using Chatterbox.Base.Alignment;
+using Vernacula.Tts.Base;
+using Vernacula.Tts.Base.Alignment;
 using Vernacula.Base.Models;
 
 string? text = null, voicePath = null, onnxDir = null, outDir = null;

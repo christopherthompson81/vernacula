@@ -1,0 +1,39 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+    <!-- CPU-only test host. Vernacula.Tts.Base would otherwise pull
+         OnnxRuntime.Gpu through its default EP=Cuda property; override
+         here so the test process doesn't need CUDA at runtime
+         (MarkdownTextExtractor is pure CPU, but the project reference
+         still resolves the EP). -->
+    <Platforms>x64</Platforms>
+    <RootNamespace>Vernacula.Tts.Tests</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />
+    <PackageReference Include="xunit.v3" Version="1.0.0" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.0.0" />
+    <!-- CPU ORT for the (opt-in) OmniVoice graph-parity integration test. Vernacula.Tts.Base
+         marks its own ORT package PrivateAssets=all, so consumers bring their own. -->
+    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.24.4" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Vernacula.Tts.Base\Vernacula.Tts.Base.csproj">
+      <Private>true</Private>
+      <SetConfiguration>EP=Cpu</SetConfiguration>
+    </ProjectReference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="..\fixtures\omnivoice_*.json"
+          Link="fixtures\%(Filename)%(Extension)"
+          CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>

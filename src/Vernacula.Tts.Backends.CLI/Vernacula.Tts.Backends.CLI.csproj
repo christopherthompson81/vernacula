@@ -1,0 +1,50 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>false</AllowUnsafeBlocks>
+    <Platforms>x64</Platforms>
+    <RootNamespace>Vernacula.Tts.Backends.CLI</RootNamespace>
+    <AssemblyName>vernacula-tts-backends</AssemblyName>
+
+    <!--
+      Select execution provider at build time, matching Vernacula.CLI:
+        dotnet build -c Release -p:EP=Cuda       (default)
+        dotnet build -c Release -p:EP=DirectML
+        dotnet build -c Release -p:EP=Cpu
+    -->
+    <EP Condition="'$(EP)' == ''">Cuda</EP>
+    <DefineConstants Condition="'$(EP)' == 'DirectML'">$(DefineConstants);DIRECTML</DefineConstants>
+    <DefineConstants Condition="'$(EP)' == 'Cpu'">$(DefineConstants);CPU</DefineConstants>
+  </PropertyGroup>
+
+  <ItemGroup Condition="'$(EP)' == 'Cuda'">
+    <PackageReference Include="Microsoft.ML.OnnxRuntime.Gpu" Version="1.24.4" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(EP)' == 'DirectML'">
+    <PackageReference Include="Microsoft.ML.OnnxRuntime.DirectML" Version="1.21.1" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(EP)' == 'Cpu'">
+    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.24.4" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="NAudio" Version="2.2.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Kokoro's G2P frontend. Direct rather than transitive through Vernacula.Tts.Base — see the
+         PrivateAssets note on that project's reference to it. -->
+    <ProjectReference Include="..\..\external\espeak-ng-portable\csharp\src\Vernacula.Phonemizer\Vernacula.Phonemizer.csproj" />
+    <ProjectReference Include="..\Vernacula.Tts.Base\Vernacula.Tts.Base.csproj">
+      <SetConfiguration>EP=$(EP)</SetConfiguration>
+    </ProjectReference>
+    <ProjectReference Include="..\Vernacula.Base\Vernacula.Base.csproj">
+      <SetConfiguration>EP=$(EP)</SetConfiguration>
+    </ProjectReference>
+  </ItemGroup>
+
+</Project>

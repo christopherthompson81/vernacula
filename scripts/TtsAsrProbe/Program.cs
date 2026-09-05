@@ -21,9 +21,9 @@
 //     [--out-wav <wav>] \
 //     [--single-chunk]   # only the first chunk (fast)
 
-using Chatterbox.Base;
-using Chatterbox.Base.Markdown;
-using Chatterbox.Base.Tokenization;
+using Vernacula.Tts.Base;
+using Vernacula.Tts.Base.Markdown;
+using Vernacula.Tts.Base.Tokenization;
 using NAudio.Wave;
 using Vernacula.Base;
 using Vernacula.Base.Models;
@@ -144,7 +144,7 @@ for (int ci = 0; ci < chunks.Count; ci++)
         Console.WriteLine($"[unk chars] {string.Join(" ", unkRunes.Take(50).Select(s => $"'{s}'"))}");
     }
 
-    // Synthesize. Use 1024 max LM steps to match Chatterbox.CLI's
+    // Synthesize. Use 1024 max LM steps to match Vernacula.Tts.Backends.CLI's
     // override — DefaultMaxLmSteps is only 256, which truncates
     // long-form chunks (the original probe bug + the same bug the
     // Avalonia reader has).
