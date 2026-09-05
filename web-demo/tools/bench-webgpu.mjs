@@ -1,5 +1,11 @@
 // Measure a transformer forward on the WebGPU EP, in headless Chrome.
 //
+// ⚠ PREFER tools/pw-bench.mjs. This harness measured 3.3 s per forward where the demo's own path
+// measured 1.1 s on the same machine, and its adapter reported different limits (2147 MB vs the
+// 4295 MB Run 8 recorded for Chrome/Dawn on the NVIDIA card): it does not reliably land on the
+// GPU the demo gets. pw-bench launches Chrome exactly as the demo's Playwright harness does and
+// matches the demo's numbers. docs/tts_speed_investigation.md, Run 6.
+//
 // ORT's WebGPU backend cannot be driven from Node (no navigator.gpu), so this serves a bench page
 // over localhost with the cross-origin-isolation headers ORT needs, launches headless Chrome at it,
 // and collects the timing the page posts back. Same model file the WASM bench uses, so the two

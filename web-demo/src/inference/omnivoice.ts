@@ -145,7 +145,6 @@ export class OmniVoice {
   static async load(o: LoadOptions): Promise<OmniVoice> {
     const ORT = await getOrt();
     const ep = await pickExecutionProvider();
-    if (ep === "webgpu") await useMaxLimitsDevice();
     o.onProgress?.(`execution provider: ${ep}`);
 
     const opts: ort.InferenceSession.SessionOptions = {
@@ -297,14 +296,13 @@ export function voiceFor(voices: Voice[], lang: string, id?: string): Voice {
  * RTX 3090 at 16 steps: WebGPU/Chrome 177 ms per forward (~2.8 s per phrase) against 1295 ms on
  * 8-thread WASM (~20.7 s). Firefox's WebGPU was SLOWER than WASM and flat in sequence length, so
  * probing for an adapter is not enough on its own — the UI reports which path it got.
- */
-/**
- * Hand ORT a device built with the adapter's MAXIMUM limits.
  *
- * ⚠ WebGPU's `requestDevice()` grants DEFAULT limits — maxBufferSize 268 MB — however large the
- * adapter's maximum, and ORT takes the default. A model with any single tensor above that kills the
- * device with "Out of memory" on a GPU with tens of GB free. This build's largest tensor is 155 MB
- * so it clears the default, but that is luck rather than design, and it forecloses larger models.
+ * ⚠ THE DEVICE IS ORT'S, NOT OURS. An earlier version built a GPUDevice with the adapter's maximum
+ * limits and put it in `env.webgpu.device`; ORT-web 1.29's native WebGPU EP ignores that and
+ * creates its own — with the features it wants (shader-f16 where the adapter offers it) and
+ * DEFAULT limits, maxBufferSize 268 MB. Measured to be a no-op (docs/tts_speed_investigation.md,
+ * Run 8), so it is gone. The shipped build's largest tensor is 155 MB and fits; a build with a
+ * tensor over 268 MB needs the API to accept a device again.
  */
 /**
  * ⚠ A LOST DEVICE MUST SAY SO. Without this, a kernel fault or an out-of-memory kills the device
@@ -320,37 +318,4 @@ function reportOrtDevice(ORT: Ort, onProgress?: (d: string) => void): void {
   device.lost.then((info) => console.error(`WebGPU device lost: ${info.reason}: ${info.message}`));
 }
 
-interface AdapterLike {
-  limits: { maxBufferSize: number; maxStorageBufferBindingSize: number };
-  features: Set<string>;
-  requestDevice(d?: { requiredFeatures?: string[]; requiredLimits?: Record<string, number> }): Promise<unknown>;
-}
-
-/**
- * ⚠ MEASURED TO BE A NO-OP ON ORT-WEB 1.29 (docs/tts_speed_investigation.md, Run 8): the native
- * WebGPU EP creates its own device — with the features it wants and DEFAULT limits — and ignores
- * `env.webgpu.device`. It works because the largest tensor (155 MB) fits the default 268 MB. Kept
- * for the day the API accepts a device again; reportOrtDevice says what ORT actually got.
- */
-async function useMaxLimitsDevice(): Promise<void> {
-  try {
-    const gpu = (navigator as unknown as { gpu?: { requestAdapter(): Promise<AdapterLike | null> } }).gpu;
-    const adapter = await gpu?.requestAdapter();
-    if (!adapter) return;
-    // ⚠ FEATURES ARE OPT-IN TOO. A device we build ourselves has NO optional features unless
-    // asked: without `shader-f16` every fp16 kernel fails validation ("Invalid ComputePipeline
-    // MatMulNBits" and a cascade after it), which is how the fp16 build ran but produced garbage.
-    // ORT requests these itself when it creates the device; we must do the same when we do.
-    const wanted = ["shader-f16", "subgroups", "timestamp-query"];
-    const requiredFeatures = wanted.filter((f) => (adapter as unknown as { features: Set<string> }).features.has(f));
-    const device = await adapter.requestDevice({
-      requiredFeatures,
-      requiredLimits: {
-        maxBufferSize: adapter.limits.maxBufferSize,
-        maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize,
-      },
-    });
-    ((await getOrt()).env.webgpu as unknown as { device?: unknown }).device = device;
-  } catch { /* fall back to ORT's own default-limits device */ }
-}
 
