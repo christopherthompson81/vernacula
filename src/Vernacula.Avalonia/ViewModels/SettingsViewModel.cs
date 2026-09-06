@@ -668,78 +668,97 @@ internal partial class SettingsViewModel : ObservableObject
     private async Task RefreshHardwareAsync(bool force)
     {
         IsCheckingHardware = true;
-        var bf16Before = HardwareInfo.SupportsBf16Acceleration();
-        bool cudaOk = false;
-        string? cudaMessage = null;
-
-        await Task.Run(() =>
+        try
         {
-            var (totalMb, _)   = HardwareInfo.GetGpuMemoryMb();
-            GpuDetected        = totalMb > 0;
-            GpuVramText        = totalMb > 0
-                ? Loc.Instance.T("settings_hw_vram", new() { ["vram"] = $"{totalMb / 1024.0:F1}" })
-                : "";
+            bool cudaOk = false;
+            string? cudaMessage = null;
+            bool bf16Before = false, bf16After = false;
 
-            // Only when the user asked. Re-check means re-check -- someone has just installed
-            // cuDNN or run ldconfig -- but merely opening this window must not throw away a
-            // process-wide probe, which would re-run the whole scan for every model init after it.
-            if (force) HardwareInfo.InvalidateCudaProbes();
-            CudaToolkitInstalled = HardwareInfo.IsCudaToolkitInstalled();
-            CudnnInstalled       = HardwareInfo.IsCudnnInstalled();
-            (cudaOk, cudaMessage) = _modelMgr.CheckCuda();
-        });
-        CudaEpWorking = cudaOk;
-        // The probe's note when it has one; otherwise whatever CheckCuda said. The provider can
-        // fail AFTER the probe passes -- a swallowed load failure is exactly the case worth
-        // explaining -- and that message was being thrown away.
-        // ⚠ FIRST LINE ONLY. CheckCuda's failure message is a full exception dump -- message,
-        // inner exception and stack trace -- written to cuda_debug.txt on purpose. Rendering all of
-        // it into a 12px label is not a diagnostic, it is a wall.
-        CudaProbeNote = cudaOk
-            ? ""
-            : (HardwareInfo.CudaProbeNote ?? FirstLine(cudaMessage) ?? "");
-        OnPropertyChanged(nameof(CanUseVibeVoiceAsr));
-        OnPropertyChanged(nameof(VibeVoiceAsrLabel));
-        OnPropertyChanged(nameof(VibeVoiceAsrDescription));
+            await Task.Run(() =>
+            {
+                // ⚠ ALL OF IT OFF THE UI THREAD, AND IN THIS ORDER. After an invalidation the caches
+                // are cold by construction, so every read below is a full probe -- on Windows a
+                // recursive walk of the CUDA, cuDNN and PATH roots, plus an NVML cycle. Reading before
+                // invalidating would also report the answers this refresh was meant to replace.
+                bf16Before = HardwareInfo.SupportsBf16Acceleration();
+                if (force) HardwareInfo.InvalidateCudaProbes();
 
-        // ⚠ AND WHAT DEPENDS ON IT. A forced refresh can flip SupportsBf16Acceleration, which
-        // decides which Granite bundle is active, so the model verdicts on this window were
-        // computed against an answer that may no longer hold. Re-checking hardware without
-        // re-checking models leaves the two disagreeing.
-        if (force && bf16Before != HardwareInfo.SupportsBf16Acceleration())
-        {
-            await CheckModelsAsync();
-            await CheckDiariZenModelsAsync();
-            await CheckVoxLinguaModelsAsync();
+                var (totalMb, _)   = HardwareInfo.GetGpuMemoryMb();
+                GpuDetected        = totalMb > 0;
+                GpuVramText        = totalMb > 0
+                    ? Loc.Instance.T("settings_hw_vram", new() { ["vram"] = $"{totalMb / 1024.0:F1}" })
+                    : "";
+
+                CudaToolkitInstalled = HardwareInfo.IsCudaToolkitInstalled();
+                CudnnInstalled       = HardwareInfo.IsCudnnInstalled();
+
+                var cudaCheck = _modelMgr.CheckCuda();
+                cudaOk = cudaCheck.Available;
+                // Only when the check actually ran: otherwise the message is about something else --
+                // on first launch, a model file that has not been downloaded yet -- and showing it here
+                // would blame CUDA for it.
+                cudaMessage = cudaCheck.Ran ? cudaCheck.Message : null;
+                bf16After = HardwareInfo.SupportsBf16Acceleration();
+            });
+            CudaEpWorking = cudaOk;
+            // The probe's note when it has one; otherwise whatever CheckCuda said. The provider can
+            // fail AFTER the probe passes -- a swallowed load failure is exactly the case worth
+            // explaining -- and that message was being thrown away.
+            // ⚠ FIRST LINE ONLY. CheckCuda's failure message is a full exception dump -- message,
+            // inner exception and stack trace -- written to cuda_debug.txt on purpose. Rendering all of
+            // it into a 12px label is not a diagnostic, it is a wall.
+            CudaProbeNote = cudaOk
+                ? ""
+                : (HardwareInfo.CudaProbeNote ?? FirstLine(cudaMessage) ?? "");
+            OnPropertyChanged(nameof(CanUseVibeVoiceAsr));
+            OnPropertyChanged(nameof(VibeVoiceAsrLabel));
+            OnPropertyChanged(nameof(VibeVoiceAsrDescription));
+
+            // ⚠ AND WHAT DEPENDS ON IT. A forced refresh can flip SupportsBf16Acceleration, which
+            // decides which Granite bundle is active, so the model verdicts on this window were
+            // computed against an answer that may no longer hold. Re-checking hardware without
+            // re-checking models leaves the two disagreeing.
+            if (force && bf16Before != bf16After)
+            {
+                await CheckModelsAsync();
+                await CheckDiariZenModelsAsync();
+                await CheckVoxLinguaModelsAsync();
+            }
+
+            if (!CudaEpWorking && SelectedAsrBackend == AsrBackend.VibeVoice)
+                SelectedAsrBackend = AsrBackend.Parakeet;
+
+            // Batch ceiling — query free VRAM (accurate post-load figure)
+            var (_, freeMb) = HardwareInfo.GetGpuMemoryMb();
+            long batchFrames;
+            bool isFallback;
+            if (freeMb > 0)
+            {
+                double avail = freeMb - Config.VramSafetyMb;
+                long   frames = avail > 0
+                    ? (long)((avail - Config.VramInterceptMb) / Config.VramSlopePerSample)
+                    : Config.FallbackMaxFrames;
+                batchFrames = frames > 0 ? frames : Config.FallbackMaxFrames;
+                isFallback  = false;
+            }
+            else
+            {
+                batchFrames = Config.FallbackMaxFrames;
+                isFallback  = true;
+            }
+
+            _batchSecs       = batchFrames / (double)Config.SampleRate;
+            _batchIsFallback = isFallback;
+            ApplyBatchCeilingText();
+
         }
-
-        if (!CudaEpWorking && SelectedAsrBackend == AsrBackend.VibeVoice)
-            SelectedAsrBackend = AsrBackend.Parakeet;
-
-        // Batch ceiling — query free VRAM (accurate post-load figure)
-        var (_, freeMb) = HardwareInfo.GetGpuMemoryMb();
-        long batchFrames;
-        bool isFallback;
-        if (freeMb > 0)
+        finally
         {
-            double avail = freeMb - Config.VramSafetyMb;
-            long   frames = avail > 0
-                ? (long)((avail - Config.VramInterceptMb) / Config.VramSlopePerSample)
-                : Config.FallbackMaxFrames;
-            batchFrames = frames > 0 ? frames : Config.FallbackMaxFrames;
-            isFallback  = false;
+            // ⚠ finally: the model checks below can throw on IO, and a stuck flag hides
+            // the hardware rows behind "Checking…" and disables Re-check for the rest of
+            // the session.
+            IsCheckingHardware = false;
         }
-        else
-        {
-            batchFrames = Config.FallbackMaxFrames;
-            isFallback  = true;
-        }
-
-        _batchSecs       = batchFrames / (double)Config.SampleRate;
-        _batchIsFallback = isFallback;
-        ApplyBatchCeilingText();
-
-        IsCheckingHardware = false;
     }
 
     [RelayCommand]

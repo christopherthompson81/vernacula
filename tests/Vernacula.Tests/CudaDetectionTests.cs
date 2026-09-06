@@ -53,7 +53,7 @@ public class CudaDetectionTests
             // Both halves checked out, so the major version is not the likely cause and must not be
             // blamed: the message should point at the driver, the GPU, or the build instead.
             Assert.Contains("driver", message);
-            Assert.DoesNotContain("older CUDA runtime cannot load it", message);
+            Assert.DoesNotContain("cannot load it", message);   // the major must not be blamed here
         }
     }
 

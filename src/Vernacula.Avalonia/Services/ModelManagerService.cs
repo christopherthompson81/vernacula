@@ -540,7 +540,15 @@ internal class ModelManagerService
             AddDllDirectory(dir);
     }
 
-    public (bool Available, string Message) CheckCuda()
+    /// <param name="Available">Whether a CUDA session was actually created.</param>
+    /// <param name="Message">One line, suitable for a label. The full detail goes to the log.</param>
+    /// <param name="Ran">False when the check could not be attempted at all -- a missing model file,
+    /// say. ⚠ THE DIFFERENCE MATTERS TO THE UI: on first launch, before models are downloaded, this
+    /// returns false with a message about a missing preprocessor, and showing that as the reason
+    /// CUDA is unavailable sends someone to fix a CUDA install that was never broken.</param>
+    public record CudaCheck(bool Available, string Message, bool Ran);
+
+    public CudaCheck CheckCuda()
     {
         string logPath  = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
@@ -552,7 +560,7 @@ internal class ModelManagerService
         {
             string msg = $"{Config.PreprocessorFile} not found at: {modelFile}";
             File.WriteAllText(logPath, msg);
-            return (false, msg);
+            return new CudaCheck(false, msg, Ran: false);
         }
         try
         {
@@ -560,14 +568,14 @@ internal class ModelManagerService
             {
                 const string macOsMessage = "CUDA execution is not supported on macOS.";
                 File.WriteAllText(logPath, macOsMessage);
-                return (false, macOsMessage);
+                return new CudaCheck(false, macOsMessage, Ran: true);
             }
 
             if (!OperatingSystem.IsWindows() && !OperatingSystem.IsLinux())
             {
                 string unsupportedMessage = $"CUDA execution is not supported on {RuntimeInformation.OSDescription}.";
                 File.WriteAllText(logPath, unsupportedMessage);
-                return (false, unsupportedMessage);
+                return new CudaCheck(false, unsupportedMessage, Ran: true);
             }
 
             if (!HardwareInfo.CanProbeCudaExecutionProvider())
@@ -580,7 +588,7 @@ internal class ModelManagerService
                 var unavailableMessage = "CUDA execution is unavailable on this machine."
                                        + (note is null ? "" : $" {note}");
                 File.WriteAllText(logPath, unavailableMessage);
-                return (false, unavailableMessage);
+                return new CudaCheck(false, unavailableMessage, Ran: true);
             }
 
             AddCudaToSearchPath();
@@ -589,7 +597,7 @@ internal class ModelManagerService
             using var session = new InferenceSession(modelFile, opts);
             string msg = $"CUDA OK on {GetPlatformName()}";
             File.WriteAllText(logPath, msg);
-            return (true, msg);
+            return new CudaCheck(true, msg, Ran: true);
         }
         catch (Exception ex)
         {
@@ -600,7 +608,7 @@ internal class ModelManagerService
             File.WriteAllText(logPath, detail);
             string summary = $"{ex.GetType().Name}: {ex.Message}"
                            + (ex.InnerException is null ? "" : $" ({ex.InnerException.Message})");
-            return (false, summary);
+            return new CudaCheck(false, summary, Ran: true);
         }
     }
 

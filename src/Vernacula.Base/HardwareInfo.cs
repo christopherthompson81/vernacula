@@ -567,11 +567,13 @@ public static class HardwareInfo
                                   | FileAttributes.System,
         };
 
-        var cudartDirs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var depDirs    = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var cudnnDirs  = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var anyCudart  = false;
-        var anyCudnn   = false;
+        var cudartDirs   = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var depDirs      = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var unversioned  = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var cudnnDirs    = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var anyCudart    = false;
+        var anyCudnn     = false;
+        var otherMajor   = false;
 
         foreach (var root in GetWindowsCudaSearchRoots())
         {
@@ -588,6 +590,8 @@ public static class HardwareInfo
                         anyCudart = true;
                         if (name.StartsWith($"cudart64_{RequiredCudaMajor}", StringComparison.OrdinalIgnoreCase))
                             cudartDirs.Add(dir);
+                        else
+                            otherMajor = true;   // another CUDA is installed alongside
                     }
                     else if (name.StartsWith("cudnn", StringComparison.OrdinalIgnoreCase))
                     {
@@ -607,6 +611,15 @@ public static class HardwareInfo
                     {
                         depDirs.Add(dir);
                     }
+                    // cuFFT and cuRAND keep their names across CUDA majors (curand64_10.dll under
+                    // both 12 and 13), so they identify a directory only when no other CUDA is
+                    // installed to confuse it with. The provider does load them, and a packaged app
+                    // cannot fall back on PATH, so they are worth having when they are unambiguous.
+                    else if (name.StartsWith("cufft", StringComparison.OrdinalIgnoreCase)
+                          || name.StartsWith("curand", StringComparison.OrdinalIgnoreCase))
+                    {
+                        unversioned.Add(dir);
+                    }
                 }
             }
             catch { }
@@ -615,13 +628,28 @@ public static class HardwareInfo
         var runtime = cudartDirs.Count > 0;
         var cudnn = cudnnDirs.Count > 0;
 
-        // Only from an install we are actually going to use.
-        var dllDirs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        // Only from an install we are actually going to use, and in a deliberate order: a HashSet
+        // enumerates unpredictably, and AddDllDirectory order decides which of two cuDNNs the
+        // loader binds. Ours first, then cuDNN sitting with it, then anything else.
+        var dllDirs = new List<string>();
         if (runtime)
         {
-            foreach (var d in cudartDirs) dllDirs.Add(d);
-            foreach (var d in depDirs) dllDirs.Add(d);
-            foreach (var d in cudnnDirs) dllDirs.Add(d);
+            void Add(IEnumerable<string> dirs)
+            {
+                foreach (var d in dirs)
+                    if (!dllDirs.Contains(d, StringComparer.OrdinalIgnoreCase))
+                        dllDirs.Add(d);
+            }
+
+            bool BesideOurCuda(string dir) =>
+                cudartDirs.Any(c => c.StartsWith(dir, StringComparison.OrdinalIgnoreCase)
+                                 || dir.StartsWith(c, StringComparison.OrdinalIgnoreCase));
+
+            Add(cudartDirs);
+            Add(depDirs);
+            Add(cudnnDirs.Where(BesideOurCuda));
+            if (!otherMajor) Add(unversioned);
+            Add(cudnnDirs);
         }
 
         var runtimeNote = runtime ? null
