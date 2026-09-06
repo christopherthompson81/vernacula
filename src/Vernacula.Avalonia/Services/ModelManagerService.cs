@@ -830,8 +830,8 @@ internal class ModelManagerService
     // RepoBase is empty, the download button stays hidden, and the status line names the
     // folder to fill by hand — the "not hosted yet" convention Qwen3-ASR uses.
     //
-    // OmniVoice's repo carries no manifest.json (yet), so its ManifestUrl is empty and the
-    // MD5 update-check pass skips it, as it does for Whisper.
+    // OmniVoice's manifest.json covers the files fetched here (not the int4 browser build) and
+    // keys the diff by its Hub name, ipa_diff.onnx.
 
     public enum TtsModelSet { Chatterbox, Kokoro, OmniVoice, OmniVoiceVoices, PhonemizerData }
 
@@ -845,7 +845,8 @@ internal class ModelManagerService
         "https://huggingface.co/christopherthompson81/kokoro-82m-onnx/resolve/main/manifest.json";
     private const string OmniVoiceRepoBase =
         "https://huggingface.co/christopherthompson81/omnivoice-ipa-onnx/resolve/main";
-    private const string OmniVoiceManifestUrl       = "";
+    private const string OmniVoiceManifestUrl =
+        "https://huggingface.co/christopherthompson81/omnivoice-ipa-onnx/resolve/main/manifest.json";
     private const string OmniVoiceVoiceLibRepoBase  = "";
     private const string PhonemizerDataRepoBase     = "";
 
