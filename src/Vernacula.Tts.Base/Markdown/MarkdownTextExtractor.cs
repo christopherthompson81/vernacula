@@ -118,8 +118,33 @@ public sealed class MarkdownTextExtractor
         return extractor.Run(markdown);
     }
 
+    // The markdown being extracted, for bounds-checking recorded source spans.
+    private string _source = string.Empty;
+
+    // Document-coordinate start/length for an inline's source span, clamped to
+    // the document. The span may legitimately be longer than the emitted text
+    // (a backslash escape emits one character for two source ones), which the
+    // TextRange contract allows: output is a subsequence of the source slice.
+    private int SourceStartOf(SourceSpan span, int outLen, out int srcLen)
+    {
+        int start = span.Start;
+        srcLen = span.End - span.Start + 1;
+        if (start < 0 || start > _source.Length)
+        {
+            // Defensive: an inline with no usable position. Record an empty
+            // span at a valid offset rather than one a consumer would throw
+            // on when it slices the source.
+            srcLen = 0;
+            return Math.Clamp(start, 0, _source.Length);
+        }
+        if (srcLen < outLen) srcLen = outLen;
+        if (start + srcLen > _source.Length) srcLen = _source.Length - start;
+        return start;
+    }
+
     private MarkdownExtractionResult Run(string markdown)
     {
+        _source = markdown;
         var doc = MarkdownParser.Parse(markdown, Pipeline);
         bool first = true;
         foreach (var block in doc)
@@ -240,13 +265,25 @@ public sealed class MarkdownTextExtractor
             case LiteralInline lit:
                 // Literal text: copy the slice verbatim AND record a range
                 // entry pointing back to the source span.
+                //
+                // The source position comes from lit.Span, NOT from the
+                // slice. LiteralInline.Content is a slice over whatever
+                // buffer Markdig assembled the inline from, and for a
+                // continuation line of a container — the second line of a
+                // block quote, a lazily continued list item — that buffer is
+                // the container's re-joined content, not the original
+                // document. slice.Start is an offset into that buffer and
+                // means nothing here; lit.Span is in document coordinates in
+                // every case (verified across quotes, lazy list
+                // continuations, nested quotes, escapes, entities, CRLF and
+                // multi-line emphasis).
                 var slice = lit.Content;
-                if (slice.Length <= 0) return;
-                int srcStart = slice.Start;
-                int srcLen = slice.End - slice.Start + 1;
+                int outLen = slice.End - slice.Start + 1;
+                if (outLen <= 0) return;
                 int outStart = _sb.Length;
                 _sb.Append(slice.AsSpan());
-                _ranges.Add(new TextRange(outStart, srcLen, srcStart, srcLen, _style));
+                int srcStart = SourceStartOf(lit.Span, outLen, out int srcLen);
+                _ranges.Add(new TextRange(outStart, outLen, srcStart, srcLen, _style));
                 break;
 
             case CodeInline code:
