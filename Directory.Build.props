@@ -23,13 +23,19 @@
     <OnnxRuntimeVersion Condition="'$(OnnxRuntimeVersion)' == ''">1.29.0</OnnxRuntimeVersion>
   </PropertyGroup>
 
-  <!-- ⚠ A REFERENCED PROJECT MUST USE THE REFERENCING PROJECT'S VERSION. Eight projects override
-       EP on a ProjectReference, and SetConfiguration really does override EP in the inner build
-       (verified by having the inner build report it). Without this the referenced library would
-       evaluate this property from a DIFFERENT EP and compile against a different managed assembly
-       than the one shipped beside it. Passing the resolved version down keeps one output directory
-       to one version. -->
-  <ItemDefinitionGroup>
+  <!-- ⚠ ONLY WHERE THE VERSION CAN ACTUALLY DIVERGE, BECAUSE THIS COSTS A SECOND BUILD.
+       AdditionalProperties on a ProjectReference gives the referenced build a different global
+       property set from the solution-level build of the same project, so MSBuild builds it twice
+       into the same directory, and under -m the two writes race on deps.json. That was roughly
+       half of CI runs (#121).
+
+       It is only needed when a reference can compute a different version than its parent, which
+       happens for DirectML alone: that is the one EP whose ONNX Runtime version differs, and a
+       reference overriding EP could otherwise pair a 1.24.4 native with a 1.29 managed assembly.
+       (In a SOLUTION build MSBuild pins every project to the solution's configuration and ignores
+       SetConfiguration entirely, so nothing diverges there; the hazard is a direct project build.)
+       Everyday Cuda and Cpu builds now add no properties, and build each project once. -->
+  <ItemDefinitionGroup Condition="'$(EP)' == 'DirectML'">
     <ProjectReference>
       <AdditionalProperties>OnnxRuntimeVersion=$(OnnxRuntimeVersion)</AdditionalProperties>
     </ProjectReference>
