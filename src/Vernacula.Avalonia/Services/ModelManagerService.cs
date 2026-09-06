@@ -522,6 +522,13 @@ internal class ModelManagerService
     [DllImport("kernel32", CharSet = CharSet.Unicode, SetLastError = true)]
     private static extern IntPtr AddDllDirectory(string newDirectory);
 
+    [DllImport("kernel32", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool RemoveDllDirectory(IntPtr cookie);
+
+    /// <summary>Cookies from the last registration, so it can be undone before the next one.</summary>
+    private static readonly List<IntPtr> _cudaDllCookies = new();
+
     /// <summary>
     /// MSIX packaged apps use a restricted DLL search that excludes the system PATH.
     /// Explicitly register the directories that actually hold cudart, cublas, cudnn, etc.
@@ -536,11 +543,33 @@ internal class ModelManagerService
             return;
         }
 
-        foreach (var dir in HardwareInfo.GetWindowsCudaDllDirectories())
-            AddDllDirectory(dir);
+        // ⚠ ADD FIRST, THEN REMOVE. AddDllDirectory only appends, so a re-check that changes the
+        // ranking has to drop the old registrations for the new order to mean anything -- but
+        // removing first leaves a window in which a session being created on another thread cannot
+        // resolve the CUDA DLLs at all, and it would fall back to the CPU because someone pressed
+        // Re-check. Adding the new set first means the directories are never unregistered.
+        lock (_cudaDllCookies)
+        {
+            var previous = _cudaDllCookies.ToList();
+            _cudaDllCookies.Clear();
+
+            foreach (var dir in HardwareInfo.GetWindowsCudaDllDirectories())
+                _cudaDllCookies.Add(AddDllDirectory(dir));
+
+            foreach (var cookie in previous)
+                if (cookie != IntPtr.Zero) RemoveDllDirectory(cookie);
+        }
     }
 
-    public (bool Available, string Message) CheckCuda()
+    /// <param name="Available">Whether a CUDA session was actually created.</param>
+    /// <param name="Message">One line, suitable for a label. The full detail goes to the log.</param>
+    /// <param name="Ran">False when the check could not be attempted at all -- a missing model file,
+    /// say. ⚠ THE DIFFERENCE MATTERS TO THE UI: on first launch, before models are downloaded, this
+    /// returns false with a message about a missing preprocessor, and showing that as the reason
+    /// CUDA is unavailable sends someone to fix a CUDA install that was never broken.</param>
+    public record CudaCheck(bool Available, string Message, bool Ran);
+
+    public CudaCheck CheckCuda()
     {
         string logPath  = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
@@ -552,7 +581,7 @@ internal class ModelManagerService
         {
             string msg = $"{Config.PreprocessorFile} not found at: {modelFile}";
             File.WriteAllText(logPath, msg);
-            return (false, msg);
+            return new CudaCheck(false, msg, Ran: false);
         }
         try
         {
@@ -560,21 +589,26 @@ internal class ModelManagerService
             {
                 const string macOsMessage = "CUDA execution is not supported on macOS.";
                 File.WriteAllText(logPath, macOsMessage);
-                return (false, macOsMessage);
+                return new CudaCheck(false, macOsMessage, Ran: true);
             }
 
             if (!OperatingSystem.IsWindows() && !OperatingSystem.IsLinux())
             {
                 string unsupportedMessage = $"CUDA execution is not supported on {RuntimeInformation.OSDescription}.";
                 File.WriteAllText(logPath, unsupportedMessage);
-                return (false, unsupportedMessage);
+                return new CudaCheck(false, unsupportedMessage, Ran: true);
             }
 
             if (!HardwareInfo.CanProbeCudaExecutionProvider())
             {
-                const string unavailableMessage = "CUDA execution is unavailable on this machine.";
+                // ⚠ THE SHARED MESSAGE, NOT A LOCAL ONE. This is the path the settings window's
+                // Re-check drives, and building its own string here meant the case with no probe
+                // note -- CUDA and cuDNN both present, no driver or no GPU visible to the process --
+                // reached the user as a bare "unavailable on this machine", with the explanation
+                // written for exactly that case unreachable from the UI.
+                var unavailableMessage = HardwareInfo.CudaUnavailableMessage();
                 File.WriteAllText(logPath, unavailableMessage);
-                return (false, unavailableMessage);
+                return new CudaCheck(false, unavailableMessage, Ran: true);
             }
 
             AddCudaToSearchPath();
@@ -583,13 +617,18 @@ internal class ModelManagerService
             using var session = new InferenceSession(modelFile, opts);
             string msg = $"CUDA OK on {GetPlatformName()}";
             File.WriteAllText(logPath, msg);
-            return (true, msg);
+            return new CudaCheck(true, msg, Ran: true);
         }
         catch (Exception ex)
         {
-            string msg = $"CUDA check failed on {GetPlatformName()}.\nException: {ex.GetType().Name}\n{ex.Message}\n\nInner: {ex.InnerException?.Message}\n\nStack:\n{ex.StackTrace}";
-            File.WriteAllText(logPath, msg);
-            return (false, msg);
+            // ⚠ TWO AUDIENCES. The log gets everything; the caller gets a line a UI can show.
+            // Returning the dump meant a settings label whose first line was "CUDA check failed on
+            // Linux." -- the failure named, the reason buried under a stack trace.
+            string detail = $"CUDA check failed on {GetPlatformName()}.\nException: {ex.GetType().Name}\n{ex.Message}\n\nInner: {ex.InnerException?.Message}\n\nStack:\n{ex.StackTrace}";
+            File.WriteAllText(logPath, detail);
+            string summary = $"{ex.GetType().Name}: {ex.Message}"
+                           + (ex.InnerException is null ? "" : $" ({ex.InnerException.Message})");
+            return new CudaCheck(false, summary, Ran: true);
         }
     }
 

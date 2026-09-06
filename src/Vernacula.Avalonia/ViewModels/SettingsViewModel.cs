@@ -266,6 +266,29 @@ internal partial class SettingsViewModel : ObservableObject
     [ObservableProperty] private bool   _cudaToolkitInstalled = false;
     [ObservableProperty] private bool   _cudnnInstalled       = false;
     [ObservableProperty] private bool   _cudaEpWorking        = false;
+
+    /// <summary>
+    /// Why CUDA is unavailable, when the probe worked it out — a CUDA of the wrong major, a library
+    /// present but off the loader path, no cuDNN at all.
+    ///
+    /// ⚠ DELIBERATELY NOT LOCALISED. It names file paths and shell commands (`ldconfig`,
+    /// `/etc/ld.so.conf.d`), which do not translate, and it is the only thing standing between a
+    /// user whose GPU went quiet and a working install.
+    /// </summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(HasCudaProbeNote))]
+    private string _cudaProbeNote = "";
+
+    public bool HasCudaProbeNote => !string.IsNullOrEmpty(CudaProbeNote);
+
+    /// <summary>
+    /// Whether to offer the download links. ⚠ NOT SIMPLY THE NEGATION OF "installed". A CUDA that
+    /// is present but unreachable — the wrong major, or outside the loader path — needs an ldconfig
+    /// line or a different version, not another download; offering one beside a note saying the
+    /// library was found contradicts the note.
+    /// </summary>
+    [ObservableProperty] private bool _offerCudaDownload = true;
+    [ObservableProperty] private bool _offerCudnnDownload = true;
     [ObservableProperty] private bool   _isCheckingHardware   = false;
     [ObservableProperty] private string _batchCeilingText     = "";
 
@@ -641,56 +664,143 @@ internal partial class SettingsViewModel : ObservableObject
 
     // ── Hardware checks ──────────────────────────────────────────────────────
 
+    private static string? FirstLine(string? text) =>
+        text is null ? null : text.Split('\n', 2)[0].Trim();
+
+    /// <summary>
+    /// Called when a hardware re-check changes which model bundle is active, so other views can
+    /// refresh what they latched. Set by MainViewModel, like the rest of the cross-view wiring.
+    /// </summary>
+    internal Func<Task>? ModelSelectionChanged { get; set; }
+
+    /// <summary>The Re-check button: discards the cached probe and looks again.</summary>
     [RelayCommand]
-    internal async Task RecheckHardwareAsync()
+    internal Task RecheckHardwareAsync() => RefreshHardwareAsync(force: true);
+
+    /// <param name="force">True only when the user asked. Opening the window reads what is already
+    /// known; throwing the probe away there would make every model init afterwards repeat the
+    /// scan.</param>
+    private async Task RefreshHardwareAsync(bool force)
     {
         IsCheckingHardware = true;
-        bool cudaOk = false;
-
-        await Task.Run(() =>
+        try
         {
-            var (totalMb, _)   = HardwareInfo.GetGpuMemoryMb();
-            GpuDetected        = totalMb > 0;
-            GpuVramText        = totalMb > 0
+            bool cudaOk = false;
+            string? cudaMessage = null;
+            bool bf16Before = false, bf16After = false;
+
+            // Collected off the UI thread, applied on it: these are bound properties, and raising
+            // PropertyChanged from a thread-pool thread updates Avalonia bindings off the UI thread.
+            long totalMb = 0;
+            bool cudaToolkit = false, cudnnFound = false, cudaPresent = false, cudnnPresent = false;
+
+            await Task.Run(() =>
+            {
+                // ⚠ THE HARDWARE WORK BELONGS HERE, AND IN THIS ORDER. After an invalidation the
+                // caches are cold by construction, so every read is a full probe -- on Windows a
+                // recursive walk of the CUDA, cuDNN and PATH roots, plus an NVML cycle. Reading
+                // before invalidating would report the answers this refresh was meant to replace.
+                //
+                // ⚠ SAMPLED, NOT SKIPPED. An earlier version only compared when something had
+                // already asked for this, to avoid forcing a cold probe -- but the model verdicts on
+                // this window come from ActiveRepos, which can be computed without ever forcing it
+                // (a non-Granite backend, or a BF16 directory that is not downloaded). Skipping the
+                // comparison then left those verdicts stale after a re-check that changed the
+                // answer. One probe is cheaper than that.
+                bf16Before = HardwareInfo.SupportsBf16Acceleration();
+                if (force) HardwareInfo.InvalidateCudaProbes();
+
+                (totalMb, _) = HardwareInfo.GetGpuMemoryMb();
+                cudaToolkit = HardwareInfo.IsCudaToolkitInstalled();
+                cudnnFound = HardwareInfo.IsCudnnInstalled();
+                cudaPresent = HardwareInfo.IsCudaRuntimePresent;
+                cudnnPresent = HardwareInfo.IsCudnnPresent;
+
+                // Re-register from the refreshed probe even when the check then fails: CheckCuda
+                // only reaches AddCudaToSearchPath on its success path, so an unavailable result
+                // would otherwise leave the loader holding directories from a discarded answer.
+                if (force && OperatingSystem.IsWindows()) ModelManagerService.AddCudaToSearchPath();
+
+                var cudaCheck = _modelMgr.CheckCuda();
+                cudaOk = cudaCheck.Available;
+                // Only when the check actually ran: otherwise the message is about something else --
+                // on first launch, a model file that has not been downloaded yet -- and showing it
+                // here would blame CUDA for it.
+                cudaMessage = cudaCheck.Ran ? cudaCheck.Message : null;
+                bf16After = HardwareInfo.SupportsBf16Acceleration();
+            });
+
+            GpuDetected          = totalMb > 0;
+            GpuVramText          = totalMb > 0
                 ? Loc.Instance.T("settings_hw_vram", new() { ["vram"] = $"{totalMb / 1024.0:F1}" })
                 : "";
+            CudaToolkitInstalled = cudaToolkit;
+            CudnnInstalled       = cudnnFound;
+            OfferCudaDownload    = !cudaToolkit && !cudaPresent;
+            OfferCudnnDownload   = !cudnnFound && !cudnnPresent;
+            CudaEpWorking = cudaOk;
+            // The probe's note when it has one; otherwise whatever CheckCuda said. The provider can
+            // fail AFTER the probe passes -- a swallowed load failure is exactly the case worth
+            // explaining -- and that message was being thrown away.
+            // ⚠ FIRST LINE ONLY. CheckCuda's failure message is a full exception dump -- message,
+            // inner exception and stack trace -- written to cuda_debug.txt on purpose. Rendering all of
+            // it into a 12px label is not a diagnostic, it is a wall.
+            CudaProbeNote = cudaOk
+                ? ""
+                : (HardwareInfo.CudaProbeNote ?? FirstLine(cudaMessage) ?? "");
+            OnPropertyChanged(nameof(CanUseVibeVoiceAsr));
+            OnPropertyChanged(nameof(VibeVoiceAsrLabel));
+            OnPropertyChanged(nameof(VibeVoiceAsrDescription));
 
-            CudaToolkitInstalled = HardwareInfo.IsCudaToolkitInstalled();
-            CudnnInstalled       = HardwareInfo.IsCudnnInstalled();
-            (cudaOk, _)          = _modelMgr.CheckCuda();
-        });
-        CudaEpWorking = cudaOk;
-        OnPropertyChanged(nameof(CanUseVibeVoiceAsr));
-        OnPropertyChanged(nameof(VibeVoiceAsrLabel));
-        OnPropertyChanged(nameof(VibeVoiceAsrDescription));
+            // ⚠ AND WHAT DEPENDS ON IT. A forced refresh can flip SupportsBf16Acceleration, which
+            // decides which Granite bundle is active, so the model verdicts on this window were
+            // computed against an answer that may no longer hold. Re-checking hardware without
+            // re-checking models leaves the two disagreeing.
+            if (force && bf16Before != bf16After)
+            {
+                await CheckModelsAsync();
+                await CheckDiariZenModelsAsync();
+                await CheckVoxLinguaModelsAsync();
+                // And the views that latched the same answer: the home screen's model status is
+                // computed from the active bundle, and would otherwise disagree with this window
+                // until the app restarted.
+                if (ModelSelectionChanged is not null) await ModelSelectionChanged();
+            }
 
-        if (!CudaEpWorking && SelectedAsrBackend == AsrBackend.VibeVoice)
-            SelectedAsrBackend = AsrBackend.Parakeet;
+            if (!CudaEpWorking && SelectedAsrBackend == AsrBackend.VibeVoice)
+                SelectedAsrBackend = AsrBackend.Parakeet;
 
-        // Batch ceiling — query free VRAM (accurate post-load figure)
-        var (_, freeMb) = HardwareInfo.GetGpuMemoryMb();
-        long batchFrames;
-        bool isFallback;
-        if (freeMb > 0)
-        {
-            double avail = freeMb - Config.VramSafetyMb;
-            long   frames = avail > 0
-                ? (long)((avail - Config.VramInterceptMb) / Config.VramSlopePerSample)
-                : Config.FallbackMaxFrames;
-            batchFrames = frames > 0 ? frames : Config.FallbackMaxFrames;
-            isFallback  = false;
+            // Batch ceiling — query free VRAM (accurate post-load figure)
+            var (_, freeMb) = HardwareInfo.GetGpuMemoryMb();
+            long batchFrames;
+            bool isFallback;
+            if (freeMb > 0)
+            {
+                double avail = freeMb - Config.VramSafetyMb;
+                long   frames = avail > 0
+                    ? (long)((avail - Config.VramInterceptMb) / Config.VramSlopePerSample)
+                    : Config.FallbackMaxFrames;
+                batchFrames = frames > 0 ? frames : Config.FallbackMaxFrames;
+                isFallback  = false;
+            }
+            else
+            {
+                batchFrames = Config.FallbackMaxFrames;
+                isFallback  = true;
+            }
+
+            _batchSecs       = batchFrames / (double)Config.SampleRate;
+            _batchIsFallback = isFallback;
+            ApplyBatchCeilingText();
+
         }
-        else
+        finally
         {
-            batchFrames = Config.FallbackMaxFrames;
-            isFallback  = true;
+            // ⚠ finally: the model checks below can throw on IO, and a stuck flag hides
+            // the hardware rows behind "Checking…" and disables Re-check for the rest of
+            // the session.
+            IsCheckingHardware = false;
         }
-
-        _batchSecs       = batchFrames / (double)Config.SampleRate;
-        _batchIsFallback = isFallback;
-        ApplyBatchCeilingText();
-
-        IsCheckingHardware = false;
     }
 
     [RelayCommand]
@@ -1109,7 +1219,7 @@ internal partial class SettingsViewModel : ObservableObject
         var modelTask    = CheckModelsAsync();
         var diarizenTask = CheckDiariZenModelsAsync();
         var voxLinguaTask = CheckVoxLinguaModelsAsync();
-        var hardwareTask = RecheckHardwareAsync();
+        var hardwareTask = RefreshHardwareAsync(force: false);
         await Task.WhenAll(modelTask, diarizenTask, voxLinguaTask, hardwareTask);
 
         if (ModelsReady)

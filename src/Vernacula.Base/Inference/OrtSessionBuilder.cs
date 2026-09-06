@@ -72,10 +72,20 @@ public static class OrtSessionBuilder
                     AppendCuda(opts, disableTf32);
                     usedCuda = true;
                 }
+                // ⚠ BEFORE THE BROAD CATCH. EntryPointNotFoundException means the binary has no
+                // CUDA provider in it, and it would otherwise be handed the probe's note -- telling
+                // someone to install cuDNN when nothing they install can add a provider.
+                catch (EntryPointNotFoundException ex)
+                {
+                    throw new InvalidOperationException(
+                        HardwareInfo.CudaUnavailableMessage(providerMissing: true), ex);
+                }
                 catch (Exception ex)
                 {
                     throw new InvalidOperationException(
-                        "CUDA EP not available in the current ONNX Runtime build.", ex);
+                        HardwareInfo.CudaUnavailableMessage()
+                        + " Run on the CPU instead with the application's Cpu execution-provider "
+                        + "setting, or build with -p:EP=Cpu.", ex);
                 }
                 break;
 
