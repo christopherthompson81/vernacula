@@ -37,6 +37,17 @@ The same pipeline also ships as a desktop app and a command-line renderer in
 | `omnivoice_transformer_ipa.int4.onnx` (+`.onnx.data`) | 472 MB | the fine-tuned transformer, **merged and quantized** for browsers — no base or diff needed |
 | `tokenizer.json` | 11 MB | the Qwen3 tokenizer, for consumers that synthesise text |
 | `ipa_diff.onnx` | 31 MB | the IPA fine-tune, as a reconstruction diff over the base transformer (currently the **v7** extraction, sha256 `31d743997ccf5b2173785ac998f4bb3c579dbc98ce5e01f7d92e5335cb0a4e28`) |
+| `voices/voices.jsonc` + `voices/voice-codes.json` | 3 MB | the **stored-voice library**: 530 reference voices covering the phonemizer's languages — per voice the codec codes of a short clip, the IPA it was transcribed with, and its source — so cloning needs neither the 654 MB encoder nor any audio |
+| `manifest.json` | | per-file MD5s, for the desktop app's update check |
+
+### The voice library
+
+Every language gets a native voice where a usable clip exists, else a donor from a related
+language; `default` marks the one a consumer should start from, and `source` names the exact
+clip so a poor exemplar can be traced and replaced. The web demo and the desktop app read the
+same two files, so all three renderers share one voice per language. How the clips were chosen,
+and what still lacks one, is in
+[`docs/voice_sourcing.md`](https://github.com/christopherthompson81/vernacula/blob/main/docs/voice_sourcing.md).
 
 The transformer is the base (un-fine-tuned) graph; the encoder/decoder are the codec, unchanged by
 the fine-tune. The IPA fine-tune is distributed as a **31 MB diff** rather than a second 2.45 GB
@@ -141,6 +152,7 @@ over-restrict the codec or under-restrict the transformer.
 | `omnivoice_transformer.onnx(.data)`, `ipa_diff.onnx`, `omnivoice_transformer_ipa.int4.onnx(.data)` | k2-fsa/OmniVoice pre-trained weights | **CC-BY-NC-4.0** |
 | `higgs_encoder.onnx`, `higgs_decoder.onnx` | [`bosonai/higgs-audio-v2-tokenizer`](https://huggingface.co/bosonai/higgs-audio-v2-tokenizer) | **Boson Higgs Audio 2 Community License** (commercial use permitted below 100k annual active users) |
 | `tokenizer.json` | the Qwen3 tokenizer | Apache-2.0 |
+| `voices/voices.jsonc`, `voices/voice-codes.json` | codec codes + IPA of short reference clips from public speech corpora | **per clip**, as the `source` field says: FLEURS, Omnilingual ASR, Vaani and most others CC-BY-4.0; Common Voice CC0; OpenSLR 83/158/44 CC-BY-SA-4.0; LibriVox public domain — see [`docs/voice_sourcing.md`](https://github.com/christopherthompson81/vernacula/blob/main/docs/voice_sourcing.md) for the full table |
 
 **Why the codec is not NonCommercial.** Upstream's restriction is on what IT trained:
 

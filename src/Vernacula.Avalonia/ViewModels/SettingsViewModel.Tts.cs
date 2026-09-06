@@ -117,7 +117,7 @@ internal partial class SettingsViewModel
             "The OmniVoice base transformer, Higgs codec graphs and the IPA fine-tune diff (scripts/omnivoice_export). Any language the phonemizer covers.",
             _modelMgr, _svc, Changed));
         TtsModelSets.Add(new(ModelManagerService.TtsModelSet.OmniVoiceVoices, "OmniVoice voice library",
-            "voices.jsonc + voice-codes.json — the stored voices OmniVoice reads in (shared with the web demo).",
+            "voices.jsonc + voice-codes.json — 530 stored reference voices OmniVoice reads in, one or more per language (shared with the web demo).",
             _modelMgr, _svc, Changed));
         TtsModelSets.Add(new(ModelManagerService.TtsModelSet.Chatterbox, "Chatterbox",
             "The Chatterbox ONNX bundle (scripts/chatterbox_export) + tokenizer.json. English; clones a reference clip.",

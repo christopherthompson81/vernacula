@@ -246,25 +246,27 @@ internal class SettingsService
             : Current.OmniVoiceOnnxDir;
 
     /// <summary>
-    /// The vernacula-phonemizer data/ root: the user's pick, else whatever
+    /// The vernacula-phonemizer data/ root: the user's pick as given (even while still empty —
+    /// it may be the folder they are about to fill), else whatever
     /// <see cref="Vernacula.Tts.Base.PhonemizerData.Resolve"/> finds (VERNACULA_DATA_DIR, then
     /// the submodule beside a source build), else the models-dir default. May not exist.
     /// </summary>
     public string GetPhonemizerDataDir()
     {
-        if (Vernacula.Tts.Base.PhonemizerData.IsDataRoot(Current.PhonemizerDataDir))
+        if (!string.IsNullOrWhiteSpace(Current.PhonemizerDataDir))
             return Current.PhonemizerDataDir;
         return Vernacula.Tts.Base.PhonemizerData.Resolve(null)
                ?? Path.Combine(GetModelsDir(), Config.PhonemizerDataSubDir);
     }
 
     /// <summary>
-    /// The OmniVoice stored-voice library: the user's pick, else the web demo's library beside a
-    /// source build, else the models-dir default.
+    /// The OmniVoice stored-voice library: the user's pick as given (an empty folder chosen as
+    /// the download target must stay the target, not fall back), else the web demo's library
+    /// beside a source build, else the models-dir default.
     /// </summary>
     public string GetOmniVoiceVoiceLibDir()
     {
-        if (Vernacula.Tts.Base.StoredVoice.IsLibrary(Current.OmniVoiceVoiceLib))
+        if (!string.IsNullOrWhiteSpace(Current.OmniVoiceVoiceLib))
             return Current.OmniVoiceVoiceLib;
         return Vernacula.Tts.Base.StoredVoice.ResolveDefaultLibrary()
                ?? Path.Combine(GetModelsDir(), Config.OmniVoiceVoiceLibSubDir);

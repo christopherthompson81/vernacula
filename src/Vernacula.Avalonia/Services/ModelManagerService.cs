@@ -840,9 +840,10 @@ internal class ModelManagerService
     // Each set is one directory the Settings → TTS tab shows a status line for. The three
     // engine exports are our own (scripts/chatterbox_export, kokoro_export, omnivoice_export)
     // and ship as Hub repos with the same (local path, remote path) asset tables as the ASR
-    // bundles above. The voice library and the phonemizer data tree are not hosted: their
-    // RepoBase is empty, the download button stays hidden, and the status line names the
-    // folder to fill by hand — the "not hosted yet" convention Qwen3-ASR uses.
+    // bundles above; the OmniVoice voice library rides in the OmniVoice repo under voices/.
+    // The phonemizer data tree is not hosted: its RepoBase is empty, the download button
+    // stays hidden, and the status line names the folder to fill by hand — the "not hosted
+    // yet" convention Qwen3-ASR uses.
     //
     // OmniVoice's manifest.json covers the files fetched here (not the int4 browser build) and
     // keys the diff by its Hub name, ipa_diff.onnx.
@@ -861,7 +862,7 @@ internal class ModelManagerService
         "https://huggingface.co/christopherthompson81/omnivoice-ipa-onnx/resolve/main";
     private const string OmniVoiceManifestUrl =
         "https://huggingface.co/christopherthompson81/omnivoice-ipa-onnx/resolve/main/manifest.json";
-    private const string OmniVoiceVoiceLibRepoBase  = "";
+    private const string OmniVoiceVoiceLibRepoBase  = OmniVoiceRepoBase;
     private const string PhonemizerDataRepoBase     = "";
 
     // The four Chatterbox stages. Every graph keeps its weights in an external-data sidecar
@@ -913,10 +914,12 @@ internal class ModelManagerService
             new(IpaFineTune.DefaultDiffFile,        "ipa_diff.onnx"),
         ];
 
+    // The library sits at the root of its own directory locally (what StoredVoice.IsLibrary
+    // checks) and under voices/ in the repo, beside the graphs it belongs with.
     private static readonly ModelAsset[] OmniVoiceVoiceLibFiles =
         [
-            new("voices.jsonc",     "voices.jsonc"),
-            new("voice-codes.json", "voice-codes.json"),
+            new("voices.jsonc",     "voices/voices.jsonc"),
+            new("voice-codes.json", "voices/voice-codes.json"),
         ];
 
     public string GetTtsModelSetDir(TtsModelSet set) => set switch
@@ -944,8 +947,9 @@ internal class ModelManagerService
     {
         TtsModelSet.Chatterbox => ChatterboxManifestUrl,
         TtsModelSet.Kokoro     => KokoroManifestUrl,
-        TtsModelSet.OmniVoice  => OmniVoiceManifestUrl,
-        _                      => "",
+        TtsModelSet.OmniVoice       => OmniVoiceManifestUrl,
+        TtsModelSet.OmniVoiceVoices => OmniVoiceManifestUrl,
+        _                           => "",
     };
 
     private static ModelAsset[] AssetsFor(TtsModelSet set) => set switch
