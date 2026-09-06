@@ -138,8 +138,25 @@ public sealed class MarkdownTextExtractor
             return Math.Clamp(start, 0, _source.Length);
         }
         if (srcLen < outLen) srcLen = outLen;
-        if (start + srcLen > _source.Length) srcLen = _source.Length - start;
+        if (srcLen > _source.Length - start) srcLen = _source.Length - start;
         return start;
+    }
+
+    // Drop or shorten range entries that extend past the final output text.
+    // Ranges are appended in output order, so only the tail can be affected.
+    private void TrimRangesToOutput(int outputLength)
+    {
+        for (int i = _ranges.Count - 1; i >= 0; i--)
+        {
+            var r = _ranges[i];
+            if (r.OutputStart + r.OutputLength <= outputLength) break;
+            if (r.OutputStart >= outputLength)
+            {
+                _ranges.RemoveAt(i);
+                continue;
+            }
+            _ranges[i] = r with { OutputLength = outputLength - r.OutputStart };
+        }
     }
 
     private MarkdownExtractionResult Run(string markdown)
@@ -154,6 +171,13 @@ public sealed class MarkdownTextExtractor
         }
         // Trim trailing whitespace the block-separator logic may have appended.
         while (_sb.Length > 0 && char.IsWhiteSpace(_sb[^1])) _sb.Length--;
+        // The trim can cut into the last range, and dropped trailing markup
+        // (a README ending in a badge image, a stray inline tag) leaves one
+        // whose output span already ran past the text: the literal "hello "
+        // in "hello ![img](/x.png)" records 6 characters, but Text is
+        // "hello". Clamp so every entry is sliceable against Text — a
+        // consumer walking the index has no other way to know.
+        TrimRangesToOutput(_sb.Length);
         return new MarkdownExtractionResult(_sb.ToString(), _ranges, _blocks);
     }
 
@@ -273,10 +297,13 @@ public sealed class MarkdownTextExtractor
                 // block quote, a lazily continued list item — that buffer is
                 // the container's re-joined content, not the original
                 // document. slice.Start is an offset into that buffer and
-                // means nothing here; lit.Span is in document coordinates in
-                // every case (verified across quotes, lazy list
-                // continuations, nested quotes, escapes, entities, CRLF and
-                // multi-line emphasis).
+                // means nothing here; lit.Span is in document coordinates for
+                // every shape observed (quotes, lazy list continuations,
+                // nested quotes, escapes, entities, CRLF, multi-line
+                // emphasis, alerts, tables, footnotes, BOM, CR-only). Not
+                // unconditionally, though — a synthesized inline can carry a
+                // degenerate span, which is why SourceStartOf bounds-checks
+                // rather than trusting it.
                 var slice = lit.Content;
                 int outLen = slice.End - slice.Start + 1;
                 if (outLen <= 0) return;
@@ -296,8 +323,9 @@ public sealed class MarkdownTextExtractor
                 // points at the full delimited extent, so record the
                 // full delim range — close-enough for forced alignment
                 // which works at word granularity.
+                int codeSrcStart = SourceStartOf(code.Span, code.Content.Length, out int codeSrcLen);
                 _ranges.Add(new TextRange(codeOutStart, code.Content.Length,
-                    code.Span.Start, code.Span.End - code.Span.Start + 1, _style | InlineStyle.Code));
+                    codeSrcStart, codeSrcLen, _style | InlineStyle.Code));
                 break;
 
             case LinkInline link when !link.IsImage:

@@ -264,12 +264,21 @@ public class MarkdownTextExtractorTests
     [InlineData("1. step one\n   > [!WARNING]\n   > careful\n2. step two")]
     [InlineData("para one\n\n> quoted\n\n- listed\n\n# heading")]
     [InlineData("CRLF quote:\r\n> line one\r\n> line two")]
+    // Trailing markup that emits nothing: the last literal's output span used
+    // to run past Text once the trailing whitespace was trimmed.
+    [InlineData("hello ![img](/x.png)")]
+    [InlineData("text <span>")]
+    [InlineData("> quoted ![badge](/b.svg)")]
     public void Every_range_maps_to_source_that_contains_its_output(string src)
     {
         var r = MarkdownTextExtractor.Extract(src);
         Assert.NotEmpty(r.Ranges);
         foreach (var range in r.Ranges)
         {
+            // Output bounds first: a range that overruns Text would make the
+            // Substring below throw instead of failing readably.
+            Assert.InRange(range.OutputStart, 0, r.Text.Length);
+            Assert.InRange(range.OutputStart + range.OutputLength, 0, r.Text.Length);
             Assert.InRange(range.SourceStart, 0, src.Length);
             Assert.InRange(range.SourceStart + range.SourceLength, 0, src.Length);
             string outSlice = r.Text.Substring(range.OutputStart, range.OutputLength);
@@ -313,6 +322,21 @@ public class MarkdownTextExtractorTests
         var bracket = r.Ranges.Single(t => r.Text.Substring(t.OutputStart, t.OutputLength) == "[");
         Assert.Equal(13, bracket.SourceStart);   // was 0, pointing at "T"
         Assert.Equal("[", src.Substring(bracket.SourceStart, bracket.SourceLength));
+    }
+
+    // Trailing markup that contributes no text (an image, an inline tag) left
+    // the preceding literal's output span running past Text, because the
+    // trailing-whitespace trim shortens the text without shortening the range.
+    // A consumer walking the index to slice Text got an out-of-range throw.
+    [Fact]
+    public void Range_is_clamped_when_trailing_markup_is_dropped()
+    {
+        const string src = "hello ![img](/x.png)";
+        var r = MarkdownTextExtractor.Extract(src);
+        Assert.Equal("hello", r.Text);
+        var last = r.Ranges[^1];
+        Assert.Equal(r.Text.Length, last.OutputStart + last.OutputLength);
+        Assert.Equal("hello", r.Text.Substring(last.OutputStart, last.OutputLength));
     }
 
     // A backslash escape emits one character for two source ones, so the

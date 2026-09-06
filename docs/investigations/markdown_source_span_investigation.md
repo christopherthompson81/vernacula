@@ -97,3 +97,48 @@ offset still lands inside a long enough source slice. The new theory asserts
 the same property across the container shapes that were broken, and three
 `[Fact]`s pin the bug report's exact offsets (16, not 12; 2, not 0; 13, not
 0). 13 of the 17 new cases fail against the unfixed extractor.
+
+## Run 4 — 2026-09-05 — review follow-up: the output side of the same index
+
+**Question.** Review pointed out that the new invariant test slices
+`r.Text.Substring(range.OutputStart, range.OutputLength)` without asserting
+output bounds first. Can a recorded range overrun `Text`?
+
+**Command.** Probe documents whose last literal is followed by markup that
+emits nothing.
+
+**Raw finding.** Yes, and it predates this work:
+
+```
+"hello ![img](/x.png)"  → Text="hello" (5), last range Output[0,6]   OVERRUN
+"text <span>"           → Text="text"  (4), last range Output[0,5]   OVERRUN
+```
+
+`Run` trims trailing whitespace off the builder but never shortens the last
+range, so anything dropped at the tail — an image, an inline tag — leaves a
+range pointing past the end. A consumer walking the index to slice `Text`
+gets an `ArgumentOutOfRangeException`, not a wrong highlight.
+
+**Blast radius: latent, not live.** Across the same 425 files: **0** overrunning
+ranges before *and* after. No document in this repo ends that way. The shape
+that triggers it is ordinary though — a README whose last line is a badge —
+and the invariant test was one `[InlineData]` away from dying with a throw
+instead of a readable assert. Fixed at the source (`TrimRangesToOutput`) rather
+than only asserted around, with three such inputs added to the theory.
+
+**Two more from the same review, both pre-existing and neither fixed here:**
+
+- A synthesized inline can carry a *degenerate* span: `"+-\n[1]"` produces a
+  literal whose `Span` has `End < Start`. `SourceStartOf`'s clamp turns that
+  into a harmless in-bounds zero-length entry. The extractor comment claimed
+  `lit.Span` was in document coordinates "in every case"; that overstated it,
+  and the comment now says what the bounds check is actually for.
+- `lit.Span` is off by one for tab-led heading text — `"# \tabc"` records
+  `"\tab"` for output `"abc"`. Identical on both versions, needs a tab
+  immediately after the heading marker, and correcting it would mean
+  second-guessing Markdig's own position. Left alone, recorded here.
+
+`CodeInline` was the last path still writing raw span arithmetic, and the
+source of the single surviving bad range repo-wide; it now goes through the
+same helper, so "every recorded range is sliceable" is total rather than
+per-case.
