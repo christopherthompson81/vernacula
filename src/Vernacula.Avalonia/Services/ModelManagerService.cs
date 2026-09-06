@@ -543,18 +543,21 @@ internal class ModelManagerService
             return;
         }
 
-        // ⚠ REMOVE BEFORE RE-ADDING. The loader honours registration order, which is why the probe
-        // returns an ordered list -- but AddDllDirectory only ever appends, so after a Re-check
-        // changed the ranking the directories registered at startup would still win. Undoing the
-        // previous registration is what makes the new order mean anything.
+        // ⚠ ADD FIRST, THEN REMOVE. AddDllDirectory only appends, so a re-check that changes the
+        // ranking has to drop the old registrations for the new order to mean anything -- but
+        // removing first leaves a window in which a session being created on another thread cannot
+        // resolve the CUDA DLLs at all, and it would fall back to the CPU because someone pressed
+        // Re-check. Adding the new set first means the directories are never unregistered.
         lock (_cudaDllCookies)
         {
-            foreach (var cookie in _cudaDllCookies)
-                if (cookie != IntPtr.Zero) RemoveDllDirectory(cookie);
+            var previous = _cudaDllCookies.ToList();
             _cudaDllCookies.Clear();
 
             foreach (var dir in HardwareInfo.GetWindowsCudaDllDirectories())
                 _cudaDllCookies.Add(AddDllDirectory(dir));
+
+            foreach (var cookie in previous)
+                if (cookie != IntPtr.Zero) RemoveDllDirectory(cookie);
         }
     }
 
@@ -598,13 +601,12 @@ internal class ModelManagerService
 
             if (!HardwareInfo.CanProbeCudaExecutionProvider())
             {
-                // The probe usually knows WHY -- a CUDA of the wrong major, a library present but
-                // off the loader path, no cuDNN at all. This is the path the settings window's
-                // Re-check drives, and a desktop user has no console to read the detail from, so it
-                // goes into the message and the log rather than only to stderr.
-                var note = HardwareInfo.CudaProbeNote;
-                var unavailableMessage = "CUDA execution is unavailable on this machine."
-                                       + (note is null ? "" : $" {note}");
+                // ⚠ THE SHARED MESSAGE, NOT A LOCAL ONE. This is the path the settings window's
+                // Re-check drives, and building its own string here meant the case with no probe
+                // note -- CUDA and cuDNN both present, no driver or no GPU visible to the process --
+                // reached the user as a bare "unavailable on this machine", with the explanation
+                // written for exactly that case unreachable from the UI.
+                var unavailableMessage = HardwareInfo.CudaUnavailableMessage();
                 File.WriteAllText(logPath, unavailableMessage);
                 return new CudaCheck(false, unavailableMessage, Ran: true);
             }

@@ -194,10 +194,26 @@ public static class HardwareInfo
 
     private static CudaProbeResult Probe => Volatile.Read(ref _probe).Value;
 
-    private static CudaProbeResult RunProbe() =>
-        OperatingSystem.IsWindows() ? ProbeWindows()
-        : OperatingSystem.IsLinux() ? ProbeLinux()
-        : new CudaProbeResult(false, false, null, null, Array.Empty<string>());
+    private static CudaProbeResult RunProbe()
+    {
+        // ⚠ NOTHING ESCAPES. This class promises to answer rather than throw, and the Lazy would
+        // cache a thrown exception and rethrow it to every caller for the rest of the session --
+        // turning "no CUDA" at one unreadable directory into a hard failure at every model init.
+        try
+        {
+            return OperatingSystem.IsWindows() ? ProbeWindows()
+                 : OperatingSystem.IsLinux() ? ProbeLinux()
+                 : Unknown();
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[HardwareInfo] CUDA probe failed: {ex.Message}");
+            return Unknown() with { RuntimeNote = $"The CUDA probe could not complete: {ex.Message}" };
+        }
+
+        static CudaProbeResult Unknown() =>
+            new(false, false, null, null, Array.Empty<string>());
+    }
 
     /// <summary>
     /// Linux: ask the dynamic loader, not the filesystem.
@@ -245,25 +261,30 @@ public static class HardwareInfo
         // Normalised on both sides: LD_LIBRARY_PATH is commonly written with a trailing slash while
         // the same directory arrives here from CUDA_PATH without one, and a raw string comparison
         // would then give exactly the circular advice this distinction exists to avoid.
-        var onLdPath = new HashSet<string>(
+        // Directories the loader already searches: LD_LIBRARY_PATH, and the system directories that
+        // are in the ldconfig cache by default. Telling someone to add /usr/lib/x86_64-linux-gnu to
+        // ld.so.conf.d is the same circular advice, just for the commoner install shape.
+        var alreadySearched = new HashSet<string>(
             (Environment.GetEnvironmentVariable("LD_LIBRARY_PATH") ?? "")
                 .Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries)
-                .Select(e => Normalise(e.Trim())),
+                .Select(e => Normalise(e.Trim()))
+                .Concat(new[] { "/usr/lib", "/usr/lib64", "/usr/lib/x86_64-linux-gnu",
+                                "/lib", "/lib64", "/lib/x86_64-linux-gnu" }.Select(Normalise)),
             StringComparer.Ordinal);
 
         foreach (var dir in GetLinuxCudaLibraryDirs())
         {
-            var hit = SafeGetFiles(dir, filePattern).FirstOrDefault();
+            var hit = SafeGetFiles(dir, filePattern).OrderBy(f => f, StringComparer.Ordinal).FirstOrDefault();
             if (hit is null) continue;
 
             // ⚠ DO NOT TELL SOMEONE TO ADD A DIRECTORY THAT IS ALREADY THERE. When the file turned
             // up in an LD_LIBRARY_PATH entry, the loader has already looked and failed, so the
             // cause is the library itself -- a missing dependency of its own, or the wrong
             // architecture -- and the ldconfig advice would send them in a circle.
-            return (Found: false, Note: onLdPath.Contains(Normalise(dir))
-                ? $"{label} was found at {hit}, in a directory that is already on LD_LIBRARY_PATH, "
-                  + "and still could not be loaded. One of its own dependencies is probably "
-                  + "missing, or it was built for a different architecture."
+            return (Found: false, Note: alreadySearched.Contains(Normalise(dir))
+                ? $"{label} was found at {hit}, in a directory the loader already searches, and "
+                  + "still could not be loaded. One of its own dependencies is probably missing, or "
+                  + "it was built for a different architecture."
                 : $"{label} was found at {hit} but the loader could not open it by name, so the "
                   + "CUDA execution provider cannot either. Add its directory to "
                   + "/etc/ld.so.conf.d (then run ldconfig) or to LD_LIBRARY_PATH.",
@@ -726,14 +747,15 @@ public static class HardwareInfo
                 : NamesSomeOtherMajor(dir)        ? 3
                                                   : 2;
 
-            Add(cudartDirs);
-            Add(depDirs);
+            Add(cudartDirs.OrderBy(d => d, StringComparer.OrdinalIgnoreCase));
+            Add(depDirs.OrderBy(d => d, StringComparer.OrdinalIgnoreCase));
             // Beside our own runtime, these are unambiguous whatever else is installed; further
             // afield they are only safe when no other CUDA is present to confuse them with, because
             // curand64_10.dll carries that name under every major.
-            Add(unversioned.Where(BesideOurCuda));
-            if (!otherMajor) Add(unversioned);
-            Add(cudnnDirs.OrderBy(CudnnRank));
+            Add(unversioned.Where(BesideOurCuda).OrderBy(d => d, StringComparer.OrdinalIgnoreCase));
+            if (!otherMajor) Add(unversioned.OrderBy(d => d, StringComparer.OrdinalIgnoreCase));
+            // ThenBy: OrderBy is stable, so equal ranks would keep the set's arbitrary order.
+            Add(cudnnDirs.OrderBy(CudnnRank).ThenBy(d => d, StringComparer.OrdinalIgnoreCase));
         }
 
         var runtimeNote = runtime ? null

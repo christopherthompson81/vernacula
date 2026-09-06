@@ -687,7 +687,7 @@ internal partial class SettingsViewModel : ObservableObject
         {
             bool cudaOk = false;
             string? cudaMessage = null;
-            bool bf16Before = false, bf16After = false, bf16Known = false;
+            bool bf16Before = false, bf16After = false;
 
             // Collected off the UI thread, applied on it: these are bound properties, and raising
             // PropertyChanged from a thread-pool thread updates Avalonia bindings off the UI thread.
@@ -701,10 +701,13 @@ internal partial class SettingsViewModel : ObservableObject
                 // recursive walk of the CUDA, cuDNN and PATH roots, plus an NVML cycle. Reading
                 // before invalidating would report the answers this refresh was meant to replace.
                 //
-                // bf16 is sampled only if something has already asked for it: forcing it here on a
-                // cold cache would run the whole scan and throw the result away one line later.
-                bf16Known = HardwareInfo.IsBf16AnswerKnown;
-                bf16Before = bf16Known && HardwareInfo.SupportsBf16Acceleration();
+                // ⚠ SAMPLED, NOT SKIPPED. An earlier version only compared when something had
+                // already asked for this, to avoid forcing a cold probe -- but the model verdicts on
+                // this window come from ActiveRepos, which can be computed without ever forcing it
+                // (a non-Granite backend, or a BF16 directory that is not downloaded). Skipping the
+                // comparison then left those verdicts stale after a re-check that changed the
+                // answer. One probe is cheaper than that.
+                bf16Before = HardwareInfo.SupportsBf16Acceleration();
                 if (force) HardwareInfo.InvalidateCudaProbes();
 
                 (totalMb, _) = HardwareInfo.GetGpuMemoryMb();
@@ -713,13 +716,18 @@ internal partial class SettingsViewModel : ObservableObject
                 cudaPresent = HardwareInfo.IsCudaRuntimePresent;
                 cudnnPresent = HardwareInfo.IsCudnnPresent;
 
+                // Re-register from the refreshed probe even when the check then fails: CheckCuda
+                // only reaches AddCudaToSearchPath on its success path, so an unavailable result
+                // would otherwise leave the loader holding directories from a discarded answer.
+                if (force && OperatingSystem.IsWindows()) ModelManagerService.AddCudaToSearchPath();
+
                 var cudaCheck = _modelMgr.CheckCuda();
                 cudaOk = cudaCheck.Available;
                 // Only when the check actually ran: otherwise the message is about something else --
                 // on first launch, a model file that has not been downloaded yet -- and showing it
                 // here would blame CUDA for it.
                 cudaMessage = cudaCheck.Ran ? cudaCheck.Message : null;
-                bf16After = bf16Known && HardwareInfo.SupportsBf16Acceleration();
+                bf16After = HardwareInfo.SupportsBf16Acceleration();
             });
 
             GpuDetected          = totalMb > 0;
@@ -748,7 +756,7 @@ internal partial class SettingsViewModel : ObservableObject
             // decides which Granite bundle is active, so the model verdicts on this window were
             // computed against an answer that may no longer hold. Re-checking hardware without
             // re-checking models leaves the two disagreeing.
-            if (force && bf16Known && bf16Before != bf16After)
+            if (force && bf16Before != bf16After)
             {
                 await CheckModelsAsync();
                 await CheckDiariZenModelsAsync();
