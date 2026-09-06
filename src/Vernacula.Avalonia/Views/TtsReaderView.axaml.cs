@@ -22,7 +22,8 @@ public partial class TtsReaderView : UserControl
 
     private void ApplyLocalizedText()
     {
-        RenderMarkdownCheck.Content = Loc.Instance["tts_render_markdown"];
+        RawMarkdownCheck.Content    = Loc.Instance["tts_raw_markdown"];
+        ExportButton.Content        = Loc.Instance["btn_export_tts"];
         IpaAnnotationCheck.Content  = Loc.Instance["tts_ipa_annotation"];
         CancelJobButton.Content     = Loc.Instance["btn_cancel_job"];
         BackButton.Content          = Loc.Instance["tts_reader_back"];

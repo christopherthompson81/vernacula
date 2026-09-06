@@ -92,7 +92,6 @@ internal class SettingsService
             if (!string.IsNullOrWhiteSpace(legacy.OmniVoiceLang)) { c.OmniVoiceLang = legacy.OmniVoiceLang; changed = true; }
             if (legacy.KokoroSpeed > 0)                            { c.KokoroSpeed = legacy.KokoroSpeed; changed = true; }
             if (legacy.OmniVoiceNumStep is > 0 and <= 64)          { c.OmniVoiceNumStep = legacy.OmniVoiceNumStep; changed = true; }
-            c.TtsRenderMarkdown    = legacy.RenderMarkdown;
             c.TtsShowIpaAnnotation = legacy.ShowIpaAnnotation;
             c.TtsSettingsMigrated  = true;
             changed = true;
@@ -109,7 +108,6 @@ internal class SettingsService
     {
         public string VoicePath { get; set; } = "";
         public string OnnxBundleDir { get; set; } = "";
-        public bool RenderMarkdown { get; set; }
         public bool ShowIpaAnnotation { get; set; }
         public string TtsBackend { get; set; } = "";
         public string PhonemizerDataDir { get; set; } = "";

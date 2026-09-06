@@ -80,7 +80,7 @@ public class AppSettings
     public string             OmniVoiceVoice          { get; set; } = "";
     public int                OmniVoiceNumStep        { get; set; } = 32;
     // Reader view preferences (not per job).
-    public bool               TtsRenderMarkdown       { get; set; } = false;
+    public bool               TtsShowRawMarkdown      { get; set; } = false;
     public bool               TtsShowIpaAnnotation    { get; set; } = false;
     // Set once the standalone reader's settings.json has been read in (SettingsService.MigrateLegacyReaderSettings).
     public bool               TtsSettingsMigrated     { get; set; } = false;

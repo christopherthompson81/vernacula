@@ -41,7 +41,7 @@ internal sealed partial class TtsReaderViewModel : ObservableObject, IDisposable
 
     /// <summary>True while the watched job is queued or rendering.</summary>
     [ObservableProperty]
-    [NotifyCanExecuteChangedFor(nameof(CancelJobNowCommand))]
+    [NotifyCanExecuteChangedFor(nameof(CancelJobNowCommand), nameof(ExportCommand))]
     private bool _isRunning;
 
     [ObservableProperty]
@@ -51,7 +51,8 @@ internal sealed partial class TtsReaderViewModel : ObservableObject, IDisposable
 
     // ── View preferences (persisted, not per job) ────────────────────────────
 
-    [ObservableProperty] private bool _renderMarkdown;
+    /// <summary>Show the document's source text verbatim instead of the word-by-word view.</summary>
+    [ObservableProperty] private bool _showRawMarkdown;
     [ObservableProperty] private bool _showIpaAnnotation;
 
     [ObservableProperty]
@@ -59,18 +60,18 @@ internal sealed partial class TtsReaderViewModel : ObservableObject, IDisposable
     private string _ipaAnnotationNotice = "";
     public bool HasIpaAnnotationNotice => !string.IsNullOrEmpty(IpaAnnotationNotice);
 
-    // The font and direction the markdown view is set in — the UI font unless the document is
-    // in a script that needs a specific face; right-to-left when the text or language says so.
+    // The font and direction the raw view is set in — the UI font unless the document is in a
+    // script that needs a specific face; right-to-left when the text or language says so.
     [ObservableProperty] private FontFamily    _textFontFamily    = ScriptFonts.Default;
     [ObservableProperty] private FlowDirection _textFlowDirection = FlowDirection.LeftToRight;
 
-    /// <summary>The rendered-markdown view's content (built by MarkdownFlowBuilder on demand).</summary>
-    [ObservableProperty] private object? _markdownContent;
+    /// <summary>The document source, verbatim, for the raw view.</summary>
+    [ObservableProperty] private string _sourceText = "";
 
     // ── Playback ─────────────────────────────────────────────────────────────
 
     [ObservableProperty]
-    [NotifyCanExecuteChangedFor(nameof(PlayPauseCommand))]
+    [NotifyCanExecuteChangedFor(nameof(PlayPauseCommand), nameof(ExportCommand))]
     private bool _hasAudio;
 
     [ObservableProperty]
@@ -110,6 +111,7 @@ internal sealed partial class TtsReaderViewModel : ObservableObject, IDisposable
     private string          _lang = "en";
     private string?         _audioPath;
     private double          _audioDuration;
+    private AlignmentSidecar? _sidecar;
     private int             _sampleRate = ChatterboxConstants.S3GenSr;
 
     // Chunks received while the job renders: audio for streaming/replay, words for timing.
@@ -137,7 +139,7 @@ internal sealed partial class TtsReaderViewModel : ObservableObject, IDisposable
         _playback.TotalChanged     += total   => Dispatcher.UIThread.Post(() =>
             PositionLabel = $"{_playback.PositionSeconds:F2} / {total:F2} s");
 
-        _renderMarkdown    = settings.Current.TtsRenderMarkdown;
+        _showRawMarkdown   = settings.Current.TtsShowRawMarkdown;
         _showIpaAnnotation = settings.Current.TtsShowIpaAnnotation;
     }
 
@@ -156,6 +158,7 @@ internal sealed partial class TtsReaderViewModel : ObservableObject, IDisposable
         HasAudio      = false;
         _audioPath    = null;
         _audioDuration = 0;
+        _sidecar      = null;
         _lang         = AnnotationLangFor(job);
         _sampleRate   = TtsJobRunner.SampleRateFor(new TtsJobSettings(job.TtsBackend, job.TtsLanguage, job.TtsVoice));
         lock (_receivedLock) { _receivedAudio.Clear(); _receivedWords.Clear(); }
@@ -230,6 +233,7 @@ internal sealed partial class TtsReaderViewModel : ObservableObject, IDisposable
             return;
         }
         AttachTimings(sidecar.Words);
+        _sidecar       = sidecar;
         _audioPath     = job.OutputAudioPath;
         _audioDuration = sidecar.AudioDurationSeconds;
         HasAudio       = File.Exists(_audioPath);
@@ -406,14 +410,13 @@ internal sealed partial class TtsReaderViewModel : ObservableObject, IDisposable
         BuildDisplayStructure(_text);
         _streamWordCursor = 0;
         _currentWordIndex = -1;
-        MarkdownContent = RenderMarkdown ? MarkdownFlowBuilder.Build(_text) : null;
+        SourceText = _text;
     }
 
-    partial void OnRenderMarkdownChanged(bool value)
+    partial void OnShowRawMarkdownChanged(bool value)
     {
-        _settings.Current.TtsRenderMarkdown = value;
+        _settings.Current.TtsShowRawMarkdown = value;
         _settings.Save();
-        if (value && MarkdownContent is null) MarkdownContent = MarkdownFlowBuilder.Build(_text);
     }
 
     partial void OnShowIpaAnnotationChanged(bool value)
@@ -655,6 +658,50 @@ internal sealed partial class TtsReaderViewModel : ObservableObject, IDisposable
         Detach();
         NavigateBack?.Invoke();
     }
+
+    // ── Export ───────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Writes the rendered WAV and a sentence-by-sentence CSV (text, phonemes, timing) next to
+    /// each other under one chosen name. Finished jobs only: the timing comes from the sidecar.
+    /// </summary>
+    [RelayCommand(CanExecute = nameof(CanExport))]
+    private async Task Export()
+    {
+        if (_job is null || _sidecar is null || _audioPath is null) return;
+        string stem = string.Concat(_job.JobTitle.Split(Path.GetInvalidFileNameChars())).Trim();
+        if (stem.Length == 0) stem = "tts-export";
+        var csvPath = await StoragePickers.SaveFileAsync(Loc.Instance["btn_export_tts"], stem + ".csv",
+            StoragePickers.CsvFiles, StoragePickers.AllFiles);
+        if (csvPath is null) return;
+        string wavPath = Path.ChangeExtension(csvPath, ".wav");
+
+        var job = _job; var sidecar = _sidecar; string audioPath = _audioPath;
+        StatusMessage = Loc.Instance["tts_export_running"];
+        try
+        {
+            await Task.Run(() =>
+            {
+                var kind = TtsJobRunner.ParseBackend(job.TtsBackend);
+                var sentences = TtsExportService.SplitSentences(sidecar.SourceText ?? _text, sidecar.Words);
+                var rows = TtsExportService.BuildRows(sentences, kind, _lang, job.TtsVoice, _settings.GetPhonemizerDataDir());
+                TtsExportService.WriteCsv(csvPath, rows, TtsExportService.PhonemeScheme(kind));
+                File.Copy(audioPath, wavPath, overwrite: true);
+            });
+            StatusMessage = Loc.Instance.T("tts_export_done", new()
+            {
+                ["csv"] = Path.GetFileName(csvPath),
+                ["wav"] = Path.GetFileName(wavPath),
+            });
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[TtsReader] export failed: {ex}");
+            StatusMessage = $"Export failed: {ex.Message}";
+        }
+    }
+
+    private bool CanExport() => HasAudio && !IsRunning && _sidecar is not null;
 
     private void SeekToWord(WordItemViewModel word)
     {

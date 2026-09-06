@@ -45,6 +45,23 @@ internal static class StoragePickers
         return picks.Count > 0 ? picks[0].TryGetLocalPath() : null;
     }
 
+    public static async Task<string?> SaveFileAsync(string title, string suggestedName, params FilePickerFileType[] filters)
+    {
+        var top = Owner();
+        if (top is null) return null;
+        var file = await top.StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
+        {
+            Title = title,
+            SuggestedFileName = suggestedName,
+            FileTypeChoices = filters,
+            ShowOverwritePrompt = true,
+        });
+        return file?.TryGetLocalPath();
+    }
+
+    public static readonly FilePickerFileType CsvFiles =
+        new("CSV") { Patterns = ["*.csv"] };
+
     public static readonly FilePickerFileType TextDocuments =
         new("Text and markdown") { Patterns = ["*.md", "*.markdown", "*.txt"] };
 

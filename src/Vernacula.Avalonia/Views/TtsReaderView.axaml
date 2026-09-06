@@ -75,7 +75,7 @@
                      quotes), each a wrapping flow of word buttons. Click-to-seek; the .current
                      class is the highlight while the audio is on that word. FlowDirection per
                      block is what lays an Arabic or Persian block out right to left. -->
-                <ScrollViewer IsVisible="{Binding !RenderMarkdown}">
+                <ScrollViewer IsVisible="{Binding !ShowRawMarkdown}">
                     <ItemsControl ItemsSource="{Binding DisplayBlocks}">
                         <ItemsControl.ItemsPanel>
                             <ItemsPanelTemplate>
@@ -183,12 +183,14 @@
                     </ItemsControl>
                 </ScrollViewer>
 
-                <!-- Rendered markdown (the help window's renderer). No word highlight here — the
-                     markdown view carries no source-position mapping. -->
-                <ScrollViewer IsVisible="{Binding RenderMarkdown}"
+                <!-- The source as written. No word highlight here — the raw text carries no
+                     alignment; it is for reading and copying the markup itself. -->
+                <ScrollViewer IsVisible="{Binding ShowRawMarkdown}"
                               FlowDirection="{Binding TextFlowDirection}">
-                    <ContentControl Content="{Binding MarkdownContent}"
-                                    FontFamily="{Binding TextFontFamily}" />
+                    <SelectableTextBlock Text="{Binding SourceText}"
+                                         FontFamily="{Binding TextFontFamily}"
+                                         Foreground="{DynamicResource TextBrush}"
+                                         TextWrapping="Wrap" />
                 </ScrollViewer>
             </Panel>
         </Border>
@@ -212,9 +214,9 @@
                        Foreground="{DynamicResource SubtextBrush}"
                        VerticalAlignment="Center" />
             <CheckBox Grid.Column="4"
-                      x:Name="RenderMarkdownCheck"
-                      Content="{local:Loc tts_render_markdown}"
-                      IsChecked="{Binding RenderMarkdown}"
+                      x:Name="RawMarkdownCheck"
+                      Content="{local:Loc tts_raw_markdown}"
+                      IsChecked="{Binding ShowRawMarkdown}"
                       Foreground="{DynamicResource TextBrush}"
                       Margin="0,0,12,0" />
             <StackPanel Grid.Column="5">
@@ -232,6 +234,11 @@
 
         <!-- ── Action buttons ── -->
         <StackPanel Grid.Row="5" Orientation="Horizontal" HorizontalAlignment="Right">
+            <Button x:Name="ExportButton"
+                    Content="{local:Loc btn_export_tts}"
+                    Classes="secondary-button"
+                    Command="{Binding ExportCommand}"
+                    Margin="0,0,8,0" />
             <Button x:Name="CancelJobButton"
                     Content="{local:Loc btn_cancel_job}"
                     Classes="danger-button"
