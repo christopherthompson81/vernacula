@@ -38,7 +38,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="NAudio"            Version="2.2.1" />
+    <PackageReference Include="NAudio"            Version="2.3.0" />
     <PackageReference Include="MathNet.Numerics"  Version="5.0.0" />
     <!-- Note: NemoNfaAligner uses an in-house SimpleSpTokenizer (greedy LPM
          over vocab.txt). Microsoft.ML.Tokenizers 2.0.0's
