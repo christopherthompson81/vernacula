@@ -111,7 +111,7 @@ related forms, measured and consistent with the above: `> [!NOTE] trailing`
 on one line is not an alert on either version (spec-correct), and a `> >`
 alert nested inside an alert is not stripped (`AllowNestedAlerts` off).
 
-An alert with an empty body (`> [!NOTE]` alone) is a third asymmetry: on
+An alert with an empty body (`> [!NOTE]` alone) is the second asymmetry: on
 1.3.2 it yields no text *and no `BlockSpan`*, where 0.34.0 gave one quote
 block containing `[!NOTE]`. The speech outcome is right, but a blockquote in
 the source now contributes nothing to the block index. Also pinned.
@@ -121,16 +121,17 @@ longer speaks "bracket bang NOTE bracket" when reading a top-level alert. But it
 every output offset after an alert by the marker's length, so it is a
 behaviour change to land deliberately, not a silent one — and it is exactly
 the kind of thing that should be frozen by a test, since neither the build nor
-the 24 existing tests noticed. Nine tests added in
+the 24 existing tests noticed. Eleven tests added in
 `MarkdownTextExtractorTests.cs` (marker stripped for each of the five GitHub
 kinds and for an unknown kind; the block is still a `QuoteBlock` — which is
 what keeps the extractor's `case QuoteBlock` arm matching it — spanning
 exactly the body; following text is not shifted; non-alert brackets survive;
-and the two asymmetries above). Seven of the original nine fail against
-0.34.0, which is the check that they pin the change rather than restate the
-parser. The two that pass on both earn their place differently: one guards
-against over-broad future alert recognition, the other against `AlertBlock`
-being reparented away from `QuoteBlock`.
+and the two asymmetries above). Nine of the eleven fail against 0.34.0, which
+is the check that they pin the change rather than restate the parser. The two
+that pass on both are deliberately version-invariant: one guards against
+over-broad future alert recognition, the other pins the list-nesting gap
+described above, which is unchanged between the versions and is exactly what
+would notice a future Markdig closing it.
 
 **Method note for the next bump.** Diffing a corpus of what the code already
 handles only proves the old behaviour is intact. Ask separately what the new

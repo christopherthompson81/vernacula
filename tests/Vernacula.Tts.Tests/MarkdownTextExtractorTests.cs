@@ -163,10 +163,12 @@ public class MarkdownTextExtractorTests
         Assert.Equal("item one\n\n[!NOTE] Nested alert body.", r.Text);
     }
 
-    // An alert whose body is empty contributes no text and, unlike a plain
-    // `>` quote, no BlockSpan either — the marker was the only content and it
-    // is consumed into the block. Consumers walking Blocks to mirror document
-    // structure see one fewer quote than the source has.
+    // An alert whose body is empty contributes no text and no BlockSpan,
+    // where 0.34.0 gave one quote block containing the marker: the marker was
+    // the only content, and it is now consumed into the block. Consumers
+    // walking Blocks to mirror document structure see one fewer quote than
+    // the source has. (An empty *plain* quote also yields no block, on both
+    // versions — the contrast here is against 0.34.0 on this same input.)
     [Fact]
     public void Alert_with_an_empty_body_contributes_no_text_and_no_block()
     {
