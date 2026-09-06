@@ -34,7 +34,7 @@
 
   <!-- NAudio: voice-prompt WAV decode + resample to 24 kHz mono. -->
   <ItemGroup>
-    <PackageReference Include="NAudio" Version="2.2.1" />
+    <PackageReference Include="NAudio" Version="2.3.0" />
   </ItemGroup>
 
   <!-- Markdig: markdown AST for MarkdownTextExtractor. Kept in step with the

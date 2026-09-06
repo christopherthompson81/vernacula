@@ -157,3 +157,66 @@ Markdig's re-assembled container content instead. In the Run 2 corpus,
 first alert — and `second line` reports 12, both offsets into
 `"plain quote\nsecond line"`. Identical on 0.34.0 and 1.3.2, so it predates
 this work; filed separately.
+
+## Run 3 — 2026-09-05 — NAudio 2.2.1 → 3.0.1, and why it landed on 2.3.0
+
+**Question.** Nine projects pin NAudio 2.2.1. Applying Run 2's method note —
+ask what the new version *changed or removed* before diffing what still works
+— what does NAudio 3 drop?
+
+**Command.** Compare the metapackage's dependency groups across versions
+(`naudio.nuspec` from the flat container), then resolve each into a scratch
+`net10.0` project and reflect over the assemblies for the types this repo uses.
+
+**Raw finding — the metapackage stops shipping the Windows backends to
+non-Windows TFMs, and it happens at 2.4.0, not 3.0:**
+
+```
+NAudio 2.2.1  -> net6.0: WinMM     (Asio, Core, Midi, Wasapi, WinMM)
+NAudio 2.3.0  -> net6.0: WinMM     (Asio, Core, Midi, Wasapi, WinMM)
+NAudio 2.4.0  -> net6.0: NO WinMM  (Core, Midi)
+NAudio 3.0.1  -> net9.0: NO WinMM  (Core, Midi)
+```
+
+`NAudio.WinMM` 3.0.1 is not merely absent from the closure — it ships *only*
+`net9.0-windows7.0`, so referencing it directly from a `net10.0` project fails
+restore outright (NU1202). Every project here targets plain `net10.0`.
+
+Type-by-type on a `net10.0` resolve of 3.0.1, over what this repo actually
+uses: `WaveFormat`, `WaveFileWriter`, `WaveFileReader`, `AudioFileReader`,
+`BufferedWaveProvider`, `ISampleProvider`, `IWaveProvider`, `WaveStream`,
+`WdlResamplingSampleProvider`, `SampleToWaveProvider16` and
+`MonoToStereoSampleProvider` all survive. **`WaveOutEvent` does not** (nor
+`WasapiOut`, `Mp3FileReader`, `MediaFoundationResampler`, none of which we
+use). `WaveOutEvent` is the Windows-native playback path — 10 references
+across `PlaybackService` and `TranscriptEditorViewModel`, guarded at runtime
+by `OperatingSystem.IsWindows()` with ffplay used elsewhere. Runtime-guarded
+still has to compile.
+
+Second, independent break: NAudio 3 replaces
+`ISampleProvider.Read(float[], int, int)` with `Read(Span<float>)` (and
+`IWaveProvider.Read` with `Read(Span<byte>)`). Four provider classes and about
+six call sites need migrating. Mechanical, and half-done before the blocker
+above settled the direction. One subtlety worth keeping: on `AudioFileReader`
+the array-based call silently rebinds to `WaveStream.Read(byte[], int, int)`
+and fails as a type error rather than a missing-method one, so the fix is to
+go through the `ISampleProvider` interface explicitly.
+
+**Implication.** Adopting 3.x is not a version bump; it is a target-framework
+change. It needs `net10.0;net10.0-windows` multi-targeting on
+`Vernacula.Avalonia` and `Vernacula.Tts.Avalonia` (and a decision for their
+dependents, `Vernacula.Tts.Avalonia` and `tests/AsrBackendCoverage`) with the
+`WaveOutEvent` path behind the Windows TFM — or dropping native Windows
+playback in favour of ffplay everywhere, which is a user-visible regression
+since Windows currently needs no external binary.
+
+**Landed: 2.3.0.** The last version that keeps WinMM on a non-Windows TFM.
+Zero code changes, solution builds clean, 283 tests pass, no advisories, and
+the resolve still carries `NAudio.WinMM/2.3.0` for `net10.0`. The 3.x
+migration is filed separately so it can be scoped as the TFM change it
+actually is, rather than riding along on a dependency bump.
+
+**Method note, confirming Run 2's.** The lesson generalized: what mattered
+here was not in the API diff at all, but in the *packaging* — which
+sub-packages the metapackage hands a given TFM. For a metapackage, diff the
+dependency groups per target framework before anything else.

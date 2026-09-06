@@ -33,7 +33,7 @@
          implementation of its own, which Avalonia 11.3 rejects: any document containing `code`
          logged "Unsupported IBinding implementation" and the whole markdown view rendered blank. -->
     <PackageReference Include="Markdown.Avalonia"           Version="11.0.3" />
-    <PackageReference Include="NAudio"                      Version="2.2.1" />
+    <PackageReference Include="NAudio"                      Version="2.3.0" />
   </ItemGroup>
 
   <!-- Both pull OnnxRuntime under PrivateAssets, so we provide the
