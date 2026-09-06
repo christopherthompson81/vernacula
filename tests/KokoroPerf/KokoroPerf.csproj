@@ -12,10 +12,10 @@
 
   <ItemGroup>
     <!-- .Gpu includes the CPU provider as fallback; covers both EP modes. -->
-    <PackageReference Include="Microsoft.ML.OnnxRuntime.Gpu" Version="1.24.4" />
+    <PackageReference Include="Microsoft.ML.OnnxRuntime.Gpu" Version="$(OnnxRuntimeVersion)" />
     <!-- Outranks the plain CPU ORT that Vernacula.Phonemizer pulls in transitively; see
          Vernacula.Tts.Base.csproj. -->
-    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.24.4" ExcludeAssets="all" />
+    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="$(OnnxRuntimeVersion)" ExcludeAssets="all" />
   </ItemGroup>
 
   <ItemGroup>

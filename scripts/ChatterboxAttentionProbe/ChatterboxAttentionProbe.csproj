@@ -12,10 +12,13 @@
   </PropertyGroup>
 
   <ItemGroup Condition="'$(EP)' == 'Cuda'">
-    <PackageReference Include="Microsoft.ML.OnnxRuntime.Gpu" Version="1.24.4" />
+    <PackageReference Include="Microsoft.ML.OnnxRuntime.Gpu" Version="$(OnnxRuntimeVersion)" />
+    <!-- Vernacula.Phonemizer pins a plain (CPU) runtime; without this suppression its native lands
+         beside the GPU one and wins the copy, leaving a 1.29 managed assembly on a 1.24.4 core. -->
+    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="$(OnnxRuntimeVersion)" ExcludeAssets="all" />
   </ItemGroup>
   <ItemGroup Condition="'$(EP)' == 'Cpu'">
-    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.24.4" />
+    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="$(OnnxRuntimeVersion)" />
   </ItemGroup>
 
   <ItemGroup>

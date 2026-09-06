@@ -1,0 +1,74 @@
+<Project InitialTargets="RejectUnknownExecutionProvider;RejectDirectMlOffWindows;RejectCudaOffX64">
+
+  <!--
+    Repo-wide build guards. Kept here rather than copied into each csproj so a new project cannot
+    quietly miss one.
+  -->
+
+  <!-- ⚠ ONE VERSION, DECIDED ONCE. Every project that references ONNX Runtime has to agree with
+       the native runtime its EP ships, or the managed assembly asks for an API version the native
+       cannot answer and the first session throws. Hard-coding the number per project meant each
+       new project was another chance to get it wrong, and several did. DirectML's newest release
+       is 1.24.4, so a DirectML build pins the whole stack there.
+
+       macOS x64 is deliberately not covered: it is stuck on 1.19.2, the last build shipping
+       osx-x64 natives, and those references stay literal. -->
+  <!-- ⚠ EP IS DEFAULTED HERE, AND THAT IS LOAD-BEARING. Directory.Build.props is imported before
+       each csproj body, so the version below is decided first: a project that sets EP in its own
+       PropertyGroup would be setting it too late and would restore, say, a DirectML package at the
+       CUDA version, which does not exist. Pass EP on the command line, or set it in this file. -->
+  <PropertyGroup>
+    <EP Condition="'$(EP)' == ''">Cuda</EP>
+    <OnnxRuntimeVersion Condition="'$(EP)' == 'DirectML'">1.24.4</OnnxRuntimeVersion>
+    <OnnxRuntimeVersion Condition="'$(OnnxRuntimeVersion)' == ''">1.29.0</OnnxRuntimeVersion>
+  </PropertyGroup>
+
+  <!-- ⚠ A REFERENCED PROJECT MUST USE THE REFERENCING PROJECT'S VERSION. Eight projects override
+       EP on a ProjectReference, and SetConfiguration really does override EP in the inner build
+       (verified by having the inner build report it). Without this the referenced library would
+       evaluate this property from a DIFFERENT EP and compile against a different managed assembly
+       than the one shipped beside it. Passing the resolved version down keeps one output directory
+       to one version. -->
+  <ItemDefinitionGroup>
+    <ProjectReference>
+      <AdditionalProperties>OnnxRuntimeVersion=$(OnnxRuntimeVersion)</AdditionalProperties>
+    </ProjectReference>
+  </ItemDefinitionGroup>
+
+  <!-- ⚠ AN UNRECOGNISED EP SILENTLY GIVES YOU THE CPU. Every package group is conditioned on a
+       spelling, and a value matching none of them selects no GPU package: the build succeeds and
+       runs on whatever plain runtime arrives transitively, so someone who typed `-p:EP=Cudaa` gets
+       a working CPU build and no hint that their GPU flag did nothing. (Case is not the hazard:
+       MSBuild compares strings case-insensitively, so `-p:EP=cuda` selects CUDA correctly.) -->
+  <Target Name="RejectUnknownExecutionProvider"
+          Condition="'$(EP)' != 'Cuda' AND '$(EP)' != 'Cpu' AND '$(EP)' != 'DirectML'">
+    <Error Text="EP=$(EP) is not a known execution provider. Use Cuda, Cpu or DirectML. An unrecognised value selects no GPU package, so the build would quietly run on the CPU." />
+  </Target>
+
+  <!-- ⚠ THERE IS NO CUDA BUILD OF ONNX RUNTIME FOR arm64. Microsoft.ML.OnnxRuntime.Gpu carries
+       win-x64 and linux-x64 natives and nothing else, so EP=Cuda on an arm64 host (or publishing
+       for an arm64 runtime identifier) selects a package with no library in it. That also settles
+       what the CPU-runtime suppression should do: it is only ever reached on x64, where the GPU
+       package really does bring a native, so it needs no platform conditions of its own.
+
+       The runtime identifier wins when publishing cross-platform, since the host architecture says
+       nothing about the target then. -->
+  <PropertyGroup>
+    <_OrtTargetArch Condition="'$(RuntimeIdentifier)' != ''">$(RuntimeIdentifier.Substring($([MSBuild]::Add($(RuntimeIdentifier.LastIndexOf('-')), 1))))</_OrtTargetArch>
+    <_OrtTargetArch Condition="'$(_OrtTargetArch)' == ''">$([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString().ToLowerInvariant())</_OrtTargetArch>
+  </PropertyGroup>
+
+  <Target Name="RejectCudaOffX64"
+          Condition="'$(EP)' == 'Cuda' AND '$(_OrtTargetArch)' != 'x64'">
+    <Error Text="EP=Cuda is x64-only: Microsoft.ML.OnnxRuntime.Gpu ships win-x64 and linux-x64 natives and nothing for $(_OrtTargetArch), so the build would produce no ONNX Runtime at all. Use -p:EP=Cpu on this platform." />
+  </Target>
+
+  <!-- ⚠ DirectML IS WINDOWS-ONLY, AND USED TO FAIL LATE. Its package carries no Linux or macOS
+       natives, so `-p:EP=DirectML` on those platforms restored no ONNX Runtime at all: the build
+       succeeded, and the first session threw DllNotFoundException. Say so at build time instead. -->
+  <Target Name="RejectDirectMlOffWindows"
+          Condition="'$(EP)' == 'DirectML' AND !$([MSBuild]::IsOSPlatform('Windows'))">
+    <Error Text="EP=DirectML is Windows-only: the DirectML package ships no natives for this platform, so the build would produce no ONNX Runtime at all. Use -p:EP=Cuda or -p:EP=Cpu here." />
+  </Target>
+
+</Project>

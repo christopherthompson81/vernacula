@@ -10,9 +10,20 @@
     <Platforms>x64</Platforms>
   </PropertyGroup>
 
+  <!-- Selected by EP, like the apps and the probe scripts: the GPU package has no native for
+       any platform but x64 (and EP=Cuda is rejected off x64 in Directory.Build.props), so an arm64
+       machine needs the plain runtime rather than a suppressed one. -->
+  <ItemGroup Condition="'$(EP)' == 'Cuda'">
+    <PackageReference Include="Microsoft.ML.OnnxRuntime.Gpu" Version="$(OnnxRuntimeVersion)" />
+    <!-- Vernacula.Phonemizer pins a plain (CPU) runtime; without this suppression it lands beside
+         the GPU one and the managed assembly meets the wrong native. -->
+    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="$(OnnxRuntimeVersion)" ExcludeAssets="all" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(EP)' != 'Cuda'">
+    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="$(OnnxRuntimeVersion)" />
+  </ItemGroup>
+
   <ItemGroup>
-    <!-- .Gpu includes the CPU provider as fallback; covers both EP modes. -->
-    <PackageReference Include="Microsoft.ML.OnnxRuntime.Gpu" Version="1.24.4" />
     <PackageReference Include="NAudio" Version="2.2.1" />
   </ItemGroup>
 
