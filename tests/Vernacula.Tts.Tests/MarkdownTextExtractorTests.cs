@@ -1,3 +1,4 @@
+using System;
 using Vernacula.Tts.Base.Markdown;
 using Xunit;
 
@@ -109,6 +110,58 @@ public class MarkdownTextExtractorTests
     {
         var r = MarkdownTextExtractor.Extract("> quoted text here");
         Assert.Equal("quoted text here", r.Text);
+    }
+
+    // GitHub alert blockquotes. Markdig 1.x recognizes these (AlertExtension,
+    // pulled in by UseAdvancedExtensions) and consumes the "[!KIND]" marker
+    // into the block instead of leaving it as a literal, so the marker no
+    // longer reaches the synthesizer. Under 0.34.0 the TTS read it aloud.
+    // These tests pin the stripping: it moves every following output offset,
+    // and the karaoke view aligns against those offsets.
+
+    [Theory]
+    [InlineData("NOTE")]
+    [InlineData("TIP")]
+    [InlineData("IMPORTANT")]
+    [InlineData("WARNING")]
+    [InlineData("CAUTION")]
+    public void Alert_quote_drops_the_kind_marker(string kind)
+    {
+        var r = MarkdownTextExtractor.Extract($"> [!{kind}]\n> Body of the alert.");
+        Assert.Equal("Body of the alert.", r.Text);
+    }
+
+    [Fact]
+    public void Alert_marker_is_dropped_for_an_unknown_kind_too()
+    {
+        var r = MarkdownTextExtractor.Extract("> [!FOO]\n> Body of the alert.");
+        Assert.Equal("Body of the alert.", r.Text);
+    }
+
+    [Fact]
+    public void Alert_quote_stays_one_quote_block_spanning_only_the_body()
+    {
+        var r = MarkdownTextExtractor.Extract("> [!NOTE]\n> Body of the alert.");
+        var block = Assert.Single(r.Blocks);
+        Assert.Equal(BlockKind.Quote, block.Kind);
+        Assert.Equal(0, block.OutputStart);
+        Assert.Equal(r.Text.Length, block.OutputLength);
+    }
+
+    [Fact]
+    public void Text_after_an_alert_is_not_shifted_by_the_marker()
+    {
+        var r = MarkdownTextExtractor.Extract("> [!NOTE]\n> Heed this.\n\nAfter the alert.");
+        Assert.Equal("Heed this.\n\nAfter the alert.", r.Text);
+        Assert.Equal(r.Text.IndexOf("After", StringComparison.Ordinal),
+                     r.Blocks[^1].OutputStart);
+    }
+
+    [Fact]
+    public void Bracketed_text_that_is_not_an_alert_marker_is_kept()
+    {
+        var r = MarkdownTextExtractor.Extract("> [not an alert]\n> Body.");
+        Assert.Equal("[not an alert] Body.", r.Text);
     }
 
     // ── Skipped constructs ────────────────────────────────────────────

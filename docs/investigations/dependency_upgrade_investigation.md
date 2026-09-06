@@ -38,16 +38,93 @@ dotnet run --project <harness> -p:EP=Cpu -c Release -- corpus.md
 diff out-0.34.0.txt out-1.3.2.txt
 ```
 
-**Raw finding.** `IDENTICAL` — byte-for-byte, text and every span. Notable
+**Raw finding (superseded — see Run 2, which found this conclusion too
+narrow).** `IDENTICAL` — byte-for-byte, text and every span. Notable
 values that held across both: inline code's source span covers the backticks
 while the output omits them (`OutputLength = 11, SourceLength = 13`), the link
 range covers the label only and skips the destination (source jumps 78→104
 across the URL), and fenced/indented code and table cells contribute no output
 text at all.
 
-**Implication.** No span-semantics change to absorb; the bump is a
-straight version change. The gap the exercise did expose was documentary, not
-behavioural, so the pin comment is corrected in the same branch. Nothing here
-argues for new tests — the corpus asserts equivalence between two versions, not
-a property worth freezing, and the 24 existing tests already cover the
-constructs by name.
+**Implication (wrong — see Run 2).** Read at the time as "no span-semantics
+change to absorb; the bump is a straight version change", and as an argument
+that no new tests were needed. Both conclusions were drawn from a corpus that
+did not contain the one construct that moved. The corpus was written from the
+list of constructs the extractor already handles, which is exactly the wrong
+generator for a question about *new* parser behaviour: an extension added in
+1.x recognizes syntax that 0.34.0 saw as something else, so the construct at
+risk is by definition one the old version had no concept of.
+
+The documentary finding above stands: the pin comment is corrected in the same
+branch.
+
+## Run 2 — 2026-09-05 — the same bump, corpus extended to constructs 1.x newly recognizes
+
+**Question.** Run 1 asked "does the same input parse the same way", and got
+yes. The question it failed to ask: **did `UseAdvancedExtensions()` pick up new
+extensions in 1.x?** Both consumers call it bare —
+`MarkdownTextExtractor.cs:108` and `MarkdownFlowBuilder.cs:20` — so any
+extension added to that bundle is opted into silently.
+
+**Command.** A corpus of GitHub alert blockquotes through the same harness, on
+both versions:
+
+```
+> [!NOTE]
+> Useful information that users should know.
+
+> [!WARNING]
+> Careful.
+
+> plain quote
+> second line
+
+> [!FOO]
+> unknown kind
+```
+
+**Raw finding.** Not identical. Markdig 1.x adds `AlertExtension` to
+`UseAdvancedExtensions()`; `AlertBlock` subclasses `QuoteBlock` and consumes
+the `[!KIND]` marker into the block rather than leaving it as a
+`LiteralInline`.
+
+| | 0.34.0 | 1.3.2 |
+|---|---|---|
+| `Text` (first alert) | `[!NOTE] Useful information that users should know.` | `Useful information that users should know.` |
+| `Ranges` over the corpus | 11 | 5 |
+| first `BlockSpan` length | 50 | 42 |
+
+Every alert form tested diverges — `[!NOTE]`, `[!WARNING]`, and unknown kinds
+such as `[!FOO]`, which 1.x also strips. Plain quotes and `> [not an alert]`
+are unchanged.
+
+**Implication.** The new behaviour is the one we want: the synthesizer no
+longer speaks "bracket bang NOTE bracket" when reading a README. But it moves
+every output offset after an alert by the marker's length, so it is a
+behaviour change to land deliberately, not a silent one — and it is exactly
+the kind of thing that should be frozen by a test, since neither the build nor
+the 24 existing tests noticed. Nine tests added in
+`MarkdownTextExtractorTests.cs` (marker stripped for each of the five GitHub
+kinds and for an unknown kind; the quote block spans only the body; following
+text is not shifted; non-alert brackets survive). Seven of the nine fail
+against 0.34.0, which is the check that they pin the change rather than
+restate the parser.
+
+**Method note for the next bump.** Diffing a corpus of what the code already
+handles only proves the old behaviour is intact. Ask separately what the new
+version *added* — for a Markdig-style bundle, diff the extension list of the
+built pipeline between versions, and write corpus cases for whatever appears.
+`MaximumNestingDepth`, `CjkFriendlyEmphasis`, `AllowDomainWithoutPeriod`,
+`AllowNestedAlerts` and `InferColumnWidthsFromSeparator` are also new in 1.x
+but are opt-in and verified off.
+
+## Open, not caused by any bump — `SourceStart` is wrong inside container continuation lines
+
+Surfaced while reading Run 2's output. `TextRange.SourceStart` is documented as
+a character offset into the original markdown, and is that for paragraphs. For
+a literal on a continuation line of a blockquote or list it is an offset into
+Markdig's re-assembled container content instead. In the Run 2 corpus,
+`plain quote` reports `SourceStart = 0` — document offset 0 is the `>` of the
+first alert — and `second line` reports 12, both offsets into
+`"plain quote\nsecond line"`. Identical on 0.34.0 and 1.3.2, so it predates
+this work; filed separately.
