@@ -10,17 +10,20 @@
     <Platforms>x64</Platforms>
   </PropertyGroup>
 
-  <ItemGroup>
-    <!-- .Gpu includes the CPU provider as fallback; covers both EP modes. -->
+  <!-- Selected by EP, like the apps and the probe scripts: the GPU package has no native for
+       any platform but x64 (and EP=Cuda is rejected off x64 in Directory.Build.props), so an arm64
+       machine needs the plain runtime rather than a suppressed one. -->
+  <ItemGroup Condition="'$(EP)' == 'Cuda'">
     <PackageReference Include="Microsoft.ML.OnnxRuntime.Gpu" Version="$(OnnxRuntimeVersion)" />
-    <!-- Vernacula.Phonemizer pins a plain (CPU) runtime; without this suppression it lands
-         beside the GPU one and the managed assembly meets the wrong native.
+    <!-- Vernacula.Phonemizer pins a plain (CPU) runtime; without this suppression it lands beside
+         the GPU one and the managed assembly meets the wrong native. -->
+    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="$(OnnxRuntimeVersion)" ExcludeAssets="all" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(EP)' != 'Cuda'">
+    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="$(OnnxRuntimeVersion)" />
+  </ItemGroup>
 
-         ⚠ ONLY WHERE THE GPU PACKAGE HAS A NATIVE TO OFFER. Microsoft.ML.OnnxRuntime.Gpu carries
-         win-x64 and linux-x64 only, so on osx-arm64 or linux-arm64 the transitive CPU runtime is
-         the sole source of a native library, and suppressing it leaves the test with none. -->
-    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="$(OnnxRuntimeVersion)" ExcludeAssets="all"
-                      Condition="$([MSBuild]::IsOSPlatform('Windows')) OR ($([MSBuild]::IsOSPlatform('Linux')) AND '$([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture)' == 'X64')" />
+  <ItemGroup>
     <PackageReference Include="NAudio" Version="2.2.1" />
   </ItemGroup>
 
