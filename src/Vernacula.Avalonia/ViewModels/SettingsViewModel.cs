@@ -280,6 +280,15 @@ internal partial class SettingsViewModel : ObservableObject
     private string _cudaProbeNote = "";
 
     public bool HasCudaProbeNote => !string.IsNullOrEmpty(CudaProbeNote);
+
+    /// <summary>
+    /// Whether to offer the download links. ⚠ NOT SIMPLY THE NEGATION OF "installed". A CUDA that
+    /// is present but unreachable — the wrong major, or outside the loader path — needs an ldconfig
+    /// line or a different version, not another download; offering one beside a note saying the
+    /// library was found contradicts the note.
+    /// </summary>
+    [ObservableProperty] private bool _offerCudaDownload = true;
+    [ObservableProperty] private bool _offerCudnnDownload = true;
     [ObservableProperty] private bool   _isCheckingHardware   = false;
     [ObservableProperty] private string _batchCeilingText     = "";
 
@@ -683,7 +692,7 @@ internal partial class SettingsViewModel : ObservableObject
             // Collected off the UI thread, applied on it: these are bound properties, and raising
             // PropertyChanged from a thread-pool thread updates Avalonia bindings off the UI thread.
             long totalMb = 0;
-            bool cudaToolkit = false, cudnnFound = false;
+            bool cudaToolkit = false, cudnnFound = false, cudaPresent = false, cudnnPresent = false;
 
             await Task.Run(() =>
             {
@@ -701,6 +710,8 @@ internal partial class SettingsViewModel : ObservableObject
                 (totalMb, _) = HardwareInfo.GetGpuMemoryMb();
                 cudaToolkit = HardwareInfo.IsCudaToolkitInstalled();
                 cudnnFound = HardwareInfo.IsCudnnInstalled();
+                cudaPresent = HardwareInfo.IsCudaRuntimePresent;
+                cudnnPresent = HardwareInfo.IsCudnnPresent;
 
                 var cudaCheck = _modelMgr.CheckCuda();
                 cudaOk = cudaCheck.Available;
@@ -717,6 +728,8 @@ internal partial class SettingsViewModel : ObservableObject
                 : "";
             CudaToolkitInstalled = cudaToolkit;
             CudnnInstalled       = cudnnFound;
+            OfferCudaDownload    = !cudaToolkit && !cudaPresent;
+            OfferCudnnDownload   = !cudnnFound && !cudnnPresent;
             CudaEpWorking = cudaOk;
             // The probe's note when it has one; otherwise whatever CheckCuda said. The provider can
             // fail AFTER the probe passes -- a swallowed load failure is exactly the case worth

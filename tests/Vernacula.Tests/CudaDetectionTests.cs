@@ -58,6 +58,21 @@ public class CudaDetectionTests
     }
 
     [Fact]
+    public void ADownloadIsOnlyOfferedForSomethingActuallyMissing()
+    {
+        if (!OperatingSystem.IsWindows() && !OperatingSystem.IsLinux())
+            Assert.Skip("CUDA detection only applies to Windows and Linux.");
+
+        HardwareInfo.InvalidateCudaProbes();
+
+        // "Present" is the weaker claim, so a usable install is necessarily present. The gap
+        // between them — present but unusable — is where a download link would contradict the note
+        // telling the user the library is already there.
+        if (HardwareInfo.IsCudaToolkitInstalled()) Assert.True(HardwareInfo.IsCudaRuntimePresent);
+        if (HardwareInfo.IsCudnnInstalled()) Assert.True(HardwareInfo.IsCudnnPresent);
+    }
+
+    [Fact]
     public void InvalidatingReallyThrowsTheAnswerAway()
     {
         // Asserting only that the answer is stable would pass for a cache that never refreshes at

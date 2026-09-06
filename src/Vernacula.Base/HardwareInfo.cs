@@ -161,12 +161,17 @@ public static class HardwareInfo
 
     /// <summary>What one look at the machine found. Computed together and published as a unit, so a
     /// reader never sees half of a refresh.</summary>
+    /// <param name="RuntimePresent">The runtime is on the machine, whether or not it can be used.
+    /// Distinguishing that from "absent" is what stops the UI offering a download link beside a note
+    /// saying the library is already installed and merely unreachable.</param>
     private sealed record CudaProbeResult(
         bool Runtime,
         bool Cudnn,
         string? RuntimeNote,
         string? CudnnNote,
-        IReadOnlyCollection<string> DllDirectories);
+        IReadOnlyCollection<string> DllDirectories,
+        bool RuntimePresent = false,
+        bool CudnnPresent = false);
 
     /// <summary>
     /// ⚠ A Lazy, NOT A HAND-ROLLED CACHE. CanProbeCudaExecutionProvider is asked at every
@@ -205,7 +210,7 @@ public static class HardwareInfo
     /// </summary>
     private static CudaProbeResult ProbeLinux()
     {
-        var (runtime, runtimeNote) = ProbeLinuxLibrary(
+        var (runtime, runtimeNote, runtimePresent) = ProbeLinuxLibrary(
             $"libcudart.so.{RequiredCudaMajor}",
             $"libcudart.so.{RequiredCudaMajor}*",
             $"CUDA {RequiredCudaMajor}",
@@ -213,23 +218,24 @@ public static class HardwareInfo
 
         // ⚠ THE SONAME, NOT THE BARE libcudnn.so. That one is the development symlink and on a
         // cuDNN 8 install it points at libcudnn.so.8, which the provider cannot use.
-        var (cudnn, cudnnNote) = ProbeLinuxLibrary(
+        var (cudnn, cudnnNote, cudnnPresent) = ProbeLinuxLibrary(
             $"libcudnn.so.{RequiredCudnnMajor}",
             $"libcudnn.so.{RequiredCudnnMajor}*",
             $"cuDNN {RequiredCudnnMajor}",
             $"No cuDNN {RequiredCudnnMajor} was found. The CUDA execution provider needs cuDNN "
             + $"{RequiredCudnnMajor} built for CUDA {RequiredCudaMajor}.");
 
-        return new CudaProbeResult(runtime, cudnn, runtimeNote, cudnnNote, Array.Empty<string>());
+        return new CudaProbeResult(runtime, cudnn, runtimeNote, cudnnNote, Array.Empty<string>(),
+                                   runtimePresent, cudnnPresent);
     }
 
-    private static (bool Found, string? Note) ProbeLinuxLibrary(
+    private static (bool Found, string? Note, bool Present) ProbeLinuxLibrary(
         string soname, string filePattern, string label, string absentNote)
     {
         if (NativeLibrary.TryLoad(soname, out var handle))
         {
             NativeLibrary.Free(handle);
-            return (true, null);
+            return (true, null, true);
         }
 
         // ⚠ LOOK, DO NOT LOAD. Loading a candidate by full path would register it under its
@@ -254,16 +260,17 @@ public static class HardwareInfo
             // up in an LD_LIBRARY_PATH entry, the loader has already looked and failed, so the
             // cause is the library itself -- a missing dependency of its own, or the wrong
             // architecture -- and the ldconfig advice would send them in a circle.
-            return (false, onLdPath.Contains(Normalise(dir))
+            return (Found: false, Note: onLdPath.Contains(Normalise(dir))
                 ? $"{label} was found at {hit}, in a directory that is already on LD_LIBRARY_PATH, "
                   + "and still could not be loaded. One of its own dependencies is probably "
                   + "missing, or it was built for a different architecture."
                 : $"{label} was found at {hit} but the loader could not open it by name, so the "
                   + "CUDA execution provider cannot either. Add its directory to "
-                  + "/etc/ld.so.conf.d (then run ldconfig) or to LD_LIBRARY_PATH.");
+                  + "/etc/ld.so.conf.d (then run ldconfig) or to LD_LIBRARY_PATH.",
+                Present: true);
         }
 
-        return (false, absentNote);
+        return (false, absentNote, false);
     }
 
     /// <summary>Returns the configured CUDA toolkit root for the current platform, or null if none is known.</summary>
@@ -435,6 +442,14 @@ public static class HardwareInfo
     /// because a CUDA installed mid-session changes this answer as well.
     /// </summary>
     public static bool SupportsBf16Acceleration() => Volatile.Read(ref _bf16Cache).Value;
+
+    /// <summary>The CUDA runtime is on this machine, even if it is the wrong major or cannot be
+    /// loaded. Offering a download link in that case tells the user to install what they have.</summary>
+    public static bool IsCudaRuntimePresent => Probe.RuntimePresent;
+
+    /// <summary>cuDNN is on this machine, even if it is not usable. See
+    /// <see cref="IsCudaRuntimePresent"/>.</summary>
+    public static bool IsCudnnPresent => Probe.CudnnPresent;
 
     /// <summary>Whether anything has asked for <see cref="SupportsBf16Acceleration"/> yet. Lets a
     /// caller find out whether the answer CHANGED without forcing the probe that computes it --
@@ -688,11 +703,26 @@ public static class HardwareInfo
                                         || d.StartsWith(c, StringComparison.OrdinalIgnoreCase));
             }
 
+            // ⚠ THE DIRECTORY NAME ORDERS cuDNN; IT DOES NOT DECIDE IT. NVIDIA's standalone package
+            // installs into per-CUDA subdirectories -- …\CUDNN\v9.x\bin\12.9\ AND …\bin\13.0\ --
+            // so both land in the set, neither sits beside our cudart, and enumeration order would
+            // hand the loader 12.9 first. That name is real evidence about which CUDA a cuDNN was
+            // built for; it is just not reliable enough to reject an install over (a cuDNN unzipped
+            // to C:\cudnn names nothing at all), which is why it ranks rather than filters.
+            int CudnnRank(string dir) =>
+                NamesMajor(dir, RequiredCudaMajor) ? 0
+                : BesideOurCuda(dir)              ? 1
+                : NamesSomeOtherMajor(dir)        ? 3
+                                                  : 2;
+
             Add(cudartDirs);
             Add(depDirs);
-            Add(cudnnDirs.Where(BesideOurCuda));
+            // Beside our own runtime, these are unambiguous whatever else is installed; further
+            // afield they are only safe when no other CUDA is present to confuse them with, because
+            // curand64_10.dll carries that name under every major.
+            Add(unversioned.Where(BesideOurCuda));
             if (!otherMajor) Add(unversioned);
-            Add(cudnnDirs);
+            Add(cudnnDirs.OrderBy(CudnnRank));
         }
 
         var runtimeNote = runtime ? null
@@ -707,8 +737,21 @@ public static class HardwareInfo
                 : $"No cuDNN was found. The CUDA execution provider needs cuDNN {RequiredCudnnMajor} "
                   + $"built for CUDA {RequiredCudaMajor}.";
 
-        return new CudaProbeResult(runtime, cudnn, runtimeNote, cudnnNote, dllDirs);
+        return new CudaProbeResult(runtime, cudnn, runtimeNote, cudnnNote, dllDirs,
+                                   RuntimePresent: anyCudart, CudnnPresent: anyCudnn);
     }
+
+    /// <summary>True when a path segment names the given CUDA major, as NVIDIA's standalone cuDNN
+    /// tree does (…\CUDNN\v9.x\bin\13.0\).</summary>
+    private static bool NamesMajor(string dir, int major) =>
+        dir.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+           .Any(seg => seg == major.ToString()
+                    || seg.StartsWith($"{major}.", StringComparison.Ordinal));
+
+    /// <summary>True when a path segment names a CUDA major that is not the one we need — evidence
+    /// that this directory belongs to another install, and should be tried last.</summary>
+    private static bool NamesSomeOtherMajor(string dir) =>
+        Enumerable.Range(9, 12).Any(m => m != RequiredCudaMajor && NamesMajor(dir, m));
 
     /// <summary>A directory in comparable form: absolute, with exactly one trailing separator, so
     /// two spellings of the same directory match and a prefix test lands on a path boundary.</summary>

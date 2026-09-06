@@ -292,8 +292,8 @@
                                             Content="{Binding Source={x:Static local:Loc.Instance}, Path=[settings_hw_download_cuda]}"
                                             Classes="link-button"
                                             Command="{Binding OpenCudaDownloadPageCommand}"
-                                            IsVisible="{Binding CudaToolkitInstalled,
-                                                                 Converter={StaticResource InvBoolToVis}}" />
+                                            IsVisible="{Binding OfferCudaDownload,
+                                                                 Converter={StaticResource BoolToVis}}" />
                                 </Grid>
 
                                 <!-- cuDNN -->
@@ -316,8 +316,8 @@
                                             Content="{Binding Source={x:Static local:Loc.Instance}, Path=[settings_hw_download_cudnn]}"
                                             Classes="link-button"
                                             Command="{Binding OpenCudnnDownloadPageCommand}"
-                                            IsVisible="{Binding CudnnInstalled,
-                                                                 Converter={StaticResource InvBoolToVis}}" />
+                                            IsVisible="{Binding OfferCudnnDownload,
+                                                                 Converter={StaticResource BoolToVis}}" />
                                 </Grid>
 
                                 <!-- CUDA EP active -->
