@@ -7,6 +7,12 @@ namespace Vernacula.Tests;
 /// What CUDA detection promises: an answer about the major this build actually links, and a reason
 /// whenever the answer is no.
 /// </summary>
+/// <remarks>
+/// ⚠ NOT IN PARALLEL WITH ANYTHING. These call InvalidateCudaProbes, which swaps caches shared by
+/// the whole assembly; another test reading SupportsBf16Acceleration at the same moment would see
+/// one being torn down.
+/// </remarks>
+[Collection("CudaProbe")]
 public class CudaDetectionTests
 {
     [Fact]

@@ -522,6 +522,13 @@ internal class ModelManagerService
     [DllImport("kernel32", CharSet = CharSet.Unicode, SetLastError = true)]
     private static extern IntPtr AddDllDirectory(string newDirectory);
 
+    [DllImport("kernel32", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool RemoveDllDirectory(IntPtr cookie);
+
+    /// <summary>Cookies from the last registration, so it can be undone before the next one.</summary>
+    private static readonly List<IntPtr> _cudaDllCookies = new();
+
     /// <summary>
     /// MSIX packaged apps use a restricted DLL search that excludes the system PATH.
     /// Explicitly register the directories that actually hold cudart, cublas, cudnn, etc.
@@ -536,8 +543,19 @@ internal class ModelManagerService
             return;
         }
 
-        foreach (var dir in HardwareInfo.GetWindowsCudaDllDirectories())
-            AddDllDirectory(dir);
+        // ⚠ REMOVE BEFORE RE-ADDING. The loader honours registration order, which is why the probe
+        // returns an ordered list -- but AddDllDirectory only ever appends, so after a Re-check
+        // changed the ranking the directories registered at startup would still win. Undoing the
+        // previous registration is what makes the new order mean anything.
+        lock (_cudaDllCookies)
+        {
+            foreach (var cookie in _cudaDllCookies)
+                if (cookie != IntPtr.Zero) RemoveDllDirectory(cookie);
+            _cudaDllCookies.Clear();
+
+            foreach (var dir in HardwareInfo.GetWindowsCudaDllDirectories())
+                _cudaDllCookies.Add(AddDllDirectory(dir));
+        }
     }
 
     /// <param name="Available">Whether a CUDA session was actually created.</param>

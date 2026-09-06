@@ -509,7 +509,18 @@ public static class HardwareInfo
         dirs.Add("/usr/lib/wsl/lib");
         dirs.Add("/usr/lib64");
 
-        return dirs.Where(Directory.Exists);
+        // Ordered, so the diagnostic is reproducible: which copy gets named decides whether the
+        // user is told to run ldconfig or to look at the library's own dependencies, and that must
+        // not change between runs. LD_LIBRARY_PATH first, because a hit there is the case with the
+        // more specific advice.
+        var ldEntries = (Environment.GetEnvironmentVariable("LD_LIBRARY_PATH") ?? "")
+            .Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries)
+            .Select(e => Normalise(e.Trim()))
+            .ToHashSet(StringComparer.Ordinal);
+
+        return dirs.Where(Directory.Exists)
+                   .OrderBy(d => ldEntries.Contains(Normalise(d)) ? 0 : 1)
+                   .ThenBy(d => d, StringComparer.Ordinal);
     }
 
     /// <summary>
@@ -737,21 +748,31 @@ public static class HardwareInfo
                 : $"No cuDNN was found. The CUDA execution provider needs cuDNN {RequiredCudnnMajor} "
                   + $"built for CUDA {RequiredCudaMajor}.";
 
+        // ⚠ PRESENT MEANS "THE RIGHT ONE IS HERE", NOT "SOMETHING IS HERE". Windows detection is
+        // by file name, so a library of the required major on disk is a usable one -- there is no
+        // Windows equivalent of the Linux "on disk but the loader cannot open it" gap. Reporting
+        // any CUDA as present suppressed the download link on exactly the machine this change is
+        // about: CUDA 12 only, note saying to install CUDA 13, and no way to get it.
         return new CudaProbeResult(runtime, cudnn, runtimeNote, cudnnNote, dllDirs,
-                                   RuntimePresent: anyCudart, CudnnPresent: anyCudnn);
+                                   RuntimePresent: runtime, CudnnPresent: cudnn);
     }
 
     /// <summary>True when a path segment names the given CUDA major, as NVIDIA's standalone cuDNN
     /// tree does (…\CUDNN\v9.x\bin\13.0\).</summary>
     private static bool NamesMajor(string dir, int major) =>
         dir.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+           // NVIDIA writes its toolkit directories as v12.6, so the leading v has to come off or a
+           // cuDNN copied into CUDA 12.6's bin looks like it names nothing at all.
+           .Select(seg => seg.StartsWith('v') || seg.StartsWith('V') ? seg[1..] : seg)
            .Any(seg => seg == major.ToString()
                     || seg.StartsWith($"{major}.", StringComparison.Ordinal));
 
     /// <summary>True when a path segment names a CUDA major that is not the one we need — evidence
     /// that this directory belongs to another install, and should be tried last.</summary>
     private static bool NamesSomeOtherMajor(string dir) =>
-        Enumerable.Range(9, 12).Any(m => m != RequiredCudaMajor && NamesMajor(dir, m));
+        // From 10: cuDNN's own majors are 7-9, and a directory named for the cuDNN version (a
+        // C:\cudnn\9.3\bin) would otherwise be demoted for naming itself rather than a CUDA.
+        Enumerable.Range(10, 11).Any(m => m != RequiredCudaMajor && NamesMajor(dir, m));
 
     /// <summary>A directory in comparable form: absolute, with exactly one trailing separator, so
     /// two spellings of the same directory match and a prefix test lands on a path boundary.</summary>
