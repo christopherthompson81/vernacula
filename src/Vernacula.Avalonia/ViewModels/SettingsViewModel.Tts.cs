@@ -103,11 +103,16 @@ internal partial class SettingsViewModel
     /// <summary>Called from the constructor: seeds the TTS fields from settings and builds the model-set rows.</summary>
     private void InitTtsSettings()
     {
+        // Seeding the backing fields, as the constructor does for the ASR settings: going through
+        // the properties would fire the change hooks (a settings save, OnTtsModelsChanged) before
+        // anything is wired. The analyzer only waives that for code textually inside a constructor.
+#pragma warning disable MVVMTK0034
         _selectedTtsBackend     = TtsJobRunner.ParseBackend(_svc.Current.TtsBackend);
         _chatterboxVoicePath    = _svc.Current.ChatterboxVoicePath ?? "";
         _omniVoiceTokenizerJson = _svc.Current.OmniVoiceTokenizerJson ?? "";
         _kokoroSpeed            = _svc.Current.KokoroSpeed > 0 ? _svc.Current.KokoroSpeed : 1.0f;
         _omniVoiceNumStep       = _svc.Current.OmniVoiceNumStep is > 0 and <= 64 ? _svc.Current.OmniVoiceNumStep : 32;
+#pragma warning restore MVVMTK0034
 
         void Changed() => OnTtsModelsChanged?.Invoke();
         TtsModelSets.Add(new(ModelManagerService.TtsModelSet.Kokoro, "Kokoro-82M",
