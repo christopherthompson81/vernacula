@@ -33,6 +33,17 @@ internal sealed partial class TtsModelSetStatusViewModel : ObservableObject
     [ObservableProperty] private double _downloadPercent    = 0;
     [ObservableProperty] private string _downloadStatusText = "";
 
+    // Outcome of the manifest compare: the stale files, shown with an Update button. Empty
+    // both when everything matches and when the check could not run (no manifest / offline)
+    // — the status line says which.
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(HasOutdatedFiles))]
+    private IReadOnlyList<string> _outdatedFiles = [];
+    [ObservableProperty] private string _updateStatusText = "";
+    [ObservableProperty] private bool   _isCheckingUpdates = false;
+
+    public bool HasOutdatedFiles => OutdatedFiles.Count > 0;
+
     /// <summary>Hidden until the set is published somewhere fetchable (see ModelManagerService).</summary>
     public bool CanDownload => ModelManagerService.CanDownloadTtsModelSet(Set);
 
@@ -98,6 +109,46 @@ internal sealed partial class TtsModelSetStatusViewModel : ObservableObject
                       ?? (Ready ? Brushes.LimeGreen : Brushes.Goldenrod);
     }
 
+    /// <summary>
+    /// Compares the set's files against its repo manifest. Non-blocking for the caller's
+    /// purposes: skipped when nothing is on disk to compare, when the set has no manifest, or
+    /// offline (the status line then says so rather than pretending to be current).
+    /// </summary>
+    public async Task CheckForUpdatesAsync()
+    {
+        OutdatedFiles = [];
+        if (!Ready || !CanDownload || string.IsNullOrEmpty(ModelManagerService.ManifestUrlFor(Set)))
+        {
+            UpdateStatusText = "";
+            return;
+        }
+        IsCheckingUpdates = true;
+        UpdateStatusText  = "Checking for updates…";
+        try
+        {
+            var progress = new Progress<(string fileName, int index, int total)>(p =>
+                UpdateStatusText = $"Checking {p.fileName} ({p.index + 1}/{p.total})…");
+            var outdated = await _modelMgr.GetOutdatedTtsFilesAsync(Set, progress);
+            if (outdated is null)
+                UpdateStatusText = "Update check skipped (offline).";
+            else if (outdated.Count == 0)
+                UpdateStatusText = "Up to date.";
+            else
+            {
+                OutdatedFiles    = outdated;
+                UpdateStatusText = $"{outdated.Count} file(s) differ from the published set: {string.Join(", ", outdated)}";
+            }
+        }
+        catch (Exception ex)
+        {
+            UpdateStatusText = $"Update check failed: {ex.Message}";
+        }
+        finally
+        {
+            IsCheckingUpdates = false;
+        }
+    }
+
     // ── Commands ─────────────────────────────────────────────────────────────
 
     [RelayCommand]
@@ -119,11 +170,17 @@ internal sealed partial class TtsModelSetStatusViewModel : ObservableObject
     }
 
     [RelayCommand]
-    private async Task Download()
+    private Task Download() => RunDownloadAsync(update: false);
+
+    /// <summary>Re-fetches the files the last <see cref="CheckForUpdatesAsync"/> found stale.</summary>
+    [RelayCommand]
+    private Task Update() => RunDownloadAsync(update: true);
+
+    private async Task RunDownloadAsync(bool update)
     {
         IsDownloading      = true;
         DownloadPercent    = 0;
-        DownloadStatusText = $"Starting {Name} download…";
+        DownloadStatusText = update ? $"Updating {Name}…" : $"Starting {Name} download…";
         _downloadCts       = new CancellationTokenSource();
 
         var progress = new Progress<DownloadProgress>(p =>
@@ -137,9 +194,13 @@ internal sealed partial class TtsModelSetStatusViewModel : ObservableObject
 
         try
         {
-            await _modelMgr.DownloadMissingTtsModelsAsync(Set, progress, _downloadCts.Token);
-            DownloadStatusText = $"{Name} download complete.";
+            if (update)
+                await _modelMgr.RedownloadTtsFilesAsync(Set, OutdatedFiles, progress, _downloadCts.Token);
+            else
+                await _modelMgr.DownloadMissingTtsModelsAsync(Set, progress, _downloadCts.Token);
+            DownloadStatusText = update ? $"{Name} updated." : $"{Name} download complete.";
             await CheckAsync();
+            await CheckForUpdatesAsync();
             _onChanged();
         }
         catch (OperationCanceledException)

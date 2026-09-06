@@ -388,27 +388,15 @@ internal class ModelManagerService
         IProgress<(string fileName, int index, int total)>? progress = null,
         CancellationToken ct = default)
     {
-        string dir     = _settings.GetModelsDir();
-        var outdated = new List<string>();
+        string dir = _settings.GetModelsDir();
         var toCheck = new List<(string localRelativePath, string expectedHash)>();
 
         foreach (var repo in ActiveRepos())
         {
             if (string.IsNullOrWhiteSpace(repo.ManifestUrl))
                 continue;
-
-            string json;
-            try
-            {
-                using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-                cts.CancelAfter(TimeSpan.FromSeconds(10));
-                json = await _http.GetStringAsync(repo.ManifestUrl, cts.Token);
-            }
-            catch { return null; }
-
-            Dictionary<string, string> manifest;
-            try   { manifest = ParseManifestHashes(json); }
-            catch { return null; }
+            var manifest = await FetchManifestAsync(repo.ManifestUrl, ct);
+            if (manifest is null) return null;
 
             foreach (var asset in repo.Assets)
             {
@@ -429,8 +417,34 @@ internal class ModelManagerService
             }
         }
 
-        int total = toCheck.Count;
+        return await HashCompareAsync(dir, toCheck, progress, ct);
+    }
 
+    /// <summary>The repo's manifest as remote path → MD5, or null when it cannot be fetched or parsed (offline).</summary>
+    private async Task<Dictionary<string, string>?> FetchManifestAsync(string manifestUrl, CancellationToken ct)
+    {
+        string json;
+        try
+        {
+            using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            cts.CancelAfter(TimeSpan.FromSeconds(10));
+            json = await _http.GetStringAsync(manifestUrl, cts.Token);
+        }
+        catch { return null; }
+
+        try   { return ParseManifestHashes(json); }
+        catch { return null; }
+    }
+
+    /// <summary>Hashes each listed file under <paramref name="dir"/>; returns the ones whose MD5 differs.</summary>
+    private static async Task<List<string>> HashCompareAsync(
+        string dir,
+        IReadOnlyList<(string localRelativePath, string expectedHash)> toCheck,
+        IProgress<(string fileName, int index, int total)>? progress,
+        CancellationToken ct)
+    {
+        var outdated = new List<string>();
+        int total = toCheck.Count;
         for (int i = 0; i < total; i++)
         {
             ct.ThrowIfCancellationRequested();
@@ -1017,14 +1031,84 @@ internal class ModelManagerService
                 $"{set} is not published for download yet. Place the files in {dir} (see docs/tts-cli.md).");
         Directory.CreateDirectory(dir);
 
-        IEnumerable<ModelAsset> assets = AssetsFor(set);
-        if (set is TtsModelSet.Chatterbox or TtsModelSet.OmniVoice)
-            assets = assets.Append(new ModelAsset("tokenizer.json", "tokenizer.json"));
-
-        var missing = assets
+        var missing = DownloadableTtsAssets(set)
             .Where(a => !File.Exists(Path.Combine(dir, a.LocalRelativePath)))
             .Select(a => new RepoAsset(repoBase, a.LocalRelativePath, a.RemoteRelativePath))
             .ToList();
         await DownloadMissingAssetsAsync(dir, missing, progress, ct);
+    }
+
+    /// <summary>
+    /// The set's files on disk whose MD5 no longer matches its repo manifest — the TTS
+    /// counterpart of <see cref="GetOutdatedFilesAsync"/>, per set because each lives in its
+    /// own directory. Null when the set has no manifest or it cannot be fetched (offline).
+    /// Only files the app would download are compared; a hand-placed extra is not judged.
+    /// </summary>
+    public async Task<IReadOnlyList<string>?> GetOutdatedTtsFilesAsync(
+        TtsModelSet set,
+        IProgress<(string fileName, int index, int total)>? progress = null,
+        CancellationToken ct = default)
+    {
+        string manifestUrl = ManifestUrlFor(set);
+        if (string.IsNullOrEmpty(manifestUrl)) return null;
+        var manifest = await FetchManifestAsync(manifestUrl, ct);
+        if (manifest is null) return null;
+
+        string dir = GetTtsModelSetDir(set);
+        var toCheck = new List<(string localRelativePath, string expectedHash)>();
+        foreach (var asset in DownloadableTtsAssets(set))
+        {
+            string path = Path.Combine(dir, asset.LocalRelativePath);
+            if (manifest.TryGetValue(asset.RemoteRelativePath, out var expected) && File.Exists(path))
+                toCheck.Add((asset.LocalRelativePath, expected));
+        }
+        return await HashCompareAsync(dir, toCheck, progress, ct);
+    }
+
+    /// <summary>
+    /// Replaces the given files of a set with the repo's current ones: each is moved aside
+    /// as <c>.outdated</c> (deleted once its replacement has landed) and then fetched through
+    /// the normal missing-files path. Mirrors <see cref="PrepareRedownload"/> + download.
+    /// </summary>
+    public async Task RedownloadTtsFilesAsync(
+        TtsModelSet set,
+        IEnumerable<string> localRelativePaths,
+        IProgress<DownloadProgress> progress,
+        CancellationToken ct = default)
+    {
+        string dir = GetTtsModelSetDir(set);
+        var moved = new List<(string current, string aside)>();
+        foreach (string rel in localRelativePaths)
+        {
+            string path = Path.Combine(dir, rel);
+            if (!File.Exists(path)) continue;
+            string aside = path + ".outdated";
+            if (File.Exists(aside)) File.Delete(aside);
+            File.Move(path, aside);
+            moved.Add((path, aside));
+        }
+        try
+        {
+            await DownloadMissingTtsModelsAsync(set, progress, ct);
+        }
+        catch
+        {
+            // Put back whatever did not get replaced, so an interrupted update leaves a
+            // working (if stale) set rather than a hole.
+            foreach (var (current, aside) in moved)
+                if (!File.Exists(current) && File.Exists(aside)) File.Move(aside, current);
+            throw;
+        }
+        foreach (var (_, aside) in moved)
+            if (File.Exists(aside)) File.Delete(aside);
+    }
+
+    /// <summary>Everything <see cref="DownloadMissingTtsModelsAsync"/> would fetch for the set.</summary>
+    private static IEnumerable<ModelAsset> DownloadableTtsAssets(TtsModelSet set)
+    {
+        IEnumerable<ModelAsset> assets = AssetsFor(set);
+        if (set is TtsModelSet.Chatterbox or TtsModelSet.OmniVoice)
+            assets = assets.Append(new ModelAsset("tokenizer.json", "tokenizer.json"));
+        return assets;
     }
 }

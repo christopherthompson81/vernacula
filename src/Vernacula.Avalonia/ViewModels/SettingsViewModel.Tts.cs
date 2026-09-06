@@ -131,5 +131,12 @@ internal partial class SettingsViewModel
     {
         foreach (var set in TtsModelSets)
             await set.CheckAsync();
+        // Manifest compares hash gigabytes; they trail the presence checks and never hold
+        // the window (the ASR update check is fire-and-forget for the same reason).
+        _ = Task.Run(async () =>
+        {
+            foreach (var set in TtsModelSets)
+                await Avalonia.Threading.Dispatcher.UIThread.InvokeAsync(set.CheckForUpdatesAsync);
+        });
     }
 }

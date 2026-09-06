@@ -1355,6 +1355,11 @@
                                                Foreground="{DynamicResource SubtextBrush}"
                                                FontSize="10"
                                                TextWrapping="Wrap" />
+                                    <TextBlock Text="{Binding UpdateStatusText}"
+                                               IsVisible="{Binding UpdateStatusText, Converter={x:Static StringConverters.IsNotNullOrEmpty}}"
+                                               Foreground="{DynamicResource SubtextBrush}"
+                                               FontSize="11"
+                                               TextWrapping="Wrap" />
 
                                     <!-- Download progress (only during active download) -->
                                     <StackPanel Spacing="4"
@@ -1383,6 +1388,11 @@
                                         <Button Content="Download"
                                                 Command="{Binding DownloadCommand}"
                                                 IsVisible="{Binding CanDownload}"
+                                                IsEnabled="{Binding !IsDownloading}"
+                                                Margin="0,0,8,0" />
+                                        <Button Content="Update"
+                                                Command="{Binding UpdateCommand}"
+                                                IsVisible="{Binding HasOutdatedFiles}"
                                                 IsEnabled="{Binding !IsDownloading}"
                                                 Margin="0,0,8,0" />
                                         <Button Content="Cancel"
