@@ -1,4 +1,4 @@
-<Project InitialTargets="RejectUnknownExecutionProvider;RejectDirectMlOffWindows;RejectCudaOffX64">
+<Project InitialTargets="RejectUnknownExecutionProvider;RejectDirectMlOffWindows;RejectCudaOffX64;RejectUnguardedDirectMlReference">
 
   <!--
     Repo-wide build guards. Kept here rather than copied into each csproj so a new project cannot
@@ -52,10 +52,18 @@
   </ItemDefinitionGroup>
 
   <!-- The other half of the scoping above: the propagation keys on the PARENT's EP, so a reference
-       that overrides a child TO DirectML would be unguarded. Rather than trust a comment, fail. -->
-  <Target Name="RejectUnguardedDirectMlReference" BeforeTargets="BeforeBuild"
+       that overrides a child TO DirectML would be unguarded. Rather than trust a comment, fail.
+
+       ⚠ CASE-INSENSITIVE, AND ACROSS ALL THREE WAYS TO SET IT. MSBuild compares conditions without
+       regard to case, so a reference written `EP=directml` would still pin the child to 1.24.4
+       while slipping past a case-sensitive check. EP can also be overridden through Properties or
+       AdditionalProperties just as well as SetConfiguration, the last of which is the mechanism
+       this very file uses above. -->
+  <Target Name="RejectUnguardedDirectMlReference"
           Condition="'$(EP)' != 'DirectML'">
-    <Error Condition="$([System.String]::Copy('%(ProjectReference.SetConfiguration)').Contains('DirectML'))"
+    <Error Condition="$([System.String]::Copy('%(ProjectReference.SetConfiguration)').ToUpperInvariant().Contains('DIRECTML'))
+                   OR $([System.String]::Copy('%(ProjectReference.Properties)').ToUpperInvariant().Contains('EP=DIRECTML'))
+                   OR $([System.String]::Copy('%(ProjectReference.AdditionalProperties)').ToUpperInvariant().Contains('EP=DIRECTML'))"
            Text="%(ProjectReference.Identity) overrides its execution provider to DirectML while this project builds as EP=$(EP). The referenced project would resolve a different ONNX Runtime version than the native shipped beside it. Widen the OnnxRuntimeVersion propagation in Directory.Build.props to cover this case before adding such a reference." />
   </Target>
 
