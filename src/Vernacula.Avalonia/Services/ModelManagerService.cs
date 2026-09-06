@@ -572,7 +572,13 @@ internal class ModelManagerService
 
             if (!HardwareInfo.CanProbeCudaExecutionProvider())
             {
-                const string unavailableMessage = "CUDA execution is unavailable on this machine.";
+                // The probe usually knows WHY -- a CUDA of the wrong major, a library present but
+                // off the loader path, no cuDNN at all. This is the path the settings window's
+                // Re-check drives, and a desktop user has no console to read the detail from, so it
+                // goes into the message and the log rather than only to stderr.
+                var note = HardwareInfo.CudaProbeNote;
+                var unavailableMessage = "CUDA execution is unavailable on this machine."
+                                       + (note is null ? "" : $" {note}");
                 File.WriteAllText(logPath, unavailableMessage);
                 return (false, unavailableMessage);
             }

@@ -75,7 +75,9 @@ public static class OrtSessionBuilder
                 catch (Exception ex)
                 {
                     throw new InvalidOperationException(
-                        "CUDA EP not available in the current ONNX Runtime build.", ex);
+                        HardwareInfo.CudaUnavailableMessage()
+                        + " Run on the CPU instead with the application's Cpu execution-provider "
+                        + "setting, or build with -p:EP=Cpu.", ex);
                 }
                 break;
 

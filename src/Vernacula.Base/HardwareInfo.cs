@@ -137,23 +137,108 @@ public static class HardwareInfo
     // ── CUDA Toolkit ──────────────────────────────────────────────────────────
 
     /// <summary>
-    /// True if the platform's CUDA runtime library can be found.
+    /// The CUDA major version the bundled ONNX Runtime links against.
+    ///
+    /// ⚠ THE MAJOR IS PART OF THE ANSWER, NOT A DETAIL. ONNX Runtime moved from CUDA 12 to CUDA 13
+    /// at 1.27, and the two are not interchangeable: the provider names its dependencies with the
+    /// major in the library name (libcudart.so.13, cudart64_13.dll), so a machine with only CUDA 12
+    /// cannot load it. Answering "CUDA is installed" for any major meant the app tried CUDA, failed
+    /// to load the provider, had the failure swallowed, and ran on the CPU with the GPU idle.
     /// </summary>
-    public static bool IsCudaToolkitInstalled()
-    {
-        if (OperatingSystem.IsWindows())
-            return _windowsCudaScan.Value.HasCudart;
+    public const int RequiredCudaMajor = 13;
 
-        if (OperatingSystem.IsLinux())
+    /// <summary>
+    /// True if the CUDA runtime this build needs can actually be loaded.
+    /// </summary>
+    public static bool IsCudaToolkitInstalled() => Probe.Runtime;
+
+    // ── The probe ─────────────────────────────────────────────────────────────
+
+    /// <summary>What one look at the machine found. Computed together and published as a unit, so a
+    /// reader never sees half of a refresh.</summary>
+    private sealed record CudaProbeResult(
+        bool Runtime,
+        bool Cudnn,
+        string? RuntimeNote,
+        string? CudnnNote,
+        IReadOnlyCollection<string> DllDirectories);
+
+    private static CudaProbeResult? _probe;
+
+    private static CudaProbeResult Probe
+    {
+        get
         {
-            foreach (var dir in GetLinuxCudaLibraryDirs())
-            {
-                if (HasFile(dir, "libcudart.so") || HasFile(dir, "libcudart.so.*"))
-                    return true;
-            }
+            var current = Volatile.Read(ref _probe);
+            if (current is not null) return current;
+            // A race recomputes rather than tearing: both writers publish an equivalent record.
+            var fresh = RunProbe();
+            Volatile.Write(ref _probe, fresh);
+            return fresh;
+        }
+    }
+
+    private static CudaProbeResult RunProbe() =>
+        OperatingSystem.IsWindows() ? ProbeWindows()
+        : OperatingSystem.IsLinux() ? ProbeLinux()
+        : new CudaProbeResult(false, false, null, null, Array.Empty<string>());
+
+    /// <summary>
+    /// Linux: ask the dynamic loader, not the filesystem.
+    ///
+    /// ⚠ THE PROVIDER dlopens BY SONAME, so the only question that matters is whether the loader
+    /// can find the library. A side-by-side CUDA 13 that is not in the ldconfig cache or on
+    /// LD_LIBRARY_PATH is a file we can see and the provider cannot open; answering "installed" for
+    /// it lands us on the CPU with no explanation. Where that is the case we say so, because the
+    /// fix is one ldconfig line rather than an install.
+    /// </summary>
+    private static CudaProbeResult ProbeLinux()
+    {
+        var (runtime, runtimeNote) = ProbeLinuxLibrary(
+            $"libcudart.so.{RequiredCudaMajor}",
+            $"libcudart.so.{RequiredCudaMajor}*",
+            $"CUDA {RequiredCudaMajor}",
+            $"No CUDA {RequiredCudaMajor} runtime was found. This build links CUDA {RequiredCudaMajor}; an older CUDA cannot load it.");
+
+        // ⚠ THE SONAME, NOT THE BARE libcudnn.so. That one is the development symlink and on a
+        // cuDNN 8 install it points at libcudnn.so.8, which the provider cannot use.
+        var (cudnn, cudnnNote) = ProbeLinuxLibrary(
+            "libcudnn.so.9",
+            "libcudnn.so.9*",
+            "cuDNN 9",
+            $"No cuDNN 9 was found. The CUDA execution provider needs cuDNN 9 built for CUDA {RequiredCudaMajor}.");
+
+        return new CudaProbeResult(runtime, cudnn, runtimeNote, cudnnNote, Array.Empty<string>());
+    }
+
+    private static (bool Found, string? Note) ProbeLinuxLibrary(
+        string soname, string filePattern, string label, string absentNote)
+    {
+        if (NativeLibrary.TryLoad(soname, out var handle))
+        {
+            NativeLibrary.Free(handle);
+            return (true, null);
         }
 
-        return false;
+        foreach (var dir in GetLinuxCudaLibraryDirs())
+        {
+            var candidates = SafeGetFiles(dir, filePattern).ToList();
+            if (candidates.Count == 0) continue;
+
+            foreach (var file in candidates)
+            {
+                if (!NativeLibrary.TryLoad(file, out var byPath)) continue;
+                NativeLibrary.Free(byPath);
+                return (false, $"{label} was found at {file} but is not on the loader path, so the "
+                             + "CUDA execution provider cannot load it. Add its directory to "
+                             + "/etc/ld.so.conf.d (then run ldconfig) or to LD_LIBRARY_PATH.");
+            }
+
+            return (false, $"{label} was found in {dir} but could not be loaded even by full path, "
+                         + "which usually means one of its own dependencies is missing.");
+        }
+
+        return (false, absentNote);
     }
 
     /// <summary>Returns the configured CUDA toolkit root for the current platform, or null if none is known.</summary>
@@ -181,24 +266,53 @@ public static class HardwareInfo
     // ── cuDNN ─────────────────────────────────────────────────────────────────
 
     /// <summary>
-    /// True if the platform's cuDNN runtime library can be found.
+    /// True if cuDNN can actually be loaded.
     /// </summary>
-    public static bool IsCudnnInstalled()
+    public static bool IsCudnnInstalled() => Probe.Cudnn;
+
+    /// <summary>Why the CUDA runtime could not be used, when the probe worked it out. Null when it
+    /// could. Readable by a UI, because a desktop app has no console to read stderr from.</summary>
+    public static string? CudaRuntimeNote => Probe.RuntimeNote;
+
+    /// <summary>Why cuDNN could not be used, when the probe worked it out. Kept apart from
+    /// <see cref="CudaRuntimeNote"/> so a cuDNN problem is never reported as the runtime's.</summary>
+    public static string? CudnnNote => Probe.CudnnNote;
+
+    /// <summary>Both notes, for a caller that just wants to say what is wrong.</summary>
+    public static string? CudaProbeNote
     {
-        if (OperatingSystem.IsWindows())
-            return _windowsCudaScan.Value.HasCudnn;
-
-        if (OperatingSystem.IsLinux())
+        get
         {
-            foreach (var dir in GetLinuxCudaLibraryDirs())
-            {
-                if (HasFile(dir, "libcudnn.so") || HasFile(dir, "libcudnn.so.*"))
-                    return true;
-            }
+            var notes = new[] { CudaRuntimeNote, CudnnNote }.Where(n => n is not null).ToArray();
+            return notes.Length == 0 ? null : string.Join(" ", notes);
         }
-
-        return false;
     }
+
+    /// <summary>
+    /// The explanation to give when the CUDA execution provider will not start, including whatever
+    /// the probe found. One place, because several call sites each threw their own version and only
+    /// one of them said anything useful.
+    /// </summary>
+    public static string CudaUnavailableMessage()
+    {
+        var note = CudaProbeNote;
+        return "Could not initialise the CUDA execution provider. This build links CUDA "
+            + $"{RequiredCudaMajor}, and an older CUDA runtime cannot load it, because the major "
+            + "version is part of the library name."
+            + (note is null ? " A missing driver, no visible GPU, or a CPU-only build of ONNX "
+                              + "Runtime will also report this." : $" {note}");
+    }
+
+    /// <summary>
+    /// Discard what the probe found, so the next question is asked afresh.
+    ///
+    /// ⚠ THE UI PROMISES THIS. The settings window's "Re-check" button, and the help text
+    /// describing it, say detection re-runs without restarting the application -- which a
+    /// process-lifetime cache silently broke. Installing cuDNN or running ldconfig while the app is
+    /// open is exactly when someone presses it. (An LD_LIBRARY_PATH change still needs a restart:
+    /// the loader read it at process start.)
+    /// </summary>
+    public static void InvalidateCudaProbes() => Volatile.Write(ref _probe, null);
 
     /// <summary>
     /// True when the current machine appears capable of initializing CUDA execution:
@@ -385,36 +499,34 @@ public static class HardwareInfo
     /// (roots to scan), these are the leaf directories to register with AddDllDirectory so an
     /// MSIX-packaged onnxruntime can locate the CUDA EP's dependencies at load time.
     /// </summary>
-    public static IReadOnlyCollection<string> GetWindowsCudaDllDirectories() =>
-        _windowsCudaScan.Value.DllDirectories;
+    public static IReadOnlyCollection<string> GetWindowsCudaDllDirectories() => Probe.DllDirectories;
+
 
     /// <summary>
-    /// Result of a single recursive scan of the Windows CUDA/cuDNN search roots:
-    /// whether the Toolkit runtime (cudart) and cuDNN are present, and the leaf
-    /// directories holding the runtime DLLs the CUDA execution provider needs.
+    /// Windows: which directories hold a CUDA of the major this build needs, and whether cuDNN is
+    /// among them.
+    ///
+    /// ⚠ TWO cuDNN LAYOUTS ARE BOTH LEGITIMATE, AND A RULE THAT SUITS ONE BREAKS THE OTHER:
+    ///
+    ///   • NVIDIA's standalone tree, C:\Program Files\NVIDIA\CUDNN\v9.x\bin\13.0\, holds
+    ///     cudnn64_9.dll and nothing else. Requiring a cudart beside it drops this one.
+    ///   • The documented copy-into-the-toolkit install puts cudnn64_9.dll in &lt;toolkit&gt;\bin, while
+    ///     CUDA 13 puts its runtime DLLs in &lt;toolkit&gt;\bin\x64. Requiring the SAME directory as
+    ///     cudart drops this one.
+    ///
+    /// So a cuDNN directory qualifies when it names the CUDA version itself, or when it belongs to
+    /// a toolkit whose runtime is the major we need. Nothing else does -- a cuDNN left behind in an
+    /// older toolkit is not a cuDNN we can use, and its directory must not join the search path
+    /// either, since the provider would load the wrong major from it.
     /// </summary>
-    private sealed record WindowsCudaScan(
-        bool HasCudart,
-        bool HasCudnn,
-        IReadOnlyCollection<string> DllDirectories);
-
-    // Toolkit / cuDNN presence is fixed for the lifetime of the process (installs don't
-    // appear or vanish mid-run), and CanProbeCudaExecutionProvider fans this query out
-    // across every ONNX model-init site — so the recursive scan is done once and cached,
-    // mirroring _bf16Cache below. A newly-installed CUDA is picked up on next launch.
-    private static readonly Lazy<WindowsCudaScan> _windowsCudaScan = new(ScanWindowsCuda);
-
-    private static WindowsCudaScan ScanWindowsCuda()
+    private static CudaProbeResult ProbeWindows()
     {
-        var dllDirs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         if (!OperatingSystem.IsWindows())
-            return new WindowsCudaScan(false, false, dllDirs);
+            return new CudaProbeResult(false, false, null, null, Array.Empty<string>());
 
-        // Bounded recursion: the DLLs sit at most ~2 levels below a search root
-        // (Toolkit bin\x64, cuDNN bin\<cuda>\). Capping depth + ignoring inaccessible
-        // and reparse-point dirs keeps an over-broad PATH root (e.g. one whose name merely
-        // contains "cuda") from triggering an unbounded walk or aborting on a single
-        // permission error mid-enumeration.
+        // Bounded recursion: the DLLs sit at most ~2 levels below a search root (Toolkit bin\x64,
+        // cuDNN bin\<cuda>). Capping depth and skipping inaccessible or reparse-point directories
+        // keeps an over-broad PATH root from triggering an unbounded walk.
         var options = new EnumerationOptions
         {
             RecurseSubdirectories = true,
@@ -425,7 +537,11 @@ public static class HardwareInfo
                                   | FileAttributes.System,
         };
 
-        bool hasCudart = false, hasCudnn = false;
+        var cudartDirs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var otherDeps  = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var cudnnDirs  = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var anyCudart  = false;
+        var anyCudnn   = false;
 
         foreach (var root in GetWindowsCudaSearchRoots())
         {
@@ -434,27 +550,85 @@ public static class HardwareInfo
                 foreach (var file in Directory.EnumerateFiles(root, "*.dll", options))
                 {
                     var name = Path.GetFileName(file);
-                    bool isCudart = name.StartsWith("cudart64_", StringComparison.OrdinalIgnoreCase);
-                    bool isCudnn  = name.StartsWith("cudnn",     StringComparison.OrdinalIgnoreCase);
-                    bool isCudaDep = isCudart || isCudnn
-                        || name.StartsWith("cublas", StringComparison.OrdinalIgnoreCase)
-                        || name.StartsWith("cufft",  StringComparison.OrdinalIgnoreCase)
-                        || name.StartsWith("nvrtc",  StringComparison.OrdinalIgnoreCase);
+                    var dir = Path.GetDirectoryName(file);
+                    if (string.IsNullOrEmpty(dir)) continue;
 
-                    if (isCudart) hasCudart = true;
-                    if (isCudnn)  hasCudnn  = true;
-                    if (isCudaDep)
+                    if (name.StartsWith("cudart64_", StringComparison.OrdinalIgnoreCase))
                     {
-                        var dir = Path.GetDirectoryName(file);
-                        if (!string.IsNullOrEmpty(dir))
-                            dllDirs.Add(dir);
+                        anyCudart = true;
+                        if (name.StartsWith($"cudart64_{RequiredCudaMajor}", StringComparison.OrdinalIgnoreCase))
+                            cudartDirs.Add(dir);
+                    }
+                    else if (name.StartsWith("cudnn", StringComparison.OrdinalIgnoreCase))
+                    {
+                        anyCudnn = true;
+                        cudnnDirs.Add(dir);
+                    }
+                    // cuFFT and cuRAND version independently of the CUDA major (CUDA 12 ships cuFFT
+                    // 11, CUDA 13 ships 12), so they cannot identify a directory; these can.
+                    else if (name.StartsWith($"cublas64_{RequiredCudaMajor}", StringComparison.OrdinalIgnoreCase)
+                          || name.StartsWith($"cublasLt64_{RequiredCudaMajor}", StringComparison.OrdinalIgnoreCase)
+                          || name.StartsWith($"nvrtc64_{RequiredCudaMajor}", StringComparison.OrdinalIgnoreCase))
+                    {
+                        otherDeps.Add(dir);
                     }
                 }
             }
             catch { }
         }
 
-        return new WindowsCudaScan(hasCudart, hasCudnn, dllDirs);
+        var toolkitRoots = new HashSet<string>(cudartDirs.Select(ToolkitRootOf), StringComparer.OrdinalIgnoreCase);
+        var usableCudnn = cudnnDirs.Where(d => NamesRequiredMajor(d) || toolkitRoots.Contains(ToolkitRootOf(d)))
+                                   .ToList();
+
+        var dllDirs = new HashSet<string>(cudartDirs, StringComparer.OrdinalIgnoreCase);
+        foreach (var d in otherDeps) dllDirs.Add(d);
+        foreach (var d in usableCudnn) dllDirs.Add(d);
+
+        var runtime = cudartDirs.Count > 0;
+        var cudnn = usableCudnn.Count > 0;
+
+        var runtimeNote = runtime ? null
+            : anyCudart
+                ? $"A CUDA runtime was found, but not CUDA {RequiredCudaMajor}, which this build links. "
+                  + $"Install the CUDA {RequiredCudaMajor} runtime."
+                : $"No CUDA {RequiredCudaMajor} runtime was found.";
+        var cudnnNote = cudnn ? null
+            : anyCudnn
+                ? $"cuDNN was found, but not one belonging to a CUDA {RequiredCudaMajor} install, so "
+                  + "the CUDA execution provider cannot load it."
+                : "No cuDNN was found. The CUDA execution provider needs cuDNN 9 built for CUDA "
+                  + $"{RequiredCudaMajor}.";
+
+        return new CudaProbeResult(runtime, cudnn, runtimeNote, cudnnNote, dllDirs);
+    }
+
+    /// <summary>True when a path segment names the CUDA version we need, as the standalone cuDNN
+    /// tree does (…\CUDNN\v9.x\bin\13.0\).</summary>
+    internal static bool NamesRequiredMajor(string dir) =>
+        dir.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+           .Any(seg => seg == RequiredCudaMajor.ToString()
+                    || seg.StartsWith($"{RequiredCudaMajor}.", StringComparison.Ordinal));
+
+    /// <summary>
+    /// The install a directory belongs to: the parent of its `bin`, so &lt;toolkit&gt;\bin and
+    /// &lt;toolkit&gt;\bin\x64 resolve to the same root and cuDNN copied into the toolkit is
+    /// recognised as belonging to the CUDA there.
+    /// </summary>
+    internal static string ToolkitRootOf(string dir)
+    {
+        for (var d = dir; !string.IsNullOrEmpty(d); d = Path.GetDirectoryName(d) ?? "")
+        {
+            if (string.Equals(Path.GetFileName(d), "bin", StringComparison.OrdinalIgnoreCase))
+                return Path.GetDirectoryName(d) ?? d;
+        }
+        return dir;
+    }
+
+    private static IEnumerable<string> SafeGetFiles(string dir, string pattern)
+    {
+        try { return Directory.Exists(dir) ? Directory.GetFiles(dir, pattern) : Array.Empty<string>(); }
+        catch { return Array.Empty<string>(); }
     }
 
     private static IEnumerable<string> SafeGetDirectories(string parent, string pattern)
@@ -468,15 +642,4 @@ public static class HardwareInfo
         catch { return Array.Empty<string>(); }
     }
 
-    private static bool HasFile(string dir, string pattern)
-    {
-        try
-        {
-            return Directory.Exists(dir) && Directory.GetFiles(dir, pattern).Length > 0;
-        }
-        catch
-        {
-            return false;
-        }
-    }
 }

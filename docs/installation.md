@@ -13,10 +13,9 @@ Vernacula runs on Linux, macOS, and Windows. The desktop app and CLI share the s
 > releases of this project used ONNX Runtime 1.24, which linked CUDA 12. If you are upgrading and
 > still have only CUDA 12, install the CUDA 13 runtime — or build with `-p:EP=Cpu`.
 >
-> ⚠ **Startup detection does not yet know about the major version**
-> ([#119](https://github.com/christopherthompson81/vernacula/issues/119)). A CUDA 12 machine still
-> reports CUDA as present and then runs on the CPU without saying why, so if GPU acceleration seems
-> to do nothing after upgrading, check your CUDA version first.
+> Startup detection knows about the major version: a CUDA 12 machine reports CUDA as unavailable
+> and says why, in the settings window and in `cuda_debug.txt`, rather than appearing to have GPU
+> support that never engages.
 
 Install FFmpeg on common Linux distros:
 
