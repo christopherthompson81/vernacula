@@ -118,8 +118,69 @@ public sealed class MarkdownTextExtractor
         return extractor.Run(markdown);
     }
 
+    // The markdown being extracted, for bounds-checking recorded source spans.
+    private string _source = string.Empty;
+
+    // Document-coordinate start/length for an inline's source span, clamped to
+    // the document. The span may legitimately be longer than the emitted text
+    // (a backslash escape emits one character for two source ones), which the
+    // TextRange contract allows: output is a subsequence of the source slice.
+    private int SourceStartOf(SourceSpan span, int outLen, out int srcLen)
+    {
+        int start = span.Start;
+        srcLen = span.End - span.Start + 1;
+        if (start < 0 || start > _source.Length)
+        {
+            // Defensive: an inline with no usable position. Record an empty
+            // span at a valid offset rather than one a consumer would throw
+            // on when it slices the source.
+            srcLen = 0;
+            return Math.Clamp(start, 0, _source.Length);
+        }
+        if (srcLen < outLen) srcLen = outLen;
+        if (srcLen > _source.Length - start) srcLen = _source.Length - start;
+        return start;
+    }
+
+    // Drop or shorten range entries that extend past the final output text.
+    // Ranges are appended in output order, so only the tail can be affected.
+    private void TrimRangesToOutput(int outputLength)
+    {
+        for (int i = _ranges.Count - 1; i >= 0; i--)
+        {
+            var r = _ranges[i];
+            if (r.OutputStart + r.OutputLength <= outputLength) break;
+            if (r.OutputStart >= outputLength)
+            {
+                _ranges.RemoveAt(i);
+                continue;
+            }
+            _ranges[i] = r with { OutputLength = outputLength - r.OutputStart };
+        }
+    }
+
+    // Same clamp for the block index. Walks the whole list rather than
+    // stopping at the first entry that fits: block spans are built as their
+    // blocks complete, and that is a weaker ordering guarantee than the
+    // ranges have.
+    private void TrimBlocksToOutput(int outputLength)
+    {
+        for (int i = _blocks.Count - 1; i >= 0; i--)
+        {
+            var b = _blocks[i];
+            if (b.OutputStart + b.OutputLength <= outputLength) continue;
+            if (b.OutputStart >= outputLength)
+            {
+                _blocks.RemoveAt(i);
+                continue;
+            }
+            _blocks[i] = b with { OutputLength = outputLength - b.OutputStart };
+        }
+    }
+
     private MarkdownExtractionResult Run(string markdown)
     {
+        _source = markdown;
         var doc = MarkdownParser.Parse(markdown, Pipeline);
         bool first = true;
         foreach (var block in doc)
@@ -129,6 +190,16 @@ public sealed class MarkdownTextExtractor
         }
         // Trim trailing whitespace the block-separator logic may have appended.
         while (_sb.Length > 0 && char.IsWhiteSpace(_sb[^1])) _sb.Length--;
+        // The trim can cut into the last range, and dropped trailing markup
+        // (a README ending in a badge image, a stray inline tag) leaves one
+        // whose output span already ran past the text: the literal "hello "
+        // in "hello ![img](/x.png)" records 6 characters, but Text is
+        // "hello". Clamp so every entry is sliceable against Text — a
+        // consumer walking the index has no other way to know. BlockSpan is
+        // documented in the same output-text terms and overruns on the same
+        // inputs, so it gets the same treatment.
+        TrimRangesToOutput(_sb.Length);
+        TrimBlocksToOutput(_sb.Length);
         return new MarkdownExtractionResult(_sb.ToString(), _ranges, _blocks);
     }
 
@@ -240,13 +311,28 @@ public sealed class MarkdownTextExtractor
             case LiteralInline lit:
                 // Literal text: copy the slice verbatim AND record a range
                 // entry pointing back to the source span.
+                //
+                // The source position comes from lit.Span, NOT from the
+                // slice. LiteralInline.Content is a slice over whatever
+                // buffer Markdig assembled the inline from, and for a
+                // continuation line of a container — the second line of a
+                // block quote, a lazily continued list item — that buffer is
+                // the container's re-joined content, not the original
+                // document. slice.Start is an offset into that buffer and
+                // means nothing here; lit.Span is in document coordinates for
+                // every shape observed (quotes, lazy list continuations,
+                // nested quotes, escapes, entities, CRLF, multi-line
+                // emphasis, alerts, tables, footnotes, BOM, CR-only). Not
+                // unconditionally, though — a synthesized inline can carry a
+                // degenerate span, which is why SourceStartOf bounds-checks
+                // rather than trusting it.
                 var slice = lit.Content;
-                if (slice.Length <= 0) return;
-                int srcStart = slice.Start;
-                int srcLen = slice.End - slice.Start + 1;
+                int outLen = slice.End - slice.Start + 1;
+                if (outLen <= 0) return;
                 int outStart = _sb.Length;
                 _sb.Append(slice.AsSpan());
-                _ranges.Add(new TextRange(outStart, srcLen, srcStart, srcLen, _style));
+                int srcStart = SourceStartOf(lit.Span, outLen, out int srcLen);
+                _ranges.Add(new TextRange(outStart, outLen, srcStart, srcLen, _style));
                 break;
 
             case CodeInline code:
@@ -259,8 +345,9 @@ public sealed class MarkdownTextExtractor
                 // points at the full delimited extent, so record the
                 // full delim range — close-enough for forced alignment
                 // which works at word granularity.
+                int codeSrcStart = SourceStartOf(code.Span, code.Content.Length, out int codeSrcLen);
                 _ranges.Add(new TextRange(codeOutStart, code.Content.Length,
-                    code.Span.Start, code.Span.End - code.Span.Start + 1, _style | InlineStyle.Code));
+                    codeSrcStart, codeSrcLen, _style | InlineStyle.Code));
                 break;
 
             case LinkInline link when !link.IsImage:

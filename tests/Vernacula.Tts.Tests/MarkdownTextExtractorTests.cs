@@ -1,3 +1,5 @@
+using System;
+using System.Linq;
 using Vernacula.Tts.Base.Markdown;
 using Xunit;
 
@@ -238,6 +240,132 @@ public class MarkdownTextExtractorTests
     }
 
     // ── Source-range index ────────────────────────────────────────────
+
+    // Every recorded range must be in bounds and its source slice must
+    // actually contain the output it claims to represent. The older tests
+    // spot-check one construct each; this walks a battery of documents,
+    // including the container shapes where the index used to point at
+    // unrelated text (see the LiteralInline case in the extractor).
+    //
+    // "Contains" rather than "equals" because the contract allows a source
+    // slice wider than the output: a backslash escape emits one character
+    // for two source ones, and inline code's span covers its backticks.
+    [Theory]
+    [InlineData("Hello world.")]
+    [InlineData("> plain quote\n> second line")]
+    [InlineData("- item one\ncontinued lazily")]
+    [InlineData("This [is not][nope] a link.")]
+    [InlineData("> level one\n> > level two\n> back to one")]
+    [InlineData("- a\n  - nested\n    continued\n- b")]
+    [InlineData("> quote with `code`\n> and **bold** text")]
+    [InlineData("escape \\*not italic\\* done")]
+    [InlineData("*emph across\nlines* end")]
+    [InlineData("> [!NOTE]\n> Alert body here.")]
+    [InlineData("1. step one\n   > [!WARNING]\n   > careful\n2. step two")]
+    [InlineData("para one\n\n> quoted\n\n- listed\n\n# heading")]
+    [InlineData("CRLF quote:\r\n> line one\r\n> line two")]
+    // Trailing markup that emits nothing: the last literal's output span used
+    // to run past Text once the trailing whitespace was trimmed.
+    [InlineData("hello ![img](/x.png)")]
+    [InlineData("text <span>")]
+    [InlineData("> quoted ![badge](/b.svg)")]
+    public void Every_range_maps_to_source_that_contains_its_output(string src)
+    {
+        var r = MarkdownTextExtractor.Extract(src);
+        Assert.NotEmpty(r.Ranges);
+        foreach (var range in r.Ranges)
+        {
+            // Output bounds first: a range that overruns Text would make the
+            // Substring below throw instead of failing readably.
+            Assert.InRange(range.OutputStart, 0, r.Text.Length);
+            Assert.InRange(range.OutputStart + range.OutputLength, 0, r.Text.Length);
+            Assert.InRange(range.SourceStart, 0, src.Length);
+            Assert.InRange(range.SourceStart + range.SourceLength, 0, src.Length);
+            string outSlice = r.Text.Substring(range.OutputStart, range.OutputLength);
+            string srcSlice = src.Substring(range.SourceStart, range.SourceLength);
+            Assert.Contains(outSlice, srcSlice, StringComparison.Ordinal);
+        }
+
+        // BlockSpan is documented in the same output-text terms and overruns
+        // on the same inputs, so it carries the same invariant.
+        foreach (var block in r.Blocks)
+        {
+            Assert.InRange(block.OutputStart, 0, r.Text.Length);
+            Assert.InRange(block.OutputStart + block.OutputLength, 0, r.Text.Length);
+        }
+    }
+
+    // The three shapes from the bug report, pinned at exact offsets. Before
+    // the fix these read LiteralInline.Content.Start, an offset into the
+    // buffer Markdig re-assembles for a container's continuation lines rather
+    // than into the document, so each pointed at unrelated text.
+
+    [Fact]
+    public void Quote_continuation_line_maps_to_its_real_document_offset()
+    {
+        const string src = "> plain quote\n> second line";
+        var r = MarkdownTextExtractor.Extract(src);
+        var second = r.Ranges[^1];
+        Assert.Equal("second line", r.Text.Substring(second.OutputStart, second.OutputLength));
+        Assert.Equal(16, second.SourceStart);   // was 12, an offset into "plain quote\nsecond line"
+        Assert.Equal("second line", src.Substring(second.SourceStart, second.SourceLength));
+    }
+
+    [Fact]
+    public void Lazily_continued_list_item_maps_to_its_real_document_offset()
+    {
+        const string src = "- item one\ncontinued lazily";
+        var r = MarkdownTextExtractor.Extract(src);
+        Assert.Equal(2, r.Ranges[0].SourceStart);    // was 0, pointing at "- item o"
+        Assert.Equal("item one", src.Substring(r.Ranges[0].SourceStart, r.Ranges[0].SourceLength));
+        Assert.Equal("continued lazily",
+                     src.Substring(r.Ranges[^1].SourceStart, r.Ranges[^1].SourceLength));
+    }
+
+    [Fact]
+    public void Unresolved_reference_link_bracket_maps_to_its_real_document_offset()
+    {
+        const string src = "This [is not][nope] a link.";
+        var r = MarkdownTextExtractor.Extract(src);
+        var bracket = r.Ranges.Single(t => r.Text.Substring(t.OutputStart, t.OutputLength) == "[");
+        Assert.Equal(13, bracket.SourceStart);   // was 0, pointing at "T"
+        Assert.Equal("[", src.Substring(bracket.SourceStart, bracket.SourceLength));
+    }
+
+    // Trailing markup that contributes no text (an image, an inline tag) left
+    // the preceding literal's output span running past Text, because the
+    // trailing-whitespace trim shortens the text without shortening the range.
+    // A consumer walking the index to slice Text got an out-of-range throw.
+    [Fact]
+    public void Range_is_clamped_when_trailing_markup_is_dropped()
+    {
+        const string src = "hello ![img](/x.png)";
+        var r = MarkdownTextExtractor.Extract(src);
+        Assert.Equal("hello", r.Text);
+        var last = r.Ranges[^1];
+        Assert.Equal(r.Text.Length, last.OutputStart + last.OutputLength);
+        Assert.Equal("hello", r.Text.Substring(last.OutputStart, last.OutputLength));
+
+        var block = Assert.Single(r.Blocks);
+        Assert.Equal("hello", r.Text.Substring(block.OutputStart, block.OutputLength));
+    }
+
+    // A backslash escape emits one character for two source ones, so the
+    // source span is legitimately wider than the output. Pinned because the
+    // fix changed SourceLength from "however long the output was" to the
+    // span's real extent, and the documented contract is subsequence, not
+    // equality.
+    [Fact]
+    public void Escaped_character_keeps_the_wider_source_span()
+    {
+        const string src = "escape \\*not italic\\* done";
+        var r = MarkdownTextExtractor.Extract(src);
+        var escaped = r.Ranges.Single(t =>
+            r.Text.Substring(t.OutputStart, t.OutputLength).StartsWith("*not", StringComparison.Ordinal));
+        Assert.Equal("*not italic", r.Text.Substring(escaped.OutputStart, escaped.OutputLength));
+        Assert.Equal("\\*not italic", src.Substring(escaped.SourceStart, escaped.SourceLength));
+        Assert.True(escaped.SourceLength > escaped.OutputLength);
+    }
 
     [Fact]
     public void Plain_paragraph_range_points_back_to_source()
