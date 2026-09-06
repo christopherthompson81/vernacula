@@ -658,6 +658,12 @@ internal partial class SettingsViewModel : ObservableObject
     private static string? FirstLine(string? text) =>
         text is null ? null : text.Split('\n', 2)[0].Trim();
 
+    /// <summary>
+    /// Called when a hardware re-check changes which model bundle is active, so other views can
+    /// refresh what they latched. Set by MainViewModel, like the rest of the cross-view wiring.
+    /// </summary>
+    internal Func<Task>? ModelSelectionChanged { get; set; }
+
     /// <summary>The Re-check button: discards the cached probe and looks again.</summary>
     [RelayCommand]
     internal Task RecheckHardwareAsync() => RefreshHardwareAsync(force: true);
@@ -672,34 +678,45 @@ internal partial class SettingsViewModel : ObservableObject
         {
             bool cudaOk = false;
             string? cudaMessage = null;
-            bool bf16Before = false, bf16After = false;
+            bool bf16Before = false, bf16After = false, bf16Known = false;
+
+            // Collected off the UI thread, applied on it: these are bound properties, and raising
+            // PropertyChanged from a thread-pool thread updates Avalonia bindings off the UI thread.
+            long totalMb = 0;
+            bool cudaToolkit = false, cudnnFound = false;
 
             await Task.Run(() =>
             {
-                // ⚠ ALL OF IT OFF THE UI THREAD, AND IN THIS ORDER. After an invalidation the caches
-                // are cold by construction, so every read below is a full probe -- on Windows a
-                // recursive walk of the CUDA, cuDNN and PATH roots, plus an NVML cycle. Reading before
-                // invalidating would also report the answers this refresh was meant to replace.
-                bf16Before = HardwareInfo.SupportsBf16Acceleration();
+                // ⚠ THE HARDWARE WORK BELONGS HERE, AND IN THIS ORDER. After an invalidation the
+                // caches are cold by construction, so every read is a full probe -- on Windows a
+                // recursive walk of the CUDA, cuDNN and PATH roots, plus an NVML cycle. Reading
+                // before invalidating would report the answers this refresh was meant to replace.
+                //
+                // bf16 is sampled only if something has already asked for it: forcing it here on a
+                // cold cache would run the whole scan and throw the result away one line later.
+                bf16Known = HardwareInfo.IsBf16AnswerKnown;
+                bf16Before = bf16Known && HardwareInfo.SupportsBf16Acceleration();
                 if (force) HardwareInfo.InvalidateCudaProbes();
 
-                var (totalMb, _)   = HardwareInfo.GetGpuMemoryMb();
-                GpuDetected        = totalMb > 0;
-                GpuVramText        = totalMb > 0
-                    ? Loc.Instance.T("settings_hw_vram", new() { ["vram"] = $"{totalMb / 1024.0:F1}" })
-                    : "";
-
-                CudaToolkitInstalled = HardwareInfo.IsCudaToolkitInstalled();
-                CudnnInstalled       = HardwareInfo.IsCudnnInstalled();
+                (totalMb, _) = HardwareInfo.GetGpuMemoryMb();
+                cudaToolkit = HardwareInfo.IsCudaToolkitInstalled();
+                cudnnFound = HardwareInfo.IsCudnnInstalled();
 
                 var cudaCheck = _modelMgr.CheckCuda();
                 cudaOk = cudaCheck.Available;
                 // Only when the check actually ran: otherwise the message is about something else --
-                // on first launch, a model file that has not been downloaded yet -- and showing it here
-                // would blame CUDA for it.
+                // on first launch, a model file that has not been downloaded yet -- and showing it
+                // here would blame CUDA for it.
                 cudaMessage = cudaCheck.Ran ? cudaCheck.Message : null;
-                bf16After = HardwareInfo.SupportsBf16Acceleration();
+                bf16After = bf16Known && HardwareInfo.SupportsBf16Acceleration();
             });
+
+            GpuDetected          = totalMb > 0;
+            GpuVramText          = totalMb > 0
+                ? Loc.Instance.T("settings_hw_vram", new() { ["vram"] = $"{totalMb / 1024.0:F1}" })
+                : "";
+            CudaToolkitInstalled = cudaToolkit;
+            CudnnInstalled       = cudnnFound;
             CudaEpWorking = cudaOk;
             // The probe's note when it has one; otherwise whatever CheckCuda said. The provider can
             // fail AFTER the probe passes -- a swallowed load failure is exactly the case worth
@@ -718,11 +735,15 @@ internal partial class SettingsViewModel : ObservableObject
             // decides which Granite bundle is active, so the model verdicts on this window were
             // computed against an answer that may no longer hold. Re-checking hardware without
             // re-checking models leaves the two disagreeing.
-            if (force && bf16Before != bf16After)
+            if (force && bf16Known && bf16Before != bf16After)
             {
                 await CheckModelsAsync();
                 await CheckDiariZenModelsAsync();
                 await CheckVoxLinguaModelsAsync();
+                // And the views that latched the same answer: the home screen's model status is
+                // computed from the active bundle, and would otherwise disagree with this window
+                // until the app restarted.
+                if (ModelSelectionChanged is not null) await ModelSelectionChanged();
             }
 
             if (!CudaEpWorking && SelectedAsrBackend == AsrBackend.VibeVoice)

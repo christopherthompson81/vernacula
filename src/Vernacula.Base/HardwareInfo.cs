@@ -236,13 +236,29 @@ public static class HardwareInfo
         // soname for the rest of the process, so the NEXT probe would find it by name and report
         // "installed" -- losing the ldconfig advice that the first probe correctly gave. The answer
         // has to mean the same thing every time the user presses Re-check.
-        var candidates = GetLinuxCudaLibraryDirs().SelectMany(d => SafeGetFiles(d, filePattern)).ToList();
-        if (candidates.Count > 0)
-            return (false, $"{label} was found at {candidates[0]} but the loader could not open it "
-                         + "by name, so the CUDA execution provider cannot either. Add its "
-                         + "directory to /etc/ld.so.conf.d (then run ldconfig) or to "
-                         + "LD_LIBRARY_PATH; if it is already there, one of its own dependencies "
-                         + "is missing.");
+        var onLdPath = new HashSet<string>(
+            (Environment.GetEnvironmentVariable("LD_LIBRARY_PATH") ?? "")
+                .Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries)
+                .Select(e => e.Trim()),
+            StringComparer.Ordinal);
+
+        foreach (var dir in GetLinuxCudaLibraryDirs())
+        {
+            var hit = SafeGetFiles(dir, filePattern).FirstOrDefault();
+            if (hit is null) continue;
+
+            // ⚠ DO NOT TELL SOMEONE TO ADD A DIRECTORY THAT IS ALREADY THERE. When the file turned
+            // up in an LD_LIBRARY_PATH entry, the loader has already looked and failed, so the
+            // cause is the library itself -- a missing dependency of its own, or the wrong
+            // architecture -- and the ldconfig advice would send them in a circle.
+            return (false, onLdPath.Contains(dir)
+                ? $"{label} was found at {hit}, in a directory that is already on LD_LIBRARY_PATH, "
+                  + "and still could not be loaded. One of its own dependencies is probably "
+                  + "missing, or it was built for a different architecture."
+                : $"{label} was found at {hit} but the loader could not open it by name, so the "
+                  + "CUDA execution provider cannot either. Add its directory to "
+                  + "/etc/ld.so.conf.d (then run ldconfig) or to LD_LIBRARY_PATH.");
+        }
 
         return (false, absentNote);
     }
@@ -404,6 +420,11 @@ public static class HardwareInfo
     /// because a CUDA installed mid-session changes this answer as well.
     /// </summary>
     public static bool SupportsBf16Acceleration() => Volatile.Read(ref _bf16Cache).Value;
+
+    /// <summary>Whether anything has asked for <see cref="SupportsBf16Acceleration"/> yet. Lets a
+    /// caller find out whether the answer CHANGED without forcing the probe that computes it --
+    /// which, on a cold cache, would run the whole scan only to throw it away.</summary>
+    public static bool IsBf16AnswerKnown => Volatile.Read(ref _bf16Cache).IsValueCreated;
 
     private static Lazy<bool> _bf16Cache = NewBf16Cache();
 
@@ -641,9 +662,19 @@ public static class HardwareInfo
                         dllDirs.Add(d);
             }
 
-            bool BesideOurCuda(string dir) =>
-                cudartDirs.Any(c => c.StartsWith(dir, StringComparison.OrdinalIgnoreCase)
-                                 || dir.StartsWith(c, StringComparison.OrdinalIgnoreCase));
+            // ⚠ ON PATH BOUNDARIES, NOT CHARACTERS. A bare StartsWith makes C:\cuda12\bin look
+            // like it sits under C:\cuda, so a CUDA 12 cuDNN would be ordered ahead of the one
+            // actually paired with our runtime -- the opposite of what this ordering is for.
+            static string Normalise(string dir) =>
+                Path.TrimEndingDirectorySeparator(Path.GetFullPath(dir)) + Path.DirectorySeparatorChar;
+
+            bool BesideOurCuda(string dir)
+            {
+                var d = Normalise(dir);
+                return cudartDirs.Select(Normalise)
+                                 .Any(c => c.StartsWith(d, StringComparison.OrdinalIgnoreCase)
+                                        || d.StartsWith(c, StringComparison.OrdinalIgnoreCase));
+            }
 
             Add(cudartDirs);
             Add(depDirs);

@@ -68,6 +68,10 @@ internal partial class MainViewModel : ObservableObject
         Progress = new ProgressViewModel(transcription, controlDb, settings, queue);
         Results  = new ResultsViewModel(export, settings);
 
+        // A hardware re-check can change which model bundle is active; the home screen's status
+        // text is computed from it, so it has to be recomputed too.
+        Settings.ModelSelectionChanged = () => Home.CheckModelsAsync();
+
         // ── Navigation wiring ─────────────────────────────────────────────────
 
         // Home → Config (new transcription dialog)
