@@ -37,11 +37,12 @@
     <PackageReference Include="NAudio" Version="2.2.1" />
   </ItemGroup>
 
-  <!-- Markdig: markdown AST for MarkdownTextExtractor. Matches the version
-       Vernacula.Avalonia is already on so two copies don't end up in a
-       composite app (cf. Markdown.Avalonia → Markdig). -->
+  <!-- Markdig: markdown AST for MarkdownTextExtractor. Kept in step with the
+       pin in Vernacula.Avalonia (MarkdownFlowBuilder) so a composite app
+       resolves one copy. Markdown.Avalonia is not involved — it parses
+       markdown with its own engine and pulls no Markdig of its own. -->
   <ItemGroup>
-    <PackageReference Include="Markdig" Version="0.34.0" />
+    <PackageReference Include="Markdig" Version="1.3.2" />
   </ItemGroup>
 
   <!-- ONNX protobuf: read the base transformer graph (initializer external-data
