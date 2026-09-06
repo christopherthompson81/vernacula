@@ -58,10 +58,18 @@
        regard to case, so a reference written `EP=directml` would still pin the child to 1.24.4
        while slipping past a case-sensitive check. EP can also be overridden through Properties or
        AdditionalProperties just as well as SetConfiguration, the last of which is the mechanism
-       this very file uses above. -->
+       this very file uses above. All three arms match EP=DIRECTML rather than the bare word, so a
+       genuine configuration name that happens to contain it (DirectMLDebug) is not rejected.
+
+       ⚠ ONE HOLE REMAINS, DELIBERATELY UNGUARDED. Under a DirectML parent this target is off, and
+       the propagation it relies on rides on AdditionalProperties, which UndefineProperties or
+       GlobalPropertiesToRemove on a reference can strip. Such a reference would silently unpin the
+       child back to 1.29.0 and surface as an API-version throw at the first session. None exists;
+       guarding it needs a second target for the DirectML case, which is not worth carrying until
+       something wants it. -->
   <Target Name="RejectUnguardedDirectMlReference"
           Condition="'$(EP)' != 'DirectML'">
-    <Error Condition="$([System.String]::Copy('%(ProjectReference.SetConfiguration)').ToUpperInvariant().Contains('DIRECTML'))
+    <Error Condition="$([System.String]::Copy('%(ProjectReference.SetConfiguration)').ToUpperInvariant().Contains('EP=DIRECTML'))
                    OR $([System.String]::Copy('%(ProjectReference.Properties)').ToUpperInvariant().Contains('EP=DIRECTML'))
                    OR $([System.String]::Copy('%(ProjectReference.AdditionalProperties)').ToUpperInvariant().Contains('EP=DIRECTML'))"
            Text="%(ProjectReference.Identity) overrides its execution provider to DirectML while this project builds as EP=$(EP). The referenced project would resolve a different ONNX Runtime version than the native shipped beside it. Widen the OnnxRuntimeVersion propagation in Directory.Build.props to cover this case before adding such a reference." />
