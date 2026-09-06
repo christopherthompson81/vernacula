@@ -18,6 +18,9 @@ directory.
 | [`indicconformer-600m-onnx`](https://huggingface.co/christopherthompson81/indicconformer-600m-onnx) | [`indicconformer-600m-onnx/`](indicconformer-600m-onnx/) | MIT | needs upload |
 | [`granite-speech-4-1-2b-onnx`](https://huggingface.co/christopherthompson81/granite-speech-4-1-2b-onnx) | [`granite-speech-4-1-2b-onnx/`](granite-speech-4-1-2b-onnx/) | Apache-2.0 | needs upload |
 | [`granite-speech-4-1-2b-onnx-bf16`](https://huggingface.co/christopherthompson81/granite-speech-4-1-2b-onnx-bf16) | [`granite-speech-4-1-2b-onnx-bf16/`](granite-speech-4-1-2b-onnx-bf16/) | Apache-2.0 | needs upload |
+| [`omnivoice-ipa-onnx`](https://huggingface.co/christopherthompson81/omnivoice-ipa-onnx) | [`omnivoice-ipa-onnx/`](omnivoice-ipa-onnx/) | per file: CC-BY-NC-4.0 (transformer, diff) / Boson Higgs Audio 2 Community (codec) / Apache-2.0 (tokenizer) | live; no `manifest.json` yet |
+| [`kokoro-82m-onnx`](https://huggingface.co/christopherthompson81/kokoro-82m-onnx) | [`kokoro-82m-onnx/`](kokoro-82m-onnx/) | Apache-2.0 | needs upload — see [`scripts/kokoro_export/README.md`](../kokoro_export/README.md#publishing-to-huggingface) |
+| [`chatterbox-tts-onnx`](https://huggingface.co/christopherthompson81/chatterbox-tts-onnx) | [`chatterbox-tts-onnx/`](chatterbox-tts-onnx/) | MIT | needs upload — see [`scripts/chatterbox_export/README.md`](../chatterbox_export/README.md#publishing-to-huggingface) |
 
 ## What each card includes
 

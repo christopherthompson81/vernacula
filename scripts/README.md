@@ -33,6 +33,17 @@ python scripts/upload_to_hf.py \
     --sync-readme --create-repo
 ```
 
+Both take `--exclude GLOB...` so a bundle directory that has been *run*
+from (ONNX Runtime writes `*.ort` / `*.use-ort` optimisation caches beside
+the graphs) can still be published with `--all`:
+
+```bash
+python scripts/make_manifest.py --model-dir ~/models/kokoro --all --exclude '*.ort' '*.use-ort'
+python scripts/upload_to_hf.py --model-dir ~/models/kokoro \
+    --repo-id christopherthompson81/kokoro-82m-onnx \
+    --exclude '*.ort' '*.use-ort' --sync-readme --create-repo
+```
+
 The C# contract is locked at
 `Vernacula.Avalonia/Services/ModelManagerService.cs::ParseManifestHashes`
 — don't fork the manifest shape per-export. New shared utilities go in
