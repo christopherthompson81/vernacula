@@ -56,6 +56,21 @@ public class TtsJobRunnerTests
                 .Text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries).Length;
             Assert.Equal(expectedWords, sidecar.Words.Count);
 
+            // One paragraph per segment, each with its own WAV beside the sidecar, so a single
+            // paragraph can be re-rendered later without touching the rest.
+            Assert.Equal(2, sidecar.Chunks.Count);   // heading + paragraph
+            Assert.Equal(new[] { "Heading", "Paragraph" }, sidecar.Chunks.Select(c => c.BlockKind));
+            string segDir = TtsJobRunner.SegmentsDirFor(sidecarPath);
+            foreach (var c in sidecar.Chunks)
+            {
+                Assert.NotNull(c.AudioFile);
+                Assert.True(File.Exists(Path.Combine(segDir, c.AudioFile!)), c.AudioFile);
+            }
+            Assert.Equal(sidecar.Chunks.Count, Directory.GetFiles(segDir, "seg_*.wav").Length);
+            // Segment audio lengths add up to the concatenated file's duration.
+            double segSum = sidecar.Chunks.Sum(c => c.AudioEndSeconds - c.AudioStartSeconds);
+            Assert.InRange(segSum, sidecar.AudioDurationSeconds - 1e-6, sidecar.AudioDurationSeconds + 1e-6);
+
             // The reader rebuilds its view from the sidecar alone.
             var reread = JsonSerializer.Deserialize<AlignmentSidecar>(await File.ReadAllTextAsync(sidecarPath))!;
             Assert.Contains("# A heading", reread.SourceText);

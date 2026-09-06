@@ -69,136 +69,61 @@ public sealed class ChatterboxSynthesisService : ITtsBackend
         Action<ProgressEvent>? onProgress = null,
         CancellationToken cancellationToken = default)
     {
-        var voicePath = request.Voice;
-        var text = request.Text;
-        var outWavPath = request.OutWavPath;
         onProgress?.Invoke(new ProgressEvent("loading models"));
         // EnsureLoaded is sync + heavy; offload to the threadpool so the
         // UI dispatcher doesn't stall on the first call (~5-10 s).
         await Task.Run(EnsureLoaded, cancellationToken).ConfigureAwait(false);
         cancellationToken.ThrowIfCancellationRequested();
 
-        // Always route through MarkdownTextExtractor (see prior comment
-        // in the pre-attention version for why we don't heuristic-detect).
-        var preparedText = MarkdownTextExtractor.Extract(text).Text;
-        if (string.IsNullOrWhiteSpace(preparedText))
-            throw new InvalidOperationException("Text is empty after markdown extraction.");
-
-        var chunks = ParagraphChunker.Chunk(preparedText);
-        int totalChunks = chunks.Count;
-        onProgress?.Invoke(new ProgressEvent($"chunked into {totalChunks} paragraphs"));
-
         return await Task.Run(() =>
         {
-            cancellationToken.ThrowIfCancellationRequested();
             var pipeline = _pipeline!;
             var tokenizer = pipeline.Tokenizer
                 ?? throw new InvalidOperationException(
                     "ChatterboxPipeline has no tokenizer — required for attention alignment. "
-                    + "Pass tokenizerJsonPath to the SynthesisService constructor, or ensure "
+                    + "Pass tokenizerJsonPath to the ChatterboxSynthesisService constructor, or ensure "
                     + "the HF cache contains the Chatterbox tokenizer.json.");
-            var spk = pipeline.Embedder.Embed(voicePath);
+            var spk = pipeline.Embedder.Embed(request.Voice);
             cancellationToken.ThrowIfCancellationRequested();
-
-            // Per-chunk synthesis loop. Each iteration: LM rollout with
-            // attention capture → vocoder → aligner. No separate
-            // alignment thread; alignment is part of the same per-chunk
-            // sequence as synthesis (~ms compared to seconds of LM/vocoder).
-            var chunkAudios = new float[totalChunks][];
-            var sidecarChunks = new List<ChunkRecord>(totalChunks);
-            var allWords = new List<AlignedWord>();
-            int sampleOffsetCursor = 0;
-
             const int maxLmSteps = 1024;
-            for (int idx = 0; idx < totalChunks; idx++)
+
+            // A segment (one paragraph) is rendered as one or more LM rollouts — the chunker
+            // keeps each rollout under the LM's comfortable length — and joined back into the
+            // paragraph's audio. Per rollout: LM.Generate(captureAlignment: true) produces the
+            // speech tokens and the cross-attention matrix in one pass; the vocoder runs on the
+            // tokens; the aligner turns the matrix into word timings.
+            (float[] Audio, IReadOnlyList<AlignedWord> Words) SynthesizeSegment(Vernacula.Tts.Base.Markdown.TextSegment seg, Action<string> warn)
             {
-                cancellationToken.ThrowIfCancellationRequested();
-                onProgress?.Invoke(new ProgressEvent($"synthesizing", idx + 1, totalChunks));
-
-                string chunkText = chunks[idx];
-                var tokenIds = tokenizer.WrapForLm(chunkText);
-                var lmResult = pipeline.Lm.Generate(
-                    spk.CondEmb, tokenIds, maxSteps: maxLmSteps, captureAlignment: true);
-
-                // Truncation check: if the LM hit maxSteps without
-                // emitting StopSpeechToken, the chunk's audio is shorter
-                // than the text demands. The alignment matrix will only
-                // cover the spoken prefix; the aligner's interpolation
-                // will spread the un-spoken trailing words across a tiny
-                // window at the end. Surface this so the user can see
-                // which chunk got cut.
-                bool truncated = lmResult.Steps >= maxLmSteps
-                    && lmResult.RawGeneratedTokens[^1] != ChatterboxConstants.StopSpeechToken;
-                if (truncated)
+                var chunks = ParagraphChunker.Chunk(seg.Text);
+                var parts = new List<(float[], IReadOnlyList<(string, double, double)>)>(chunks.Count);
+                for (int c = 0; c < chunks.Count; c++)
                 {
-                    onProgress?.Invoke(new ProgressEvent(
-                        $"⚠ chunk {idx + 1}/{totalChunks} hit LM step cap — audio may be truncated",
-                        idx + 1, totalChunks));
+                    cancellationToken.ThrowIfCancellationRequested();
+                    string chunkText = chunks[c];
+                    var tokenIds = tokenizer.WrapForLm(chunkText);
+                    var lmResult = pipeline.Lm.Generate(
+                        spk.CondEmb, tokenIds, maxSteps: maxLmSteps, captureAlignment: true);
+
+                    // If the LM hit maxSteps without emitting StopSpeechToken, the audio is
+                    // shorter than the text demands and the aligner will squeeze the unspoken
+                    // tail into the end. Say so, per paragraph, so the user can see which.
+                    bool truncated = lmResult.Steps >= maxLmSteps
+                        && lmResult.RawGeneratedTokens[^1] != ChatterboxConstants.StopSpeechToken;
+                    if (truncated)
+                        warn($"⚠ paragraph {seg.Index + 1} hit the LM step cap — audio may be truncated");
+
+                    var speechTokens = lmResult.BuildSpeechTokens(spk.AudioTokens);
+                    var wav = pipeline.Vocoder.Synthesize(
+                        speechTokens, spk.SpeakerEmbeddings, spk.SpeakerFeatures);
+                    var localWords = ChatterboxAttentionAligner.Align(
+                        lmResult.Alignment!, chunkText, tokenizer, wav.Length, ChatterboxConstants.S3GenSr);
+                    parts.Add((wav, localWords.Select(w => (w.Text, w.StartSeconds, w.EndSeconds)).ToList()));
                 }
-
-                var speechTokens = lmResult.BuildSpeechTokens(spk.AudioTokens);
-                var wav = pipeline.Vocoder.Synthesize(
-                    speechTokens, spk.SpeakerEmbeddings, spk.SpeakerFeatures);
-
-                chunkAudios[idx] = wav;
-                double chunkStartSec = sampleOffsetCursor / (double)ChatterboxConstants.S3GenSr;
-                double chunkEndSec = (sampleOffsetCursor + wav.Length) / (double)ChatterboxConstants.S3GenSr;
-                sampleOffsetCursor += wav.Length;
-
-                // Cross-attention alignment. lmResult.Alignment is
-                // guaranteed non-null because we passed captureAlignment.
-                var localWords = ChatterboxAttentionAligner.Align(
-                    lmResult.Alignment!, chunkText, tokenizer, wav.Length, ChatterboxConstants.S3GenSr);
-                var absWords = new List<AlignedWord>(localWords.Count);
-                foreach (var w in localWords)
-                {
-                    absWords.Add(new AlignedWord
-                    {
-                        Text = w.Text,
-                        StartSeconds = chunkStartSec + w.StartSeconds,
-                        EndSeconds = chunkStartSec + w.EndSeconds,
-                        ChunkIndex = idx,
-                    });
-                }
-                allWords.AddRange(absWords);
-                sidecarChunks.Add(new ChunkRecord
-                {
-                    Index = idx,
-                    AudioStartSeconds = chunkStartSec,
-                    AudioEndSeconds = chunkEndSec,
-                    Text = chunkText,
-                    WordCount = absWords.Count,
-                });
-
-                onProgress?.Invoke(new ProgressEvent($"chunk {idx + 1}/{totalChunks} ready", idx + 1, totalChunks));
-                onChunkProduced?.Invoke(new ChunkProducedEvent(
-                    idx, totalChunks, wav, chunkText, chunkStartSec, absWords));
+                return SegmentedSynthesis.Join(parts, ChatterboxConstants.S3GenSr);
             }
 
-            // Concatenate all chunks in input order + write the final WAV.
-            int totalSamples = chunkAudios.Sum(c => c.Length);
-            var allSamples = new float[totalSamples];
-            int off = 0;
-            for (int i = 0; i < totalChunks; i++)
-            {
-                var w = chunkAudios[i];
-                Array.Copy(w, 0, allSamples, off, w.Length);
-                off += w.Length;
-            }
-            var fmt = WaveFormat.CreateIeeeFloatWaveFormat(ChatterboxConstants.S3GenSr, 1);
-            using (var writer = new WaveFileWriter(outWavPath, fmt))
-                writer.WriteSamples(allSamples, 0, allSamples.Length);
-
-            var sidecar = new AlignmentSidecar
-            {
-                AudioPath = outWavPath,
-                SampleRate = ChatterboxConstants.S3GenSr,
-                AudioDurationSeconds = totalSamples / (double)ChatterboxConstants.S3GenSr,
-                Aligner = "chatterbox_attention",
-                Chunks = sidecarChunks,
-                Words = allWords,
-            };
-            return new SynthesisResult(outWavPath, sidecar);
+            return SegmentedSynthesis.Run(request, ChatterboxConstants.S3GenSr, "chatterbox_attention",
+                SynthesizeSegment, onChunkProduced, onProgress, cancellationToken);
         }, cancellationToken).ConfigureAwait(false);
     }
 

@@ -84,11 +84,20 @@
                         </ItemsControl.ItemsPanel>
                         <ItemsControl.ItemTemplate>
                             <DataTemplate x:DataType="vm:BlockItemViewModel">
-                                <Border Classes.heading="{Binding IsHeading}"
+                                <!-- One box per segment: the unit the engine rendered and stored on
+                                     its own (seg_NNNN.wav), captioned with its index and length,
+                                     lit while the audio is inside it. -->
+                                <Border Classes="segment"
+                                        Classes.current="{Binding IsCurrent}"
+                                        Classes.heading="{Binding IsHeading}"
                                         Classes.quote="{Binding IsQuote}"
                                         Classes.listitem="{Binding IsListItem}"
                                         Classes.paragraph="{Binding IsParagraph}"
                                         FlowDirection="{Binding FlowDirection}">
+                                  <StackPanel>
+                                    <TextBlock Text="{Binding HeaderLabel}"
+                                               Classes="segment-caption"
+                                               FlowDirection="LeftToRight" />
                                     <Grid ColumnDefinitions="Auto,*">
                                         <TextBlock Grid.Column="0" Text="•"
                                                    IsVisible="{Binding IsListItem}"
@@ -177,6 +186,7 @@
                                             </ItemsControl.ItemTemplate>
                                         </ItemsControl>
                                     </Grid>
+                                  </StackPanel>
                                 </Border>
                             </DataTemplate>
                         </ItemsControl.ItemTemplate>
@@ -314,22 +324,32 @@
             <Setter Property="TextBlock.TextDecorations" Value="Underline" />
         </Style>
 
-        <!-- Block containers: spacing (line breaks), quote indent. -->
+        <!-- Segment boxes: one per paragraph-sized unit of audio. The kind classes only tune
+             the inside (a quote's bar, a heading's air); the box itself is the same for all. -->
+        <Style Selector="Border.segment">
+            <Setter Property="Margin" Value="0,0,0,8" />
+            <Setter Property="Padding" Value="10,6,10,8" />
+            <Setter Property="CornerRadius" Value="6" />
+            <Setter Property="Background" Value="{DynamicResource BgBrush}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource OverlayBrush}" />
+            <Setter Property="BorderThickness" Value="1" />
+        </Style>
+        <Style Selector="Border.segment.current">
+            <Setter Property="BorderBrush" Value="{DynamicResource AccentBrush}" />
+        </Style>
+        <Style Selector="TextBlock.segment-caption">
+            <Setter Property="FontSize" Value="10" />
+            <Setter Property="Foreground" Value="{DynamicResource SubtextBrush}" />
+            <Setter Property="Margin" Value="0,0,0,4" />
+        </Style>
+        <Style Selector="Border.segment.current TextBlock.segment-caption">
+            <Setter Property="Foreground" Value="{DynamicResource AccentBrush}" />
+        </Style>
         <Style Selector="Border.heading">
-            <Setter Property="Margin" Value="0,14,0,2" />
-        </Style>
-        <Style Selector="Border.paragraph">
-            <Setter Property="Margin" Value="0,4,0,4" />
-        </Style>
-        <Style Selector="Border.listitem">
-            <Setter Property="Margin" Value="0,1,0,1" />
+            <Setter Property="Margin" Value="0,6,0,8" />
         </Style>
         <Style Selector="Border.quote">
-            <Setter Property="Margin" Value="0,6,0,6" />
-            <Setter Property="Padding" Value="10,2,0,2" />
-            <Setter Property="BorderThickness" Value="3,0,0,0" />
-            <Setter Property="BorderBrush" Value="{DynamicResource OverlayBrush}" />
-            <Setter Property="Opacity" Value="0.85" />
+            <Setter Property="Opacity" Value="0.9" />
         </Style>
     </UserControl.Styles>
 </UserControl>

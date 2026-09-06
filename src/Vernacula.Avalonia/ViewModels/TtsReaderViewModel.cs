@@ -121,6 +121,8 @@ internal sealed partial class TtsReaderViewModel : ObservableObject, IDisposable
     private bool                       _streamingPlayback;
     private int                        _streamWordCursor;
     private int                        _currentWordIndex = -1;
+    private readonly List<BlockItemViewModel> _wordBlock = new();   // word index → its block
+    private BlockItemViewModel?        _currentBlock;
     private CancellationTokenSource?   _annotationCts;
 
     public TtsReaderViewModel(JobQueueService queue, SettingsService settings)
@@ -232,7 +234,7 @@ internal sealed partial class TtsReaderViewModel : ObservableObject, IDisposable
             ErrorMessage = $"Alignment sidecar not found or unreadable: {job.ResultsFile}";
             return;
         }
-        AttachTimings(sidecar.Words);
+        AttachTimings(sidecar);
         _sidecar       = sidecar;
         _audioPath     = job.OutputAudioPath;
         _audioDuration = sidecar.AudioDurationSeconds;
@@ -344,6 +346,9 @@ internal sealed partial class TtsReaderViewModel : ObservableObject, IDisposable
             }
             _streamWordCursor++;
         }
+        if (chunk.ChunkIndex < DisplayBlocks.Count)
+            DisplayBlocks[chunk.ChunkIndex].SetTiming(chunk.AudioStartSeconds,
+                chunk.AudioStartSeconds + chunk.Audio24k.Length / (double)_sampleRate);
         HasAudio = true;
     }
 
@@ -429,48 +434,43 @@ internal sealed partial class TtsReaderViewModel : ObservableObject, IDisposable
 
     /// <summary>
     /// Rebuild DisplayBlocks + the flat Words from the markdown so the whole document renders
-    /// immediately. Words start un-timed (StartSeconds = +∞, never the highlight target);
-    /// timing attaches by running index — the word sequence here matches the backend's
-    /// aligned-word sequence 1:1 (both come from MarkdownTextExtractor.Extract(text) split on
-    /// whitespace).
+    /// immediately: one block per <see cref="ParagraphSegmenter"/> segment — the same cut the
+    /// engine renders and stores one file for — and its words in order. Words start un-timed
+    /// (StartSeconds = +∞, never the highlight target); timing attaches by running index,
+    /// which works because the segmenter guarantees the per-segment words are the whole
+    /// extraction's words in order.
     /// </summary>
     private void BuildDisplayStructure(string text)
     {
         DisplayBlocks.Clear();
         Words.Clear();
+        _wordBlock.Clear();
         var extract = MarkdownTextExtractor.Extract(text ?? "");
         var et = extract.Text;
-        var blocks = extract.Blocks;
         var ranges = extract.Ranges;
 
-        BlockItemViewModel? current = null;
-        int currentBlockIdx = -2;
-        int i = 0;
-        while (i < et.Length)
+        foreach (var seg in ParagraphSegmenter.Segment(extract))
         {
-            while (i < et.Length && char.IsWhiteSpace(et[i])) i++;
-            if (i >= et.Length) break;
-            int start = i;
-            while (i < et.Length && !char.IsWhiteSpace(et[i])) i++;
+            var block = new BlockItemViewModel(seg.Kind, seg.Level) { Index = seg.Index };
+            DisplayBlocks.Add(block);
 
-            int bi = FindBlockIndex(blocks, start);
-            var kind = bi >= 0 ? blocks[bi].Kind : BlockKind.Paragraph;
-            var level = bi >= 0 ? blocks[bi].Level : 0;
-            var style = FindStyle(ranges, start);
-
-            if (current is null || bi != currentBlockIdx)
+            int i = seg.OutputStart, segEnd = seg.OutputStart + seg.OutputLength;
+            while (i < segEnd)
             {
-                current = new BlockItemViewModel(kind, level);
-                DisplayBlocks.Add(current);
-                currentBlockIdx = bi;
+                while (i < segEnd && char.IsWhiteSpace(et[i])) i++;
+                if (i >= segEnd) break;
+                int start = i;
+                while (i < segEnd && !char.IsWhiteSpace(et[i])) i++;
+
+                var style = ParagraphSegmenter.StyleAt(ranges, start);
+                var w = new WordItemViewModel(et.Substring(start, i - start), Words.Count, seg.Kind, seg.Level, style, SeekToWord)
+                {
+                    StartSeconds = double.MaxValue,
+                };
+                block.Words.Add(w);
+                Words.Add(w);
+                _wordBlock.Add(block);
             }
-
-            var w = new WordItemViewModel(et.Substring(start, i - start), Words.Count, kind, level, style, SeekToWord)
-            {
-                StartSeconds = double.MaxValue,
-            };
-            current.Words.Add(w);
-            Words.Add(w);
         }
 
         var langRtl = LanguageCatalog.IsRightToLeft(_lang);
@@ -479,39 +479,18 @@ internal sealed partial class TtsReaderViewModel : ObservableObject, IDisposable
         RefreshIpaAnnotation();
     }
 
-    private void AttachTimings(IReadOnlyList<AlignedWord> words)
+    private void AttachTimings(AlignmentSidecar sidecar)
     {
+        var words = sidecar.Words;
         for (int k = 0; k < words.Count && k < Words.Count; k++)
         {
             Words[k].StartSeconds = words[k].StartSeconds;
             Words[k].EndSeconds   = words[k].EndSeconds;
         }
         _streamWordCursor = Math.Min(words.Count, Words.Count);
-    }
-
-    private static int FindBlockIndex(IReadOnlyList<BlockSpan> blocks, int offset)
-    {
-        int lo = 0, hi = blocks.Count - 1, best = -1;
-        while (lo <= hi)
-        {
-            int mid = (lo + hi) >>> 1;
-            if (blocks[mid].OutputStart <= offset) { best = mid; lo = mid + 1; }
-            else hi = mid - 1;
-        }
-        return best >= 0 && offset < blocks[best].OutputStart + blocks[best].OutputLength ? best : -1;
-    }
-
-    private static InlineStyle FindStyle(IReadOnlyList<TextRange> ranges, int offset)
-    {
-        int lo = 0, hi = ranges.Count - 1, best = -1;
-        while (lo <= hi)
-        {
-            int mid = (lo + hi) >>> 1;
-            if (ranges[mid].OutputStart <= offset) { best = mid; lo = mid + 1; }
-            else hi = mid - 1;
-        }
-        return best >= 0 && offset < ranges[best].OutputStart + ranges[best].OutputLength
-            ? ranges[best].Style : InlineStyle.None;
+        foreach (var c in sidecar.Chunks)
+            if (c.Index < DisplayBlocks.Count)
+                DisplayBlocks[c.Index].SetTiming(c.AudioStartSeconds, c.AudioEndSeconds);
     }
 
     // ── IPA annotation (ruby text above each word) ───────────────────────────
@@ -728,6 +707,14 @@ internal sealed partial class TtsReaderViewModel : ObservableObject, IDisposable
             _currentWordIndex = idx;
             // A split word (Japanese, Chinese) highlights piece by piece instead of all at once.
             if (idx >= 0 && idx < Words.Count) Words[idx].IsCurrent = !Words[idx].HasPieces;
+            // And the box the word sits in, so the paragraph being read stands out at a glance.
+            var block = idx >= 0 && idx < _wordBlock.Count ? _wordBlock[idx] : null;
+            if (!ReferenceEquals(block, _currentBlock))
+            {
+                if (_currentBlock is not null) _currentBlock.IsCurrent = false;
+                _currentBlock = block;
+                if (_currentBlock is not null) _currentBlock.IsCurrent = true;
+            }
         }
         if (idx >= 0 && idx < Words.Count) Words[idx].HighlightPieceAt(posSec);
         PositionLabel = $"{posSec:F2} / {_playback.TotalEstimatedSeconds:F2} s";
@@ -741,6 +728,7 @@ internal sealed partial class TtsReaderViewModel : ObservableObject, IDisposable
             Words[_currentWordIndex].ClearPieceHighlight();
         }
         _currentWordIndex = -1;
+        if (_currentBlock is not null) { _currentBlock.IsCurrent = false; _currentBlock = null; }
     }
 
     /// <summary>Put the highlight back on whichever half of the current word now draws it

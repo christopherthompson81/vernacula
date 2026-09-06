@@ -249,6 +249,12 @@ public class JobRecord : ObservableObject
     public string OutputAudioPath =>
         Kind == JobKind.Tts ? Path.ChangeExtension(ResultsFile, ".wav") : "";
 
+    /// <summary>TTS: the folder holding one WAV per paragraph, beside the sidecar.</summary>
+    public string SegmentsDir =>
+        Kind == JobKind.Tts && ResultsFile.Length > 0
+            ? Path.Combine(Path.GetDirectoryName(ResultsFile) ?? "", Path.GetFileNameWithoutExtension(ResultsFile) + "_segments")
+            : "";
+
     public bool IsTts => Kind == JobKind.Tts;
     public bool IsAsr => Kind == JobKind.Asr;
 

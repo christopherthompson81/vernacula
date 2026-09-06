@@ -53,15 +53,18 @@ internal sealed class TtsJobRunner : IDisposable
 
         var backend = EnsureBackend(tts);
         string wavPath = Path.ChangeExtension(sidecarPath, ".wav");
+        string segmentsDir = SegmentsDirFor(sidecarPath);
         Directory.CreateDirectory(Path.GetDirectoryName(sidecarPath)!);
+        // A re-render starts clean: a shorter document must not leave stale paragraph files.
+        if (Directory.Exists(segmentsDir)) Directory.Delete(segmentsDir, recursive: true);
 
         var request = ParseBackend(tts.Backend) switch
         {
-            TtsBackendKind.Kokoro    => new TtsRequest(text, wavPath, tts.Voice, tts.Speed),
+            TtsBackendKind.Kokoro    => new TtsRequest(text, wavPath, tts.Voice, tts.Speed, SegmentsDir: segmentsDir),
             TtsBackendKind.OmniVoice => new TtsRequest(text, wavPath, tts.Voice,
                                             Lang: string.IsNullOrWhiteSpace(tts.Language) ? "en" : tts.Language.Trim(),
-                                            NumStep: tts.NumStep),
-            _                        => new TtsRequest(text, wavPath, tts.Voice),
+                                            NumStep: tts.NumStep, SegmentsDir: segmentsDir),
+            _                        => new TtsRequest(text, wavPath, tts.Voice, SegmentsDir: segmentsDir),
         };
 
         var result = await backend.SynthesizeStreamingAsync(request, onChunkProduced, onProgress, ct);
@@ -72,6 +75,10 @@ internal sealed class TtsJobRunner : IDisposable
             await JsonSerializer.SerializeAsync(fs, sidecar, new JsonSerializerOptions { WriteIndented = false }, ct);
         return sidecar;
     }
+
+    /// <summary>The folder of per-paragraph WAVs beside a job's sidecar: <c>{stem}_segments/</c>.</summary>
+    public static string SegmentsDirFor(string sidecarPath) =>
+        Path.Combine(Path.GetDirectoryName(sidecarPath)!, Path.GetFileNameWithoutExtension(sidecarPath) + "_segments");
 
     /// <summary>
     /// The job's backend, built from the model locations in Settings. Missing prerequisites

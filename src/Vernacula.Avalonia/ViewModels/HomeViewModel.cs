@@ -212,6 +212,8 @@ internal partial class HomeViewModel : ObservableObject
             // A TTS job's rendered audio sits beside its sidecar.
             if (job.IsTts && File.Exists(job.OutputAudioPath))
                 File.Delete(job.OutputAudioPath);
+            if (job.IsTts && Directory.Exists(job.SegmentsDir))
+                Directory.Delete(job.SegmentsDir, recursive: true);
             _controlDb.DeleteJob(job.JobId);
             Jobs.Remove(job);
         }
