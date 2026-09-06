@@ -50,6 +50,24 @@ internal sealed class ControlDb : IDisposable
         // Migrate: add per-job ASR model snapshot if it does not exist yet
         try { Execute("ALTER TABLE jobs ADD COLUMN asr_model_name TEXT NOT NULL DEFAULT 'nvidia/parakeet-tdt-0.6b-v3'"); }
         catch (SqliteException) { /* column already present — ignore */ }
+
+        // Migrate: job kind + per-job TTS settings + output duration. Every row that predates
+        // this column is an ASR job, hence the default. audio_file_path keeps its name and
+        // holds the input document for TTS jobs (see JobRecord.AudioFilePath).
+        foreach (string ddl in new[]
+        {
+            "ALTER TABLE jobs ADD COLUMN job_kind TEXT NOT NULL DEFAULT 'asr'",
+            "ALTER TABLE jobs ADD COLUMN tts_backend TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE jobs ADD COLUMN tts_language TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE jobs ADD COLUMN tts_voice TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE jobs ADD COLUMN tts_speed REAL NOT NULL DEFAULT 1.0",
+            "ALTER TABLE jobs ADD COLUMN tts_num_step INTEGER NOT NULL DEFAULT 32",
+            "ALTER TABLE jobs ADD COLUMN output_duration_seconds REAL",
+        })
+        {
+            try { Execute(ddl); }
+            catch (SqliteException) { /* column already present — ignore */ }
+        }
     }
 
     /// <summary>
@@ -171,6 +189,89 @@ internal sealed class ControlDb : IDisposable
         using var lastId = _conn.CreateCommand();
         lastId.CommandText = "SELECT last_insert_rowid()";
         return (int)(long)lastId.ExecuteScalar()!;
+    }
+
+    /// <summary>
+    /// Inserts a brand-new text-to-speech job with 'queued' status. Mirrors
+    /// <see cref="InsertNewJob"/>: a job for the same results_file (same document + same
+    /// backend/voice/language, see JobQueueService.TtsResultsFileName) is updated in place and
+    /// its job_id returned, so re-adding a document re-renders rather than duplicating the row.
+    /// </summary>
+    public int InsertNewTtsJob(string title, string resultsFile, string documentPath,
+                               string sha256, string documentDateStamp, TtsJobSettings tts)
+    {
+        using var check = _conn.CreateCommand();
+        check.CommandText = "SELECT job_id FROM jobs WHERE results_file = $rf";
+        check.Parameters.AddWithValue("$rf", resultsFile);
+        if (check.ExecuteScalar() is long existingId)
+        {
+            using var upd = _conn.CreateCommand();
+            upd.CommandText = """
+                UPDATE jobs
+                SET job_title = $jt,
+                    audio_file_path = $ap,
+                    audio_file_sha256sum = $sh,
+                    audio_file_datestamp = $ad,
+                    job_kind = 'tts',
+                    tts_backend = $tb,
+                    tts_language = $tl,
+                    tts_voice = $tv,
+                    tts_speed = $ts,
+                    tts_num_step = $tn,
+                    output_duration_seconds = NULL
+                WHERE job_id = $id
+                """;
+            upd.Parameters.AddWithValue("$jt", title);
+            upd.Parameters.AddWithValue("$ap", documentPath);
+            upd.Parameters.AddWithValue("$sh", sha256);
+            upd.Parameters.AddWithValue("$ad", documentDateStamp);
+            AddTtsParameters(upd, tts);
+            upd.Parameters.AddWithValue("$id", existingId);
+            upd.ExecuteNonQuery();
+            return (int)existingId;
+        }
+
+        using var ins = _conn.CreateCommand();
+        ins.CommandText = """
+            INSERT INTO jobs
+                (job_title, results_file, transcription_run_datestamp,
+                 audio_file_path, audio_file_sha256sum, audio_file_datestamp,
+                 status, created_at, stream_index, job_kind,
+                 tts_backend, tts_language, tts_voice, tts_speed, tts_num_step)
+            VALUES ($jt, $rf, NULL, $ap, $sh, $ad, 'queued', $ca, -1, 'tts',
+                    $tb, $tl, $tv, $ts, $tn)
+            """;
+        ins.Parameters.AddWithValue("$jt", title);
+        ins.Parameters.AddWithValue("$rf", resultsFile);
+        ins.Parameters.AddWithValue("$ap", documentPath);
+        ins.Parameters.AddWithValue("$sh", sha256);
+        ins.Parameters.AddWithValue("$ad", documentDateStamp);
+        ins.Parameters.AddWithValue("$ca", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"));
+        AddTtsParameters(ins, tts);
+        ins.ExecuteNonQuery();
+
+        using var lastId = _conn.CreateCommand();
+        lastId.CommandText = "SELECT last_insert_rowid()";
+        return (int)(long)lastId.ExecuteScalar()!;
+    }
+
+    private static void AddTtsParameters(SqliteCommand cmd, TtsJobSettings tts)
+    {
+        cmd.Parameters.AddWithValue("$tb", tts.Backend);
+        cmd.Parameters.AddWithValue("$tl", tts.Language);
+        cmd.Parameters.AddWithValue("$tv", tts.Voice);
+        cmd.Parameters.AddWithValue("$ts", tts.Speed);
+        cmd.Parameters.AddWithValue("$tn", tts.NumStep);
+    }
+
+    /// <summary>TTS: records how long the rendered audio is once a job completes.</summary>
+    public void UpdateJobOutputDuration(int jobId, double seconds)
+    {
+        using var cmd = _conn.CreateCommand();
+        cmd.CommandText = "UPDATE jobs SET output_duration_seconds = $d WHERE job_id = $id";
+        cmd.Parameters.AddWithValue("$d",  seconds);
+        cmd.Parameters.AddWithValue("$id", jobId);
+        cmd.ExecuteNonQuery();
     }
 
     /// <summary>Sets a job to 'running' and records when the run started.</summary>
@@ -319,11 +420,20 @@ internal sealed class ControlDb : IDisposable
         }
 
         int siOrd = r.GetOrdinal("stream_index");
+        int odOrd = r.GetOrdinal("output_duration_seconds");
         string? runStamp = GetNullable("transcription_run_datestamp");
         return new JobRecord
         {
             JobId                     = r.GetInt32(r.GetOrdinal("job_id")),
             JobTitle                  = r.GetString(r.GetOrdinal("job_title")),
+            Kind                      = string.Equals(GetNullable("job_kind"), "tts", StringComparison.OrdinalIgnoreCase)
+                                            ? JobKind.Tts : JobKind.Asr,
+            TtsBackend                = GetNullable("tts_backend") ?? "",
+            TtsLanguage               = GetNullable("tts_language") ?? "",
+            TtsVoice                  = GetNullable("tts_voice") ?? "",
+            TtsSpeed                  = (float)r.GetDouble(r.GetOrdinal("tts_speed")),
+            TtsNumStep                = r.GetInt32(r.GetOrdinal("tts_num_step")),
+            OutputDurationSeconds     = r.IsDBNull(odOrd) ? null : r.GetDouble(odOrd),
             ResultsFile               = r.GetString(r.GetOrdinal("results_file")),
             AudioFilePath             = r.GetString(r.GetOrdinal("audio_file_path")),
             AudioFileSha256Sum        = r.GetString(r.GetOrdinal("audio_file_sha256sum")),

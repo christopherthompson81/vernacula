@@ -49,12 +49,10 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\Vernacula.Tts.Base\Vernacula.Tts.Base.csproj">
-      <SetConfiguration>EP=$(EP)</SetConfiguration>
-    </ProjectReference>
-    <ProjectReference Include="..\Vernacula.Base\Vernacula.Base.csproj">
-      <SetConfiguration>EP=$(EP)</SetConfiguration>
-    </ProjectReference>
+    <!-- No SetConfiguration: EP is a global property and already reaches both (and Base again
+         through Tts.Base) with the same value — an override here would build Base twice. -->
+    <ProjectReference Include="..\Vernacula.Tts.Base\Vernacula.Tts.Base.csproj" />
+    <ProjectReference Include="..\Vernacula.Base\Vernacula.Base.csproj" />
   </ItemGroup>
 
 </Project>

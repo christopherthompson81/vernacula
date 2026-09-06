@@ -102,6 +102,22 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Vernacula.Base\Vernacula.Base.csproj" />
+    <!-- Text-to-speech: the reader's synthesis backends (Chatterbox, Kokoro, OmniVoice-IPA)
+         live in Vernacula.Tts.Base. This is where the standalone Vernacula.Tts.Avalonia reader
+         was folded in; TTS jobs share the ASR job queue and history. -->
+    <ProjectReference Include="..\Vernacula.Tts.Base\Vernacula.Tts.Base.csproj" />
+  </ItemGroup>
+
+  <!--
+    Vernacula.Phonemizer (via Vernacula.Tts.Base) takes a plain (CPU) Microsoft.ML.OnnxRuntime
+    reference. Left alone it flows into this app's output next to the EP variant above and both
+    ship a native onnxruntime library — whichever lands last wins, which is how a CUDA build
+    silently ends up on the CPU runtime. A DIRECT reference outranks the transitive one, and
+    ExcludeAssets="all" then contributes nothing, so the EP package is the only runtime shipped.
+    Only for the GPU EPs: the Cpu / macOS branches above already reference the plain package.
+  -->
+  <ItemGroup Condition="('$(EP)' == 'Cuda' AND ($([MSBuild]::IsOSPlatform('Windows')) OR $([MSBuild]::IsOSPlatform('Linux')))) OR ('$(EP)' == 'DirectML' AND $([MSBuild]::IsOSPlatform('Windows')))">
+    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="$(OnnxRuntimeVersion)" ExcludeAssets="all" />
   </ItemGroup>
 
   <ItemGroup>

@@ -6,7 +6,7 @@ using System.Threading.Tasks;
 using Avalonia.Threading;
 using NAudio.Wave;
 
-namespace Vernacula.Tts.App.Services;
+namespace Vernacula.App.Services.Tts;
 
 /// <summary>
 /// Cross-platform streaming audio playback for the reader UI. Mirrors

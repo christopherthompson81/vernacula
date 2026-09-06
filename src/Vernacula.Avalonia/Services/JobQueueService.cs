@@ -1,10 +1,19 @@
+using System.Security.Cryptography;
+using System.Text;
 using Vernacula.App.Models;
+using Vernacula.App.Services.Tts;
 
 namespace Vernacula.App.Services;
 
+/// <summary>
+/// The one queue behind the Home screen's job list. ASR jobs run through
+/// <see cref="TranscriptionService"/>; TTS jobs through <see cref="TtsJobRunner"/>. Both share
+/// the slots, the status/progress events and the per-job live UI state the panels attach to.
+/// </summary>
 internal sealed class JobQueueService
 {
     private readonly TranscriptionService _transcription;
+    private readonly TtsJobRunner         _tts;
     private readonly ControlDb            _controlDb;
     private readonly SettingsService      _settings;
 
@@ -13,6 +22,7 @@ internal sealed class JobQueueService
     private readonly Queue<QueueEntry>                        _pendingQueue   = new();
     private readonly Dictionary<int, CancellationTokenSource> _activeCts      = new();
     private readonly Dictionary<int, JobUiState>              _jobUiStates    = new();
+    private readonly Dictionary<int, TtsJobUiState>           _ttsUiStates    = new();
 
     /// <summary>Number of jobs that may run concurrently.</summary>
     public int SlotCount { get; }
@@ -35,13 +45,21 @@ internal sealed class JobQueueService
     /// </summary>
     public event Action<int, TranscriptionProgress>? JobProgressInfoUpdated;
 
+    /// <summary>
+    /// Fired on any thread with a TTS job's phase message ("synthesizing (3/12)"). The Home
+    /// grid's Progress column shows it; the reader panel attaches to the job's UI state instead.
+    /// </summary>
+    public event Action<int, ProgressEvent>? JobTtsProgressUpdated;
+
     public JobQueueService(
         TranscriptionService transcription,
+        TtsJobRunner         tts,
         ControlDb            controlDb,
         SettingsService      settings,
         int                  slotCount = 1)
     {
         _transcription = transcription;
+        _tts           = tts;
         _controlDb     = controlDb;
         _settings      = settings;
         SlotCount      = slotCount;
@@ -116,6 +134,36 @@ internal sealed class JobQueueService
     }
 
     /// <summary>
+    /// Creates a text-to-speech job for <paramref name="documentPath"/> with 'queued' status and
+    /// adds it to the run queue. Returns the new job ID. The output lands in the jobs directory
+    /// as <c>{sha16}_{settings8}_tts.json</c> (alignment sidecar) + <c>.wav</c>, keyed on both the
+    /// document and the rendering choices so the same text in two voices makes two jobs.
+    /// </summary>
+    public async Task<int> EnqueueNewTtsJobAsync(string documentPath, string jobTitle, TtsJobSettings tts)
+    {
+        Console.WriteLine($"[Queue] EnqueueNewTtsJobAsync starting for '{documentPath}'");
+        string sha256 = await Task.Run(() => AudioUtils.Sha256Checksum(documentPath));
+        string sidecarPath = Path.Combine(_settings.GetJobsDir(), TtsResultsFileName(sha256, tts));
+        string fileDateStamp = File.GetLastWriteTime(documentPath).ToString("yyyy-MM-dd HH:mm:ss");
+
+        int jobId = _controlDb.InsertNewTtsJob(jobTitle, sidecarPath, documentPath, sha256, fileDateStamp, tts);
+        Console.WriteLine($"[Queue] TTS job inserted with ID: {jobId}");
+
+        Enqueue(new QueueEntry(jobId, documentPath, sidecarPath, Kind: JobKind.Tts, Tts: tts));
+        JobStatusChanged?.Invoke(jobId, JobStatus.Queued, null, null);
+        _ = TryStartNextAsync();
+        return jobId;
+    }
+
+    /// <summary>Sidecar file name for a TTS job — see <see cref="EnqueueNewTtsJobAsync"/>.</summary>
+    internal static string TtsResultsFileName(string documentSha256, TtsJobSettings tts)
+    {
+        string settingsKey = $"{tts.Backend}|{tts.Language}|{tts.Voice}|{tts.Speed:F2}|{tts.NumStep}";
+        string settingsHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(settingsKey)))[..8].ToLowerInvariant();
+        return $"{documentSha256[..16]}_{settingsHash}_tts.json";
+    }
+
+    /// <summary>
     /// Re-adds an existing (failed / cancelled) job back into the run queue.
     /// </summary>
     public void RequeueJob(int jobId, string dbPath, string audioPath, int streamIndex = -1,
@@ -125,6 +173,22 @@ internal sealed class JobQueueService
         Enqueue(new QueueEntry(jobId, audioPath, dbPath, streamIndex, asrLanguageCode, asrModelName));
         JobStatusChanged?.Invoke(jobId, JobStatus.Queued, null, null);
         _ = TryStartNextAsync();
+    }
+
+    /// <summary>Re-adds an existing (failed / cancelled) job of either kind back into the run queue.</summary>
+    public void RequeueJob(JobRecord job)
+    {
+        if (job.Kind == JobKind.Tts)
+        {
+            _controlDb.UpdateJobStatus(job.JobId, JobStatus.Queued);
+            var tts = new TtsJobSettings(job.TtsBackend, job.TtsLanguage, job.TtsVoice, job.TtsSpeed, job.TtsNumStep);
+            Enqueue(new QueueEntry(job.JobId, job.AudioFilePath, job.ResultsFile, Kind: JobKind.Tts, Tts: tts));
+            JobStatusChanged?.Invoke(job.JobId, JobStatus.Queued, null, null);
+            _ = TryStartNextAsync();
+            return;
+        }
+        RequeueJob(job.JobId, job.ResultsFile, job.AudioFilePath, job.AudioStreamIndex,
+            job.AsrLanguageCode, job.AsrModelName);
     }
 
     /// <summary>Requests cancellation of a running or queued job.</summary>
@@ -177,7 +241,26 @@ internal sealed class JobQueueService
 
     public double GetJobProgress(int jobId)
     {
-        lock (_lock) return _jobUiStates.TryGetValue(jobId, out var s) ? s.Percent : 0;
+        lock (_lock)
+        {
+            if (_jobUiStates.TryGetValue(jobId, out var s)) return s.Percent;
+            if (_ttsUiStates.TryGetValue(jobId, out var t)) return t.Percent;
+            return 0;
+        }
+    }
+
+    public ProgressEvent? GetTtsJobLastProgress(int jobId)
+    {
+        lock (_lock) return _ttsUiStates.TryGetValue(jobId, out var s) ? s.LastProgress : null;
+    }
+
+    /// <summary>
+    /// Returns the live UI state for an actively running TTS job (chunks so far + progress),
+    /// or null if the job is not currently running. See <see cref="GetJobUiState"/>.
+    /// </summary>
+    public TtsJobUiState? GetTtsJobUiState(int jobId)
+    {
+        lock (_lock) return _ttsUiStates.TryGetValue(jobId, out var s) ? s : null;
     }
 
     public TranscriptionProgress? GetJobLastProgress(int jobId)
@@ -236,7 +319,71 @@ internal sealed class JobQueueService
         }
     }
 
-    private async Task RunJobAsync(QueueEntry entry)
+    private Task RunJobAsync(QueueEntry entry) =>
+        entry.Kind == JobKind.Tts ? RunTtsJobAsync(entry) : RunAsrJobAsync(entry);
+
+    private async Task RunTtsJobAsync(QueueEntry entry)
+    {
+        Console.WriteLine($"[Queue] RunTtsJobAsync starting for job {entry.JobId}");
+        var tts   = entry.Tts!;
+        var cts   = new CancellationTokenSource();
+        var state = new TtsJobUiState(TtsJobRunner.SampleRateFor(tts));
+        lock (_lock) { _activeCts[entry.JobId] = cts; _ttsUiStates[entry.JobId] = state; }
+
+        string runStamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
+        _controlDb.SetJobRunning(entry.JobId, runStamp);
+        JobStatusChanged?.Invoke(entry.JobId, JobStatus.Running, null, null);
+
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+
+        void OnProgress(ProgressEvent p)
+        {
+            state.Dispatch(new TtsProgressAction(p));
+            JobTtsProgressUpdated?.Invoke(entry.JobId, p);
+            JobProgressUpdated?.Invoke(entry.JobId, state.Percent);
+        }
+
+        void OnChunk(ChunkProducedEvent ev)
+        {
+            state.Dispatch(new TtsChunkProducedAction(ev));
+            JobProgressUpdated?.Invoke(entry.JobId, state.Percent);
+        }
+
+        try
+        {
+            var sidecar = await _tts.RunAsync(entry.AudioPath, entry.DbPath, tts, OnChunk, OnProgress, cts.Token);
+
+            sw.Stop();
+            int elapsed = (int)sw.Elapsed.TotalSeconds;
+            _controlDb.UpdateJobOutputDuration(entry.JobId, sidecar.AudioDurationSeconds);
+            _controlDb.UpdateJobStatus(entry.JobId, JobStatus.Complete, runTimeSeconds: elapsed);
+            lock (_lock) { _ttsUiStates.Remove(entry.JobId); }
+            JobStatusChanged?.Invoke(entry.JobId, JobStatus.Complete, null, elapsed);
+        }
+        catch (OperationCanceledException)
+        {
+            sw.Stop();
+            _controlDb.UpdateJobStatus(entry.JobId, JobStatus.Cancelled,
+                runTimeSeconds: (int)sw.Elapsed.TotalSeconds);
+            lock (_lock) { _ttsUiStates.Remove(entry.JobId); }
+            JobStatusChanged?.Invoke(entry.JobId, JobStatus.Cancelled, null, (int)sw.Elapsed.TotalSeconds);
+        }
+        catch (Exception ex)
+        {
+            sw.Stop();
+            string error = ex.ToString();
+            _controlDb.UpdateJobStatus(entry.JobId, JobStatus.Failed, error,
+                runTimeSeconds: (int)sw.Elapsed.TotalSeconds);
+            lock (_lock) { _ttsUiStates.Remove(entry.JobId); }
+            JobStatusChanged?.Invoke(entry.JobId, JobStatus.Failed, error, (int)sw.Elapsed.TotalSeconds);
+        }
+        finally
+        {
+            lock (_lock) _activeCts.Remove(entry.JobId);
+        }
+    }
+
+    private async Task RunAsrJobAsync(QueueEntry entry)
     {
         Console.WriteLine($"[Queue] RunJobAsync starting for job {entry.JobId}");
         var cts   = new CancellationTokenSource();
@@ -329,11 +476,18 @@ internal sealed class JobQueueService
         }
     }
 
+    /// <summary>
+    /// One queued job. <paramref name="AudioPath"/> is the input file (media for ASR, the
+    /// document for TTS) and <paramref name="DbPath"/> the results file (results DB for ASR,
+    /// alignment sidecar for TTS) — the names follow the jobs table's columns.
+    /// </summary>
     private record QueueEntry(
         int JobId,
         string AudioPath,
         string DbPath,
         int StreamIndex = -1,
         string AsrLanguageCode = "auto",
-        string AsrModelName = "nvidia/parakeet-tdt-0.6b-v3");
+        string AsrModelName = "nvidia/parakeet-tdt-0.6b-v3",
+        JobKind Kind = JobKind.Asr,
+        TtsJobSettings? Tts = null);
 }

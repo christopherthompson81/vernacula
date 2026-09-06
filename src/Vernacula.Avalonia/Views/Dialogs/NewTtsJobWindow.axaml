@@ -1,0 +1,17 @@
+<Window x:Class="Vernacula.App.Views.Dialogs.NewTtsJobWindow"
+        xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:local="using:Vernacula.App"
+        xmlns:v="using:Vernacula.App.Views"
+        Title="{local:Loc menu_new_tts_job}"
+        Width="580"
+        SizeToContent="Height"
+        WindowStartupLocation="CenterOwner"
+        CanResize="False"
+        ShowInTaskbar="False"
+        Icon="avares://Vernacula.Avalonia/Assets/icon.ico"
+        Background="{DynamicResource BgBrush}">
+
+    <v:TtsJobConfigView />
+
+</Window>

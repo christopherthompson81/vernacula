@@ -30,6 +30,13 @@ Usage:
         --repo-id christopherthompson81/voxlingua107-lid-onnx \\
         --sync-readme --readme path/to/README.md
 
+    # Leave local-only files behind (ONNX Runtime's optimised-graph caches,
+    # scratch outputs). Globs match the path relative to --model-dir.
+    python scripts/upload_to_hf.py \\
+        --model-dir ~/models/kokoro \\
+        --repo-id christopherthompson81/kokoro-82m-onnx \\
+        --exclude '*.ort' '*.use-ort' --sync-readme
+
 Each file is uploaded individually so progress is visible and re-runs
 resume cleanly (HF skips identical uploads).
 """
@@ -37,6 +44,7 @@ resume cleanly (HF skips identical uploads).
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import sys
 from pathlib import Path
 
@@ -52,8 +60,11 @@ def default_readme_for_repo(repo_id: str) -> Path:
     return HF_README_DIR / basename / "README.md"
 
 
-def discover_files(model_dir: Path) -> list[str]:
-    """Sorted list of non-hidden files under model_dir, excluding README.md."""
+def discover_files(model_dir: Path, exclude: list[str] | None = None) -> list[str]:
+    """Sorted list of non-hidden files under model_dir, excluding README.md
+    and anything matching an `exclude` glob (matched against the relative
+    POSIX path and against the bare file name, so `*.ort` catches a cache
+    file in a subdirectory too)."""
     rel = []
     for p in sorted(model_dir.rglob("*")):
         if not p.is_file():
@@ -64,8 +75,17 @@ def discover_files(model_dir: Path) -> list[str]:
         if relpath == "README.md":
             # README is uploaded via --sync-readme from a separate source.
             continue
+        if is_excluded(relpath, exclude):
+            continue
         rel.append(relpath)
     return rel
+
+
+def is_excluded(relpath: str, exclude: list[str] | None) -> bool:
+    if not exclude:
+        return False
+    name = relpath.rsplit("/", 1)[-1]
+    return any(fnmatch.fnmatch(relpath, g) or fnmatch.fnmatch(name, g) for g in exclude)
 
 
 def main() -> None:
@@ -80,6 +100,10 @@ def main() -> None:
     p.add_argument("--files", nargs="+", default=None,
                    help="File names (relative to --model-dir) to upload. "
                         "Default: every non-hidden file under --model-dir.")
+    p.add_argument("--exclude", nargs="+", default=None, metavar="GLOB",
+                   help="Skip files matching these globs (relative path or file name), "
+                        "e.g. '*.ort' '*.use-ort' for ONNX Runtime optimisation caches. "
+                        "Applies to discovery only; an explicit --files list is uploaded as given.")
     p.add_argument("--create-repo", action="store_true",
                    help="Run create_repo(exist_ok=True) before uploading.")
     p.add_argument("--private", action="store_true",
@@ -101,7 +125,7 @@ def main() -> None:
         create_repo(args.repo_id, repo_type="model",
                     private=args.private, exist_ok=True)
 
-    files = args.files if args.files else discover_files(args.model_dir)
+    files = args.files if args.files else discover_files(args.model_dir, args.exclude)
     if not files:
         sys.exit(f"no files found under {args.model_dir}")
 

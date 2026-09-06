@@ -142,3 +142,40 @@ for the running log; the staged plan:
   plain attribute via `torch.randn(...)` at `__init__`, so without
   pinning, two consecutive exports produce different `.onnx` files
   (and parity tests are apples-to-oranges). See Run 11.
+
+## Publishing to HuggingFace
+
+The bundle ships as
+[`christopherthompson81/chatterbox-tts-onnx`](https://huggingface.co/christopherthompson81/chatterbox-tts-onnx);
+the model card's source is
+[`scripts/hf_readmes/chatterbox-tts-onnx/README.md`](../hf_readmes/chatterbox-tts-onnx/README.md),
+and `Vernacula.Avalonia`'s Settings → Text-to-Speech tab downloads from this repo
+(`ModelManagerService.ChatterboxRepoBase`).
+
+Two things the export folder does not contain on its own:
+
+- **`tokenizer.json`.** The C# pipeline finds it in the HuggingFace cache when it is absent,
+  but a downloaded bundle has no cache to fall back on, so it ships beside the graphs. Copy
+  it from the pinned upstream snapshot (the revision is in `export-report.json`).
+- **Every `*.onnx_data` sidecar** — the weights live there (9 GB of the 9.3 GB); the graphs
+  reference that exact spelling, underscore and all.
+
+```bash
+# 1. Export (see Usage above); the output folder is the bundle
+python scripts/chatterbox_export/export_chatterbox_to_onnx.py --output-dir ~/models/chatterbox --device cuda --dtype float32
+
+# 2. Put the tokenizer beside the graphs
+REV=$(python -c "import json;print(json.load(open('$HOME/models/chatterbox/export-report.json'))['revision'])")
+cp ~/.cache/huggingface/hub/models--ResembleAI--chatterbox/snapshots/$REV/tokenizer.json ~/models/chatterbox/
+
+# 3. Hash + upload (⚠ --exclude the ORT optimisation caches if the app has run from this folder)
+python scripts/make_manifest.py --model-dir ~/models/chatterbox --all --exclude '*.ort' '*.use-ort'
+python scripts/upload_to_hf.py \
+    --model-dir ~/models/chatterbox \
+    --repo-id christopherthompson81/chatterbox-tts-onnx \
+    --exclude '*.ort' '*.use-ort' \
+    --sync-readme --create-repo
+```
+
+`upload_to_hf.py` uploads file by file and HF skips identical content, so an interrupted
+9 GB upload resumes by re-running the same command.

@@ -1179,6 +1179,237 @@
                     </Border>
                 </ScrollViewer>
             </TabItem>
+            <TabItem Header="Text-to-Speech">
+                <ScrollViewer VerticalScrollBarVisibility="Auto"
+                              HorizontalScrollBarVisibility="Disabled">
+                    <Border Padding="24,12,38,32">
+                        <StackPanel MaxWidth="500">
+
+                <!-- ─── Default engine ─────────────────────────────────────── -->
+                <TextBlock Text="Default engine"
+                           Classes="section-heading" />
+
+                <Border Background="{DynamicResource SurfaceBrush}"
+                        CornerRadius="8" Padding="16">
+                    <StackPanel>
+                        <TextBlock Text="New text-to-speech jobs start from this engine. Each job keeps its own engine, language and voice, so changing this never alters a job already in the list."
+                                   Foreground="{DynamicResource SubtextBrush}"
+                                   FontSize="11"
+                                   TextWrapping="Wrap"
+                                   Margin="0,0,0,10" />
+
+                        <RadioButton GroupName="TtsBackend"
+                                     IsChecked="{Binding IsTtsKokoro, Mode=OneWay}"
+                                     Command="{Binding SetTtsBackendCommand}"
+                                     CommandParameter="Kokoro"
+                                     Foreground="{DynamicResource TextBrush}"
+                                     Margin="0,0,0,4">
+                            <StackPanel>
+                                <TextBlock Text="Kokoro-82M"
+                                           FontWeight="SemiBold"
+                                           Foreground="{DynamicResource TextBrush}" />
+                                <TextBlock Text="Small and fast. Named English voices (American and British), adjustable speed, word timing from the model's own durations."
+                                           Foreground="{DynamicResource SubtextBrush}"
+                                           FontSize="11"
+                                           TextWrapping="Wrap" />
+                            </StackPanel>
+                        </RadioButton>
+
+                        <RadioButton GroupName="TtsBackend"
+                                     IsChecked="{Binding IsTtsOmniVoice, Mode=OneWay}"
+                                     Command="{Binding SetTtsBackendCommand}"
+                                     CommandParameter="OmniVoice"
+                                     Foreground="{DynamicResource TextBrush}"
+                                     Margin="0,0,0,4">
+                            <StackPanel>
+                                <TextBlock Text="OmniVoice-IPA"
+                                           FontWeight="SemiBold"
+                                           Foreground="{DynamicResource TextBrush}" />
+                                <TextBlock Text="Any of the phonemizer's 190+ languages through the IPA fine-tune, in a stored voice from the voice library. Large model; word timing is estimated."
+                                           Foreground="{DynamicResource SubtextBrush}"
+                                           FontSize="11"
+                                           TextWrapping="Wrap" />
+                            </StackPanel>
+                        </RadioButton>
+
+                        <RadioButton GroupName="TtsBackend"
+                                     IsChecked="{Binding IsTtsChatterbox, Mode=OneWay}"
+                                     Command="{Binding SetTtsBackendCommand}"
+                                     CommandParameter="Chatterbox"
+                                     Foreground="{DynamicResource TextBrush}">
+                            <StackPanel>
+                                <TextBlock Text="Chatterbox"
+                                           FontWeight="SemiBold"
+                                           Foreground="{DynamicResource TextBrush}" />
+                                <TextBlock Text="English voice cloning from a short reference clip. Word timing from the model's cross-attention."
+                                           Foreground="{DynamicResource SubtextBrush}"
+                                           FontSize="11"
+                                           TextWrapping="Wrap" />
+                            </StackPanel>
+                        </RadioButton>
+                    </StackPanel>
+                </Border>
+
+                <!-- ─── Engine defaults ─────────────────────────────────────── -->
+                <TextBlock Text="Engine defaults"
+                           Classes="section-heading" />
+
+                <Border Background="{DynamicResource SurfaceBrush}"
+                        CornerRadius="8" Padding="16">
+                    <StackPanel Spacing="10">
+
+                        <!-- Kokoro: speed -->
+                        <StackPanel IsVisible="{Binding IsTtsKokoro}">
+                            <TextBlock Text="{Binding KokoroSpeed, StringFormat='Speed: {0:F2}×'}"
+                                       FontWeight="SemiBold"
+                                       Foreground="{DynamicResource TextBrush}" />
+                            <Slider Minimum="0.5" Maximum="2.0" TickFrequency="0.1"
+                                    Value="{Binding KokoroSpeed}" />
+                            <TextBlock Text="The speech rate new Kokoro jobs start from; each job can change it."
+                                       Foreground="{DynamicResource SubtextBrush}"
+                                       FontSize="11" TextWrapping="Wrap" />
+                        </StackPanel>
+
+                        <!-- OmniVoice: diffusion steps + optional tokenizer -->
+                        <StackPanel IsVisible="{Binding IsTtsOmniVoice}" Spacing="10">
+                            <StackPanel>
+                                <TextBlock Text="{Binding OmniVoiceNumStep, StringFormat='Diffusion steps: {0}'}"
+                                           FontWeight="SemiBold"
+                                           Foreground="{DynamicResource TextBrush}" />
+                                <Slider Minimum="8" Maximum="48" TickFrequency="4" IsSnapToTickEnabled="True"
+                                        Value="{Binding OmniVoiceNumStep}" />
+                                <TextBlock Text="More steps: cleaner audio, slower render. 32 is the usual trade-off."
+                                           Foreground="{DynamicResource SubtextBrush}"
+                                           FontSize="11" TextWrapping="Wrap" />
+                            </StackPanel>
+                            <StackPanel>
+                                <TextBlock Text="Qwen3 tokenizer.json (optional)"
+                                           FontWeight="SemiBold"
+                                           Foreground="{DynamicResource TextBrush}" />
+                                <TextBlock Text="Found automatically beside the graphs, in OMNIVOICE_MODEL_DIR, or in the Hugging Face cache. Pick it only when none of those apply."
+                                           Foreground="{DynamicResource SubtextBrush}"
+                                           FontSize="11" TextWrapping="Wrap" Margin="0,0,0,4" />
+                                <Grid ColumnDefinitions="*,Auto,Auto">
+                                    <TextBox Grid.Column="0"
+                                             Text="{Binding OmniVoiceTokenizerJson, Mode=OneWay}"
+                                             IsReadOnly="True"
+                                             Watermark="(auto-located)"
+                                             Margin="0,0,8,0" />
+                                    <Button Grid.Column="1" Content="Browse…"
+                                            Classes="secondary-button"
+                                            Command="{Binding PickOmniVoiceTokenizerCommand}"
+                                            Margin="0,0,6,0" />
+                                    <Button Grid.Column="2" Content="Clear"
+                                            Classes="secondary-button"
+                                            Command="{Binding ClearOmniVoiceTokenizerCommand}" />
+                                </Grid>
+                            </StackPanel>
+                        </StackPanel>
+
+                        <!-- Chatterbox: default reference clip -->
+                        <StackPanel IsVisible="{Binding IsTtsChatterbox}">
+                            <TextBlock Text="Default reference voice clip"
+                                       FontWeight="SemiBold"
+                                       Foreground="{DynamicResource TextBrush}" />
+                            <TextBlock Text="A few seconds of clean speech in the voice to clone. New Chatterbox jobs start from this clip; each job can pick another."
+                                       Foreground="{DynamicResource SubtextBrush}"
+                                       FontSize="11" TextWrapping="Wrap" Margin="0,0,0,4" />
+                            <Grid ColumnDefinitions="*,Auto">
+                                <TextBox Grid.Column="0"
+                                         Text="{Binding ChatterboxVoicePath, Mode=OneWay}"
+                                         IsReadOnly="True"
+                                         Watermark="No clip picked"
+                                         Margin="0,0,8,0" />
+                                <Button Grid.Column="1" Content="Browse…"
+                                        Classes="secondary-button"
+                                        Command="{Binding PickChatterboxVoiceCommand}" />
+                            </Grid>
+                        </StackPanel>
+                    </StackPanel>
+                </Border>
+
+                <!-- ─── Models & data ───────────────────────────────────────── -->
+                <TextBlock Text="Models &amp; data"
+                           Classes="section-heading" />
+
+                <ItemsControl ItemsSource="{Binding TtsModelSets}">
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                            <Border Background="{DynamicResource SurfaceBrush}"
+                                    CornerRadius="8" Padding="16"
+                                    Margin="0,0,0,8">
+                                <StackPanel Spacing="6">
+                                    <TextBlock Text="{Binding Name}"
+                                               FontWeight="SemiBold"
+                                               Foreground="{DynamicResource TextBrush}" />
+                                    <TextBlock Text="{Binding Description}"
+                                               Foreground="{DynamicResource SubtextBrush}"
+                                               FontSize="11"
+                                               TextWrapping="Wrap" />
+
+                                    <!-- Status + location -->
+                                    <TextBlock Text="{Binding StatusText}"
+                                               Foreground="{Binding StatusBrush}"
+                                               TextWrapping="Wrap" />
+                                    <TextBlock Text="{Binding LocationText}"
+                                               Foreground="{DynamicResource SubtextBrush}"
+                                               FontSize="10"
+                                               TextWrapping="Wrap" />
+                                    <TextBlock Text="{Binding UpdateStatusText}"
+                                               IsVisible="{Binding UpdateStatusText, Converter={x:Static StringConverters.IsNotNullOrEmpty}}"
+                                               Foreground="{DynamicResource SubtextBrush}"
+                                               FontSize="11"
+                                               TextWrapping="Wrap" />
+
+                                    <!-- Download progress (only during active download) -->
+                                    <StackPanel Spacing="4"
+                                                IsVisible="{Binding IsDownloading}">
+                                        <ProgressBar Value="{Binding DownloadPercent}"
+                                                     Minimum="0"
+                                                     Maximum="100" />
+                                        <TextBlock Text="{Binding DownloadStatusText}"
+                                                   Foreground="{DynamicResource SubtextBrush}"
+                                                   FontSize="11"
+                                                   TextWrapping="Wrap" />
+                                    </StackPanel>
+
+                                    <WrapPanel Orientation="Horizontal">
+                                        <Button Content="Choose folder…"
+                                                Classes="secondary-button"
+                                                Command="{Binding PickLocationCommand}"
+                                                IsEnabled="{Binding !IsDownloading}"
+                                                Margin="0,0,8,0" />
+                                        <Button Content="Use default folder"
+                                                Classes="secondary-button"
+                                                Command="{Binding UseDefaultLocationCommand}"
+                                                IsVisible="{Binding HasCustomLocation}"
+                                                IsEnabled="{Binding !IsDownloading}"
+                                                Margin="0,0,8,0" />
+                                        <Button Content="Download"
+                                                Command="{Binding DownloadCommand}"
+                                                IsVisible="{Binding CanDownload}"
+                                                IsEnabled="{Binding !IsDownloading}"
+                                                Margin="0,0,8,0" />
+                                        <Button Content="Update"
+                                                Command="{Binding UpdateCommand}"
+                                                IsVisible="{Binding HasOutdatedFiles}"
+                                                IsEnabled="{Binding !IsDownloading}"
+                                                Margin="0,0,8,0" />
+                                        <Button Content="Cancel"
+                                                Classes="secondary-button"
+                                                Command="{Binding CancelDownloadCommand}"
+                                                IsVisible="{Binding IsDownloading}" />
+                                    </WrapPanel>
+                                </StackPanel>
+                            </Border>
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+
+                        </StackPanel>
+                    </Border>
+                </ScrollViewer>
+            </TabItem>
         </TabControl>
 
         <!-- ─── Footer ───────────────────────────────────────────────────────── -->

@@ -64,3 +64,31 @@ the graph; the model takes already-tokenized ids.
 | `audio` (out) | `[samples]` | float32 | 24 kHz waveform |
 
 `tokens` and `samples` are dynamic axes.
+
+## Publishing to HuggingFace
+
+The bundle ships as
+[`christopherthompson81/kokoro-82m-onnx`](https://huggingface.co/christopherthompson81/kokoro-82m-onnx)
+(`kokoro.onnx` + `voices/*.bin` + `manifest.json`); the model card's source is
+[`scripts/hf_readmes/kokoro-82m-onnx/README.md`](../hf_readmes/kokoro-82m-onnx/README.md), and
+`Vernacula.Avalonia`'s Settings → Text-to-Speech tab downloads from this repo
+(`ModelManagerService.KokoroRepoBase`).
+
+```bash
+# 1. Export the graph and the English voice packs into one folder
+scripts/kokoro_export/.venv/bin/python scripts/kokoro_export/export_kokoro.py --out ~/models/kokoro --opset 17
+scripts/kokoro_export/.venv/bin/python scripts/kokoro_export/export_voices.py --out ~/models/kokoro
+
+# 2. Hash + upload. ⚠ --exclude the ONNX Runtime optimisation caches: a folder the app has
+#    run from holds kokoro.opt.<ep>.<hash>.ort files (300 MB each) beside the graph, and
+#    --all would ship them.
+python scripts/make_manifest.py --model-dir ~/models/kokoro --all --exclude '*.ort' '*.use-ort'
+python scripts/upload_to_hf.py \
+    --model-dir ~/models/kokoro \
+    --repo-id christopherthompson81/kokoro-82m-onnx \
+    --exclude '*.ort' '*.use-ort' \
+    --sync-readme --create-repo
+```
+
+The app's download list names the 28 English voices explicitly (`ModelManagerService.KokoroVoices`);
+if `export_voices.py --all` ever ships more, add them there too or they will not be fetched.
