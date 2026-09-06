@@ -668,6 +668,7 @@ internal partial class SettingsViewModel : ObservableObject
     private async Task RefreshHardwareAsync(bool force)
     {
         IsCheckingHardware = true;
+        var bf16Before = HardwareInfo.SupportsBf16Acceleration();
         bool cudaOk = false;
         string? cudaMessage = null;
 
@@ -700,6 +701,17 @@ internal partial class SettingsViewModel : ObservableObject
         OnPropertyChanged(nameof(CanUseVibeVoiceAsr));
         OnPropertyChanged(nameof(VibeVoiceAsrLabel));
         OnPropertyChanged(nameof(VibeVoiceAsrDescription));
+
+        // ⚠ AND WHAT DEPENDS ON IT. A forced refresh can flip SupportsBf16Acceleration, which
+        // decides which Granite bundle is active, so the model verdicts on this window were
+        // computed against an answer that may no longer hold. Re-checking hardware without
+        // re-checking models leaves the two disagreeing.
+        if (force && bf16Before != HardwareInfo.SupportsBf16Acceleration())
+        {
+            await CheckModelsAsync();
+            await CheckDiariZenModelsAsync();
+            await CheckVoxLinguaModelsAsync();
+        }
 
         if (!CudaEpWorking && SelectedAsrBackend == AsrBackend.VibeVoice)
             SelectedAsrBackend = AsrBackend.Parakeet;

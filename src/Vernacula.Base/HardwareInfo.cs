@@ -307,6 +307,10 @@ public static class HardwareInfo
         var note = CudaProbeNote;
         // With a note, the probe knows what is wrong and says it. Without one, CUDA and cuDNN both
         // checked out, so the major version is NOT the likely cause and must not lead.
+        if (!OperatingSystem.IsWindows() && !OperatingSystem.IsLinux())
+            return "The CUDA execution provider is not available on this platform; CUDA builds of "
+                 + "ONNX Runtime exist for Windows and Linux only.";
+
         return note is not null
             ? $"Could not initialise the CUDA execution provider. {note}"
             : "Could not initialise the CUDA execution provider. The CUDA "
@@ -346,7 +350,10 @@ public static class HardwareInfo
         if (!OperatingSystem.IsWindows() && !OperatingSystem.IsLinux())
             return false;
 
-        if (!IsCudaToolkitInstalled() || !IsCudnnInstalled())
+        // One snapshot: asking through the two properties could take the answers from either side
+        // of a Re-check landing between them.
+        var probe = Probe;
+        if (!probe.Runtime || !probe.Cudnn)
             return false;
 
         var (totalMb, _) = GetGpuMemoryMb();
@@ -393,7 +400,8 @@ public static class HardwareInfo
     /// Result is cached after the first call: the answer is fixed for the
     /// lifetime of the process (GPUs don't hot-swap), and the underlying
     /// NVML init/get/shutdown cycle is non-trivial when called repeatedly
-    /// from settings/UI flows.
+    /// from settings/UI flows. <see cref="InvalidateCudaProbes"/> clears it too,
+    /// because a CUDA installed mid-session changes this answer as well.
     /// </summary>
     public static bool SupportsBf16Acceleration() => Volatile.Read(ref _bf16Cache).Value;
 
@@ -587,14 +595,15 @@ public static class HardwareInfo
                         if (name.StartsWith($"cudnn64_{RequiredCudnnMajor}", StringComparison.OrdinalIgnoreCase))
                             cudnnDirs.Add(dir);
                     }
-                    // Everything else the provider loads. cuFFT and cuRAND version independently of
-                    // the CUDA major, so they cannot IDENTIFY an install -- but once we have decided
-                    // to use one, their directories still belong on the search path, which a
-                    // packaged app needs because its DLL search is restricted.
-                    else if (name.StartsWith("cublas", StringComparison.OrdinalIgnoreCase)
-                          || name.StartsWith("cufft", StringComparison.OrdinalIgnoreCase)
-                          || name.StartsWith("curand", StringComparison.OrdinalIgnoreCase)
-                          || name.StartsWith("nvrtc", StringComparison.OrdinalIgnoreCase))
+                    // ⚠ ONLY LIBRARIES THAT NAME THE MAJOR MAY IDENTIFY A DIRECTORY. cuFFT and
+                    // cuRAND version independently -- curand64_10.dll is called that under both
+                    // CUDA 12 and 13 -- so a directory known only by them could be CUDA 12's bin,
+                    // and adding it would let the provider bind CUDA 12's cuRAND beside a CUDA 13
+                    // cudart. In a stock toolkit they sit in the cudart directory anyway, which is
+                    // already on the list.
+                    else if (name.StartsWith($"cublas64_{RequiredCudaMajor}", StringComparison.OrdinalIgnoreCase)
+                          || name.StartsWith($"cublasLt64_{RequiredCudaMajor}", StringComparison.OrdinalIgnoreCase)
+                          || name.StartsWith($"nvrtc64_{RequiredCudaMajor}", StringComparison.OrdinalIgnoreCase))
                     {
                         depDirs.Add(dir);
                     }

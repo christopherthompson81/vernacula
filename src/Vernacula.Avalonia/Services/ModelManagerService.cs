@@ -593,9 +593,14 @@ internal class ModelManagerService
         }
         catch (Exception ex)
         {
-            string msg = $"CUDA check failed on {GetPlatformName()}.\nException: {ex.GetType().Name}\n{ex.Message}\n\nInner: {ex.InnerException?.Message}\n\nStack:\n{ex.StackTrace}";
-            File.WriteAllText(logPath, msg);
-            return (false, msg);
+            // ⚠ TWO AUDIENCES. The log gets everything; the caller gets a line a UI can show.
+            // Returning the dump meant a settings label whose first line was "CUDA check failed on
+            // Linux." -- the failure named, the reason buried under a stack trace.
+            string detail = $"CUDA check failed on {GetPlatformName()}.\nException: {ex.GetType().Name}\n{ex.Message}\n\nInner: {ex.InnerException?.Message}\n\nStack:\n{ex.StackTrace}";
+            File.WriteAllText(logPath, detail);
+            string summary = $"{ex.GetType().Name}: {ex.Message}"
+                           + (ex.InnerException is null ? "" : $" ({ex.InnerException.Message})");
+            return (false, summary);
         }
     }
 
