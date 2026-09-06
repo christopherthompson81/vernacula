@@ -285,6 +285,14 @@ public class MarkdownTextExtractorTests
             string srcSlice = src.Substring(range.SourceStart, range.SourceLength);
             Assert.Contains(outSlice, srcSlice, StringComparison.Ordinal);
         }
+
+        // BlockSpan is documented in the same output-text terms and overruns
+        // on the same inputs, so it carries the same invariant.
+        foreach (var block in r.Blocks)
+        {
+            Assert.InRange(block.OutputStart, 0, r.Text.Length);
+            Assert.InRange(block.OutputStart + block.OutputLength, 0, r.Text.Length);
+        }
     }
 
     // The three shapes from the bug report, pinned at exact offsets. Before
@@ -337,6 +345,9 @@ public class MarkdownTextExtractorTests
         var last = r.Ranges[^1];
         Assert.Equal(r.Text.Length, last.OutputStart + last.OutputLength);
         Assert.Equal("hello", r.Text.Substring(last.OutputStart, last.OutputLength));
+
+        var block = Assert.Single(r.Blocks);
+        Assert.Equal("hello", r.Text.Substring(block.OutputStart, block.OutputLength));
     }
 
     // A backslash escape emits one character for two source ones, so the

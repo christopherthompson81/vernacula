@@ -159,6 +159,25 @@ public sealed class MarkdownTextExtractor
         }
     }
 
+    // Same clamp for the block index. Walks the whole list rather than
+    // stopping at the first entry that fits: block spans are built as their
+    // blocks complete, and that is a weaker ordering guarantee than the
+    // ranges have.
+    private void TrimBlocksToOutput(int outputLength)
+    {
+        for (int i = _blocks.Count - 1; i >= 0; i--)
+        {
+            var b = _blocks[i];
+            if (b.OutputStart + b.OutputLength <= outputLength) continue;
+            if (b.OutputStart >= outputLength)
+            {
+                _blocks.RemoveAt(i);
+                continue;
+            }
+            _blocks[i] = b with { OutputLength = outputLength - b.OutputStart };
+        }
+    }
+
     private MarkdownExtractionResult Run(string markdown)
     {
         _source = markdown;
@@ -176,8 +195,11 @@ public sealed class MarkdownTextExtractor
         // whose output span already ran past the text: the literal "hello "
         // in "hello ![img](/x.png)" records 6 characters, but Text is
         // "hello". Clamp so every entry is sliceable against Text — a
-        // consumer walking the index has no other way to know.
+        // consumer walking the index has no other way to know. BlockSpan is
+        // documented in the same output-text terms and overruns on the same
+        // inputs, so it gets the same treatment.
         TrimRangesToOutput(_sb.Length);
+        TrimBlocksToOutput(_sb.Length);
         return new MarkdownExtractionResult(_sb.ToString(), _ranges, _blocks);
     }
 

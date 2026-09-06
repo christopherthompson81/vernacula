@@ -81,9 +81,17 @@ git ls-files '*.md' | grep -v '^external/'
 
 **Implication.** This was not an edge case — 96% of the repo's own markdown
 had a broken index, because any document long enough to contain one quote or
-one wrapped list item has them. It went unnoticed because nothing downstream
-of `SourceStart` fails loudly; the karaoke highlight just lands on the wrong
-source text.
+one wrapped list item has them.
+
+**Why nobody noticed, stated accurately:** `TextRange.SourceStart` and
+`SourceLength` have *no consumer in the tree*. The only reader of `Ranges` is
+`FindStyle` in `MainViewModel`, which uses `Style` and compares `OutputStart`
+/`OutputLength` only. The source index is being built ahead of forced
+alignment, so none of the 19,894 wrong entries was ever rendered. An earlier
+draft of this note said the karaoke highlight "lands on the wrong source
+text"; that overstated it — the highlight does not read these fields yet.
+The fix is therefore low-risk rather than urgent, which is worth saying in
+that direction: it corrects the index before anything depends on it.
 
 The single remaining case is not a defect: an inline code span inside a block
 quote, whose document extent legitimately includes the `> ` continuation
@@ -96,7 +104,8 @@ srcSlice)` on one construct each, which passes by luck whenever the wrong
 offset still lands inside a long enough source slice. The new theory asserts
 the same property across the container shapes that were broken, and three
 `[Fact]`s pin the bug report's exact offsets (16, not 12; 2, not 0; 13, not
-0). 13 of the 17 new cases fail against the unfixed extractor.
+0). After the additions in Runs 4 and 5, 17 of the 21 new cases fail against
+the unfixed extractor.
 
 ## Run 4 — 2026-09-05 — review follow-up: the output side of the same index
 
@@ -138,7 +147,37 @@ than only asserted around, with three such inputs added to the theory.
   immediately after the heading marker, and correcting it would mean
   second-guessing Markdig's own position. Left alone, recorded here.
 
-`CodeInline` was the last path still writing raw span arithmetic, and the
-source of the single surviving bad range repo-wide; it now goes through the
-same helper, so "every recorded range is sliceable" is total rather than
-per-case.
+`CodeInline` was the last path still writing raw span arithmetic; it now goes
+through the same helper, so "every recorded range is sliceable" is total
+rather than per-case. To be precise about what that buys: the reroute is
+provably a no-op on real input (code-inline ranges are byte-identical across
+all 425 files), and it does *not* fix the one surviving bad range, which is
+correct as recorded. It closes the last path that could produce an
+unsliceable one.
+
+## Run 5 — 2026-09-05 — review round two: the same overrun in the block index
+
+**Question.** `TrimRangesToOutput` clamps `_ranges`. `_blocks` is built from
+the same builder offsets and documented in the same output-text terms
+("spans are in output order"). Does it overrun on the same inputs?
+
+**Raw finding.** Yes, on all of them:
+
+```
+"hello ![img](/x.png)"  → Text="hello" (5)   Paragraph[0,6]  OVERRUN
+"> quoted ![badge](/b)" → Text="quoted"(6)   Quote[0,7]      OVERRUN
+"a *b ![x](y)*"         → Text="a b"   (3)   Paragraph[0,4]  OVERRUN
+```
+
+**Implication.** Same defect, same shapes, one list over. Latent for the same
+reason and one step further removed — the only consumer, `FindBlockIndex`,
+does a containment lookup and never slices `Text`. Fixed alongside rather than
+left as the twin of a bug fixed inches away, and the invariant test now walks
+`Blocks` as well as `Ranges`.
+
+`TrimBlocksToOutput` walks the whole list instead of stopping at the first
+entry that fits. The ranges version can stop early because both `_ranges.Add`
+calls sit immediately after an append to `_sb`, which is only truncated after
+the walk — so output order is monotonic by construction. Block spans are
+recorded as their blocks complete, which is a weaker guarantee, and the list
+is short enough that relying on it buys nothing.
