@@ -56,6 +56,10 @@ public class CudaDetectionTests
     [Fact]
     public void TheProbeAnswersAndSaysWhyWhenItSaysNo()
     {
+        // Only Windows and Linux are probed at all; elsewhere there is nothing to explain.
+        if (!OperatingSystem.IsWindows() && !OperatingSystem.IsLinux())
+            Assert.Skip("CUDA detection only applies to Windows and Linux.");
+
         // Whatever this machine has, the invariant holds: a false answer carries a reason, and a
         // true one does not need one. This is what a settings window shows the user.
         HardwareInfo.InvalidateCudaProbes();
@@ -65,6 +69,15 @@ public class CudaDetectionTests
         Assert.Equal(runtime, HardwareInfo.CudaRuntimeNote is null);
         Assert.Equal(cudnn, HardwareInfo.CudnnNote is null);
         Assert.Contains($"CUDA {HardwareInfo.RequiredCudaMajor}", HardwareInfo.CudaUnavailableMessage());
+    }
+
+    [Fact]
+    public void ACudnnFromAnotherMajorDoesNotQualify()
+    {
+        // Windows accepted any cudnn*.dll while Linux insisted on cuDNN 9. A cuDNN 8 copied into a
+        // CUDA 13 toolkit satisfies every path rule, so the major has to be checked on the name.
+        Assert.True(HardwareInfo.NamesRequiredMajor(P("opt", "cudnn", "13.0")));
+        Assert.False(HardwareInfo.NamesRequiredMajor(P("opt", "cudnn", "8")));
     }
 
     [Fact]

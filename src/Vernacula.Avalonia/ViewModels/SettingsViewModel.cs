@@ -266,6 +266,20 @@ internal partial class SettingsViewModel : ObservableObject
     [ObservableProperty] private bool   _cudaToolkitInstalled = false;
     [ObservableProperty] private bool   _cudnnInstalled       = false;
     [ObservableProperty] private bool   _cudaEpWorking        = false;
+
+    /// <summary>
+    /// Why CUDA is unavailable, when the probe worked it out — a CUDA of the wrong major, a library
+    /// present but off the loader path, no cuDNN at all.
+    ///
+    /// ⚠ DELIBERATELY NOT LOCALISED. It names file paths and shell commands (`ldconfig`,
+    /// `/etc/ld.so.conf.d`), which do not translate, and it is the only thing standing between a
+    /// user whose GPU went quiet and a working install.
+    /// </summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(HasCudaProbeNote))]
+    private string _cudaProbeNote = "";
+
+    public bool HasCudaProbeNote => !string.IsNullOrEmpty(CudaProbeNote);
     [ObservableProperty] private bool   _isCheckingHardware   = false;
     [ObservableProperty] private string _batchCeilingText     = "";
 
@@ -663,6 +677,7 @@ internal partial class SettingsViewModel : ObservableObject
             (cudaOk, _)          = _modelMgr.CheckCuda();
         });
         CudaEpWorking = cudaOk;
+        CudaProbeNote = cudaOk ? "" : (HardwareInfo.CudaProbeNote ?? "");
         OnPropertyChanged(nameof(CanUseVibeVoiceAsr));
         OnPropertyChanged(nameof(VibeVoiceAsrLabel));
         OnPropertyChanged(nameof(VibeVoiceAsrDescription));

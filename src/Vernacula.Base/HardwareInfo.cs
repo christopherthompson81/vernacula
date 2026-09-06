@@ -165,15 +165,24 @@ public static class HardwareInfo
 
     private static CudaProbeResult? _probe;
 
+    /// <summary>Bumped by every invalidation, so a probe that began earlier does not publish its
+    /// answer over a newer one. Without it a Re-check could be undone by an in-flight probe and go
+    /// on reporting the pre-install state for the rest of the process.</summary>
+    private static int _probeGeneration;
+
     private static CudaProbeResult Probe
     {
         get
         {
             var current = Volatile.Read(ref _probe);
             if (current is not null) return current;
-            // A race recomputes rather than tearing: both writers publish an equivalent record.
+
+            var startedAt = Volatile.Read(ref _probeGeneration);
             var fresh = RunProbe();
-            Volatile.Write(ref _probe, fresh);
+            // Publish only if nothing invalidated while we were looking. Two probes of the same
+            // generation produce equivalent records, so either may win.
+            if (Volatile.Read(ref _probeGeneration) == startedAt)
+                Volatile.Write(ref _probe, fresh);
             return fresh;
         }
     }
@@ -220,23 +229,22 @@ public static class HardwareInfo
             return (true, null);
         }
 
-        foreach (var dir in GetLinuxCudaLibraryDirs())
+        // Every candidate across every directory, then decide: returning on the first directory
+        // that merely CONTAINS a match let one broken copy hide both a good copy further down and
+        // the "not on the loader path" diagnosis, which is the one with an actionable fix.
+        var candidates = GetLinuxCudaLibraryDirs().SelectMany(d => SafeGetFiles(d, filePattern)).ToList();
+        foreach (var file in candidates)
         {
-            var candidates = SafeGetFiles(dir, filePattern).ToList();
-            if (candidates.Count == 0) continue;
-
-            foreach (var file in candidates)
-            {
-                if (!NativeLibrary.TryLoad(file, out var byPath)) continue;
-                NativeLibrary.Free(byPath);
-                return (false, $"{label} was found at {file} but is not on the loader path, so the "
-                             + "CUDA execution provider cannot load it. Add its directory to "
-                             + "/etc/ld.so.conf.d (then run ldconfig) or to LD_LIBRARY_PATH.");
-            }
-
-            return (false, $"{label} was found in {dir} but could not be loaded even by full path, "
-                         + "which usually means one of its own dependencies is missing.");
+            if (!NativeLibrary.TryLoad(file, out var byPath)) continue;
+            NativeLibrary.Free(byPath);
+            return (false, $"{label} was found at {file} but is not on the loader path, so the "
+                         + "CUDA execution provider cannot load it. Add its directory to "
+                         + "/etc/ld.so.conf.d (then run ldconfig) or to LD_LIBRARY_PATH.");
         }
+
+        if (candidates.Count > 0)
+            return (false, $"{label} was found ({candidates[0]}) but could not be loaded, even by "
+                         + "full path, which usually means one of its own dependencies is missing.");
 
         return (false, absentNote);
     }
@@ -283,7 +291,10 @@ public static class HardwareInfo
     {
         get
         {
-            var notes = new[] { CudaRuntimeNote, CudnnNote }.Where(n => n is not null).ToArray();
+            // One snapshot: reading the two notes through their own properties could take them from
+            // different generations if a refresh landed between the reads.
+            var probe = Probe;
+            var notes = new[] { probe.RuntimeNote, probe.CudnnNote }.Where(n => n is not null).ToArray();
             return notes.Length == 0 ? null : string.Join(" ", notes);
         }
     }
@@ -312,7 +323,11 @@ public static class HardwareInfo
     /// open is exactly when someone presses it. (An LD_LIBRARY_PATH change still needs a restart:
     /// the loader read it at process start.)
     /// </summary>
-    public static void InvalidateCudaProbes() => Volatile.Write(ref _probe, null);
+    public static void InvalidateCudaProbes()
+    {
+        Interlocked.Increment(ref _probeGeneration);
+        Volatile.Write(ref _probe, null);
+    }
 
     /// <summary>
     /// True when the current machine appears capable of initializing CUDA execution:
@@ -562,7 +577,12 @@ public static class HardwareInfo
                     else if (name.StartsWith("cudnn", StringComparison.OrdinalIgnoreCase))
                     {
                         anyCudnn = true;
-                        cudnnDirs.Add(dir);
+                        // cudnn64_9.dll specifically, matching what Linux asks the loader for. A
+                        // cuDNN 8 copied into a CUDA 13 toolkit satisfies every path rule below and
+                        // still cannot be loaded by the provider, so accepting it would put the
+                        // wrong major on the DLL search path, which is what this exists to prevent.
+                        if (name.StartsWith("cudnn64_9", StringComparison.OrdinalIgnoreCase))
+                            cudnnDirs.Add(dir);
                     }
                     // cuFFT and cuRAND version independently of the CUDA major (CUDA 12 ships cuFFT
                     // 11, CUDA 13 ships 12), so they cannot identify a directory; these can.
@@ -595,8 +615,8 @@ public static class HardwareInfo
                 : $"No CUDA {RequiredCudaMajor} runtime was found.";
         var cudnnNote = cudnn ? null
             : anyCudnn
-                ? $"cuDNN was found, but not one belonging to a CUDA {RequiredCudaMajor} install, so "
-                  + "the CUDA execution provider cannot load it."
+                ? $"cuDNN was found, but not cuDNN 9 belonging to a CUDA {RequiredCudaMajor} "
+                  + "install, so the CUDA execution provider cannot load it."
                 : "No cuDNN was found. The CUDA execution provider needs cuDNN 9 built for CUDA "
                   + $"{RequiredCudaMajor}.";
 

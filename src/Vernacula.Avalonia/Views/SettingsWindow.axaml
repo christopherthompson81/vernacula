@@ -336,6 +336,15 @@
                                                Classes="check-label" />
                                 </Grid>
 
+                                <!-- What the probe found, when it found something. Untranslated on
+                                     purpose: it names paths and shell commands. -->
+                                <TextBlock Text="{Binding CudaProbeNote}"
+                                           IsVisible="{Binding HasCudaProbeNote}"
+                                           Foreground="{DynamicResource SubtextBrush}"
+                                           FontSize="12"
+                                           TextWrapping="Wrap"
+                                           Margin="22,0,0,6" />
+
                             </StackPanel>
 
                             <!-- No GPU message — shown when no acceleratable GPU is present -->
