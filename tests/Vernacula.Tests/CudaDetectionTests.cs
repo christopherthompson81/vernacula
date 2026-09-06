@@ -4,53 +4,18 @@ using Vernacula.Base;
 namespace Vernacula.Tests;
 
 /// <summary>
-/// The path rules behind Windows CUDA detection. They exist because two cuDNN layouts are both
-/// legitimate and a rule that suits one breaks the other — which is exactly how earlier attempts
-/// at this failed, each time on the layout the previous fix had not considered.
+/// What CUDA detection promises: an answer about the major this build actually links, and a reason
+/// whenever the answer is no.
 /// </summary>
 public class CudaDetectionTests
 {
-    private static string P(params string[] parts) => string.Join(System.IO.Path.DirectorySeparatorChar, parts);
-
     [Fact]
-    public void StandaloneCudnnTreeNamesTheCudaVersionInItsPath()
+    public void TheRequiredMajorsAreWhatOnnxRuntime129Links()
     {
-        // C:\Program Files\NVIDIA\CUDNN\v9.10\bin\13.0\ — holds cudnn64_9.dll and nothing else, so
-        // a rule that wants a cudart beside it would drop the whole install.
-        Assert.True(HardwareInfo.NamesRequiredMajor(P("C:", "Program Files", "NVIDIA", "CUDNN", "v9.10", "bin", "13.0")));
-        Assert.True(HardwareInfo.NamesRequiredMajor(P("opt", "cudnn", "13")));
-    }
-
-    [Fact]
-    public void ACudnnTreeForAnotherCudaIsNotOurs()
-    {
-        Assert.False(HardwareInfo.NamesRequiredMajor(P("C:", "Program Files", "NVIDIA", "CUDNN", "v9.10", "bin", "12.8")));
-        Assert.False(HardwareInfo.NamesRequiredMajor(P("C:", "Program Files", "NVIDIA", "CUDNN", "v9.10", "bin")));
-    }
-
-    [Fact]
-    public void ToolkitBinAndItsX64SubdirectoryAreTheSameInstall()
-    {
-        // The other legitimate layout: cuDNN copied into <toolkit>\bin, while CUDA 13 keeps its
-        // runtime DLLs in <toolkit>\bin\x64. A rule requiring the same directory drops this one.
-        var toolkit = P("C:", "Program Files", "NVIDIA GPU Computing Toolkit", "CUDA", "v13.0");
-        Assert.Equal(toolkit, HardwareInfo.ToolkitRootOf(P(toolkit, "bin")));
-        Assert.Equal(toolkit, HardwareInfo.ToolkitRootOf(P(toolkit, "bin", "x64")));
-    }
-
-    [Fact]
-    public void SeparateToolkitsDoNotShareARoot()
-    {
-        var v13 = P("C:", "CUDA", "v13.0", "bin", "x64");
-        var v12 = P("C:", "CUDA", "v12.8", "bin");
-        Assert.NotEqual(HardwareInfo.ToolkitRootOf(v13), HardwareInfo.ToolkitRootOf(v12));
-    }
-
-    [Fact]
-    public void ADirectoryWithNoBinSegmentIsItsOwnRoot()
-    {
-        var loose = P("C:", "some", "place");
-        Assert.Equal(loose, HardwareInfo.ToolkitRootOf(loose));
+        // The provider names these in its own dependencies: libcudart.so.13 and libcudnn.so.9.
+        // If a future runtime moves either, these constants are the one place to change.
+        Assert.Equal(13, HardwareInfo.RequiredCudaMajor);
+        Assert.Equal(9, HardwareInfo.RequiredCudnnMajor);
     }
 
     [Fact]
@@ -60,24 +25,36 @@ public class CudaDetectionTests
         if (!OperatingSystem.IsWindows() && !OperatingSystem.IsLinux())
             Assert.Skip("CUDA detection only applies to Windows and Linux.");
 
-        // Whatever this machine has, the invariant holds: a false answer carries a reason, and a
-        // true one does not need one. This is what a settings window shows the user.
         HardwareInfo.InvalidateCudaProbes();
         var runtime = HardwareInfo.IsCudaToolkitInstalled();
         var cudnn = HardwareInfo.IsCudnnInstalled();
 
+        // A "no" always carries a reason a user can act on; a "yes" needs none.
         Assert.Equal(runtime, HardwareInfo.CudaRuntimeNote is null);
         Assert.Equal(cudnn, HardwareInfo.CudnnNote is null);
-        Assert.Contains($"CUDA {HardwareInfo.RequiredCudaMajor}", HardwareInfo.CudaUnavailableMessage());
     }
 
     [Fact]
-    public void ACudnnFromAnotherMajorDoesNotQualify()
+    public void TheMessageLeadsWithWhateverTheProbeFound()
     {
-        // Windows accepted any cudnn*.dll while Linux insisted on cuDNN 9. A cuDNN 8 copied into a
-        // CUDA 13 toolkit satisfies every path rule, so the major has to be checked on the name.
-        Assert.True(HardwareInfo.NamesRequiredMajor(P("opt", "cudnn", "13.0")));
-        Assert.False(HardwareInfo.NamesRequiredMajor(P("opt", "cudnn", "8")));
+        if (!OperatingSystem.IsWindows() && !OperatingSystem.IsLinux())
+            Assert.Skip("CUDA detection only applies to Windows and Linux.");
+
+        HardwareInfo.InvalidateCudaProbes();
+        var message = HardwareInfo.CudaUnavailableMessage();
+        var note = HardwareInfo.CudaProbeNote;
+
+        if (note is not null)
+        {
+            Assert.Contains(note, message);
+        }
+        else
+        {
+            // Both halves checked out, so the major version is not the likely cause and must not be
+            // blamed: the message should point at the driver, the GPU, or the build instead.
+            Assert.Contains("driver", message);
+            Assert.DoesNotContain("older CUDA runtime cannot load it", message);
+        }
     }
 
     [Fact]

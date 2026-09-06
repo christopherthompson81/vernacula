@@ -147,6 +147,11 @@ public static class HardwareInfo
     /// </summary>
     public const int RequiredCudaMajor = 13;
 
+    /// <summary>The cuDNN major the CUDA provider loads (libcudnn.so.9 / cudnn64_9.dll). Named for
+    /// the same reason as <see cref="RequiredCudaMajor"/>: when ONNX Runtime moves to cuDNN 10, a
+    /// literal 9 scattered through this file would report "no cuDNN" on a correct install.</summary>
+    public const int RequiredCudnnMajor = 9;
+
     /// <summary>
     /// True if the CUDA runtime this build needs can actually be loaded.
     /// </summary>
@@ -209,10 +214,11 @@ public static class HardwareInfo
         // ⚠ THE SONAME, NOT THE BARE libcudnn.so. That one is the development symlink and on a
         // cuDNN 8 install it points at libcudnn.so.8, which the provider cannot use.
         var (cudnn, cudnnNote) = ProbeLinuxLibrary(
-            "libcudnn.so.9",
-            "libcudnn.so.9*",
-            "cuDNN 9",
-            $"No cuDNN 9 was found. The CUDA execution provider needs cuDNN 9 built for CUDA {RequiredCudaMajor}.");
+            $"libcudnn.so.{RequiredCudnnMajor}",
+            $"libcudnn.so.{RequiredCudnnMajor}*",
+            $"cuDNN {RequiredCudnnMajor}",
+            $"No cuDNN {RequiredCudnnMajor} was found. The CUDA execution provider needs cuDNN "
+            + $"{RequiredCudnnMajor} built for CUDA {RequiredCudaMajor}.");
 
         return new CudaProbeResult(runtime, cudnn, runtimeNote, cudnnNote, Array.Empty<string>());
     }
@@ -299,11 +305,15 @@ public static class HardwareInfo
     public static string CudaUnavailableMessage()
     {
         var note = CudaProbeNote;
-        return "Could not initialise the CUDA execution provider. This build links CUDA "
-            + $"{RequiredCudaMajor}, and an older CUDA runtime cannot load it, because the major "
-            + "version is part of the library name."
-            + (note is null ? " A missing driver, no visible GPU, or a CPU-only build of ONNX "
-                              + "Runtime will also report this." : $" {note}");
+        // With a note, the probe knows what is wrong and says it. Without one, CUDA and cuDNN both
+        // checked out, so the major version is NOT the likely cause and must not lead.
+        return note is not null
+            ? $"Could not initialise the CUDA execution provider. {note}"
+            : "Could not initialise the CUDA execution provider. The CUDA "
+              + $"{RequiredCudaMajor} runtime and cuDNN {RequiredCudnnMajor} were both found, so "
+              + "the likely causes are a missing or too-old driver, no GPU visible to this process "
+              + "(a container without the NVIDIA devices passed through, say), or a CPU-only build "
+              + "of ONNX Runtime.";
     }
 
     /// <summary>
@@ -517,21 +527,19 @@ public static class HardwareInfo
 
 
     /// <summary>
-    /// Windows: which directories hold a CUDA of the major this build needs, and whether cuDNN is
-    /// among them.
+    /// Windows: is there a CUDA of the major this build needs, and a cuDNN it can use?
     ///
-    /// ⚠ TWO cuDNN LAYOUTS ARE BOTH LEGITIMATE, AND A RULE THAT SUITS ONE BREAKS THE OTHER:
+    /// ⚠ THE MAJOR IS CHECKED ON cudart, WHICH CARRIES IT, AND NOT ON cuDNN, WHICH DOES NOT.
+    /// cudart64_13.dll names its CUDA; cudnn64_9.dll is called that whether it was built for CUDA
+    /// 12 or 13, so no rule over file names or directory layout can tell those apart. An earlier
+    /// attempt inferred it from the directory instead -- a cuDNN counted only if its path named the
+    /// CUDA version or it sat under the same toolkit as a matching cudart -- and that rejected the
+    /// commonest Windows install of all: unzip cuDNN to C:\cudnn and put it on PATH. Being strict
+    /// about something unknowable cost a working configuration and bought nothing.
     ///
-    ///   • NVIDIA's standalone tree, C:\Program Files\NVIDIA\CUDNN\v9.x\bin\13.0\, holds
-    ///     cudnn64_9.dll and nothing else. Requiring a cudart beside it drops this one.
-    ///   • The documented copy-into-the-toolkit install puts cudnn64_9.dll in &lt;toolkit&gt;\bin, while
-    ///     CUDA 13 puts its runtime DLLs in &lt;toolkit&gt;\bin\x64. Requiring the SAME directory as
-    ///     cudart drops this one.
-    ///
-    /// So a cuDNN directory qualifies when it names the CUDA version itself, or when it belongs to
-    /// a toolkit whose runtime is the major we need. Nothing else does -- a cuDNN left behind in an
-    /// older toolkit is not a cuDNN we can use, and its directory must not join the search path
-    /// either, since the provider would load the wrong major from it.
+    /// So cuDNN is answered the way Linux answers it: is a cuDNN of the required major there at
+    /// all. A cuDNN built for the wrong CUDA still gets past this and fails at provider init, on
+    /// both platforms, and that limit is real rather than papered over.
     /// </summary>
     private static CudaProbeResult ProbeWindows()
     {
@@ -552,7 +560,7 @@ public static class HardwareInfo
         };
 
         var cudartDirs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var otherDeps  = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var depDirs    = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var cudnnDirs  = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var anyCudart  = false;
         var anyCudnn   = false;
@@ -576,78 +584,50 @@ public static class HardwareInfo
                     else if (name.StartsWith("cudnn", StringComparison.OrdinalIgnoreCase))
                     {
                         anyCudnn = true;
-                        // cudnn64_9.dll specifically, matching what Linux asks the loader for. A
-                        // cuDNN 8 copied into a CUDA 13 toolkit satisfies every path rule below and
-                        // still cannot be loaded by the provider, so accepting it would put the
-                        // wrong major on the DLL search path, which is what this exists to prevent.
-                        if (name.StartsWith("cudnn64_9", StringComparison.OrdinalIgnoreCase))
+                        if (name.StartsWith($"cudnn64_{RequiredCudnnMajor}", StringComparison.OrdinalIgnoreCase))
                             cudnnDirs.Add(dir);
                     }
-                    // cuFFT and cuRAND version independently of the CUDA major (CUDA 12 ships cuFFT
-                    // 11, CUDA 13 ships 12), so they cannot identify a directory; these can.
-                    else if (name.StartsWith($"cublas64_{RequiredCudaMajor}", StringComparison.OrdinalIgnoreCase)
-                          || name.StartsWith($"cublasLt64_{RequiredCudaMajor}", StringComparison.OrdinalIgnoreCase)
-                          || name.StartsWith($"nvrtc64_{RequiredCudaMajor}", StringComparison.OrdinalIgnoreCase))
+                    // Everything else the provider loads. cuFFT and cuRAND version independently of
+                    // the CUDA major, so they cannot IDENTIFY an install -- but once we have decided
+                    // to use one, their directories still belong on the search path, which a
+                    // packaged app needs because its DLL search is restricted.
+                    else if (name.StartsWith("cublas", StringComparison.OrdinalIgnoreCase)
+                          || name.StartsWith("cufft", StringComparison.OrdinalIgnoreCase)
+                          || name.StartsWith("curand", StringComparison.OrdinalIgnoreCase)
+                          || name.StartsWith("nvrtc", StringComparison.OrdinalIgnoreCase))
                     {
-                        otherDeps.Add(dir);
+                        depDirs.Add(dir);
                     }
                 }
             }
             catch { }
         }
 
-        var toolkitRoots = new HashSet<string>(cudartDirs.Select(ToolkitRootOf), StringComparer.OrdinalIgnoreCase);
-        var usableCudnn = cudnnDirs.Where(d => NamesRequiredMajor(d) || toolkitRoots.Contains(ToolkitRootOf(d)))
-                                   .ToList();
-
         var runtime = cudartDirs.Count > 0;
+        var cudnn = cudnnDirs.Count > 0;
 
-        // Only from an install we are actually going to use: registering directories from a CUDA we
-        // have just rejected is how the wrong major reaches the search path.
+        // Only from an install we are actually going to use.
         var dllDirs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         if (runtime)
         {
             foreach (var d in cudartDirs) dllDirs.Add(d);
-            foreach (var d in otherDeps) dllDirs.Add(d);
-            foreach (var d in usableCudnn) dllDirs.Add(d);
+            foreach (var d in depDirs) dllDirs.Add(d);
+            foreach (var d in cudnnDirs) dllDirs.Add(d);
         }
-        var cudnn = usableCudnn.Count > 0;
 
         var runtimeNote = runtime ? null
             : anyCudart
-                ? $"A CUDA runtime was found, but not CUDA {RequiredCudaMajor}, which this build links. "
-                  + $"Install the CUDA {RequiredCudaMajor} runtime."
+                ? $"A CUDA runtime was found, but not CUDA {RequiredCudaMajor}, which this build "
+                  + $"links. Install the CUDA {RequiredCudaMajor} runtime."
                 : $"No CUDA {RequiredCudaMajor} runtime was found.";
         var cudnnNote = cudnn ? null
             : anyCudnn
-                ? $"cuDNN was found, but not cuDNN 9 belonging to a CUDA {RequiredCudaMajor} "
-                  + "install, so the CUDA execution provider cannot load it."
-                : "No cuDNN was found. The CUDA execution provider needs cuDNN 9 built for CUDA "
-                  + $"{RequiredCudaMajor}.";
+                ? $"cuDNN was found, but not cuDNN {RequiredCudnnMajor}, which the CUDA execution "
+                  + "provider loads."
+                : $"No cuDNN was found. The CUDA execution provider needs cuDNN {RequiredCudnnMajor} "
+                  + $"built for CUDA {RequiredCudaMajor}.";
 
         return new CudaProbeResult(runtime, cudnn, runtimeNote, cudnnNote, dllDirs);
-    }
-
-    /// <summary>True when a path segment names the CUDA version we need, as the standalone cuDNN
-    /// tree does (…\CUDNN\v9.x\bin\13.0\).</summary>
-    internal static bool NamesRequiredMajor(string dir) =>
-        dir.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
-           .Any(seg => seg == RequiredCudaMajor.ToString()
-                    || seg.StartsWith($"{RequiredCudaMajor}.", StringComparison.Ordinal));
-
-    /// <summary>
-    /// The install a directory belongs to: the parent of its `bin`, so &lt;toolkit&gt;\bin and
-    /// &lt;toolkit&gt;\bin\x64 resolve to the same root and cuDNN copied into the toolkit is
-    /// recognised as belonging to the CUDA there.
-    /// </summary>
-    internal static string ToolkitRootOf(string dir)
-    {
-        for (var d = dir; !string.IsNullOrEmpty(d); d = Path.GetDirectoryName(d) ?? "")
-        {
-            if (string.Equals(Path.GetFileName(d), "bin", StringComparison.OrdinalIgnoreCase))
-                return Path.GetDirectoryName(d) ?? d;
-        }
-        return dir;
     }
 
     private static IEnumerable<string> SafeGetFiles(string dir, string pattern)

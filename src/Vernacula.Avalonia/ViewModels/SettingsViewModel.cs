@@ -655,8 +655,17 @@ internal partial class SettingsViewModel : ObservableObject
 
     // ── Hardware checks ──────────────────────────────────────────────────────
 
+    private static string? FirstLine(string? text) =>
+        text is null ? null : text.Split('\n', 2)[0].Trim();
+
+    /// <summary>The Re-check button: discards the cached probe and looks again.</summary>
     [RelayCommand]
-    internal async Task RecheckHardwareAsync()
+    internal Task RecheckHardwareAsync() => RefreshHardwareAsync(force: true);
+
+    /// <param name="force">True only when the user asked. Opening the window reads what is already
+    /// known; throwing the probe away there would make every model init afterwards repeat the
+    /// scan.</param>
+    private async Task RefreshHardwareAsync(bool force)
     {
         IsCheckingHardware = true;
         bool cudaOk = false;
@@ -670,9 +679,10 @@ internal partial class SettingsViewModel : ObservableObject
                 ? Loc.Instance.T("settings_hw_vram", new() { ["vram"] = $"{totalMb / 1024.0:F1}" })
                 : "";
 
-            // Re-check means re-check: the probe caches for the life of the process, and this is
-            // the button someone presses right after installing cuDNN or running ldconfig.
-            HardwareInfo.InvalidateCudaProbes();
+            // Only when the user asked. Re-check means re-check -- someone has just installed
+            // cuDNN or run ldconfig -- but merely opening this window must not throw away a
+            // process-wide probe, which would re-run the whole scan for every model init after it.
+            if (force) HardwareInfo.InvalidateCudaProbes();
             CudaToolkitInstalled = HardwareInfo.IsCudaToolkitInstalled();
             CudnnInstalled       = HardwareInfo.IsCudnnInstalled();
             (cudaOk, cudaMessage) = _modelMgr.CheckCuda();
@@ -681,7 +691,12 @@ internal partial class SettingsViewModel : ObservableObject
         // The probe's note when it has one; otherwise whatever CheckCuda said. The provider can
         // fail AFTER the probe passes -- a swallowed load failure is exactly the case worth
         // explaining -- and that message was being thrown away.
-        CudaProbeNote = cudaOk ? "" : (HardwareInfo.CudaProbeNote ?? cudaMessage ?? "");
+        // ⚠ FIRST LINE ONLY. CheckCuda's failure message is a full exception dump -- message,
+        // inner exception and stack trace -- written to cuda_debug.txt on purpose. Rendering all of
+        // it into a 12px label is not a diagnostic, it is a wall.
+        CudaProbeNote = cudaOk
+            ? ""
+            : (HardwareInfo.CudaProbeNote ?? FirstLine(cudaMessage) ?? "");
         OnPropertyChanged(nameof(CanUseVibeVoiceAsr));
         OnPropertyChanged(nameof(VibeVoiceAsrLabel));
         OnPropertyChanged(nameof(VibeVoiceAsrDescription));
@@ -1131,7 +1146,7 @@ internal partial class SettingsViewModel : ObservableObject
         var modelTask    = CheckModelsAsync();
         var diarizenTask = CheckDiariZenModelsAsync();
         var voxLinguaTask = CheckVoxLinguaModelsAsync();
-        var hardwareTask = RecheckHardwareAsync();
+        var hardwareTask = RefreshHardwareAsync(force: false);
         await Task.WhenAll(modelTask, diarizenTask, voxLinguaTask, hardwareTask);
 
         if (ModelsReady)
