@@ -236,10 +236,13 @@ public static class HardwareInfo
         // soname for the rest of the process, so the NEXT probe would find it by name and report
         // "installed" -- losing the ldconfig advice that the first probe correctly gave. The answer
         // has to mean the same thing every time the user presses Re-check.
+        // Normalised on both sides: LD_LIBRARY_PATH is commonly written with a trailing slash while
+        // the same directory arrives here from CUDA_PATH without one, and a raw string comparison
+        // would then give exactly the circular advice this distinction exists to avoid.
         var onLdPath = new HashSet<string>(
             (Environment.GetEnvironmentVariable("LD_LIBRARY_PATH") ?? "")
                 .Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries)
-                .Select(e => e.Trim()),
+                .Select(e => Normalise(e.Trim())),
             StringComparer.Ordinal);
 
         foreach (var dir in GetLinuxCudaLibraryDirs())
@@ -251,7 +254,7 @@ public static class HardwareInfo
             // up in an LD_LIBRARY_PATH entry, the loader has already looked and failed, so the
             // cause is the library itself -- a missing dependency of its own, or the wrong
             // architecture -- and the ldconfig advice would send them in a circle.
-            return (false, onLdPath.Contains(dir)
+            return (false, onLdPath.Contains(Normalise(dir))
                 ? $"{label} was found at {hit}, in a directory that is already on LD_LIBRARY_PATH, "
                   + "and still could not be loaded. One of its own dependencies is probably "
                   + "missing, or it was built for a different architecture."
@@ -318,15 +321,27 @@ public static class HardwareInfo
     /// the probe found. One place, because several call sites each threw their own version and only
     /// one of them said anything useful.
     /// </summary>
-    public static string CudaUnavailableMessage()
+    /// <param name="providerMissing">True when the ONNX Runtime binary has no CUDA provider entry
+    /// point at all, which is what an EntryPointNotFoundException means: a CPU-only build.
+    /// ⚠ THE PROBE'S NOTE IS IRRELEVANT THEN. No amount of installing CUDA or cuDNN puts a provider
+    /// into a binary that does not contain one, so leading with "no cuDNN found" sends that user
+    /// somewhere that cannot help them.</param>
+    public static string CudaUnavailableMessage(bool providerMissing = false)
     {
-        var note = CudaProbeNote;
-        // With a note, the probe knows what is wrong and says it. Without one, CUDA and cuDNN both
-        // checked out, so the major version is NOT the likely cause and must not lead.
+        // The platform question comes first: on macOS there is nothing to probe and nothing to say
+        // about majors. (Asking for the note here would also force a probe whose answer is unused.)
         if (!OperatingSystem.IsWindows() && !OperatingSystem.IsLinux())
             return "The CUDA execution provider is not available on this platform; CUDA builds of "
                  + "ONNX Runtime exist for Windows and Linux only.";
 
+        if (providerMissing)
+            return "This build of ONNX Runtime has no CUDA execution provider in it: it is a "
+                 + "CPU-only build. Installing CUDA or cuDNN will not change that; the application "
+                 + "needs to be built with -p:EP=Cuda.";
+
+        // With a note, the probe knows what is wrong and says it. Without one, CUDA and cuDNN both
+        // checked out, so the major version is NOT the likely cause and must not lead.
+        var note = CudaProbeNote;
         return note is not null
             ? $"Could not initialise the CUDA execution provider. {note}"
             : "Could not initialise the CUDA execution provider. The CUDA "
@@ -665,9 +680,6 @@ public static class HardwareInfo
             // ⚠ ON PATH BOUNDARIES, NOT CHARACTERS. A bare StartsWith makes C:\cuda12\bin look
             // like it sits under C:\cuda, so a CUDA 12 cuDNN would be ordered ahead of the one
             // actually paired with our runtime -- the opposite of what this ordering is for.
-            static string Normalise(string dir) =>
-                Path.TrimEndingDirectorySeparator(Path.GetFullPath(dir)) + Path.DirectorySeparatorChar;
-
             bool BesideOurCuda(string dir)
             {
                 var d = Normalise(dir);
@@ -696,6 +708,14 @@ public static class HardwareInfo
                   + $"built for CUDA {RequiredCudaMajor}.";
 
         return new CudaProbeResult(runtime, cudnn, runtimeNote, cudnnNote, dllDirs);
+    }
+
+    /// <summary>A directory in comparable form: absolute, with exactly one trailing separator, so
+    /// two spellings of the same directory match and a prefix test lands on a path boundary.</summary>
+    private static string Normalise(string dir)
+    {
+        try { return Path.TrimEndingDirectorySeparator(Path.GetFullPath(dir)) + Path.DirectorySeparatorChar; }
+        catch { return dir; }
     }
 
     private static IEnumerable<string> SafeGetFiles(string dir, string pattern)
