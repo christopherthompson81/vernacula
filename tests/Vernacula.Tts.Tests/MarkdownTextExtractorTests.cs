@@ -111,6 +111,88 @@ public class MarkdownTextExtractorTests
         Assert.Equal("quoted text here", r.Text);
     }
 
+    // GitHub alert blockquotes. Markdig 1.x recognizes these (AlertExtension,
+    // pulled in by UseAdvancedExtensions) and consumes the "[!KIND]" marker
+    // into the block instead of leaving it as a literal, so the marker no
+    // longer reaches the synthesizer. Under 0.34.0 the TTS read it aloud.
+    // These tests pin the stripping: it moves every following output offset,
+    // and the karaoke view aligns against those offsets.
+
+    [Theory]
+    [InlineData("NOTE")]
+    [InlineData("TIP")]
+    [InlineData("IMPORTANT")]
+    [InlineData("WARNING")]
+    [InlineData("CAUTION")]
+    public void Alert_quote_drops_the_kind_marker(string kind)
+    {
+        var r = MarkdownTextExtractor.Extract($"> [!{kind}]\n> Body of the alert.");
+        Assert.Equal("Body of the alert.", r.Text);
+    }
+
+    [Fact]
+    public void Alert_marker_is_dropped_for_an_unknown_kind_too()
+    {
+        var r = MarkdownTextExtractor.Extract("> [!FOO]\n> Body of the alert.");
+        Assert.Equal("Body of the alert.", r.Text);
+    }
+
+    // AlertBlock subclasses QuoteBlock, so the `case QuoteBlock` arm in the
+    // extractor still matches it. If a future Markdig reparents it the block
+    // would fall through to `default: return false` and vanish from the output
+    // entirely — this is the test that localizes that.
+    [Fact]
+    public void Alert_is_still_a_quote_block_spanning_exactly_the_body()
+    {
+        var r = MarkdownTextExtractor.Extract("> [!NOTE]\n> Body of the alert.");
+        var block = Assert.Single(r.Blocks);
+        Assert.Equal(BlockKind.Quote, block.Kind);
+        Assert.Equal("Body of the alert.",
+                     r.Text[block.OutputStart..(block.OutputStart + block.OutputLength)]);
+    }
+
+    // Markdig's AlertParser only fires on a top-level quote, so an alert
+    // indented under a list item keeps its marker and is spoken. GitHub does
+    // render these as alerts, so the two disagree; pinned rather than fixed,
+    // because a future Markdig closing the gap would shift output offsets
+    // again and this is what would notice.
+    [Fact]
+    public void Alert_nested_in_a_list_item_keeps_its_marker()
+    {
+        var r = MarkdownTextExtractor.Extract("- item one\n  > [!NOTE]\n  > Nested alert body.");
+        Assert.Equal("item one\n\n[!NOTE] Nested alert body.", r.Text);
+    }
+
+    // An alert whose body is empty contributes no text and no BlockSpan,
+    // where 0.34.0 gave one quote block containing the marker: the marker was
+    // the only content, and it is now consumed into the block. Consumers
+    // walking Blocks to mirror document structure see one fewer quote than
+    // the source has. (An empty *plain* quote also yields no block, on both
+    // versions — the contrast here is against 0.34.0 on this same input.)
+    [Fact]
+    public void Alert_with_an_empty_body_contributes_no_text_and_no_block()
+    {
+        var r = MarkdownTextExtractor.Extract("> [!NOTE]");
+        Assert.Equal("", r.Text);
+        Assert.Empty(r.Blocks);
+    }
+
+    [Fact]
+    public void Text_after_an_alert_is_not_shifted_by_the_marker()
+    {
+        var r = MarkdownTextExtractor.Extract("> [!NOTE]\n> Heed this.\n\nAfter the alert.");
+        Assert.Equal("Heed this.\n\nAfter the alert.", r.Text);
+        Assert.Equal(r.Text.IndexOf("After", StringComparison.Ordinal),
+                     r.Blocks[^1].OutputStart);
+    }
+
+    [Fact]
+    public void Bracketed_text_that_is_not_an_alert_marker_is_kept()
+    {
+        var r = MarkdownTextExtractor.Extract("> [not an alert]\n> Body.");
+        Assert.Equal("[not an alert] Body.", r.Text);
+    }
+
     // ── Skipped constructs ────────────────────────────────────────────
 
     [Fact]

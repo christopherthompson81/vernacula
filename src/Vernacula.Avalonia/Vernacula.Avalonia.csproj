@@ -58,7 +58,7 @@
 
   <ItemGroup>
     <PackageReference Include="Avalonia" Version="11.3.9" />
-    <PackageReference Include="Markdig" Version="0.34.0" />
+    <PackageReference Include="Markdig" Version="1.3.2" />
     <!-- ⚠ TRANSITIVE PIN, NOT A FEATURE. Avalonia 11.3.9 resolves Tmds.DBus.Protocol
          0.21.2, which carries a high-severity advisory (GHSA-xrw6-gwf8-vvr9); 0.21.3 is the
          patched release on that line. Drop this line once Avalonia itself resolves 0.21.3
