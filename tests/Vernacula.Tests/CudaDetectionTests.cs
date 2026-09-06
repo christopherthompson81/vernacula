@@ -81,10 +81,16 @@ public class CudaDetectionTests
     }
 
     [Fact]
-    public void InvalidatingMakesTheNextAnswerFresh()
+    public void InvalidatingReallyThrowsTheAnswerAway()
     {
+        // Asserting only that the answer is stable would pass for a cache that never refreshes at
+        // all, which is the bug this exists to prevent: Re-check has to re-check.
         var before = HardwareInfo.IsCudaToolkitInstalled();
+        var generation = HardwareInfo.ProbeGeneration;
+
         HardwareInfo.InvalidateCudaProbes();
+
+        Assert.True(HardwareInfo.ProbeGeneration > generation, "invalidation must discard the cached probe");
         Assert.Equal(before, HardwareInfo.IsCudaToolkitInstalled());   // same machine, same answer
     }
 }

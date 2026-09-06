@@ -163,29 +163,26 @@ public static class HardwareInfo
         string? CudnnNote,
         IReadOnlyCollection<string> DllDirectories);
 
-    private static CudaProbeResult? _probe;
+    /// <summary>
+    /// ⚠ A Lazy, NOT A HAND-ROLLED CACHE. CanProbeCudaExecutionProvider is asked at every
+    /// model-init site, and those run in parallel; on Windows the probe is a recursive walk of
+    /// every CUDA, cuDNN and PATH root. A check-then-run cache lets every caller that arrives
+    /// while it is empty run the whole walk. ExecutionAndPublication means one thread does it and
+    /// the others wait, and swapping the Lazy wholesale on invalidation keeps Re-check honest
+    /// without reintroducing that herd.
+    /// </summary>
+    private static Lazy<CudaProbeResult> _probe = NewProbe();
 
-    /// <summary>Bumped by every invalidation, so a probe that began earlier does not publish its
-    /// answer over a newer one. Without it a Re-check could be undone by an in-flight probe and go
-    /// on reporting the pre-install state for the rest of the process.</summary>
+    private static Lazy<CudaProbeResult> NewProbe() =>
+        new(RunProbe, LazyThreadSafetyMode.ExecutionAndPublication);
+
+    /// <summary>Counts invalidations. Not needed for correctness now that each refresh is its own
+    /// Lazy, but it makes "the answer was actually thrown away" observable to a test.</summary>
+    internal static int ProbeGeneration => Volatile.Read(ref _probeGeneration);
+
     private static int _probeGeneration;
 
-    private static CudaProbeResult Probe
-    {
-        get
-        {
-            var current = Volatile.Read(ref _probe);
-            if (current is not null) return current;
-
-            var startedAt = Volatile.Read(ref _probeGeneration);
-            var fresh = RunProbe();
-            // Publish only if nothing invalidated while we were looking. Two probes of the same
-            // generation produce equivalent records, so either may win.
-            if (Volatile.Read(ref _probeGeneration) == startedAt)
-                Volatile.Write(ref _probe, fresh);
-            return fresh;
-        }
-    }
+    private static CudaProbeResult Probe => Volatile.Read(ref _probe).Value;
 
     private static CudaProbeResult RunProbe() =>
         OperatingSystem.IsWindows() ? ProbeWindows()
@@ -229,22 +226,17 @@ public static class HardwareInfo
             return (true, null);
         }
 
-        // Every candidate across every directory, then decide: returning on the first directory
-        // that merely CONTAINS a match let one broken copy hide both a good copy further down and
-        // the "not on the loader path" diagnosis, which is the one with an actionable fix.
+        // ⚠ LOOK, DO NOT LOAD. Loading a candidate by full path would register it under its
+        // soname for the rest of the process, so the NEXT probe would find it by name and report
+        // "installed" -- losing the ldconfig advice that the first probe correctly gave. The answer
+        // has to mean the same thing every time the user presses Re-check.
         var candidates = GetLinuxCudaLibraryDirs().SelectMany(d => SafeGetFiles(d, filePattern)).ToList();
-        foreach (var file in candidates)
-        {
-            if (!NativeLibrary.TryLoad(file, out var byPath)) continue;
-            NativeLibrary.Free(byPath);
-            return (false, $"{label} was found at {file} but is not on the loader path, so the "
-                         + "CUDA execution provider cannot load it. Add its directory to "
-                         + "/etc/ld.so.conf.d (then run ldconfig) or to LD_LIBRARY_PATH.");
-        }
-
         if (candidates.Count > 0)
-            return (false, $"{label} was found ({candidates[0]}) but could not be loaded, even by "
-                         + "full path, which usually means one of its own dependencies is missing.");
+            return (false, $"{label} was found at {candidates[0]} but the loader could not open it "
+                         + "by name, so the CUDA execution provider cannot either. Add its "
+                         + "directory to /etc/ld.so.conf.d (then run ldconfig) or to "
+                         + "LD_LIBRARY_PATH; if it is already there, one of its own dependencies "
+                         + "is missing.");
 
         return (false, absentNote);
     }
@@ -326,7 +318,12 @@ public static class HardwareInfo
     public static void InvalidateCudaProbes()
     {
         Interlocked.Increment(ref _probeGeneration);
-        Volatile.Write(ref _probe, null);
+        Volatile.Write(ref _probe, NewProbe());
+        // ⚠ AND THE THINGS COMPUTED FROM IT. SupportsBf16Acceleration latches an answer derived
+        // from this probe, and it decides which model bundle is selected; leaving it behind meant a
+        // user could install CUDA, press Re-check, be told CUDA works, and still get the FP32
+        // bundle for the rest of the session.
+        Volatile.Write(ref _bf16Cache, NewBf16Cache());
     }
 
     /// <summary>
@@ -388,14 +385,16 @@ public static class HardwareInfo
     /// NVML init/get/shutdown cycle is non-trivial when called repeatedly
     /// from settings/UI flows.
     /// </summary>
-    public static bool SupportsBf16Acceleration() => _bf16Cache.Value;
+    public static bool SupportsBf16Acceleration() => Volatile.Read(ref _bf16Cache).Value;
 
-    private static readonly Lazy<bool> _bf16Cache = new(() =>
+    private static Lazy<bool> _bf16Cache = NewBf16Cache();
+
+    private static Lazy<bool> NewBf16Cache() => new(() =>
     {
         if (!CanProbeCudaExecutionProvider()) return false;
         var (major, _) = GetCudaComputeCapability();
         return major >= 8;
-    });
+    }, LazyThreadSafetyMode.ExecutionAndPublication);
 
     private static int NvmlInitPlatform() =>
         OperatingSystem.IsWindows() ? NvmlInitWindows() : NvmlInitLinux();
@@ -601,11 +600,17 @@ public static class HardwareInfo
         var usableCudnn = cudnnDirs.Where(d => NamesRequiredMajor(d) || toolkitRoots.Contains(ToolkitRootOf(d)))
                                    .ToList();
 
-        var dllDirs = new HashSet<string>(cudartDirs, StringComparer.OrdinalIgnoreCase);
-        foreach (var d in otherDeps) dllDirs.Add(d);
-        foreach (var d in usableCudnn) dllDirs.Add(d);
-
         var runtime = cudartDirs.Count > 0;
+
+        // Only from an install we are actually going to use: registering directories from a CUDA we
+        // have just rejected is how the wrong major reaches the search path.
+        var dllDirs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (runtime)
+        {
+            foreach (var d in cudartDirs) dllDirs.Add(d);
+            foreach (var d in otherDeps) dllDirs.Add(d);
+            foreach (var d in usableCudnn) dllDirs.Add(d);
+        }
         var cudnn = usableCudnn.Count > 0;
 
         var runtimeNote = runtime ? null

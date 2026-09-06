@@ -660,6 +660,7 @@ internal partial class SettingsViewModel : ObservableObject
     {
         IsCheckingHardware = true;
         bool cudaOk = false;
+        string? cudaMessage = null;
 
         await Task.Run(() =>
         {
@@ -674,10 +675,13 @@ internal partial class SettingsViewModel : ObservableObject
             HardwareInfo.InvalidateCudaProbes();
             CudaToolkitInstalled = HardwareInfo.IsCudaToolkitInstalled();
             CudnnInstalled       = HardwareInfo.IsCudnnInstalled();
-            (cudaOk, _)          = _modelMgr.CheckCuda();
+            (cudaOk, cudaMessage) = _modelMgr.CheckCuda();
         });
         CudaEpWorking = cudaOk;
-        CudaProbeNote = cudaOk ? "" : (HardwareInfo.CudaProbeNote ?? "");
+        // The probe's note when it has one; otherwise whatever CheckCuda said. The provider can
+        // fail AFTER the probe passes -- a swallowed load failure is exactly the case worth
+        // explaining -- and that message was being thrown away.
+        CudaProbeNote = cudaOk ? "" : (HardwareInfo.CudaProbeNote ?? cudaMessage ?? "");
         OnPropertyChanged(nameof(CanUseVibeVoiceAsr));
         OnPropertyChanged(nameof(VibeVoiceAsrLabel));
         OnPropertyChanged(nameof(VibeVoiceAsrDescription));
