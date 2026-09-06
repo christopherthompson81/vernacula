@@ -1,4 +1,3 @@
-using System;
 using Vernacula.Tts.Base.Markdown;
 using Xunit;
 
@@ -138,14 +137,42 @@ public class MarkdownTextExtractorTests
         Assert.Equal("Body of the alert.", r.Text);
     }
 
+    // AlertBlock subclasses QuoteBlock, so the `case QuoteBlock` arm in the
+    // extractor still matches it. If a future Markdig reparents it the block
+    // would fall through to `default: return false` and vanish from the output
+    // entirely — this is the test that localizes that.
     [Fact]
-    public void Alert_quote_stays_one_quote_block_spanning_only_the_body()
+    public void Alert_is_still_a_quote_block_spanning_exactly_the_body()
     {
         var r = MarkdownTextExtractor.Extract("> [!NOTE]\n> Body of the alert.");
         var block = Assert.Single(r.Blocks);
         Assert.Equal(BlockKind.Quote, block.Kind);
-        Assert.Equal(0, block.OutputStart);
-        Assert.Equal(r.Text.Length, block.OutputLength);
+        Assert.Equal("Body of the alert.",
+                     r.Text[block.OutputStart..(block.OutputStart + block.OutputLength)]);
+    }
+
+    // Markdig's AlertParser only fires on a top-level quote, so an alert
+    // indented under a list item keeps its marker and is spoken. GitHub does
+    // render these as alerts, so the two disagree; pinned rather than fixed,
+    // because a future Markdig closing the gap would shift output offsets
+    // again and this is what would notice.
+    [Fact]
+    public void Alert_nested_in_a_list_item_keeps_its_marker()
+    {
+        var r = MarkdownTextExtractor.Extract("- item one\n  > [!NOTE]\n  > Nested alert body.");
+        Assert.Equal("item one\n\n[!NOTE] Nested alert body.", r.Text);
+    }
+
+    // An alert whose body is empty contributes no text and, unlike a plain
+    // `>` quote, no BlockSpan either — the marker was the only content and it
+    // is consumed into the block. Consumers walking Blocks to mirror document
+    // structure see one fewer quote than the source has.
+    [Fact]
+    public void Alert_with_an_empty_body_contributes_no_text_and_no_block()
+    {
+        var r = MarkdownTextExtractor.Extract("> [!NOTE]");
+        Assert.Equal("", r.Text);
+        Assert.Empty(r.Blocks);
     }
 
     [Fact]

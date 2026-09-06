@@ -98,25 +98,53 @@ Every alert form tested diverges — `[!NOTE]`, `[!WARNING]`, and unknown kinds
 such as `[!FOO]`, which 1.x also strips. Plain quotes and `> [not an alert]`
 are unchanged.
 
+**Scope — top-level alerts only.** Markdig's `AlertParser` fires on a
+top-level quote. An alert indented under a list item is unchanged from 0.34.0:
+`- item one\n  > [!NOTE]\n  > body` still extracts as
+`item one\n\n[!NOTE] body` on both versions. GitHub *does* render that as an
+alert, so the two disagree, and a README whose install steps carry a
+`> [!WARNING]` under a numbered step still has the marker spoken while an
+identical marker two paragraphs earlier at top level is stripped. Pinned by a
+test rather than worked around: a future Markdig that closes the gap would
+shift offsets again, silently, for exactly the reason this run exists. Two
+related forms, measured and consistent with the above: `> [!NOTE] trailing`
+on one line is not an alert on either version (spec-correct), and a `> >`
+alert nested inside an alert is not stripped (`AllowNestedAlerts` off).
+
+An alert with an empty body (`> [!NOTE]` alone) is a third asymmetry: on
+1.3.2 it yields no text *and no `BlockSpan`*, where 0.34.0 gave one quote
+block containing `[!NOTE]`. The speech outcome is right, but a blockquote in
+the source now contributes nothing to the block index. Also pinned.
+
 **Implication.** The new behaviour is the one we want: the synthesizer no
-longer speaks "bracket bang NOTE bracket" when reading a README. But it moves
+longer speaks "bracket bang NOTE bracket" when reading a top-level alert. But it moves
 every output offset after an alert by the marker's length, so it is a
 behaviour change to land deliberately, not a silent one — and it is exactly
 the kind of thing that should be frozen by a test, since neither the build nor
 the 24 existing tests noticed. Nine tests added in
 `MarkdownTextExtractorTests.cs` (marker stripped for each of the five GitHub
-kinds and for an unknown kind; the quote block spans only the body; following
-text is not shifted; non-alert brackets survive). Seven of the nine fail
-against 0.34.0, which is the check that they pin the change rather than
-restate the parser.
+kinds and for an unknown kind; the block is still a `QuoteBlock` — which is
+what keeps the extractor's `case QuoteBlock` arm matching it — spanning
+exactly the body; following text is not shifted; non-alert brackets survive;
+and the two asymmetries above). Seven of the original nine fail against
+0.34.0, which is the check that they pin the change rather than restate the
+parser. The two that pass on both earn their place differently: one guards
+against over-broad future alert recognition, the other against `AlertBlock`
+being reparented away from `QuoteBlock`.
 
 **Method note for the next bump.** Diffing a corpus of what the code already
 handles only proves the old behaviour is intact. Ask separately what the new
 version *added* — for a Markdig-style bundle, diff the extension list of the
 built pipeline between versions, and write corpus cases for whatever appears.
-`MaximumNestingDepth`, `CjkFriendlyEmphasis`, `AllowDomainWithoutPeriod`,
-`AllowNestedAlerts` and `InferColumnWidthsFromSeparator` are also new in 1.x
-but are opt-in and verified off.
+`CjkFriendlyEmphasis`, `AllowDomainWithoutPeriod`, `AllowNestedAlerts` and
+`InferColumnWidthsFromSeparator` are also new in 1.x, and are opt-in and
+verified off. `MaximumNestingDepth` is new but *not* off — it defaults to 128.
+It is harmless for a different reason: 0.34.0 had the same limit as a
+hardcoded constant, and 1.x only made it configurable. Measured on both
+versions, 100 nested `>` parses and 130 throws the identical
+`ArgumentException`. Worth stating precisely, since this paragraph is the
+recipe for the next bump: "new option" and "changed behaviour" are not the
+same question.
 
 ## Open, not caused by any bump — `SourceStart` is wrong inside container continuation lines
 
