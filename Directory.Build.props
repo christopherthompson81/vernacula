@@ -34,12 +34,30 @@
        reference overriding EP could otherwise pair a 1.24.4 native with a 1.29 managed assembly.
        (In a SOLUTION build MSBuild pins every project to the solution's configuration and ignores
        SetConfiguration entirely, so nothing diverges there; the hazard is a direct project build.)
-       Everyday Cuda and Cpu builds now add no properties, and build each project once. -->
+       Everyday Cuda and Cpu builds now add no properties, and build each project once.
+
+       ⚠ TWO THINGS THIS DOES NOT COVER, both enforced or recorded rather than left to be
+       rediscovered:
+         - A reference overriding TO DirectML from a Cuda or Cpu parent would diverge with no
+           propagation to correct it. No such reference exists, and the target below fails the
+           build if one is added, rather than letting it surface as an API-version throw at the
+           first session.
+         - A DirectML solution build still builds each referenced project twice, because it still
+           passes the property. That is the same race, confined to the one EP CI does not run;
+           -m:1 is the workaround. Recorded on #121. -->
   <ItemDefinitionGroup Condition="'$(EP)' == 'DirectML'">
     <ProjectReference>
       <AdditionalProperties>OnnxRuntimeVersion=$(OnnxRuntimeVersion)</AdditionalProperties>
     </ProjectReference>
   </ItemDefinitionGroup>
+
+  <!-- The other half of the scoping above: the propagation keys on the PARENT's EP, so a reference
+       that overrides a child TO DirectML would be unguarded. Rather than trust a comment, fail. -->
+  <Target Name="RejectUnguardedDirectMlReference" BeforeTargets="BeforeBuild"
+          Condition="'$(EP)' != 'DirectML'">
+    <Error Condition="$([System.String]::Copy('%(ProjectReference.SetConfiguration)').Contains('DirectML'))"
+           Text="%(ProjectReference.Identity) overrides its execution provider to DirectML while this project builds as EP=$(EP). The referenced project would resolve a different ONNX Runtime version than the native shipped beside it. Widen the OnnxRuntimeVersion propagation in Directory.Build.props to cover this case before adding such a reference." />
+  </Target>
 
   <!-- ⚠ AN UNRECOGNISED EP SILENTLY GIVES YOU THE CPU. Every package group is conditioned on a
        spelling, and a value matching none of them selects no GPU package: the build succeeds and
