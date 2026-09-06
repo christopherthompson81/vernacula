@@ -2,9 +2,9 @@ using System;
 using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
-using Vernacula.Tts.App.Models;
+using Vernacula.App.Models;
 
-namespace Vernacula.Tts.App.Services;
+namespace Vernacula.App.Services.Tts;
 
 /// <summary>Which TTS engine drives synthesis.</summary>
 public enum TtsBackendKind

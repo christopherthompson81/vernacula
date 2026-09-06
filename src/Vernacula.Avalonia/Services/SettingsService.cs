@@ -51,6 +51,78 @@ internal class SettingsService
         }
 
         MigrateLegacyModelLayout();
+        MigrateLegacyReaderSettings();
+    }
+
+    /// <summary>
+    /// The standalone TTS reader (Vernacula.Tts.Avalonia) kept its own settings.json under
+    /// VernaculaTtsReader/. On the first run after it was folded into this app, carry its
+    /// model locations and last-used choices over — only into fields that are still empty, so
+    /// anything the user has since set here wins. The old file is left in place.
+    /// </summary>
+    private void MigrateLegacyReaderSettings()
+    {
+        try
+        {
+            string legacyPath = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "VernaculaTtsReader", "settings.json");
+            if (!File.Exists(legacyPath)) return;
+            var legacy = JsonSerializer.Deserialize<LegacyReaderSettings>(File.ReadAllText(legacyPath));
+            if (legacy is null) return;
+
+            bool changed = false;
+            void Take(Func<string> get, Action<string> set, string? value)
+            {
+                if (string.IsNullOrWhiteSpace(get()) && !string.IsNullOrWhiteSpace(value)) { set(value); changed = true; }
+            }
+            var c = Current;
+            Take(() => c.ChatterboxBundleDir, v => c.ChatterboxBundleDir = v, legacy.OnnxBundleDir);
+            Take(() => c.ChatterboxVoicePath,     v => c.ChatterboxVoicePath = v, legacy.VoicePath);
+            Take(() => c.KokoroModelDir,          v => c.KokoroModelDir = v,      legacy.KokoroModelDir);
+            Take(() => c.KokoroVoice,             v => c.KokoroVoice = v,         legacy.KokoroVoice);
+            Take(() => c.PhonemizerDataDir,       v => c.PhonemizerDataDir = v,
+                 !string.IsNullOrWhiteSpace(legacy.PhonemizerDataDir) ? legacy.PhonemizerDataDir : legacy.KokoroDataDir);
+            Take(() => c.OmniVoiceOnnxDir,        v => c.OmniVoiceOnnxDir = v,    legacy.OmniVoiceOnnxDir);
+            Take(() => c.OmniVoiceTokenizerJson,  v => c.OmniVoiceTokenizerJson = v, legacy.OmniVoiceTokenizerJson);
+            Take(() => c.OmniVoiceVoiceLib,       v => c.OmniVoiceVoiceLib = v,   legacy.OmniVoiceVoiceLib);
+            Take(() => c.OmniVoiceVoice,          v => c.OmniVoiceVoice = v,      legacy.OmniVoiceVoice);
+            if (c.TtsSettingsMigrated) return;   // choices below have defaults, so only take them once
+            if (!string.IsNullOrWhiteSpace(legacy.TtsBackend))   { c.TtsBackend = legacy.TtsBackend; changed = true; }
+            if (!string.IsNullOrWhiteSpace(legacy.OmniVoiceLang)) { c.OmniVoiceLang = legacy.OmniVoiceLang; changed = true; }
+            if (legacy.KokoroSpeed > 0)                            { c.KokoroSpeed = legacy.KokoroSpeed; changed = true; }
+            if (legacy.OmniVoiceNumStep is > 0 and <= 64)          { c.OmniVoiceNumStep = legacy.OmniVoiceNumStep; changed = true; }
+            c.TtsRenderMarkdown    = legacy.RenderMarkdown;
+            c.TtsShowIpaAnnotation = legacy.ShowIpaAnnotation;
+            c.TtsSettingsMigrated  = true;
+            changed = true;
+            if (changed) Save();
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[Settings] legacy reader settings not migrated: {ex.Message}");
+        }
+    }
+
+    /// <summary>Shape of the standalone reader's settings.json (Vernacula.Tts.App.Services.ReaderSettings).</summary>
+    private sealed class LegacyReaderSettings
+    {
+        public string VoicePath { get; set; } = "";
+        public string OnnxBundleDir { get; set; } = "";
+        public bool RenderMarkdown { get; set; }
+        public bool ShowIpaAnnotation { get; set; }
+        public string TtsBackend { get; set; } = "";
+        public string PhonemizerDataDir { get; set; } = "";
+        public string KokoroDataDir { get; set; } = "";
+        public string KokoroModelDir { get; set; } = "";
+        public string KokoroVoice { get; set; } = "";
+        public float KokoroSpeed { get; set; }
+        public string OmniVoiceOnnxDir { get; set; } = "";
+        public string OmniVoiceTokenizerJson { get; set; } = "";
+        public string OmniVoiceVoiceLib { get; set; } = "";
+        public string OmniVoiceLang { get; set; } = "";
+        public string OmniVoiceVoice { get; set; } = "";
+        public int OmniVoiceNumStep { get; set; }
     }
 
     public bool IsGatedModelAccepted(string modelId) =>
@@ -152,6 +224,51 @@ internal class SettingsService
 
     public string GetKenLmParakeetDir() =>
         Path.Combine(GetModelsDir(), Config.KenLmParakeetSubDir);
+
+    // ── Text-to-speech locations ─────────────────────────────────────────
+    // Each is the user's pick when set, else a subfolder of the models dir so a
+    // fresh install has one place to put (or download) everything.
+
+    public string GetChatterboxModelsDir() =>
+        string.IsNullOrWhiteSpace(Current.ChatterboxBundleDir)
+            ? Path.Combine(GetModelsDir(), Config.ChatterboxSubDir)
+            : Current.ChatterboxBundleDir;
+
+    public string GetKokoroModelsDir() =>
+        string.IsNullOrWhiteSpace(Current.KokoroModelDir)
+            ? Path.Combine(GetModelsDir(), Config.KokoroSubDir)
+            : Current.KokoroModelDir;
+
+    public string GetOmniVoiceModelsDir() =>
+        string.IsNullOrWhiteSpace(Current.OmniVoiceOnnxDir)
+            ? (Environment.GetEnvironmentVariable("OMNIVOICE_ONNX_DIR")
+               ?? Path.Combine(GetModelsDir(), Config.OmniVoiceSubDir))
+            : Current.OmniVoiceOnnxDir;
+
+    /// <summary>
+    /// The vernacula-phonemizer data/ root: the user's pick, else whatever
+    /// <see cref="Vernacula.Tts.Base.PhonemizerData.Resolve"/> finds (VERNACULA_DATA_DIR, then
+    /// the submodule beside a source build), else the models-dir default. May not exist.
+    /// </summary>
+    public string GetPhonemizerDataDir()
+    {
+        if (Vernacula.Tts.Base.PhonemizerData.IsDataRoot(Current.PhonemizerDataDir))
+            return Current.PhonemizerDataDir;
+        return Vernacula.Tts.Base.PhonemizerData.Resolve(null)
+               ?? Path.Combine(GetModelsDir(), Config.PhonemizerDataSubDir);
+    }
+
+    /// <summary>
+    /// The OmniVoice stored-voice library: the user's pick, else the web demo's library beside a
+    /// source build, else the models-dir default.
+    /// </summary>
+    public string GetOmniVoiceVoiceLibDir()
+    {
+        if (Vernacula.Tts.Base.StoredVoice.IsLibrary(Current.OmniVoiceVoiceLib))
+            return Current.OmniVoiceVoiceLib;
+        return Vernacula.Tts.Base.StoredVoice.ResolveDefaultLibrary()
+               ?? Path.Combine(GetModelsDir(), Config.OmniVoiceVoiceLibSubDir);
+    }
 
     public string GetJobsDir()
     {

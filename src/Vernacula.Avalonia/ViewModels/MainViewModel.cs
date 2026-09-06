@@ -9,7 +9,7 @@ using Vernacula.App.Services;
 
 namespace Vernacula.App.ViewModels;
 
-internal enum AppPanel { Home, Progress, Results }
+internal enum AppPanel { Home, Progress, Results, TtsReader }
 
 internal partial class MainViewModel : ObservableObject
 {
@@ -18,18 +18,21 @@ internal partial class MainViewModel : ObservableObject
     [ObservableProperty]
     private AppPanel _currentPanel = AppPanel.Home;
 
-    public HomeViewModel     Home     { get; }
-    public ConfigViewModel   Config   { get; }
-    public ProgressViewModel Progress { get; }
-    public ResultsViewModel  Results  { get; }
-    public SettingsViewModel Settings { get; }
+    public HomeViewModel      Home      { get; }
+    public ConfigViewModel    Config    { get; }
+    public NewTtsJobViewModel TtsConfig { get; }
+    public ProgressViewModel  Progress  { get; }
+    public ResultsViewModel   Results   { get; }
+    public TtsReaderViewModel TtsReader { get; }
+    public SettingsViewModel  Settings  { get; }
 
     public object? CurrentPanelViewModel => CurrentPanel switch
     {
-        AppPanel.Home     => Home,
-        AppPanel.Progress => Progress,
-        AppPanel.Results  => Results,
-        _                 => null,
+        AppPanel.Home      => Home,
+        AppPanel.Progress  => Progress,
+        AppPanel.Results   => Results,
+        AppPanel.TtsReader => TtsReader,
+        _                  => null,
     };
 
     partial void OnCurrentPanelChanged(AppPanel value)
@@ -58,15 +61,18 @@ internal partial class MainViewModel : ObservableObject
         ModelManagerService  modelManager,
         TranscriptionService transcription,
         JobQueueService      queue,
-        ExportService        export)
+        ExportService        export,
+        Services.Tts.TtsJobRunner ttsRunner)
     {
         _controlDb = controlDb;
         _queue   = queue;
-        Settings = new SettingsViewModel(settings, modelManager);
-        Home     = new HomeViewModel(modelManager, controlDb, settings);
-        Config   = new ConfigViewModel();
-        Progress = new ProgressViewModel(transcription, controlDb, settings, queue);
-        Results  = new ResultsViewModel(export, settings);
+        Settings  = new SettingsViewModel(settings, modelManager);
+        Home      = new HomeViewModel(modelManager, controlDb, settings);
+        Config    = new ConfigViewModel();
+        TtsConfig = new NewTtsJobViewModel(settings);
+        Progress  = new ProgressViewModel(transcription, controlDb, settings, queue);
+        Results   = new ResultsViewModel(export, settings);
+        TtsReader = new TtsReaderViewModel(queue, settings);
 
         // A hardware re-check can change which model bundle is active; the home screen's status
         // text is computed from it, so it has to be recomputed too.
@@ -85,11 +91,38 @@ internal partial class MainViewModel : ObservableObject
             win.ShowDialog(_mainWindow!);
         };
 
-        // Home → Requeue (resume a failed / cancelled job)
+        // Home → New TTS job dialog. Re-seeded from Settings + last-used choices each time.
+        Home.NavigateToTtsConfig = () =>
+        {
+            TtsConfig.Reset();
+            var win = new Views.Dialogs.NewTtsJobWindow
+            {
+                DataContext = TtsConfig,
+            };
+            TtsConfig.NavigateBack = win.Close;
+            win.ShowDialog(_mainWindow!);
+        };
+
+        // TTS config → Enqueue, then open the reader on the new job so the user watches it
+        // render (the dialog closes via NavigateBack after this returns).
+        TtsConfig.EnqueueJob = async (documentPath, jobTitle, tts) =>
+        {
+            int jobId = await queue.EnqueueNewTtsJobAsync(documentPath, jobTitle, tts);
+            await Dispatcher.UIThread.InvokeAsync(() =>
+            {
+                RefreshJobsAndSync();
+                if (Home.Jobs.FirstOrDefault(j => j.JobId == jobId) is { } job)
+                {
+                    TtsReader.Open(job);
+                    CurrentPanel = AppPanel.TtsReader;
+                }
+            });
+        };
+
+        // Home → Requeue (resume a failed / cancelled job of either kind)
         Home.RequeueJob = job =>
         {
-            queue.RequeueJob(job.JobId, job.ResultsFile, job.AudioFilePath, job.AudioStreamIndex,
-                job.AsrLanguageCode, job.AsrModelName);
+            queue.RequeueJob(job);
             RefreshJobsAndSync();
         };
 
@@ -100,11 +133,29 @@ internal partial class MainViewModel : ObservableObject
             RefreshJobsAndSync();
         };
 
-        // Home → Results (load a completed job)
+        // Home → Results (load a completed ASR job) / Reader (open a completed TTS job)
         Home.LoadJobToResults = job =>
         {
+            if (job.IsTts)
+            {
+                TtsReader.Open(job);
+                CurrentPanel = AppPanel.TtsReader;
+                return;
+            }
             Results.Load(job.ResultsFile, job.AudioBaseName, _mainWindow, job.JobId);
             CurrentPanel = AppPanel.Results;
+        };
+
+        // Reader → Home (back) / cancel the watched job
+        TtsReader.NavigateBack = () =>
+        {
+            RefreshJobsAndSync();
+            CurrentPanel = AppPanel.Home;
+        };
+        TtsReader.CancelJob = jobId =>
+        {
+            queue.CancelJob(jobId);
+            RefreshJobsAndSync();
         };
 
         // Results → reprocess with a different ASR backend + forced language.
@@ -169,9 +220,15 @@ internal partial class MainViewModel : ObservableObject
             CurrentPanel = AppPanel.Home;
         };
 
-        // Home → Progress (monitor a running / queued job)
+        // Home → Progress (monitor a running / queued ASR job) / Reader (a TTS job)
         Home.MonitorJob = job =>
         {
+            if (job.IsTts)
+            {
+                TtsReader.Open(job);
+                CurrentPanel = AppPanel.TtsReader;
+                return;
+            }
             Progress.WatchJob(job.JobId, job.ResultsFile, job.AudioFilePath, job.AudioBaseName);
             CurrentPanel = AppPanel.Progress;
         };
@@ -318,6 +375,10 @@ internal partial class MainViewModel : ObservableObject
             Dispatcher.UIThread.InvokeAsync(() =>
                 ApplyJobPhase(jobId, progress));
 
+        queue.JobTtsProgressUpdated += (jobId, progress) =>
+            Dispatcher.UIThread.InvokeAsync(() =>
+                ApplyTtsProgress(jobId, progress));
+
          // Startup will be triggered when MainWindow is loaded via StartAsync()
     }
 
@@ -352,11 +413,20 @@ internal partial class MainViewModel : ObservableObject
                 job.IsActivelyRunning = true;
                 job.ProgressPercent   = _queue.GetJobProgress(job.JobId);
 
-                if (_queue.GetJobLastProgress(job.JobId) is { } p)
+                if (job.IsTts)
+                {
+                    if (_queue.GetTtsJobLastProgress(job.JobId) is { } tp)
+                        ApplyTtsProgress(job.JobId, tp);
+                    else
+                        job.ProgressText = Loc.Instance["tts_status_running"];
+                }
+                else if (_queue.GetJobLastProgress(job.JobId) is { } p)
                     ApplyJobPhase(job.JobId, p);
                 else
                     job.IsIndeterminate = true; // running but no progress event yet
             }
+            else if (job.IsTts && job.Status == JobStatus.Queued)
+                job.ProgressText = Loc.Instance["tts_progress_queued"];
         }
 
         RefreshRunningJobClocks();
@@ -386,9 +456,24 @@ internal partial class MainViewModel : ObservableObject
             job.ProgressPercent = status == JobStatus.Complete ? 100 : job.ProgressPercent;
             job.PhaseLabel      = "";
             job.IsIndeterminate = false;
+            job.ProgressText    = status == JobStatus.Complete ? "" : job.ProgressText;
+            // A finished TTS job's Time column shows the audio length, which only the DB has.
+            if (job.IsTts && status == JobStatus.Complete)
+                job.OutputDurationSeconds = _controlDb.GetJobs().FirstOrDefault(j => j.JobId == jobId)?.OutputDurationSeconds;
         }
+        else if (status == JobStatus.Queued && job.IsTts)
+            job.ProgressText = Loc.Instance["tts_progress_queued"];
 
         UpdateRunningJobClockTimer();
+    }
+
+    private void ApplyTtsProgress(int jobId, Services.Tts.ProgressEvent progress)
+    {
+        var job = Home.Jobs.FirstOrDefault(j => j.JobId == jobId);
+        if (job == null) return;
+        job.ProgressText = progress.ChunkIndex is int idx && progress.TotalChunks is int total
+            ? $"{progress.Phase} ({idx}/{total})"
+            : progress.Phase;
     }
 
     private void ApplyJobProgress(int jobId, double percent)

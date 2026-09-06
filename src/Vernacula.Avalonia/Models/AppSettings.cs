@@ -61,6 +61,30 @@ public class AppSettings
     public bool               LidPerSegment       { get; set; } = false;
     public string             VoxLinguaModelsDir  { get; set; } = "";
 
+    // ── Text-to-speech ────────────────────────────────────────────────────
+    // Model / data locations. Empty means "the default under the models dir" (see
+    // SettingsService.GetTts*Dir); the pickers on the Settings → TTS tab override.
+    // TtsBackend stores the TtsBackendKind enum NAME, not its integer, so a reordered
+    // enum cannot re-interpret a saved choice.
+    public string             TtsBackend              { get; set; } = "Kokoro";
+    public string             ChatterboxBundleDir     { get; set; } = "";
+    public string             ChatterboxVoicePath     { get; set; } = "";
+    public string             KokoroModelDir          { get; set; } = "";
+    public string             KokoroVoice             { get; set; } = "";
+    public float              KokoroSpeed             { get; set; } = 1.0f;
+    public string             PhonemizerDataDir       { get; set; } = "";
+    public string             OmniVoiceOnnxDir        { get; set; } = "";
+    public string             OmniVoiceTokenizerJson  { get; set; } = "";
+    public string             OmniVoiceVoiceLib       { get; set; } = "";
+    public string             OmniVoiceLang           { get; set; } = "en";
+    public string             OmniVoiceVoice          { get; set; } = "";
+    public int                OmniVoiceNumStep        { get; set; } = 32;
+    // Reader view preferences (not per job).
+    public bool               TtsRenderMarkdown       { get; set; } = false;
+    public bool               TtsShowIpaAnnotation    { get; set; } = false;
+    // Set once the standalone reader's settings.json has been read in (SettingsService.MigrateLegacyReaderSettings).
+    public bool               TtsSettingsMigrated     { get; set; } = false;
+
     public List<string>       AcceptedGatedModels { get; set; } = [];
     public string             Language            { get; set; } = "";
 

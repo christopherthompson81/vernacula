@@ -183,6 +183,7 @@ public partial class MainWindow : Window
     {
         FileMenuItem.Header = MenuText("menu_file");
         NewTranscriptionMenuItem.Header = MenuText("menu_new_transcription");
+        NewTtsJobMenuItem.Header = MenuText("menu_new_tts_job");
         ExitMenuItem.Header = MenuText("menu_exit");
         SettingsMenuItem.Header = MenuText("menu_settings");
         HelpMenuItem.Header = MenuText("menu_help");

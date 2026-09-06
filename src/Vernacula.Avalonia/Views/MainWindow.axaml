@@ -22,6 +22,9 @@
         <DataTemplate DataType="vm:ResultsViewModel">
             <v:ResultsView />
         </DataTemplate>
+        <DataTemplate DataType="vm:TtsReaderViewModel">
+            <v:TtsReaderView />
+        </DataTemplate>
     </Window.DataTemplates>
 
     <DockPanel>
@@ -30,6 +33,8 @@
             <MenuItem x:Name="FileMenuItem" Header="{local:Loc menu_file}">
                 <MenuItem x:Name="NewTranscriptionMenuItem" Header="{local:Loc menu_new_transcription}"
                           Command="{Binding Home.NewTranscriptionCommand}" />
+                <MenuItem x:Name="NewTtsJobMenuItem" Header="{local:Loc menu_new_tts_job}"
+                          Command="{Binding Home.NewTtsJobCommand}" />
                 <Separator />
                 <MenuItem x:Name="ExitMenuItem" Header="{local:Loc menu_exit}" Click="Exit_Click" />
             </MenuItem>

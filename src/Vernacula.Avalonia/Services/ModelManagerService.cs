@@ -6,6 +6,7 @@ using Microsoft.ML.OnnxRuntime;
 using Vernacula.Base;
 using Vernacula.Base.Models;
 using Vernacula.App.Models;
+using Vernacula.Tts.Base;
 
 namespace Vernacula.App.Services;
 
@@ -818,5 +819,138 @@ internal class ModelManagerService
             File.Move(tmpPath, destPath);
             prevBytes += fileSizes[i];
         }
+    }
+
+    // ── Text-to-speech model sets ─────────────────────────────────────────────
+    //
+    // Each set is one directory the Settings → TTS tab shows a status line for. The ONNX
+    // exports are our own (scripts/chatterbox_export, kokoro_export, omnivoice_export) and are
+    // not published to a Hub repo yet, so their RepoBase is empty: the presence check works,
+    // the download button is hidden, and the status line names the folder to fill by hand —
+    // the same "not hosted yet" convention as Qwen3-ASR and the Whisper mel graph above. When a
+    // repo goes up, fill in the base + manifest and the download path lights up unchanged.
+
+    public enum TtsModelSet { Chatterbox, Kokoro, OmniVoice, OmniVoiceVoices, PhonemizerData }
+
+    private const string ChatterboxRepoBase        = "";
+    private const string KokoroRepoBase            = "";
+    private const string OmniVoiceRepoBase         = "";
+    private const string OmniVoiceVoiceLibRepoBase = "";
+    private const string PhonemizerDataRepoBase    = "";
+
+    // speech_encoder / embed_tokens / language_model + the split vocoder graphs. The vocoder's
+    // decoder ships as either conditional_decoder_loop.onnx (loop layout) or
+    // conditional_decoder.onnx (monolithic) — see Vocoder.cs — so it is checked as a pair below
+    // rather than listed here. tokenizer.json may also come from the HF cache
+    // (ChatterboxPipeline.LocateCachedTokenizerJson), so it is checked separately too.
+    private static readonly string[] ChatterboxRequiredFiles =
+        ["speech_encoder.onnx", "embed_tokens.onnx", "language_model.onnx",
+         "flow_encoder.onnx", "cfm_estimator.onnx", "mel2wav.onnx"];
+
+    private static readonly string[] OmniVoiceRequiredFiles =
+        ["omnivoice_transformer.onnx", "omnivoice_transformer.onnx.data",
+         "higgs_encoder.onnx", "higgs_decoder.onnx", IpaFineTune.DefaultDiffFile];
+
+    private static readonly string[] OmniVoiceVoiceLibRequiredFiles = ["voices.jsonc", "voice-codes.json"];
+
+    public string GetTtsModelSetDir(TtsModelSet set) => set switch
+    {
+        TtsModelSet.Chatterbox      => _settings.GetChatterboxModelsDir(),
+        TtsModelSet.Kokoro          => _settings.GetKokoroModelsDir(),
+        TtsModelSet.OmniVoice       => _settings.GetOmniVoiceModelsDir(),
+        TtsModelSet.OmniVoiceVoices => _settings.GetOmniVoiceVoiceLibDir(),
+        TtsModelSet.PhonemizerData  => _settings.GetPhonemizerDataDir(),
+        _                           => throw new ArgumentOutOfRangeException(nameof(set)),
+    };
+
+    private static string RepoBaseFor(TtsModelSet set) => set switch
+    {
+        TtsModelSet.Chatterbox      => ChatterboxRepoBase,
+        TtsModelSet.Kokoro          => KokoroRepoBase,
+        TtsModelSet.OmniVoice       => OmniVoiceRepoBase,
+        TtsModelSet.OmniVoiceVoices => OmniVoiceVoiceLibRepoBase,
+        TtsModelSet.PhonemizerData  => PhonemizerDataRepoBase,
+        _                           => "",
+    };
+
+    /// <summary>True once the set's files are published somewhere this app can fetch them from.</summary>
+    public static bool CanDownloadTtsModelSet(TtsModelSet set) => !string.IsNullOrEmpty(RepoBaseFor(set));
+
+    /// <summary>
+    /// The files a set still needs, relative to its directory. Empty means the backend can
+    /// load. Where a file has more than one acceptable spelling or location, one entry names
+    /// the alternatives.
+    /// </summary>
+    public IReadOnlyList<string> GetMissingTtsFiles(TtsModelSet set)
+    {
+        string dir = GetTtsModelSetDir(set);
+        var missing = new List<string>();
+        switch (set)
+        {
+            case TtsModelSet.Chatterbox:
+                missing.AddRange(ChatterboxRequiredFiles.Where(f => !File.Exists(Path.Combine(dir, f))));
+                if (!File.Exists(Path.Combine(dir, "conditional_decoder_loop.onnx"))
+                    && !File.Exists(Path.Combine(dir, "conditional_decoder.onnx")))
+                    missing.Add("conditional_decoder_loop.onnx (or conditional_decoder.onnx)");
+                if (!File.Exists(Path.Combine(dir, "tokenizer.json"))
+                    && ChatterboxPipeline.LocateCachedTokenizerJson() is null)
+                    missing.Add("tokenizer.json");
+                break;
+
+            case TtsModelSet.Kokoro:
+                if (!File.Exists(Path.Combine(dir, "kokoro.onnx"))) missing.Add("kokoro.onnx");
+                string voices = Path.Combine(dir, "voices");
+                if (!Directory.Exists(voices) || !Directory.EnumerateFiles(voices, "*.bin").Any())
+                    missing.Add("voices/*.bin");
+                break;
+
+            case TtsModelSet.OmniVoice:
+                missing.AddRange(OmniVoiceRequiredFiles.Where(f => !File.Exists(Path.Combine(dir, f))));
+                if (!File.Exists(_settings.Current.OmniVoiceTokenizerJson)
+                    && (!Directory.Exists(dir) || OmniVoiceIpaTts.LocateTokenizerJson(dir) is null))
+                    missing.Add("tokenizer.json");
+                break;
+
+            case TtsModelSet.OmniVoiceVoices:
+                missing.AddRange(OmniVoiceVoiceLibRequiredFiles.Where(f => !File.Exists(Path.Combine(dir, f))));
+                break;
+
+            case TtsModelSet.PhonemizerData:
+                if (!PhonemizerData.IsDataRoot(dir)) missing.Add("core/phonology.jsonc (the data/ tree)");
+                break;
+        }
+        return missing;
+    }
+
+    /// <summary>
+    /// Downloads a set's missing files into its directory. Only the plain file lists are
+    /// fetchable (the pair/alternative entries above are resolved to their first spelling);
+    /// a set with no repo throws with the folder to fill by hand.
+    /// </summary>
+    public async Task DownloadMissingTtsModelsAsync(
+        TtsModelSet set,
+        IProgress<DownloadProgress> progress,
+        CancellationToken ct = default)
+    {
+        string repoBase = RepoBaseFor(set);
+        string dir = GetTtsModelSetDir(set);
+        if (string.IsNullOrEmpty(repoBase))
+            throw new InvalidOperationException(
+                $"{set} is not published for download yet. Place the files in {dir} (see docs/tts-cli.md).");
+        Directory.CreateDirectory(dir);
+
+        IEnumerable<string> files = set switch
+        {
+            TtsModelSet.Chatterbox      => ChatterboxRequiredFiles.Append("conditional_decoder_loop.onnx").Append("tokenizer.json"),
+            TtsModelSet.Kokoro          => ["kokoro.onnx"],
+            TtsModelSet.OmniVoice       => OmniVoiceRequiredFiles.Append("tokenizer.json"),
+            TtsModelSet.OmniVoiceVoices => OmniVoiceVoiceLibRequiredFiles,
+            _                           => [],
+        };
+        var missing = files
+            .Where(f => !File.Exists(Path.Combine(dir, f)))
+            .Select(f => new RepoAsset(repoBase, f, f))
+            .ToList();
+        await DownloadMissingAssetsAsync(dir, missing, progress, ct);
     }
 }

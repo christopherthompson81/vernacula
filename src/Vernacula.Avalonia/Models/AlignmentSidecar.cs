@@ -1,7 +1,7 @@
 using System.Collections.Generic;
 using System.Text.Json.Serialization;
 
-namespace Vernacula.Tts.App.Models;
+namespace Vernacula.App.Models;
 
 /// <summary>
 /// Deserialized shape of the JSON sidecar emitted by Vernacula.Tts.Backends.CLI
@@ -29,6 +29,16 @@ public sealed class AlignmentSidecar
 
     [JsonPropertyName("words")]
     public List<AlignedWord> Words { get; set; } = new();
+
+    /// <summary>
+    /// The markdown/text the job rendered, verbatim. Written by the desktop app's TTS jobs so
+    /// the reader can rebuild the structured view without the input file; absent in sidecars
+    /// from the CLI. The word sequence in <see cref="Words"/> is 1:1 with the whitespace-split
+    /// output of MarkdownTextExtractor.Extract(SourceText), which is what lets the reader attach
+    /// timing by running index.
+    /// </summary>
+    [JsonPropertyName("source_text")]
+    public string? SourceText { get; set; }
 }
 
 public sealed class ChunkRecord

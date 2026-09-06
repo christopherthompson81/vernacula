@@ -42,6 +42,7 @@ https://github.com/user-attachments/assets/42015635-03b9-4c6b-868c-248e8c29c352
 - **Wide format support** — common audio formats plus MP4, MOV, MKV, AVI, WMV, FLV, MTS, and more
 - **Export** to XLSX, CSV, JSON, SRT, Markdown, DOCX, and SQLite
 - **Full analysis data** in SQLite with per-token durations, logprobs, and speaker labels
+- **Text-to-speech jobs** alongside transcription — read a markdown/text document aloud with Kokoro, OmniVoice-IPA (any phonemizer language) or Chatterbox (voice cloning); the reader highlights each word as it is spoken, with optional IPA above the text
 - **GPU acceleration** via CUDA (DirectML on Windows), with automatic CPU fallback
 - **Parakeet v3 covers 25 languages**: English, French, German, Spanish, Portuguese, Italian, Dutch, Polish, Russian, Ukrainian, Czech, Slovak, Romanian, Hungarian, Bulgarian, Croatian, Slovenian, Greek, Swedish, Danish, Finnish, Estonian, Latvian, Lithuanian, and Maltese
 - **Qwen3-ASR and Cohere Transcribe backends** add ~30 and ~15 additional language options respectively
@@ -60,3 +61,9 @@ For packaged installs on Linux, see [Installation](installation.md). For custom 
 ## Models
 
 The Avalonia app surfaces each model repo through Settings → Models and handles downloads, resuming, and hash verification. See [Models](models.md) for the full catalogue.
+
+## Text-to-speech
+
+The job list holds both kinds of job; the left-most **Kind** column says which. **New Text-to-Speech Job** takes a markdown or plain-text document and the rendering choices that belong to that job — engine, language, voice, speed or diffusion steps — and queues it like a transcription. **Open** on a finished job shows the reader: the document as a word-by-word view (or rendered markdown) with playback that follows the spoken word, click-to-seek, and optional IPA above each word. A job still rendering can be opened too; Play streams the audio as it is produced.
+
+Engine model locations, the default engine and its defaults live under **Settings → Text-to-Speech**. The engines' ONNX exports come from `scripts/kokoro_export`, `scripts/omnivoice_export` and `scripts/chatterbox_export` and are not published for download yet; the tab reports what each engine is missing and where it looks. See [vernacula-tts](tts-cli.md) for what the OmniVoice engine needs.

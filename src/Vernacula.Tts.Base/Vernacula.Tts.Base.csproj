@@ -7,7 +7,7 @@
     <RootNamespace>Vernacula.Tts.Base</RootNamespace>
     <AssemblyName>Vernacula.Tts.Base</AssemblyName>
     <!--
-      EP is passed by consuming projects (Vernacula.Tts.Backends.CLI, Vernacula.Tts.Avalonia,
+      EP is passed by consuming projects (Vernacula.Tts.Backends.CLI, Vernacula.Avalonia,
       Vernacula.Tts.CLI and the smoke tests). Mirrors the pattern in Vernacula.Base —
       PrivateAssets="all" keeps the package out of consumers' output; each
       consumer brings its own OnnxRuntime variant.

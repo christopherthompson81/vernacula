@@ -4,14 +4,14 @@ using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
-using Vernacula.Tts.App.Models;
+using Vernacula.App.Models;
 using Vernacula.Tts.Base;
 using Vernacula.Tts.Base.Alignment;
 using Vernacula.Tts.Base.Markdown;
 using NAudio.Wave;
 using Vernacula.Base.Models;
 
-namespace Vernacula.Tts.App.Services;
+namespace Vernacula.App.Services.Tts;
 
 /// <summary>
 /// Streaming synthesis + cross-attention alignment for the reader UI.
@@ -25,7 +25,7 @@ namespace Vernacula.Tts.App.Services;
 /// subsequent invocations — the pipeline load is the big sticky cost
 /// (~5-10 s), and rebuilding it per click would make the UI feel slow.
 /// </summary>
-public sealed class SynthesisService : ITtsBackend
+public sealed class ChatterboxSynthesisService : ITtsBackend
 {
     private readonly string _onnxBundleDir;
     private readonly string? _tokenizerJsonPath;
@@ -34,7 +34,7 @@ public sealed class SynthesisService : ITtsBackend
     private ChatterboxPipeline? _pipeline;
     private readonly object _gate = new();
 
-    public SynthesisService(
+    public ChatterboxSynthesisService(
         string onnxBundleDir,
         string? tokenizerJsonPath = null,
         ExecutionProvider ep = ExecutionProvider.Auto)

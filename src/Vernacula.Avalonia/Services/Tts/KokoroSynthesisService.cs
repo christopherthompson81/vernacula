@@ -3,13 +3,13 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
-using Vernacula.Tts.App.Models;
+using Vernacula.App.Models;
 using Vernacula.Tts.Base;
 using Vernacula.Tts.Base.Markdown;
 using NAudio.Wave;
 using Vernacula.Base.Models;
 
-namespace Vernacula.Tts.App.Services;
+namespace Vernacula.App.Services.Tts;
 
 /// <summary>
 /// Kokoro-82M streaming backend. Same per-chunk streaming contract as

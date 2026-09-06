@@ -1,7 +1,7 @@
 using System.Text;
 using Avalonia.Media;
 
-namespace Vernacula.Tts.App;
+namespace Vernacula.App;
 
 /// <summary>
 /// Which font to set text in, by the script it is written in.

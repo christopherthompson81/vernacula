@@ -28,6 +28,7 @@ internal partial class HomeViewModel : ObservableObject
     public ObservableCollection<JobRecord> Jobs { get; } = new();
 
     public Action?               NavigateToConfig  { get; set; }
+    public Action?               NavigateToTtsConfig { get; set; }
     public Action<JobRecord>?    RequeueJob        { get; set; }
     public Action<int>?          CancelJob         { get; set; }
     public Action<JobRecord>?    LoadJobToResults  { get; set; }
@@ -168,6 +169,11 @@ internal partial class HomeViewModel : ObservableObject
     [RelayCommand]
     private void NewTranscription() => NavigateToConfig?.Invoke();
 
+    // Not gated on ModelsReady: that flag is the ASR bundle's. The TTS dialog explains what
+    // its own engine is missing and disables Start until it is there.
+    [RelayCommand]
+    private void NewTtsJob() => NavigateToTtsConfig?.Invoke();
+
     [RelayCommand]
     private async Task BulkAddJobs()
     {
@@ -203,6 +209,9 @@ internal partial class HomeViewModel : ObservableObject
         {
             if (File.Exists(job.ResultsFile))
                 File.Delete(job.ResultsFile);
+            // A TTS job's rendered audio sits beside its sidecar.
+            if (job.IsTts && File.Exists(job.OutputAudioPath))
+                File.Delete(job.OutputAudioPath);
             _controlDb.DeleteJob(job.JobId);
             Jobs.Remove(job);
         }
