@@ -6,7 +6,6 @@ using Microsoft.ML.OnnxRuntime;
 using Vernacula.Base;
 using Vernacula.Base.Models;
 using Vernacula.App.Models;
-using Vernacula.Tts.Base;
 using Vernacula.App.Services.Tts;
 
 namespace Vernacula.App.Services;
@@ -415,6 +414,9 @@ internal class ModelManagerService
     /// The (local path, expected MD5) pairs a manifest lets us verify for the assets that are
     /// on disk under <paramref name="dir"/> — the one loop behind the ASR and TTS update checks.
     /// Null when the manifest cannot be fetched or parsed (offline), so callers can skip.
+    /// An entry with no MD5 is left out rather than compared: it can never match, so listing it
+    /// would report the file as outdated on every check and re-fetch it to no effect. (The
+    /// Sortformer check below already treats a missing hash as "cannot say".)
     /// </summary>
     private async Task<List<(string localRelativePath, string expectedHash)>?> ManifestChecksAsync(
         string dir, string manifestUrl, IEnumerable<ModelAsset> assets, CancellationToken ct)
@@ -859,9 +861,10 @@ internal class ModelManagerService
     public string GetTtsModelSetDir(TtsModelSet set) => set.Dir(_settings);
 
     /// <summary>
-    /// The files a set still needs, relative to its directory. Empty means the backend can
-    /// load. Static so the job runner and the New TTS Job dialog check the same files Settings
-    /// does.
+    /// The files a set still needs, relative to its directory; empty means the backend can
+    /// load. The rule is the set's own (<see cref="TtsModelSet.Missing"/>), which is also what
+    /// the job runner and the New TTS Job dialog consult through <see cref="TtsModelSet.MissingFiles"/>,
+    /// so the three cannot disagree.
     /// </summary>
     public IReadOnlyList<string> GetMissingTtsFiles(TtsModelSet set) => set.MissingFiles(_settings);
 
