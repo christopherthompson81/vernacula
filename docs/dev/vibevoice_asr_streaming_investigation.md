@@ -998,3 +998,41 @@ Suite 163 pass.
 so it streams *decoding*, not *capture*. Live microphone input would need an audio source
 feeding the same loop, which the backend is shaped for — it takes one window at a time and
 holds its own cache — but nothing upstream of it currently produces audio incrementally.
+
+## Run 22 — 2026-09-07 17:50 — the ceiling was ours, and raising it costs ~1 MB
+
+**Question (user's).** A "streaming" model that caps at 17 minutes seems odd.
+
+**Two things were tangled in the word.** "Streaming" here is about *latency*, not unbounded
+length: the contrast upstream draws is with the non-streaming checkpoint, which emits nothing
+until the recording ends. That is the ordinary online/offline distinction and says nothing
+about running forever. The length bound is a separate axis, and it is not arbitrary — this
+model attributes speakers purely from accumulated context, so evicting context cuts the
+thread, which Run 15 measured directly.
+
+**But the 17-minute figure was mine, not the model's.** It came from copying upstream's
+server default of 16,384. The checkpoints are trained further:
+
+| checkpoint | trained context | audio | KV cache at that ceiling |
+|---|---|---|---|
+| 1.5B | 65,536 | ~68 min | 1.75 GB |
+| 7B | 131,072 | ~137 min | 3.50 GB |
+
+**And raising it does not touch the weights.** The ceiling exists only as the buffer length
+declared on the decoder's `past_key/value` inputs; no node carries it as a constant, because
+GroupQueryAttention takes the live length through `seqlens_k` and `total_sequence_length`.
+`set_cache_ceiling.py` rewrites those 56 dimensions and the export report with
+`load_external_data=False`, so the `.onnx.data` file is never read or rewritten — verified
+byte-identical by MD5 on both packages.
+
+**Consequence for publishing:** re-publishing the raised ceiling moved **0.9 MB** of graph
+plus two small JSON files per repo, instead of re-uploading 12.2 GB of weights. Both repos
+updated in seconds.
+
+**Verified after patching:** both packages transcribe the 69 s clip with output identical to
+before (WER 0.008 and 0.012 against the torch reference, same speaker counts), and the C#
+backend reports the new limits.
+
+**The remaining cost is speed, not memory.** Attention tracks the filled cache, so a token
+late in a two-hour file costs several times an early one; VRAM stays flat. Documented in the
+help text and both model cards rather than left for a user to discover.

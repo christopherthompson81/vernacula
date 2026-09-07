@@ -66,9 +66,12 @@ the selected checkpoint needs more memory than the detected GPU reports.
 The two install into separate folders, so switching between them does not re-download the one
 you already have.
 
-Recording length is capped rather than unlimited: the model keeps its whole context, so the
-package is built with a ceiling of about 17 minutes of audio. A longer file is refused up
-front with a message naming the limit, instead of failing partway through.
+Recording length is capped rather than unlimited. The model keeps its whole context — that is
+how it tracks who is speaking without a separate diarizer — so each package is built with a
+ceiling set to the checkpoint's trained context: about **68 minutes** for the 1.5B and about
+**2 hours** for the 7B. A longer file is refused up front with a message naming the limit,
+instead of failing partway through. Note that speed tapers as the context fills, so the last
+minutes of a very long recording decode more slowly than the first.
 
 ### IndicConformer language selection
 

@@ -61,8 +61,10 @@ one text chunk per 2.93 s of audio and marks speaker turns inline.
 - ONNX Runtime with the **CUDA** execution provider. `GroupQueryAttention` and the float16
   graphs are not supported on the CPU provider here.
 - Peak VRAM about **7.4 GB**; real-time factor about **0.060** on an RTX 3090.
-- The KV cache ceiling in `export-report.json` bounds recording length (16,384 positions,
-  roughly 17 minutes). The runtime refuses a longer recording rather than failing partway.
+- The KV cache ceiling in `export-report.json` bounds recording length and is set to the
+  checkpoint's trained context (65,536 positions, roughly 68 minutes of audio). The runtime refuses a
+  longer recording rather than failing partway. Attention cost grows with the filled cache,
+  so decoding slows as a long recording proceeds; VRAM does not.
 - Speaker attribution at this size is **less reliable — on the test clip it labelled every turn Speaker 0**.
 
 ## Licence

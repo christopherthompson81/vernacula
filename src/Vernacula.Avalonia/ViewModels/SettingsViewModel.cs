@@ -175,7 +175,7 @@ internal partial class SettingsViewModel : ObservableObject
         ? "VibeVoice-ASR Streaming"
         : "VibeVoice-ASR Streaming (Unavailable - CUDA Missing)";
     public string VibeVoiceStreamingAsrDescription => CanUseVibeVoiceStreamingAsr
-        ? "Chunked ASR with built-in speaker attribution, in 10 languages. Transcribes as the recording plays rather than after it. Downloads into the vibevoice_asr_streaming models folder."
+        ? "Chunked ASR with built-in speaker attribution, in 10 languages. Text appears as the recording is decoded rather than after it finishes. Recording length is capped by the checkpoint's context: about 68 minutes (1.5B) or 2 hours (7B)."
         : "Unavailable because the CUDA execution provider check did not pass.";
     public string VibeVoiceAsrLabel => CanUseVibeVoiceAsr ? "VibeVoice-ASR" : "VibeVoice-ASR (Unavailable - CUDA Missing)";
     public string VibeVoiceAsrDescription => CanUseVibeVoiceAsr
