@@ -44,9 +44,31 @@ Controls which speech-recognition model transcribes the audio. Each backend cove
 | **Cohere Transcribe** | 14 | Whisper-family decoder path. Supports optional per-file forced language. |
 | **Qwen3-ASR 1.7B** | 29 | Batched decoder with the widest language coverage. Optional forced language; otherwise auto-detects. |
 | **VibeVoice-ASR** | 12 | Combined diarization + ASR in a single model pass. Requires a CUDA-capable GPU. |
+| **VibeVoice-ASR Streaming** | 10 | Microsoft's streaming sibling of VibeVoice-ASR: transcribes in 2.9-second chunks and marks speaker turns as it goes, again with no separate diarizer. Requires a CUDA-capable GPU, and offers a size choice — see below. |
 | **IndicConformer 600M** | 22 Indic | AI4Bharat's multilingual Indic model. Covers the 22 official Indian languages across multiple scripts (Devanagari, Bengali, Tamil, Arabic, Ol Chiki, etc.). Requires a language to be picked at inference — see below. |
 | **Whisper large-v3-turbo** | 99 | OpenAI Whisper (turbo-distilled decoder, full large-v3 encoder). Widest multilingual coverage of any Vernacula backend by a long margin — includes Arabic, Japanese, Korean, Vietnamese, Swahili, Tagalog, Cantonese, and many low-resource languages no other backend covers. Auto-detects language by default via Whisper's `<\|lang\|>` prefix token; forced language available for files where auto-detect confuses similar languages (e.g. Croatian vs Serbian, Norwegian Bokmål vs Nynorsk). |
 | **Granite Speech 4.1** | 6 | IBM's 1.84 B Granite-4 LLM decoder fused with a Conformer audio encoder. English-first; secondary support for French, German, Spanish, Portuguese, Japanese. No language picker. Auto-selects the BF16 mixed-precision bundle on Ampere+ NVIDIA GPUs (faster, smaller); falls back to FP32 on older GPUs and CPU-only systems. |
+
+### VibeVoice-ASR Streaming: choosing 1.5B or 7B
+
+Two checkpoints are available, and the picker sits directly under the backend radio button.
+They differ far more in speaker attribution than in transcription accuracy:
+
+| | VRAM | Speed | Speaker labels |
+|---|---|---|---|
+| **1.5B** | about 7.4 GB | roughly 2x real time on an RTX 3090 | Weaker. On a two-person interview it labelled every turn as one speaker. |
+| **7B** | about 15.7 GB | roughly half the 1.5B's speed | Reliable. It separated the same interview correctly and held both labels across a 30-minute recording. |
+
+Pick the 1.5B when you want a transcript and the speaker labels are incidental, or when the
+card is small. Pick the 7B when who-said-what matters. A warning appears under the picker if
+the selected checkpoint needs more memory than the detected GPU reports.
+
+The two install into separate folders, so switching between them does not re-download the one
+you already have.
+
+Recording length is capped rather than unlimited: the model keeps its whole context, so the
+package is built with a ceiling of about 17 minutes of audio. A longer file is refused up
+front with a message naming the limit, instead of failing partway through.
 
 ### IndicConformer language selection
 
