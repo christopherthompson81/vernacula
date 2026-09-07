@@ -25,11 +25,32 @@ public partial class App : Application
     internal JobQueueService      JobQueue      { get; private set; } = null!;
     internal ExportService        Export        { get; } = new();
 
-    public static void Main(string[] args)
+    private static volatile bool s_shuttingDown;
+    private static volatile int s_exitCode;
+
+    /// <summary>
+    /// Called when the desktop lifetime is actually exiting -- not merely when a shutdown is
+    /// requested, since such a request can still be cancelled and the app go on running. After
+    /// this point the dispatcher stops accepting work, so anything still trying to marshal to
+    /// the UI thread will fail.
+    /// </summary>
+    private static void BeginShutdown(int exitCode)
+    {
+        s_exitCode = exitCode;
+        s_shuttingDown = true;
+    }
+
+    public static int Main(string[] args)
     {
         SetupGlobalExceptionHandlers();
-        BuildAvaloniaApp().StartWithClassicDesktopLifetime(args);
+        var exitCode = BuildAvaloniaApp().StartWithClassicDesktopLifetime(args);
+        s_exitCode = exitCode;
         Console.WriteLine("[App] StartWithClassicDesktopLifetime returned");
+        // The UI is gone and the exit code is settled; leave before any background teardown
+        // (D-Bus readers, ONNX session finalizers) can raise on a thread we do not own.
+        Console.Out.Flush();
+        Environment.Exit(exitCode);
+        return exitCode;
     }
 
     public static AppBuilder BuildAvaloniaApp()
@@ -40,8 +61,25 @@ public partial class App : Application
 
     private static void SetupGlobalExceptionHandlers()
     {
+        // Avalonia's FreeDesktop backend keeps a D-Bus connection whose signal observers were
+        // subscribed on the UI thread. When that connection drops during exit it reports the
+        // disconnect to each observer through the captured (Avalonia) synchronization context;
+        // with the dispatcher already shutting down, the Send is cancelled and the resulting
+        // TaskCanceledException is rethrown on a thread pool thread, where nothing can catch it.
+        // The app is done at that point, so treat it as a clean exit -- but only for exceptions
+        // that actually came through the D-Bus stack, and only once shutdown has begun, so real
+        // faults are still reported.
         AppDomain.CurrentDomain.UnhandledException += (_, e) =>
+        {
+            if (s_shuttingDown && e.ExceptionObject is Exception ex && IsDBusTeardown(ex))
+            {
+                Console.Error.WriteLine($"[shutdown] ignoring D-Bus teardown error: {ex.GetType().Name}: {ex.Message}");
+                // Exit with the code the run had already settled on: a failing run must not be
+                // reported as a success just because teardown raised on the way out.
+                Environment.Exit(s_exitCode);
+            }
             Console.WriteLine($"[UNHANDLED] AppDomain exception: {e.ExceptionObject}");
+        };
 
         TaskScheduler.UnobservedTaskException += (_, e) =>
         {
@@ -54,6 +92,17 @@ public partial class App : Application
 
             Console.WriteLine($"[UNHANDLED] Unobserved task exception: {e.Exception}");
         };
+    }
+
+    /// <summary>True when <paramref name="ex"/>, or anything it wraps, was raised inside the
+    /// D-Bus stack. Aggregates are flattened: one disconnect can fault several observers at once,
+    /// and the D-Bus one need not be first.</summary>
+    private static bool IsDBusTeardown(Exception ex)
+    {
+        if (ex.StackTrace?.Contains("Tmds.DBus", StringComparison.Ordinal) == true) return true;
+        if (ex is AggregateException agg)
+            return agg.Flatten().InnerExceptions.Any(IsDBusTeardown);
+        return ex.InnerException is { } inner && IsDBusTeardown(inner);
     }
 
     private static bool IsIgnorableLinuxDesktopIntegrationException(Exception ex)
@@ -140,6 +189,9 @@ public partial class App : Application
             desktop.Exit += (_, e) =>
             {
                 Console.WriteLine($"[App] Desktop Exit event! ExitCode={e.ApplicationExitCode}");
+                // Only Exit arms the guard: a shutdown *request* can be cancelled, and the guard
+                // must not stay armed while the app carries on running.
+                BeginShutdown(e.ApplicationExitCode);
                 DisposeServices();
             };
             var mainVm = new MainViewModel(Settings, ControlDb, ModelManager, Transcription, JobQueue, Export, TtsRunner);
