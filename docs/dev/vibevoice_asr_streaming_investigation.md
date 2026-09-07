@@ -220,3 +220,48 @@ the default per-window cold encode?
 graph (1×83200 → 26×hidden) reused per window. Run 4 measures cache growth and stability
 over 10 and 30 minute files before the decoder export is designed, since the LM cache never
 shrinks.
+
+## Run 4 — 2026-09-07 12:30 — cache growth and stability over 10 and 30 minutes
+
+**Command.** `run_reference.py --deterministic` on 10 min and 30 min files made by looping
+the 69 s interview clip (`ffmpeg -stream_loop`, mono 24 kHz). Same content repeated, so this
+measures memory, speed and degeneration, not accuracy.
+
+**Question.** The LM cache never shrinks. Does a long file fit, does per-chunk latency grow,
+and does the output stay sane (no empty chunks, no runaway speaker labels, no collapse)?
+
+**Raw result.**
+
+| checkpoint | length | chunks | peak VRAM | cache growth | RTF | s/chunk first 10 | s/chunk last 10 | speakers | empty chunks | words |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 1.5B | 10 min | 205 | 5.20 GiB | +0.39 | 0.158 | 0.48 | 0.43 | 1 | 0 | 2414 |
+| 1.5B | 30 min | 614 | 5.96 GiB | +1.15 | 0.164 | 0.46 | 0.41 | 1 | 0 | 7193 |
+| 7B | 10 min | 205 | 16.97 GiB | +0.77 | 0.200 | 0.51 | 0.56 | 2 | 0 | 2462 |
+| 7B | 30 min | 614 | 18.47 GiB | +2.26 | 0.221 | 0.54 | 0.72 | 2 | 0 | 7342 |
+
+- No OOM, no exceptions, no empty chunks, word count scales linearly with length (the
+  10-minute file is 8.7 loops and yields 8.7× the words), and the 7B keeps exactly two
+  speaker labels for the full 30 minutes rather than inventing new ones.
+- Cache growth is roughly linear: 7B ≈ 0.75 GiB per 10 minutes, 1.5B ≈ 0.38 GiB per
+  10 minutes. Extrapolated, a 60-minute file peaks near 20.7 GiB on the 7B, inside the
+  3090's 24 GiB but with the same headroom caveat the non-streaming port hit; the 1.5B
+  would sit near 7 GiB. ONNX Runtime will have its own workspace on top of this.
+- Per-chunk latency on the 7B creeps from 0.54 s to 0.72 s over 30 minutes (attention over
+  ~23k cached positions); the 1.5B does not move. Both stay far under the 2.93 s chunk
+  period, so real-time streaming has a wide margin even in this Python loop.
+- Overall RTF in Python is 0.16 to 0.22; the loop is still overhead-bound (see Run 1).
+
+**Implications.** The distributed model is understood and runs as intended on this machine;
+this closes the "use it as upstream intends" step. Export design that follows from Runs 0-4:
+
+1. `audio_encoder.onnx`: fixed shape, 1×83,200 samples → 26×hidden, mean-only, no conv
+   cache, run once per window (exactly upstream's default path).
+2. Decoder with a growing KV cache across chunks, the same graph handling the 28-token
+   audio block prefill, the per-token decode, and the trailing `<|text_chunk_end|>` feed.
+   The existing single-graph decoder export with IO-bound cache from the non-streaming
+   port is the starting point; the difference is that prefill happens many times.
+3. Cache must be sized for the longest job the app allows, or evicted by policy. Upstream
+   never evicts; measuring transcript quality with a sliding window is a separate
+   investigation, not part of parity.
+4. Start with the 1.5B for export and parity work (fast iteration, 5 GiB), then apply the
+   same recipe to the 7B.
