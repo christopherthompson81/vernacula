@@ -48,14 +48,23 @@ public class JobRecord : ObservableObject
     public string  AudioFileSha256Sum        { get; set; } = "";
 
     // ── TTS-only settings, snapshotted per job so a requeue renders the same way ──
+    /// <summary>
+    /// The job's TTS choices, read from the jobs table's <c>job_settings</c> JSON column; null
+    /// for ASR jobs and for TTS rows written before that column existed and never opened by a
+    /// build that backfills them. The accessors below are conveniences over this one field —
+    /// a new engine knob goes in <see cref="TtsJobSettings"/> and needs nothing here unless
+    /// something binds to it directly.
+    /// </summary>
+    public TtsJobSettings? TtsSettings        { get; set; }
+
     /// <summary>TtsBackendKind name ("Chatterbox" / "Kokoro" / "OmniVoice"); "" for ASR jobs.</summary>
-    public string  TtsBackend                { get; set; } = "";
+    public string  TtsBackend                => TtsSettings?.Backend  ?? "";
     /// <summary>vernacula-phonemizer language code (OmniVoice); "" where the backend has no choice.</summary>
-    public string  TtsLanguage               { get; set; } = "";
+    public string  TtsLanguage               => TtsSettings?.Language ?? "";
     /// <summary>Backend-specific voice: a WAV path (Chatterbox), a voice name (Kokoro), a library id (OmniVoice).</summary>
-    public string  TtsVoice                  { get; set; } = "";
-    public float   TtsSpeed                  { get; set; } = 1.0f;
-    public int     TtsNumStep                { get; set; } = 32;
+    public string  TtsVoice                  => TtsSettings?.Voice    ?? "";
+    public float   TtsSpeed                  => TtsSettings?.Speed    ?? 1.0f;
+    public int     TtsNumStep                => TtsSettings?.NumStep  ?? 32;
     public string  AsrModelName              { get; set; } = "nvidia/parakeet-tdt-0.6b-v3";
     public string  AsrLanguageCode           { get; set; } = "auto";
     public string? AudioFileDatestamp        { get; set; }

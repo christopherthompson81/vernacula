@@ -183,6 +183,12 @@ internal sealed class JobQueueService
     internal static string TtsResultsFileName(string documentSha256, TtsJobSettings tts)
     {
         // Invariant formatting: the key names a file that must stay the same under any UI culture.
+        //
+        // This list is deliberately written out rather than derived from the settings record, even
+        // though the record is now what the jobs table stores (issue #130). The key identifies a
+        // rendered file on disk: adding a field here re-keys every existing render and orphans it.
+        // A new engine knob belongs in this string only if two jobs differing in it must produce
+        // two files.
         string settingsKey = string.Create(System.Globalization.CultureInfo.InvariantCulture,
             $"{tts.Backend}|{tts.Language}|{tts.Voice}|{tts.Speed:F2}|{tts.NumStep}");
         string settingsHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(settingsKey)))[..8].ToLowerInvariant();

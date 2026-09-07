@@ -63,11 +63,70 @@ internal sealed class ControlDb : IDisposable
             "ALTER TABLE jobs ADD COLUMN tts_speed REAL NOT NULL DEFAULT 1.0",
             "ALTER TABLE jobs ADD COLUMN tts_num_step INTEGER NOT NULL DEFAULT 32",
             "ALTER TABLE jobs ADD COLUMN output_duration_seconds REAL",
+            // Per-kind engine settings as one JSON blob, superseding the five tts_* columns
+            // above (issue #130). Those stay in the schema, unwritten, so a database written
+            // by this version still opens in an older build; nothing reads them any more
+            // except the backfill below.
+            "ALTER TABLE jobs ADD COLUMN job_settings TEXT",
         })
         {
             try { Execute(ddl); }
             catch (SqliteException) { /* column already present — ignore */ }
         }
+
+        BackfillTtsJobSettings();
+    }
+
+    /// <summary>
+    /// Moves TTS rows written before <c>job_settings</c> existed into it. Idempotent — it only
+    /// touches rows that have no JSON yet — so it is safe to run on every open, which also
+    /// covers a process that died between the ALTER and the copy.
+    /// </summary>
+    private void BackfillTtsJobSettings()
+    {
+        var legacy = new List<(int JobId, TtsJobSettings Tts)>();
+        using (var read = _conn.CreateCommand())
+        {
+            read.CommandText = """
+                SELECT job_id, tts_backend, tts_language, tts_voice, tts_speed, tts_num_step
+                FROM jobs
+                WHERE job_kind = 'tts' AND job_settings IS NULL
+                """;
+            using var r = read.ExecuteReader();
+            while (r.Read())
+                legacy.Add((r.GetInt32(0), new TtsJobSettings(
+                    r.IsDBNull(1) ? "" : r.GetString(1),
+                    r.IsDBNull(2) ? "" : r.GetString(2),
+                    r.IsDBNull(3) ? "" : r.GetString(3),
+                    r.IsDBNull(4) ? 1.0f : (float)r.GetDouble(4),
+                    r.IsDBNull(5) ? 32 : r.GetInt32(5))));
+        }
+        if (legacy.Count == 0) return;
+
+        using var tx = _conn.BeginTransaction();
+        foreach (var (jobId, tts) in legacy)
+        {
+            using var upd = _conn.CreateCommand();
+            upd.Transaction = tx;
+            upd.CommandText = "UPDATE jobs SET job_settings = $js WHERE job_id = $id";
+            upd.Parameters.AddWithValue("$js", SerializeTts(tts));
+            upd.Parameters.AddWithValue("$id", jobId);
+            upd.ExecuteNonQuery();
+        }
+        tx.Commit();
+    }
+
+    // The jobs table stores per-kind engine settings as JSON so that a new engine knob is one
+    // edit to the record rather than a column, two SQL statements, a parameter, a property and
+    // a reader ordinal. System.Text.Json is culture-invariant, which the column needs to be.
+    private static string SerializeTts(TtsJobSettings tts) =>
+        System.Text.Json.JsonSerializer.Serialize(tts);
+
+    private static TtsJobSettings? DeserializeTts(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return null;
+        try { return System.Text.Json.JsonSerializer.Deserialize<TtsJobSettings>(json); }
+        catch (System.Text.Json.JsonException) { return null; }   // unreadable row → treat as unset
     }
 
     /// <summary>
@@ -137,16 +196,40 @@ internal sealed class ControlDb : IDisposable
                             string sha256, string audioDateStamp, int streamIndex = -1,
                             string asrLanguageCode = "auto",
                             string asrModelName = "nvidia/parakeet-tdt-0.6b-v3")
+        => InsertJob(JobKind.Asr, title, resultsFile, audioPath, sha256, audioDateStamp,
+                     streamIndex, asrLanguageCode, asrModelName, settingsJson: null);
+
+    /// <summary>
+    /// Inserts a brand-new text-to-speech job with 'queued' status. A job for the same
+    /// results_file (same document + same backend/voice/language, see
+    /// JobQueueService.TtsResultsFileName) is updated in place and its job_id returned, so
+    /// re-adding a document re-renders rather than duplicating the row.
+    /// </summary>
+    public int InsertNewTtsJob(string title, string resultsFile, string documentPath,
+                               string sha256, string documentDateStamp, TtsJobSettings tts)
+        => InsertJob(JobKind.Tts, title, resultsFile, documentPath, sha256, documentDateStamp,
+                     streamIndex: -1, asrLanguageCode: "auto",
+                     asrModelName: "nvidia/parakeet-tdt-0.6b-v3",
+                     settingsJson: SerializeTts(tts));
+
+    /// <summary>
+    /// The one upsert-by-results_file behind both. Re-adding a job re-runs it: the row goes
+    /// back to 'queued' with its previous outcome cleared, or Home would keep showing the old
+    /// result (and its Resume button) while the new run overwrote the files underneath it.
+    /// </summary>
+    private int InsertJob(JobKind kind, string title, string resultsFile, string inputPath,
+                          string sha256, string inputDateStamp, int streamIndex,
+                          string asrLanguageCode, string asrModelName, string? settingsJson)
     {
+        string kindText = kind == JobKind.Tts ? "tts" : "asr";
+        object settingsValue = (object?)settingsJson ?? DBNull.Value;
+
         using var check = _conn.CreateCommand();
         check.CommandText = "SELECT job_id FROM jobs WHERE results_file = $rf";
         check.Parameters.AddWithValue("$rf", resultsFile);
         if (check.ExecuteScalar() is long existingId)
         {
             using var upd = _conn.CreateCommand();
-            // Re-adding a job re-runs it: the row goes back to 'queued' with its old outcome
-            // cleared, or Home would keep showing the previous result (and its Resume button)
-            // while the new run overwrites the files underneath it.
             upd.CommandText = """
                 UPDATE jobs
                 SET job_title = $jt,
@@ -156,75 +239,8 @@ internal sealed class ControlDb : IDisposable
                     stream_index = $si,
                     asr_language_code = $lc,
                     asr_model_name = $am,
-                    status = 'queued',
-                    error_message = NULL,
-                    run_time_seconds = NULL,
-                    transcription_run_datestamp = NULL
-                WHERE job_id = $id
-                """;
-            upd.Parameters.AddWithValue("$jt", title);
-            upd.Parameters.AddWithValue("$ap", audioPath);
-            upd.Parameters.AddWithValue("$sh", sha256);
-            upd.Parameters.AddWithValue("$ad", audioDateStamp);
-            upd.Parameters.AddWithValue("$si", streamIndex);
-            upd.Parameters.AddWithValue("$lc", asrLanguageCode);
-            upd.Parameters.AddWithValue("$am", asrModelName);
-            upd.Parameters.AddWithValue("$id", existingId);
-            upd.ExecuteNonQuery();
-            return (int)existingId;
-        }
-
-        using var ins = _conn.CreateCommand();
-        ins.CommandText = """
-            INSERT INTO jobs
-                (job_title, results_file, transcription_run_datestamp,
-                 audio_file_path, audio_file_sha256sum, audio_file_datestamp,
-                 status, created_at, stream_index, asr_language_code, asr_model_name)
-            VALUES ($jt, $rf, NULL, $ap, $sh, $ad, 'queued', $ca, $si, $lc, $am)
-            """;
-        ins.Parameters.AddWithValue("$jt", title);
-        ins.Parameters.AddWithValue("$rf", resultsFile);
-        ins.Parameters.AddWithValue("$ap", audioPath);
-        ins.Parameters.AddWithValue("$sh", sha256);
-        ins.Parameters.AddWithValue("$ad", audioDateStamp);
-        ins.Parameters.AddWithValue("$ca", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"));
-        ins.Parameters.AddWithValue("$si", streamIndex);
-        ins.Parameters.AddWithValue("$lc", asrLanguageCode);
-        ins.Parameters.AddWithValue("$am", asrModelName);
-        ins.ExecuteNonQuery();
-
-        using var lastId = _conn.CreateCommand();
-        lastId.CommandText = "SELECT last_insert_rowid()";
-        return (int)(long)lastId.ExecuteScalar()!;
-    }
-
-    /// <summary>
-    /// Inserts a brand-new text-to-speech job with 'queued' status. Mirrors
-    /// <see cref="InsertNewJob"/>: a job for the same results_file (same document + same
-    /// backend/voice/language, see JobQueueService.TtsResultsFileName) is updated in place and
-    /// its job_id returned, so re-adding a document re-renders rather than duplicating the row.
-    /// </summary>
-    public int InsertNewTtsJob(string title, string resultsFile, string documentPath,
-                               string sha256, string documentDateStamp, TtsJobSettings tts)
-    {
-        using var check = _conn.CreateCommand();
-        check.CommandText = "SELECT job_id FROM jobs WHERE results_file = $rf";
-        check.Parameters.AddWithValue("$rf", resultsFile);
-        if (check.ExecuteScalar() is long existingId)
-        {
-            using var upd = _conn.CreateCommand();
-            upd.CommandText = """
-                UPDATE jobs
-                SET job_title = $jt,
-                    audio_file_path = $ap,
-                    audio_file_sha256sum = $sh,
-                    audio_file_datestamp = $ad,
-                    job_kind = 'tts',
-                    tts_backend = $tb,
-                    tts_language = $tl,
-                    tts_voice = $tv,
-                    tts_speed = $ts,
-                    tts_num_step = $tn,
+                    job_kind = $jk,
+                    job_settings = $js,
                     output_duration_seconds = NULL,
                     status = 'queued',
                     error_message = NULL,
@@ -232,11 +248,8 @@ internal sealed class ControlDb : IDisposable
                     transcription_run_datestamp = NULL
                 WHERE job_id = $id
                 """;
-            upd.Parameters.AddWithValue("$jt", title);
-            upd.Parameters.AddWithValue("$ap", documentPath);
-            upd.Parameters.AddWithValue("$sh", sha256);
-            upd.Parameters.AddWithValue("$ad", documentDateStamp);
-            AddTtsParameters(upd, tts);
+            AddCommonParameters(upd, title, inputPath, sha256, inputDateStamp,
+                                streamIndex, asrLanguageCode, asrModelName, kindText, settingsValue);
             upd.Parameters.AddWithValue("$id", existingId);
             upd.ExecuteNonQuery();
             return (int)existingId;
@@ -247,18 +260,14 @@ internal sealed class ControlDb : IDisposable
             INSERT INTO jobs
                 (job_title, results_file, transcription_run_datestamp,
                  audio_file_path, audio_file_sha256sum, audio_file_datestamp,
-                 status, created_at, stream_index, job_kind,
-                 tts_backend, tts_language, tts_voice, tts_speed, tts_num_step)
-            VALUES ($jt, $rf, NULL, $ap, $sh, $ad, 'queued', $ca, -1, 'tts',
-                    $tb, $tl, $tv, $ts, $tn)
+                 status, created_at, stream_index, asr_language_code, asr_model_name,
+                 job_kind, job_settings)
+            VALUES ($jt, $rf, NULL, $ap, $sh, $ad, 'queued', $ca, $si, $lc, $am, $jk, $js)
             """;
-        ins.Parameters.AddWithValue("$jt", title);
+        AddCommonParameters(ins, title, inputPath, sha256, inputDateStamp,
+                            streamIndex, asrLanguageCode, asrModelName, kindText, settingsValue);
         ins.Parameters.AddWithValue("$rf", resultsFile);
-        ins.Parameters.AddWithValue("$ap", documentPath);
-        ins.Parameters.AddWithValue("$sh", sha256);
-        ins.Parameters.AddWithValue("$ad", documentDateStamp);
         ins.Parameters.AddWithValue("$ca", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"));
-        AddTtsParameters(ins, tts);
         ins.ExecuteNonQuery();
 
         using var lastId = _conn.CreateCommand();
@@ -266,13 +275,20 @@ internal sealed class ControlDb : IDisposable
         return (int)(long)lastId.ExecuteScalar()!;
     }
 
-    private static void AddTtsParameters(SqliteCommand cmd, TtsJobSettings tts)
+    private static void AddCommonParameters(
+        SqliteCommand cmd, string title, string inputPath, string sha256, string inputDateStamp,
+        int streamIndex, string asrLanguageCode, string asrModelName, string kindText,
+        object settingsValue)
     {
-        cmd.Parameters.AddWithValue("$tb", tts.Backend);
-        cmd.Parameters.AddWithValue("$tl", tts.Language);
-        cmd.Parameters.AddWithValue("$tv", tts.Voice);
-        cmd.Parameters.AddWithValue("$ts", tts.Speed);
-        cmd.Parameters.AddWithValue("$tn", tts.NumStep);
+        cmd.Parameters.AddWithValue("$jt", title);
+        cmd.Parameters.AddWithValue("$ap", inputPath);
+        cmd.Parameters.AddWithValue("$sh", sha256);
+        cmd.Parameters.AddWithValue("$ad", inputDateStamp);
+        cmd.Parameters.AddWithValue("$si", streamIndex);
+        cmd.Parameters.AddWithValue("$lc", asrLanguageCode);
+        cmd.Parameters.AddWithValue("$am", asrModelName);
+        cmd.Parameters.AddWithValue("$jk", kindText);
+        cmd.Parameters.AddWithValue("$js", settingsValue);
     }
 
     /// <summary>TTS: the rendered audio length recorded for a job, if any.</summary>
@@ -449,11 +465,7 @@ internal sealed class ControlDb : IDisposable
             JobTitle                  = r.GetString(r.GetOrdinal("job_title")),
             Kind                      = string.Equals(GetNullable("job_kind"), "tts", StringComparison.OrdinalIgnoreCase)
                                             ? JobKind.Tts : JobKind.Asr,
-            TtsBackend                = GetNullable("tts_backend") ?? "",
-            TtsLanguage               = GetNullable("tts_language") ?? "",
-            TtsVoice                  = GetNullable("tts_voice") ?? "",
-            TtsSpeed                  = (float)r.GetDouble(r.GetOrdinal("tts_speed")),
-            TtsNumStep                = r.GetInt32(r.GetOrdinal("tts_num_step")),
+            TtsSettings               = DeserializeTts(GetNullable("job_settings")),
             OutputDurationSeconds     = r.IsDBNull(odOrd) ? null : r.GetDouble(odOrd),
             ResultsFile               = r.GetString(r.GetOrdinal("results_file")),
             AudioFilePath             = r.GetString(r.GetOrdinal("audio_file_path")),

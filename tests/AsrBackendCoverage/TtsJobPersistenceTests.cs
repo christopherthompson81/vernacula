@@ -1,6 +1,9 @@
 using System;
+using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Threading;
+using Microsoft.Data.Sqlite;
 using Vernacula.App.Models;
 using Vernacula.App.Services;
 using Xunit;
@@ -60,6 +63,8 @@ public class TtsJobPersistenceTests : IDisposable
         Assert.Equal("cy_default", job.TtsVoice);
         Assert.Equal(1.25f, job.TtsSpeed);
         Assert.Equal(24, job.TtsNumStep);
+        // The five accessors above are conveniences over the one stored object (issue #130).
+        Assert.Equal(tts, job.TtsSettings);
         Assert.Equal(12.5, job.OutputDurationSeconds);
         Assert.Equal("/docs/page.md", job.AudioFilePath);
         Assert.Equal(Path.ChangeExtension(sidecar, ".wav"), job.OutputAudioPath);
@@ -156,5 +161,79 @@ public class TtsJobPersistenceTests : IDisposable
         Assert.NotEqual(a, b);
         Assert.StartsWith(sha[..16] + "_", a);
         Assert.EndsWith("_tts.json", a);
+    }
+
+    /// <summary>
+    /// TTS jobs written before job_settings existed live in five tts_* columns. Opening such a
+    /// database must move them across, or every one of those jobs loses the voice and language
+    /// it was rendered with and a requeue renders something else.
+    /// </summary>
+    [Fact]
+    public void LegacyTtsColumnsAreBackfilledIntoJobSettings()
+    {
+        string dbPath = Path.Combine(_dir, "control.db");
+        using (var _ = new ControlDb(dbPath)) { /* create the schema, including job_settings */ }
+
+        // A row as the previous version wrote it: tts_* populated, job_settings absent.
+        using (var raw = new SqliteConnection($"Data Source={dbPath}"))
+        {
+            raw.Open();
+            using var cmd = raw.CreateCommand();
+            cmd.CommandText = """
+                INSERT INTO jobs
+                    (job_title, results_file, audio_file_path, audio_file_sha256sum,
+                     audio_file_datestamp, status, created_at, job_kind,
+                     tts_backend, tts_language, tts_voice, tts_speed, tts_num_step)
+                VALUES ('old', '/jobs/old_tts.json', '/docs/old.md', 'abc',
+                        '2026-01-01 00:00:00', 'complete', '2026-01-01 00:00:00', 'tts',
+                        'OmniVoice', 'cy', 'cy_default', 1.25, 24)
+                """;
+            cmd.ExecuteNonQuery();
+        }
+
+        using (var reopened = new ControlDb(dbPath))
+        {
+            var job = Assert.Single(reopened.GetJobs());
+            Assert.Equal(new TtsJobSettings("OmniVoice", "cy", "cy_default", 1.25f, 24), job.TtsSettings);
+        }
+
+        // Idempotent: a second open must not disturb a row it already migrated.
+        using (var again = new ControlDb(dbPath))
+            Assert.Equal("cy_default", Assert.Single(again.GetJobs()).TtsVoice);
+    }
+
+    /// <summary>ASR rows carry no engine settings at all — they used to carry TTS defaults.</summary>
+    [Fact]
+    public void AsrJobsHaveNoEngineSettings()
+    {
+        string dbPath = Path.Combine(_dir, "control.db");
+        using var db = new ControlDb(dbPath);
+        db.InsertNewJob("asr", Path.Combine(_dir, "a_results.sqlite3"), "/media/a.wav", "abc", "2026-01-01 00:00:00");
+
+        var job = Assert.Single(db.GetJobs());
+        Assert.Null(job.TtsSettings);
+        Assert.Equal("", job.TtsBackend);
+        Assert.Equal(1.0f, job.TtsSpeed);
+    }
+
+    /// <summary>
+    /// The stored JSON must not depend on the running culture: a comma decimal separator would
+    /// make Speed unreadable on the next open under a different locale.
+    /// </summary>
+    [Fact]
+    public void SettingsSurviveACommaDecimalCulture()
+    {
+        var previous = Thread.CurrentThread.CurrentCulture;
+        Thread.CurrentThread.CurrentCulture = new CultureInfo("de-DE");
+        try
+        {
+            string dbPath = Path.Combine(_dir, "control.db");
+            var tts = new TtsJobSettings("Kokoro", "", "af_heart", Speed: 1.25f);
+            using var db = new ControlDb(dbPath);
+            db.InsertNewTtsJob("t", Path.Combine(_dir, "d_tts.json"), "/docs/d.md", "abc", "2026-01-01 00:00:00", tts);
+
+            Assert.Equal(1.25f, Assert.Single(db.GetJobs()).TtsSpeed);
+        }
+        finally { Thread.CurrentThread.CurrentCulture = previous; }
     }
 }
