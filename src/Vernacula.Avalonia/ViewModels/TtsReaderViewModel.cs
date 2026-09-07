@@ -1,5 +1,5 @@
+using Vernacula.Tts.Base.Alignment;
 using System.Collections.ObjectModel;
-using System.Text.Json;
 using Avalonia.Media;
 using Avalonia.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
@@ -210,7 +210,7 @@ internal sealed partial class TtsReaderViewModel : ObservableObject, IDisposable
         try
         {
             if (File.Exists(job.ResultsFile))
-                sidecar = JsonSerializer.Deserialize<AlignmentSidecar>(File.ReadAllText(job.ResultsFile));
+                sidecar = AlignmentSidecar.Load(job.ResultsFile);
         }
         catch (Exception ex) { Console.Error.WriteLine($"[TtsReader] sidecar unreadable: {ex.Message}"); }
 

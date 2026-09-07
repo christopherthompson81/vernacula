@@ -1,7 +1,7 @@
+using Vernacula.Tts.Base.Alignment;
 using System;
 using System.IO;
 using System.Linq;
-using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using Vernacula.App.Models;
@@ -60,7 +60,7 @@ public class TtsJobRunnerTests
             // paragraph can be re-rendered later without touching the rest.
             Assert.Equal(2, sidecar.Chunks.Count);   // heading + paragraph
             Assert.Equal(new[] { "Heading", "Paragraph" }, sidecar.Chunks.Select(c => c.BlockKind));
-            string segDir = TtsJobRunner.SegmentsDirFor(sidecarPath);
+            string segDir = AlignmentSidecar.SegmentsDirFor(sidecarPath);
             foreach (var c in sidecar.Chunks)
             {
                 Assert.NotNull(c.AudioFile);
@@ -72,7 +72,7 @@ public class TtsJobRunnerTests
             Assert.InRange(segSum, sidecar.AudioDurationSeconds - 1e-6, sidecar.AudioDurationSeconds + 1e-6);
 
             // The reader rebuilds its view from the sidecar alone.
-            var reread = JsonSerializer.Deserialize<AlignmentSidecar>(await File.ReadAllTextAsync(sidecarPath))!;
+            var reread = AlignmentSidecar.Load(sidecarPath);
             Assert.Contains("# A heading", reread.SourceText);
             Assert.Equal(sidecar.Words.Count, reread.Words.Count);
         }

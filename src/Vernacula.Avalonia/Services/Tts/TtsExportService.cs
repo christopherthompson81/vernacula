@@ -1,3 +1,4 @@
+using Vernacula.Tts.Base.Alignment;
 using System.Text;
 using System.Text.RegularExpressions;
 using Vernacula.App.Models;

@@ -1,4 +1,4 @@
-using System.Text.Json;
+using Vernacula.Tts.Base.Alignment;
 using Vernacula.App.Models;
 using Vernacula.Tts.Base;
 
@@ -47,7 +47,7 @@ internal sealed class TtsJobRunner : IDisposable
 
         var backend = EnsureBackend(tts);
         string wavPath = Path.ChangeExtension(sidecarPath, ".wav");
-        string segmentsDir = SegmentsDirFor(sidecarPath);
+        string segmentsDir = AlignmentSidecar.SegmentsDirFor(sidecarPath);
         Directory.CreateDirectory(Path.GetDirectoryName(sidecarPath)!);
         // A re-render starts clean: a shorter document must not leave stale paragraph files.
         if (Directory.Exists(segmentsDir)) Directory.Delete(segmentsDir, recursive: true);
@@ -58,14 +58,9 @@ internal sealed class TtsJobRunner : IDisposable
 
         var sidecar = result.Alignment;
         sidecar.SourceText = text;
-        await using (var fs = File.Create(sidecarPath))
-            await JsonSerializer.SerializeAsync(fs, sidecar, new JsonSerializerOptions { WriteIndented = false }, ct);
+        sidecar.Save(sidecarPath);
         return sidecar;
     }
-
-    /// <summary>The folder of per-paragraph WAVs beside a job's sidecar: <c>{stem}_segments/</c>.</summary>
-    public static string SegmentsDirFor(string sidecarPath) =>
-        Path.Combine(Path.GetDirectoryName(sidecarPath)!, Path.GetFileNameWithoutExtension(sidecarPath) + "_segments");
 
     /// <summary>
     /// The job's backend, built from the model locations in Settings. Missing prerequisites

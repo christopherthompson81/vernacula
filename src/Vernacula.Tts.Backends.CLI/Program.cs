@@ -11,6 +11,7 @@
 //
 // See README.md for full flag reference.
 
+using Vernacula.Tts.Base.Alignment;
 using System.Diagnostics;
 using System.Globalization;
 using Vernacula.Tts.Base;
@@ -543,8 +544,8 @@ if (alignmentOut is not null)
     if (verbose)
         Console.WriteLine($"Aligning {chunks.Count} chunk(s) against {nfaBundle} ...");
 
-    var allWords = new List<object>();
-    var chunkRecords = new List<object>();
+    var allWords = new List<AlignedWord>();
+    var chunkRecords = new List<ChunkRecord>();
     int sampleOffset = 0;
     for (int i = 0; i < chunkAudios.Length; i++)
     {
@@ -562,21 +563,21 @@ if (alignmentOut is not null)
 
         foreach (var w in words)
         {
-            allWords.Add(new
+            allWords.Add(new AlignedWord
             {
-                text = w.Text,
-                start_seconds = chunkStartSec + w.StartSeconds,
-                end_seconds = chunkStartSec + w.EndSeconds,
-                chunk_index = i,
+                Text         = w.Text,
+                StartSeconds = chunkStartSec + w.StartSeconds,
+                EndSeconds   = chunkStartSec + w.EndSeconds,
+                ChunkIndex   = i,
             });
         }
-        chunkRecords.Add(new
+        chunkRecords.Add(new ChunkRecord
         {
-            index = i,
-            audio_start_seconds = chunkStartSec,
-            audio_end_seconds = chunkEndSec,
-            text = chunks[i],
-            word_count = words.Count,
+            Index             = i,
+            AudioStartSeconds = chunkStartSec,
+            AudioEndSeconds   = chunkEndSec,
+            Text              = chunks[i],
+            WordCount         = words.Count,
         });
         if (verbose)
             Console.WriteLine($"  chunk {i + 1}/{chunkAudios.Length}: "
@@ -585,28 +586,19 @@ if (alignmentOut is not null)
     }
     alignSw.Stop();
 
-    var payload = new
+    // The schema is AlignmentSidecar's, shared with the desktop app, so a sidecar written
+    // here opens in its reader (#132). Save is atomic — a sibling .tmp then a rename — so a
+    // SIGINT mid-write cannot leave a truncated file for a consumer to choke on.
+    new AlignmentSidecar
     {
-        audio_path = outPath,
-        sample_rate = ChatterboxConstants.S3GenSr,
-        audio_duration_seconds = totalSamples / (double)ChatterboxConstants.S3GenSr,
-        aligner = "nemo_nfa",
-        nfa_bundle = nfaBundle,
-        chunks = chunkRecords,
-        words = allWords,
-    };
-    // Snake-case schema (start_seconds, chunk_index, ...) is part of the
-    // consumer contract — don't add PropertyNamingPolicy.CamelCase here
-    // unless you also update every downstream parser. Default options
-    // preserve declared anonymous-type member names verbatim.
-    var json = System.Text.Json.JsonSerializer.Serialize(payload,
-        new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
-    // Atomic write: serialize to a sibling .tmp, then rename. A SIGINT
-    // mid-File.WriteAllText would otherwise leave a truncated JSON that
-    // downstream consumers fail to parse.
-    var tmpPath = alignmentOut + ".tmp";
-    File.WriteAllText(tmpPath, json);
-    File.Move(tmpPath, alignmentOut, overwrite: true);
+        AudioPath            = outPath,
+        SampleRate           = ChatterboxConstants.S3GenSr,
+        AudioDurationSeconds = totalSamples / (double)ChatterboxConstants.S3GenSr,
+        Aligner              = "nemo_nfa",
+        NfaBundle            = nfaBundle,
+        Chunks               = chunkRecords,
+        Words                = allWords,
+    }.Save(alignmentOut, indented: true);
 
     if (verbose)
         Console.WriteLine($"Alignment: {alignSw.ElapsedMilliseconds} ms, "
