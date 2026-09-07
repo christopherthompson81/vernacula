@@ -123,21 +123,10 @@ internal partial class SettingsViewModel
             TtsEngineOptions.Add(new TtsEngineOptionViewModel(engine, SelectedTtsEngine));
 
         void Changed() => OnTtsModelsChanged?.Invoke();
-        TtsModelSets.Add(new(ModelManagerService.TtsModelSet.Kokoro, "Kokoro-82M",
-            "kokoro.onnx + voices/*.bin from scripts/kokoro_export. English voices; fast, light.",
-            _modelMgr, _svc, Changed));
-        TtsModelSets.Add(new(ModelManagerService.TtsModelSet.OmniVoice, "OmniVoice-IPA",
-            "The OmniVoice base transformer, Higgs codec graphs and the IPA fine-tune diff (scripts/omnivoice_export). Any language the phonemizer covers.",
-            _modelMgr, _svc, Changed));
-        TtsModelSets.Add(new(ModelManagerService.TtsModelSet.OmniVoiceVoices, "OmniVoice voice library",
-            "voices.jsonc + voice-codes.json — 530 stored reference voices OmniVoice reads in, one or more per language (shared with the web demo).",
-            _modelMgr, _svc, Changed));
-        TtsModelSets.Add(new(ModelManagerService.TtsModelSet.Chatterbox, "Chatterbox",
-            "The Chatterbox ONNX bundle (scripts/chatterbox_export) + tokenizer.json. English; clones a reference clip.",
-            _modelMgr, _svc, Changed));
-        TtsModelSets.Add(new(ModelManagerService.TtsModelSet.PhonemizerData, "Phonemizer data",
-            "The vernacula-phonemizer data/ tree (text → IPA) that Kokoro and OmniVoice need. Found automatically beside a source checkout.",
-            _modelMgr, _svc, Changed));
+        // One row per set — the list is the table, not a hand-written copy of it. (Fully
+        // qualified: this view model's own TtsModelSets property, the rows, shadows the class.)
+        foreach (var set in Services.Tts.TtsModelSets.All)
+            TtsModelSets.Add(new(set, _modelMgr, _svc, Changed));
     }
 
     // Presence only. The manifest compare hashes the whole set (9 GB for Chatterbox) and is
