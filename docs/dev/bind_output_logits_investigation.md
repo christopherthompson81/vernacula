@@ -142,10 +142,12 @@ which VAD returns as **one** segment. Step loop now owns 28–29 % of phase time
 
 | | run a | run b | run c |
 |---|---|---|---|
-| baseline | 152 ms | 155 ms | (cold 219) |
+| baseline | *219 ms (cold, discarded)* | 152 ms | 155 ms |
 | preallocated | 152 ms | 153 ms | 152 ms |
 
-No improvement. Transcripts byte-identical.
+No improvement. Transcripts byte-identical. The baseline's first run is the cold
+outlier again — this file was the first workload of a fresh process — which is why
+the warm pair is what the comparison uses.
 
 ## Run 4 — 2026-09-07 08:05 — Whisper, warm, batched *and* step-heavy (B=8, 393 steps)
 

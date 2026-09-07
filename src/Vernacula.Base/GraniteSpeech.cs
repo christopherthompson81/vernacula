@@ -451,10 +451,13 @@ public sealed class GraniteSpeech : IDisposable
     /// local.
     /// </para>
     /// <para>
-    /// <paramref name="projectorTokens"/> is the audio-token count the projector
+    /// The returned <c>projectorTokens</c> is the audio-token count the projector
     /// actually produced. It should equal <see cref="NumAudioTokens"/> of the
     /// waveform length; the paths that assert that keep doing so themselves, since
-    /// the checks differ in wording and in which ones are fatal.
+    /// the checks differ in wording and in which ones are fatal. Note that the
+    /// embeddings are materialized before any caller gets to run that assertion —
+    /// the copy happens here — so a bundle that disagrees with the formula pays one
+    /// wasted array copy on its way to the exception.
     /// </para>
     /// </summary>
     private (float[] audioEmbeds, long audioDim, long projectorTokens) RunAudioPipeline(
