@@ -25,6 +25,8 @@ string? qwen3AsrModelDir = null;        // defaults to <modelDir>/qwen3asr
 bool    forceQwen3AsrSerial = false;    // --qwen3asr-serial disables experimental batching
 GraphOptimizationLevel qwen3AsrOrtOptLevel = GraphOptimizationLevel.ORT_ENABLE_EXTENDED;
 string? vibevoiceModelDir = null;       // defaults to <modelDir>/vibevoice_asr
+string? vibevoiceStreamingModelDir = null; // defaults to <modelDir>/vibevoice_asr_streaming
+string? hotwords          = null;       // VibeVoice-ASR-Streaming context_info (comma-separated)
 string? graniteModelDir   = null;       // defaults to <modelDir>/granite_speech_4_1_2b
 string? profileOutputDir  = null;       // ORT profiling output dir (vibevoice only)
 int     profileMaxTokens  = 200;        // cap maxNewTokens during profiling to stay under ORT 1M event limit
@@ -70,9 +72,9 @@ for (int i = 0; i < args.Length; i++)
         case "--skip-asr":      skipAsr = true; break;
         case "--asr":
             asrBackend = args[++i].ToLowerInvariant();
-            if (asrBackend is not ("parakeet" or "cohere" or "qwen3asr" or "vibevoice" or "whisper" or "granite"))
+            if (asrBackend is not ("parakeet" or "cohere" or "qwen3asr" or "vibevoice" or "vibevoice-streaming" or "whisper" or "granite"))
             {
-                Console.Error.WriteLine($"Unknown ASR backend: {asrBackend}. Choose: parakeet, cohere, qwen3asr, vibevoice, whisper, granite.");
+                Console.Error.WriteLine($"Unknown ASR backend: {asrBackend}. Choose: parakeet, cohere, qwen3asr, vibevoice, vibevoice-streaming, whisper, granite.");
                 return 1;
             }
             break;
@@ -95,6 +97,8 @@ for (int i = 0; i < args.Length; i++)
             }
             break;
         case "--vibevoice-model":  vibevoiceModelDir = args[++i]; break;
+        case "--vibevoice-streaming-model": vibevoiceStreamingModelDir = args[++i]; break;
+        case "--hotwords":         hotwords = args[++i]; break;
         case "--granite-model":    graniteModelDir   = args[++i]; break;
         case "--min-asr-seconds":  minAsrSeconds     = double.Parse(args[++i]); break;
         case "--asr-buffer":       asrBufferSeconds  = double.Parse(args[++i]); break;
@@ -216,12 +220,22 @@ if (audioPath is null)
 }
 
 // Resolve diarization default based on ASR backend
-diarization ??= asrBackend == "vibevoice" ? "vibevoice-asr-builtin" : "sortformer";
+diarization ??= asrBackend is "vibevoice" or "vibevoice-streaming" ? "vibevoice-asr-builtin" : "sortformer";
 
 // Validate that vibevoice-asr-builtin is only used with vibevoice ASR
-if (diarization == "vibevoice-asr-builtin" && asrBackend != "vibevoice")
+if (diarization == "vibevoice-asr-builtin" && asrBackend is not ("vibevoice" or "vibevoice-streaming"))
 {
-    Console.Error.WriteLine("Error: --diarization vibevoice-asr-builtin requires --asr vibevoice.");
+    Console.Error.WriteLine("Error: --diarization vibevoice-asr-builtin requires --asr vibevoice or vibevoice-streaming.");
+    return 1;
+}
+if (asrBackend == "vibevoice-streaming" && diarization != "vibevoice-asr-builtin")
+{
+    Console.Error.WriteLine("Error: --asr vibevoice-streaming attributes speakers itself; use --diarization vibevoice-asr-builtin (the default).");
+    return 1;
+}
+if (hotwords is not null && asrBackend != "vibevoice-streaming")
+{
+    Console.Error.WriteLine("Error: --hotwords is only supported by --asr vibevoice-streaming.");
     return 1;
 }
 
@@ -596,6 +610,40 @@ try
             Console.WriteLine($"\r  {groups.Count} group(s) → {vibeSegs.Count} VibeVoice sub-segment(s) " +
                               $"→ {results.Count} output segment(s) ({swAsr.ElapsedMilliseconds}ms)");
         }
+    }
+    else if (asrBackend == "vibevoice-streaming")
+    {
+        string dir = vibevoiceStreamingModelDir ?? BundleDir(modelsRoot, Config.VibeVoiceStreamingSubDir);
+        if (!File.Exists(Path.Combine(dir, VibeVoiceStreamingAsr.ExportReportFile)))
+        {
+            Console.Error.WriteLine($"\nError: VibeVoice-ASR-Streaming model not found in: {dir}");
+            Console.Error.WriteLine("Use --vibevoice-streaming-model <dir> to specify the directory explicitly.");
+            return 1;
+        }
+        if (hotwords is not null)
+        {
+            // The package ships no BPE encoder; tokenizing hotwords needs one on the C# side.
+            Console.Error.WriteLine("Error: --hotwords is not wired yet (no BPE encoder for this package).");
+            return 1;
+        }
+
+        using var streaming = new VibeVoiceStreamingAsr(dir);
+        Console.WriteLine($"Transcribing (VibeVoice-ASR-Streaming, {streaming.HopSamples / (double)streaming.SampleRate:F2}s chunks)...");
+        // Print each chunk as the model emits it: this backend is meant to produce text while
+        // the audio is still arriving, and hiding that until the end would misrepresent it.
+        int chunkCount = 0;
+        var chunks = streaming.Transcribe(rawSamples, sampleRate, channels,
+            onChunk: c =>
+            {
+                chunkCount++;
+                if (!string.IsNullOrWhiteSpace(c.Text))
+                    Console.WriteLine($"  [{c.End,6:F1}s] {c.Text.Replace("\n", " ").Trim()}");
+            },
+            ct: cts.Token);
+        swAsr.Stop();
+        foreach (var seg in VibeVoiceStreamingAsr.ToSegments(chunks))
+            results.Add((seg.Start, seg.End, $"speaker_{seg.Speaker}", seg.Content));
+        Console.WriteLine($"\r{chunkCount} chunk(s) → {results.Count} segment(s) ({swAsr.ElapsedMilliseconds}ms)");
     }
     else if (asrBackend == "cohere")
     {
@@ -1280,7 +1328,7 @@ static void PrintUsage()
     Console.WriteLine("  --diarization <backend>            Diarization backend: sortformer, diarizen, vad, vibevoice-asr-builtin");
     Console.WriteLine("                                     (default: sortformer, or vibevoice-asr-builtin when --asr vibevoice)");
     Console.WriteLine("  --vad                              Use VAD instead of diarization (deprecated)");
-    Console.WriteLine("  --asr <parakeet|cohere|qwen3asr|vibevoice|whisper|granite>");
+    Console.WriteLine("  --asr <parakeet|cohere|qwen3asr|vibevoice|vibevoice-streaming|whisper|granite>");
     Console.WriteLine("                                     ASR backend (default: parakeet)");
     Console.WriteLine("  --cohere-model <dir>               Path to Cohere Transcribe model dir (default: <models-dir>/cohere_transcribe)");
     Console.WriteLine("  --qwen3asr-model <dir>             Path to Qwen3-ASR model dir (default: <models-dir>/qwen3asr)");
@@ -1288,6 +1336,8 @@ static void PrintUsage()
     Console.WriteLine("  --qwen3asr-ort-opt <extended|basic|disabled>");
     Console.WriteLine("                                     ONNX Runtime graph optimization level for Qwen3-ASR");
     Console.WriteLine("  --vibevoice-model <dir>            Path to VibeVoice-ASR model dir (default: <models-dir>/vibevoice_asr)");
+    Console.WriteLine("  --vibevoice-streaming-model <dir>  Path to VibeVoice-ASR-Streaming model dir (default: <models-dir>/vibevoice_asr_streaming)");
+    Console.WriteLine("  --hotwords <a,b,c>                 VibeVoice-ASR-Streaming hotwords (not wired yet)");
     Console.WriteLine("  --granite-model <dir>              Path to Granite Speech model dir (default: <models-dir>/granite_speech_4_1_2b_bf16,");
     Console.WriteLine("                                     falling back to granite_speech_4_1_2b)");
     Console.WriteLine("  --min-asr-seconds <n>              Minimum audio span (s) per ASR group when using segmented VibeVoice (default: 5.0)");

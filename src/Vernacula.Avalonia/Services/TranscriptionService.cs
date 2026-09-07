@@ -114,13 +114,16 @@ internal class TranscriptionService
 
         // ── ASR backend / segmentation flags ─────────────────────────────────
         bool useVibeVoiceAsr     = string.Equals(asrModelName, "vibevoice/vibevoice-asr", StringComparison.Ordinal);
+        // The streaming checkpoint also segments and attributes speakers itself, so it takes
+        // the same whole-recording path; only the backend class and the model dir differ.
+        bool useVibeVoiceStreaming = string.Equals(asrModelName, "microsoft/vibevoice-asr-streaming", StringComparison.Ordinal);
         bool useCohereAsr        = string.Equals(asrModelName, "CohereLabs/cohere-transcribe-03-2026", StringComparison.Ordinal);
         bool useQwen3Asr         = string.Equals(asrModelName, "Qwen/Qwen3-ASR-1.7B", StringComparison.Ordinal);
         bool useIndicConformerAsr = string.Equals(asrModelName, "ai4bharat/indic-conformer-600m-multilingual", StringComparison.Ordinal);
         bool useWhisperTurboAsr   = string.Equals(asrModelName, "openai/whisper-large-v3-turbo", StringComparison.Ordinal);
         bool useGraniteSpeechAsr  = string.Equals(asrModelName, "ibm-granite/granite-speech-4.1-2b", StringComparison.Ordinal);
         var  segmentationMode = _settings.Current.Segmentation;
-        bool runVibeVoice     = useVibeVoiceAsr || segmentationMode == SegmentationMode.VibeVoiceBuiltin;
+        bool runVibeVoice     = useVibeVoiceAsr || useVibeVoiceStreaming || segmentationMode == SegmentationMode.VibeVoiceBuiltin;
 
         // End-of-diarization anchor used by LID + ASR to scale into the overall
         // bar. Each diarizer completes at its own weight; ASR starts there and
@@ -147,7 +150,9 @@ internal class TranscriptionService
         if (!db.CheckMetadata(audioPath))
             db.PopulateMetadata(audioPath);
 
-        string effectiveAsrModelName = runVibeVoice ? "vibevoice/vibevoice-asr" : asrModelName;
+        string effectiveAsrModelName = useVibeVoiceStreaming ? "microsoft/vibevoice-asr-streaming"
+                                     : runVibeVoice          ? "vibevoice/vibevoice-asr"
+                                     : asrModelName;
         db.UpdateMetadata("asr_model", effectiveAsrModelName);
         string effectiveAsrLanguageCode =
             string.IsNullOrWhiteSpace(asrLanguageCode) ? "auto" : asrLanguageCode;
@@ -180,6 +185,47 @@ internal class TranscriptionService
 
                 IReadOnlyList<VibeVoiceSegment> vibeSegs = await Task.Run(() =>
                 {
+                    if (useVibeVoiceStreaming)
+                    {
+                        using var streaming = new VibeVoiceStreamingAsr(_settings.GetVibeVoiceStreamingModelsDir());
+                        // This model exists to show text while the audio is still arriving, so
+                        // the transcript is built as chunks land rather than at the end. The
+                        // newest turn stays open and grows, so each chunk adds any turns that
+                        // just started and rewrites the text of the one still in progress.
+                        var asm = new VibeVoiceStreamingAsr.SegmentAssembler();
+                        int shown = 0;
+                        streaming.Transcribe(
+                            vibeVoiceAudio, vibeVoiceSampleRate, vibeVoiceChannels,
+                            onChunk: c =>
+                            {
+                                asm.Add(c);
+                                var segs = asm.Segments;
+                                for (; shown < segs.Count; shown++)
+                                {
+                                    var seg = segs[shown];
+                                    string sid = $"speaker_{seg.Speaker}";
+                                    onSegmentAdded(new SegmentRow
+                                    {
+                                        SegmentId          = shown,
+                                        SpeakerTag         = sid,
+                                        SpeakerDisplayName = sid,
+                                        StartTime          = seg.Start,
+                                        EndTime            = seg.End,
+                                    });
+                                }
+                                if (segs.Count > 0)
+                                    onSegmentText(segs.Count - 1, segs[^1].Content);
+
+                                double pct = vibeDuration > 0 ? c.End / vibeDuration * 100.0 : 0;
+                                progress.Report(new TranscriptionProgress(
+                                    TranscriptionPhase.Recognizing, 0, 100,
+                                    $"{c.End:F1}s / {vibeDuration:F1}s",
+                                    Math.Max(0, segs.Count - 1), c.Text, OverridePercent: pct));
+                            },
+                            ct: ct);
+                        return asm.Finish();
+                    }
+
                     using var vibe = new VibeVoiceAsr(
                         vibeVoiceDir,
                         persistEncoder: false,
@@ -212,10 +258,14 @@ internal class TranscriptionService
                 var seenVibeSpeakers = new HashSet<int>();
                 foreach (var seg in vibeSegs)
                 {
-                    string spkId    = $"speaker_{seg.Speaker}";
-                    int diarSpkId   = seg.Speaker + 1;
+                    // The streaming model can emit text before it names anyone, which the
+                    // assembler reports as speaker -1. Fold that onto speaker 0 rather than
+                    // writing "speaker_-1" and a diarization id of 0, which no consumer expects.
+                    int speaker     = Math.Max(0, seg.Speaker);
+                    string spkId    = $"speaker_{speaker}";
+                    int diarSpkId   = speaker + 1;
 
-                    if (seenVibeSpeakers.Add(seg.Speaker))
+                    if (seenVibeSpeakers.Add(speaker))
                         db.InsertSpeaker(spkId);
 
                     // VibeVoice does not emit timestamps, so we synthesize them uniformly over

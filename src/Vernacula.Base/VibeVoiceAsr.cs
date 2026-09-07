@@ -293,7 +293,7 @@ public sealed class VibeVoiceAsr : IDisposable
 
     // ── Audio preprocessing ───────────────────────────────────────────────────
 
-    private static float[] AudioTo24kMono(float[] audio, int sampleRate, int channels)
+    internal static float[] AudioTo24kMono(float[] audio, int sampleRate, int channels)
     {
         // Downmix
         float[] mono;
@@ -1018,7 +1018,7 @@ public sealed class VibeVoiceAsr : IDisposable
 
     // ── Tokenizer loading ─────────────────────────────────────────────────────
 
-    private static (string?[] idToToken, Dictionary<int, string> addedContent)
+    internal static (string?[] idToToken, Dictionary<int, string> addedContent)
         LoadTokenizerVocab(string path)
     {
         using var doc  = JsonDocument.Parse(File.ReadAllText(path));
@@ -1061,7 +1061,7 @@ public sealed class VibeVoiceAsr : IDisposable
     ///
     /// This table is the reverse: Unicode char in a token string → byte value.
     /// </summary>
-    private static Dictionary<char, byte> BuildByteLevelDecode()
+    internal static Dictionary<char, byte> BuildByteLevelDecode()
     {
         // Bytes in the printable set map to themselves
         var printable = new HashSet<int>(

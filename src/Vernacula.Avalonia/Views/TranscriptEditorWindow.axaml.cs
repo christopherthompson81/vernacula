@@ -101,6 +101,7 @@ public partial class TranscriptEditorWindow : Window
         bool isCohere         = string.Equals(_jobAsrModel, "CohereLabs/cohere-transcribe-03-2026", StringComparison.Ordinal);
         bool isQwen3Asr       = string.Equals(_jobAsrModel, "Qwen/Qwen3-ASR-1.7B", StringComparison.Ordinal);
         bool isVibeVoice      = string.Equals(_jobAsrModel, "vibevoice/vibevoice-asr", StringComparison.Ordinal);
+        bool isVibeVoiceStreaming = string.Equals(_jobAsrModel, "microsoft/vibevoice-asr-streaming", StringComparison.Ordinal);
         bool isIndicConformer = string.Equals(_jobAsrModel, "ai4bharat/indic-conformer-600m-multilingual", StringComparison.Ordinal);
         bool isGraniteSpeech  = string.Equals(_jobAsrModel, "ibm-granite/granite-speech-4.1-2b", StringComparison.Ordinal);
         bool isWhisperTurbo   = string.Equals(_jobAsrModel, "openai/whisper-large-v3-turbo", StringComparison.Ordinal);
@@ -136,6 +137,8 @@ public partial class TranscriptEditorWindow : Window
                 ? Path.Combine(modelsDir, Config.Qwen3AsrSubDir, Qwen3Asr.TokenizerFile)
             : isVibeVoice
                 ? Path.Combine(modelsDir, Config.VibeVoiceSubDir, VibeVoiceAsr.TokenizerFile)
+            : isVibeVoiceStreaming
+                ? Path.Combine(App.Current.Settings.GetVibeVoiceStreamingModelsDir(), VibeVoiceStreamingAsr.TokenizerFile)
             : isIndicConformer
                 ? Path.Combine(modelsDir, Config.IndicConformerSubDir, Config.VocabFile)
             : isGraniteSpeech
@@ -146,7 +149,8 @@ public partial class TranscriptEditorWindow : Window
         if (vocabPath is not null && File.Exists(vocabPath))
         {
             _vocab = new VocabService(
-                isCohere || isQwen3Asr || isVibeVoice || isIndicConformer || isGraniteSpeech || isWhisperTurbo
+                isCohere || isQwen3Asr || isVibeVoice || isVibeVoiceStreaming || isIndicConformer
+                    || isGraniteSpeech || isWhisperTurbo
                     ? App.Current.Settings.GetModelsDir() : parakeetModelsDir,
                 _jobAsrModel);
         }
@@ -171,6 +175,13 @@ public partial class TranscriptEditorWindow : Window
             _asrModelsAvailable =
                 File.Exists(Path.Combine(vibeVoiceDir, VibeVoiceAsr.AudioEncoderFile)) &&
                 File.Exists(Path.Combine(vibeVoiceDir, VibeVoiceAsr.DecoderSingleFile));
+        }
+        else if (isVibeVoiceStreaming)
+        {
+            string dir = App.Current.Settings.GetVibeVoiceStreamingModelsDir();
+            _asrModelsAvailable =
+                File.Exists(Path.Combine(dir, VibeVoiceStreamingAsr.AudioEncoderFile)) &&
+                File.Exists(Path.Combine(dir, VibeVoiceStreamingAsr.DecoderGqaFile));
         }
         else if (isQwen3Asr)
         {

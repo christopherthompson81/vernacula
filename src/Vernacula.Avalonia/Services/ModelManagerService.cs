@@ -36,6 +36,15 @@ internal class ModelManagerService
     private const string VibeVoiceManifestUrl =
         "https://huggingface.co/christopherthompson81/vibevoice-asr-onnx/resolve/main/manifest.json";
 
+    private const string VibeVoiceStreaming1_5BRepoBase =
+        "https://huggingface.co/christopherthompson81/vibevoice-asr-streaming-1.5b-onnx/resolve/main";
+    private const string VibeVoiceStreaming1_5BManifestUrl =
+        VibeVoiceStreaming1_5BRepoBase + "/manifest.json";
+    private const string VibeVoiceStreaming7BRepoBase =
+        "https://huggingface.co/christopherthompson81/vibevoice-asr-streaming-7b-onnx/resolve/main";
+    private const string VibeVoiceStreaming7BManifestUrl =
+        VibeVoiceStreaming7BRepoBase + "/manifest.json";
+
     private const string VoxLinguaRepoBase =
         "https://huggingface.co/christopherthompson81/voxlingua107-lid-onnx/resolve/main";
     private const string VoxLinguaManifestUrl =
@@ -226,6 +235,27 @@ internal class ModelManagerService
             new(Path.Combine(Config.VibeVoiceSubDir, VibeVoiceAsr.TokenizerFile),                          VibeVoiceAsr.TokenizerFile),
         ];
 
+    // The streaming package is the GQA export: a float16 audio encoder and a decoder whose
+    // KV cache is a shared, pre-allocated buffer. Same file names at both sizes, so the asset
+    // list is built per size rather than duplicated.
+    private static ModelAsset[] VibeVoiceStreamingFiles(VibeVoiceStreamingSize size)
+    {
+        string dir = SettingsService.VibeVoiceStreamingSubDir(size);
+        string[] names =
+        [
+            VibeVoiceStreamingAsr.AudioEncoderFile,
+            $"{VibeVoiceStreamingAsr.AudioEncoderFile}.data",
+            VibeVoiceStreamingAsr.DecoderGqaFile,
+            $"{VibeVoiceStreamingAsr.DecoderGqaFile}.data",
+            "config.json",
+            "preprocessor_config.json",
+            "tokenizer_config.json",
+            VibeVoiceStreamingAsr.ExportReportFile,
+            VibeVoiceStreamingAsr.TokenizerFile,
+        ];
+        return [.. names.Select(n => new ModelAsset(Path.Combine(dir, n), n))];
+    }
+
     private readonly SettingsService _settings;
     private readonly HttpClient _http = new(new HttpClientHandler { AllowAutoRedirect = true });
 
@@ -233,6 +263,19 @@ internal class ModelManagerService
 
     private AssetRepo[] ActiveRepos()
     {
+        // Checked before the VibeVoiceBuiltin test below: this backend also forces built-in
+        // segmentation, and without this it would match that test and download the
+        // non-streaming package instead — a different model, and 17 GB of it.
+        if (_settings.Current.AsrBackend == AsrBackend.VibeVoiceStreaming)
+        {
+            var size = _settings.Current.VibeVoiceStreamingSize;
+            return size == VibeVoiceStreamingSize.Large7B
+                ? [new AssetRepo(VibeVoiceStreaming7BRepoBase, VibeVoiceStreaming7BManifestUrl,
+                                 VibeVoiceStreamingFiles(size))]
+                : [new AssetRepo(VibeVoiceStreaming1_5BRepoBase, VibeVoiceStreaming1_5BManifestUrl,
+                                 VibeVoiceStreamingFiles(size))];
+        }
+
         if (_settings.Current.AsrBackend == AsrBackend.VibeVoice ||
             _settings.Current.Segmentation == SegmentationMode.VibeVoiceBuiltin)
         {
@@ -283,7 +326,8 @@ internal class ModelManagerService
                     new AssetRepo(CoreRepoBase, CoreManifestUrl, CoreDiarizationFiles),
                     new AssetRepo(GraniteSpeechFp32RepoBase, GraniteSpeechFp32ManifestUrl, GraniteSpeechFp32Files),
                 ],
-            // VibeVoice is handled by the early-return at the top of the
+            // VibeVoice and VibeVoice Streaming are both handled by the early-returns at the
+            // top of the
             // method (it can be the segmentation backend even when the
             // AsrBackend isn't VibeVoice). If a future enum value is added
             // without a switch arm here, this throws to surface the gap

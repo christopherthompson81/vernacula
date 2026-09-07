@@ -6,13 +6,20 @@ public enum AppTheme    { Dark, Light }
 public enum PlaybackMode { Single, AutoAdvance, Continuous }
 // New enum values MUST be appended. Persisted settings store the integer
 // value, so inserting mid-enum silently re-interprets existing user state.
-public enum AsrBackend { Parakeet, Cohere, Qwen3Asr, VibeVoice, IndicConformer, WhisperTurbo, GraniteSpeech }
+/// <summary>
+/// Which VibeVoice-ASR-Streaming checkpoint to run. The 1.5B is faster and fits a smaller
+/// card; the 7B is the only one that separated speakers reliably in testing.
+/// </summary>
+public enum VibeVoiceStreamingSize { Small1_5B, Large7B }
+
+public enum AsrBackend { Parakeet, Cohere, Qwen3Asr, VibeVoice, IndicConformer, WhisperTurbo, GraniteSpeech, VibeVoiceStreaming }
 
 public class AppSettings
 {
     public AppTheme           Theme               { get; set; } = AppTheme.Dark;
     public SegmentationMode   Segmentation        { get; set; } = SegmentationMode.SileroVad;
     public AsrBackend         AsrBackend          { get; set; } = AsrBackend.Parakeet;
+    public VibeVoiceStreamingSize VibeVoiceStreamingSize { get; set; } = VibeVoiceStreamingSize.Small1_5B;
     // Parakeet TDT beam search. 1 = greedy (default, fastest). 4–8 enables
     // beam search — ~3–5× slower per segment but improves accuracy on hard
     // or ambiguous audio and is a prerequisite for shallow LM fusion.
