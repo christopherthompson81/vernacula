@@ -69,11 +69,12 @@
          rendered through KokoroFormat, Kokoro's G2P. Vendored as a git submodule under external/;
          its data/ tree is located at runtime by PhonemizerData.
 
-         ⚠ Its Microsoft.ML.OnnxRuntime reference is a PLAIN (CPU) one, not PrivateAssets="all"
-         like the EP-selected package above, so it flows transitively into every consumer of this
-         project. A Cuda/DirectML consumer must outrank it with a direct ExcludeAssets="all"
-         reference or the CPU native library lands next to the GPU one and whichever copies last
-         wins — see Vernacula.Tts.CLI.csproj for the block and the explanation. -->
+         ⚠ Its Microsoft.ML.OnnxRuntime reference is a PLAIN (CPU) one, and the submodule does not
+         mark it PrivateAssets="all" the way the EP-selected package above is. Left alone it would
+         flow transitively into every consumer of this project, putting the CPU native beside the
+         GPU one where whichever copies last wins. Directory.Build.targets cuts it off at the
+         submodule instead, so consumers need nothing (#131); read that file before changing this
+         reference. -->
     <ProjectReference Include="..\..\external\vernacula-phonemizer\csharp\Vernacula.Phonemizer\Vernacula.Phonemizer.csproj" />
   </ItemGroup>
 

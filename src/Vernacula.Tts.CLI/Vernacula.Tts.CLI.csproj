@@ -31,21 +31,6 @@
     <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="$(OnnxRuntimeVersion)" />
   </ItemGroup>
 
-  <!--
-    Vernacula.Phonemizer takes a plain (CPU) Microsoft.ML.OnnxRuntime reference for its neural
-    G2P models rather than the PrivateAssets="all" convention Vernacula.Base uses. Left alone,
-    that transitive package flows into this app's output next to the EP variant above and both
-    ship a `Microsoft.ML.OnnxRuntime.dll` plus a native `libonnxruntime.so` — whichever native
-    lands last wins, which is how a CUDA build silently ends up on the CPU runtime. A DIRECT
-    reference outranks the transitive one, and ExcludeAssets="all" then contributes nothing, so
-    the EP package above is the only runtime in the output.
-  -->
-  <!-- The version comes from OnnxRuntimeVersion in Directory.Build.props, which is
-       what keeps it equal to the native runtime this EP ships. -->
-  <ItemGroup Condition="'$(EP)' != 'Cpu'">
-    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="$(OnnxRuntimeVersion)" ExcludeAssets="all" />
-  </ItemGroup>
-
   <ItemGroup>
     <PackageReference Include="NAudio" Version="2.3.0" />
   </ItemGroup>

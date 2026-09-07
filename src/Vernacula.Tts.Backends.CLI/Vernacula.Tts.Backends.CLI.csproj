@@ -35,19 +35,6 @@
     <PackageReference Include="NAudio" Version="2.3.0" />
   </ItemGroup>
 
-  <!--
-    Vernacula.Phonemizer (via Vernacula.Tts.Base) takes a plain (CPU) Microsoft.ML.OnnxRuntime
-    reference. Left alone it flows into this app's output next to the EP variant above and both
-    ship a native onnxruntime library — whichever lands last wins, which is how a CUDA build
-    silently ends up on the CPU runtime. A DIRECT reference outranks the transitive one, and
-    ExcludeAssets="all" then contributes nothing, so the EP package is the only runtime shipped.
-  -->
-  <!-- The version comes from OnnxRuntimeVersion in Directory.Build.props, which is
-       what keeps it equal to the native runtime this EP ships. -->
-  <ItemGroup Condition="'$(EP)' != 'Cpu'">
-    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="$(OnnxRuntimeVersion)" ExcludeAssets="all" />
-  </ItemGroup>
-
   <ItemGroup>
     <!-- No SetConfiguration: EP is a global property and already reaches both (and Base again
          through Tts.Base) with the same value — an override here would build Base twice. -->

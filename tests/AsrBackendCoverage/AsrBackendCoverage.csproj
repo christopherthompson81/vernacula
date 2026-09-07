@@ -10,6 +10,9 @@
          override to Cpu so the test host loads cleanly without CUDA. -->
     <Platforms>x64</Platforms>
     <RootNamespace>Vernacula.Tests.AsrBackendCoverage</RootNamespace>
+    <!-- CPU-only test host: it references the plain ONNX Runtime on purpose, so the
+         Directory.Build.targets guard against the CPU package under a GPU EP does not apply. -->
+    <AllowCpuOnnxRuntime>true</AllowCpuOnnxRuntime>
   </PropertyGroup>
 
   <ItemGroup>

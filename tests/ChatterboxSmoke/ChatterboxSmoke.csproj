@@ -15,9 +15,6 @@
        machine needs the plain runtime rather than a suppressed one. -->
   <ItemGroup Condition="'$(EP)' == 'Cuda'">
     <PackageReference Include="Microsoft.ML.OnnxRuntime.Gpu" Version="$(OnnxRuntimeVersion)" />
-    <!-- Vernacula.Phonemizer pins a plain (CPU) runtime; without this suppression it lands beside
-         the GPU one and the managed assembly meets the wrong native. -->
-    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="$(OnnxRuntimeVersion)" ExcludeAssets="all" />
   </ItemGroup>
   <ItemGroup Condition="'$(EP)' != 'Cuda'">
     <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="$(OnnxRuntimeVersion)" />
