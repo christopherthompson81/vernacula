@@ -662,3 +662,52 @@ measured here in isolation and still to be confirmed end to end: a hard VRAM cei
 at export time, per-token cost proportional to the filled length rather than the buffer,
 better numerics than either shipped build, no `Concat` and no K/V casts, and fixed shapes
 that unblock CUDA graph capture against the 56 % dispatch overhead.
+
+## Run 12 — 2026-09-07 14:00 — GQA shared-buffer decoder, built and measured (1.5B)
+
+**Code.** `scripts/vibevoice_streaming_export/export_gqa.py` exports `decoder_gqa.onnx`:
+`Qwen2Attention.forward` is replaced by one that projects Q/K/V, applies RoPE exactly as the
+eager path does, and then calls a single `com.microsoft::GroupQueryAttention` node per layer
+against a pre-allocated fp16 buffer. `bench_streaming_gqa.py` drives it, binding
+`past_key_i` and `present_key_i` to the **same** device tensor so the cache is updated in
+place.
+
+**Four things that had to be got right, all of them non-obvious:**
+
+1. `torch.autograd.Function` with a `symbolic` staticmethod no longer traces on torch 2.11
+   (`RuntimeError: unordered_map::at`). Use `torch.library.custom_op` plus
+   `torch.onnx.register_custom_op_symbolic`.
+2. A registered custom op may not return a tensor that aliases an input, so the placeholder
+   returns `past_k.clone()`. The real aliasing (present *is* past) happens at bind time.
+3. transformers 4.57 builds its causal mask with `torch.vmap`, which the TorchScript
+   exporter cannot trace. Passing `attention_mask={"full_attention": <dummy>}` skips
+   `create_causal_mask` entirely; GQA masks from `seqlens_k` anyway.
+4. The head counts arrive at the symbolic as traced `Constant` values, so they need
+   `symbolic_helper._parse_arg(v, "i")` before becoming `*_i` attributes.
+
+**And one bug that cost the most time, worth remembering:** `IoBinding.get_outputs()` returns
+values in **binding order, not model order**. Binding `logits` after the 56 cache tensors and
+then reading `get_outputs()[0]` silently yields `present_key_0`, so the argmax was taken over
+a cache tensor and the model "generated" 1536 tokens of garbage for a 17 s clip. The graph
+was correct the whole time: an A/B against the dynamic decoder matched step for step
+(argmax identical, logit correlation 0.99999). Bind `logits` first.
+
+**Raw result (1.5B, WER vs the deterministic torch reference):**
+
+| build | 69 s RTF | 10 min RTF | 69 s tok/s | 10 min tok/s | decay | 10 min WER | GPU 69 s | GPU 10 min |
+|---|---|---|---|---|---|---|---|---|
+| dynamic BF16 (Run 6) | 0.087 | 0.125 | 71.7 | 49.9 | −30 % | 0.023 | 8.66 | 10.91 |
+| INT8 dynamic (Run 9) | 0.078 | 0.112 | 79.9 | 55.3 | −31 % | 0.021 | 7.80 | 9.80 |
+| **GQA fp16** | 0.084 | **0.086** | 74.8 | 71.7 | **−4 %** | 0.020 | 9.16 | **9.17** |
+| **GQA + INT8** | **0.065** | **0.066** | 96.3 | 94.6 | **−2 %** | 0.024 | 8.25 | **8.25** |
+
+**Both properties hold at once.** GPU usage is *identical* at 69 seconds and 10 minutes
+(8.25 GiB for the INT8 build) because the cache is one allocation of 0.44 GiB made up front;
+and throughput decays 2 % over the same span where the dynamic cache loses 30 %. Parity is
+unchanged: 0.024 at 10 minutes against the reference's own seed spread of 0 to 1.3 %, and the
+speaker-turn count is 155 against 152.
+
+Against the build that started this session, GQA + INT8 is **1.9× faster end to end** (RTF
+0.125 → 0.066) on 2.7 GiB less VRAM, with the memory now flat in recording length rather than
+growing. The buffer ceiling (16384 positions here) is what bounds the job length, and it is
+chosen at export time.
