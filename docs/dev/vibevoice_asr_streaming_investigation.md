@@ -711,3 +711,35 @@ Against the build that started this session, GQA + INT8 is **1.9× faster end to
 0.125 → 0.066) on 2.7 GiB less VRAM, with the memory now flat in recording length rather than
 growing. The buffer ceiling (16384 positions here) is what bounds the job length, and it is
 chosen at export time.
+
+## Run 13 — 2026-09-07 13:41 — GQA on the 7B: the checkpoint that could not finish, finishes
+
+**Raw result (7B, WER vs the deterministic torch reference):**
+
+| 7B build | 69 s RTF | 10 min | 10 min RTF | 10 min tok/s | 10 min WER | GPU 69 s / 10 min |
+|---|---|---|---|---|---|---|
+| BF16 dynamic (Run 6) | 0.181 | **OOM** | — | — | — | 20.72 / — |
+| float16 dynamic (Run 10) | 0.187 | **OOM** | — | — | — | 21.87 / — |
+| static KV 12288 (Run 10) | — | **OOM** | — | — | — | — |
+| INT8 dynamic (Run 10) | 0.139 | completes | 0.250 | 26.7 | 0.016 | 14.90 / 18.90 |
+| GQA fp16 | 0.174 | **completes** | 0.195 | 34.3 | 0.014 | 22.83 / 22.72 |
+| **GQA + INT8** | **0.124** | **completes** | **0.142** | 47.2 | 0.016 | 15.16 / 15.68 |
+
+- GQA alone rescues the 7B: the unquantized fp16 build now completes a 10-minute file at
+  22.7 GiB, where the same weights with a dynamic cache died in layer 24. Memory is flat
+  (22.83 → 22.72 GiB) but the margin on a 24 GiB card is thin.
+- **GQA + INT8 is the configuration to ship for the 7B:** 15.7 GiB, RTF 0.142, 47.2 tok/s.
+  That is 1.76× faster than INT8 with the dynamic cache (0.250) and leaves 8 GiB of headroom.
+  Parity is 0.016 with 188 speaker turns against the reference's 190 — indistinguishable
+  from the dynamic INT8 build and inside the 7B's seed envelope.
+
+**The failure mode changed, which matters as much as the speed.** The 30-minute file stopped
+with `KV buffer full: 16401 > 16384` — a clean, predictable refusal naming the ceiling,
+raised before any work was wasted. Compare the old behaviour: `BFCArena ... Failed to
+allocate memory for requested buffer of size 42663936` from inside layer 25, after minutes of
+compute, with no way to know in advance whether a given file would fit. A bounded cache turns
+an unpredictable crash into a documented limit the caller can check up front:
+`ceiling ÷ (tokens per chunk) × 2.93 s` of audio, or simply refuse the job.
+
+Run 14 re-exports both checkpoints at a 32768 ceiling (buffer 1.76 GiB on the 7B, 0.88 on the
+1.5B) to cover 30-minute files.
