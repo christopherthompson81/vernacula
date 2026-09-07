@@ -13,3 +13,5 @@ tmp/
 # C# Dev Kit
 samples/
 *.lscache
+# Local app data if the app is ever launched with the repo as its working directory
+Vernacula/
