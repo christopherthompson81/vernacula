@@ -6,13 +6,15 @@ using Microsoft.ML.OnnxRuntime;
 using Vernacula.Base;
 using Vernacula.Base.Models;
 using Vernacula.App.Models;
-using Vernacula.Tts.Base;
+using Vernacula.App.Services.Tts;
 
 namespace Vernacula.App.Services;
 
+/// <summary>One file of a model set: where it lives under the set's directory, and where it is in the repo.</summary>
+internal readonly record struct ModelAsset(string LocalRelativePath, string RemoteRelativePath);
+
 internal class ModelManagerService
 {
-    private readonly record struct ModelAsset(string LocalRelativePath, string RemoteRelativePath);
     private readonly record struct AssetRepo(string RepoBase, string ManifestUrl, ModelAsset[] Assets);
     private readonly record struct RepoAsset(string RepoBase, string LocalRelativePath, string RemoteRelativePath);
 
@@ -395,29 +397,42 @@ internal class ModelManagerService
         {
             if (string.IsNullOrWhiteSpace(repo.ManifestUrl))
                 continue;
-            var manifest = await FetchManifestAsync(repo.ManifestUrl, ct);
-            if (manifest is null) return null;
-
-            foreach (var asset in repo.Assets)
-            {
-                // Skip Sortformer .onnx.data files — ONNX Runtime regenerates
-                // these as external weights at runtime, so their hashes will
-                // never match the manifest.  The main .onnx model file is
-                // checked normally below.
-                if (asset.LocalRelativePath.EndsWith(Config.SortformerDataFile, StringComparison.OrdinalIgnoreCase))
-                    continue;
-
-                string path = Path.Combine(dir, asset.LocalRelativePath);
-                if (manifest.TryGetValue(asset.RemoteRelativePath, out var expectedHash) &&
-                    expectedHash is not null &&
-                    File.Exists(path))
-                {
-                    toCheck.Add((asset.LocalRelativePath, expectedHash));
-                }
-            }
+            // Skip Sortformer .onnx.data files — ONNX Runtime regenerates these as external
+            // weights at runtime, so their hashes will never match the manifest. The main
+            // .onnx model file is checked normally.
+            var assets = repo.Assets.Where(a =>
+                !a.LocalRelativePath.EndsWith(Config.SortformerDataFile, StringComparison.OrdinalIgnoreCase));
+            var checks = await ManifestChecksAsync(dir, repo.ManifestUrl, assets, ct);
+            if (checks is null) return null;
+            toCheck.AddRange(checks);
         }
 
         return await HashCompareAsync(dir, toCheck, progress, ct);
+    }
+
+    /// <summary>
+    /// The (local path, expected MD5) pairs a manifest lets us verify for the assets that are
+    /// on disk under <paramref name="dir"/> — the one loop behind the ASR and TTS update checks.
+    /// Null when the manifest cannot be fetched or parsed (offline), so callers can skip.
+    /// An entry with no MD5 is left out rather than compared: it can never match, so listing it
+    /// would report the file as outdated on every check and re-fetch it to no effect. (The
+    /// Sortformer check below already treats a missing hash as "cannot say".)
+    /// </summary>
+    private async Task<List<(string localRelativePath, string expectedHash)>?> ManifestChecksAsync(
+        string dir, string manifestUrl, IEnumerable<ModelAsset> assets, CancellationToken ct)
+    {
+        var manifest = await FetchManifestAsync(manifestUrl, ct);
+        if (manifest is null) return null;
+
+        var toCheck = new List<(string, string)>();
+        foreach (var asset in assets)
+        {
+            if (manifest.TryGetValue(asset.RemoteRelativePath, out var expected)
+                && !string.IsNullOrEmpty(expected)
+                && File.Exists(Path.Combine(dir, asset.LocalRelativePath)))
+                toCheck.Add((asset.LocalRelativePath, expected));
+        }
+        return toCheck;
     }
 
     /// <summary>The repo's manifest as remote path → MD5, or null when it cannot be fetched or parsed (offline).</summary>
@@ -837,212 +852,40 @@ internal class ModelManagerService
 
     // ── Text-to-speech model sets ─────────────────────────────────────────────
     //
-    // Each set is one directory the Settings → TTS tab shows a status line for. The three
-    // engine exports are our own (scripts/chatterbox_export, kokoro_export, omnivoice_export)
-    // and ship as Hub repos with the same (local path, remote path) asset tables as the ASR
-    // bundles above; the OmniVoice voice library rides in the OmniVoice repo under voices/.
-    // The phonemizer data tree is not hosted: its RepoBase is empty, the download button
-    // stays hidden, and the status line names the folder to fill by hand — the "not hosted
-    // yet" convention Qwen3-ASR uses.
-    //
-    // OmniVoice's manifest.json covers the files fetched here (not the int4 browser build) and
-    // keys the diff by its Hub name, ipa_diff.onnx.
+    // The sets themselves — names, directories, repos, files, presence rules — are the table in
+    // TtsModelSets (Services/Tts). What lives here is only the operations, which take a set and
+    // reuse the same manifest / hash / download machinery as the ASR bundles above. The
+    // difference from the ASR side is that each TTS set has its own directory where the ASR
+    // bundles share the models dir; that is the one reason these are separate entry points.
 
-    public enum TtsModelSet { Chatterbox, Kokoro, OmniVoice, OmniVoiceVoices, PhonemizerData }
-
-    private const string ChatterboxRepoBase =
-        "https://huggingface.co/christopherthompson81/chatterbox-tts-onnx/resolve/main";
-    private const string ChatterboxManifestUrl =
-        "https://huggingface.co/christopherthompson81/chatterbox-tts-onnx/resolve/main/manifest.json";
-    private const string KokoroRepoBase =
-        "https://huggingface.co/christopherthompson81/kokoro-82m-onnx/resolve/main";
-    private const string KokoroManifestUrl =
-        "https://huggingface.co/christopherthompson81/kokoro-82m-onnx/resolve/main/manifest.json";
-    private const string OmniVoiceRepoBase =
-        "https://huggingface.co/christopherthompson81/omnivoice-ipa-onnx/resolve/main";
-    private const string OmniVoiceManifestUrl =
-        "https://huggingface.co/christopherthompson81/omnivoice-ipa-onnx/resolve/main/manifest.json";
-    private const string OmniVoiceVoiceLibRepoBase  = OmniVoiceRepoBase;
-    private const string PhonemizerDataRepoBase     = "";
-
-    // The four Chatterbox stages. Every graph keeps its weights in an external-data sidecar
-    // spelled `<graph>.onnx_data` (underscore — that is what the graphs reference). The
-    // vocoder is listed in its merged-Loop layout, which is what the C# Vocoder loads first;
-    // the split graphs (flow_encoder / cfm_estimator / mel2wav) are in the repo too but are
-    // only a fallback, so they are neither required nor fetched. tokenizer.json may also come
-    // from the HF cache (ChatterboxPipeline.LocateCachedTokenizerJson) and is checked apart.
-    private static readonly ModelAsset[] ChatterboxFiles =
-        [
-            new("speech_encoder.onnx",                 "speech_encoder.onnx"),
-            new("speech_encoder.onnx_data",            "speech_encoder.onnx_data"),
-            new("embed_tokens.onnx",                   "embed_tokens.onnx"),
-            new("embed_tokens.onnx_data",              "embed_tokens.onnx_data"),
-            new("language_model.onnx",                 "language_model.onnx"),
-            new("language_model.onnx_data",            "language_model.onnx_data"),
-            new("conditional_decoder_loop.onnx",       "conditional_decoder_loop.onnx"),
-            new("conditional_decoder_loop.onnx_data",  "conditional_decoder_loop.onnx_data"),
-        ];
-
-    // Kokoro v1.0's 28 English voices — what scripts/kokoro_export/export_voices.py emits by
-    // default and what the repo holds. A voice missing from here would not be fetched.
-    internal static readonly string[] KokoroVoices =
-        [
-            "af_alloy", "af_aoede", "af_bella", "af_heart", "af_jessica", "af_kore", "af_nicole",
-            "af_nova", "af_river", "af_sarah", "af_sky",
-            "am_adam", "am_echo", "am_eric", "am_fenrir", "am_liam", "am_michael", "am_onyx",
-            "am_puck", "am_santa",
-            "bf_alice", "bf_emma", "bf_isabella", "bf_lily",
-            "bm_daniel", "bm_fable", "bm_george", "bm_lewis",
-        ];
-
-    private static readonly ModelAsset[] KokoroFiles =
-        [
-            new("kokoro.onnx", "kokoro.onnx"),
-            .. KokoroVoices.Select(v => new ModelAsset(Path.Combine("voices", $"{v}.bin"), $"voices/{v}.bin")),
-        ];
-
-    // The base transformer + codec + the IPA fine-tune diff + tokenizer. The repo names the
-    // diff `ipa_diff.onnx` (its card says which extraction it is); locally it keeps the
-    // versioned name IpaFineTune.DefaultDiffFile so a stale diff cannot pass as current —
-    // bump both when the fine-tune moves. The int4 browser build in the repo is not fetched.
-    private static readonly ModelAsset[] OmniVoiceFiles =
-        [
-            new("omnivoice_transformer.onnx",       "omnivoice_transformer.onnx"),
-            new("omnivoice_transformer.onnx.data",  "omnivoice_transformer.onnx.data"),
-            new("higgs_encoder.onnx",               "higgs_encoder.onnx"),
-            new("higgs_decoder.onnx",               "higgs_decoder.onnx"),
-            new(IpaFineTune.DefaultDiffFile,        "ipa_diff.onnx"),
-        ];
-
-    // The library sits at the root of its own directory locally (what StoredVoice.IsLibrary
-    // checks) and under voices/ in the repo, beside the graphs it belongs with.
-    private static readonly ModelAsset[] OmniVoiceVoiceLibFiles =
-        [
-            new("voices.jsonc",     "voices/voices.jsonc"),
-            new("voice-codes.json", "voices/voice-codes.json"),
-        ];
-
-    public string GetTtsModelSetDir(TtsModelSet set) => TtsModelSetDir(set, _settings);
-
-    public static string TtsModelSetDir(TtsModelSet set, SettingsService settings) => set switch
-    {
-        TtsModelSet.Chatterbox      => settings.GetChatterboxModelsDir(),
-        TtsModelSet.Kokoro          => settings.GetKokoroModelsDir(),
-        TtsModelSet.OmniVoice       => settings.GetOmniVoiceModelsDir(),
-        TtsModelSet.OmniVoiceVoices => settings.GetOmniVoiceVoiceLibDir(),
-        TtsModelSet.PhonemizerData  => settings.GetPhonemizerDataDir(),
-        _                           => throw new ArgumentOutOfRangeException(nameof(set)),
-    };
-
-    private static string RepoBaseFor(TtsModelSet set) => set switch
-    {
-        TtsModelSet.Chatterbox      => ChatterboxRepoBase,
-        TtsModelSet.Kokoro          => KokoroRepoBase,
-        TtsModelSet.OmniVoice       => OmniVoiceRepoBase,
-        TtsModelSet.OmniVoiceVoices => OmniVoiceVoiceLibRepoBase,
-        TtsModelSet.PhonemizerData  => PhonemizerDataRepoBase,
-        _                           => "",
-    };
-
-    /// <summary>The set's manifest.json URL, or "" where the repo has none (update check skips it).</summary>
-    public static string ManifestUrlFor(TtsModelSet set) => set switch
-    {
-        TtsModelSet.Chatterbox => ChatterboxManifestUrl,
-        TtsModelSet.Kokoro     => KokoroManifestUrl,
-        TtsModelSet.OmniVoice       => OmniVoiceManifestUrl,
-        TtsModelSet.OmniVoiceVoices => OmniVoiceManifestUrl,
-        _                           => "",
-    };
-
-    private static ModelAsset[] AssetsFor(TtsModelSet set) => set switch
-    {
-        TtsModelSet.Chatterbox      => ChatterboxFiles,
-        TtsModelSet.Kokoro          => KokoroFiles,
-        TtsModelSet.OmniVoice       => OmniVoiceFiles,
-        TtsModelSet.OmniVoiceVoices => OmniVoiceVoiceLibFiles,
-        _                           => [],
-    };
-
-    /// <summary>True once the set's files are published somewhere this app can fetch them from.</summary>
-    public static bool CanDownloadTtsModelSet(TtsModelSet set) => !string.IsNullOrEmpty(RepoBaseFor(set));
+    public string GetTtsModelSetDir(TtsModelSet set) => set.Dir(_settings);
 
     /// <summary>
-    /// The files a set still needs, relative to its directory. Empty means the backend can
-    /// load. The listed assets are the fetchable ones; the entries after them are the
-    /// alternatives a hand-placed folder may satisfy another way.
+    /// The files a set still needs, relative to its directory; empty means the backend can
+    /// load. The rule is the set's own (<see cref="TtsModelSet.Missing"/>), which is also what
+    /// the job runner and the New TTS Job dialog consult through <see cref="TtsModelSet.MissingFiles"/>,
+    /// so the three cannot disagree.
     /// </summary>
-    public IReadOnlyList<string> GetMissingTtsFiles(TtsModelSet set) => GetMissingTtsFiles(set, _settings);
-
-    /// <summary>Static so the job runner and the New TTS Job dialog check the same files Settings does.</summary>
-    public static IReadOnlyList<string> GetMissingTtsFiles(TtsModelSet set, SettingsService settings)
-    {
-        string dir = TtsModelSetDir(set, settings);
-        var missing = new List<string>();
-        switch (set)
-        {
-            case TtsModelSet.Chatterbox:
-                // A monolithic conditional_decoder.onnx (the --no-split --no-merge export) stands
-                // in for the merged-Loop pair.
-                bool monolithic = File.Exists(Path.Combine(dir, "conditional_decoder.onnx"));
-                missing.AddRange(ChatterboxFiles
-                    .Where(a => !(monolithic && a.LocalRelativePath.StartsWith("conditional_decoder_loop", StringComparison.Ordinal)))
-                    .Where(a => !File.Exists(Path.Combine(dir, a.LocalRelativePath)))
-                    .Select(a => a.LocalRelativePath));
-                if (!File.Exists(Path.Combine(dir, "tokenizer.json"))
-                    && ChatterboxPipeline.LocateCachedTokenizerJson() is null)
-                    missing.Add("tokenizer.json");
-                break;
-
-            case TtsModelSet.Kokoro:
-                if (!File.Exists(Path.Combine(dir, "kokoro.onnx"))) missing.Add("kokoro.onnx");
-                // Any voice pack will do to run; the download fills in the full set.
-                string voices = Path.Combine(dir, "voices");
-                if (!Directory.Exists(voices) || !Directory.EnumerateFiles(voices, "*.bin").Any())
-                    missing.Add("voices/*.bin");
-                break;
-
-            case TtsModelSet.OmniVoice:
-                missing.AddRange(OmniVoiceFiles
-                    .Where(a => !File.Exists(Path.Combine(dir, a.LocalRelativePath)))
-                    .Select(a => a.LocalRelativePath));
-                if (!File.Exists(settings.Current.OmniVoiceTokenizerJson)
-                    && (!Directory.Exists(dir) || OmniVoiceIpaTts.LocateTokenizerJson(dir) is null))
-                    missing.Add("tokenizer.json");
-                break;
-
-            case TtsModelSet.OmniVoiceVoices:
-                missing.AddRange(OmniVoiceVoiceLibFiles
-                    .Where(a => !File.Exists(Path.Combine(dir, a.LocalRelativePath)))
-                    .Select(a => a.LocalRelativePath));
-                break;
-
-            case TtsModelSet.PhonemizerData:
-                if (!PhonemizerData.IsDataRoot(dir)) missing.Add("core/phonology.jsonc (the data/ tree)");
-                break;
-        }
-        return missing;
-    }
+    public IReadOnlyList<string> GetMissingTtsFiles(TtsModelSet set) => set.MissingFiles(_settings);
 
     /// <summary>
-    /// Downloads a set's missing files into its directory — the asset table plus, for the
-    /// engines, tokenizer.json when no copy is beside the graphs. A set with no repo throws
-    /// with the folder to fill by hand.
+    /// Downloads a set's missing files into its directory. A set with no repo throws with the
+    /// folder to fill by hand.
     /// </summary>
     public async Task DownloadMissingTtsModelsAsync(
         TtsModelSet set,
         IProgress<DownloadProgress> progress,
         CancellationToken ct = default)
     {
-        string repoBase = RepoBaseFor(set);
-        string dir = GetTtsModelSetDir(set);
-        if (string.IsNullOrEmpty(repoBase))
+        string dir = set.Dir(_settings);
+        if (!set.CanDownload)
             throw new InvalidOperationException(
-                $"{set} is not published for download yet. Place the files in {dir} (see docs/tts-cli.md).");
+                $"{set.Name} is not published for download yet. Place the files in {dir} (see docs/tts-cli.md).");
         Directory.CreateDirectory(dir);
 
-        var missing = DownloadableTtsAssets(set)
+        var missing = set.Downloadable
             .Where(a => !File.Exists(Path.Combine(dir, a.LocalRelativePath)))
-            .Select(a => new RepoAsset(repoBase, a.LocalRelativePath, a.RemoteRelativePath))
+            .Select(a => new RepoAsset(set.RepoBase, a.LocalRelativePath, a.RemoteRelativePath))
             .ToList();
         await DownloadMissingAssetsAsync(dir, missing, progress, ct);
     }
@@ -1058,19 +901,10 @@ internal class ModelManagerService
         IProgress<(string fileName, int index, int total)>? progress = null,
         CancellationToken ct = default)
     {
-        string manifestUrl = ManifestUrlFor(set);
-        if (string.IsNullOrEmpty(manifestUrl)) return null;
-        var manifest = await FetchManifestAsync(manifestUrl, ct);
-        if (manifest is null) return null;
-
-        string dir = GetTtsModelSetDir(set);
-        var toCheck = new List<(string localRelativePath, string expectedHash)>();
-        foreach (var asset in DownloadableTtsAssets(set))
-        {
-            string path = Path.Combine(dir, asset.LocalRelativePath);
-            if (manifest.TryGetValue(asset.RemoteRelativePath, out var expected) && File.Exists(path))
-                toCheck.Add((asset.LocalRelativePath, expected));
-        }
+        if (!set.HasManifest) return null;
+        string dir = set.Dir(_settings);
+        var toCheck = await ManifestChecksAsync(dir, set.ManifestUrl, set.Downloadable, ct);
+        if (toCheck is null) return null;
         return await HashCompareAsync(dir, toCheck, progress, ct);
     }
 
@@ -1085,7 +919,7 @@ internal class ModelManagerService
         IProgress<DownloadProgress> progress,
         CancellationToken ct = default)
     {
-        string dir = GetTtsModelSetDir(set);
+        string dir = set.Dir(_settings);
         var moved = new List<(string current, string aside)>();
         foreach (string rel in localRelativePaths)
         {
@@ -1110,14 +944,5 @@ internal class ModelManagerService
         }
         foreach (var (_, aside) in moved)
             if (File.Exists(aside)) File.Delete(aside);
-    }
-
-    /// <summary>Everything <see cref="DownloadMissingTtsModelsAsync"/> would fetch for the set.</summary>
-    private static IEnumerable<ModelAsset> DownloadableTtsAssets(TtsModelSet set)
-    {
-        IEnumerable<ModelAsset> assets = AssetsFor(set);
-        if (set is TtsModelSet.Chatterbox or TtsModelSet.OmniVoice)
-            assets = assets.Append(new ModelAsset("tokenizer.json", "tokenizer.json"));
-        return assets;
     }
 }

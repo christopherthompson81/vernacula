@@ -2,6 +2,8 @@ using System.Text.Json;
 using Vernacula.Base;
 using Vernacula.App.Models;
 
+using Vernacula.App.Services.Tts;
+
 namespace Vernacula.App.Services;
 
 internal class SettingsService
@@ -228,51 +230,16 @@ internal class SettingsService
         Path.Combine(GetModelsDir(), Config.KenLmParakeetSubDir);
 
     // ── Text-to-speech locations ─────────────────────────────────────────
-    // Each is the user's pick when set, else a subfolder of the models dir so a
-    // fresh install has one place to put (or download) everything.
+    // Each set's directory is decided by its entry in TtsModelSets — the user's pick when
+    // set, else a resolver (an environment variable, a checkout beside a source build), else
+    // a subfolder of the models dir so a fresh install has one place to put everything. These
+    // stay as the named entry points callers already use.
 
-    public string GetChatterboxModelsDir() =>
-        string.IsNullOrWhiteSpace(Current.ChatterboxBundleDir)
-            ? Path.Combine(GetModelsDir(), Config.ChatterboxSubDir)
-            : Current.ChatterboxBundleDir;
-
-    public string GetKokoroModelsDir() =>
-        string.IsNullOrWhiteSpace(Current.KokoroModelDir)
-            ? Path.Combine(GetModelsDir(), Config.KokoroSubDir)
-            : Current.KokoroModelDir;
-
-    public string GetOmniVoiceModelsDir() =>
-        string.IsNullOrWhiteSpace(Current.OmniVoiceOnnxDir)
-            ? (Environment.GetEnvironmentVariable("OMNIVOICE_ONNX_DIR")
-               ?? Path.Combine(GetModelsDir(), Config.OmniVoiceSubDir))
-            : Current.OmniVoiceOnnxDir;
-
-    /// <summary>
-    /// The vernacula-phonemizer data/ root: the user's pick as given (even while still empty —
-    /// it may be the folder they are about to fill), else whatever
-    /// <see cref="Vernacula.Tts.Base.PhonemizerData.Resolve"/> finds (VERNACULA_DATA_DIR, then
-    /// the submodule beside a source build), else the models-dir default. May not exist.
-    /// </summary>
-    public string GetPhonemizerDataDir()
-    {
-        if (!string.IsNullOrWhiteSpace(Current.PhonemizerDataDir))
-            return Current.PhonemizerDataDir;
-        return Vernacula.Tts.Base.PhonemizerData.Resolve(null)
-               ?? Path.Combine(GetModelsDir(), Config.PhonemizerDataSubDir);
-    }
-
-    /// <summary>
-    /// The OmniVoice stored-voice library: the user's pick as given (an empty folder chosen as
-    /// the download target must stay the target, not fall back), else the web demo's library
-    /// beside a source build, else the models-dir default.
-    /// </summary>
-    public string GetOmniVoiceVoiceLibDir()
-    {
-        if (!string.IsNullOrWhiteSpace(Current.OmniVoiceVoiceLib))
-            return Current.OmniVoiceVoiceLib;
-        return Vernacula.Tts.Base.StoredVoice.ResolveDefaultLibrary()
-               ?? Path.Combine(GetModelsDir(), Config.OmniVoiceVoiceLibSubDir);
-    }
+    public string GetChatterboxModelsDir()   => TtsModelSets.Chatterbox.Dir(this);
+    public string GetKokoroModelsDir()       => TtsModelSets.Kokoro.Dir(this);
+    public string GetOmniVoiceModelsDir()    => TtsModelSets.OmniVoice.Dir(this);
+    public string GetPhonemizerDataDir()     => TtsModelSets.PhonemizerData.Dir(this);
+    public string GetOmniVoiceVoiceLibDir()  => TtsModelSets.OmniVoiceVoices.Dir(this);
 
     public string GetJobsDir()
     {

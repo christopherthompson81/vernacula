@@ -29,7 +29,7 @@ internal abstract class TtsEngine
     /// <summary>Output sample rate (Hz) — the reader needs it before any audio exists.</summary>
     public abstract int SampleRate { get; }
     /// <summary>The model sets that must be complete on disk before a job can run.</summary>
-    public abstract ModelManagerService.TtsModelSet[] RequiredSets { get; }
+    public abstract TtsModelSet[] RequiredSets { get; }
 
     /// <summary>How the export's phoneme column was produced, named in the CSV.</summary>
     public virtual string PhonemeScheme => "ipa";
@@ -136,8 +136,8 @@ internal sealed class KokoroEngine : TtsEngine
     public override string Description =>
         "Small and fast. Named English voices (American and British), adjustable speed, word timing from the model's own durations.";
     public override int SampleRate => Kokoro.SampleRate;
-    public override ModelManagerService.TtsModelSet[] RequiredSets =>
-        [ModelManagerService.TtsModelSet.Kokoro, ModelManagerService.TtsModelSet.PhonemizerData];
+    public override TtsModelSet[] RequiredSets =>
+        [TtsModelSets.Kokoro, TtsModelSets.PhonemizerData];
     public override string PhonemeScheme => "kokoro";   // its own vocabulary, exactly what the model consumed
 
     public override bool UsesVoiceList => true;
@@ -199,11 +199,11 @@ internal sealed class OmniVoiceEngine : TtsEngine
     public override string Description =>
         "Any of the phonemizer's 190+ languages through the IPA fine-tune, in a stored voice from the voice library. Large model; word timing is estimated.";
     public override int SampleRate => OmniVoiceIpaTts.SampleRate;
-    public override ModelManagerService.TtsModelSet[] RequiredSets =>
+    public override TtsModelSet[] RequiredSets =>
     [
-        ModelManagerService.TtsModelSet.OmniVoice,
-        ModelManagerService.TtsModelSet.OmniVoiceVoices,
-        ModelManagerService.TtsModelSet.PhonemizerData,
+        TtsModelSets.OmniVoice,
+        TtsModelSets.OmniVoiceVoices,
+        TtsModelSets.PhonemizerData,
     ];
 
     public override bool UsesLanguage => true;
@@ -265,7 +265,7 @@ internal sealed class ChatterboxEngine : TtsEngine
     public override string Description =>
         "English voice cloning from a short reference clip. Word timing from the model's cross-attention.";
     public override int SampleRate => ChatterboxConstants.S3GenSr;
-    public override ModelManagerService.TtsModelSet[] RequiredSets => [ModelManagerService.TtsModelSet.Chatterbox];
+    public override TtsModelSet[] RequiredSets => [TtsModelSets.Chatterbox];
 
     public override bool UsesReferenceClip => true;
 

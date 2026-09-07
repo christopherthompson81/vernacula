@@ -114,20 +114,10 @@ internal static class TtsPrerequisites
         var engine = TtsEngines.For(kind);
         foreach (var set in engine.RequiredSets)
         {
-            var missing = ModelManagerService.GetMissingTtsFiles(set, s);
+            var missing = set.MissingFiles(s);
             if (missing.Count > 0)
-                return $"{SetName(set)} incomplete in {ModelManagerService.TtsModelSetDir(set, s)}: missing {string.Join(", ", missing)}. See Settings → Text-to-Speech.";
+                return $"{set.Name} incomplete in {set.Dir(s)}: missing {string.Join(", ", missing)}. See Settings → Text-to-Speech.";
         }
         return job is null ? null : engine.DescribeJobIssue(s, job);
     }
-
-    private static string SetName(ModelManagerService.TtsModelSet set) => set switch
-    {
-        ModelManagerService.TtsModelSet.Chatterbox      => "Chatterbox bundle",
-        ModelManagerService.TtsModelSet.Kokoro          => "Kokoro model",
-        ModelManagerService.TtsModelSet.OmniVoice       => "OmniVoice ONNX set",
-        ModelManagerService.TtsModelSet.OmniVoiceVoices => "OmniVoice voice library",
-        ModelManagerService.TtsModelSet.PhonemizerData  => "Phonemizer data",
-        _                                               => set.ToString(),
-    };
 }

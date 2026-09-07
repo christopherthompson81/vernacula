@@ -4,6 +4,7 @@ using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using Vernacula.App.Models;
 using Vernacula.App.Services;
+using Vernacula.App.Services.Tts;
 
 namespace Vernacula.App.ViewModels;
 
@@ -20,9 +21,9 @@ internal sealed partial class TtsModelSetStatusViewModel : ObservableObject
     private readonly Action              _onChanged;
     private CancellationTokenSource?     _downloadCts;
 
-    public ModelManagerService.TtsModelSet Set { get; }
-    public string Name        { get; }
-    public string Description { get; }
+    public TtsModelSet Set         { get; }
+    public string      Name        => Set.Name;
+    public string      Description => Set.Description;
 
     [ObservableProperty] private string _locationText       = "";
     [ObservableProperty] private string _statusText         = "";
@@ -44,46 +45,28 @@ internal sealed partial class TtsModelSetStatusViewModel : ObservableObject
 
     public bool HasOutdatedFiles => OutdatedFiles.Count > 0;
 
-    /// <summary>Hidden until the set is published somewhere fetchable (see ModelManagerService).</summary>
-    public bool CanDownload => ModelManagerService.CanDownloadTtsModelSet(Set);
+    /// <summary>Hidden until the set is published somewhere fetchable (see TtsModelSets).</summary>
+    public bool CanDownload => Set.CanDownload;
 
     public TtsModelSetStatusViewModel(
-        ModelManagerService.TtsModelSet set, string name, string description,
-        ModelManagerService modelMgr, SettingsService svc, Action onChanged)
+        TtsModelSet set, ModelManagerService modelMgr, SettingsService svc, Action onChanged)
     {
         Set          = set;
-        Name         = name;
-        Description  = description;
         _modelMgr    = modelMgr;
         _svc         = svc;
         _onChanged   = onChanged;
-        StatusText   = $"Checking {name}…";
+        StatusText   = $"Checking {set.Name}…";
         LocationText = modelMgr.GetTtsModelSetDir(set);
     }
 
-    // ── Where the set's directory is stored in AppSettings ───────────────────
+    // ── Where the set's directory is stored in AppSettings: the set says ─────
 
     private string CustomLocation
     {
-        get => Set switch
-        {
-            ModelManagerService.TtsModelSet.Chatterbox      => _svc.Current.ChatterboxBundleDir,
-            ModelManagerService.TtsModelSet.Kokoro          => _svc.Current.KokoroModelDir,
-            ModelManagerService.TtsModelSet.OmniVoice       => _svc.Current.OmniVoiceOnnxDir,
-            ModelManagerService.TtsModelSet.OmniVoiceVoices => _svc.Current.OmniVoiceVoiceLib,
-            ModelManagerService.TtsModelSet.PhonemizerData  => _svc.Current.PhonemizerDataDir,
-            _                                               => "",
-        };
+        get => Set.GetOverride(_svc.Current);
         set
         {
-            switch (Set)
-            {
-                case ModelManagerService.TtsModelSet.Chatterbox:      _svc.Current.ChatterboxBundleDir = value; break;
-                case ModelManagerService.TtsModelSet.Kokoro:          _svc.Current.KokoroModelDir      = value; break;
-                case ModelManagerService.TtsModelSet.OmniVoice:       _svc.Current.OmniVoiceOnnxDir    = value; break;
-                case ModelManagerService.TtsModelSet.OmniVoiceVoices: _svc.Current.OmniVoiceVoiceLib   = value; break;
-                case ModelManagerService.TtsModelSet.PhonemizerData:  _svc.Current.PhonemizerDataDir   = value; break;
-            }
+            Set.SetOverride(_svc.Current, value);
             _svc.Save();
         }
     }
@@ -110,7 +93,7 @@ internal sealed partial class TtsModelSetStatusViewModel : ObservableObject
     }
 
     /// <summary>Can the set be compared against a published manifest at all.</summary>
-    public bool CanCheckForUpdates => CanDownload && !string.IsNullOrEmpty(ModelManagerService.ManifestUrlFor(Set));
+    public bool CanCheckForUpdates => CanDownload && Set.HasManifest;
 
     /// <summary>
     /// Compares the set's files against its repo manifest (hashes every file, so it is behind
@@ -123,7 +106,7 @@ internal sealed partial class TtsModelSetStatusViewModel : ObservableObject
     public async Task CheckForUpdatesAsync()
     {
         OutdatedFiles = [];
-        if (!Ready || !CanDownload || string.IsNullOrEmpty(ModelManagerService.ManifestUrlFor(Set)))
+        if (!Ready || !CanCheckForUpdates)
         {
             UpdateStatusText = "";
             return;
