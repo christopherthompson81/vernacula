@@ -69,12 +69,20 @@
          rendered through KokoroFormat, Kokoro's G2P. Vendored as a git submodule under external/;
          its data/ tree is located at runtime by PhonemizerData.
 
-         ⚠ Its Microsoft.ML.OnnxRuntime reference is a PLAIN (CPU) one, not PrivateAssets="all"
-         like the EP-selected package above, so it flows transitively into every consumer of this
-         project. A Cuda/DirectML consumer must outrank it with a direct ExcludeAssets="all"
-         reference or the CPU native library lands next to the GPU one and whichever copies last
-         wins — see Vernacula.Tts.CLI.csproj for the block and the explanation. -->
-    <ProjectReference Include="..\..\external\vernacula-phonemizer\csharp\Vernacula.Phonemizer\Vernacula.Phonemizer.csproj" />
+         ⚠ Its Microsoft.ML.OnnxRuntime reference is a PLAIN (CPU) one, and the submodule does not
+         mark it PrivateAssets="all" the way the EP-selected package above is. Left alone it flows
+         transitively into every consumer of this project, and its native lands beside the GPU
+         one where whichever copies last wins (#131).
+
+         ExcludeAssets="native" on this edge stops exactly that: the phonemizer's own assembly and
+         the managed ORT still flow, the CPU `libonnxruntime.so` does not. It is "native" and not
+         "runtime" because on a ProjectReference "runtime" also excludes the referenced project's
+         own DLL — measured: Vernacula.Phonemizer.dll vanishes from every consumer's output. And
+         it is on THIS edge rather than PrivateAssets on the submodule's own reference because the
+         submodule's tests and tools get their ORT through that same reference; cutting it there
+         left them with no native at all when built in place. The rule that keeps this honest is
+         RejectCpuOnnxRuntimeUnderGpuEp in Directory.Build.targets. -->
+    <ProjectReference Include="..\..\external\vernacula-phonemizer\csharp\Vernacula.Phonemizer\Vernacula.Phonemizer.csproj" ExcludeAssets="native" />
   </ItemGroup>
 
 </Project>

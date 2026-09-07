@@ -13,15 +13,11 @@
   <ItemGroup>
     <!-- .Gpu includes the CPU provider as fallback; covers both EP modes. -->
     <PackageReference Include="Microsoft.ML.OnnxRuntime.Gpu" Version="$(OnnxRuntimeVersion)" />
-    <!-- Outranks the plain CPU ORT that Vernacula.Phonemizer pulls in transitively; see
-         Vernacula.Tts.Base.csproj. -->
-    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="$(OnnxRuntimeVersion)" ExcludeAssets="all" />
   </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\Vernacula.Tts.Base\Vernacula.Tts.Base.csproj">
       <Private>true</Private>
-      <SetConfiguration>EP=Cuda</SetConfiguration>
     </ProjectReference>
   </ItemGroup>
 

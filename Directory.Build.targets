@@ -1,0 +1,38 @@
+<Project>
+
+  <!--
+    Repo-wide build rules that must run AFTER each project body — Directory.Build.props is
+    imported before it, so anything that inspects a project's own items belongs here.
+  -->
+
+  <!-- ⚠ THE CPU ONNX RUNTIME MUST NOT REACH A GPU BUILD'S OUTPUT. Vernacula.Phonemizer, a git
+       submodule, takes a plain (CPU) Microsoft.ML.OnnxRuntime reference for its neural G2P.
+       Vernacula.Tts.Base stops that package's native from flowing onward — ExcludeAssets="native"
+       on its ProjectReference, explained there — so no consumer needs the ExcludeAssets="all" shim
+       eight of them used to carry, and a new consumer is correct by default (#131).
+
+       This target is the rule behind that. An edge attribute is still something a direct plain
+       reference in a GPU consumer can sidestep, and the symptom of getting it wrong is a build
+       that succeeds and runs on the wrong runtime: the CPU `libonnxruntime.so` lands in the same
+       runtimes/<rid>/native/ directory as the GPU one, whichever copies last wins, and the CUDA
+       provider libraries sit uselessly beside it. So: under a GPU execution provider, the CPU
+       package must not contribute a native. Windows and Linux only, the two platforms whose GPU
+       packages actually ship one — on macOS x64 the plain package IS the runtime, at a pinned
+       1.19.2, and is referenced deliberately.
+
+       A project that genuinely wants the CPU runtime while the rest of the build is on a GPU EP —
+       a CPU-only test host, say — sets AllowCpuOnnxRuntime, which says so where a reader will
+       see it.
+
+       Vendored projects under external/ are exempt: the submodule owns that reference for its own
+       compilation and its own tests, and its bin/ is not what anything here ships. -->
+  <Target Name="RejectCpuOnnxRuntimeUnderGpuEp"
+          AfterTargets="ResolveReferences"
+          Condition="'$(EP)' != 'Cpu' AND '$(AllowCpuOnnxRuntime)' != 'true'
+                     AND !$(MSBuildProjectDirectory.StartsWith('$(MSBuildThisFileDirectory)external'))
+                     AND ($([MSBuild]::IsOSPlatform('Windows')) OR $([MSBuild]::IsOSPlatform('Linux')))">
+    <Error Condition="'%(RuntimeTargetsCopyLocalItems.NuGetPackageId)' == 'Microsoft.ML.OnnxRuntime'"
+           Text="$(MSBuildProjectName) builds as EP=$(EP) but the CPU Microsoft.ML.OnnxRuntime package is contributing runtime assets (e.g. %(RuntimeTargetsCopyLocalItems.DestinationSubPath)). Its native would land on top of the GPU native of the same name and win the copy, so the build would succeed while running on the wrong runtime. Drop the reference that brings it in, or set AllowCpuOnnxRuntime=true if this project really is CPU-only." />
+  </Target>
+
+</Project>
