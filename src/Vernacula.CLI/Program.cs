@@ -43,6 +43,11 @@ float   parakeetLmLen     = 0.6f;       // --lm-length-penalty <p> per-emitted-t
 
 for (int i = 0; i < args.Length; i++)
 {
+    // Every value-taking case reads args[++i]; a flag passed last with no value would walk
+    // off the end. One guard here covers all of them, rather than a bounds check per case.
+    string flag = args[i];
+    try
+    {
     switch (args[i])
     {
         case "--audio":         audioPath    = args[++i]; break;
@@ -147,6 +152,12 @@ for (int i = 0; i < args.Length; i++)
             Console.Error.WriteLine($"Unknown argument: {args[i]}");
             return 1;
     }
+    }
+    catch (IndexOutOfRangeException)
+    {
+        Console.Error.WriteLine($"Error: {flag} requires a value.");
+        return 1;
+    }
 }
 
 // ── Models root ───────────────────────────────────────────────────────────────
@@ -221,7 +232,7 @@ if (!Directory.Exists(modelsRoot))
     Console.Error.WriteLine(modelsDirFlag is null && modelDir is null
         ? "That is the default location (the desktop app's models root). Download the models "
           + "there with the desktop app, or point at your own with --models-dir <dir>."
-        : "Check the path passed to --models-dir.");
+        : $"Check the path passed to {(modelsDirFlag is null ? "--model" : "--models-dir")}.");
     return 1;
 }
 
@@ -322,7 +333,14 @@ try
     {
         Console.Write("Detecting speech (VAD)... ");
         // Silero loads its file flat from whatever directory it is handed.
-        using var vad = new VadSegmenter(BundleDir(modelsRoot, Config.VadSubDir));
+        string vadDir = BundleDir(modelsRoot, Config.VadSubDir);
+        if (!File.Exists(Path.Combine(vadDir, Config.VadFile)))
+        {
+            Console.Error.WriteLine($"\nError: Silero VAD model not found: {Path.Combine(vadDir, Config.VadFile)}");
+            Console.Error.WriteLine("Download the models with the desktop app, or point at them with --models-dir <dir>.");
+            return 1;
+        }
+        using var vad = new VadSegmenter(vadDir);
         var vadSegs = vad.GetSegments(audio);
         segs = vadSegs.Select(s => (s.start, s.end, "speaker_1")).ToList();
         swDiar.Stop();
@@ -355,6 +373,18 @@ try
     }
     else // sortformer (default)
     {
+        // Sortformer resolves subdir-or-root itself (Config.GetSortformerModelPath); check the
+        // file it settles on, so a models root that was never populated says so rather than
+        // surfacing as an ONNX Runtime stack trace. This is the default diarizer, so it is the
+        // first thing a zero-flag run touches.
+        string sortformerModel = Config.GetSortformerModelPath(modelsRoot);
+        if (!File.Exists(sortformerModel))
+        {
+            Console.Error.WriteLine($"\nError: Sortformer model not found: {sortformerModel}");
+            Console.Error.WriteLine("Download the models with the desktop app, or point at them with --models-dir <dir>.");
+            return 1;
+        }
+
         if (profileSortformer)
         {
             // ── Profiled Sortformer path ──────────────────────────────────────
@@ -616,9 +646,13 @@ try
             string bf16Dir = Path.Combine(modelsRoot, Config.GraniteSpeechBf16SubDir);
             string fp32Dir = Path.Combine(modelsRoot, Config.GraniteSpeechSubDir);
             bool bf16Available = Directory.Exists(bf16Dir) && HardwareInfo.SupportsBf16Acceleration();
-            graniteDir = bf16Available ? bf16Dir
-                : (Directory.Exists(fp32Dir) ? fp32Dir : modelsRoot);
-            Console.WriteLine($"Granite Speech bundle: {Path.GetFileName(graniteDir)}");
+            bool foundBundle = bf16Available || Directory.Exists(fp32Dir);
+            graniteDir = bf16Available ? bf16Dir : (foundBundle ? fp32Dir : modelsRoot);
+            // Only name a bundle we actually found. Falling back to the root and announcing
+            // "Granite Speech bundle: models" read as a successful pick one line before the
+            // load failed.
+            if (foundBundle)
+                Console.WriteLine($"Granite Speech bundle: {Path.GetFileName(graniteDir)}");
         }
 
         if (!File.Exists(Path.Combine(graniteDir, GraniteSpeech.MelFile)))
@@ -793,7 +827,23 @@ try
         int effectiveBeam = parakeetLmPath != null && parakeetBeam < 2 ? 4 : parakeetBeam;
 
         // Parakeet loads its files flat from whatever directory it is handed.
-        using var parakeet = new ParakeetAsr(BundleDir(modelsRoot, Config.ParakeetSubDir),
+        string parakeetDir = BundleDir(modelsRoot, Config.ParakeetSubDir);
+
+        // Say so before ONNX Runtime does. With the models root now defaulting rather than
+        // being passed, "the root exists but the bundle was never downloaded" is the ordinary
+        // first-run mistake, and without this it surfaced as a raw OnnxRuntimeException stack
+        // trace. The other backends all pre-check like this.
+        if (!File.Exists(Path.Combine(parakeetDir, Config.PreprocessorFile)))
+        {
+            Console.Error.WriteLine($"\nError: Parakeet model not found in: {parakeetDir}");
+            Console.Error.WriteLine($"Expected {Config.PreprocessorFile} and related files there "
+                                  + $"({encoderFile}, {decoderJointFile}, {Config.VocabFile}).");
+            Console.Error.WriteLine("Download the models with the desktop app, or point at them "
+                                  + "with --models-dir <dir>.");
+            return 1;
+        }
+
+        using var parakeet = new ParakeetAsr(parakeetDir,
             encoderFile, decoderJointFile, beamWidth: effectiveBeam);
 
         if (parakeetLmPath != null)
@@ -1256,7 +1306,7 @@ static void PrintUsage()
     Console.WriteLine("  --download-voxlingua               Download the VoxLingua107 LID model and exit");
     Console.WriteLine("                                     (defaults to ~/.local/share/Vernacula/models)");
     Console.WriteLine("  --lid                              Run VAD + LID on --audio and print the detected");
-    Console.WriteLine("                                     language, then exit. Uses --model as the models");
+    Console.WriteLine("                                     language, then exit. Uses --models-dir as the models");
     Console.WriteLine("                                     root, or the default dir if omitted.");
     Console.WriteLine("  -h, --help                         Show this help");
     Console.WriteLine();
