@@ -581,6 +581,25 @@
                         <Separator Background="{DynamicResource OverlayBrush}" Margin="0,8,0,8" />
 
                         <RadioButton GroupName="AsrBackend"
+                                     IsChecked="{Binding IsAsrVibeVoiceStreaming, Mode=OneWay}"
+                                     Command="{Binding SetAsrBackendCommand}"
+                                     CommandParameter="VibeVoiceStreaming"
+                                     Foreground="{DynamicResource TextBrush}"
+                                     IsEnabled="{Binding CanUseVibeVoiceStreamingAsr}">
+                            <StackPanel>
+                                <TextBlock Text="{Binding VibeVoiceStreamingAsrLabel}"
+                                           FontWeight="SemiBold"
+                                           Foreground="{DynamicResource TextBrush}" />
+                                <TextBlock Text="{Binding VibeVoiceStreamingAsrDescription}"
+                                           Foreground="{DynamicResource SubtextBrush}"
+                                           FontSize="11"
+                                           TextWrapping="Wrap" />
+                            </StackPanel>
+                        </RadioButton>
+
+                        <Separator Background="{DynamicResource OverlayBrush}" Margin="0,8,0,8" />
+
+                        <RadioButton GroupName="AsrBackend"
                                      IsChecked="{Binding IsAsrIndicConformer, Mode=OneWay}"
                                      Command="{Binding SetAsrBackendCommand}"
                                      CommandParameter="IndicConformer"

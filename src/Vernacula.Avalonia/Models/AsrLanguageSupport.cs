@@ -74,6 +74,14 @@ public static class AsrLanguageSupport
         "en", "fr", "de", "it", "ja", "ko", "pt", "ru", "es", "th", "vi", "zh",
     }.ToFrozenSet();
 
+    // VibeVoice-ASR-Streaming — the 10 languages listed on the model card
+    // (https://huggingface.co/microsoft/VibeVoice-ASR-Streaming-7B). Two fewer than the
+    // non-streaming sibling: it drops Thai and Vietnamese and adds nothing.
+    private static readonly FrozenSet<string> VibeVoiceStreamingLangs = new HashSet<string>
+    {
+        "en", "zh", "es", "pt", "de", "ja", "ko", "fr", "ru", "it",
+    }.ToFrozenSet();
+
     // OpenAI Whisper large-v3-turbo — 99 languages from the model's
     // generation_config.json lang_to_id dict. Covers the widest surface of
     // any backend Vernacula ships: all of Parakeet / Cohere / Qwen3 plus many
@@ -155,6 +163,7 @@ public static class AsrLanguageSupport
         AsrBackend.Cohere         => CohereLangs,
         AsrBackend.Qwen3Asr       => Qwen3AsrLangs,
         AsrBackend.VibeVoice      => VibeVoiceLangs,
+        AsrBackend.VibeVoiceStreaming => VibeVoiceStreamingLangs,
         AsrBackend.IndicConformer => IndicConformerLangs,
         AsrBackend.WhisperTurbo   => WhisperTurboLangs,
         AsrBackend.GraniteSpeech  => GraniteSpeechLangs,
@@ -251,6 +260,7 @@ public static class AsrLanguageSupport
         AsrBackend.Cohere         => "Cohere Transcribe",
         AsrBackend.Qwen3Asr       => "Qwen3-ASR",
         AsrBackend.VibeVoice      => "VibeVoice-ASR",
+        AsrBackend.VibeVoiceStreaming => "VibeVoice-ASR Streaming",
         AsrBackend.IndicConformer => "IndicConformer",
         AsrBackend.WhisperTurbo   => "Whisper Turbo",
         AsrBackend.GraniteSpeech  => "Granite Speech 4.1",
@@ -269,6 +279,7 @@ public static class AsrLanguageSupport
         "CohereLabs/cohere-transcribe-03-2026"         => AsrBackend.Cohere,
         "Qwen/Qwen3-ASR-1.7B"                          => AsrBackend.Qwen3Asr,
         "vibevoice/vibevoice-asr"                      => AsrBackend.VibeVoice,
+        "microsoft/vibevoice-asr-streaming"            => AsrBackend.VibeVoiceStreaming,
         "ai4bharat/indic-conformer-600m-multilingual"  => AsrBackend.IndicConformer,
         "openai/whisper-large-v3-turbo"                => AsrBackend.WhisperTurbo,
         "ibm-granite/granite-speech-4.1-2b"            => AsrBackend.GraniteSpeech,
@@ -282,6 +293,7 @@ public static class AsrLanguageSupport
         AsrBackend.Cohere         => "CohereLabs/cohere-transcribe-03-2026",
         AsrBackend.Qwen3Asr       => "Qwen/Qwen3-ASR-1.7B",
         AsrBackend.VibeVoice      => "vibevoice/vibevoice-asr",
+        AsrBackend.VibeVoiceStreaming => "microsoft/vibevoice-asr-streaming",
         AsrBackend.IndicConformer => "ai4bharat/indic-conformer-600m-multilingual",
         AsrBackend.WhisperTurbo   => "openai/whisper-large-v3-turbo",
         AsrBackend.GraniteSpeech  => "ibm-granite/granite-speech-4.1-2b",

@@ -114,13 +114,16 @@ internal class TranscriptionService
 
         // ── ASR backend / segmentation flags ─────────────────────────────────
         bool useVibeVoiceAsr     = string.Equals(asrModelName, "vibevoice/vibevoice-asr", StringComparison.Ordinal);
+        // The streaming checkpoint also segments and attributes speakers itself, so it takes
+        // the same whole-recording path; only the backend class and the model dir differ.
+        bool useVibeVoiceStreaming = string.Equals(asrModelName, "microsoft/vibevoice-asr-streaming", StringComparison.Ordinal);
         bool useCohereAsr        = string.Equals(asrModelName, "CohereLabs/cohere-transcribe-03-2026", StringComparison.Ordinal);
         bool useQwen3Asr         = string.Equals(asrModelName, "Qwen/Qwen3-ASR-1.7B", StringComparison.Ordinal);
         bool useIndicConformerAsr = string.Equals(asrModelName, "ai4bharat/indic-conformer-600m-multilingual", StringComparison.Ordinal);
         bool useWhisperTurboAsr   = string.Equals(asrModelName, "openai/whisper-large-v3-turbo", StringComparison.Ordinal);
         bool useGraniteSpeechAsr  = string.Equals(asrModelName, "ibm-granite/granite-speech-4.1-2b", StringComparison.Ordinal);
         var  segmentationMode = _settings.Current.Segmentation;
-        bool runVibeVoice     = useVibeVoiceAsr || segmentationMode == SegmentationMode.VibeVoiceBuiltin;
+        bool runVibeVoice     = useVibeVoiceAsr || useVibeVoiceStreaming || segmentationMode == SegmentationMode.VibeVoiceBuiltin;
 
         // End-of-diarization anchor used by LID + ASR to scale into the overall
         // bar. Each diarizer completes at its own weight; ASR starts there and
@@ -147,7 +150,9 @@ internal class TranscriptionService
         if (!db.CheckMetadata(audioPath))
             db.PopulateMetadata(audioPath);
 
-        string effectiveAsrModelName = runVibeVoice ? "vibevoice/vibevoice-asr" : asrModelName;
+        string effectiveAsrModelName = useVibeVoiceStreaming ? "microsoft/vibevoice-asr-streaming"
+                                     : runVibeVoice          ? "vibevoice/vibevoice-asr"
+                                     : asrModelName;
         db.UpdateMetadata("asr_model", effectiveAsrModelName);
         string effectiveAsrLanguageCode =
             string.IsNullOrWhiteSpace(asrLanguageCode) ? "auto" : asrLanguageCode;
@@ -180,6 +185,27 @@ internal class TranscriptionService
 
                 IReadOnlyList<VibeVoiceSegment> vibeSegs = await Task.Run(() =>
                 {
+                    if (useVibeVoiceStreaming)
+                    {
+                        using var streaming = new VibeVoiceStreamingAsr(_settings.GetVibeVoiceStreamingModelsDir());
+                        // The streaming model emits one chunk per hop and only names a speaker
+                        // when the turn changes, so segments are only final once the whole
+                        // recording is decoded. Chunks drive progress; rows come from
+                        // ToSegments afterwards, and the shared code below inserts them.
+                        var streamChunks = streaming.Transcribe(
+                            vibeVoiceAudio, vibeVoiceSampleRate, vibeVoiceChannels,
+                            onChunk: c =>
+                            {
+                                double pct = vibeDuration > 0 ? c.End / vibeDuration * 100.0 : 0;
+                                progress.Report(new TranscriptionProgress(
+                                    TranscriptionPhase.Recognizing, 0, 100,
+                                    $"{c.End:F1}s / {vibeDuration:F1}s",
+                                    c.Index, c.Text, OverridePercent: pct));
+                            },
+                            ct: ct);
+                        return VibeVoiceStreamingAsr.ToSegments(streamChunks);
+                    }
+
                     using var vibe = new VibeVoiceAsr(
                         vibeVoiceDir,
                         persistEncoder: false,

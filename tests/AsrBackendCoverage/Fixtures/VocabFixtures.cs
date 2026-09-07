@@ -199,7 +199,9 @@ internal static class VocabFixtures
                 break;
 
             case VocabService.VocabKind.VibeVoice:
+                // Two backends share this kind and each reads its own folder, so write both.
                 WriteFile(Path.Combine(dir, Config.VibeVoiceSubDir, VibeVoiceAsr.TokenizerFile), HfTokenizerJson());
+                WriteFile(Path.Combine(dir, Config.VibeVoiceStreamingSubDir, VibeVoiceStreamingAsr.TokenizerFile), HfTokenizerJson());
                 break;
 
             case VocabService.VocabKind.Qwen3Asr:

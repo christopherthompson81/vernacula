@@ -31,7 +31,7 @@ internal partial class SettingsViewModel : ObservableObject
     private SegmentationMode _selectedSegmentation;
 
     [ObservableProperty]
-    [NotifyPropertyChangedFor(nameof(IsAsrParakeet), nameof(IsAsrCohere), nameof(IsAsrQwen3Asr), nameof(IsAsrVibeVoice), nameof(IsAsrIndicConformer), nameof(IsAsrWhisperTurbo), nameof(IsAsrGraniteSpeech), nameof(ShowStandardSegmentationOptions), nameof(ShowVibeVoiceBuiltinSegmentation), nameof(ShowDiariZenInSegmentation), nameof(ShowGatedSegmentationHint), nameof(CanUseVibeVoiceAsr), nameof(VibeVoiceAsrLabel), nameof(VibeVoiceAsrDescription), nameof(ShowCohereLanguagePicker), nameof(ShowQwen3AsrLanguagePicker), nameof(ShowIndicConformerLanguagePicker), nameof(ShowWhisperTurboLanguagePicker))]
+    [NotifyPropertyChangedFor(nameof(IsAsrParakeet), nameof(IsAsrCohere), nameof(IsAsrQwen3Asr), nameof(IsAsrVibeVoice), nameof(IsAsrVibeVoiceStreaming), nameof(IsAsrIndicConformer), nameof(IsAsrWhisperTurbo), nameof(IsAsrGraniteSpeech), nameof(ShowStandardSegmentationOptions), nameof(ShowVibeVoiceBuiltinSegmentation), nameof(ShowDiariZenInSegmentation), nameof(ShowGatedSegmentationHint), nameof(CanUseVibeVoiceAsr), nameof(VibeVoiceAsrLabel), nameof(VibeVoiceAsrDescription), nameof(CanUseVibeVoiceStreamingAsr), nameof(VibeVoiceStreamingAsrLabel), nameof(VibeVoiceStreamingAsrDescription), nameof(ShowCohereLanguagePicker), nameof(ShowQwen3AsrLanguagePicker), nameof(ShowIndicConformerLanguagePicker), nameof(ShowWhisperTurboLanguagePicker))]
     private AsrBackend _selectedAsrBackend;
 
     [ObservableProperty]
@@ -136,10 +136,18 @@ internal partial class SettingsViewModel : ObservableObject
     public bool IsAsrCohere         => SelectedAsrBackend == AsrBackend.Cohere;
     public bool IsAsrQwen3Asr       => SelectedAsrBackend == AsrBackend.Qwen3Asr;
     public bool IsAsrVibeVoice      => SelectedAsrBackend == AsrBackend.VibeVoice;
+    public bool IsAsrVibeVoiceStreaming => SelectedAsrBackend == AsrBackend.VibeVoiceStreaming;
     public bool IsAsrIndicConformer => SelectedAsrBackend == AsrBackend.IndicConformer;
     public bool IsAsrWhisperTurbo   => SelectedAsrBackend == AsrBackend.WhisperTurbo;
     public bool IsAsrGraniteSpeech  => SelectedAsrBackend == AsrBackend.GraniteSpeech;
     public bool CanUseVibeVoiceAsr  => CudaEpWorking;
+    public bool CanUseVibeVoiceStreamingAsr => CudaEpWorking;
+    public string VibeVoiceStreamingAsrLabel => CanUseVibeVoiceStreamingAsr
+        ? "VibeVoice-ASR Streaming"
+        : "VibeVoice-ASR Streaming (Unavailable - CUDA Missing)";
+    public string VibeVoiceStreamingAsrDescription => CanUseVibeVoiceStreamingAsr
+        ? "Chunked ASR with built-in speaker attribution, in 10 languages. Transcribes as the recording plays rather than after it. Downloads into the vibevoice_asr_streaming models folder."
+        : "Unavailable because the CUDA execution provider check did not pass.";
     public string VibeVoiceAsrLabel => CanUseVibeVoiceAsr ? "VibeVoice-ASR" : "VibeVoice-ASR (Unavailable - CUDA Missing)";
     public string VibeVoiceAsrDescription => CanUseVibeVoiceAsr
         ? "Whole-recording ASR with built-in diarization. Downloads into the vibevoice_asr models folder."
@@ -148,8 +156,12 @@ internal partial class SettingsViewModel : ObservableObject
     public bool ShowQwen3AsrLanguagePicker       => SelectedAsrBackend == AsrBackend.Qwen3Asr;
     public bool ShowIndicConformerLanguagePicker => SelectedAsrBackend == AsrBackend.IndicConformer;
     public bool ShowWhisperTurboLanguagePicker   => SelectedAsrBackend == AsrBackend.WhisperTurbo;
-    public bool ShowStandardSegmentationOptions => SelectedAsrBackend != AsrBackend.VibeVoice;
-    public bool ShowVibeVoiceBuiltinSegmentation => SelectedAsrBackend == AsrBackend.VibeVoice;
+    // Both VibeVoice checkpoints segment and attribute speakers themselves, so neither
+    // offers the standard segmentation choices.
+    public bool ShowStandardSegmentationOptions =>
+        SelectedAsrBackend is not (AsrBackend.VibeVoice or AsrBackend.VibeVoiceStreaming);
+    public bool ShowVibeVoiceBuiltinSegmentation =>
+        SelectedAsrBackend is AsrBackend.VibeVoice or AsrBackend.VibeVoiceStreaming;
     public bool ShowDiariZenInSegmentation => HasAcceptedDiariZenNotice && ShowStandardSegmentationOptions;
     public bool ShowGatedSegmentationHint => !HasAcceptedDiariZenNotice && ShowStandardSegmentationOptions;
     public bool IsEditorSingle      => SelectedEditorPlaybackMode == PlaybackMode.Single;
@@ -436,13 +448,15 @@ internal partial class SettingsViewModel : ObservableObject
 
     partial void OnSelectedAsrBackendChanged(AsrBackend value)
     {
-        if (value == AsrBackend.VibeVoice && !CanUseVibeVoiceAsr)
+        if ((value == AsrBackend.VibeVoice && !CanUseVibeVoiceAsr)
+            || (value == AsrBackend.VibeVoiceStreaming && !CanUseVibeVoiceStreamingAsr))
         {
             SelectedAsrBackend = AsrBackend.Parakeet;
             return;
         }
 
-        if (value == AsrBackend.VibeVoice && SelectedSegmentation != SegmentationMode.VibeVoiceBuiltin)
+        if (value is AsrBackend.VibeVoice or AsrBackend.VibeVoiceStreaming
+            && SelectedSegmentation != SegmentationMode.VibeVoiceBuiltin)
             _lastNonVibeSegmentation = NormalizeSegmentationForBackend(SelectedSegmentation, AsrBackend.Parakeet);
 
         _svc.Current.AsrBackend = value;
@@ -751,6 +765,9 @@ internal partial class SettingsViewModel : ObservableObject
                 ? ""
                 : (HardwareInfo.CudaProbeNote ?? FirstLine(cudaMessage) ?? "");
             OnPropertyChanged(nameof(CanUseVibeVoiceAsr));
+            OnPropertyChanged(nameof(CanUseVibeVoiceStreamingAsr));
+            OnPropertyChanged(nameof(VibeVoiceStreamingAsrLabel));
+            OnPropertyChanged(nameof(VibeVoiceStreamingAsrDescription));
             OnPropertyChanged(nameof(VibeVoiceAsrLabel));
             OnPropertyChanged(nameof(VibeVoiceAsrDescription));
 
@@ -769,7 +786,7 @@ internal partial class SettingsViewModel : ObservableObject
                 if (ModelSelectionChanged is not null) await ModelSelectionChanged();
             }
 
-            if (!CudaEpWorking && SelectedAsrBackend == AsrBackend.VibeVoice)
+            if (!CudaEpWorking && SelectedAsrBackend is AsrBackend.VibeVoice or AsrBackend.VibeVoiceStreaming)
                 SelectedAsrBackend = AsrBackend.Parakeet;
 
             // Batch ceiling — query free VRAM (accurate post-load figure)
@@ -867,6 +884,13 @@ internal partial class SettingsViewModel : ObservableObject
                 return;
             }
 
+            if (SelectedAsrBackend == AsrBackend.VibeVoiceStreaming)
+            {
+                ModelStatusText = $"Missing {_lastMissing.Count} required model file(s): {string.Join(", ", _lastMissing)}. " +
+                                  $"Use Download Missing Models, or place VibeVoice-ASR Streaming weights under {_svc.GetVibeVoiceStreamingModelsDir()}.";
+                return;
+            }
+
             ModelStatusText = Loc.Instance.T("model_status_missing",
                 new() { ["count"] = _lastMissing.Count.ToString(),
                         ["files"] = string.Join(", ", _lastMissing) });
@@ -961,7 +985,7 @@ internal partial class SettingsViewModel : ObservableObject
 
     private SegmentationMode NormalizeSegmentationForBackend(SegmentationMode requested, AsrBackend backend)
     {
-        if (backend == AsrBackend.VibeVoice)
+        if (backend is AsrBackend.VibeVoice or AsrBackend.VibeVoiceStreaming)
             return SegmentationMode.VibeVoiceBuiltin;
 
         if (requested == SegmentationMode.VibeVoiceBuiltin)

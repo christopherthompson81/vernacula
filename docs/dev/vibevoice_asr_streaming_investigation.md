@@ -881,3 +881,38 @@ matching speaker-turn counts (156 and 19).
 One deliberate change: log-probabilities are now opt-in (`computeLogprobs`, default off).
 The second pass needs a `Math.Exp` per vocabulary entry, 152k per token; measured at ~7 % of
 wall time here, and the CLI does not use the values.
+
+## Run 19 — 2026-09-07 16:10 — desktop app integration
+
+`AsrBackend.VibeVoiceStreaming` added and wired through every place the enum is enumerated.
+The app's dispatch-coverage suite is what makes that tractable: each unmapped site throws by
+design rather than silently inheriting Parakeet's behaviour, so adding the enum member and
+running the tests lists the work.
+
+Wired: the model-name mapping (`microsoft/vibevoice-asr-streaming`), the 10-language set from
+the model card (two fewer than the non-streaming sibling — it drops Thai and Vietnamese), the
+display name, the settings radio with a CUDA-gated label matching VibeVoice's, the
+missing-model messages in both the home and settings view models, the download manifest and
+asset list, and `VocabService` (same Qwen2 byte-level vocabulary, read from the streaming
+package's own folder).
+
+`TranscriptionService` reuses the whole-recording VibeVoice path since this checkpoint also
+segments and attributes speakers itself; only the backend class and model directory differ.
+Chunk callbacks drive progress, and `ToSegments` produces the rows the existing bulk-insert
+code already handles. Both checkpoints force `SegmentationMode.VibeVoiceBuiltin` and hide the
+standard segmentation choices.
+
+**The suite caught four real failures**, all one bug: `VocabFixtures` writes its tokenizer by
+`VocabKind`, and the two VibeVoice backends share a kind but read different folders, so the
+streaming service found no vocabulary and decoded to "". The fixture now writes both folders.
+
+**Verification.** Full suite green (27 / 158 / 178). Headless Xvfb run with isolated
+`XDG_*` dirs: app launches with no exceptions, and the new row renders under VibeVoice-ASR in
+the Transcription tab, correctly greyed with the CUDA reason on a host whose CUDA EP check
+fails (screenshot taken; the check fails inside Xvfb, which is itself the right behaviour to
+see).
+
+**Not done, and deliberately.** The HF repo the manifest points at
+(`christopherthompson81/vibevoice-asr-streaming-onnx`) does not exist yet, so Download
+Missing Models will 404 until the package is published. Publishing it is the next step, along
+with a manifest of per-file MD5s built the same way as the other model repos.

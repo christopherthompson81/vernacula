@@ -85,6 +85,8 @@ internal partial class HomeViewModel : ObservableObject
         else if (_settings.Current.AsrBackend == AsrBackend.VibeVoice ||
                  _settings.Current.Segmentation == Vernacula.Base.Models.SegmentationMode.VibeVoiceBuiltin)
             ModelStatusText = $"VibeVoice-ASR weights are missing. Use Download Missing Models, or place them in {_settings.GetVibeVoiceModelsDir()}.";
+        else if (_settings.Current.AsrBackend == AsrBackend.VibeVoiceStreaming)
+            ModelStatusText = $"VibeVoice-ASR Streaming weights are missing. Use Download Missing Models, or place them in {_settings.GetVibeVoiceStreamingModelsDir()}.";
         else if (_settings.Current.AsrBackend == AsrBackend.IndicConformer)
             ModelStatusText = $"IndicConformer weights are missing. Place them in {_settings.GetIndicConformerModelsDir()}.";
         else if (_settings.Current.AsrBackend == AsrBackend.WhisperTurbo)

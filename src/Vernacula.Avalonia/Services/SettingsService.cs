@@ -174,6 +174,9 @@ internal class SettingsService
     public string GetVibeVoiceModelsDir() =>
         Path.Combine(GetModelsDir(), "vibevoice_asr");
 
+    public string GetVibeVoiceStreamingModelsDir() =>
+        Path.Combine(GetModelsDir(), Config.VibeVoiceStreamingSubDir);
+
     public string GetIndicConformerModelsDir() =>
         Path.Combine(GetModelsDir(), Config.IndicConformerSubDir);
 

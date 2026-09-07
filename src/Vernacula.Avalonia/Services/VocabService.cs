@@ -28,6 +28,8 @@ internal class VocabService
         AsrBackend.Cohere         => VocabKind.Cohere,
         AsrBackend.Qwen3Asr       => VocabKind.Qwen3Asr,
         AsrBackend.VibeVoice      => VocabKind.VibeVoice,
+        // Same Qwen2 byte-level vocabulary, read from the streaming package's own folder.
+        AsrBackend.VibeVoiceStreaming => VocabKind.VibeVoice,
         AsrBackend.IndicConformer => VocabKind.IndicConformer,
         AsrBackend.GraniteSpeech  => VocabKind.GraniteSpeech,
         AsrBackend.WhisperTurbo   => VocabKind.WhisperTurbo,
@@ -64,6 +66,12 @@ internal class VocabService
         {
             _kind = VocabKind.VibeVoice;
             (_vocab, _addedContent) = LoadVibeVoiceVocab(Path.Combine(modelsDir, Config.VibeVoiceSubDir, VibeVoiceAsr.TokenizerFile));
+            _byteLevelDecode = BuildByteLevelDecode();
+        }
+        else if (string.Equals(asrModel, "microsoft/vibevoice-asr-streaming", StringComparison.Ordinal))
+        {
+            _kind = VocabKind.VibeVoice;
+            (_vocab, _addedContent) = LoadVibeVoiceVocab(Path.Combine(modelsDir, Config.VibeVoiceStreamingSubDir, VibeVoiceStreamingAsr.TokenizerFile));
             _byteLevelDecode = BuildByteLevelDecode();
         }
         else if (string.Equals(asrModel, "Qwen/Qwen3-ASR-1.7B", StringComparison.Ordinal))

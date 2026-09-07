@@ -36,6 +36,11 @@ internal class ModelManagerService
     private const string VibeVoiceManifestUrl =
         "https://huggingface.co/christopherthompson81/vibevoice-asr-onnx/resolve/main/manifest.json";
 
+    private const string VibeVoiceStreamingRepoBase =
+        "https://huggingface.co/christopherthompson81/vibevoice-asr-streaming-onnx/resolve/main";
+    private const string VibeVoiceStreamingManifestUrl =
+        "https://huggingface.co/christopherthompson81/vibevoice-asr-streaming-onnx/resolve/main/manifest.json";
+
     private const string VoxLinguaRepoBase =
         "https://huggingface.co/christopherthompson81/voxlingua107-lid-onnx/resolve/main";
     private const string VoxLinguaManifestUrl =
@@ -226,6 +231,22 @@ internal class ModelManagerService
             new(Path.Combine(Config.VibeVoiceSubDir, VibeVoiceAsr.TokenizerFile),                          VibeVoiceAsr.TokenizerFile),
         ];
 
+    // The streaming package is the GQA export: a float16 audio encoder and a decoder whose
+    // KV cache is a shared, pre-allocated buffer. Same file names for the shared metadata,
+    // but decoder_gqa.onnx rather than decoder_single.onnx, and no chat template.
+    private static readonly ModelAsset[] VibeVoiceStreamingFiles =
+        [
+            new(Path.Combine(Config.VibeVoiceStreamingSubDir, VibeVoiceStreamingAsr.AudioEncoderFile),         VibeVoiceStreamingAsr.AudioEncoderFile),
+            new(Path.Combine(Config.VibeVoiceStreamingSubDir, $"{VibeVoiceStreamingAsr.AudioEncoderFile}.data"), $"{VibeVoiceStreamingAsr.AudioEncoderFile}.data"),
+            new(Path.Combine(Config.VibeVoiceStreamingSubDir, VibeVoiceStreamingAsr.DecoderGqaFile),           VibeVoiceStreamingAsr.DecoderGqaFile),
+            new(Path.Combine(Config.VibeVoiceStreamingSubDir, $"{VibeVoiceStreamingAsr.DecoderGqaFile}.data"), $"{VibeVoiceStreamingAsr.DecoderGqaFile}.data"),
+            new(Path.Combine(Config.VibeVoiceStreamingSubDir, "config.json"),                                  "config.json"),
+            new(Path.Combine(Config.VibeVoiceStreamingSubDir, "preprocessor_config.json"),                     "preprocessor_config.json"),
+            new(Path.Combine(Config.VibeVoiceStreamingSubDir, "tokenizer_config.json"),                        "tokenizer_config.json"),
+            new(Path.Combine(Config.VibeVoiceStreamingSubDir, VibeVoiceStreamingAsr.ExportReportFile),         VibeVoiceStreamingAsr.ExportReportFile),
+            new(Path.Combine(Config.VibeVoiceStreamingSubDir, VibeVoiceStreamingAsr.TokenizerFile),            VibeVoiceStreamingAsr.TokenizerFile),
+        ];
+
     private readonly SettingsService _settings;
     private readonly HttpClient _http = new(new HttpClientHandler { AllowAutoRedirect = true });
 
@@ -241,6 +262,12 @@ internal class ModelManagerService
 
         return _settings.Current.AsrBackend switch
         {
+            // Like VibeVoice, it segments and attributes speakers itself, so it needs no
+            // diarization assets.
+            AsrBackend.VibeVoiceStreaming =>
+            [
+                new AssetRepo(VibeVoiceStreamingRepoBase, VibeVoiceStreamingManifestUrl, VibeVoiceStreamingFiles),
+            ],
             AsrBackend.Parakeet =>
             [
                 new AssetRepo(CoreRepoBase, CoreManifestUrl, [.. CoreDiarizationFiles, .. AsrFilesFp32]),
