@@ -166,8 +166,8 @@ internal sealed class TtsQueueRunner : IJobRunner
 
     public QueueEntry EntryFor(JobRecord job) =>
         new(job.JobId, job.AudioFilePath, job.ResultsFile, Kind: JobKind.Tts,
-            Tts: new TtsJobSettings(job.TtsBackend, job.TtsLanguage, job.TtsVoice,
-                                    job.TtsSpeed, job.TtsNumStep));
+            Tts: job.TtsSettings ?? new TtsJobSettings(job.TtsBackend, job.TtsLanguage, job.TtsVoice,
+                                                       job.TtsSpeed, job.TtsNumStep));
 
     public async Task RunAsync(
         QueueEntry entry, IJobUiState uiState, Action onPercentChanged, CancellationToken ct)
