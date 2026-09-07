@@ -547,3 +547,85 @@ Neither needs the static-KV graph; it stays in the export script for cases where
 can be sized to the job (and it is the only way to bound the arena on a smaller card).
 Remaining perf idea, not yet tried: calibrated INT4 (GPTQ/AWQ) to see whether the 0.07 WER
 of round-to-nearest INT4 is recoverable, which would matter for CPU and 8 GiB cards.
+
+## Run 11 — 2026-09-07 13:30 — KV cache design: is there a bounded-VRAM cache with no speed penalty?
+
+**Question (user's).** Is there a KV cache type that gives a dependable VRAM ceiling without
+the slowdown static buffers cost?
+
+**First: the non-streaming port already answered half of this, and I rediscovered it the
+expensive way.** `VIBEVOICE_ASR_3090_ANALYSIS.md` states plainly that static KV
+"was built and benchmarked but is net-negative for the C# GPU IO binding path: the
+fixed-size 6144-position attention window costs more in attention MACs than the Concat ops
+it eliminates." Run 8 here measured the same thing independently at 16384. **Read the
+sibling investigation before repeating an experiment it already ran.**
+
+**What that port also found, which reframes the question:**
+
+- Decode time splits **44 % node dispatch / 56 % ORT framework overhead** (~1950 kernel
+  launches per step). Crucially: *"Because output shapes grow each step (KV cache), CUDA
+  graphs cannot be used; this overhead is structural to ORT autoregressive decode with
+  dynamic shapes."*
+- Of the 44 % that is real ops: `Concat` (the cache growth) is 14 %, `Cast` 9 % (BF16↔F32 at
+  every K/V store, a direct cost of the float32 KV cache), `MatMul` 20 %.
+- `ORT_ENABLE_ALL` was rejected because ORT's **fused attention kernel does the softmax in
+  BF16**, skipping the float32 upcast Qwen2's eager path uses, which moved the first
+  divergence earlier. `ORT_ENABLE_EXTENDED` is pinned for correctness.
+
+**The mechanism that fits: `com.microsoft.GroupQueryAttention` with a shared cache buffer.**
+Verified present in ORT 1.29 on this machine, with inputs `past_key`, `past_value`,
+`seqlens_k`, `total_sequence_length`, and `T_CACHE` accepting float32, float16, bfloat16 and
+**int8/uint8/float8** (with `k_scale`/`v_scale`). Built a synthetic node at the 1.5B's
+geometry (12 heads / 2 KV heads / 128 dim) and ran it:
+
+| cache dtype | CUDA | CPU | buffer shape preserved |
+|---|---|---|---|
+| fp16 act / fp16 cache | ok | ok | yes |
+| fp32 act / fp32 cache | ok | ok | yes |
+| fp16 act / fp32 cache | ok | ok | yes |
+
+Then the decisive measurement — one decode token, buffer fixed at 16384, varying how much of
+it is valid:
+
+| valid positions | % of buffer | µs / step |
+|---|---|---|
+| 128 | 0.8 % | 24.1 |
+| 1024 | 6.2 % | 76.4 |
+| 4096 | 25.0 % | 88.2 |
+| 8192 | 50.0 % | 128.1 |
+| 15000 | 91.6 % | 175.0 |
+
+**Cost tracks the valid length, not the buffer size.** That is the property our static export
+lacks (it was flat at ~O(max_tokens), hence 2× slower). So GQA gives, in one op: a buffer
+allocated once at a known ceiling, an in-place cache update (no `Concat`, removing 14 %), no
+BF16↔F32 cast at the K/V boundary if the cache is fp16 (removing much of the 9 %), and
+attention proportional to what is actually filled.
+
+**And the bigger prize, from the sibling log:** fixed input *and output* shapes are exactly
+the precondition CUDA graphs need. The 56 % framework overhead was declared structural
+*because the cache grows*; a shared buffer removes that reason. Capturing the decode step as
+a CUDA graph is the only lever measured here that attacks the largest single cost.
+
+**The pitfall this must clear, also from the sibling log.** GQA *is* a fused attention
+kernel, the same class that caused the `ORT_ENABLE_ALL` parity regression. That regression
+was specifically a BF16 softmax replacing a float32 upcast. Our best build is now INT8
+weights with float16 activations, and flash-style kernels normally accumulate softmax in
+float32, so it may well not reproduce — but it is not safe to assume. Validation is the
+harness we already have: WER against the deterministic torch reference must stay inside the
+seed envelope and the speaker count must not move.
+
+**Assessment.** Yes, there is a design that is bounded and fast, and it is GQA with a shared
+buffer, not a preallocated buffer behind ordinary attention. It is not free: it needs the
+per-layer attention subgraph replaced by a GQA node. ORT's own fusion tooling has no Qwen2
+GQA path (`MODEL_TYPES['qwen3']` maps to the GPT-2 handler; `fusion_rotary_attention` never
+emits GQA), so the realistic routes are (a) emit GQA directly from the export wrapper by
+replacing `Qwen2Attention.forward` with a custom symbolic op, or (b) `onnxruntime-genai`'s
+model builder, which produces Qwen2 with GQA plus INT4/INT8 natively — but it is
+`input_ids`-based and our decoder is fed `inputs_embeds` (audio frames interleaved with
+text), so it would need adapting. Route (a) keeps our existing package contract.
+
+Ordering, if this is pursued: GQA + fp16 shared-buffer cache first (parity check against the
+harness), then CUDA graph capture on the now-fixed shapes, then optionally int8 KV via
+`k_scale`/`v_scale`. Expected: bounded VRAM at a chosen ceiling, per-token cost at or below
+today's dynamic cache, and the first real attack on the 56 % dispatch overhead. Not started;
+this run is analysis only.
