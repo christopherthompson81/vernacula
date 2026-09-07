@@ -86,6 +86,65 @@ public class TtsJobPersistenceTests : IDisposable
     }
 
     [Fact]
+    public void ReaddingAFinishedJobPutsItBackInTheQueue()
+    {
+        // A reused row must not keep the previous run's outcome: Home would show the old result
+        // (and its Resume button) while the new run overwrites the files underneath it.
+        string dbPath = Path.Combine(_dir, "control.db");
+        var tts = new TtsJobSettings("Kokoro", "", "af_heart");
+        string sidecar = Path.Combine(_dir, "doc_tts.json");
+
+        using var db = new ControlDb(dbPath);
+        int id = db.InsertNewTtsJob("one", sidecar, "/docs/page.md", "sha", "2026-01-01 00:00:00", tts);
+        db.SetJobRunning(id, "2026-01-01 00:00:01");
+        db.UpdateJobOutputDuration(id, 9);
+        db.UpdateJobStatus(id, JobStatus.Failed, "boom", runTimeSeconds: 4);
+
+        db.InsertNewTtsJob("again", sidecar, "/docs/page.md", "sha", "2026-01-01 00:00:00", tts);
+
+        var job = Assert.Single(db.GetJobs());
+        Assert.Equal(JobStatus.Queued, job.Status);
+        Assert.Null(job.ErrorMessage);
+        Assert.Null(job.RunTimeSeconds);
+        Assert.Null(job.OutputDurationSeconds);
+        Assert.Null(job.TranscriptionRunDatestamp);
+    }
+
+    [Fact]
+    public void ReaddingAFinishedAsrJobPutsItBackInTheQueueToo()
+    {
+        string dbPath = Path.Combine(_dir, "control.db");
+        string results = Path.Combine(_dir, "a_results.sqlite3");
+        using var db = new ControlDb(dbPath);
+        int id = db.InsertNewJob("one", results, "/media/a.wav", "abc", "2026-01-01 00:00:00");
+        db.UpdateJobStatus(id, JobStatus.Complete, runTimeSeconds: 12);
+
+        db.InsertNewJob("again", results, "/media/a.wav", "abc", "2026-01-01 00:00:00");
+
+        var job = Assert.Single(db.GetJobs());
+        Assert.Equal(JobStatus.Queued, job.Status);
+        Assert.Null(job.RunTimeSeconds);
+    }
+
+    [Fact]
+    public void ResultsFileNameIsCultureIndependent()
+    {
+        // The key names a file on disk; a comma decimal separator would give the same job two
+        // different names depending on the UI language.
+        const string sha = "0123456789abcdef0123456789abcdef";
+        var tts = new TtsJobSettings("Kokoro", "", "af_heart", Speed: 1.25f);
+        var previous = System.Globalization.CultureInfo.CurrentCulture;
+        try
+        {
+            System.Globalization.CultureInfo.CurrentCulture = new System.Globalization.CultureInfo("de-DE");
+            string german = JobQueueService.TtsResultsFileName(sha, tts);
+            System.Globalization.CultureInfo.CurrentCulture = System.Globalization.CultureInfo.InvariantCulture;
+            Assert.Equal(JobQueueService.TtsResultsFileName(sha, tts), german);
+        }
+        finally { System.Globalization.CultureInfo.CurrentCulture = previous; }
+    }
+
+    [Fact]
     public void ResultsFileNameKeysOnDocumentAndRenderingChoices()
     {
         const string sha = "0123456789abcdef0123456789abcdef";

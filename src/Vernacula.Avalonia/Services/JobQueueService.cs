@@ -158,7 +158,9 @@ internal sealed class JobQueueService
     /// <summary>Sidecar file name for a TTS job — see <see cref="EnqueueNewTtsJobAsync"/>.</summary>
     internal static string TtsResultsFileName(string documentSha256, TtsJobSettings tts)
     {
-        string settingsKey = $"{tts.Backend}|{tts.Language}|{tts.Voice}|{tts.Speed:F2}|{tts.NumStep}";
+        // Invariant formatting: the key names a file that must stay the same under any UI culture.
+        string settingsKey = string.Create(System.Globalization.CultureInfo.InvariantCulture,
+            $"{tts.Backend}|{tts.Language}|{tts.Voice}|{tts.Speed:F2}|{tts.NumStep}");
         string settingsHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(settingsKey)))[..8].ToLowerInvariant();
         return $"{documentSha256[..16]}_{settingsHash}_tts.json";
     }

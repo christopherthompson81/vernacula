@@ -22,15 +22,20 @@ internal class SettingsService
     {
         try
         {
-            if (!File.Exists(SettingsPath)) return;
-            var json = File.ReadAllText(SettingsPath);
-            Current = JsonSerializer.Deserialize<AppSettings>(json) ?? new();
-            MigrateLegacySettings();
+            if (File.Exists(SettingsPath))
+            {
+                var json = File.ReadAllText(SettingsPath);
+                Current = JsonSerializer.Deserialize<AppSettings>(json) ?? new();
+                MigrateLegacySettings();
+            }
         }
         catch
         {
             Current = new();
         }
+        // On a fresh install too — otherwise the reader's old settings would only be read on
+        // the SECOND launch, over the top of whatever the user chose during the first.
+        MigrateLegacyReaderSettings();
     }
 
     public void Save()
@@ -51,17 +56,19 @@ internal class SettingsService
         }
 
         MigrateLegacyModelLayout();
-        MigrateLegacyReaderSettings();
     }
 
     /// <summary>
     /// The standalone TTS reader (Vernacula.Tts.Avalonia) kept its own settings.json under
-    /// VernaculaTtsReader/. On the first run after it was folded into this app, carry its
-    /// model locations and last-used choices over — only into fields that are still empty, so
-    /// anything the user has since set here wins. The old file is left in place.
+    /// VernaculaTtsReader/. Once, on the first run after it was folded into this app, carry its
+    /// model locations and last-used choices over into fields that are still empty. Exactly
+    /// once: an empty location afterwards means "use the default" (the row's Use Default button
+    /// writes it), and re-filling it from the old file on every launch would undo that choice.
+    /// The old file is left in place.
     /// </summary>
     private void MigrateLegacyReaderSettings()
     {
+        if (Current.TtsSettingsMigrated) return;
         try
         {
             string legacyPath = Path.Combine(
@@ -87,15 +94,13 @@ internal class SettingsService
             Take(() => c.OmniVoiceTokenizerJson,  v => c.OmniVoiceTokenizerJson = v, legacy.OmniVoiceTokenizerJson);
             Take(() => c.OmniVoiceVoiceLib,       v => c.OmniVoiceVoiceLib = v,   legacy.OmniVoiceVoiceLib);
             Take(() => c.OmniVoiceVoice,          v => c.OmniVoiceVoice = v,      legacy.OmniVoiceVoice);
-            if (c.TtsSettingsMigrated) return;   // choices below have defaults, so only take them once
             if (!string.IsNullOrWhiteSpace(legacy.TtsBackend))   { c.TtsBackend = legacy.TtsBackend; changed = true; }
             if (!string.IsNullOrWhiteSpace(legacy.OmniVoiceLang)) { c.OmniVoiceLang = legacy.OmniVoiceLang; changed = true; }
             if (legacy.KokoroSpeed > 0)                            { c.KokoroSpeed = legacy.KokoroSpeed; changed = true; }
             if (legacy.OmniVoiceNumStep is > 0 and <= 64)          { c.OmniVoiceNumStep = legacy.OmniVoiceNumStep; changed = true; }
             c.TtsShowIpaAnnotation = legacy.ShowIpaAnnotation;
             c.TtsSettingsMigrated  = true;
-            changed = true;
-            if (changed) Save();
+            Save();
         }
         catch (Exception ex)
         {

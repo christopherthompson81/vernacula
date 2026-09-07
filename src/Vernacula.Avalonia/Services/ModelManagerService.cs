@@ -922,13 +922,15 @@ internal class ModelManagerService
             new("voice-codes.json", "voices/voice-codes.json"),
         ];
 
-    public string GetTtsModelSetDir(TtsModelSet set) => set switch
+    public string GetTtsModelSetDir(TtsModelSet set) => TtsModelSetDir(set, _settings);
+
+    public static string TtsModelSetDir(TtsModelSet set, SettingsService settings) => set switch
     {
-        TtsModelSet.Chatterbox      => _settings.GetChatterboxModelsDir(),
-        TtsModelSet.Kokoro          => _settings.GetKokoroModelsDir(),
-        TtsModelSet.OmniVoice       => _settings.GetOmniVoiceModelsDir(),
-        TtsModelSet.OmniVoiceVoices => _settings.GetOmniVoiceVoiceLibDir(),
-        TtsModelSet.PhonemizerData  => _settings.GetPhonemizerDataDir(),
+        TtsModelSet.Chatterbox      => settings.GetChatterboxModelsDir(),
+        TtsModelSet.Kokoro          => settings.GetKokoroModelsDir(),
+        TtsModelSet.OmniVoice       => settings.GetOmniVoiceModelsDir(),
+        TtsModelSet.OmniVoiceVoices => settings.GetOmniVoiceVoiceLibDir(),
+        TtsModelSet.PhonemizerData  => settings.GetPhonemizerDataDir(),
         _                           => throw new ArgumentOutOfRangeException(nameof(set)),
     };
 
@@ -969,9 +971,12 @@ internal class ModelManagerService
     /// load. The listed assets are the fetchable ones; the entries after them are the
     /// alternatives a hand-placed folder may satisfy another way.
     /// </summary>
-    public IReadOnlyList<string> GetMissingTtsFiles(TtsModelSet set)
+    public IReadOnlyList<string> GetMissingTtsFiles(TtsModelSet set) => GetMissingTtsFiles(set, _settings);
+
+    /// <summary>Static so the job runner and the New TTS Job dialog check the same files Settings does.</summary>
+    public static IReadOnlyList<string> GetMissingTtsFiles(TtsModelSet set, SettingsService settings)
     {
-        string dir = GetTtsModelSetDir(set);
+        string dir = TtsModelSetDir(set, settings);
         var missing = new List<string>();
         switch (set)
         {
@@ -1000,7 +1005,7 @@ internal class ModelManagerService
                 missing.AddRange(OmniVoiceFiles
                     .Where(a => !File.Exists(Path.Combine(dir, a.LocalRelativePath)))
                     .Select(a => a.LocalRelativePath));
-                if (!File.Exists(_settings.Current.OmniVoiceTokenizerJson)
+                if (!File.Exists(settings.Current.OmniVoiceTokenizerJson)
                     && (!Directory.Exists(dir) || OmniVoiceIpaTts.LocateTokenizerJson(dir) is null))
                     missing.Add("tokenizer.json");
                 break;

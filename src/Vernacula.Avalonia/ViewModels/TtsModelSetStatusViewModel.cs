@@ -109,11 +109,17 @@ internal sealed partial class TtsModelSetStatusViewModel : ObservableObject
                       ?? (Ready ? Brushes.LimeGreen : Brushes.Goldenrod);
     }
 
+    /// <summary>Can the set be compared against a published manifest at all.</summary>
+    public bool CanCheckForUpdates => CanDownload && !string.IsNullOrEmpty(ModelManagerService.ManifestUrlFor(Set));
+
     /// <summary>
-    /// Compares the set's files against its repo manifest. Non-blocking for the caller's
-    /// purposes: skipped when nothing is on disk to compare, when the set has no manifest, or
+    /// Compares the set's files against its repo manifest (hashes every file, so it is behind
+    /// a button). Skipped when nothing is on disk to compare, when the set has no manifest, or
     /// offline (the status line then says so rather than pretending to be current).
     /// </summary>
+    [RelayCommand]
+    private Task CheckForUpdates() => CheckForUpdatesAsync();
+
     public async Task CheckForUpdatesAsync()
     {
         OutdatedFiles = [];

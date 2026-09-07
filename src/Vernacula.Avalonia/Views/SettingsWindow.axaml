@@ -1390,6 +1390,12 @@
                                                 IsVisible="{Binding CanDownload}"
                                                 IsEnabled="{Binding !IsDownloading}"
                                                 Margin="0,0,8,0" />
+                                        <Button Content="Check for updates"
+                                                Classes="secondary-button"
+                                                Command="{Binding CheckForUpdatesCommand}"
+                                                IsVisible="{Binding CanCheckForUpdates}"
+                                                IsEnabled="{Binding !IsCheckingUpdates}"
+                                                Margin="0,0,8,0" />
                                         <Button Content="Update"
                                                 Command="{Binding UpdateCommand}"
                                                 IsVisible="{Binding HasOutdatedFiles}"

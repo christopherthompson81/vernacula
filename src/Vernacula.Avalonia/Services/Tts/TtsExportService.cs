@@ -30,7 +30,6 @@ internal static class TtsExportService
     // boundaries are cut so every sentence is a whole number of whitespace-split words —
     // the unit the alignment is keyed on. Paragraph breaks are whitespace too.
     private static readonly Regex SentenceEnd = new(@"(?<=[.!?…。！？])\s+", RegexOptions.Compiled);
-    private static readonly char[] Whitespace = [' ', '\t', '\n', '\r'];
 
     /// <summary>
     /// The sentences of <paramref name="sourceText"/> (markdown or plain text) with timing from
@@ -44,7 +43,10 @@ internal static class TtsExportService
         int wordCursor = 0;
         foreach (var raw in SentenceEnd.Split(extracted))
         {
-            var tokens = raw.Split(Whitespace, StringSplitOptions.RemoveEmptyEntries);
+            // Split((char[]?)null): Unicode whitespace, the same tokenizer the aligners and the
+            // segmenter use — an ASCII-only set miscounted words around a no-break space and
+            // shifted every later row's timing.
+            var tokens = raw.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
             if (tokens.Length == 0) continue;
             int first = wordCursor, last = wordCursor + tokens.Length - 1;
             wordCursor += tokens.Length;

@@ -139,55 +139,56 @@ internal sealed class TtsJobRunner : IDisposable
 /// </summary>
 internal static class TtsPrerequisites
 {
-    /// <summary>Null when everything the backend needs is on disk; otherwise what is missing and where it was looked for.</summary>
+    /// <summary>The model sets a backend needs on disk.</summary>
+    public static ModelManagerService.TtsModelSet[] RequiredSets(TtsBackendKind kind) => kind switch
+    {
+        TtsBackendKind.Kokoro    => [ModelManagerService.TtsModelSet.Kokoro, ModelManagerService.TtsModelSet.PhonemizerData],
+        TtsBackendKind.OmniVoice => [ModelManagerService.TtsModelSet.OmniVoice, ModelManagerService.TtsModelSet.OmniVoiceVoices,
+                                     ModelManagerService.TtsModelSet.PhonemizerData],
+        _                        => [ModelManagerService.TtsModelSet.Chatterbox],
+    };
+
+    /// <summary>
+    /// Null when everything the backend needs is on disk; otherwise what is missing and where
+    /// it was looked for. The on-disk part is ModelManagerService's own check — the same one
+    /// the Settings rows show — so the dialog, the runner and Settings cannot disagree; only
+    /// the job-specific voice/language checks are layered on here.
+    /// </summary>
     public static string? Describe(TtsBackendKind kind, SettingsService s, TtsJobSettings? job = null)
     {
+        foreach (var set in RequiredSets(kind))
+        {
+            var missing = ModelManagerService.GetMissingTtsFiles(set, s);
+            if (missing.Count > 0)
+                return $"{SetName(set)} incomplete in {ModelManagerService.TtsModelSetDir(set, s)}: missing {string.Join(", ", missing)}. See Settings → Text-to-Speech.";
+        }
+        if (job is null) return null;
+
         switch (kind)
         {
             case TtsBackendKind.Kokoro:
-            {
-                string dir = s.GetKokoroModelsDir();
-                if (!File.Exists(Path.Combine(dir, "kokoro.onnx")))
-                    return $"Kokoro model not found: {Path.Combine(dir, "kokoro.onnx")}";
-                if (!Directory.Exists(Path.Combine(dir, "voices")))
-                    return $"Kokoro voices folder not found: {Path.Combine(dir, "voices")}";
-                if (!PhonemizerData.IsDataRoot(s.GetPhonemizerDataDir()))
-                    return $"vernacula-phonemizer data dir not found: {s.GetPhonemizerDataDir()}";
-                if (job is not null && string.IsNullOrWhiteSpace(job.Voice))
-                    return "No Kokoro voice selected.";
-                if (job is not null && !File.Exists(Path.Combine(dir, "voices", job.Voice + ".bin")))
-                    return $"Kokoro voice not found: {Path.Combine(dir, "voices", job.Voice + ".bin")}";
+                if (string.IsNullOrWhiteSpace(job.Voice)) return "No Kokoro voice selected.";
+                string voicePath = Path.Combine(s.GetKokoroModelsDir(), "voices", job.Voice + ".bin");
+                if (!File.Exists(voicePath)) return $"Kokoro voice not found: {voicePath}";
                 return null;
-            }
             case TtsBackendKind.OmniVoice:
-            {
-                string dir = s.GetOmniVoiceModelsDir();
-                if (!Directory.Exists(dir))
-                    return $"OmniVoice ONNX dir not found: {dir}";
-                string diff = Path.Combine(dir, IpaFineTune.DefaultDiffFile);
-                if (!File.Exists(diff))
-                    return $"IPA fine-tune diff not found: {diff}";
-                if (!File.Exists(s.Current.OmniVoiceTokenizerJson) && OmniVoiceIpaTts.LocateTokenizerJson(dir) is null)
-                    return "Qwen3 tokenizer.json not found (put it beside the graphs, set OMNIVOICE_MODEL_DIR, or pick it in Settings).";
-                if (!PhonemizerData.IsDataRoot(s.GetPhonemizerDataDir()))
-                    return $"vernacula-phonemizer data dir not found: {s.GetPhonemizerDataDir()}";
-                if (!StoredVoice.IsLibrary(s.GetOmniVoiceVoiceLibDir()))
-                    return $"Voice library not found: {s.GetOmniVoiceVoiceLibDir()}";
-                if (job is not null && string.IsNullOrWhiteSpace(job.Voice))
-                    return "No OmniVoice voice selected.";
-                if (job is not null && LanguageCatalog.ByCode(job.Language) is null)
-                    return $"Unknown language \"{job.Language}\" — pick one from the list.";
+                if (string.IsNullOrWhiteSpace(job.Voice)) return "No OmniVoice voice selected.";
+                if (LanguageCatalog.ByCode(job.Language) is null) return $"Unknown language \"{job.Language}\" — pick one from the list.";
                 return null;
-            }
             default:
-            {
-                string dir = s.GetChatterboxModelsDir();
-                if (!File.Exists(Path.Combine(dir, "language_model.onnx")))
-                    return $"Chatterbox ONNX bundle not found: {dir}";
-                if (job is not null && !File.Exists(job.Voice))
+                if (!File.Exists(job.Voice))
                     return $"Reference voice clip not found: {(string.IsNullOrWhiteSpace(job.Voice) ? "(not set)" : job.Voice)}";
                 return null;
-            }
         }
     }
+
+    private static string SetName(ModelManagerService.TtsModelSet set) => set switch
+    {
+        ModelManagerService.TtsModelSet.Chatterbox      => "Chatterbox bundle",
+        ModelManagerService.TtsModelSet.Kokoro          => "Kokoro model",
+        ModelManagerService.TtsModelSet.OmniVoice       => "OmniVoice ONNX set",
+        ModelManagerService.TtsModelSet.OmniVoiceVoices => "OmniVoice voice library",
+        ModelManagerService.TtsModelSet.PhonemizerData  => "Phonemizer data",
+        _                                               => set.ToString(),
+    };
 }

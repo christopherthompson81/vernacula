@@ -144,6 +144,9 @@ internal sealed class ControlDb : IDisposable
         if (check.ExecuteScalar() is long existingId)
         {
             using var upd = _conn.CreateCommand();
+            // Re-adding a job re-runs it: the row goes back to 'queued' with its old outcome
+            // cleared, or Home would keep showing the previous result (and its Resume button)
+            // while the new run overwrites the files underneath it.
             upd.CommandText = """
                 UPDATE jobs
                 SET job_title = $jt,
@@ -152,7 +155,11 @@ internal sealed class ControlDb : IDisposable
                     audio_file_datestamp = $ad,
                     stream_index = $si,
                     asr_language_code = $lc,
-                    asr_model_name = $am
+                    asr_model_name = $am,
+                    status = 'queued',
+                    error_message = NULL,
+                    run_time_seconds = NULL,
+                    transcription_run_datestamp = NULL
                 WHERE job_id = $id
                 """;
             upd.Parameters.AddWithValue("$jt", title);
@@ -218,7 +225,11 @@ internal sealed class ControlDb : IDisposable
                     tts_voice = $tv,
                     tts_speed = $ts,
                     tts_num_step = $tn,
-                    output_duration_seconds = NULL
+                    output_duration_seconds = NULL,
+                    status = 'queued',
+                    error_message = NULL,
+                    run_time_seconds = NULL,
+                    transcription_run_datestamp = NULL
                 WHERE job_id = $id
                 """;
             upd.Parameters.AddWithValue("$jt", title);
@@ -262,6 +273,16 @@ internal sealed class ControlDb : IDisposable
         cmd.Parameters.AddWithValue("$tv", tts.Voice);
         cmd.Parameters.AddWithValue("$ts", tts.Speed);
         cmd.Parameters.AddWithValue("$tn", tts.NumStep);
+    }
+
+    /// <summary>TTS: the rendered audio length recorded for a job, if any.</summary>
+    public double? GetJobOutputDuration(int jobId)
+    {
+        using var cmd = _conn.CreateCommand();
+        cmd.CommandText = "SELECT output_duration_seconds FROM jobs WHERE job_id = $id";
+        cmd.Parameters.AddWithValue("$id", jobId);
+        var result = cmd.ExecuteScalar();
+        return result is DBNull or null ? null : Convert.ToDouble(result);
     }
 
     /// <summary>TTS: records how long the rendered audio is once a job completes.</summary>

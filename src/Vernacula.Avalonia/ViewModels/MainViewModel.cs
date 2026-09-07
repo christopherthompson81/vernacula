@@ -459,7 +459,7 @@ internal partial class MainViewModel : ObservableObject
             job.ProgressText    = status == JobStatus.Complete ? "" : job.ProgressText;
             // A finished TTS job's Time column shows the audio length, which only the DB has.
             if (job.IsTts && status == JobStatus.Complete)
-                job.OutputDurationSeconds = _controlDb.GetJobs().FirstOrDefault(j => j.JobId == jobId)?.OutputDurationSeconds;
+                job.OutputDurationSeconds = _controlDb.GetJobOutputDuration(jobId);
         }
         else if (status == JobStatus.Queued && job.IsTts)
             job.ProgressText = Loc.Instance["tts_progress_queued"];

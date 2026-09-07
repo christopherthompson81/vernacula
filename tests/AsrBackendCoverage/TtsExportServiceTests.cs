@@ -36,6 +36,19 @@ public class TtsExportServiceTests
     }
 
     [Fact]
+    public void NonAsciiWhitespaceCountsAsAWordBoundary()
+    {
+        // The aligners split on Unicode whitespace, so the export must too: a no-break space
+        // (ordinary in pasted text) counted as one word here would shift every later row's
+        // timing by one word per occurrence.
+        string md = "Bonjour\u00A0! Deuxième phrase.";
+        var words = new[] { W("Bonjour", 0.0, 0.4), W("!", 0.4, 0.6), W("Deuxième", 1.0, 1.4), W("phrase.", 1.4, 1.9) };
+        var s = TtsExportService.SplitSentences(md, words);
+        Assert.Equal(new[] { "Bonjour !", "Deuxième phrase." }, s.Select(x => x.Text));
+        Assert.Equal((1.0, 1.9), (s[1].Start, s[1].End));
+    }
+
+    [Fact]
     public void CsvQuotesCommasAndQuotes()
     {
         string path = Path.Combine(Path.GetTempPath(), $"vernacula-export-{Guid.NewGuid():N}.csv");

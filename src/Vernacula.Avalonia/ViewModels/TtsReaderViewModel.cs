@@ -578,24 +578,32 @@ internal sealed partial class TtsReaderViewModel : ObservableObject, IDisposable
             return;
         }
 
+        if (IsRunning)
+        {
+            // Stream: what exists now, then every chunk as it lands (OnStateAction appends).
+            // ⚠ ONE LOCK HOLD for snapshot + flag + replay. AppendSamples only queues (the
+            // writer task drains it), so holding the lock is cheap — and it is what keeps a
+            // chunk landing right now from being neither in the replay nor appended live, or
+            // appended ahead of the chunks before it.
+            try
+            {
+                lock (_receivedLock)
+                {
+                    if (_receivedAudio.Count == 0) return;
+                    _playback.StartStreaming(_sampleRate, channels: 1);
+                    foreach (var c in _receivedAudio) _playback.AppendSamples(c);
+                    _streamingPlayback = true;
+                }
+            }
+            catch (Exception ex) { StatusMessage = $"Play failed: {ex.Message}"; }
+            return;
+        }
+
         List<float[]> snapshot;
         lock (_receivedLock)
         {
             if (_receivedAudio.Count == 0) return;
             snapshot = new List<float[]>(_receivedAudio);
-        }
-
-        if (IsRunning)
-        {
-            // Stream: what exists now, then every chunk as it lands (OnStateAction appends).
-            try
-            {
-                _playback.StartStreaming(_sampleRate, channels: 1);
-                lock (_receivedLock) _streamingPlayback = true;
-                foreach (var c in snapshot) _playback.AppendSamples(c);
-            }
-            catch (Exception ex) { StatusMessage = $"Play failed: {ex.Message}"; }
-            return;
         }
 
         // A cancelled or failed job with partial audio: play what was rendered from a temp WAV.

@@ -132,16 +132,11 @@ internal partial class SettingsViewModel
             _modelMgr, _svc, Changed));
     }
 
+    // Presence only. The manifest compare hashes the whole set (9 GB for Chatterbox) and is
+    // behind each row's Check for Updates button rather than run on every Settings open.
     internal async Task CheckTtsModelsAsync()
     {
         foreach (var set in TtsModelSets)
             await set.CheckAsync();
-        // Manifest compares hash gigabytes; they trail the presence checks and never hold
-        // the window (the ASR update check is fire-and-forget for the same reason).
-        _ = Task.Run(async () =>
-        {
-            foreach (var set in TtsModelSets)
-                await Avalonia.Threading.Dispatcher.UIThread.InvokeAsync(set.CheckForUpdatesAsync);
-        });
     }
 }
