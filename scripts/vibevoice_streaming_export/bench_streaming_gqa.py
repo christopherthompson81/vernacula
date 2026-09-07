@@ -38,6 +38,7 @@ def main():
     dec = ort.InferenceSession(str(md / "decoder_gqa.onnx"), so, providers=prov)
     load_s = time.time() - t0
 
+    enc_dtype = np.float16 if "float16" in enc.get_inputs()[0].type else np.float32
     from vibevoice.processor.audio_utils import load_audio_use_ffmpeg
     from transformers import AutoTokenizer
     tok = AutoTokenizer.from_pretrained(str(md))
@@ -86,7 +87,8 @@ def main():
     chunks, times, ntok, enc_s = [], [], 0, 0.0
     for w in windows(audio, st["window_samples"], st["hop_samples"]):
         te = time.time()
-        emb = enc.run(None, {"input_values": w[None]})[0].astype(np.float16)
+        # The encoder may be exported fp32 or fp16; feed it what it declares.
+        emb = enc.run(None, {"input_values": w[None].astype(enc_dtype)})[0].astype(np.float16)
         enc_s += time.time() - te
         nxt = step([tk["speech_start_id"]], emb, [tk["speech_end_id"]])
         ids = []

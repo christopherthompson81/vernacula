@@ -783,3 +783,55 @@ so it is already on the right side of that.
 This says upstream chose a bounded session, not that windowing fails — their product is
 real-time sessions rather than long-file transcription, so they had no reason to need it.
 The sliding-window trial continues on branch `exp/vibevoice-sliding-window`.
+
+## Run 17 — 2026-09-07 15:10 — closing out the performance spike
+
+Three remaining ideas were tested before moving to the C# port. Two are dead ends worth
+recording; one is a clean win.
+
+**1. CUDA graph capture — closed, and permanently.** The sibling port attributed 56 % of
+decode time to ORT dispatch overhead and called it unreachable because cache shapes grew.
+GQA fixed the shapes, so this was the obvious next lever. ORT refuses:
+`This session cannot use the graph capture feature ... as all compute graph nodes have not
+been partitioned`. Profiling showed why the first time: **1197 of 4392 node dispatches ran on
+the CPU EP** (510 `Gather`, 339 `Unsqueeze`, 171 `Concat`, 168 `Div` — all shape arithmetic
+from the traced dynamic dimensions). A decode-only export with every axis fixed
+(`--decode-only`, `decoder_gqa_step.onnx`) eliminates them completely: **0 CPU nodes, 2673
+CUDA nodes**, 39 % fewer dispatches. Capture is *still* refused, because
+`total_sequence_length` is a required CPU input of GroupQueryAttention itself, so a
+CPU/GPU boundary always remains. CUDA graphs are not available for this model as exported.
+
+**2. The fixed-shape decode graph is not worth shipping.** Having built it, it is only 3 %
+faster per token (5.76 vs 5.95 ms) despite deleting 1197 CPU dispatches — those nodes are
+tiny and overlap with GPU work. It would double the package size for 3 %. Rejected.
+
+**But measuring it produced the most useful number of the day.** Raw per-token latency on
+the graph is **5.95 ms = 168 tok/s**, while the end-to-end Python bench reports 94.6 tok/s on
+the same model. **44 % of measured time is Python harness overhead** — a fresh `io_binding`
+per step, numpy↔OrtValue conversions, the logits copy. That overhead does not exist in the
+C# backend, which reuses one binding and reads logits from a bound buffer. So the C# port is
+itself the largest remaining performance item, worth up to ~1.8× on the decode loop, and the
+Python RTF figures in this document are a floor rather than a ceiling.
+
+**3. float16 audio encoder — ship it.** The encoder was exported with float32 conv towers,
+inherited from the sibling port's workaround for ORT having no bf16 Conv. fp16 Conv is well
+supported in ORT 1.29:
+
+| encoder | size | per 3.47 s window | 10-min encoder total | 10-min WER |
+|---|---|---|---|---|
+| float32 | 2.77 GB | 30.49 ms | 6.0 s | 0.024 |
+| **float16** | **1.39 GB** | **19.73 ms** | **4.0 s** | **0.021** |
+
+Half the size, 35 % faster, and parity is unchanged (0.021 vs 0.024 — if anything nearer the
+reference). Numerically it sits 9.4e-4 from the float32 encoder, which is below the fp16
+resolution the decoder consumes frames at anyway.
+
+**Final 1.5B configuration**: fp16 audio encoder + GQA INT8 decoder with a shared fp16 cache.
+10-minute file at **RTF 0.060 in 7.35 GiB**, against RTF 0.125 in 10.91 GiB for the first
+working ONNX build this session — **2.1× faster on 3.6 GiB less**, with memory now flat in
+recording length. Package drops from 5.9 GB to 3.3 GB.
+
+**Perf spike closed.** Remaining ideas, none blocking: calibrated INT4 (GPTQ/AWQ) for CPU and
+small cards, batching the audio encoder across windows in file mode (the windows are all known
+up front, so they need not be encoded one at a time), and the re-priming work parked on
+`exp/vibevoice-sliding-window`.

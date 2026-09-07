@@ -156,6 +156,8 @@ def main():
     ap.add_argument("--opset", type=int, default=18)
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--f32-lm-head", action="store_true")
+    ap.add_argument("--decode-only", action="store_true",
+                    help="export a fixed-shape single-token graph (decoder_gqa_step.onnx)")
     ap.add_argument("--overwrite", action="store_true")
     args = ap.parse_args()
 
@@ -183,27 +185,40 @@ def main():
     Qwen2Attention.forward = gqa_attention_forward
     try:
         dec = DecoderGqa(model, args.f32_lm_head).eval()
-        pfx = torch.tensor([extras["prompt_token_ids"][:5]], dtype=torch.long, device=args.device)
-        aud = torch.zeros((4, hidden), dtype=torch.float16, device=args.device)
-        sfx = torch.tensor([[extras["speech_end_id"]]], dtype=torch.long, device=args.device)
-        seq = 10
+        if args.decode_only:
+            # One token, no audio, no suffix, and NO dynamic axes: every shape in the graph
+            # becomes a constant, so the Shape/Gather/Unsqueeze/Concat arithmetic that ORT
+            # otherwise assigns to the CPU folds away entirely. Fixed shapes are also the
+            # precondition for CUDA graph capture.
+            pfx = torch.tensor([[extras["speech_end_id"]]], dtype=torch.long, device=args.device)
+            aud = torch.zeros((0, hidden), dtype=torch.float16, device=args.device)
+            sfx = torch.zeros((1, 0), dtype=torch.long, device=args.device)
+            seq = 1
+        else:
+            pfx = torch.tensor([extras["prompt_token_ids"][:5]], dtype=torch.long, device=args.device)
+            aud = torch.zeros((4, hidden), dtype=torch.float16, device=args.device)
+            sfx = torch.tensor([[extras["speech_end_id"]]], dtype=torch.long, device=args.device)
+            seq = 10
         seqlens = torch.tensor([seq - 1], dtype=torch.int32, device=args.device)
         total = torch.tensor([seq], dtype=torch.int32, device=args.device)
         kv = [torch.zeros((1, KH, args.max_tokens, HD), dtype=torch.float16, device=args.device)
               for _ in range(2 * L)]
         names_in = [n for i in range(L) for n in (f"past_key_{i}", f"past_value_{i}")]
         names_out = [n for i in range(L) for n in (f"present_key_{i}", f"present_value_{i}")]
-        print(f"exporting decoder_gqa.onnx (max_tokens {args.max_tokens}, fp16 cache) ...")
+        fname = "decoder_gqa_step.onnx" if args.decode_only else "decoder_gqa.onnx"
+        print(f"exporting {fname} (max_tokens {args.max_tokens}, fp16 cache, "
+              f"{'fixed seq=1' if args.decode_only else 'dynamic'}) ...")
         export_onnx_graph(
             model=dec, args=(pfx, aud, sfx, seqlens, total, *kv),
-            output_path=out / "decoder_gqa.onnx",
+            output_path=out / fname,
             input_names=["prefix_input_ids", "audio_embeddings", "suffix_input_ids",
                          "seqlens_k", "total_sequence_length", *names_in],
             output_names=["logits", *names_out], opset=args.opset,
-            dynamic_axes={"prefix_input_ids": {1: "prefix_len"},
-                          "audio_embeddings": {0: "num_audio_tokens"},
-                          "suffix_input_ids": {1: "suffix_len"},
-                          "logits": {1: "seq_len"}},
+            dynamic_axes=None if args.decode_only else {
+                "prefix_input_ids": {1: "prefix_len"},
+                "audio_embeddings": {0: "num_audio_tokens"},
+                "suffix_input_ids": {1: "suffix_len"},
+                "logits": {1: "seq_len"}},
             exporter="legacy")
     finally:
         Qwen2Attention.forward = original
