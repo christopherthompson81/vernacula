@@ -1,3 +1,4 @@
+using Vernacula.Tts.Base.Alignment;
 using NAudio.Wave;
 using Vernacula.App.Models;
 using Vernacula.Tts.Base.Markdown;
@@ -68,7 +69,7 @@ internal static class SegmentedSynthesis
             string? audioFile = null;
             if (request.SegmentsDir is { } dir)
             {
-                audioFile = $"seg_{idx:D4}.wav";
+                audioFile = AlignmentSidecar.SegmentFileName(idx);
                 WriteWav(Path.Combine(dir, audioFile), audio, sampleRate);
             }
 

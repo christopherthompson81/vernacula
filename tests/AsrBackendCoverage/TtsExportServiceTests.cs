@@ -1,3 +1,4 @@
+using Vernacula.Tts.Base.Alignment;
 using System;
 using System.IO;
 using System.Linq;

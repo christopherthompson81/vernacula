@@ -1,3 +1,4 @@
+using Vernacula.Tts.Base.Alignment;
 using CommunityToolkit.Mvvm.ComponentModel;
 using Avalonia;
 using Avalonia.Media;
@@ -260,9 +261,7 @@ public class JobRecord : ObservableObject
 
     /// <summary>TTS: the folder holding one WAV per paragraph, beside the sidecar.</summary>
     public string SegmentsDir =>
-        Kind == JobKind.Tts && ResultsFile.Length > 0
-            ? Path.Combine(Path.GetDirectoryName(ResultsFile) ?? "", Path.GetFileNameWithoutExtension(ResultsFile) + "_segments")
-            : "";
+        Kind == JobKind.Tts && ResultsFile.Length > 0 ? AlignmentSidecar.SegmentsDirFor(ResultsFile) : "";
 
     public bool IsTts => Kind == JobKind.Tts;
     public bool IsAsr => Kind == JobKind.Asr;

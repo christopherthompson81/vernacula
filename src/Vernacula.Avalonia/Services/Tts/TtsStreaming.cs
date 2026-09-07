@@ -1,3 +1,4 @@
+using Vernacula.Tts.Base.Alignment;
 using System;
 using System.Collections.Generic;
 using System.Threading;
