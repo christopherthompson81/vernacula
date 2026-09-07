@@ -7,7 +7,7 @@ using Vernacula.Tts.Base.Markdown;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 
-namespace Vernacula.Tts.App.ViewModels;
+namespace Vernacula.App.ViewModels;
 
 /// <summary>
 /// Per-word presentation wrapper for the structured (markdown-styled) karaoke view.

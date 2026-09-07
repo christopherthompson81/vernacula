@@ -6,7 +6,7 @@ using CommunityToolkit.Mvvm.ComponentModel;
 using Vernacula.Tts.Base;
 using Vernacula.Tts.Base.Markdown;
 
-namespace Vernacula.Tts.App.ViewModels;
+namespace Vernacula.App.ViewModels;
 
 /// <summary>
 /// One markdown block (heading / paragraph / list item / quote) in the structured karaoke

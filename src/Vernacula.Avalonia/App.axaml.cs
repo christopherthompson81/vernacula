@@ -3,6 +3,7 @@ using Avalonia;
 using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Markup.Xaml;
 using Vernacula.App.Services;
+using Vernacula.App.Services.Tts;
 using Vernacula.App.ViewModels;
 using Vernacula.App.Views;
 using Vernacula.Base;
@@ -20,6 +21,7 @@ public partial class App : Application
     internal ModelManagerService  ModelManager  { get; private set; } = null!;
     internal LangIdService        LangId        { get; private set; } = null!;
     internal TranscriptionService Transcription { get; private set; } = null!;
+    internal TtsJobRunner         TtsRunner     { get; private set; } = null!;
     internal JobQueueService      JobQueue      { get; private set; } = null!;
     internal ExportService        Export        { get; } = new();
 
@@ -109,7 +111,8 @@ public partial class App : Application
         ModelManager  = new ModelManagerService(Settings);
         LangId        = new LangIdService(Settings);
         Transcription = new TranscriptionService(Settings, LangId);
-        JobQueue      = new JobQueueService(Transcription, ControlDb, Settings);
+        TtsRunner     = new TtsJobRunner(Settings);
+        JobQueue      = new JobQueueService(Transcription, TtsRunner, ControlDb, Settings);
 
         // Warm up Sortformer model on a background thread so the first
         // transcription starts without the usual ONNX Runtime initialisation
@@ -139,7 +142,7 @@ public partial class App : Application
                 Console.WriteLine($"[App] Desktop Exit event! ExitCode={e.ApplicationExitCode}");
                 DisposeServices();
             };
-            var mainVm = new MainViewModel(Settings, ControlDb, ModelManager, Transcription, JobQueue, Export);
+            var mainVm = new MainViewModel(Settings, ControlDb, ModelManager, Transcription, JobQueue, Export, TtsRunner);
             desktop.MainWindow = new MainWindow { DataContext = mainVm };
             Console.WriteLine("[App] MainWindow set");
 
@@ -178,6 +181,7 @@ public partial class App : Application
         }
 
         _servicesDisposed = true;
+        TtsRunner?.Dispose();
         ControlDb?.Dispose();
     }
 }

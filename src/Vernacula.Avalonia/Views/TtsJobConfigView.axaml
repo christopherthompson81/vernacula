@@ -1,0 +1,194 @@
+<UserControl x:Class="Vernacula.App.Views.TtsJobConfigView"
+             xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:local="using:Vernacula.App"
+             xmlns:conv="using:Vernacula.App.Converters"
+             xmlns:vm="using:Vernacula.App.ViewModels"
+             x:DataType="vm:NewTtsJobViewModel">
+
+    <UserControl.Resources>
+        <conv:BoolToVisibilityConverter x:Key="BoolToVis" />
+    </UserControl.Resources>
+
+    <StackPanel HorizontalAlignment="Center"
+                VerticalAlignment="Center"
+                Width="520">
+
+        <Border Background="{DynamicResource SurfaceBrush}"
+                CornerRadius="8"
+                Padding="24"
+                Margin="0,0,0,12">
+            <StackPanel>
+                <TextBlock x:Name="ConfigHeadingText"
+                           Text="{local:Loc tts_config_heading}"
+                           Foreground="{DynamicResource TextBrush}"
+                           FontSize="20" FontWeight="SemiBold"
+                           Margin="0,0,0,20" />
+
+                <!-- Document -->
+                <TextBlock x:Name="DocumentLabelText"
+                           Text="{local:Loc label_document}"
+                           Foreground="{DynamicResource TextBrush}"
+                           Margin="0,0,0,4" />
+                <Grid Margin="0,0,0,16" ColumnDefinitions="*,Auto">
+                    <TextBox Grid.Column="0"
+                             Text="{Binding DocumentPath}"
+                             Foreground="{DynamicResource TextBrush}"
+                             Background="{DynamicResource SurfaceBrush}"
+                             BorderBrush="{DynamicResource OverlayBrush}"
+                             IsReadOnly="True"
+                             Margin="0,0,8,0" />
+                    <Button x:Name="BrowseButton"
+                            Grid.Column="1"
+                            Content="{local:Loc btn_browse}"
+                            Classes="secondary-button"
+                            Command="{Binding SelectDocumentCommand}" />
+                </Grid>
+
+                <!-- Job name -->
+                <TextBlock x:Name="JobNameLabelText"
+                           Text="{local:Loc label_job_name}"
+                           Foreground="{DynamicResource TextBrush}"
+                           Margin="0,0,0,4" />
+                <TextBox Text="{Binding JobName, UpdateSourceTrigger=PropertyChanged}"
+                         Foreground="{DynamicResource TextBrush}"
+                         Background="{DynamicResource SurfaceBrush}"
+                         BorderBrush="{DynamicResource OverlayBrush}"
+                         Margin="0,0,0,16" />
+
+                <!-- Engine -->
+                <TextBlock x:Name="EngineLabelText"
+                           Text="{local:Loc label_engine}"
+                           Foreground="{DynamicResource TextBrush}"
+                           Margin="0,0,0,4" />
+                <ComboBox ItemsSource="{Binding Backends}"
+                          SelectedItem="{Binding SelectedBackend}"
+                          HorizontalAlignment="Stretch"
+                          Margin="0,0,0,16" />
+
+                <!-- ── Chatterbox: reference clip ── -->
+                <StackPanel IsVisible="{Binding IsChatterbox}">
+                    <TextBlock x:Name="ReferenceClipLabelText"
+                               Text="{local:Loc label_reference_clip}"
+                               Foreground="{DynamicResource TextBrush}"
+                               Margin="0,0,0,4" />
+                    <Grid Margin="0,0,0,16" ColumnDefinitions="*,Auto">
+                        <TextBox Grid.Column="0"
+                                 Text="{Binding ChatterboxVoicePath}"
+                                 Foreground="{DynamicResource TextBrush}"
+                                 Background="{DynamicResource SurfaceBrush}"
+                                 BorderBrush="{DynamicResource OverlayBrush}"
+                                 IsReadOnly="True"
+                                 Watermark="No clip picked"
+                                 Margin="0,0,8,0" />
+                        <Button Grid.Column="1"
+                                Content="{local:Loc btn_browse}"
+                                Classes="secondary-button"
+                                Command="{Binding PickChatterboxVoiceCommand}" />
+                    </Grid>
+                </StackPanel>
+
+                <!-- ── Kokoro: voice + speed ── -->
+                <StackPanel IsVisible="{Binding IsKokoro}">
+                    <TextBlock Text="{local:Loc label_voice}"
+                               Foreground="{DynamicResource TextBrush}"
+                               Margin="0,0,0,4" />
+                    <ComboBox ItemsSource="{Binding KokoroVoices}"
+                              SelectedItem="{Binding KokoroVoice}"
+                              HorizontalAlignment="Stretch"
+                              Margin="0,0,0,12" />
+                    <TextBlock Text="{Binding KokoroSpeed, StringFormat='Speed: {0:F2}×'}"
+                               Foreground="{DynamicResource TextBrush}" />
+                    <Slider Minimum="0.5" Maximum="2.0" TickFrequency="0.1"
+                            Value="{Binding KokoroSpeed}"
+                            Margin="0,0,0,12" />
+                </StackPanel>
+
+                <!-- ── OmniVoice: language + voice (type-ahead) + steps ── -->
+                <!-- FilterMode=None because the VM RANKS the matches (exact code first)
+                     rather than merely filtering them; focus opens the full list (code-behind). -->
+                <StackPanel IsVisible="{Binding IsOmniVoice}">
+                    <TextBlock Text="{local:Loc label_language}"
+                               Foreground="{DynamicResource TextBrush}"
+                               Margin="0,0,0,4" />
+                    <AutoCompleteBox Text="{Binding OmniVoiceLangQuery}"
+                                     SelectedItem="{Binding OmniVoiceLanguage}"
+                                     ItemsSource="{Binding LanguageMatches}"
+                                     FilterMode="None" MinimumPrefixLength="0" MinimumPopulateDelay="0"
+                                     MaxDropDownHeight="320"
+                                     Watermark="Search languages by name, code or endonym…"
+                                     GotFocus="OnPickerGotFocus"
+                                     Margin="0,0,0,12">
+                        <AutoCompleteBox.ItemTemplate>
+                            <DataTemplate>
+                                <StackPanel Orientation="Horizontal" Spacing="8">
+                                    <TextBlock Text="{Binding Name}" />
+                                    <TextBlock Text="{Binding Native}" Opacity="0.7" />
+                                    <TextBlock Text="{Binding Code}" Opacity="0.5" FontFamily="monospace" />
+                                    <TextBlock Text="trained" IsVisible="{Binding Trained}"
+                                               FontSize="11" Foreground="{DynamicResource GreenBrush}" />
+                                </StackPanel>
+                            </DataTemplate>
+                        </AutoCompleteBox.ItemTemplate>
+                    </AutoCompleteBox>
+
+                    <TextBlock Text="{local:Loc label_voice}"
+                               Foreground="{DynamicResource TextBrush}"
+                               Margin="0,0,0,4" />
+                    <AutoCompleteBox Text="{Binding OmniVoiceVoiceQuery}"
+                                     SelectedItem="{Binding OmniVoiceVoice}"
+                                     ItemsSource="{Binding OmniVoiceVoices}"
+                                     FilterMode="None" MinimumPrefixLength="0" MinimumPopulateDelay="0"
+                                     MaxDropDownHeight="320"
+                                     Watermark="Search the language's voices by id or label…"
+                                     GotFocus="OnPickerGotFocus"
+                                     Margin="0,0,0,12">
+                        <AutoCompleteBox.ItemTemplate>
+                            <DataTemplate>
+                                <StackPanel Orientation="Horizontal" Spacing="8">
+                                    <TextBlock Text="{Binding Label}" />
+                                    <TextBlock Text="{Binding Id}" Opacity="0.5" FontFamily="monospace" />
+                                    <TextBlock Text="default" IsVisible="{Binding IsDefault}"
+                                               FontSize="11" Foreground="{DynamicResource GreenBrush}" />
+                                </StackPanel>
+                            </DataTemplate>
+                        </AutoCompleteBox.ItemTemplate>
+                    </AutoCompleteBox>
+
+                    <TextBlock Text="{Binding OmniVoiceNumStep, StringFormat='Diffusion steps: {0}'}"
+                               Foreground="{DynamicResource TextBrush}" />
+                    <Slider Minimum="8" Maximum="48" TickFrequency="4" IsSnapToTickEnabled="True"
+                            Value="{Binding OmniVoiceNumStep}"
+                            Margin="0,0,0,12" />
+                </StackPanel>
+
+                <!-- What is missing, with the path to fix -->
+                <Border Background="{DynamicResource BgBrush}"
+                        BorderBrush="{DynamicResource YellowBrush}"
+                        BorderThickness="1"
+                        CornerRadius="6"
+                        Padding="10,6"
+                        IsVisible="{Binding HasPrerequisiteMessage}">
+                    <SelectableTextBlock Text="{Binding PrerequisiteMessage}"
+                                         Foreground="{DynamicResource TextBrush}"
+                                         FontSize="11"
+                                         TextWrapping="Wrap" />
+                </Border>
+            </StackPanel>
+        </Border>
+
+        <!-- Buttons -->
+        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right"
+                    Margin="0,0,0,12">
+            <Button x:Name="BackButton"
+                    Content="{local:Loc btn_back}"
+                    Classes="secondary-button"
+                    Command="{Binding BackCommand}"
+                    Margin="0,0,8,0" />
+            <Button x:Name="StartButton"
+                    Content="{local:Loc btn_start_tts}"
+                    Command="{Binding StartCommand}" />
+        </StackPanel>
+
+    </StackPanel>
+</UserControl>

@@ -95,6 +95,11 @@
                     Margin="0,0,10,0"
                     Command="{Binding NewTranscriptionCommand}"
                     IsEnabled="{Binding ModelsReady}" />
+            <Button x:Name="NewTtsJobButton"
+                    Content="{local:Loc btn_new_tts_job}"
+                    Classes="primary-button"
+                    Margin="0,0,10,0"
+                    Command="{Binding NewTtsJobCommand}" />
             <Button x:Name="BulkAddButton"
                     Content="{local:Loc btn_bulk_add}"
                     Classes="secondary-button"
@@ -137,6 +142,31 @@
                         GridLinesVisibility="Horizontal"
                         HeadersVisibility="Column">
                         <DataGrid.Columns>
+                            <!-- Kind: ASR (speech → text) or TTS (text → speech). Same badge
+                                 shape as Status, neutral colour, so the eye can sort the list
+                                 by job type without reading the file names. -->
+                            <DataGridTemplateColumn Width="58">
+                                <DataGridTemplateColumn.Header>
+                                    <TextBlock Text="{Binding Source={x:Static local:Loc.Instance}, Path=[history_col_kind]}" />
+                                </DataGridTemplateColumn.Header>
+                                <DataGridTemplateColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <Border Background="{DynamicResource OverlayBrush}"
+                                                HorizontalAlignment="Center"
+                                                VerticalAlignment="Center"
+                                                Padding="6,1"
+                                                MinHeight="0"
+                                                CornerRadius="999">
+                                            <TextBlock Text="{Binding KindLabel}"
+                                                       Foreground="{DynamicResource TextBrush}"
+                                                       FontWeight="SemiBold"
+                                                       FontSize="11"
+                                                       LineHeight="16"
+                                                       VerticalAlignment="Center" />
+                                        </Border>
+                                    </DataTemplate>
+                                </DataGridTemplateColumn.CellTemplate>
+                            </DataGridTemplateColumn>
                             <DataGridTemplateColumn Width="*" IsReadOnly="True">
                                 <DataGridTemplateColumn.Header>
                                     <TextBlock Text="{Binding Source={x:Static local:Loc.Instance}, Path=[history_col_title]}" />
@@ -206,7 +236,18 @@
                                 </DataGridTemplateColumn.Header>
                                 <DataGridTemplateColumn.CellTemplate>
                                     <DataTemplate>
-                                        <StackPanel IsVisible="{Binding ShowProgress, Converter={StaticResource BoolToVis}}" Margin="4,3">
+                                      <Panel>
+                                        <!-- TTS: a phase line ("synthesizing (3/12)") — chunks are the honest unit. -->
+                                        <TextBlock Text="{Binding ProgressText}"
+                                                   IsVisible="{Binding ShowTtsProgress, Converter={StaticResource BoolToVis}}"
+                                                   FontSize="10"
+                                                   TextWrapping="Wrap"
+                                                   VerticalAlignment="Center"
+                                                   HorizontalAlignment="Center"
+                                                   TextAlignment="Center"
+                                                   Foreground="{DynamicResource SubtextBrush}"
+                                                   Margin="4,3" />
+                                        <StackPanel IsVisible="{Binding ShowAsrProgress, Converter={StaticResource BoolToVis}}" Margin="4,3">
                                             <TextBlock Text="{Binding PhaseLabel}"
                                                        FontSize="10"
                                                        FontWeight="SemiBold"
@@ -233,6 +274,7 @@
                                                        HorizontalAlignment="Center"
                                                        Foreground="{DynamicResource SubtextBrush}" />
                                         </StackPanel>
+                                      </Panel>
                                     </DataTemplate>
                                 </DataGridTemplateColumn.CellTemplate>
                             </DataGridTemplateColumn>

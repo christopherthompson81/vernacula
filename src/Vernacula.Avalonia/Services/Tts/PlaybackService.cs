@@ -6,7 +6,7 @@ using System.Threading.Tasks;
 using Avalonia.Threading;
 using NAudio.Wave;
 
-namespace Vernacula.Tts.App.Services;
+namespace Vernacula.App.Services.Tts;
 
 /// <summary>
 /// Cross-platform streaming audio playback for the reader UI. Mirrors
@@ -214,16 +214,25 @@ public sealed class PlaybackService : IDisposable
                 {
                     var bp = _bufferedProvider;
                     if (bp is null) break;
-                    // Throttle when the buffer is over half-full so we
-                    // don't hit the 60 s cap. AddSamples would throw with
-                    // DiscardOnBufferOverflow=false; better to wait.
-                    while (bp.BufferedDuration.TotalSeconds > 30)
+                    // Feed the buffer in bounded slices, throttling before each so the
+                    // buffer never has to take more than it has room for. A chunk is now a
+                    // whole paragraph — tens of seconds is ordinary — and one AddSamples of
+                    // that onto a half-full 60 s buffer threw "Buffer full" (which ended the
+                    // writer loop and silently dropped every later chunk).
+                    int sliceBytes = _sampleRate * 4 * 5;   // 5 s
+                    bool tornDown = false;
+                    for (int off = 0; off < bytes.Length && !tornDown; off += sliceBytes)
                     {
-                        await Task.Delay(100).ConfigureAwait(false);
-                        if (_bufferedProvider is null) return;
+                        while (bp.BufferedDuration.TotalSeconds > 30)
+                        {
+                            await Task.Delay(100).ConfigureAwait(false);
+                            if (_bufferedProvider is null) return;
+                        }
+                        int n = Math.Min(sliceBytes, bytes.Length - off);
+                        try { bp.AddSamples(bytes, off, n); }
+                        catch (InvalidOperationException) { tornDown = true; }
                     }
-                    try { bp.AddSamples(bytes, 0, bytes.Length); }
-                    catch (InvalidOperationException) { break; /* torn down */ }
+                    if (tornDown) break;
                 }
                 else
                 {
@@ -404,9 +413,17 @@ public sealed class PlaybackService : IDisposable
             {
                 CurrentTime = TimeSpan.FromSeconds(seconds),
             };
-            _waveOut = new WaveOutEvent();
+            var player = new WaveOutEvent();
+            _waveOut = player;
             _waveOut.Init(_fileReader);
-            _waveOut.PlaybackStopped += (_, _) => Dispatcher.UIThread.InvokeAsync(Stop);
+            // ⚠ ONLY STOP IF THIS PLAYER IS STILL THE CURRENT ONE. A seek during playback
+            // Stop()s the previous WaveOutEvent, whose PlaybackStopped is delivered
+            // asynchronously — after the new player has started — and an unconditional
+            // Stop() there tore the new playback down within milliseconds.
+            _waveOut.PlaybackStopped += (sender, _) => Dispatcher.UIThread.InvokeAsync(() =>
+            {
+                if (ReferenceEquals(sender, _waveOut)) Stop();
+            });
             _waveOut.Play();
         }
         else
@@ -538,7 +555,12 @@ public sealed class PlaybackService : IDisposable
     private void StartFfplay(ProcessStartInfo psi)
     {
         var p = new Process { StartInfo = psi, EnableRaisingEvents = true };
-        p.Exited += (_, _) => Dispatcher.UIThread.InvokeAsync(Stop);
+        // Same guard as the WaveOut handler: a seek replaces the process, and the old one's
+        // Exited must not stop the new one.
+        p.Exited += (sender, _) => Dispatcher.UIThread.InvokeAsync(() =>
+        {
+            if (ReferenceEquals(sender, _ffplayProcess)) Stop();
+        });
         if (!p.Start())
         {
             p.Dispose();

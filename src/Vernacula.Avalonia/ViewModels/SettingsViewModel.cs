@@ -390,6 +390,8 @@ internal partial class SettingsViewModel : ObservableObject
         VoxLinguaStatusText = "Checking VoxLingua107 weights…";
         VoxLinguaModelsLocationText = _svc.GetVoxLinguaModelsDir();
 
+        InitTtsSettings();
+
         Loc.Instance.PropertyChanged += (_, e) =>
         {
             if (e.PropertyName != "Item[]") return;
@@ -1219,8 +1221,9 @@ internal partial class SettingsViewModel : ObservableObject
         var modelTask    = CheckModelsAsync();
         var diarizenTask = CheckDiariZenModelsAsync();
         var voxLinguaTask = CheckVoxLinguaModelsAsync();
+        var ttsTask      = CheckTtsModelsAsync();
         var hardwareTask = RefreshHardwareAsync(force: false);
-        await Task.WhenAll(modelTask, diarizenTask, voxLinguaTask, hardwareTask);
+        await Task.WhenAll(modelTask, diarizenTask, voxLinguaTask, ttsTask, hardwareTask);
 
         if (ModelsReady)
             _ = CheckForUpdatesAsync();   // non-blocking; skipped if offline

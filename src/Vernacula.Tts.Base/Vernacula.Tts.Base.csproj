@@ -7,9 +7,9 @@
     <RootNamespace>Vernacula.Tts.Base</RootNamespace>
     <AssemblyName>Vernacula.Tts.Base</AssemblyName>
     <!--
-      EP is passed by consuming projects (Vernacula.Tts.Backends.CLI, Vernacula.Tts.Avalonia,
-      Vernacula.Tts.CLI and the smoke tests). Mirrors the pattern in Vernacula.Base —
-      PrivateAssets="all" keeps the package out of consumers' output; each
+      EP arrives as a global property (defaulted in Directory.Build.props, or -p:EP= on the
+      command line) and reaches every referenced project on its own. Mirrors the pattern in
+      Vernacula.Base — PrivateAssets="all" keeps the package out of consumers' output; each
       consumer brings its own OnnxRuntime variant.
     -->
     <EP Condition="'$(EP)' == ''">Cuda</EP>
@@ -56,10 +56,14 @@
   </ItemGroup>
 
   <ItemGroup>
-    <!-- Shared ORT plumbing: OrtSessionBuilder, ExecutionProvider enum, etc. -->
+    <!-- Shared ORT plumbing: OrtSessionBuilder, ExecutionProvider enum, etc.
+         ⚠ NO SetConfiguration HERE. Vernacula.Avalonia references Vernacula.Base directly AND
+         through this project; an EP override on this reference gave Base a different global-
+         property set on the second path, so MSBuild built it twice into the same directory and
+         the two writes raced on deps.json ("being used by another process") — the #121 failure
+         again. EP is already a global property and flows here unchanged. -->
     <ProjectReference Include="..\Vernacula.Base\Vernacula.Base.csproj">
       <Private>true</Private>
-      <SetConfiguration>EP=$(EP)</SetConfiguration>
     </ProjectReference>
     <!-- The phonemizer: canonical IPA for the IPA-conditioned OmniVoice path (Vernacula.Tts.CLI) and,
          rendered through KokoroFormat, Kokoro's G2P. Vendored as a git submodule under external/;

@@ -31,16 +31,18 @@ public partial class HomeView : UserControl
         BannerOpenSettingsButton.Content = Loc.Instance["btn_open_settings"];
         DismissBannerButton.Content = Loc.Instance["btn_dismiss"];
         NewTranscriptionButton.Content = Loc.Instance["btn_new_transcription"];
+        NewTtsJobButton.Content = Loc.Instance["btn_new_tts_job"];
         BulkAddButton.Content = Loc.Instance["btn_bulk_add"];
         HistoryHeadingText.Text = Loc.Instance["history_heading"];
         HistoryEmptyText.Text = Loc.Instance["history_empty"];
-        JobsGrid.Columns[0].Header = Loc.Instance["history_col_title"];
-        JobsGrid.Columns[1].Header = Loc.Instance["history_col_audio"];
-        JobsGrid.Columns[2].Header = Loc.Instance["history_col_date"];
-        JobsGrid.Columns[3].Header = Loc.Instance["history_col_time"];
-        JobsGrid.Columns[4].Header = Loc.Instance["history_col_status"];
-        JobsGrid.Columns[5].Header = Loc.Instance["history_col_progress"];
-        JobsGrid.Columns[6].Header = Loc.Instance["history_col_actions"];
+        JobsGrid.Columns[0].Header = Loc.Instance["history_col_kind"];
+        JobsGrid.Columns[1].Header = Loc.Instance["history_col_title"];
+        JobsGrid.Columns[2].Header = Loc.Instance["history_col_audio"];
+        JobsGrid.Columns[3].Header = Loc.Instance["history_col_date"];
+        JobsGrid.Columns[4].Header = Loc.Instance["history_col_time"];
+        JobsGrid.Columns[5].Header = Loc.Instance["history_col_status"];
+        JobsGrid.Columns[6].Header = Loc.Instance["history_col_progress"];
+        JobsGrid.Columns[7].Header = Loc.Instance["history_col_actions"];
     }
 
     private void HomeView_KeyDown(object? sender, KeyEventArgs e)

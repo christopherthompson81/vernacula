@@ -1,0 +1,355 @@
+<UserControl x:Class="Vernacula.App.Views.TtsReaderView"
+             xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:local="using:Vernacula.App"
+             xmlns:conv="using:Vernacula.App.Converters"
+             xmlns:vm="using:Vernacula.App.ViewModels"
+             x:DataType="vm:TtsReaderViewModel">
+
+    <UserControl.Resources>
+        <conv:BoolToVisibilityConverter x:Key="BoolToVis" />
+        <conv:BoolToVisibilityConverter x:Key="InvBoolToVis" Invert="True" />
+    </UserControl.Resources>
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />   <!-- Title -->
+            <RowDefinition Height="Auto" />   <!-- Job info -->
+            <RowDefinition Height="Auto" />   <!-- Status / progress / error -->
+            <RowDefinition Height="*"    />   <!-- Document -->
+            <RowDefinition Height="Auto" />   <!-- Playback + view toggles -->
+            <RowDefinition Height="Auto" />   <!-- Action buttons -->
+        </Grid.RowDefinitions>
+
+        <TextBlock Grid.Row="0"
+                   Text="{Binding JobTitle}"
+                   Foreground="{DynamicResource TextBrush}"
+                   FontSize="20" FontWeight="SemiBold"
+                   Margin="0,0,0,4" />
+
+        <TextBlock Grid.Row="1"
+                   Text="{Binding JobInfo}"
+                   Foreground="{DynamicResource SubtextBrush}"
+                   FontSize="11"
+                   Margin="0,0,0,8" />
+
+        <StackPanel Grid.Row="2" Margin="0,0,0,10" Spacing="4">
+            <StackPanel Orientation="Horizontal" Spacing="10">
+                <TextBlock Text="{Binding StatusMessage}"
+                           Foreground="{DynamicResource SubtextBrush}"
+                           TextWrapping="Wrap" />
+                <TextBlock Text="{Binding ProgressText}"
+                           Foreground="{DynamicResource AccentBrush}"
+                           FontSize="11"
+                           VerticalAlignment="Center"
+                           IsVisible="{Binding IsRunning}" />
+            </StackPanel>
+            <ProgressBar IsIndeterminate="True"
+                         IsVisible="{Binding IsRunning}"
+                         Height="4" />
+            <Border Background="{DynamicResource SurfaceBrush}"
+                    BorderBrush="{DynamicResource RedBrush}"
+                    BorderThickness="1"
+                    MaxHeight="140"
+                    IsVisible="{Binding HasError}">
+                <ScrollViewer VerticalScrollBarVisibility="Auto"
+                              HorizontalScrollBarVisibility="Disabled">
+                    <SelectableTextBlock Text="{Binding ErrorMessage}"
+                                         TextWrapping="Wrap"
+                                         FontFamily="Consolas"
+                                         FontSize="11"
+                                         Foreground="{DynamicResource RedBrush}"
+                                         Padding="6" />
+                </ScrollViewer>
+            </Border>
+        </StackPanel>
+
+        <!-- ── Document: karaoke words or rendered markdown ── -->
+        <Border Grid.Row="3"
+                Background="{DynamicResource SurfaceBrush}"
+                CornerRadius="8"
+                Padding="16"
+                Margin="0,0,0,10">
+            <Panel>
+                <!-- Structured karaoke view: markdown blocks (headings, paragraphs, list items,
+                     quotes), each a wrapping flow of word buttons. Click-to-seek; the .current
+                     class is the highlight while the audio is on that word. FlowDirection per
+                     block is what lays an Arabic or Persian block out right to left. -->
+                <ScrollViewer IsVisible="{Binding !ShowRawMarkdown}">
+                    <ItemsControl ItemsSource="{Binding DisplayBlocks}">
+                        <ItemsControl.ItemsPanel>
+                            <ItemsPanelTemplate>
+                                <StackPanel Orientation="Vertical" />
+                            </ItemsPanelTemplate>
+                        </ItemsControl.ItemsPanel>
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate x:DataType="vm:BlockItemViewModel">
+                                <!-- One box per segment: the unit the engine rendered and stored on
+                                     its own (seg_NNNN.wav), captioned with its index and length,
+                                     lit while the audio is inside it. -->
+                                <Border Classes="segment"
+                                        Classes.current="{Binding IsCurrent}"
+                                        Classes.heading="{Binding IsHeading}"
+                                        Classes.quote="{Binding IsQuote}"
+                                        Classes.listitem="{Binding IsListItem}"
+                                        Classes.paragraph="{Binding IsParagraph}"
+                                        FlowDirection="{Binding FlowDirection}">
+                                  <StackPanel>
+                                    <TextBlock Text="{Binding HeaderLabel}"
+                                               Classes="segment-caption"
+                                               FlowDirection="LeftToRight" />
+                                    <Grid ColumnDefinitions="Auto,*">
+                                        <TextBlock Grid.Column="0" Text="•"
+                                                   IsVisible="{Binding IsListItem}"
+                                                   FontSize="18" Margin="2,2,8,0"
+                                                   VerticalAlignment="Top" Opacity="0.6" />
+                                        <!-- Display, not Words: visual order, which differs from
+                                             spoken order where directions mix. -->
+                                        <ItemsControl Grid.Column="1" ItemsSource="{Binding Display}">
+                                            <ItemsControl.ItemsPanel>
+                                                <ItemsPanelTemplate>
+                                                    <WrapPanel Orientation="Horizontal" />
+                                                </ItemsPanelTemplate>
+                                            </ItemsControl.ItemsPanel>
+                                            <ItemsControl.ItemTemplate>
+                                                <DataTemplate x:DataType="vm:WordItemViewModel">
+                                                    <Button Command="{Binding ClickCommand}"
+                                                            Classes="word"
+                                                            FontSize="{Binding FontSize}"
+                                                            FontWeight="{Binding FontWeight}"
+                                                            FontStyle="{Binding FontStyle}"
+                                                            Classes.code="{Binding IsCode}"
+                                                            Classes.link="{Binding IsLink}"
+                                                            Classes.current="{Binding IsCurrent}">
+                                                        <!-- Ruby text: the word's IPA above the word,
+                                                             furigana style; the row collapses when
+                                                             there is no reading. -->
+                                                        <Panel>
+                                                            <StackPanel Orientation="Vertical" Spacing="0"
+                                                                        IsVisible="{Binding !HasPieces}">
+                                                                <TextBlock Text="{Binding Ipa}"
+                                                                           IsVisible="{Binding HasRubyRow}"
+                                                                           Height="{Binding IpaLineHeight}"
+                                                                           LineHeight="{Binding IpaLineHeight}"
+                                                                           FontSize="{Binding IpaFontSize}"
+                                                                           FontWeight="Normal"
+                                                                           FontStyle="Normal"
+                                                                           Classes="ruby"
+                                                                           FlowDirection="LeftToRight"
+                                                                           HorizontalAlignment="Center"
+                                                                           TextAlignment="Center" />
+                                                                <TextBlock Text="{Binding Text}"
+                                                                           FontFamily="{Binding FontFamily}"
+                                                                           LineHeight="{Binding LineHeight}"
+                                                                           HorizontalAlignment="Center" />
+                                                            </StackPanel>
+                                                            <!-- Written without spaces (Japanese, Chinese):
+                                                                 the phonemizer's own segmentation is drawn
+                                                                 piece by piece, each with its own reading. -->
+                                                            <ItemsControl ItemsSource="{Binding Pieces}"
+                                                                          IsVisible="{Binding HasPieces}"
+                                                                          FlowDirection="{Binding PieceFlowDirection}">
+                                                                <ItemsControl.ItemsPanel>
+                                                                    <ItemsPanelTemplate>
+                                                                        <WrapPanel Orientation="Horizontal" />
+                                                                    </ItemsPanelTemplate>
+                                                                </ItemsControl.ItemsPanel>
+                                                                <ItemsControl.ItemTemplate>
+                                                                    <DataTemplate x:DataType="vm:RubyPieceViewModel">
+                                                                        <Border Classes="piece"
+                                                                                Classes.current="{Binding IsCurrent}">
+                                                                            <StackPanel Orientation="Vertical" Spacing="0">
+                                                                                <TextBlock Text="{Binding Ipa}"
+                                                                                           IsVisible="{Binding Word.HasRubyRow}"
+                                                                                           Height="{Binding Word.IpaLineHeight}"
+                                                                                           LineHeight="{Binding Word.IpaLineHeight}"
+                                                                                           FontSize="{Binding Word.IpaFontSize}"
+                                                                                           FontWeight="Normal"
+                                                                                           FontStyle="Normal"
+                                                                                           Classes="ruby"
+                                                                                           FlowDirection="LeftToRight"
+                                                                                           HorizontalAlignment="Center"
+                                                                                           TextAlignment="Center" />
+                                                                                <TextBlock Text="{Binding Text}"
+                                                                                           FontSize="{Binding Word.FontSize}"
+                                                                                           FontFamily="{Binding Word.FontFamily}"
+                                                                                           LineHeight="{Binding Word.LineHeight}"
+                                                                                           HorizontalAlignment="Center" />
+                                                                            </StackPanel>
+                                                                        </Border>
+                                                                    </DataTemplate>
+                                                                </ItemsControl.ItemTemplate>
+                                                            </ItemsControl>
+                                                        </Panel>
+                                                    </Button>
+                                                </DataTemplate>
+                                            </ItemsControl.ItemTemplate>
+                                        </ItemsControl>
+                                    </Grid>
+                                  </StackPanel>
+                                </Border>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </ScrollViewer>
+
+                <!-- The source as written. No word highlight here — the raw text carries no
+                     alignment; it is for reading and copying the markup itself. -->
+                <ScrollViewer IsVisible="{Binding ShowRawMarkdown}"
+                              FlowDirection="{Binding TextFlowDirection}">
+                    <SelectableTextBlock Text="{Binding SourceText}"
+                                         FontFamily="{Binding TextFontFamily}"
+                                         Foreground="{DynamicResource TextBrush}"
+                                         TextWrapping="Wrap" />
+                </ScrollViewer>
+            </Panel>
+        </Border>
+
+        <!-- ── Playback + view toggles ── -->
+        <Grid Grid.Row="4" ColumnDefinitions="Auto,Auto,Auto,*,Auto,Auto" Margin="0,0,0,10">
+            <Button Grid.Column="0"
+                    Content="{Binding PlayPauseLabel}"
+                    Classes="primary-button"
+                    Command="{Binding PlayPauseCommand}"
+                    MinWidth="100"
+                    Margin="0,0,6,0" />
+            <Button Grid.Column="1"
+                    Content="■ Stop"
+                    Classes="secondary-button"
+                    Command="{Binding StopCommand}"
+                    MinWidth="80"
+                    Margin="0,0,12,0" />
+            <TextBlock Grid.Column="2"
+                       Text="{Binding PositionLabel}"
+                       Foreground="{DynamicResource SubtextBrush}"
+                       VerticalAlignment="Center" />
+            <CheckBox Grid.Column="4"
+                      x:Name="RawMarkdownCheck"
+                      Content="{local:Loc tts_raw_markdown}"
+                      IsChecked="{Binding ShowRawMarkdown}"
+                      Foreground="{DynamicResource TextBrush}"
+                      Margin="0,0,12,0" />
+            <StackPanel Grid.Column="5">
+                <CheckBox x:Name="IpaAnnotationCheck"
+                          Content="{local:Loc tts_ipa_annotation}"
+                          IsChecked="{Binding ShowIpaAnnotation}"
+                          Foreground="{DynamicResource TextBrush}"
+                          ToolTip.Tip="Shows each word's phonemizer reading above it, the way furigana sits above kanji. Uses the job's language." />
+                <TextBlock Text="{Binding IpaAnnotationNotice}"
+                           IsVisible="{Binding HasIpaAnnotationNotice}"
+                           Foreground="{DynamicResource SubtextBrush}"
+                           TextWrapping="Wrap" FontSize="11" />
+            </StackPanel>
+        </Grid>
+
+        <!-- ── Action buttons ── -->
+        <StackPanel Grid.Row="5" Orientation="Horizontal" HorizontalAlignment="Right">
+            <Button x:Name="ExportButton"
+                    Content="{local:Loc btn_export_tts}"
+                    Classes="secondary-button"
+                    Command="{Binding ExportCommand}"
+                    Margin="0,0,8,0" />
+            <Button x:Name="CancelJobButton"
+                    Content="{local:Loc btn_cancel_job}"
+                    Classes="danger-button"
+                    Command="{Binding CancelJobNowCommand}"
+                    IsVisible="{Binding IsRunning}"
+                    Margin="0,0,8,0" />
+            <Button x:Name="BackButton"
+                    Content="{local:Loc tts_reader_back}"
+                    Classes="secondary-button"
+                    Command="{Binding GoBackCommand}" />
+        </StackPanel>
+    </Grid>
+
+    <UserControl.Styles>
+        <!-- Word buttons: borderless, transparent, click-to-seek. -->
+        <Style Selector="Button.word">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderBrush" Value="Transparent" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Padding" Value="2,1" />
+            <Setter Property="Margin" Value="0,0,2,0" />
+            <Setter Property="MinHeight" Value="0" />
+            <Setter Property="VerticalAlignment" Value="Center" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
+        </Style>
+        <Style Selector="Button.word:pointerover /template/ ContentPresenter">
+            <Setter Property="Background" Value="{DynamicResource OverlayBrush}" />
+        </Style>
+        <!-- Highlight (current spoken word): the accent, like the status chip. -->
+        <Style Selector="Button.word.current /template/ ContentPresenter">
+            <Setter Property="Background" Value="{DynamicResource AccentBrush}" />
+        </Style>
+        <Style Selector="Button.word.current">
+            <Setter Property="Foreground" Value="{DynamicResource BgBrush}" />
+        </Style>
+        <!-- Ruby (IPA) line above a word: dimmer than the text it annotates. ONE FONT FOR THE
+             WHOLE RUBY LINE: the UI font lacks tie bars / tone letters, and per-string fallback
+             brings its own ascent, so the line rippled word by word. -->
+        <Style Selector="TextBlock.ruby">
+            <Setter Property="Opacity" Value="0.62" />
+            <Setter Property="Margin" Value="0,0,0,-1" />
+            <Setter Property="FontFamily"
+                    Value="Charis SIL, Doulos SIL, Gentium Plus, DejaVu Sans, Segoe UI, Arial Unicode MS, sans-serif" />
+        </Style>
+        <Style Selector="Button.word.current TextBlock.ruby">
+            <Setter Property="Opacity" Value="1" />
+        </Style>
+
+        <!-- A piece of a split word. -->
+        <Style Selector="Border.piece">
+            <Setter Property="Padding" Value="2,0" />
+            <Setter Property="Margin" Value="0,0,3,0" />
+            <Setter Property="CornerRadius" Value="3" />
+        </Style>
+        <Style Selector="Border.piece.current">
+            <Setter Property="Background" Value="{DynamicResource AccentBrush}" />
+        </Style>
+        <Style Selector="Border.piece.current TextBlock">
+            <Setter Property="Foreground" Value="{DynamicResource BgBrush}" />
+        </Style>
+        <Style Selector="Border.piece.current TextBlock.ruby">
+            <Setter Property="Opacity" Value="1" />
+        </Style>
+
+        <!-- Inline code: subtle chip (the monospace face comes from WordItemViewModel.FontFamily). -->
+        <Style Selector="Button.word.code /template/ ContentPresenter">
+            <Setter Property="Background" Value="{DynamicResource OverlayBrush}" />
+        </Style>
+        <!-- Links: accent + underline. -->
+        <Style Selector="Button.word.link">
+            <Setter Property="Foreground" Value="{DynamicResource LinkBrush}" />
+            <Setter Property="TextBlock.TextDecorations" Value="Underline" />
+        </Style>
+
+        <!-- Segment boxes: one per paragraph-sized unit of audio. The kind classes only tune
+             the inside (a quote's bar, a heading's air); the box itself is the same for all. -->
+        <Style Selector="Border.segment">
+            <Setter Property="Margin" Value="0,0,0,8" />
+            <Setter Property="Padding" Value="10,6,10,8" />
+            <Setter Property="CornerRadius" Value="6" />
+            <Setter Property="Background" Value="{DynamicResource BgBrush}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource OverlayBrush}" />
+            <Setter Property="BorderThickness" Value="1" />
+        </Style>
+        <Style Selector="Border.segment.current">
+            <Setter Property="BorderBrush" Value="{DynamicResource AccentBrush}" />
+        </Style>
+        <Style Selector="TextBlock.segment-caption">
+            <Setter Property="FontSize" Value="10" />
+            <Setter Property="Foreground" Value="{DynamicResource SubtextBrush}" />
+            <Setter Property="Margin" Value="0,0,0,4" />
+        </Style>
+        <Style Selector="Border.segment.current TextBlock.segment-caption">
+            <Setter Property="Foreground" Value="{DynamicResource AccentBrush}" />
+        </Style>
+        <Style Selector="Border.heading">
+            <Setter Property="Margin" Value="0,6,0,8" />
+        </Style>
+        <Style Selector="Border.quote">
+            <Setter Property="Opacity" Value="0.9" />
+        </Style>
+    </UserControl.Styles>
+</UserControl>

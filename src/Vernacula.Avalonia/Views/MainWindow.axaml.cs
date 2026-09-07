@@ -183,6 +183,7 @@ public partial class MainWindow : Window
     {
         FileMenuItem.Header = MenuText("menu_file");
         NewTranscriptionMenuItem.Header = MenuText("menu_new_transcription");
+        NewTtsJobMenuItem.Header = MenuText("menu_new_tts_job");
         ExitMenuItem.Header = MenuText("menu_exit");
         SettingsMenuItem.Header = MenuText("menu_settings");
         HelpMenuItem.Header = MenuText("menu_help");
@@ -218,6 +219,9 @@ public partial class MainWindow : Window
     protected override void OnClosed(EventArgs e)
     {
         Loc.Instance.PropertyChanged -= OnLocalePropertyChanged;
+        // The reader owns the playback service (possibly a live ffplay child) — a forced child
+        // outliving the GUI is a real failure mode, so dispose it explicitly.
+        if (DataContext is MainViewModel vm) vm.TtsReader.Dispose();
         base.OnClosed(e);
     }
 }

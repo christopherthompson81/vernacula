@@ -15,12 +15,17 @@ Usage:
     # Or hash every non-hidden file in the dir, recursive
     python scripts/make_manifest.py --model-dir ~/models/voxlingua107 --all
 
+    # --all, minus local-only files (ONNX Runtime optimisation caches)
+    python scripts/make_manifest.py --model-dir ~/models/kokoro --all \\
+        --exclude '*.ort' '*.use-ort'
+
 Writes `<model-dir>/manifest.json` (or `--out` if given).
 """
 
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import sys
 from pathlib import Path
 
@@ -30,8 +35,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _export_utils.manifest import build_manifest, dump_manifest  # noqa: E402
 
 
-def discover_files(model_dir: Path) -> list[str]:
-    """Sorted list of non-hidden files under model_dir, excluding manifest.json itself."""
+def discover_files(model_dir: Path, exclude: list[str] | None = None) -> list[str]:
+    """Sorted list of non-hidden files under model_dir, excluding manifest.json
+    itself, README.md (synced separately by upload_to_hf.py) and anything
+    matching an `exclude` glob (relative path or bare file name)."""
     rel = []
     for p in sorted(model_dir.rglob("*")):
         if not p.is_file():
@@ -39,7 +46,10 @@ def discover_files(model_dir: Path) -> list[str]:
         if any(part.startswith(".") for part in p.relative_to(model_dir).parts):
             continue
         relpath = p.relative_to(model_dir).as_posix()
-        if relpath == "manifest.json":
+        if relpath in ("manifest.json", "README.md"):
+            continue
+        name = relpath.rsplit("/", 1)[-1]
+        if exclude and any(fnmatch.fnmatch(relpath, g) or fnmatch.fnmatch(name, g) for g in exclude):
             continue
         rel.append(relpath)
     return rel
@@ -59,9 +69,11 @@ def main() -> None:
                      help="Files (relative to --model-dir) to include.")
     src.add_argument("--all", action="store_true",
                      help="Include every non-hidden file under --model-dir (recursive).")
+    p.add_argument("--exclude", nargs="+", default=None, metavar="GLOB",
+                   help="With --all: skip files matching these globs, e.g. '*.ort' '*.use-ort'.")
     args = p.parse_args()
 
-    files = args.files if args.files else discover_files(args.model_dir)
+    files = args.files if args.files else discover_files(args.model_dir, args.exclude)
     if not files:
         p.error(f"no files found under {args.model_dir}")
 

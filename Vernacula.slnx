@@ -24,9 +24,6 @@
   <Project Path="src/Vernacula.Avalonia/Vernacula.Avalonia.csproj">
     <Platform Project="x64" />
   </Project>
-  <Project Path="src/Vernacula.Tts.Avalonia/Vernacula.Tts.Avalonia.csproj">
-    <Platform Project="x64" />
-  </Project>
   <Project Path="tests/IndicConformerTest/IndicConformerTest.csproj">
     <Platform Project="x64" />
   </Project>

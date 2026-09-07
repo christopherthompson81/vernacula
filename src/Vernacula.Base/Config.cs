@@ -199,6 +199,18 @@ public static class Config
     public const string KenLmParakeetRepoBase =
         "https://huggingface.co/christopherthompson81/kenlm-parakeet/resolve/main";
 
+    // ── Text-to-speech (relative to the models dir) ─────────────────────────
+    /// <summary>Chatterbox ONNX bundle: speech_encoder / embed_tokens / language_model / vocoder graphs.</summary>
+    public const string ChatterboxSubDir        = "chatterbox";
+    /// <summary>Kokoro-82M: kokoro.onnx + voices/*.bin (scripts/kokoro_export).</summary>
+    public const string KokoroSubDir            = "kokoro";
+    /// <summary>OmniVoice: base transformer, Higgs codec graphs, the IPA fine-tune diff, tokenizer.json.</summary>
+    public const string OmniVoiceSubDir         = "omnivoice";
+    /// <summary>OmniVoice stored-voice library (voices.jsonc + voice-codes.json + one JSON per voice).</summary>
+    public const string OmniVoiceVoiceLibSubDir = "omnivoice_voices";
+    /// <summary>vernacula-phonemizer data/ tree (core/phonology.jsonc is the sentinel).</summary>
+    public const string PhonemizerDataSubDir    = "phonemizer_data";
+
     /// <summary>
     /// Directory (relative to models dir) for the language-ID model.
     /// </summary>
