@@ -69,6 +69,19 @@ public class TtsEngineRegistryTests
     }
 
     [Fact]
+    public void AnUnknownEngineNameIsRecognisedAsUnknown()
+    {
+        // For() falls back so a job can still be described and a settings file still loads;
+        // TryFor() reports the truth, which is what callers that only describe a job use so a
+        // job saved by another build is not relabelled as the fallback engine.
+        Assert.Null(TtsEngines.TryFor("PiperTTS"));
+        Assert.Null(TtsEngines.TryFor(""));
+        Assert.Null(TtsEngines.TryFor(null));
+        Assert.Equal(TtsEngines.Default.Kind, TtsEngines.For("PiperTTS").Kind);
+        Assert.Equal(TtsEngines.All[0], TtsEngines.Default);
+    }
+
+    [Fact]
     public void JobDescriptionAndAnnotationLanguageComeFromTheEngine()
     {
         var british = new JobRecord { Kind = JobKind.Tts, TtsBackend = "Kokoro", TtsVoice = "bf_emma", TtsSpeed = 1.0f };

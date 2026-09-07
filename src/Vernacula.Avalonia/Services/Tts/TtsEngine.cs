@@ -103,14 +103,27 @@ internal static class TtsEngines
     public static IReadOnlyList<TtsEngine> All { get; } =
         [new KokoroEngine(), new OmniVoiceEngine(), new ChatterboxEngine()];
 
+    /// <summary>The default for a new job, and the fallback for anything unrecognised.</summary>
+    public static TtsEngine Default => All[0];
+
     public static TtsEngine For(TtsBackendKind kind) =>
-        All.FirstOrDefault(e => e.Kind == kind) ?? All[0];
+        All.FirstOrDefault(e => e.Kind == kind) ?? Default;
 
-    /// <summary>By persisted name ("Kokoro"); an unknown name falls back to the first engine.</summary>
-    public static TtsEngine For(string? name) =>
-        Enum.TryParse<TtsBackendKind>(name, ignoreCase: true, out var kind) ? For(kind) : All[0];
+    /// <summary>
+    /// By persisted name ("Kokoro"), or null when the name is empty or names no engine this
+    /// build has. Callers that must produce audio use <see cref="For(string?)"/>; callers that
+    /// merely DESCRIBE a stored job use this, so a job saved by another build is reported as
+    /// what it says it is rather than relabelled as the fallback.
+    /// </summary>
+    public static TtsEngine? TryFor(string? name) =>
+        Enum.TryParse<TtsBackendKind>(name, ignoreCase: true, out var kind)
+            ? All.FirstOrDefault(e => e.Kind == kind)
+            : null;
 
-    /// <summary>The engine a job was rendered with.</summary>
+    /// <summary>By persisted name; an unknown name falls back to <see cref="Default"/>.</summary>
+    public static TtsEngine For(string? name) => TryFor(name) ?? Default;
+
+    /// <summary>The engine a job was rendered with (the fallback applies to an unknown name).</summary>
     public static TtsEngine For(JobRecord job) => For(job.TtsBackend);
 }
 

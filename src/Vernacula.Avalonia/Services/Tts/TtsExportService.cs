@@ -19,9 +19,6 @@ internal static class TtsExportService
     /// <summary>One exported row.</summary>
     public sealed record SentenceRow(int Index, double StartSeconds, double EndSeconds, string Text, string Phonemes);
 
-    /// <summary>How the phoneme column was produced — named in the CSV so it is never mistaken for another scheme.</summary>
-    public static string PhonemeScheme(TtsBackendKind kind) => TtsEngines.For(kind).PhonemeScheme;
-
     // Terminal punctuation (Latin, ellipsis, CJK) followed by whitespace. Only whitespace
     // boundaries are cut so every sentence is a whole number of whitespace-split words —
     // the unit the alignment is keyed on. Paragraph breaks are whitespace too.

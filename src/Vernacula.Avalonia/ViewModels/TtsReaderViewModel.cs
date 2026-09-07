@@ -186,10 +186,15 @@ internal sealed partial class TtsReaderViewModel : ObservableObject, IDisposable
         }
     }
 
-    /// <summary>"Kokoro · af_heart · 1.00×" — the engine, then whatever it says identifies the job.</summary>
+    /// <summary>
+    /// "Kokoro-82M · af_heart · 1.00×" — the engine, then whatever it says identifies the job.
+    /// A job whose engine this build does not have is named by what it stored, not relabelled
+    /// as the fallback engine, and only its voice is shown (no engine is there to interpret it).
+    /// </summary>
     private static string DescribeJob(JobRecord job)
     {
-        var engine = TtsEngines.For(job);
+        if (TtsEngines.TryFor(job.TtsBackend) is not { } engine)
+            return string.Join("  ·  ", new[] { job.TtsBackend, job.TtsVoice }.Where(p => !string.IsNullOrWhiteSpace(p)));
         return string.Join("  ·  ", new[] { engine.DisplayName }.Concat(engine.DescribeJob(job)));
     }
 

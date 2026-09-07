@@ -214,12 +214,28 @@ internal partial class NewTtsJobViewModel : ObservableObject
 
     // ── Voice lists ──────────────────────────────────────────────────────────
 
-    /// <summary>The named voices of an engine that has a fixed list; empty for the others.</summary>
+    /// <summary>
+    /// The named voices of an engine that has a fixed list.
+    ///
+    /// ⚠ LEAVE THE LIST ALONE FOR AN ENGINE THAT HAS NONE. KokoroVoices is the voice
+    /// ComboBox's ItemsSource and its selection is bound two-way to KokoroVoice, so clearing
+    /// it clears the choice: switching the engine away and back would silently replace a
+    /// picked voice with the first in the list — and RememberChoices would then persist that.
+    /// </summary>
     private void RefreshVoiceList()
     {
-        KokoroVoices.Clear();
-        foreach (var v in SelectedEngine.AvailableVoices(_settings))
-            KokoroVoices.Add(v);
+        if (!SelectedEngine.UsesVoiceList) return;
+
+        // Rebuild in place only when the contents actually differ, so re-selecting the same
+        // engine does not disturb the ComboBox's selection at all.
+        var voices = SelectedEngine.AvailableVoices(_settings);
+        if (!KokoroVoices.SequenceEqual(voices))
+        {
+            string keep = KokoroVoice;
+            KokoroVoices.Clear();
+            foreach (var v in voices) KokoroVoices.Add(v);
+            if (voices.Contains(keep)) KokoroVoice = keep;
+        }
         if (KokoroVoices.Count > 0 && !KokoroVoices.Contains(KokoroVoice))
             KokoroVoice = KokoroVoices[0];
     }
