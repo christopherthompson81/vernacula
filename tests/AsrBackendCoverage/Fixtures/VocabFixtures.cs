@@ -89,14 +89,74 @@ internal static class VocabFixtures
         public void Dispose() => Cleanup(Dir);
     }
 
-    /// <summary>A throwaway models directory holding the fixture for <paramref name="kind"/>.</summary>
-    public static Fixture Write(VocabService.VocabKind kind)
-    {
-        string dir = WriteModelsDir(kind);
-        int[] tokens = kind == VocabService.VocabKind.Cohere
+    /// <summary>The tokens that spell <see cref="Phrase"/> in <paramref name="kind"/>'s fixture.</summary>
+    public static int[] PhraseTokensFor(VocabService.VocabKind kind) =>
+        kind == VocabService.VocabKind.Cohere
             ? [Hello, SpaceW, OSplitHigh, OSplitLowRld, CohereRld, CohereDot]
             : [Hello, SpaceW, OSplitHigh, OSplitLowRld, Dot];
-        return new Fixture(dir, tokens);
+
+    /// <summary>
+    /// The tokens for a sequence that stops in the MIDDLE of "ö" — the last token carries only
+    /// that character's first byte, leaving the streaming decoders holding it.
+    /// </summary>
+    public static int[] TruncatedMidCharacterTokens => [Hello, SpaceW, OSplitHigh];
+
+    /// <summary>
+    /// What <see cref="TruncatedMidCharacterTokens"/> decodes to, which depends on the format:
+    /// the byte-level vocabs really are cut mid-character, so the held byte becomes the Unicode
+    /// replacement character, while the text formats spell "ö" as one whole token and simply
+    /// end with it. Both are correct; only the byte-level kinds exercise the decoder's tail.
+    /// </summary>
+    public static string TruncatedPhraseFor(VocabService.VocabKind kind) =>
+        kind is VocabService.VocabKind.Parakeet or VocabService.VocabKind.IndicConformer
+            ? "Hello wö"
+            : "Hello w\uFFFD";
+
+    /// <summary>A throwaway models directory holding the fixture for <paramref name="kind"/>.</summary>
+    public static Fixture Write(VocabService.VocabKind kind) =>
+        new(WriteModelsDir(kind), PhraseTokensFor(kind));
+
+    /// <summary>
+    /// Granite in its BF16 bundle rather than the FP32 one. The loader prefers BF16 when both
+    /// are installed, and BF16 is what the app fetches on hardware that supports it — so the
+    /// preferred arm needs a fixture of its own.
+    /// </summary>
+    public static Fixture WriteGraniteBf16()
+    {
+        string dir = Path.Combine(Path.GetTempPath(), "vernacula-vocab-fixtures", Guid.NewGuid().ToString("N"));
+        WriteFile(Path.Combine(dir, Config.GraniteSpeechBf16SubDir, GraniteSpeech.TokenizerFile), HfTokenizerJson());
+        return new Fixture(dir, PhraseTokensFor(VocabService.VocabKind.GraniteSpeech));
+    }
+
+    /// <summary>
+    /// Both Granite bundles installed, spelling DIFFERENT phrases, so a test can tell which one
+    /// the loader actually read. Returns the directory and what each bundle spells.
+    /// </summary>
+    public static Fixture WriteGraniteBothBundles(out string bf16Phrase, out string fp32Phrase)
+    {
+        string dir = Path.Combine(Path.GetTempPath(), "vernacula-vocab-fixtures", Guid.NewGuid().ToString("N"));
+        bf16Phrase = Phrase;
+        fp32Phrase = "WRONG BUNDLE";
+        WriteFile(Path.Combine(dir, Config.GraniteSpeechBf16SubDir, GraniteSpeech.TokenizerFile), HfTokenizerJson());
+        WriteFile(Path.Combine(dir, Config.GraniteSpeechSubDir, GraniteSpeech.TokenizerFile),
+                  SingleWordTokenizerJson(fp32Phrase));
+        return new Fixture(dir, PhraseTokensFor(VocabService.VocabKind.GraniteSpeech));
+    }
+
+    /// <summary>A tokenizer.json whose FIRST token is the whole phrase and whose rest are empty,
+    /// so the shared token sequence decodes to exactly that phrase.</summary>
+    private static string SingleWordTokenizerJson(string phrase)
+    {
+        var vocab = new (string Spelling, int Id)[]
+        {
+            (ToByteLevel(phrase), Hello),
+            (ToByteLevel(""),     SpaceW),
+            (ToByteLevel(""),     OSplitHigh),
+            (ToByteLevel(""),     OSplitLowRld),
+            (ToByteLevel(""),     Dot),
+        };
+        string entries = string.Join(",", vocab.Select(v => $"{Quoted(v.Spelling)}:{v.Id}"));
+        return $"{{\"model\":{{\"vocab\":{{{entries}}}}}}}";
     }
 
     /// <summary>A throwaway models directory holding the fixture for <paramref name="kind"/>.</summary>

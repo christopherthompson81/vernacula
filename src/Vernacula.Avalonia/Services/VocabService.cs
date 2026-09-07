@@ -226,6 +226,47 @@ internal class VocabService
         };
     }
 
+    /// <summary>
+    /// Whatever a streaming decoder is still holding after the last token, as the final run's
+    /// tail. A sequence that ends mid-character (a segment cut after the first byte of a
+    /// two-byte character) leaves bytes in the decoder; flushing turns them into the same
+    /// replacement character the whole-sequence decode produces for them. Without it the runs
+    /// were silently shorter than the content they annotate — the trailing-edge twin of the
+    /// dropped-pending-byte bug fixed in DecodeCohereTokenIncrement.
+    /// </summary>
+    private static void AppendDecoderTail(Decoder decoder, List<(string text, float logprob)> runs)
+    {
+        if (runs.Count == 0) return;
+        int tail = decoder.GetCharCount([], 0, 0, flush: true);
+        if (tail == 0) return;
+        char[] chars = new char[tail];
+        decoder.GetChars([], 0, 0, chars, 0, flush: true);
+        runs[^1] = (runs[^1].text + new string(chars), runs[^1].logprob);
+    }
+
+    /// <summary>
+    /// Trims the boundary whitespace off the ends of a run list, as the text decoders' Trim()
+    /// does to the whole string, so the runs say exactly what DecodeTokens says. The editor
+    /// renders these runs AS the card's text, so a leading space here is one the user sees on
+    /// a card whose content does not have it. Runs are never dropped — only their text is
+    /// trimmed — because each run is paired positionally with its token's confidence.
+    /// </summary>
+    private static void TrimRunEdges(List<(string text, float logprob)> runs)
+    {
+        for (int i = 0; i < runs.Count; i++)
+        {
+            string trimmed = runs[i].text.TrimStart();
+            if (trimmed.Length > 0) { runs[i] = (trimmed, runs[i].logprob); break; }
+            runs[i] = ("", runs[i].logprob);
+        }
+        for (int i = runs.Count - 1; i >= 0; i--)
+        {
+            string trimmed = runs[i].text.TrimEnd();
+            if (trimmed.Length > 0) { runs[i] = (trimmed, runs[i].logprob); break; }
+            runs[i] = ("", runs[i].logprob);
+        }
+    }
+
     /// <summary>Returns (text, logprob) pairs for each token.</summary>
     public IReadOnlyList<(string text, float logprob)> GetTokenRuns(
         IReadOnlyList<int> tokens, IReadOnlyList<float> logprobs, string? targetText = null)
@@ -239,20 +280,23 @@ internal class VocabService
         if (_kind == VocabKind.GraniteSpeech)
             return GetGraniteSpeechTokenRuns(tokens, logprobs);
 
-        var runs = new List<(string, float)>(tokens.Count);
+        var runs = new List<(string text, float logprob)>(tokens.Count);
         for (int i = 0; i < tokens.Count; i++)
         {
             string text = DecodeToken(tokens[i]);
             float  lp   = i < logprobs.Count ? logprobs[i] : 0f;
             runs.Add((text, lp));
         }
+        // The word-start marker on the first token becomes a leading space; DecodeTokens trims
+        // it and so must these, or the card renders a space its content does not have.
+        TrimRunEdges(runs);
         return runs;
     }
 
     private IReadOnlyList<(string text, float logprob)> GetCohereTokenRuns(
         IReadOnlyList<int> tokens, IReadOnlyList<float> logprobs)
     {
-        var runs = new List<(string, float)>(tokens.Count);
+        var runs = new List<(string text, float logprob)>(tokens.Count);
         Decoder decoder = Encoding.UTF8.GetDecoder();
         bool stripLeadingSpace = true;
 
@@ -263,6 +307,7 @@ internal class VocabService
             runs.Add((runText, lp));
         }
 
+        AppendDecoderTail(decoder, runs);
         return runs;
     }
 
@@ -326,7 +371,7 @@ internal class VocabService
         // boundary they actually finish at. Matches the Qwen3 / VibeVoice
         // pattern; no leading-space-strip or quote-trim because Granite's
         // raw decode already lines up with Content (no prefix-quote artefact).
-        var runs = new List<(string, float)>(tokens.Count);
+        var runs = new List<(string text, float logprob)>(tokens.Count);
         Decoder decoder = Encoding.UTF8.GetDecoder();
 
         for (int i = 0; i < tokens.Count; i++)
@@ -349,6 +394,7 @@ internal class VocabService
             runs.Add((runText, lp));
         }
 
+        AppendDecoderTail(decoder, runs);
         return runs;
     }
 
@@ -406,10 +452,7 @@ internal class VocabService
         int charCount = decoder.GetCharCount(tokenBytes, 0, tokenBytes.Length, flush: false);
         char[] chars = new char[charCount];
         decoder.GetChars(tokenBytes, 0, tokenBytes.Length, chars, 0, flush: false);
-        if (charCount == 0)
-            return "";
-
-        string text = new(chars);
+        string text = new(chars);   // "" when this token completed no character
 
         if (stripLeadingSpace && text.Length > 0)
         {
@@ -438,7 +481,7 @@ internal class VocabService
     private IReadOnlyList<(string text, float logprob)> GetVibeVoiceTokenRuns(
         IReadOnlyList<int> tokens, IReadOnlyList<float> logprobs, string? targetText)
     {
-        var runs = new List<(string, float)>(tokens.Count);
+        var runs = new List<(string text, float logprob)>(tokens.Count);
         Decoder decoder = Encoding.UTF8.GetDecoder();
 
         for (int i = 0; i < tokens.Count; i++)
@@ -461,13 +504,14 @@ internal class VocabService
             runs.Add((runText, lp));
         }
 
+        AppendDecoderTail(decoder, runs);
         return ClipRunsToTargetText(runs, targetText);
     }
 
     private IReadOnlyList<(string text, float logprob)> GetQwen3AsrTokenRuns(
         IReadOnlyList<int> tokens, IReadOnlyList<float> logprobs)
     {
-        var runs = new List<(string, float)>(tokens.Count);
+        var runs = new List<(string text, float logprob)>(tokens.Count);
         Decoder decoder = Encoding.UTF8.GetDecoder();
         bool stripLeadingSpace = true;
 
@@ -497,6 +541,7 @@ internal class VocabService
             runs.Add((runText, lp));
         }
 
+        AppendDecoderTail(decoder, runs);
         return runs;
     }
 

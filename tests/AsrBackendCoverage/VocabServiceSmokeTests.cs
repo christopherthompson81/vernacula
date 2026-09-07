@@ -87,8 +87,12 @@ public class VocabServiceSmokeTests
             // streaming UTF-8 decoder correctly emits nothing for the first half — that is the
             // behaviour being checked, not a defect. What must hold is that the runs together
             // say the same thing as the whole-sequence decode.
-            Assert.Equal(vocab.DecodeTokens(tokens).Trim(),
-                         string.Concat(runs.Select(r => r.text)).Trim());
+            //
+            // ⚠ AND NOT .Trim() ON EITHER SIDE. The editor renders these runs AS the card's
+            // text (TranscriptEditorViewModel.RefreshAdjacentCardAppearance), so trimming here
+            // would hide exactly the divergence that matters: the word-start marker on the
+            // first token used to leave the runs a space longer than the content.
+            Assert.Equal(vocab.DecodeTokens(tokens), string.Concat(runs.Select(r => r.text)));
             Assert.Contains(runs, r => r.text.Length > 0);
         }
     }
@@ -152,18 +156,76 @@ public class VocabServiceSmokeTests
     }
 
     /// <summary>The phrase's tokens in the shared HF-format fixture (the divergence tests are HF-only).</summary>
-    private static int[] HfPhrase => VocabFixtures.Write(VocabService.VocabKind.GraniteSpeech) is var f
-        ? Use(f) : [];
-
-    private static int[] Use(VocabFixtures.Fixture f)
-    {
-        using (f) return f.PhraseTokens;
-    }
+    private static int[] HfPhrase => VocabFixtures.PhraseTokensFor(VocabService.VocabKind.GraniteSpeech);
 
     private static string Decode(VocabService.VocabKind kind, IReadOnlyList<int> tokens)
     {
         using var fixture = VocabFixtures.Write(kind);
         return Load(kind, fixture.Dir).DecodeTokens(tokens);
+    }
+
+    [Theory]
+    [MemberData(nameof(AllBackends))]
+    public void EveryKind_EndingMidCharacter_SaysTheSameThingInRunsAsInTheDecode(AsrBackend backend)
+    {
+        // A segment cut after the first byte of a two-byte character leaves the streaming
+        // decoders holding it. The whole-sequence decode turns it into a replacement character;
+        // the runs must agree, or the card renders shorter than its own content.
+        using var fixture = VocabFixtures.Write(KindOf(backend));
+        var vocab = Load(backend, fixture.Dir);
+        int[] tokens = VocabFixtures.TruncatedMidCharacterTokens;
+
+        string decoded = vocab.DecodeTokens(tokens);
+        var runs = vocab.GetTokenRuns(tokens, []);
+
+        Assert.Equal(VocabFixtures.TruncatedPhraseFor(KindOf(backend)), decoded);
+        Assert.Equal(tokens.Length, runs.Count);
+        Assert.Equal(decoded, string.Concat(runs.Select(r => r.text)));
+    }
+
+    // ── VibeVoice's clip-to-content path ────────────────────────────────────
+
+    [Fact]
+    public void VibeVoice_ClipsRunsToTheSegmentContent()
+    {
+        // The editor passes seg.Content as targetText, and VibeVoice is the only kind that acts
+        // on it: its model wraps output in quotes, and the runs are clipped back to the content
+        // the card actually shows. This is the most offset-sensitive code in the file and the
+        // branch every production VibeVoice call takes.
+        using var fixture = VocabFixtures.Write(VocabService.VocabKind.VibeVoice);
+        var vocab = Load(VocabService.VocabKind.VibeVoice, fixture.Dir);
+        int[] quoted = [VocabFixtures.Quote, .. fixture.PhraseTokens, VocabFixtures.Quote];
+
+        var runs = vocab.GetTokenRuns(quoted, [], VocabFixtures.Phrase);
+
+        Assert.Equal(quoted.Length, runs.Count);                       // still one run per token
+        Assert.Equal(VocabFixtures.Phrase, string.Concat(runs.Select(r => r.text)));
+        Assert.Equal("", runs[0].text);                                // the opening quote is clipped away
+        Assert.Equal("", runs[^1].text);                               // and the closing one
+    }
+
+    // ── Granite's two sibling bundles ───────────────────────────────────────
+
+    [Fact]
+    public void GraniteSpeech_ReadsTheBf16BundleWhenItIsInstalled()
+    {
+        // BF16 is what the app installs on hardware that supports it, and the loader prefers it.
+        // The FP32-only fixture the other tests use exercises the fallback arm; this one covers
+        // the preferred arm, so a wrong subdirectory constant cannot hide behind it.
+        using var fixture = VocabFixtures.WriteGraniteBf16();
+        var vocab = Load(VocabService.VocabKind.GraniteSpeech, fixture.Dir);
+        Assert.Equal(VocabFixtures.Phrase, vocab.DecodeTokens(fixture.PhraseTokens));
+    }
+
+    [Fact]
+    public void GraniteSpeech_PrefersBf16OverFp32WhenBothAreInstalled()
+    {
+        using var fixture = VocabFixtures.WriteGraniteBothBundles(out string bf16Phrase, out string fp32Phrase);
+        var vocab = Load(VocabService.VocabKind.GraniteSpeech, fixture.Dir);
+
+        string decoded = vocab.DecodeTokens(fixture.PhraseTokens);
+        Assert.Equal(bf16Phrase, decoded);
+        Assert.NotEqual(fp32Phrase, decoded);
     }
 
     // ── The loud-fallthrough path ────────────────────────────────────────────
