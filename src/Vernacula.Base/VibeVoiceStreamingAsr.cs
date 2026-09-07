@@ -213,13 +213,15 @@ public sealed class VibeVoiceStreamingAsr : IDisposable
                 }
                 Step([_textChunkEndId], emptyAudio, 0, emptyIds, kvBuffers, ref kvPos, binding, runOptions, false);
 
+                var (chunkText, tokenCharEnds) = DecodeWithOffsets(ids);
                 var chunk = new VibeVoiceStreamingChunk(
                     Index: ci,
                     Start: start / (double)SampleRate,
                     End:   Math.Min(start + HopSamples, audio.Length) / (double)SampleRate,
-                    Text:  DecodeSkippingSpecial(ids),
+                    Text:  chunkText,
                     TokenIds: ids.ToArray(),
-                    TokenLogprobs: logprobs?.ToArray() ?? []);
+                    TokenLogprobs: logprobs?.ToArray() ?? [],
+                    TokenCharEnds: tokenCharEnds);
                 chunks.Add(chunk);
                 onChunk?.Invoke(chunk);
             }
@@ -244,6 +246,8 @@ public sealed class VibeVoiceStreamingAsr : IDisposable
     {
         private readonly List<VibeVoiceSegment> _closed = [];
         private readonly StringBuilder _open = new();
+        private readonly List<int>   _openTokens   = [];
+        private readonly List<float> _openLogprobs = [];
         private int    _speaker = -1;
         private double _start, _end;
         private bool   _started;
@@ -255,7 +259,7 @@ public sealed class VibeVoiceStreamingAsr : IDisposable
             {
                 string t = _open.ToString().Trim();
                 if (t.Length == 0) return _closed;
-                return [.. _closed, new VibeVoiceSegment(_start, Math.Max(_end, _start), _speaker, t)];
+                return [.. _closed, Build(t, Math.Max(_end, _start))];
             }
         }
 
@@ -265,14 +269,15 @@ public sealed class VibeVoiceStreamingAsr : IDisposable
             int pos = 0;
             foreach (Match m in SpeakerMarker.Matches(chunk.Text))
             {
-                _open.Append(chunk.Text, pos, m.Index - pos);
+                Take(chunk, pos, m.Index);
                 double at = At(chunk, m.Index);
                 Close(at);
                 _speaker = int.Parse(m.Groups[1].Value);
                 _start   = at;
-                pos      = m.Index + m.Length;
+                // The marker's own tokens belong to no turn: they are structure, not speech.
+                pos = m.Index + m.Length;
             }
-            _open.Append(chunk.Text, pos, chunk.Text.Length - pos);
+            Take(chunk, pos, chunk.Text.Length);
             _end = chunk.End;
         }
 
@@ -283,11 +288,37 @@ public sealed class VibeVoiceStreamingAsr : IDisposable
             return _closed;
         }
 
+        /// <summary>Appends one character range of a chunk, with the tokens that produced it.</summary>
+        private void Take(VibeVoiceStreamingChunk chunk, int from, int to)
+        {
+            if (to <= from) return;
+            _open.Append(chunk.Text, from, to - from);
+            if (chunk.TokenCharEnds.Length != chunk.TokenIds.Length) return;   // offsets unavailable
+            for (int i = 0; i < chunk.TokenIds.Length; i++)
+            {
+                int end   = chunk.TokenCharEnds[i];
+                int begin = i == 0 ? 0 : chunk.TokenCharEnds[i - 1];
+                // A token counts for this range when any of its characters fall inside it.
+                if (end <= from || begin >= to) continue;
+                _openTokens.Add((int)chunk.TokenIds[i]);
+                if (i < chunk.TokenLogprobs.Length) _openLogprobs.Add(chunk.TokenLogprobs[i]);
+            }
+        }
+
+        private VibeVoiceSegment Build(string text, double end) =>
+            new(_start, end, _speaker, text)
+            {
+                TokenIds      = _openTokens.ToArray(),
+                TokenLogprobs = _openLogprobs.Count == _openTokens.Count ? _openLogprobs.ToArray() : [],
+            };
+
         private void Close(double end)
         {
             string t = _open.ToString().Trim();
-            if (t.Length > 0) _closed.Add(new VibeVoiceSegment(_start, Math.Max(end, _start), _speaker, t));
+            if (t.Length > 0) _closed.Add(Build(t, Math.Max(end, _start)));
             _open.Clear();
+            _openTokens.Clear();
+            _openLogprobs.Clear();
         }
 
         // The model gives no timestamps, so a turn boundary inside a chunk is placed
@@ -453,19 +484,59 @@ public sealed class VibeVoiceStreamingAsr : IDisposable
 
     // ── Token decoding (skip_special_tokens=True, as upstream decodes chunk text) ──
 
-    private string DecodeSkippingSpecial(List<long> ids)
+    /// <summary>
+    /// Converts per-token byte offsets into character offsets.
+    ///
+    /// Byte offsets stop being character offsets the moment anything is non-ASCII, and a
+    /// multi-byte sequence can straddle two tokens — this is a byte-level tokenizer, so a
+    /// token boundary lands mid-character routinely for the CJK languages this model covers.
+    /// Counting each token's bytes independently would therefore be wrong; a stateful decoder
+    /// carries the partial sequence across the boundary, in one pass.
+    /// </summary>
+    internal static int[] CharEndsFromByteEnds(byte[] utf8, int[] byteEnds)
+    {
+        var ends = new int[byteEnds.Length];
+        var decoder = Encoding.UTF8.GetDecoder();
+        // GetChars, not GetCharCount: only the former advances the decoder's state, so only it
+        // holds a partial sequence back until the token that completes it. GetCharCount would
+        // report the same pending bytes on every call and count a split character repeatedly.
+        char[] scratch = new char[utf8.Length + 1];
+        int chars = 0, from = 0;
+        for (int i = 0; i < byteEnds.Length; i++)
+        {
+            chars += decoder.GetChars(utf8, from, byteEnds[i] - from, scratch, 0, flush: false);
+            from = byteEnds[i];
+            ends[i] = chars;
+        }
+        return ends;
+    }
+
+    /// <summary>
+    /// Decodes generated tokens, and reports for each one the character offset in the result at
+    /// which its contribution ends. A token can produce no characters (a special token) or, in
+    /// a multi-byte sequence, share a character with its neighbours, so offsets are
+    /// non-decreasing rather than strictly increasing — which is exactly what a caller needs to
+    /// ask "which tokens produced the text up to here".
+    /// </summary>
+    private (string text, int[] tokenCharEnds) DecodeWithOffsets(List<long> ids)
     {
         var bytes = new List<byte>(ids.Count * 4);
-        foreach (long id in ids)
+        var endsInBytes = new int[ids.Count];
+        for (int i = 0; i < ids.Count; i++)
         {
-            int iid = (int)id;
-            if (_addedTokenContent.ContainsKey(iid)) continue;
-            string? raw = iid >= 0 && iid < _idToToken.Length ? _idToToken[iid] : null;
-            if (raw is null) continue;
-            foreach (char ch in raw)
-                if (_byteLevelDecode.TryGetValue(ch, out byte b)) bytes.Add(b);
+            int iid = (int)ids[i];
+            if (!_addedTokenContent.ContainsKey(iid))
+            {
+                string? raw = iid >= 0 && iid < _idToToken.Length ? _idToToken[iid] : null;
+                if (raw is not null)
+                    foreach (char ch in raw)
+                        if (_byteLevelDecode.TryGetValue(ch, out byte b)) bytes.Add(b);
+            }
+            endsInBytes[i] = bytes.Count;
         }
-        return Encoding.UTF8.GetString(bytes.ToArray());
+
+        byte[] all = [.. bytes];
+        return (Encoding.UTF8.GetString(all), CharEndsFromByteEnds(all, endsInBytes));
     }
 
     private static long[] ReadLongArray(JsonElement el) => el.EnumerateArray().Select(e => e.GetInt64()).ToArray();
@@ -478,4 +549,5 @@ public sealed class VibeVoiceStreamingAsr : IDisposable
 /// produces, so the editor shows no per-word confidence for this backend yet.</para>
 /// </summary>
 public sealed record VibeVoiceStreamingChunk(
-    int Index, double Start, double End, string Text, long[] TokenIds, float[] TokenLogprobs);
+    int Index, double Start, double End, string Text, long[] TokenIds, float[] TokenLogprobs,
+    int[] TokenCharEnds);

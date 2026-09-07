@@ -1123,3 +1123,101 @@ process, and then deleted: this repository's build guard refuses the GPU runtime
 project (it is marked CPU-only), so the test could never exercise the path that crashes. A
 test that cannot run is worse than no test. The reproduction that did work was the app itself
 under Xvfb with an isolated profile and a job seeded into the control database.
+
+
+## Run 25 — 2026-09-07 19:00 — the 7B's "third speaker" is the crowd
+
+Run 14 flagged a third speaker label on the 7B's 30-minute run against two-speaker audio.
+Resolved: it is not drift and not a defect. Every occurrence is the same thing —
+
+```
+Speaker 2:Applause And Cheering
+```
+
+— and there are exactly three, at chunks 332, 379 and 426, one per repetition of the looped
+source. The model gives the audience its own label, and gives it the *same* label each time
+the same audio comes round, which is evidence the attribution is stable rather than wandering.
+
+**Consequence for the app, which is real if minor:** a speaker in the transcript need not be a
+person. A segment may arrive attributed to a speaker whose content is a non-speech event. The
+editor already lets a speaker be renamed, so this needs no code; it is documented in the help
+text so the label is not read as a transcription error.
+
+## Run 26 — 2026-09-07 19:20 — per-word confidence for the streaming backend
+
+The editor colours words by confidence for every other backend. This one produced none: the
+decode loop could compute log-probabilities but no caller asked, and the assembler dropped
+them anyway when folding chunks into turns.
+
+**The hard part is attribution, not computation.** A speaker turn is a slice of a chunk's
+text, so a segment must claim exactly the tokens that produced *its* characters. Tokens are
+byte-level, so byte offsets are not character offsets the moment anything is non-ASCII — and
+this model handles ten languages including Chinese, Japanese and Korean. `DecodeWithOffsets`
+therefore decodes each prefix to get true character offsets, and a chunk carries one offset
+per token. The assembler claims a token when any of its characters fall inside the range it is
+taking, and the speaker marker's own tokens go to neither side, since a marker is structure
+rather than speech.
+
+Confidences stay opt-in. The app asks for them because the editor shows them; the CLI asks
+only under `--benchmark`, since it prints text.
+
+**Verified** on the 69 s clip: 19 of 19 segments carry per-word confidence, and parity is
+unchanged at WER 0.008. Four tests pin the attribution: tokens follow text across a marker,
+they accumulate across chunks within one turn, marker tokens belong to neither side, and a
+segment reports *no* confidences rather than a mismatched count when they were not computed.
+
+## Run 27 — 2026-09-07 19:45 — hotwords, and a tokenizer that moved a layer down
+
+Hotwords were parsed but refused: they are user text spliced into the model's prompt, so they
+must be tokenized with the model's own vocabulary, and the C# side had only a *decoder*.
+
+**No new tokenizer was written.** `Qwen3Tokenizer` already implements the full byte-level BPE
+encoder for exactly this vocabulary — it was just in `Vernacula.Tts.Base`, because when it was
+written the ASR backends were all decode-only. Its header said so. That is no longer true, so
+the class moved to `Vernacula.Base`, where an ASR backend can use it without dragging in the
+TTS stack (the command-line tool references only `Vernacula.Base`, and should stay that way).
+Two callers inside the TTS library and one test needed a `using`; nothing else changed, and
+its parity tests still pass.
+
+**Effect, on the clip upstream ships to demonstrate the feature:**
+
+| | without hotwords | with `VibeVoice,diarization` |
+|---|---|---|
+| product name | "Y-voice" | "VibeVoice" |
+| technical term | "dilation" | "diarization" |
+
+Seven tokens of prompt. Wired in the CLI as `--hotwords` and in the app as a text box under
+the size picker, saved with the other settings. Bad hotwords are logged and ignored rather
+than failing the transcription, since losing a job to a typo in an optional field would be a
+poor trade.
+
+
+## Run 29 — 2026-09-07 20:40 — review of the follow-ups, and a bug my own test found
+
+Reviewing the confidence work turned up a defect in the fix I had just written, which is worth
+recording because the first version of the test would not have caught it.
+
+**The test was vacuous.** The non-ASCII attribution test built its chunks with hand-written
+character offsets, so it exercised the assembler's *use* of offsets and never the code that
+*computes* them. Breaking the computation deliberately left it green. Offsets are now produced
+by a small internal helper that can be called directly, and four tests drive it with real
+UTF-8.
+
+**The defect those tests then found.** The offset pass used `Decoder.GetCharCount`, which does
+not advance the decoder's state — it reports what the pending bytes *would* produce, every
+time it is asked. A character split across a token boundary was therefore counted once per
+token that touched its bytes: `[0,2,2,4]` where `[0,1,1,2]` was correct. `Decoder.GetChars`
+advances the state and holds a partial sequence back until the token that completes it.
+
+This matters because the tokenizer is byte-level: a token boundary lands inside a character
+routinely for the CJK languages this model covers, so the wrong tokens would be attributed to
+a speaker turn and the editor's confidence colours would follow them.
+
+Negative-checked: with byte offsets substituted for character offsets, three of the four tests
+fail; all pass when restored.
+
+**Two smaller review points.** `Qwen3Tokenizer`'s parity test stays in the TTS test project
+even though the class moved to `Vernacula.Base`, because the fixtures it compares against are
+generated by the OmniVoice export and ship with that project; the class header now says so
+rather than leaving the split unexplained. Two `using` lines left dangling by the move were
+removed.

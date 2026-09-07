@@ -1,5 +1,5 @@
+using Vernacula.Base.Tokenization;
 using System.Text.RegularExpressions;
-using Vernacula.Tts.Base.Tokenization;
 
 namespace Vernacula.Tts.Base;
 

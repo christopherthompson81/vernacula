@@ -620,11 +620,15 @@ try
             Console.Error.WriteLine("Use --vibevoice-streaming-model <dir> to specify the directory explicitly.");
             return 1;
         }
-        if (hotwords is not null)
+        // Hotwords are user text spliced into the model's prompt, so they must be tokenized
+        // with the model's own vocabulary — the package ships the tokenizer.json for it.
+        long[]? hotwordIds = null;
+        if (!string.IsNullOrWhiteSpace(hotwords))
         {
-            // The package ships no BPE encoder; tokenizing hotwords needs one on the C# side.
-            Console.Error.WriteLine("Error: --hotwords is not wired yet (no BPE encoder for this package).");
-            return 1;
+            var tok = new Vernacula.Base.Tokenization.Qwen3Tokenizer(
+                Path.Combine(dir, VibeVoiceStreamingAsr.TokenizerFile));
+            hotwordIds = [.. tok.Encode(hotwords).Select(t => (long)t)];
+            Console.WriteLine($"Hotwords: {hotwords} ({hotwordIds.Length} token(s))");
         }
 
         using var streaming = new VibeVoiceStreamingAsr(dir);
@@ -633,6 +637,8 @@ try
         // the audio is still arriving, and hiding that until the end would misrepresent it.
         int chunkCount = 0;
         var chunks = streaming.Transcribe(rawSamples, sampleRate, channels,
+            hotwordTokenIds: hotwordIds,
+            computeLogprobs: true,
             onChunk: c =>
             {
                 chunkCount++;
@@ -641,8 +647,14 @@ try
             },
             ct: cts.Token);
         swAsr.Stop();
-        foreach (var seg in VibeVoiceStreamingAsr.ToSegments(chunks))
-            results.Add((seg.Start, seg.End, $"speaker_{seg.Speaker}", seg.Content));
+        var streamSegs = VibeVoiceStreamingAsr.ToSegments(chunks);
+        foreach (var seg in streamSegs)
+            results.Add((seg.Start, seg.End, $"speaker_{Math.Max(0, seg.Speaker)}", seg.Content));
+        if (showBenchmark)
+        {
+            int withConf = streamSegs.Count(s2 => s2.TokenLogprobs.Count > 0);
+            Console.WriteLine($"  per-word confidence available on {withConf}/{streamSegs.Count} segment(s)");
+        }
         Console.WriteLine($"\r{chunkCount} chunk(s) → {results.Count} segment(s) ({swAsr.ElapsedMilliseconds}ms)");
     }
     else if (asrBackend == "cohere")
@@ -1337,7 +1349,7 @@ static void PrintUsage()
     Console.WriteLine("                                     ONNX Runtime graph optimization level for Qwen3-ASR");
     Console.WriteLine("  --vibevoice-model <dir>            Path to VibeVoice-ASR model dir (default: <models-dir>/vibevoice_asr)");
     Console.WriteLine("  --vibevoice-streaming-model <dir>  Path to VibeVoice-ASR-Streaming model dir (default: <models-dir>/vibevoice_asr_streaming)");
-    Console.WriteLine("  --hotwords <a,b,c>                 VibeVoice-ASR-Streaming hotwords (not wired yet)");
+    Console.WriteLine("  --hotwords <a,b,c>                 Bias VibeVoice-ASR-Streaming toward these names or terms");
     Console.WriteLine("  --granite-model <dir>              Path to Granite Speech model dir (default: <models-dir>/granite_speech_4_1_2b_bf16,");
     Console.WriteLine("                                     falling back to granite_speech_4_1_2b)");
     Console.WriteLine("  --min-asr-seconds <n>              Minimum audio span (s) per ASR group when using segmented VibeVoice (default: 5.0)");
