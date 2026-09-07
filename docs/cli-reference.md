@@ -7,14 +7,17 @@
 From a built binary:
 
 ```bash
-vernacula-cli --audio <file> --model <dir> [options]
+vernacula-cli --audio <file> [--models-dir <dir>] [options]
 ```
+
+With no `--models-dir`, the models root defaults to the desktop app's own location
+(`~/.local/share/Vernacula/models` on Linux, `%LOCALAPPDATA%\Vernacula\models` on Windows), so
+models downloaded in the app are found without any flag.
 
 From source:
 
 ```bash
-dotnet run --project src/Vernacula.CLI -p:EP=Cuda -- \
-  --audio meeting.wav --model ~/models/vernacula
+dotnet run --project src/Vernacula.CLI -p:EP=Cuda -- --audio meeting.wav
 ```
 
 Build configurations (CUDA / CPU / DirectML) are covered in [Building from source](building.md).
@@ -22,20 +25,28 @@ Build configurations (CUDA / CPU / DirectML) are covered in [Building from sourc
 ## Arguments
 
 ```
-Usage: vernacula-cli --audio <file> --model <dir> [options]
+Usage: vernacula-cli --audio <file> [--models-dir <dir>] [options]
 
 Required:
   --audio <path>                      Audio file to transcribe
-  --model <dir>                       Directory containing ONNX model files
+
+Models:
+  --models-dir <dir>                  Models root, one subdirectory per backend (parakeet/,
+                                      silero/, sortformer/, granite_speech_4_1_2b/, ...) — the
+                                      same layout the desktop app uses.
+                                      Default: <LocalApplicationData>/Vernacula/models
+  --model <dir>                       Older spelling of --models-dir. Also accepts a flat
+                                      bundle directory with no per-backend subdirectories,
+                                      which is how it used to be passed for Parakeet.
 
 Output:
   --output <path>                     Output file path (auto-named if omitted)
   --export-format <md|txt|json|srt>   Output format (default: md)
 
 ASR backend:
-  --asr <parakeet|cohere|qwen3asr|vibevoice>   ASR backend (default: parakeet)
+  --asr <parakeet|cohere|qwen3asr|vibevoice|whisper|granite>   ASR backend (default: parakeet)
   --language <code>                   Force language for Cohere ASR (ISO 639-1: en, fr, de, ...)
-  --cohere-model <dir>                Override Cohere model dir (default: <model>/cohere_transcribe)
+  --cohere-model <dir>                Override Cohere model dir (default: <models-dir>/cohere_transcribe)
   --qwen3asr-model <dir>              Override Qwen3-ASR model dir
   --vibevoice-model <dir>             Override VibeVoice-ASR model dir
 
@@ -62,25 +73,25 @@ Other:
 ## Examples
 
 ```bash
-# Basic Parakeet transcription with Sortformer diarization
+# Basic Parakeet transcription with Sortformer diarization, using the default models root
 dotnet run --project src/Vernacula.CLI -p:EP=Cuda -- \
-  --audio meeting.wav --model ~/models/vernacula
+  --audio meeting.wav
 
 # Parakeet + shallow KenLM fusion for medical dictation
 dotnet run --project src/Vernacula.CLI -- \
-  --audio clinic-note.wav --model ~/models/vernacula \
+  --audio clinic-note.wav \
   --lm ~/models/kenlm-parakeet/en-medical.arpa.gz \
   --lm-weight 0.15
 
 # Cohere Transcribe backend with forced French
 dotnet run --project src/Vernacula.CLI -- \
-  --audio interview.flac --model ~/models/vernacula \
+  --audio interview.flac \
   --asr cohere --language fr \
   --export-format srt --output interview.srt
 
 # Language identification only
 dotnet run --project src/Vernacula.CLI -- \
-  --audio unknown.mp3 --model ~/models/vernacula --lid
+  --audio unknown.mp3 --lid
 ```
 
 ## See also

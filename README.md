@@ -72,7 +72,7 @@ On Linux, `./install.sh` from the repo root builds a self-contained package and 
 
 ```bash
 dotnet run --project src/Vernacula.CLI -p:EP=Cuda -- \
-  --audio meeting.wav --model ~/models/vernacula
+  --audio meeting.wav
 ```
 
 Full argument reference and more examples in [docs/cli-reference.md](docs/cli-reference.md). Build configurations (CUDA / CPU / DirectML) in [docs/building.md](docs/building.md).

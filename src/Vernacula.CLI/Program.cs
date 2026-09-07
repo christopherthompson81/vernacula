@@ -9,7 +9,8 @@ using ParakeetAsr = Vernacula.Base.Parakeet;
 // ── Argument parsing ──────────────────────────────────────────────────────────
 
 string? audioPath       = null;
-string? modelDir        = null;
+string? modelDir        = null;         // legacy --model: a models ROOT, or a flat Parakeet bundle
+string? modelsDirFlag   = null;         // --models-dir: the models root, as the desktop app means it
 string? outputPath      = null;
 string? segmentsPath    = null;
 string  exportFormat    = "md";
@@ -46,6 +47,7 @@ for (int i = 0; i < args.Length; i++)
     {
         case "--audio":         audioPath    = args[++i]; break;
         case "--model":         modelDir     = args[++i]; break;
+        case "--models-dir":    modelsDirFlag = args[++i]; break;
         case "--output":        outputPath   = args[++i]; break;
         case "--segments":      segmentsPath = args[++i]; break;
         case "--export-format": exportFormat = args[++i].ToLowerInvariant(); break;
@@ -147,15 +149,30 @@ for (int i = 0; i < args.Length; i++)
     }
 }
 
+// ── Models root ───────────────────────────────────────────────────────────────
+//
+// One root holds every backend's bundle in its own subdirectory, exactly as the desktop app
+// lays it out (SettingsService.GetModelsDir plus per-backend Get<X>ModelsDir). Backends read
+// their own subdirectory from it; the two that historically loaded files flat from whatever
+// they were handed — Parakeet and Silero VAD — go through BundleDir below, which prefers the
+// subdirectory and falls back to the root, so `--model <flat-bundle>` keeps working.
+
+if (modelDir is not null && modelsDirFlag is not null)
+{
+    Console.Error.WriteLine(
+        "Error: --model and --models-dir both given. --models-dir is the models root "
+        + "(the desktop app's layout); --model is its older spelling. Pass one.");
+    return 1;
+}
+
+string modelsRoot = modelsDirFlag ?? modelDir ?? DefaultModelsDir();
+
 // ── Model-management actions (don't require --audio) ─────────────────────────
 
 if (downloadVoxLingua)
 {
-    // The Avalonia app's SettingsService.DefaultModelsDir resolves to
-    // <LocalApplicationData>/Vernacula/models; match that when the caller
-    // didn't override via --model so the downloaded assets land where the
-    // GUI would expect them.
-    string modelsRoot = modelDir ?? DefaultModelsDir();
+    // With no flag this is <LocalApplicationData>/Vernacula/models, so the downloaded assets
+    // land where the GUI would expect them.
     string destDir = Path.Combine(modelsRoot, Config.VoxLinguaSubDir);
     return await DownloadVoxLinguaAsync(destDir);
 }
@@ -167,7 +184,6 @@ if (runLid)
         Console.Error.WriteLine("Error: --lid requires --audio <file>.");
         return 1;
     }
-    string modelsRoot = modelDir ?? DefaultModelsDir();
     return RunLidAction(audioPath, modelsRoot);
 }
 
@@ -178,13 +194,12 @@ if (runWhisperCheck)
         Console.Error.WriteLine("Error: --whisper-check requires --audio <file>.");
         return 1;
     }
-    string modelsRoot = modelDir ?? DefaultModelsDir();
     return RunWhisperCheckAction(audioPath, modelsRoot);
 }
 
-if (audioPath is null || modelDir is null)
+if (audioPath is null)
 {
-    Console.Error.WriteLine("Error: --audio and --model are required.");
+    Console.Error.WriteLine("Error: --audio is required.");
     PrintUsage();
     return 1;
 }
@@ -200,7 +215,15 @@ if (diarization == "vibevoice-asr-builtin" && asrBackend != "vibevoice")
 }
 
 if (!File.Exists(audioPath))     { Console.Error.WriteLine($"Audio file not found: {audioPath}");  return 1; }
-if (!Directory.Exists(modelDir)) { Console.Error.WriteLine($"Model dir not found: {modelDir}");    return 1; }
+if (!Directory.Exists(modelsRoot))
+{
+    Console.Error.WriteLine($"Models dir not found: {modelsRoot}");
+    Console.Error.WriteLine(modelsDirFlag is null && modelDir is null
+        ? "That is the default location (the desktop app's models root). Download the models "
+          + "there with the desktop app, or point at your own with --models-dir <dir>."
+        : "Check the path passed to --models-dir.");
+    return 1;
+}
 
 if (exportFormat is not ("md" or "txt" or "json" or "srt"))
 {
@@ -298,7 +321,8 @@ try
     else if (diarization == "vad")
     {
         Console.Write("Detecting speech (VAD)... ");
-        using var vad = new VadSegmenter(modelDir);
+        // Silero loads its file flat from whatever directory it is handed.
+        using var vad = new VadSegmenter(BundleDir(modelsRoot, Config.VadSubDir));
         var vadSegs = vad.GetSegments(audio);
         segs = vadSegs.Select(s => (s.start, s.end, "speaker_1")).ToList();
         swDiar.Stop();
@@ -307,15 +331,12 @@ try
     else if (diarization == "diarizen")
     {
         Console.Write("Diarizing (DiariZen)... ");
-        // Check <modelDir>/diarizen/ subdirectory first (matches Avalonia app layout),
-        // then fall back to modelDir root for backward compatibility.
-        string diarizenSubDir = Path.Combine(modelDir, "diarizen");
-        string diarizenBase   = Directory.Exists(diarizenSubDir) ? diarizenSubDir : modelDir;
-        string diarizenModel  = Path.Combine(diarizenBase, Config.DiariZenFile);
+        string diarizenBase  = BundleDir(modelsRoot, "diarizen");
+        string diarizenModel = Path.Combine(diarizenBase, Config.DiariZenFile);
         if (!File.Exists(diarizenModel))
         {
             Console.Error.WriteLine($"\nError: DiariZen model not found: {diarizenModel}");
-            Console.Error.WriteLine("Expected at <model-dir>/diarizen/diarizen_segmentation.onnx");
+            Console.Error.WriteLine("Expected at <models-dir>/diarizen/diarizen_segmentation.onnx");
             return 1;
         }
 
@@ -341,7 +362,7 @@ try
 
             var sw1 = Stopwatch.StartNew();
             Console.Write("Loading Sortformer model... ");
-            using var sortformer = new SortformerStreamer(modelDir);
+            using var sortformer = new SortformerStreamer(modelsRoot);
             Console.WriteLine($"DONE ({sw1.ElapsedMilliseconds,6} ms)");
 
             var sw2 = Stopwatch.StartNew();
@@ -394,7 +415,7 @@ try
         else
         {
             Console.Write("Diarizing (Sortformer)... ");
-            using var sortformer = new SortformerStreamer(modelDir);
+            using var sortformer = new SortformerStreamer(modelsRoot);
             segs = sortformer.Diarize(audio,
                 (idx, total) => Console.Write($"\r  Diarizing chunk {idx}/{total}..."));
             swDiar.Stop();
@@ -418,9 +439,7 @@ try
     else if (asrBackend == "vibevoice")
     {
         string vibevoiceDir = vibevoiceModelDir
-            ?? (Directory.Exists(Path.Combine(modelDir, Config.VibeVoiceSubDir))
-                ? Path.Combine(modelDir, Config.VibeVoiceSubDir)
-                : modelDir);
+            ?? BundleDir(modelsRoot, Config.VibeVoiceSubDir);
 
         if (!File.Exists(Path.Combine(vibevoiceDir, VibeVoiceAsr.AudioEncoderFile)))
         {
@@ -551,9 +570,7 @@ try
     else if (asrBackend == "cohere")
     {
         string cohereDir = cohereModelDir
-            ?? (Directory.Exists(Path.Combine(modelDir, "cohere_transcribe"))
-                ? Path.Combine(modelDir, "cohere_transcribe")
-                : modelDir);
+            ?? BundleDir(modelsRoot, "cohere_transcribe");
 
         if (!File.Exists(Path.Combine(cohereDir, CohereTranscribe.MelFile)))
         {
@@ -596,11 +613,11 @@ try
         }
         else
         {
-            string bf16Dir = Path.Combine(modelDir, Config.GraniteSpeechBf16SubDir);
-            string fp32Dir = Path.Combine(modelDir, Config.GraniteSpeechSubDir);
+            string bf16Dir = Path.Combine(modelsRoot, Config.GraniteSpeechBf16SubDir);
+            string fp32Dir = Path.Combine(modelsRoot, Config.GraniteSpeechSubDir);
             bool bf16Available = Directory.Exists(bf16Dir) && HardwareInfo.SupportsBf16Acceleration();
             graniteDir = bf16Available ? bf16Dir
-                : (Directory.Exists(fp32Dir) ? fp32Dir : modelDir);
+                : (Directory.Exists(fp32Dir) ? fp32Dir : modelsRoot);
             Console.WriteLine($"Granite Speech bundle: {Path.GetFileName(graniteDir)}");
         }
 
@@ -635,9 +652,7 @@ try
     else if (asrBackend == "qwen3asr")
     {
         string qwen3AsrDir = qwen3AsrModelDir
-            ?? (Directory.Exists(Path.Combine(modelDir, Config.Qwen3AsrSubDir))
-                ? Path.Combine(modelDir, Config.Qwen3AsrSubDir)
-                : modelDir);
+            ?? BundleDir(modelsRoot, Config.Qwen3AsrSubDir);
 
         if (!File.Exists(Path.Combine(qwen3AsrDir, Qwen3Asr.EncoderFile)))
         {
@@ -703,7 +718,7 @@ try
     }
     else if (asrBackend == "whisper")
     {
-        string whisperDir = Path.Combine(modelDir, Config.WhisperTurboSubDir);
+        string whisperDir = Path.Combine(modelsRoot, Config.WhisperTurboSubDir);
         string[] required = [
             WhisperTurbo.MelFile,
             WhisperTurbo.EncoderFile,
@@ -777,8 +792,9 @@ try
         // so `--lm foo.arpa` Just Works.
         int effectiveBeam = parakeetLmPath != null && parakeetBeam < 2 ? 4 : parakeetBeam;
 
-        using var parakeet = new ParakeetAsr(modelDir, encoderFile, decoderJointFile,
-            beamWidth: effectiveBeam);
+        // Parakeet loads its files flat from whatever directory it is handed.
+        using var parakeet = new ParakeetAsr(BundleDir(modelsRoot, Config.ParakeetSubDir),
+            encoderFile, decoderJointFile, beamWidth: effectiveBeam);
 
         if (parakeetLmPath != null)
         {
@@ -947,6 +963,24 @@ static bool IsLikelyOutOfMemory(OnnxRuntimeException ex)
         || message.Contains("failed to allocate memory", StringComparison.OrdinalIgnoreCase)
         || message.Contains("cuda out of memory", StringComparison.OrdinalIgnoreCase)
         || message.Contains("bfcarena", StringComparison.OrdinalIgnoreCase);
+}
+
+/// <summary>
+/// A backend's bundle inside the models root: <c>&lt;root&gt;/&lt;subDir&gt;</c> when that
+/// exists, else the root itself.
+///
+/// <para>
+/// The fallback is what keeps <c>--model &lt;flat-bundle&gt;</c> working. Backends that read
+/// their own subdirectory never need this; it is for the two that load files flat from the
+/// directory they are handed (Parakeet, Silero VAD) and for the ones whose bundle may sit
+/// either way round. Sortformer does the same thing for itself in
+/// <see cref="Config.GetSortformerModelPath"/>.
+/// </para>
+/// </summary>
+static string BundleDir(string root, string subDir)
+{
+    string candidate = Path.Combine(root, subDir);
+    return Directory.Exists(candidate) ? candidate : root;
 }
 
 /// <summary>
@@ -1174,8 +1208,20 @@ static async Task<int> DownloadVoxLinguaAsync(string destDir)
 
 static void PrintUsage()
 {
-    Console.WriteLine("Usage: vernacula-cli --audio <file> --model <dir> [options]");
-    Console.WriteLine("       vernacula-cli --download-voxlingua [--model <dir>]");
+    Console.WriteLine("Usage: vernacula-cli --audio <file> [--models-dir <dir>] [options]");
+    Console.WriteLine("       vernacula-cli --download-voxlingua [--models-dir <dir>]");
+    Console.WriteLine();
+    Console.WriteLine("Models:");
+    Console.WriteLine("  --models-dir <dir>                 Models root, holding one subdirectory per backend");
+    Console.WriteLine("                                     (parakeet/, silero/, granite_speech_4_1_2b/, ...) — the");
+    Console.WriteLine("                                     same layout the desktop app uses.");
+    Console.WriteLine($"                                     Default: {DefaultModelsDir()}");
+    Console.WriteLine("  --model <dir>                      Older spelling of --models-dir. Also accepts a flat");
+    Console.WriteLine("                                     bundle directory (no per-backend subdirectories),");
+    Console.WriteLine("                                     which is how it used to be passed for Parakeet.");
+    Console.WriteLine();
+    Console.WriteLine("  The per-backend --*-model flags below override one backend's directory; everything");
+    Console.WriteLine("  else is found under the models root.");
     Console.WriteLine();
     Console.WriteLine("Options:");
     Console.WriteLine("  --segments <path>                  Load pre-computed segments JSON, skip diarization");
@@ -1184,13 +1230,16 @@ static void PrintUsage()
     Console.WriteLine("  --diarization <backend>            Diarization backend: sortformer, diarizen, vad, vibevoice-asr-builtin");
     Console.WriteLine("                                     (default: sortformer, or vibevoice-asr-builtin when --asr vibevoice)");
     Console.WriteLine("  --vad                              Use VAD instead of diarization (deprecated)");
-    Console.WriteLine("  --asr <parakeet|cohere|qwen3asr|vibevoice>  ASR backend (default: parakeet)");
-    Console.WriteLine("  --cohere-model <dir>               Path to Cohere Transcribe model dir (default: <model>/cohere_transcribe)");
-    Console.WriteLine("  --qwen3asr-model <dir>             Path to Qwen3-ASR model dir (default: <model>/qwen3asr)");
+    Console.WriteLine("  --asr <parakeet|cohere|qwen3asr|vibevoice|whisper|granite>");
+    Console.WriteLine("                                     ASR backend (default: parakeet)");
+    Console.WriteLine("  --cohere-model <dir>               Path to Cohere Transcribe model dir (default: <models-dir>/cohere_transcribe)");
+    Console.WriteLine("  --qwen3asr-model <dir>             Path to Qwen3-ASR model dir (default: <models-dir>/qwen3asr)");
     Console.WriteLine("  --qwen3asr-serial                  Force serial Qwen3-ASR, disabling experimental batching");
     Console.WriteLine("  --qwen3asr-ort-opt <extended|basic|disabled>");
     Console.WriteLine("                                     ONNX Runtime graph optimization level for Qwen3-ASR");
-    Console.WriteLine("  --vibevoice-model <dir>            Path to VibeVoice-ASR model dir (default: <model>/vibevoice_asr)");
+    Console.WriteLine("  --vibevoice-model <dir>            Path to VibeVoice-ASR model dir (default: <models-dir>/vibevoice_asr)");
+    Console.WriteLine("  --granite-model <dir>              Path to Granite Speech model dir (default: <models-dir>/granite_speech_4_1_2b_bf16,");
+    Console.WriteLine("                                     falling back to granite_speech_4_1_2b)");
     Console.WriteLine("  --min-asr-seconds <n>              Minimum audio span (s) per ASR group when using segmented VibeVoice (default: 5.0)");
     Console.WriteLine("  --asr-buffer <n>                   Seconds of audio padding on each side of a group (default: 0.0); helps boundary transitions");
     Console.WriteLine("  --profile <dir>                    Write ORT Chrome-trace JSON to <dir>/ (vibevoice only; for perf analysis)");
