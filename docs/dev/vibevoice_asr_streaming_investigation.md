@@ -916,3 +916,41 @@ see).
 (`christopherthompson81/vibevoice-asr-streaming-onnx`) does not exist yet, so Download
 Missing Models will 404 until the package is published. Publishing it is the next step, along
 with a manifest of per-file MD5s built the same way as the other model repos.
+
+## Run 20 — 2026-09-07 16:50 — two sizes, selectable; packages assembled for publishing
+
+**Size selection.** `VibeVoiceStreamingSize { Small1_5B, Large7B }` persists in settings and
+picks both the install folder (`vibevoice_asr_streaming_1_5b` / `_7b`, side by side so
+switching does not force a re-download) and the download repo. The settings pane shows the
+pair only when the streaming backend is selected, each labelled with its measured VRAM peak
+and the trade-off that matters:
+
+| | VRAM | 10-min RTF | speakers on the test clip |
+|---|---|---|---|
+| 1.5B | 7.4 GB | 0.060 | labels every turn Speaker 0 |
+| 7B | 15.7 GB | 0.142 | separates two speakers, held over 30 minutes |
+
+A warning line appears when the detected card is smaller than the selected checkpoint needs.
+Changing size re-runs the model check, since the missing-file set differs.
+
+**A packaging trap.** The float16 audio encoder fits in a single protobuf (1.39 GB) and so
+saved *without* a `.data` sidecar, while every other graph has one. The downloader's asset
+list is static, so a package missing a file the list names would 404 at install.
+`assemble_package.py` therefore re-saves both graphs with external data, giving every package
+the same nine files at both sizes.
+
+**Packages built and verified end to end through the C# CLI, not just the Python harness:**
+
+| package | size | WER vs the torch reference | speakers |
+|---|---|---|---|
+| 1.5B | 3.2 GiB | 0.008 | 1 |
+| 7B | 9.0 GiB | 0.012 | 2 |
+
+Manifests of per-file MD5s built with the shared `scripts/make_manifest.py`, and model cards
+written to `scripts/hf_readmes/vibevoice-asr-streaming-{1.5b,7b}-onnx/` in the same house
+style as the other exports, stating the deterministic-encoding and INT8 changes, the CUDA
+requirement, the cache ceiling, and the speaker-attribution difference between sizes.
+
+**Not uploaded.** The two HF repos do not exist yet and publishing ~12 GiB to public repos is
+the user's call, so this stops at locally verified packages under
+`/mnt/data/models/vibevoice_streaming_publish/{1.5b,7b}`.

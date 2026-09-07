@@ -175,7 +175,15 @@ internal class SettingsService
         Path.Combine(GetModelsDir(), "vibevoice_asr");
 
     public string GetVibeVoiceStreamingModelsDir() =>
-        Path.Combine(GetModelsDir(), Config.VibeVoiceStreamingSubDir);
+        Path.Combine(GetModelsDir(), VibeVoiceStreamingSubDir(Current.VibeVoiceStreamingSize));
+
+    /// <summary>Package folder for a streaming size, independent of what is selected.</summary>
+    public static string VibeVoiceStreamingSubDir(VibeVoiceStreamingSize size) => size switch
+    {
+        VibeVoiceStreamingSize.Small1_5B => Config.VibeVoiceStreamingSubDir,
+        VibeVoiceStreamingSize.Large7B   => Config.VibeVoiceStreaming7BSubDir,
+        _ => throw new ArgumentOutOfRangeException(nameof(size)),
+    };
 
     public string GetIndicConformerModelsDir() =>
         Path.Combine(GetModelsDir(), Config.IndicConformerSubDir);

@@ -31,8 +31,13 @@ internal partial class SettingsViewModel : ObservableObject
     private SegmentationMode _selectedSegmentation;
 
     [ObservableProperty]
-    [NotifyPropertyChangedFor(nameof(IsAsrParakeet), nameof(IsAsrCohere), nameof(IsAsrQwen3Asr), nameof(IsAsrVibeVoice), nameof(IsAsrVibeVoiceStreaming), nameof(IsAsrIndicConformer), nameof(IsAsrWhisperTurbo), nameof(IsAsrGraniteSpeech), nameof(ShowStandardSegmentationOptions), nameof(ShowVibeVoiceBuiltinSegmentation), nameof(ShowDiariZenInSegmentation), nameof(ShowGatedSegmentationHint), nameof(CanUseVibeVoiceAsr), nameof(VibeVoiceAsrLabel), nameof(VibeVoiceAsrDescription), nameof(CanUseVibeVoiceStreamingAsr), nameof(VibeVoiceStreamingAsrLabel), nameof(VibeVoiceStreamingAsrDescription), nameof(ShowCohereLanguagePicker), nameof(ShowQwen3AsrLanguagePicker), nameof(ShowIndicConformerLanguagePicker), nameof(ShowWhisperTurboLanguagePicker))]
+    [NotifyPropertyChangedFor(nameof(IsAsrParakeet), nameof(IsAsrCohere), nameof(IsAsrQwen3Asr), nameof(IsAsrVibeVoice), nameof(IsAsrVibeVoiceStreaming), nameof(IsAsrIndicConformer), nameof(IsAsrWhisperTurbo), nameof(IsAsrGraniteSpeech), nameof(ShowStandardSegmentationOptions), nameof(ShowVibeVoiceBuiltinSegmentation), nameof(ShowDiariZenInSegmentation), nameof(ShowGatedSegmentationHint), nameof(CanUseVibeVoiceAsr), nameof(VibeVoiceAsrLabel), nameof(VibeVoiceAsrDescription), nameof(CanUseVibeVoiceStreamingAsr), nameof(VibeVoiceStreamingAsrLabel), nameof(VibeVoiceStreamingAsrDescription), nameof(ShowVibeVoiceStreamingSizePicker), nameof(ShowCohereLanguagePicker), nameof(ShowQwen3AsrLanguagePicker), nameof(ShowIndicConformerLanguagePicker), nameof(ShowWhisperTurboLanguagePicker))]
     private AsrBackend _selectedAsrBackend;
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(IsVibeVoiceStreamingSmall), nameof(IsVibeVoiceStreamingLarge),
+                              nameof(VibeVoiceStreamingSizeWarning), nameof(ShowVibeVoiceStreamingSizeWarning))]
+    private VibeVoiceStreamingSize _selectedVibeVoiceStreamingSize;
 
     [ObservableProperty]
     private int _parakeetBeamWidth;
@@ -142,6 +147,30 @@ internal partial class SettingsViewModel : ObservableObject
     public bool IsAsrGraniteSpeech  => SelectedAsrBackend == AsrBackend.GraniteSpeech;
     public bool CanUseVibeVoiceAsr  => CudaEpWorking;
     public bool CanUseVibeVoiceStreamingAsr => CudaEpWorking;
+
+    public bool IsVibeVoiceStreamingSmall => SelectedVibeVoiceStreamingSize == VibeVoiceStreamingSize.Small1_5B;
+    public bool IsVibeVoiceStreamingLarge => SelectedVibeVoiceStreamingSize == VibeVoiceStreamingSize.Large7B;
+
+    /// <summary>
+    /// Warns when the selected checkpoint will not fit. Measured peaks on a 24 GB card at a
+    /// 16384-position cache: 7.4 GB for the 1.5B, 15.7 GB for the 7B
+    /// (docs/dev/vibevoice_asr_streaming_investigation.md, Runs 12-14).
+    /// </summary>
+    public string VibeVoiceStreamingSizeWarning
+    {
+        get
+        {
+            var (totalMb, _) = HardwareInfo.GetGpuMemoryMb();
+            if (totalMb <= 0) return "";
+            double needGb = SelectedVibeVoiceStreamingSize == VibeVoiceStreamingSize.Large7B ? 15.7 : 7.4;
+            double haveGb = totalMb / 1024.0;
+            return haveGb < needGb
+                ? $"This card reports {haveGb:F1} GB of VRAM; this checkpoint peaks near {needGb:F1} GB."
+                : "";
+        }
+    }
+
+    public bool ShowVibeVoiceStreamingSizeWarning => VibeVoiceStreamingSizeWarning.Length > 0;
     public string VibeVoiceStreamingAsrLabel => CanUseVibeVoiceStreamingAsr
         ? "VibeVoice-ASR Streaming"
         : "VibeVoice-ASR Streaming (Unavailable - CUDA Missing)";
@@ -152,6 +181,7 @@ internal partial class SettingsViewModel : ObservableObject
     public string VibeVoiceAsrDescription => CanUseVibeVoiceAsr
         ? "Whole-recording ASR with built-in diarization. Downloads into the vibevoice_asr models folder."
         : "Unavailable because the CUDA execution provider check did not pass.";
+    public bool ShowVibeVoiceStreamingSizePicker => SelectedAsrBackend == AsrBackend.VibeVoiceStreaming;
     public bool ShowCohereLanguagePicker         => SelectedAsrBackend == AsrBackend.Cohere;
     public bool ShowQwen3AsrLanguagePicker       => SelectedAsrBackend == AsrBackend.Qwen3Asr;
     public bool ShowIndicConformerLanguagePicker => SelectedAsrBackend == AsrBackend.IndicConformer;
@@ -357,6 +387,7 @@ internal partial class SettingsViewModel : ObservableObject
         _modelMgr              = modelMgr;
         _selectedTheme                = svc.Current.Theme;
         _selectedAsrBackend           = svc.Current.AsrBackend;
+        _selectedVibeVoiceStreamingSize = svc.Current.VibeVoiceStreamingSize;
         _selectedSegmentation         = NormalizeSegmentationForBackend(
             svc.Current.Segmentation == SegmentationMode.DiariZen && !svc.IsGatedModelAccepted(DiariZenGatedModelId)
                 ? SegmentationMode.Sortformer
@@ -444,6 +475,14 @@ internal partial class SettingsViewModel : ObservableObject
         _svc.Current.Segmentation = value;
         _svc.Save();
         OnSegmentationChanged?.Invoke();
+    }
+
+    partial void OnSelectedVibeVoiceStreamingSizeChanged(VibeVoiceStreamingSize value)
+    {
+        _svc.Current.VibeVoiceStreamingSize = value;
+        _svc.Save();
+        // The two sizes live in different folders, so the missing-file set changes with them.
+        _ = CheckModelsAsync();
     }
 
     partial void OnSelectedAsrBackendChanged(AsrBackend value)
@@ -675,6 +714,7 @@ internal partial class SettingsViewModel : ObservableObject
     [RelayCommand] private void SetTheme(string n)              { if (Enum.TryParse<AppTheme>(n,         out var t)) SelectedTheme              = t; }
     [RelayCommand] private void SetSegmentation(string n)       { if (Enum.TryParse<SegmentationMode>(n, out var s)) SelectedSegmentation       = s; }
     [RelayCommand] private void SetAsrBackend(string n)         { if (Enum.TryParse<AsrBackend>(n,      out var a)) SelectedAsrBackend         = a; }
+    [RelayCommand] private void SetVibeVoiceStreamingSize(string n) { if (Enum.TryParse<VibeVoiceStreamingSize>(n, out var v)) SelectedVibeVoiceStreamingSize = v; }
     [RelayCommand] private void SetEditorPlaybackMode(string n) { if (Enum.TryParse<PlaybackMode>(n,     out var m)) SelectedEditorPlaybackMode = m; }
     [RelayCommand] private void SetLanguage(string l)           => SelectedLanguage = l;
 

@@ -178,7 +178,14 @@ public static class Config
     /// Default subdirectory for a VibeVoice-ASR-Streaming package (same file names as
     /// <see cref="VibeVoiceSubDir"/>, plus a "streaming" section in export-report.json).
     /// </summary>
-    public const string VibeVoiceStreamingSubDir = "vibevoice_asr_streaming";
+    /// <summary>
+    /// Default subdirectory for the 1.5B streaming package. The two sizes install side by
+    /// side so switching between them does not force a re-download.
+    /// </summary>
+    public const string VibeVoiceStreamingSubDir = "vibevoice_asr_streaming_1_5b";
+
+    /// <summary>Subdirectory for the 7B streaming package.</summary>
+    public const string VibeVoiceStreaming7BSubDir = "vibevoice_asr_streaming_7b";
 
     // ── ASR (Qwen3-ASR) ──────────────────────────────────────────────────────
     public const string Qwen3AsrSubDir = "qwen3asr";

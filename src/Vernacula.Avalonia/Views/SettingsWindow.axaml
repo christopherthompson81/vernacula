@@ -597,6 +597,40 @@
                             </StackPanel>
                         </RadioButton>
 
+                        <StackPanel Margin="26,6,0,0" IsVisible="{Binding ShowVibeVoiceStreamingSizePicker}">
+                            <RadioButton GroupName="VibeVoiceStreamingSize"
+                                         IsChecked="{Binding IsVibeVoiceStreamingSmall, Mode=OneWay}"
+                                         Command="{Binding SetVibeVoiceStreamingSizeCommand}"
+                                         CommandParameter="Small1_5B"
+                                         Foreground="{DynamicResource TextBrush}">
+                                <StackPanel>
+                                    <TextBlock Text="1.5B — faster, ~7.4 GB VRAM"
+                                               Foreground="{DynamicResource TextBrush}" />
+                                    <TextBlock Text="Best for transcription. Speaker labels are less reliable than the 7B."
+                                               Foreground="{DynamicResource SubtextBrush}"
+                                               FontSize="11" TextWrapping="Wrap" />
+                                </StackPanel>
+                            </RadioButton>
+                            <RadioButton GroupName="VibeVoiceStreamingSize"
+                                         IsChecked="{Binding IsVibeVoiceStreamingLarge, Mode=OneWay}"
+                                         Command="{Binding SetVibeVoiceStreamingSizeCommand}"
+                                         CommandParameter="Large7B"
+                                         Margin="0,4,0,0"
+                                         Foreground="{DynamicResource TextBrush}">
+                                <StackPanel>
+                                    <TextBlock Text="7B — better speaker attribution, ~15.7 GB VRAM"
+                                               Foreground="{DynamicResource TextBrush}" />
+                                    <TextBlock Text="Separates speakers reliably; about half the speed of the 1.5B."
+                                               Foreground="{DynamicResource SubtextBrush}"
+                                               FontSize="11" TextWrapping="Wrap" />
+                                </StackPanel>
+                            </RadioButton>
+                            <TextBlock Text="{Binding VibeVoiceStreamingSizeWarning}"
+                                       IsVisible="{Binding ShowVibeVoiceStreamingSizeWarning}"
+                                       Foreground="{DynamicResource RedBrush}"
+                                       FontSize="11" TextWrapping="Wrap" Margin="0,4,0,0" />
+                        </StackPanel>
+
                         <Separator Background="{DynamicResource OverlayBrush}" Margin="0,8,0,8" />
 
                         <RadioButton GroupName="AsrBackend"

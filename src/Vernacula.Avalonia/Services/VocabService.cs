@@ -71,7 +71,12 @@ internal class VocabService
         else if (string.Equals(asrModel, "microsoft/vibevoice-asr-streaming", StringComparison.Ordinal))
         {
             _kind = VocabKind.VibeVoice;
-            (_vocab, _addedContent) = LoadVibeVoiceVocab(Path.Combine(modelsDir, Config.VibeVoiceStreamingSubDir, VibeVoiceStreamingAsr.TokenizerFile));
+            // Both sizes ship the same vocabulary; read whichever package is installed.
+            string streamingDir = Directory.Exists(Path.Combine(modelsDir, Config.VibeVoiceStreaming7BSubDir))
+                                  && !Directory.Exists(Path.Combine(modelsDir, Config.VibeVoiceStreamingSubDir))
+                ? Config.VibeVoiceStreaming7BSubDir
+                : Config.VibeVoiceStreamingSubDir;
+            (_vocab, _addedContent) = LoadVibeVoiceVocab(Path.Combine(modelsDir, streamingDir, VibeVoiceStreamingAsr.TokenizerFile));
             _byteLevelDecode = BuildByteLevelDecode();
         }
         else if (string.Equals(asrModel, "Qwen/Qwen3-ASR-1.7B", StringComparison.Ordinal))
