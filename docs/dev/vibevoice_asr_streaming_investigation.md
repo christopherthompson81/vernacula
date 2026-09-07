@@ -743,3 +743,43 @@ an unpredictable crash into a documented limit the caller can check up front:
 
 Run 14 re-exports both checkpoints at a 32768 ceiling (buffer 1.76 GiB on the 7B, 0.88 on the
 1.5B) to cover 30-minute files.
+
+## Run 14 — 2026-09-07 13:52 — 32768 ceiling: 30-minute files on both checkpoints
+
+**Command.** Both checkpoints re-exported with `--max-tokens 32768` (buffer 1.75 GiB on the
+7B, 0.88 on the 1.5B), quantized to INT8, run on the 30-minute file.
+
+| build | audio | RTF | tok/s | KV used | GPU | WER vs torch | speaker turns |
+|---|---|---|---|---|---|---|---|
+| 7B GQA+INT8 | 30 min | 0.177 | 37.7 | 29821/32768 | 15.69 GiB | 0.020 | 585 (ref 588) |
+| 1.5B GQA+INT8 | 30 min | 0.078 | 78.0 | 28742/32768 | 8.67 GiB | 0.025 | 439 (ref 436) |
+
+- **The 7B transcribes a 30-minute recording for the first time**, at 15.7 GiB with 8 GiB to
+  spare, faster than the reference PyTorch loop (0.177 vs 0.221) and with parity inside its
+  seed envelope. Every earlier build OOMed at 10 minutes.
+- The 1.5B does the same file at RTF 0.078 in 8.67 GiB — 2.1× faster than the PyTorch loop.
+- Cache use at 30 minutes is ~29k positions, so the 32768 ceiling is worth about 33 minutes.
+  A ceiling maps to duration as `ceiling ÷ ~16.0 positions per second of audio`.
+- One thing to watch: the 7B run emitted **three** distinct speaker labels where the
+  reference emitted two, on audio that contains two speakers (the file loops one interview).
+  WER is unaffected (0.020) and the turn count matches (585 vs 588), so this is one stray
+  label rather than a systematic split, but speaker-label stability over long files deserves
+  its own check before the app trusts the labels for anything but display.
+
+**Upstream comparison (checked at the user's suggestion).** `microsoft/VibeVoice`'s own vLLM
+streaming server does not stream unboundedly either. It enforces two ceilings in code —
+`max_model_len` (default **16384**, the same number chosen here independently) and
+`max_audio_windows` (default 512, ~25 minutes) — and on either it raises "session outgrew
+the ... context ... Raise --max-model-len, or start a new session." The docs say the same:
+"`--max-model-len` is what caps how long one session can run; raise it for hour-long
+streams." There is no eviction, sliding window or re-priming anywhere in the repo, and the
+design notes state that every chunk reuses the KV cache of every chunk before it.
+
+Their bookkeeping is worth copying in one respect: they count the *expanded* length, warning
+that each audio placeholder becomes `window_frames + 2` positions and that counting the
+unexpanded prefix runs short by ~20 tokens per window. Our check counts real cache positions,
+so it is already on the right side of that.
+
+This says upstream chose a bounded session, not that windowing fails — their product is
+real-time sessions rather than long-file transcription, so they had no reason to need it.
+The sliding-window trial continues on branch `exp/vibevoice-sliding-window`.
