@@ -120,6 +120,24 @@ public class VibeVoiceStreamingAssemblerTests
     }
 
     [Fact]
+    public void NonAsciiTextAttributesTokensByCharacter_NotByByte()
+    {
+        // The offsets a chunk carries are character positions. If they were byte positions,
+        // a turn split after a multi-byte word would claim the wrong tokens — and this model
+        // covers Chinese, Japanese and Korean, so that is the normal case, not a corner one.
+        // "发布" is two characters and six UTF-8 bytes.
+        const string text = "发布 \n Speaker 1:ok";
+        var chunk = PerChar(0, text);
+        var segs = VibeVoiceStreamingAsr.ToSegments([chunk]);
+
+        Assert.Equal(2, segs.Count);
+        Assert.Equal("发布", segs[0].Content);
+        Assert.Equal("ok", segs[1].Content);
+        Assert.Equal(2, segs[0].TokenIds.Count);          // 发, 布 — not 6 bytes' worth
+        Assert.Equal(2, segs[1].TokenIds.Count);
+    }
+
+    [Fact]
     public void ChunksWithNoSpeakerMarkerStillProduceText()
     {
         // A recording whose speaker never changes emits no markers at all; the text must not

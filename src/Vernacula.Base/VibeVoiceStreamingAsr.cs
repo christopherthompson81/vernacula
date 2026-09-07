@@ -485,6 +485,33 @@ public sealed class VibeVoiceStreamingAsr : IDisposable
     // ── Token decoding (skip_special_tokens=True, as upstream decodes chunk text) ──
 
     /// <summary>
+    /// Converts per-token byte offsets into character offsets.
+    ///
+    /// Byte offsets stop being character offsets the moment anything is non-ASCII, and a
+    /// multi-byte sequence can straddle two tokens — this is a byte-level tokenizer, so a
+    /// token boundary lands mid-character routinely for the CJK languages this model covers.
+    /// Counting each token's bytes independently would therefore be wrong; a stateful decoder
+    /// carries the partial sequence across the boundary, in one pass.
+    /// </summary>
+    internal static int[] CharEndsFromByteEnds(byte[] utf8, int[] byteEnds)
+    {
+        var ends = new int[byteEnds.Length];
+        var decoder = Encoding.UTF8.GetDecoder();
+        // GetChars, not GetCharCount: only the former advances the decoder's state, so only it
+        // holds a partial sequence back until the token that completes it. GetCharCount would
+        // report the same pending bytes on every call and count a split character repeatedly.
+        char[] scratch = new char[utf8.Length + 1];
+        int chars = 0, from = 0;
+        for (int i = 0; i < byteEnds.Length; i++)
+        {
+            chars += decoder.GetChars(utf8, from, byteEnds[i] - from, scratch, 0, flush: false);
+            from = byteEnds[i];
+            ends[i] = chars;
+        }
+        return ends;
+    }
+
+    /// <summary>
     /// Decodes generated tokens, and reports for each one the character offset in the result at
     /// which its contribution ends. A token can produce no characters (a special token) or, in
     /// a multi-byte sequence, share a character with its neighbours, so offsets are
@@ -509,13 +536,7 @@ public sealed class VibeVoiceStreamingAsr : IDisposable
         }
 
         byte[] all = [.. bytes];
-        string text = Encoding.UTF8.GetString(all);
-        // Byte offsets are not character offsets once anything is non-ASCII; decoding the
-        // prefix is the only way to be right about that for every script this model handles.
-        var ends = new int[ids.Count];
-        for (int i = 0; i < ids.Count; i++)
-            ends[i] = Encoding.UTF8.GetString(all, 0, endsInBytes[i]).Length;
-        return (text, ends);
+        return (Encoding.UTF8.GetString(all), CharEndsFromByteEnds(all, endsInBytes));
     }
 
     private static long[] ReadLongArray(JsonElement el) => el.EnumerateArray().Select(e => e.GetInt64()).ToArray();
