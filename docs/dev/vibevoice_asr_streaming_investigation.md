@@ -1036,3 +1036,41 @@ backend reports the new limits.
 **The remaining cost is speed, not memory.** Attention tracks the filled cache, so a token
 late in a two-hour file costs several times an early one; VRAM stays flat. Documented in the
 help text and both model cards rather than left for a user to discover.
+
+## Run 23 — 2026-09-07 18:10 — selecting Streaming downloaded the wrong model
+
+**Reported.** With the 1.5B streaming backend selected, the download showed
+`vibevoice_asr/audio_encoder.onnx.data` and a 17.2 GB total — the *non-streaming* package.
+
+**Cause.** `ActiveRepos()` opened with an early return that pre-dated this backend:
+
+```csharp
+if (AsrBackend == VibeVoice || Segmentation == VibeVoiceBuiltin)
+    return [ the non-streaming VibeVoice repo ];
+```
+
+The streaming backend also forces `VibeVoiceBuiltin` (it segments itself), so that condition
+matched first and the switch arm added for it below was never reached. Selecting Streaming
+queued a different model, 17.2 GB of it, into `vibevoice_asr/`.
+
+**Fix.** The streaming backend is now resolved *before* that test, with a comment saying why
+the order matters. The unreachable switch arm is removed.
+
+**Why nothing caught it.** Every existing check asks whether a mapping *exists* — a models
+directory getter, an `IsAsr…` property, a language set — not whether the mapping is the
+*right* one. The dispatch suite would have been just as happy with a backend that downloaded
+someone else's weights.
+
+`ModelRepoSelectionTests` closes that gap by asserting on the resolved file list: the
+streaming backend requires only files under its own package folder and never
+`decoder_single.onnx`; the non-streaming backend is unaffected; built-in segmentation *alone*
+(a non-VibeVoice ASR backend using VibeVoice for segmentation) still pulls the non-streaming
+package; and no backend pulls another's package. Negative-checked by restoring the original
+ordering, which fails with `"vibevoice_asr/decoder_single.onnx" ... expected start
+"vibevoice_asr_streaming_7b"` — the reported bug exactly — and passes again once fixed.
+
+**One trap inside the test itself:** an early version matched the substring `"streaming"` and
+flagged Parakeet, because Sortformer's diarization model is named
+`diar_streaming_sortformer_4spk-v2.1.onnx`. It now matches the package folder prefix.
+
+Suite 168 pass.

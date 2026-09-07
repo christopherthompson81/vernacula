@@ -263,6 +263,19 @@ internal class ModelManagerService
 
     private AssetRepo[] ActiveRepos()
     {
+        // Checked before the VibeVoiceBuiltin test below: this backend also forces built-in
+        // segmentation, and without this it would match that test and download the
+        // non-streaming package instead — a different model, and 17 GB of it.
+        if (_settings.Current.AsrBackend == AsrBackend.VibeVoiceStreaming)
+        {
+            var size = _settings.Current.VibeVoiceStreamingSize;
+            return size == VibeVoiceStreamingSize.Large7B
+                ? [new AssetRepo(VibeVoiceStreaming7BRepoBase, VibeVoiceStreaming7BManifestUrl,
+                                 VibeVoiceStreamingFiles(size))]
+                : [new AssetRepo(VibeVoiceStreaming1_5BRepoBase, VibeVoiceStreaming1_5BManifestUrl,
+                                 VibeVoiceStreamingFiles(size))];
+        }
+
         if (_settings.Current.AsrBackend == AsrBackend.VibeVoice ||
             _settings.Current.Segmentation == SegmentationMode.VibeVoiceBuiltin)
         {
@@ -271,19 +284,6 @@ internal class ModelManagerService
 
         return _settings.Current.AsrBackend switch
         {
-            // Like VibeVoice, it segments and attributes speakers itself, so it needs no
-            // diarization assets.
-            AsrBackend.VibeVoiceStreaming => _settings.Current.VibeVoiceStreamingSize == VibeVoiceStreamingSize.Large7B
-                ?
-                [
-                    new AssetRepo(VibeVoiceStreaming7BRepoBase, VibeVoiceStreaming7BManifestUrl,
-                                  VibeVoiceStreamingFiles(VibeVoiceStreamingSize.Large7B)),
-                ]
-                :
-                [
-                    new AssetRepo(VibeVoiceStreaming1_5BRepoBase, VibeVoiceStreaming1_5BManifestUrl,
-                                  VibeVoiceStreamingFiles(VibeVoiceStreamingSize.Small1_5B)),
-                ],
             AsrBackend.Parakeet =>
             [
                 new AssetRepo(CoreRepoBase, CoreManifestUrl, [.. CoreDiarizationFiles, .. AsrFilesFp32]),
@@ -326,7 +326,8 @@ internal class ModelManagerService
                     new AssetRepo(CoreRepoBase, CoreManifestUrl, CoreDiarizationFiles),
                     new AssetRepo(GraniteSpeechFp32RepoBase, GraniteSpeechFp32ManifestUrl, GraniteSpeechFp32Files),
                 ],
-            // VibeVoice is handled by the early-return at the top of the
+            // VibeVoice and VibeVoice Streaming are both handled by the early-returns at the
+            // top of the
             // method (it can be the segmentation backend even when the
             // AsrBackend isn't VibeVoice). If a future enum value is added
             // without a switch arm here, this throws to surface the gap
