@@ -45,15 +45,17 @@ public sealed class VibeVoiceStreamingAsr : IDisposable
     private readonly int  _maxKvTokens;          // cache ceiling baked into the export
     private readonly int  _vocabSize;
     private readonly bool _encoderWantsFloat16;
-    private bool _wantLogprobs;
 
     /// <summary>Longest recording this package can transcribe, from its cache ceiling.</summary>
     public double MaxAudioSeconds => _maxKvTokens / PositionsPerSecond;
 
     /// <summary>
-    /// Cache positions consumed per second of audio: each hop contributes the speech markers,
-    /// the window's frames and the text generated for it. Measured at ~16.0 (Run 14); the
-    /// text share varies with speech density, so this is an estimate used for messages only.
+    /// Cache positions consumed per second of audio. Each hop contributes its frames, the two
+    /// speech markers, the chunk-end token and the text generated for it; only the last varies,
+    /// with speech density. Measured at ~16.0 (Run 14), against a floor of ~9.9 for audio with
+    /// no speech at all. Used only to refuse an obviously-too-long recording before any work:
+    /// dense speech can still exhaust the cache mid-run, which <see cref="Step"/> reports, and
+    /// a very sparse recording may be refused slightly early.
     /// </summary>
     private const double PositionsPerSecond = 16.0;
 
@@ -136,7 +138,6 @@ public sealed class VibeVoiceStreamingAsr : IDisposable
         Action<VibeVoiceStreamingChunk>? onChunk = null,
         CancellationToken ct = default)
     {
-        _wantLogprobs = computeLogprobs;
         float[] audio = VibeVoiceAsr.AudioTo24kMono(rawAudio, sampleRate, channels);
         int totalChunks = audio.Length == 0 ? 0 : (audio.Length + HopSamples - 1) / HopSamples;
         var chunks = new List<VibeVoiceStreamingChunk>(totalChunks);
@@ -144,9 +145,10 @@ public sealed class VibeVoiceStreamingAsr : IDisposable
         double estimated = audio.Length / (double)SampleRate * PositionsPerSecond;
         if (estimated > _maxKvTokens)
             throw new InvalidOperationException(
-                $"Recording is about {audio.Length / (double)SampleRate / 60:F1} minutes, beyond " +
-                $"this model's {MaxAudioSeconds / 60:F0}-minute cache ceiling " +
-                $"({_maxKvTokens} positions). Re-export with a larger --max-tokens, or split the recording.");
+                $"Recording is about {audio.Length / (double)SampleRate / 60:F1} minutes, which is " +
+                $"estimated to need more than this model's {_maxKvTokens}-position cache " +
+                $"(about {MaxAudioSeconds / 60:F0} minutes of audio). Re-export with a larger " +
+                "--max-tokens, or split the recording.");
 
         // The cache must live on the device. Allocating it from OrtAllocator.DefaultInstance
         // puts it in host memory, and every step then copies the whole buffer both ways --
@@ -167,7 +169,7 @@ public sealed class VibeVoiceStreamingAsr : IDisposable
                 "has no device allocator for its KV cache. Check that CUDA is available and that " +
                 "this build ships the GPU ONNX Runtime.", ex);
         }
-        using var _deviceAlloc = deviceAlloc;
+        using var ownedAlloc = deviceAlloc;
         using var binding    = _decoder.CreateIoBinding();
         using var runOptions = new RunOptions();
         var kvBuffers = CreateSharedKvBuffers(deviceAlloc);
@@ -181,7 +183,7 @@ public sealed class VibeVoiceStreamingAsr : IDisposable
             long[] prompt = hotwordTokenIds is { Length: > 0 }
                 ? [.. _promptHotwordsHeadIds, .. hotwordTokenIds, .. _promptTailIds]
                 : _promptTokenIds;
-            Step(prompt, emptyAudio, 0, emptyIds, kvBuffers, ref kvPos, binding, runOptions);
+            Step(prompt, emptyAudio, 0, emptyIds, kvBuffers, ref kvPos, binding, runOptions, false);
 
             // 2 — one window per hop, zero-padded at the end of the recording
             for (int ci = 0; ci < totalChunks; ci++)
@@ -195,18 +197,21 @@ public sealed class VibeVoiceStreamingAsr : IDisposable
                 int numFrames = frames.Length / _hiddenSize;
 
                 long next = Step([_speechStartId], frames, numFrames, [_speechEndId],
-                                 kvBuffers, ref kvPos, binding, runOptions).token;
+                                 kvBuffers, ref kvPos, binding, runOptions, false).token;
                 var ids = new List<long>();
-                var logprobs = new List<float>();
+                // Only collected when asked for: the second pass over the vocabulary costs a
+                // Math.Exp per entry. Left empty otherwise rather than filled with NaN, so a
+                // consumer cannot mistake "not computed" for a confidence value.
+                var logprobs = computeLogprobs ? new List<float>() : null;
                 for (int t = 0; t < maxNewTokensPerChunk; t++)
                 {
                     if (next == _textChunkEndId || next == _eosTokenId) break;
                     ids.Add(next);
-                    var (tok, lp) = Step([next], emptyAudio, 0, emptyIds, kvBuffers, ref kvPos, binding, runOptions);
-                    logprobs.Add(lp);
+                    var (tok, lp) = Step([next], emptyAudio, 0, emptyIds, kvBuffers, ref kvPos, binding, runOptions, computeLogprobs);
+                    logprobs?.Add(lp);
                     next = tok;
                 }
-                Step([_textChunkEndId], emptyAudio, 0, emptyIds, kvBuffers, ref kvPos, binding, runOptions);
+                Step([_textChunkEndId], emptyAudio, 0, emptyIds, kvBuffers, ref kvPos, binding, runOptions, false);
 
                 var chunk = new VibeVoiceStreamingChunk(
                     Index: ci,
@@ -214,7 +219,7 @@ public sealed class VibeVoiceStreamingAsr : IDisposable
                     End:   Math.Min(start + HopSamples, audio.Length) / (double)SampleRate,
                     Text:  DecodeSkippingSpecial(ids),
                     TokenIds: ids.ToArray(),
-                    TokenLogprobs: logprobs.ToArray());
+                    TokenLogprobs: logprobs?.ToArray() ?? []);
                 chunks.Add(chunk);
                 onChunk?.Invoke(chunk);
             }
@@ -361,7 +366,8 @@ public sealed class VibeVoiceStreamingAsr : IDisposable
     /// </summary>
     private (long token, float logprob) Step(
         long[] prefixIds, Float16[] audioData, int audioCount, long[] suffixIds,
-        OrtValue[] kvBuffers, ref long kvPos, OrtIoBinding binding, RunOptions runOptions)
+        OrtValue[] kvBuffers, ref long kvPos, OrtIoBinding binding, RunOptions runOptions,
+        bool wantLogprob)
     {
         int seqLen = prefixIds.Length + audioCount + suffixIds.Length;
         long total = kvPos + seqLen;
@@ -412,7 +418,7 @@ public sealed class VibeVoiceStreamingAsr : IDisposable
         }
 
         _decoder.RunWithBinding(runOptions, binding);
-        var result = ArgmaxAndLogprob(logitsVal, seqLen, _wantLogprobs);
+        var result = ArgmaxAndLogprob(logitsVal, seqLen, wantLogprob);
 
         kvPos = total;
         return result;
@@ -465,6 +471,11 @@ public sealed class VibeVoiceStreamingAsr : IDisposable
     private static long[] ReadLongArray(JsonElement el) => el.EnumerateArray().Select(e => e.GetInt64()).ToArray();
 }
 
-/// <summary>One streaming chunk: the text the model emitted for one hop of audio.</summary>
+/// <summary>
+/// One streaming chunk: the text the model emitted for one hop of audio.
+/// <para><see cref="TokenLogprobs"/> is empty unless the caller asked for confidences, and is
+/// not currently carried onto the segments <see cref="VibeVoiceStreamingAsr.ToSegments"/>
+/// produces, so the editor shows no per-word confidence for this backend yet.</para>
+/// </summary>
 public sealed record VibeVoiceStreamingChunk(
     int Index, double Start, double End, string Text, long[] TokenIds, float[] TokenLogprobs);
