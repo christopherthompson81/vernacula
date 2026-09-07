@@ -85,10 +85,13 @@ public class AlignmentSidecarTests : IDisposable
         Assert.Equal("# Title\n\nHello world.", back.SourceText);
         Assert.Null(back.NfaBundle);
 
-        // A field the producer did not make is absent on disk, not null — the sample has no
-        // nfa_bundle, and its second chunk has no block_level beyond the default it declares.
+        // A nullable field the producer did not set is absent on disk, not null: the sample has
+        // no nfa_bundle. (Value-typed fields such as block_level are always written — the second
+        // chunk carries block_level 0 — which is why BlockLevel is an int rather than int?: 0 is a
+        // meaningful "not a heading", not a missing value.)
         using var doc = JsonDocument.Parse(File.ReadAllText(path));
         Assert.False(doc.RootElement.TryGetProperty("nfa_bundle", out _), "null fields must not be written");
+        Assert.Equal(0, doc.RootElement.GetProperty("chunks")[1].GetProperty("block_level").GetInt32());
     }
 
     /// <summary>
