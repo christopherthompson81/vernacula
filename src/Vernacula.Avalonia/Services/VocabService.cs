@@ -395,12 +395,20 @@ internal class VocabService
         if (tokenBytes.Length == 0)
             return "";
 
+        // ⚠ FEED THE DECODER EVEN WHEN THIS TOKEN COMPLETES NO CHARACTER. Cohere spells a
+        // character outside its subword vocab as one <0xNN> token per byte, so a two-byte
+        // character arrives as two tokens: the first completes nothing (charCount 0) and must
+        // still be handed to the decoder to be held as state. Returning early instead dropped
+        // it, and the next token's continuation byte then decoded alone as U+FFFD — an accented
+        // word rendered with a replacement character in the editor's per-token runs while the
+        // whole-sequence decode above got it right. The other byte-level kinds always call
+        // GetChars for this reason; this path used to be the exception.
         int charCount = decoder.GetCharCount(tokenBytes, 0, tokenBytes.Length, flush: false);
+        char[] chars = new char[charCount];
+        decoder.GetChars(tokenBytes, 0, tokenBytes.Length, chars, 0, flush: false);
         if (charCount == 0)
             return "";
 
-        char[] chars = new char[charCount];
-        decoder.GetChars(tokenBytes, 0, tokenBytes.Length, chars, 0, flush: false);
         string text = new(chars);
 
         if (stripLeadingSpace && text.Length > 0)
