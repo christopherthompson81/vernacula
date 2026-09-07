@@ -629,3 +629,36 @@ harness), then CUDA graph capture on the now-fixed shapes, then optionally int8 
 `k_scale`/`v_scale`. Expected: bounded VRAM at a chosen ceiling, per-token cost at or below
 today's dynamic cache, and the first real attack on the 56 % dispatch overhead. Not started;
 this run is analysis only.
+
+**Addendum — the old fusion pitfall does not apply, measured.** Rather than let the
+`ORT_ENABLE_ALL` history rule GQA out, all the attention paths were compared against a
+float64 reference on the same inputs (1.5B geometry, 1024-position cache, one decode token):
+
+| attention path | relative error vs float64 |
+|---|---|
+| eager, bf16 cache, float32 softmax — *the build we shipped* | 2.46e-03 |
+| eager, bf16 cache, **bf16 softmax** — *the ORT_ENABLE_ALL regression* | 2.88e-03 |
+| eager, fp16 cache, float32 softmax — *the fp16/INT8 build* | 3.04e-04 |
+| eager, fp16 cache, fp16 softmax | 3.83e-04 |
+| **GQA, fp16 cache** | **4.04e-04** |
+| GQA, fp32 cache | 1.23e-06 |
+
+The 2026-04 regression was a **BF16** problem, not a **fusion** problem: dropping the float32
+softmax upcast cost only 17 % more error, but on a BF16 baseline already at 2.5e-3, which is
+coarse enough that 0.0-margin logit ties flip. GQA with an fp16 cache lands at 4.0e-4 —
+**six times more accurate than the BF16 build that shipped**, and level with the eager fp16
+path we now run. The precondition that made fused attention dangerous is gone the moment the
+model left BF16.
+
+**One trap found in the process:** the fp32 cache is the most accurate option by three
+orders of magnitude but falls off the flash-attention kernel and is **60× slower**
+(4833 µs/step vs 77 µs at a 1024 cache). GQA must be run with an fp16 cache. That is also
+the cheaper one: 0.44 GiB for all 28 layers at a 16384 ceiling, against 0.88 GiB for fp32,
+and it removes the BF16↔F32 casts that cost 9 % of node time in the sibling port's profile.
+
+**Revised assessment: GQA with an fp16 shared buffer is the configuration to build**, and the
+historical objection to fused attention should not block it. Expected outcome, all of it
+measured here in isolation and still to be confirmed end to end: a hard VRAM ceiling chosen
+at export time, per-token cost proportional to the filled length rather than the buffer,
+better numerics than either shipped build, no `Concat` and no K/V casts, and fixed shapes
+that unblock CUDA graph capture against the 56 % dispatch overhead.
