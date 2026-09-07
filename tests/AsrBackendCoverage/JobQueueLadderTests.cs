@@ -16,11 +16,17 @@ namespace Vernacula.Tests.AsrBackendCoverage;
 /// duration). Issue #129 collapsed them onto <see cref="IJobRunner"/>; these pin the shared
 /// ladder down so a future third kind cannot quietly skip a rung.
 /// <para>
-/// Both jobs here point at a file that exists but holds nothing either worker can use, so each
-/// fails inside its worker without loading a model — the enqueue path hashes the file, so it has
-/// to be real. That is deliberate: the failure path exercises every rung —
-/// status transitions, the run-time stopwatch, the error column and the live-state cleanup —
-/// while staying a unit test.
+/// Both jobs point at a file that exists but holds nothing either worker can use, so each fails
+/// inside its worker without loading a model. That is deliberate: the failure path exercises
+/// every rung — status transitions, the run-time stopwatch, the error column and the live-state
+/// cleanup — while staying a unit test.
+/// </para>
+/// <para>
+/// Jobs are inserted straight into the control DB and started with <c>RequeueJob</c> rather than
+/// enqueued, for two reasons: it keeps every path this test writes to inside the temp directory
+/// (the enqueue helpers resolve output paths through <c>SettingsService.GetJobsDir()</c>, which
+/// is the real user data directory and creates it), and it covers the requeue path, which used
+/// to be the other place the queue branched on kind.
 /// </para>
 /// </summary>
 public class JobQueueLadderTests : IDisposable
@@ -58,7 +64,8 @@ public class JobQueueLadderTests : IDisposable
     public void EveryJobKindHasARegisteredRunner()
     {
         var (queue, db) = NewQueue();
-        using (db) Assert.NotNull(queue);
+        using var _ = db;
+        Assert.NotNull(queue);
     }
 
     private static async Task WaitUntil(Func<bool> condition)
@@ -89,9 +96,13 @@ public class JobQueueLadderTests : IDisposable
         string unusable = Path.Combine(_dir, "unusable.dat");
         await File.WriteAllTextAsync(unusable, "", TestContext.Current.CancellationToken);
 
+        string results = Path.Combine(_dir, "results.out");
         int jobId = kind == JobKind.Tts
-            ? await queue.EnqueueNewTtsJobAsync(unusable, "tts", new TtsJobSettings("Kokoro", "en", "af_heart"))
-            : await queue.EnqueueNewJobAsync(unusable, "asr");
+            ? db.InsertNewTtsJob("tts", results, unusable, "sha", "2026-01-01 00:00:00",
+                                 new TtsJobSettings("Kokoro", "en", "af_heart"))
+            : db.InsertNewJob("asr", results, unusable, "sha", "2026-01-01 00:00:00");
+
+        queue.RequeueJob(Assert.Single(db.GetJobs(), j => j.JobId == jobId));
 
         await finished.Task.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
 

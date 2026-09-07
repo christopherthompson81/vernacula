@@ -93,6 +93,8 @@ internal sealed class AsrQueueRunner : IJobRunner
     public async Task RunAsync(
         QueueEntry entry, IJobUiState uiState, Action onPercentChanged, CancellationToken ct)
     {
+        // Safe by construction: the queue only ever hands a runner the state that same runner
+        // returned from CreateUiState.
         var state = (JobUiState)uiState;
 
         var progress = new Progress<TranscriptionProgress>(p =>
@@ -170,6 +172,7 @@ internal sealed class TtsQueueRunner : IJobRunner
     public async Task RunAsync(
         QueueEntry entry, IJobUiState uiState, Action onPercentChanged, CancellationToken ct)
     {
+        // Safe by construction — see AsrQueueRunner.RunAsync.
         var state = (TtsJobUiState)uiState;
 
         void OnProgress(ProgressEvent p)
