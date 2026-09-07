@@ -40,6 +40,9 @@ internal partial class SettingsViewModel : ObservableObject
     private VibeVoiceStreamingSize _selectedVibeVoiceStreamingSize;
 
     [ObservableProperty]
+    private string _vibeVoiceStreamingHotwords = "";
+
+    [ObservableProperty]
     private int _parakeetBeamWidth;
 
     // Selected KenLM option (from KenLmCatalog.All). Changing this triggers
@@ -388,6 +391,7 @@ internal partial class SettingsViewModel : ObservableObject
         _selectedTheme                = svc.Current.Theme;
         _selectedAsrBackend           = svc.Current.AsrBackend;
         _selectedVibeVoiceStreamingSize = svc.Current.VibeVoiceStreamingSize;
+        _vibeVoiceStreamingHotwords     = svc.Current.VibeVoiceStreamingHotwords;
         _selectedSegmentation         = NormalizeSegmentationForBackend(
             svc.Current.Segmentation == SegmentationMode.DiariZen && !svc.IsGatedModelAccepted(DiariZenGatedModelId)
                 ? SegmentationMode.Sortformer
@@ -475,6 +479,12 @@ internal partial class SettingsViewModel : ObservableObject
         _svc.Current.Segmentation = value;
         _svc.Save();
         OnSegmentationChanged?.Invoke();
+    }
+
+    partial void OnVibeVoiceStreamingHotwordsChanged(string value)
+    {
+        _svc.Current.VibeVoiceStreamingHotwords = value ?? "";
+        _svc.Save();
     }
 
     partial void OnSelectedVibeVoiceStreamingSizeChanged(VibeVoiceStreamingSize value)

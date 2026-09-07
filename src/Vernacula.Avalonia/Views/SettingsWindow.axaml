@@ -625,6 +625,15 @@
                                                FontSize="11" TextWrapping="Wrap" />
                                 </StackPanel>
                             </RadioButton>
+                            <TextBlock Text="Hotwords (optional)"
+                                       Foreground="{DynamicResource TextBrush}"
+                                       Margin="0,10,0,0" />
+                            <TextBlock Text="Names or technical terms to bias recognition toward, separated by commas."
+                                       Foreground="{DynamicResource SubtextBrush}"
+                                       FontSize="11" TextWrapping="Wrap" />
+                            <TextBox Text="{Binding VibeVoiceStreamingHotwords}"
+                                     Watermark="e.g. Vernacula, diarization"
+                                     Margin="0,4,0,0" MaxWidth="420" HorizontalAlignment="Left" />
                             <TextBlock Text="{Binding VibeVoiceStreamingSizeWarning}"
                                        IsVisible="{Binding ShowVibeVoiceStreamingSizeWarning}"
                                        Foreground="{DynamicResource RedBrush}"

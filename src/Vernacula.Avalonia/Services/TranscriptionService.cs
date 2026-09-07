@@ -187,7 +187,26 @@ internal class TranscriptionService
                 {
                     if (useVibeVoiceStreaming)
                     {
-                        using var streaming = new VibeVoiceStreamingAsr(_settings.GetVibeVoiceStreamingModelsDir());
+                        string streamingDir = _settings.GetVibeVoiceStreamingModelsDir();
+                        // Hotwords are user text spliced into the prompt, so they need the
+                        // model's own vocabulary; the package ships the tokenizer for it.
+                        long[]? hotwordIds = null;
+                        string hotwords = _settings.Current.VibeVoiceStreamingHotwords;
+                        if (!string.IsNullOrWhiteSpace(hotwords))
+                        {
+                            try
+                            {
+                                var tok = new Vernacula.Base.Tokenization.Qwen3Tokenizer(
+                                    Path.Combine(streamingDir, VibeVoiceStreamingAsr.TokenizerFile));
+                                hotwordIds = [.. tok.Encode(hotwords).Select(t => (long)t)];
+                            }
+                            catch (Exception ex)
+                            {
+                                // Bad hotwords must not cost the user the transcription.
+                                Console.Error.WriteLine($"[vibevoice-streaming] ignoring hotwords: {ex.Message}");
+                            }
+                        }
+                        using var streaming = new VibeVoiceStreamingAsr(streamingDir);
                         // This model exists to show text while the audio is still arriving, so
                         // the transcript is built as chunks land rather than at the end. The
                         // newest turn stays open and grows, so each chunk adds any turns that
@@ -196,6 +215,7 @@ internal class TranscriptionService
                         int shown = 0;
                         streaming.Transcribe(
                             vibeVoiceAudio, vibeVoiceSampleRate, vibeVoiceChannels,
+                            hotwordTokenIds: hotwordIds,
                             // The editor colours words by confidence, so pay for the second
                             // pass over the vocabulary here even though the CLI does not.
                             computeLogprobs: true,

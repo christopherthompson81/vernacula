@@ -20,6 +20,12 @@ public class AppSettings
     public SegmentationMode   Segmentation        { get; set; } = SegmentationMode.SileroVad;
     public AsrBackend         AsrBackend          { get; set; } = AsrBackend.Parakeet;
     public VibeVoiceStreamingSize VibeVoiceStreamingSize { get; set; } = VibeVoiceStreamingSize.Small1_5B;
+
+    /// <summary>
+    /// Comma-separated names or terms to bias VibeVoice-ASR-Streaming toward, spliced into the
+    /// model's prompt. Empty means none.
+    /// </summary>
+    public string VibeVoiceStreamingHotwords { get; set; } = "";
     // Parakeet TDT beam search. 1 = greedy (default, fastest). 4–8 enables
     // beam search — ~3–5× slower per segment but improves accuracy on hard
     // or ambiguous audio and is a prerequisite for shallow LM fusion.

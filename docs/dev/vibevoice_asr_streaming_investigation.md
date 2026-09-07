@@ -1165,3 +1165,28 @@ only under `--benchmark`, since it prints text.
 unchanged at WER 0.008. Four tests pin the attribution: tokens follow text across a marker,
 they accumulate across chunks within one turn, marker tokens belong to neither side, and a
 segment reports *no* confidences rather than a mismatched count when they were not computed.
+
+## Run 27 — 2026-09-07 19:45 — hotwords, and a tokenizer that moved a layer down
+
+Hotwords were parsed but refused: they are user text spliced into the model's prompt, so they
+must be tokenized with the model's own vocabulary, and the C# side had only a *decoder*.
+
+**No new tokenizer was written.** `Qwen3Tokenizer` already implements the full byte-level BPE
+encoder for exactly this vocabulary — it was just in `Vernacula.Tts.Base`, because when it was
+written the ASR backends were all decode-only. Its header said so. That is no longer true, so
+the class moved to `Vernacula.Base`, where an ASR backend can use it without dragging in the
+TTS stack (the command-line tool references only `Vernacula.Base`, and should stay that way).
+Two callers inside the TTS library and one test needed a `using`; nothing else changed, and
+its parity tests still pass.
+
+**Effect, on the clip upstream ships to demonstrate the feature:**
+
+| | without hotwords | with `VibeVoice,diarization` |
+|---|---|---|
+| product name | "Y-voice" | "VibeVoice" |
+| technical term | "dilation" | "diarization" |
+
+Seven tokens of prompt. Wired in the CLI as `--hotwords` and in the app as a text box under
+the size picker, saved with the other settings. Bad hotwords are logged and ignored rather
+than failing the transcription, since losing a job to a typo in an optional field would be a
+poor trade.

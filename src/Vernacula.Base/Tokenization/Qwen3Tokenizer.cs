@@ -1,7 +1,11 @@
-// Byte-level BPE encoder for the Qwen3 tokenizer (text -> token IDs), as used by
-// OmniVoice. The repo's other Qwen/GPT-2-family tokenizers (Qwen3Asr, WhisperTurbo,
-// GraniteSpeech, VibeVoiceAsr) are all decode-only or bake fixed token sequences
-// offline; OmniVoice synthesises arbitrary user text, so it needs the real encoder.
+// Byte-level BPE encoder for the Qwen tokenizer (text -> token IDs). Used by OmniVoice,
+// which synthesises arbitrary user text, and by VibeVoice-ASR-Streaming, whose hotwords are
+// user text spliced into the prompt. The repo's other Qwen/GPT-2-family tokenizers (Qwen3Asr,
+// WhisperTurbo, GraniteSpeech, VibeVoiceAsr) remain decode-only or bake fixed token sequences
+// offline and do not need it.
+//
+// It lives in Vernacula.Base rather than Vernacula.Tts.Base because an ASR backend now needs
+// it too, and ASR must not depend on the TTS stack.
 //
 // This composes three existing patterns:
 //   - the GPT-2 bytes->unicode table (cf. WhisperTurbo's decode table, used here in
@@ -17,12 +21,13 @@
 // Verified against scripts/omnivoice_export/dump_tokenizer_fixtures.py output by
 // Vernacula.Tests/Qwen3TokenizerParityTests.
 
+using Vernacula.Base.Tokenization;
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 
-namespace Vernacula.Tts.Base.Tokenization;
+namespace Vernacula.Base.Tokenization;
 
 public sealed partial class Qwen3Tokenizer
 {
