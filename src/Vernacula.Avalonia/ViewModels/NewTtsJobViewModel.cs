@@ -31,25 +31,29 @@ internal partial class NewTtsJobViewModel : ObservableObject
 
     // ── Engine ───────────────────────────────────────────────────────────────
 
-    public IReadOnlyList<TtsBackendKind> Backends { get; } =
-        [TtsBackendKind.Kokoro, TtsBackendKind.OmniVoice, TtsBackendKind.Chatterbox];
+    public IReadOnlyList<TtsEngine> Engines => TtsEngines.All;
 
     [ObservableProperty]
     [NotifyCanExecuteChangedFor(nameof(StartCommand))]
-    [NotifyPropertyChangedFor(nameof(IsChatterbox), nameof(IsKokoro), nameof(IsOmniVoice))]
-    private TtsBackendKind _selectedBackend;
+    [NotifyPropertyChangedFor(nameof(ShowReferenceClip), nameof(ShowVoiceList), nameof(ShowLanguage),
+                              nameof(ShowSpeed), nameof(ShowDiffusionSteps))]
+    private TtsEngine _selectedEngine = TtsEngines.All[0];
 
-    public bool IsChatterbox => SelectedBackend == TtsBackendKind.Chatterbox;
-    public bool IsKokoro     => SelectedBackend == TtsBackendKind.Kokoro;
-    public bool IsOmniVoice  => SelectedBackend == TtsBackendKind.OmniVoice;
+    // Which controls the dialog shows is asked of the engine, not of its name, so a new engine
+    // gets the right ones by declaring its capabilities.
+    public bool ShowReferenceClip   => SelectedEngine.UsesReferenceClip;
+    public bool ShowVoiceList       => SelectedEngine.UsesVoiceList;
+    public bool ShowLanguage        => SelectedEngine.UsesLanguage;
+    public bool ShowSpeed           => SelectedEngine.UsesSpeed;
+    public bool ShowDiffusionSteps  => SelectedEngine.UsesDiffusionSteps;
 
-    // ── Chatterbox: reference clip ───────────────────────────────────────────
+    // ── Reference clip (a cloning engine) ────────────────────────────────────
 
     [ObservableProperty]
     [NotifyCanExecuteChangedFor(nameof(StartCommand))]
     private string _chatterboxVoicePath = "";
 
-    // ── Kokoro: named voice + speed ──────────────────────────────────────────
+    // ── Named voice + speed (a fixed-voice engine) ───────────────────────────
 
     public ObservableCollection<string> KokoroVoices { get; } = new();
 
@@ -118,11 +122,11 @@ internal partial class NewTtsJobViewModel : ObservableObject
             DocumentPath = "";
             JobName = "";
             var s = _settings.Current;
-            SelectedBackend     = TtsJobRunner.ParseBackend(s.TtsBackend);
+            SelectedEngine      = TtsEngines.For(s.TtsBackend);
             ChatterboxVoicePath = s.ChatterboxVoicePath ?? "";
             KokoroSpeed         = s.KokoroSpeed > 0 ? s.KokoroSpeed : 1.0f;
             KokoroVoice         = s.KokoroVoice ?? "";
-            RefreshKokoroVoices();
+            RefreshVoiceList();
             OmniVoiceLang       = string.IsNullOrWhiteSpace(s.OmniVoiceLang) ? "en" : s.OmniVoiceLang;
             OmniVoiceLanguage   = LanguageCatalog.ByCode(OmniVoiceLang);
             OmniVoiceLangQuery  = OmniVoiceLanguage?.Name ?? OmniVoiceLang;
@@ -134,24 +138,38 @@ internal partial class NewTtsJobViewModel : ObservableObject
         UpdatePrerequisites();
     }
 
-    /// <summary>The choices as they would be stored on the job.</summary>
-    public TtsJobSettings CurrentSettings() => SelectedBackend switch
+    /// <summary>
+    /// The choices as they would be stored on the job. Which field holds "the voice" follows
+    /// the engine's capabilities — a path to clone, a name from a list, or a library id.
+    /// </summary>
+    public TtsJobSettings CurrentSettings()
     {
-        TtsBackendKind.Kokoro    => new TtsJobSettings("Kokoro", "", KokoroVoice, KokoroSpeed),
-        TtsBackendKind.OmniVoice => new TtsJobSettings("OmniVoice", OmniVoiceLang.Trim(), OmniVoiceVoice?.Id ?? "", NumStep: OmniVoiceNumStep),
-        _                        => new TtsJobSettings("Chatterbox", "", ChatterboxVoicePath),
-    };
+        var e = SelectedEngine;
+        string voice = e.UsesReferenceClip ? ChatterboxVoicePath
+                     : e.UsesVoiceList     ? KokoroVoice
+                     : OmniVoiceVoice?.Id ?? "";
+        return new TtsJobSettings(
+            e.Kind.ToString(),
+            e.UsesLanguage ? OmniVoiceLang.Trim() : "",
+            voice,
+            e.UsesSpeed ? KokoroSpeed : 1.0f,
+            e.UsesDiffusionSteps ? OmniVoiceNumStep : 32);
+    }
 
     private void UpdatePrerequisites()
     {
         if (_loading) return;
-        PrerequisiteMessage = TtsPrerequisites.Describe(SelectedBackend, _settings, CurrentSettings()) ?? "";
+        PrerequisiteMessage = TtsPrerequisites.Describe(SelectedEngine.Kind, _settings, CurrentSettings()) ?? "";
         StartCommand.NotifyCanExecuteChanged();
     }
 
     // ── Change hooks ─────────────────────────────────────────────────────────
 
-    partial void OnSelectedBackendChanged(TtsBackendKind value) => UpdatePrerequisites();
+    partial void OnSelectedEngineChanged(TtsEngine value)
+    {
+        RefreshVoiceList();
+        UpdatePrerequisites();
+    }
     partial void OnChatterboxVoicePathChanged(string value)     => UpdatePrerequisites();
     partial void OnKokoroVoiceChanged(string value)             => UpdatePrerequisites();
     partial void OnOmniVoiceVoiceChanged(StoredVoice.Info? value) => UpdatePrerequisites();
@@ -196,13 +214,12 @@ internal partial class NewTtsJobViewModel : ObservableObject
 
     // ── Voice lists ──────────────────────────────────────────────────────────
 
-    private void RefreshKokoroVoices()
+    /// <summary>The named voices of an engine that has a fixed list; empty for the others.</summary>
+    private void RefreshVoiceList()
     {
         KokoroVoices.Clear();
-        var dir = Path.Combine(_settings.GetKokoroModelsDir(), "voices");
-        if (!Directory.Exists(dir)) return;
-        foreach (var f in Directory.EnumerateFiles(dir, "*.bin").OrderBy(p => p))
-            KokoroVoices.Add(Path.GetFileNameWithoutExtension(f));
+        foreach (var v in SelectedEngine.AvailableVoices(_settings))
+            KokoroVoices.Add(v);
         if (KokoroVoices.Count > 0 && !KokoroVoices.Contains(KokoroVoice))
             KokoroVoice = KokoroVoices[0];
     }
@@ -318,22 +335,12 @@ internal partial class NewTtsJobViewModel : ObservableObject
     private void RememberChoices(TtsJobSettings tts)
     {
         var s = _settings.Current;
+        var e = SelectedEngine;
         s.TtsBackend = tts.Backend;
-        switch (SelectedBackend)
-        {
-            case TtsBackendKind.Kokoro:
-                s.KokoroVoice = KokoroVoice;
-                s.KokoroSpeed = KokoroSpeed;
-                break;
-            case TtsBackendKind.OmniVoice:
-                s.OmniVoiceLang    = OmniVoiceLang;
-                s.OmniVoiceVoice   = OmniVoiceVoice?.Id ?? "";
-                s.OmniVoiceNumStep = OmniVoiceNumStep;
-                break;
-            default:
-                s.ChatterboxVoicePath = ChatterboxVoicePath;
-                break;
-        }
+        e.WriteStoredVoice(s, tts.Voice);
+        if (e.UsesSpeed)           s.KokoroSpeed      = KokoroSpeed;
+        if (e.UsesLanguage)        s.OmniVoiceLang    = OmniVoiceLang;
+        if (e.UsesDiffusionSteps)  s.OmniVoiceNumStep = OmniVoiceNumStep;
         _settings.Save();
     }
 

@@ -68,8 +68,8 @@ public class TtsExportServiceTests
         var settings = new SettingsService(); settings.Load();
         if (TtsPrerequisites.Describe(TtsBackendKind.Kokoro, settings) is { } missing)
             Assert.Skip($"Kokoro not available here: {missing}");
-        var rows = TtsExportService.BuildRows([("Hello world.", 0, 1)], TtsBackendKind.Kokoro, "en", "af_heart",
-            settings.GetPhonemizerDataDir());
+        var rows = TtsExportService.BuildRows([("Hello world.", 0, 1)], settings,
+            new TtsJobSettings("Kokoro", "", "af_heart"));
         Assert.Single(rows);
         Assert.False(string.IsNullOrWhiteSpace(rows[0].Phonemes));
         Assert.DoesNotContain("<error", rows[0].Phonemes);

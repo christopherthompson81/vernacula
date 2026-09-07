@@ -1198,55 +1198,30 @@
                                    TextWrapping="Wrap"
                                    Margin="0,0,0,10" />
 
-                        <RadioButton GroupName="TtsBackend"
-                                     IsChecked="{Binding IsTtsKokoro, Mode=OneWay}"
-                                     Command="{Binding SetTtsBackendCommand}"
-                                     CommandParameter="Kokoro"
-                                     Foreground="{DynamicResource TextBrush}"
-                                     Margin="0,0,0,4">
-                            <StackPanel>
-                                <TextBlock Text="Kokoro-82M"
-                                           FontWeight="SemiBold"
-                                           Foreground="{DynamicResource TextBrush}" />
-                                <TextBlock Text="Small and fast. Named English voices (American and British), adjustable speed, word timing from the model's own durations."
-                                           Foreground="{DynamicResource SubtextBrush}"
-                                           FontSize="11"
-                                           TextWrapping="Wrap" />
-                            </StackPanel>
-                        </RadioButton>
-
-                        <RadioButton GroupName="TtsBackend"
-                                     IsChecked="{Binding IsTtsOmniVoice, Mode=OneWay}"
-                                     Command="{Binding SetTtsBackendCommand}"
-                                     CommandParameter="OmniVoice"
-                                     Foreground="{DynamicResource TextBrush}"
-                                     Margin="0,0,0,4">
-                            <StackPanel>
-                                <TextBlock Text="OmniVoice-IPA"
-                                           FontWeight="SemiBold"
-                                           Foreground="{DynamicResource TextBrush}" />
-                                <TextBlock Text="Any of the phonemizer's 190+ languages through the IPA fine-tune, in a stored voice from the voice library. Large model; word timing is estimated."
-                                           Foreground="{DynamicResource SubtextBrush}"
-                                           FontSize="11"
-                                           TextWrapping="Wrap" />
-                            </StackPanel>
-                        </RadioButton>
-
-                        <RadioButton GroupName="TtsBackend"
-                                     IsChecked="{Binding IsTtsChatterbox, Mode=OneWay}"
-                                     Command="{Binding SetTtsBackendCommand}"
-                                     CommandParameter="Chatterbox"
-                                     Foreground="{DynamicResource TextBrush}">
-                            <StackPanel>
-                                <TextBlock Text="Chatterbox"
-                                           FontWeight="SemiBold"
-                                           Foreground="{DynamicResource TextBrush}" />
-                                <TextBlock Text="English voice cloning from a short reference clip. Word timing from the model's cross-attention."
-                                           Foreground="{DynamicResource SubtextBrush}"
-                                           FontSize="11"
-                                           TextWrapping="Wrap" />
-                            </StackPanel>
-                        </RadioButton>
+                        <!-- One row per engine in the registry (TtsEngines.All), so a new
+                             engine appears here without a new block of XAML. -->
+                        <ItemsControl ItemsSource="{Binding TtsEngineOptions}">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <RadioButton GroupName="TtsBackend"
+                                                 IsChecked="{Binding IsSelected, Mode=OneWay}"
+                                                 Command="{Binding $parent[ItemsControl].DataContext.SetTtsBackendCommand}"
+                                                 CommandParameter="{Binding KindName}"
+                                                 Foreground="{DynamicResource TextBrush}"
+                                                 Margin="0,0,0,4">
+                                        <StackPanel>
+                                            <TextBlock Text="{Binding Name}"
+                                                       FontWeight="SemiBold"
+                                                       Foreground="{DynamicResource TextBrush}" />
+                                            <TextBlock Text="{Binding Description}"
+                                                       Foreground="{DynamicResource SubtextBrush}"
+                                                       FontSize="11"
+                                                       TextWrapping="Wrap" />
+                                        </StackPanel>
+                                    </RadioButton>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
                     </StackPanel>
                 </Border>
 
@@ -1259,7 +1234,7 @@
                     <StackPanel Spacing="10">
 
                         <!-- Kokoro: speed -->
-                        <StackPanel IsVisible="{Binding IsTtsKokoro}">
+                        <StackPanel IsVisible="{Binding ShowTtsSpeedDefault}">
                             <TextBlock Text="{Binding KokoroSpeed, StringFormat='Speed: {0:F2}×'}"
                                        FontWeight="SemiBold"
                                        Foreground="{DynamicResource TextBrush}" />
@@ -1271,7 +1246,7 @@
                         </StackPanel>
 
                         <!-- OmniVoice: diffusion steps + optional tokenizer -->
-                        <StackPanel IsVisible="{Binding IsTtsOmniVoice}" Spacing="10">
+                        <StackPanel IsVisible="{Binding ShowTtsStepsDefault}" Spacing="10">
                             <StackPanel>
                                 <TextBlock Text="{Binding OmniVoiceNumStep, StringFormat='Diffusion steps: {0}'}"
                                            FontWeight="SemiBold"
@@ -1307,7 +1282,7 @@
                         </StackPanel>
 
                         <!-- Chatterbox: default reference clip -->
-                        <StackPanel IsVisible="{Binding IsTtsChatterbox}">
+                        <StackPanel IsVisible="{Binding ShowTtsReferenceClipDefault}">
                             <TextBlock Text="Default reference voice clip"
                                        FontWeight="SemiBold"
                                        Foreground="{DynamicResource TextBrush}" />

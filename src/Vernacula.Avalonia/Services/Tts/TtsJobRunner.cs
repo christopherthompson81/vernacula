@@ -25,15 +25,9 @@ internal sealed class TtsJobRunner : IDisposable
     public TtsJobRunner(SettingsService settings) => _settings = settings;
 
     /// <summary>Sample rate of the backend a job with <paramref name="tts"/> will produce.</summary>
-    public static int SampleRateFor(TtsJobSettings tts) => ParseBackend(tts.Backend) switch
-    {
-        TtsBackendKind.Kokoro    => Kokoro.SampleRate,
-        TtsBackendKind.OmniVoice => OmniVoiceIpaTts.SampleRate,
-        _                        => ChatterboxConstants.S3GenSr,
-    };
+    public static int SampleRateFor(TtsJobSettings tts) => TtsEngines.For(tts.Backend).SampleRate;
 
-    public static TtsBackendKind ParseBackend(string name) =>
-        Enum.TryParse<TtsBackendKind>(name, ignoreCase: true, out var kind) ? kind : TtsBackendKind.Chatterbox;
+    public static TtsBackendKind ParseBackend(string name) => TtsEngines.For(name).Kind;
 
     /// <summary>
     /// Synthesizes <paramref name="documentPath"/> and writes <paramref name="sidecarPath"/>
@@ -58,14 +52,7 @@ internal sealed class TtsJobRunner : IDisposable
         // A re-render starts clean: a shorter document must not leave stale paragraph files.
         if (Directory.Exists(segmentsDir)) Directory.Delete(segmentsDir, recursive: true);
 
-        var request = ParseBackend(tts.Backend) switch
-        {
-            TtsBackendKind.Kokoro    => new TtsRequest(text, wavPath, tts.Voice, tts.Speed, SegmentsDir: segmentsDir),
-            TtsBackendKind.OmniVoice => new TtsRequest(text, wavPath, tts.Voice,
-                                            Lang: string.IsNullOrWhiteSpace(tts.Language) ? "en" : tts.Language.Trim(),
-                                            NumStep: tts.NumStep, SegmentsDir: segmentsDir),
-            _                        => new TtsRequest(text, wavPath, tts.Voice, SegmentsDir: segmentsDir),
-        };
+        var request = TtsEngines.For(tts.Backend).BuildRequest(text, wavPath, segmentsDir, tts);
 
         var result = await backend.SynthesizeStreamingAsync(request, onChunkProduced, onProgress, ct);
 
@@ -86,37 +73,19 @@ internal sealed class TtsJobRunner : IDisposable
     /// </summary>
     private ITtsBackend EnsureBackend(TtsJobSettings tts)
     {
-        var kind = ParseBackend(tts.Backend);
-        string key = kind switch
-        {
-            TtsBackendKind.Kokoro    => $"kokoro|{_settings.GetKokoroModelsDir()}|{_settings.GetPhonemizerDataDir()}",
-            TtsBackendKind.OmniVoice => $"omnivoice|{_settings.GetOmniVoiceModelsDir()}|{_settings.Current.OmniVoiceTokenizerJson}"
-                                        + $"|{_settings.GetPhonemizerDataDir()}|{_settings.GetOmniVoiceVoiceLibDir()}",
-            _                        => $"chatterbox|{_settings.GetChatterboxModelsDir()}",
-        };
+        var engine = TtsEngines.For(tts.Backend);
+        string key = engine.CacheKey(_settings);
         if (_backend is not null && _backendKey == key) return _backend;
 
         _backend?.Dispose();
         _backend = null;
         _backendKey = null;
 
-        string? missing = TtsPrerequisites.Describe(kind, _settings, tts);
+        string? missing = TtsPrerequisites.Describe(engine.Kind, _settings, tts);
         if (missing is not null)
             throw new InvalidOperationException(missing);
 
-        _backend = kind switch
-        {
-            TtsBackendKind.Kokoro    => new KokoroSynthesisService(_settings.GetKokoroModelsDir(), _settings.GetPhonemizerDataDir()),
-            TtsBackendKind.OmniVoice => new OmniVoiceSynthesisService(
-                                            _settings.GetOmniVoiceModelsDir(),
-                                            File.Exists(_settings.Current.OmniVoiceTokenizerJson) ? _settings.Current.OmniVoiceTokenizerJson : null,
-                                            _settings.GetPhonemizerDataDir(),
-                                            _settings.GetOmniVoiceVoiceLibDir()),
-            _                        => new ChatterboxSynthesisService(
-                                            _settings.GetChatterboxModelsDir(),
-                                            File.Exists(Path.Combine(_settings.GetChatterboxModelsDir(), "tokenizer.json"))
-                                                ? Path.Combine(_settings.GetChatterboxModelsDir(), "tokenizer.json") : null),
-        };
+        _backend = engine.CreateBackend(_settings);
         _backendKey = key;
         return _backend;
     }
@@ -139,15 +108,6 @@ internal sealed class TtsJobRunner : IDisposable
 /// </summary>
 internal static class TtsPrerequisites
 {
-    /// <summary>The model sets a backend needs on disk.</summary>
-    public static ModelManagerService.TtsModelSet[] RequiredSets(TtsBackendKind kind) => kind switch
-    {
-        TtsBackendKind.Kokoro    => [ModelManagerService.TtsModelSet.Kokoro, ModelManagerService.TtsModelSet.PhonemizerData],
-        TtsBackendKind.OmniVoice => [ModelManagerService.TtsModelSet.OmniVoice, ModelManagerService.TtsModelSet.OmniVoiceVoices,
-                                     ModelManagerService.TtsModelSet.PhonemizerData],
-        _                        => [ModelManagerService.TtsModelSet.Chatterbox],
-    };
-
     /// <summary>
     /// Null when everything the backend needs is on disk; otherwise what is missing and where
     /// it was looked for. The on-disk part is ModelManagerService's own check — the same one
@@ -156,30 +116,14 @@ internal static class TtsPrerequisites
     /// </summary>
     public static string? Describe(TtsBackendKind kind, SettingsService s, TtsJobSettings? job = null)
     {
-        foreach (var set in RequiredSets(kind))
+        var engine = TtsEngines.For(kind);
+        foreach (var set in engine.RequiredSets)
         {
             var missing = ModelManagerService.GetMissingTtsFiles(set, s);
             if (missing.Count > 0)
                 return $"{SetName(set)} incomplete in {ModelManagerService.TtsModelSetDir(set, s)}: missing {string.Join(", ", missing)}. See Settings → Text-to-Speech.";
         }
-        if (job is null) return null;
-
-        switch (kind)
-        {
-            case TtsBackendKind.Kokoro:
-                if (string.IsNullOrWhiteSpace(job.Voice)) return "No Kokoro voice selected.";
-                string voicePath = Path.Combine(s.GetKokoroModelsDir(), "voices", job.Voice + ".bin");
-                if (!File.Exists(voicePath)) return $"Kokoro voice not found: {voicePath}";
-                return null;
-            case TtsBackendKind.OmniVoice:
-                if (string.IsNullOrWhiteSpace(job.Voice)) return "No OmniVoice voice selected.";
-                if (LanguageCatalog.ByCode(job.Language) is null) return $"Unknown language \"{job.Language}\" — pick one from the list.";
-                return null;
-            default:
-                if (!File.Exists(job.Voice))
-                    return $"Reference voice clip not found: {(string.IsNullOrWhiteSpace(job.Voice) ? "(not set)" : job.Voice)}";
-                return null;
-        }
+        return job is null ? null : engine.DescribeJobIssue(s, job);
     }
 
     private static string SetName(ModelManagerService.TtsModelSet set) => set switch
