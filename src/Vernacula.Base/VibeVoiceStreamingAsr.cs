@@ -150,7 +150,22 @@ public sealed class VibeVoiceStreamingAsr : IDisposable
         // puts it in host memory, and every step then copies the whole buffer both ways --
         // measured at 9x slower than the Python harness before this was fixed.
         using var cudaMemInfo = new OrtMemoryInfo(OrtMemoryInfo.allocatorCUDA, OrtAllocatorType.DeviceAllocator, 0, OrtMemType.Default);
-        using var deviceAlloc = new OrtAllocator(_decoder, cudaMemInfo);
+        OrtAllocator deviceAlloc;
+        try
+        {
+            deviceAlloc = new OrtAllocator(_decoder, cudaMemInfo);
+        }
+        catch (OnnxRuntimeException ex)
+        {
+            // ORT reports this as "No requested allocator available", which says nothing about
+            // the cause. It means the decoder session is not running on CUDA, so there is no
+            // device allocator to take the KV cache from.
+            throw new InvalidOperationException(
+                "VibeVoice-ASR-Streaming needs the CUDA execution provider: the decoder session " +
+                "has no device allocator for its KV cache. Check that CUDA is available and that " +
+                "this build ships the GPU ONNX Runtime.", ex);
+        }
+        using var _deviceAlloc = deviceAlloc;
         using var binding    = _decoder.CreateIoBinding();
         using var runOptions = new RunOptions();
         var kvBuffers = CreateSharedKvBuffers(deviceAlloc);

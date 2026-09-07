@@ -258,10 +258,14 @@ internal class TranscriptionService
                 var seenVibeSpeakers = new HashSet<int>();
                 foreach (var seg in vibeSegs)
                 {
-                    string spkId    = $"speaker_{seg.Speaker}";
-                    int diarSpkId   = seg.Speaker + 1;
+                    // The streaming model can emit text before it names anyone, which the
+                    // assembler reports as speaker -1. Fold that onto speaker 0 rather than
+                    // writing "speaker_-1" and a diarization id of 0, which no consumer expects.
+                    int speaker     = Math.Max(0, seg.Speaker);
+                    string spkId    = $"speaker_{speaker}";
+                    int diarSpkId   = speaker + 1;
 
-                    if (seenVibeSpeakers.Add(seg.Speaker))
+                    if (seenVibeSpeakers.Add(speaker))
                         db.InsertSpeaker(spkId);
 
                     // VibeVoice does not emit timestamps, so we synthesize them uniformly over
