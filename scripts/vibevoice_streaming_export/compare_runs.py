@@ -6,7 +6,9 @@ import json, re, sys
 
 
 def words(t):
-    return re.findall(r"[\w']+", t.lower())
+    # Speaker markers are structure, not transcript; drop them so a consumer that turns
+    # them into fields (the C# CLI) compares on words alone.
+    return re.findall(r"[\w']+", re.sub(r"Speaker \d+:", " ", t).lower())
 
 
 def wer(ref, hyp):
@@ -25,7 +27,18 @@ def speakers(t):
     return [int(m) for m in re.findall(r"Speaker (\d+):", t)]
 
 
-recs = [json.load(open(p)) for p in sys.argv[1:]]
+def load(p):
+    r = json.load(open(p, encoding="utf-8-sig"))
+    if isinstance(r, list):   # Vernacula CLI --export-format json: [{speaker,start,end,text}]
+        return dict(chunks=[s["text"] for s in r], n_chunks=len(r), rtf=float("nan"),
+                    peak_gib=float("nan"), weights_gib=float("nan"),
+                    text=" ".join(f"Speaker {s['speaker'].split('_')[-1]}: {s['text']}" for s in r))
+    return r
+
+
+if __name__ != "__main__":
+    sys.exit(0)
+recs = [load(p) for p in sys.argv[1:]]
 base = recs[0]
 print(f"{'file':40} {'WER vs first':>12} {'chunks==':>9} {'spk turns':>9} {'distinct':>8} "
       f"{'RTF':>6} {'peak GiB':>8} {'wts GiB':>7}")

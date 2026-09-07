@@ -312,3 +312,129 @@ copying 56 KV tensors to and from the host every token; IO binding is the obviou
 **Implications.** The 1.5B package is parity-clean. Apply the same export to the 7B, then
 compare its parity (the 7B's seed envelope is wider, 1.7 to 2.7 %). After that: measure the
 package with IO-bound KV (the perf step), then the C# port against these same records.
+
+**7B parity (same setup):** WER 0.040 against the deterministic torch reference, 11/24
+identical chunks, 2 speakers, 428 tokens. That is numerically the same distance as one
+seeded torch run sits from the deterministic one (seed 0: 0.040, 11/24), so ORT is inside
+the model's own noise. The chunk diffs are commas, `?`/`!` choices, and which side of a
+boundary a word lands; in one place the torch reference emits a spurious two-word speaker
+turn that ORT does not. Host-KV RTF for the 7B is 0.296 (56 float32 tensors copied both
+ways per token, ~20 MB each way by the end of the clip); IO binding is measured next.
+Both 7B graphs were checked for the past-cache `Concat` as with the 1.5B.
+
+## Run 6 — 2026-09-07 12:20 — ORT with IO-bound KV cache (the C# execution model)
+
+**Command.** `bench_streaming_iobound.py` (KV `present_*` outputs bound to the CUDA device and
+fed straight back as `past_*`; only the last logits row returns to the host), ORT 1.29 CUDA,
+extended optimisation, 69 s clip and the 10-minute looped file.
+
+**Question.** What does the package actually cost once the cache stops round-tripping, and is
+it still parity-clean?
+
+**Two ORT-Python pitfalls found on the way** (both irrelevant to C#, both recorded so the
+next script does not rediscover them): `IoBinding.clear_binding_inputs()` /
+`clear_binding_outputs()` segfault in the 1.29 wrapper, so create a fresh binding per step;
+and a zero-length tensor created directly on the CUDA device also segfaults, so the empty
+initial cache lives on the host and every later cache tensor is a device-resident output.
+
+**Raw result, 1.5B:**
+
+| audio | gen time | RTF | tokens | tok/s | final KV length | GPU used at end |
+|---|---|---|---|---|---|---|
+| 69 s clip | 6.0 s | 0.087 | 432 | 71.7 | 1159 | 8.66 GiB |
+| 10 min | 75.1 s | 0.125 | 3745 | 49.9 | 9721 | 10.91 GiB |
+
+- 1.9× faster than the same graphs with host-side KV (Run 5) and 1.9× faster than the
+  PyTorch loop (Run 1/3) on the short clip.
+- Throughput falls from 72 to 50 tok/s between 1.2k and 9.7k cached positions. With a
+  dynamic cache every step `Concat`s the full past into a new tensor (56 of them), so the
+  per-token cost is linear in cache length and the total is quadratic. The non-streaming
+  port answered this with `decoder_single_static.onnx` (pre-allocated buffers, in-place
+  scatter); the same export is the next perf step once the 7B numbers are in.
+
+**Raw result, 7B (69 s clip):** 12.5 s gen, RTF 0.181, 431 tokens at 34.6 tok/s, final KV
+1158, 20.72 GiB in use at the end (ORT arena on top of 15.2 GB of weights plus the
+float32 audio encoder). Same speed as the PyTorch loop on this clip; the 7B is
+weight-bandwidth-bound per token, so binding buys less than it does on the 1.5B. The
+10-minute 7B run is the VRAM test: the cache alone is small, but the arena grows with every
+`Concat`-produced tensor.
+
+**7B, 10 minutes: out of memory.** ORT's BFC arena failed a 27 MB allocation inside layer
+27's attention at some point in the file (nvidia-smi read 20.7 GiB after the 69 s clip).
+The KV cache itself is small (~1 GiB at this length in float32); what fills the card is the
+arena's fragmentation under the dynamic-cache pattern, where every step allocates 56 new
+`Concat` outputs that are each a little larger than the last. The non-streaming port hit the
+same wall and answered it with `decoder_single_static.onnx` (pre-allocated `[1,kv,max,128]`
+buffers plus a `kv_pos` scatter), so the 7B needs that export before it is usable past a few
+minutes on a 24 GiB card. The 1.5B reached 10.9 GiB at 10 minutes and is fine.
+
+**Run-to-run repeatability (1.5B, IO-bound, identical inputs):** three runs of the 69 s clip
+give WER 0.007 to 0.043 against each other (15 to 22 of 24 chunks identical), and the
+IO-bound run differs from the host-KV run of the same graphs by 0.017. Traced to the audio
+encoder: on CUDA two consecutive runs of the same 83,200-sample window differ by ~1.7e-4
+relative (max-abs 8.5e-5 of scale), on every setting tried (`cudnn_conv_algo_search`
+HEURISTIC/DEFAULT, `use_tf32=0`); on the CPU EP the output is bit-identical run to run, and
+CPU vs CUDA differ by 2.6e-4. There is no random op in the graph. This is cuDNN
+accumulation-order noise in the float32 conv towers; it is 20× below BF16 resolution, but
+the decoder consumes the frames in BF16, so a handful of rounding flips reach the greedy
+argmax and move a comma or a boundary word. The decoder itself is deterministic within a
+process for identical inputs. Consequence: ORT parity is a tolerance statement (WER against
+the deterministic torch reference inside the seed envelope, speaker count unchanged), never
+a byte-equality one, and upstream's own inference is stochastic anyway.
+
+**Quantization (user's question, 12:40).** The decoder is a stock Qwen2 causal LM
+(Qwen2.5-1.5B / -7B), the architecture the GGUF ecosystem quantizes as a matter of course;
+weight-only INT4/INT8 on its linear layers (ORT `MatMulNBits`) is the obvious lever for the
+7B on a 24 GiB card and for CPU/DirectML feasibility, while the KV cache, attention and the
+conv tokenizers stay float. That is the perf step after the static-KV export, measured
+with the same parity harness: WER against the torch reference must stay inside the seed
+envelope and the speaker count must not change.
+
+## Run 7 — 2026-09-07 12:45 — C# backend and CLI
+
+**Code.** `src/Vernacula.Base/VibeVoiceStreamingAsr.cs` (new): reads the `streaming` and
+`tokenizer` sections of `export-report.json`, encodes each 83,200-sample window with
+`audio_encoder.onnx`, and drives `decoder_single.onnx` with the same IO-bound step the
+non-streaming backend uses (KV cache device-resident, only the last logits row read back).
+`ToSegments` folds the inline `Speaker N:` markers into `VibeVoiceSegment`s; the model gives
+no timestamps, so a boundary inside a chunk is placed proportionally to its character
+offset in that chunk's text (approximate to within one 2.93 s chunk, never decreasing).
+`Vernacula.CLI` gains `--asr vibevoice-streaming`, `--vibevoice-streaming-model <dir>`, and a
+`--hotwords` flag that is parsed but refused for now: the package has no BPE *encoder* on
+the C# side, only the byte-level decoder, so hotwords need one before they can be wired.
+
+**Command.** `Vernacula.CLI --audio demo1-chat.wav --asr vibevoice-streaming
+--vibevoice-streaming-model <1.5B package> --export-format json` (the CLI reads WAV only on
+Linux; NAudio's MP3 path is Media Foundation).
+
+**Raw result (1.5B, 69 s clip).**
+
+| | WER vs torch deterministic | speaker turns | wall incl. session load |
+|---|---|---|---|
+| CLI | 0.011 | 19 | 15.2 s |
+| Python IO-bound (Run 6) | 0.011 | 19 | 6.0 s gen + load |
+
+- Same distance from the reference as the Python ORT loop, and the same turn count, so the
+  C# loop reproduces the Python one (the two differ from each other only by the CUDA
+  encoder jitter described under Run 6).
+- First comparison read 0.18 WER: the Python records keep the `Speaker N:` markers as text
+  while the CLI turns them into fields, 38 words on this clip. `compare_runs.py` now strips
+  markers before scoring and accepts the CLI's JSON directly.
+- Wall time includes two session loads and the whole-file decode; the decode itself is the
+  Python figure, ~6 s.
+
+**State of the port after Runs 0-7.** Python reference → ONNX package → ORT parity →
+IO-bound perf → C# backend → CLI are all in place for the 1.5B. Open items, in order:
+
+1. `decoder_single_static.onnx` for both checkpoints (pre-allocated KV, `kv_pos` scatter):
+   removes the per-token `Concat` and the arena growth that OOMs the 7B at 10 minutes and
+   slows the 1.5B from 72 to 50 tok/s over the same span. The non-streaming export script
+   already has the wrapper.
+2. Weight-only INT4/INT8 on the Qwen2 decoder, measured with the same harness.
+3. Desktop app: a `vibevoice/vibevoice-asr-streaming` model entry, download manifest,
+   settings row, and `TranscriptionService` branch; chunk callbacks map onto the existing
+   progress reporting naturally.
+4. Hotwords need a BPE encoder in C# (Qwen2 byte-level BPE; `tokenizer.json` ships the
+   merges).
+5. The 1.5B labels every speaker `Speaker 0` on the interview clip while the 7B separates
+   two; the app's default should be decided on more than one clip.

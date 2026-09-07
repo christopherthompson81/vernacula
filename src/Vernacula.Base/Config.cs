@@ -174,6 +174,12 @@ public static class Config
     /// </summary>
     public const string VibeVoiceSubDir = "vibevoice_asr";
 
+    /// <summary>
+    /// Default subdirectory for a VibeVoice-ASR-Streaming package (same file names as
+    /// <see cref="VibeVoiceSubDir"/>, plus a "streaming" section in export-report.json).
+    /// </summary>
+    public const string VibeVoiceStreamingSubDir = "vibevoice_asr_streaming";
+
     // ── ASR (Qwen3-ASR) ──────────────────────────────────────────────────────
     public const string Qwen3AsrSubDir = "qwen3asr";
 
