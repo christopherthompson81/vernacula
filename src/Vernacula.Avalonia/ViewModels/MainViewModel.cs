@@ -183,9 +183,7 @@ internal partial class MainViewModel : ObservableObject
             }
             catch { /* DB missing or inaccessible — banner will reappear harmlessly */ }
 
-            queue.RequeueJob(refreshed.JobId, refreshed.ResultsFile, refreshed.AudioFilePath,
-                             refreshed.AudioStreamIndex, refreshed.AsrLanguageCode,
-                             refreshed.AsrModelName);
+            queue.RequeueJob(refreshed);
             RefreshJobsAndSync();
             // Hop to the Progress / Home panel so the user can see the new run.
             CurrentPanel = AppPanel.Home;
@@ -213,9 +211,7 @@ internal partial class MainViewModel : ObservableObject
             }
             catch { /* DB missing or inaccessible — will re-evaluate on next run */ }
 
-            queue.RequeueJob(refreshed.JobId, refreshed.ResultsFile, refreshed.AudioFilePath,
-                             refreshed.AudioStreamIndex, refreshed.AsrLanguageCode,
-                             refreshed.AsrModelName);
+            queue.RequeueJob(refreshed);
             RefreshJobsAndSync();
             CurrentPanel = AppPanel.Home;
         };

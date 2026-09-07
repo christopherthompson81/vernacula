@@ -35,7 +35,7 @@ internal record ProgressUpdatedAction(
 /// PropertyChanged notifications on the wrong thread.
 /// </para>
 /// </summary>
-internal sealed class JobUiState
+internal sealed class JobUiState : IJobUiState
 {
     private record SegmentData(
         int    SegmentId,

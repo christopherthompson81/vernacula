@@ -6,23 +6,28 @@ using Vernacula.App.Services.Tts;
 namespace Vernacula.App.Services;
 
 /// <summary>
-/// The one queue behind the Home screen's job list. ASR jobs run through
-/// <see cref="TranscriptionService"/>; TTS jobs through <see cref="TtsJobRunner"/>. Both share
-/// the slots, the status/progress events and the per-job live UI state the panels attach to.
+/// The one queue behind the Home screen's job list, for jobs of every kind.
+/// <para>
+/// The queue owns the slots, the cancellation tokens, the running → complete/cancelled/failed
+/// ladder, the run-time bookkeeping, the status/progress events and the per-job live UI state
+/// the panels attach to. What differs per kind — the worker, the shape of that live state, the
+/// extra columns written on success — belongs to an <see cref="IJobRunner"/>, one per
+/// <see cref="JobKind"/>, so nothing here branches on kind.
+/// </para>
 /// </summary>
 internal sealed class JobQueueService
 {
-    private readonly TranscriptionService _transcription;
-    private readonly TtsJobRunner         _tts;
-    private readonly ControlDb            _controlDb;
-    private readonly SettingsService      _settings;
+    private readonly ControlDb       _controlDb;
+    private readonly SettingsService _settings;
+
+    /// <summary>One runner per job kind; the queue never branches on kind itself.</summary>
+    private readonly Dictionary<JobKind, IJobRunner> _runners;
 
     private readonly SemaphoreSlim _slots;
     private readonly object        _lock        = new();
-    private readonly Queue<QueueEntry>                        _pendingQueue   = new();
-    private readonly Dictionary<int, CancellationTokenSource> _activeCts      = new();
-    private readonly Dictionary<int, JobUiState>              _jobUiStates    = new();
-    private readonly Dictionary<int, TtsJobUiState>           _ttsUiStates    = new();
+    private readonly Queue<QueueEntry>                        _pendingQueue = new();
+    private readonly Dictionary<int, CancellationTokenSource> _activeCts    = new();
+    private readonly Dictionary<int, IJobUiState>             _uiStates     = new();
 
     /// <summary>Number of jobs that may run concurrently.</summary>
     public int SlotCount { get; }
@@ -58,12 +63,31 @@ internal sealed class JobQueueService
         SettingsService      settings,
         int                  slotCount = 1)
     {
-        _transcription = transcription;
-        _tts           = tts;
-        _controlDb     = controlDb;
-        _settings      = settings;
-        SlotCount      = slotCount;
-        _slots         = new SemaphoreSlim(slotCount, slotCount);
+        _controlDb = controlDb;
+        _settings  = settings;
+        SlotCount  = slotCount;
+        _slots     = new SemaphoreSlim(slotCount, slotCount);
+
+        // Each runner's own typed progress event is forwarded to the queue's, so that
+        // subscribers keep one place to attach to while the run ladder stays kind-agnostic.
+        var asr = new AsrQueueRunner(transcription, controlDb);
+        asr.ProgressInfo += (id, p) => JobProgressInfoUpdated?.Invoke(id, p);
+        var ttsRunner = new TtsQueueRunner(tts, controlDb);
+        ttsRunner.Progress += (id, p) => JobTtsProgressUpdated?.Invoke(id, p);
+        _runners = new Dictionary<JobKind, IJobRunner>
+        {
+            [asr.Kind]       = asr,
+            [ttsRunner.Kind] = ttsRunner,
+        };
+
+        // A kind with no runner would otherwise surface as a KeyNotFoundException on a
+        // background thread the first time someone enqueues one — long after the mistake, and
+        // nowhere near it. Fail at startup instead.
+        foreach (var kind in Enum.GetValues<JobKind>())
+            if (!_runners.ContainsKey(kind))
+                throw new InvalidOperationException(
+                    $"No IJobRunner is registered for JobKind.{kind}. Add one in JobRunner.cs "
+                  + "and register it here.");
     }
 
     // ── Public API ────────────────────────────────────────────────────────────
@@ -165,32 +189,13 @@ internal sealed class JobQueueService
         return $"{documentSha256[..16]}_{settingsHash}_tts.json";
     }
 
-    /// <summary>
-    /// Re-adds an existing (failed / cancelled) job back into the run queue.
-    /// </summary>
-    public void RequeueJob(int jobId, string dbPath, string audioPath, int streamIndex = -1,
-        string asrLanguageCode = "auto", string asrModelName = "nvidia/parakeet-tdt-0.6b-v3")
-    {
-        _controlDb.UpdateJobStatus(jobId, JobStatus.Queued);
-        Enqueue(new QueueEntry(jobId, audioPath, dbPath, streamIndex, asrLanguageCode, asrModelName));
-        JobStatusChanged?.Invoke(jobId, JobStatus.Queued, null, null);
-        _ = TryStartNextAsync();
-    }
-
-    /// <summary>Re-adds an existing (failed / cancelled) job of either kind back into the run queue.</summary>
+    /// <summary>Re-adds an existing (failed / cancelled) job of any kind back into the run queue.</summary>
     public void RequeueJob(JobRecord job)
     {
-        if (job.Kind == JobKind.Tts)
-        {
-            _controlDb.UpdateJobStatus(job.JobId, JobStatus.Queued);
-            var tts = new TtsJobSettings(job.TtsBackend, job.TtsLanguage, job.TtsVoice, job.TtsSpeed, job.TtsNumStep);
-            Enqueue(new QueueEntry(job.JobId, job.AudioFilePath, job.ResultsFile, Kind: JobKind.Tts, Tts: tts));
-            JobStatusChanged?.Invoke(job.JobId, JobStatus.Queued, null, null);
-            _ = TryStartNextAsync();
-            return;
-        }
-        RequeueJob(job.JobId, job.ResultsFile, job.AudioFilePath, job.AudioStreamIndex,
-            job.AsrLanguageCode, job.AsrModelName);
+        _controlDb.UpdateJobStatus(job.JobId, JobStatus.Queued);
+        Enqueue(_runners[job.Kind].EntryFor(job));
+        JobStatusChanged?.Invoke(job.JobId, JobStatus.Queued, null, null);
+        _ = TryStartNextAsync();
     }
 
     /// <summary>Requests cancellation of a running or queued job.</summary>
@@ -243,18 +248,10 @@ internal sealed class JobQueueService
 
     public double GetJobProgress(int jobId)
     {
-        lock (_lock)
-        {
-            if (_jobUiStates.TryGetValue(jobId, out var s)) return s.Percent;
-            if (_ttsUiStates.TryGetValue(jobId, out var t)) return t.Percent;
-            return 0;
-        }
+        lock (_lock) return _uiStates.TryGetValue(jobId, out var s) ? s.Percent : 0;
     }
 
-    public ProgressEvent? GetTtsJobLastProgress(int jobId)
-    {
-        lock (_lock) return _ttsUiStates.TryGetValue(jobId, out var s) ? s.LastProgress : null;
-    }
+    public ProgressEvent? GetTtsJobLastProgress(int jobId) => GetTtsJobUiState(jobId)?.LastProgress;
 
     /// <summary>
     /// Returns the live UI state for an actively running TTS job (chunks so far + progress),
@@ -262,13 +259,10 @@ internal sealed class JobQueueService
     /// </summary>
     public TtsJobUiState? GetTtsJobUiState(int jobId)
     {
-        lock (_lock) return _ttsUiStates.TryGetValue(jobId, out var s) ? s : null;
+        lock (_lock) return _uiStates.GetValueOrDefault(jobId) as TtsJobUiState;
     }
 
-    public TranscriptionProgress? GetJobLastProgress(int jobId)
-    {
-        lock (_lock) return _jobUiStates.TryGetValue(jobId, out var s) ? s.LastProgress : null;
-    }
+    public TranscriptionProgress? GetJobLastProgress(int jobId) => GetJobUiState(jobId)?.LastProgress;
 
     /// <summary>
     /// Returns the live UI state for an actively running job, or null if the
@@ -277,7 +271,7 @@ internal sealed class JobQueueService
     /// </summary>
     public JobUiState? GetJobUiState(int jobId)
     {
-        lock (_lock) return _jobUiStates.TryGetValue(jobId, out var s) ? s : null;
+        lock (_lock) return _uiStates.GetValueOrDefault(jobId) as JobUiState;
     }
 
     // ── Internal queue mechanics ──────────────────────────────────────────────
@@ -321,175 +315,56 @@ internal sealed class JobQueueService
         }
     }
 
-    private Task RunJobAsync(QueueEntry entry) =>
-        entry.Kind == JobKind.Tts ? RunTtsJobAsync(entry) : RunAsrJobAsync(entry);
-
-    private async Task RunTtsJobAsync(QueueEntry entry)
-    {
-        Console.WriteLine($"[Queue] RunTtsJobAsync starting for job {entry.JobId}");
-        var tts   = entry.Tts!;
-        var cts   = new CancellationTokenSource();
-        var state = new TtsJobUiState(TtsJobRunner.SampleRateFor(tts));
-        lock (_lock) { _activeCts[entry.JobId] = cts; _ttsUiStates[entry.JobId] = state; }
-
-        string runStamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
-        _controlDb.SetJobRunning(entry.JobId, runStamp);
-        JobStatusChanged?.Invoke(entry.JobId, JobStatus.Running, null, null);
-
-        var sw = System.Diagnostics.Stopwatch.StartNew();
-
-        void OnProgress(ProgressEvent p)
-        {
-            state.Dispatch(new TtsProgressAction(p));
-            JobTtsProgressUpdated?.Invoke(entry.JobId, p);
-            JobProgressUpdated?.Invoke(entry.JobId, state.Percent);
-        }
-
-        void OnChunk(ChunkProducedEvent ev)
-        {
-            state.Dispatch(new TtsChunkProducedAction(ev));
-            JobProgressUpdated?.Invoke(entry.JobId, state.Percent);
-        }
-
-        try
-        {
-            var sidecar = await _tts.RunAsync(entry.AudioPath, entry.DbPath, tts, OnChunk, OnProgress, cts.Token);
-
-            sw.Stop();
-            int elapsed = (int)sw.Elapsed.TotalSeconds;
-            _controlDb.UpdateJobOutputDuration(entry.JobId, sidecar.AudioDurationSeconds);
-            _controlDb.UpdateJobStatus(entry.JobId, JobStatus.Complete, runTimeSeconds: elapsed);
-            lock (_lock) { _ttsUiStates.Remove(entry.JobId); }
-            JobStatusChanged?.Invoke(entry.JobId, JobStatus.Complete, null, elapsed);
-        }
-        catch (OperationCanceledException)
-        {
-            sw.Stop();
-            _controlDb.UpdateJobStatus(entry.JobId, JobStatus.Cancelled,
-                runTimeSeconds: (int)sw.Elapsed.TotalSeconds);
-            lock (_lock) { _ttsUiStates.Remove(entry.JobId); }
-            JobStatusChanged?.Invoke(entry.JobId, JobStatus.Cancelled, null, (int)sw.Elapsed.TotalSeconds);
-        }
-        catch (Exception ex)
-        {
-            sw.Stop();
-            string error = ex.ToString();
-            _controlDb.UpdateJobStatus(entry.JobId, JobStatus.Failed, error,
-                runTimeSeconds: (int)sw.Elapsed.TotalSeconds);
-            lock (_lock) { _ttsUiStates.Remove(entry.JobId); }
-            JobStatusChanged?.Invoke(entry.JobId, JobStatus.Failed, error, (int)sw.Elapsed.TotalSeconds);
-        }
-        finally
-        {
-            lock (_lock) _activeCts.Remove(entry.JobId);
-        }
-    }
-
-    private async Task RunAsrJobAsync(QueueEntry entry)
-    {
-        Console.WriteLine($"[Queue] RunJobAsync starting for job {entry.JobId}");
-        var cts   = new CancellationTokenSource();
-        var state = new JobUiState();
-        lock (_lock) { _activeCts[entry.JobId] = cts; _jobUiStates[entry.JobId] = state; }
-
-        string runStamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
-        Console.WriteLine($"[Queue] Calling SetJobRunning for job {entry.JobId}");
-        _controlDb.SetJobRunning(entry.JobId, runStamp);
-        Console.WriteLine($"[Queue] Firing JobStatusChanged (Running) for job {entry.JobId}");
-        JobStatusChanged?.Invoke(entry.JobId, JobStatus.Running, null, null);
-
-        var sw = System.Diagnostics.Stopwatch.StartNew();
-
-        var progress = new Progress<TranscriptionProgress>(p =>
-        {
-            // Dispatch first so the state's monotonic clamp runs, then fire the
-            // event with the clamped value — otherwise home-screen job rows
-            // would still see raw percents and rewind.
-            state.Dispatch(new ProgressUpdatedAction(p));
-            JobProgressUpdated?.Invoke(entry.JobId, state.Percent);
-            JobProgressInfoUpdated?.Invoke(entry.JobId, p);
-        });
-
-        void OnSegmentAdded(SegmentRow seg) =>
-            state.Dispatch(new SegmentAddedAction(
-                seg.SegmentId, seg.SpeakerTag, seg.SpeakerDisplayName,
-                seg.StartTime, seg.EndTime));
-
-        void OnSegmentText(int segId, string text) =>
-            state.Dispatch(new SegmentTextUpdatedAction(segId, text));
-
-        try
-        {
-            // Captures the effective ASR config (post-LID / SwitchBackend)
-            // via the TranscriptionService callback so we can mirror it into
-            // the jobs table after RunAsync completes — without reopening
-            // the results DB.
-            string? effectiveModel = null;
-            string? effectiveLang  = null;
-            void OnAsrConfigEffective(string model, string lang)
-            {
-                effectiveModel = model;
-                effectiveLang  = lang;
-            }
-
-            await _transcription.RunAsync(
-                entry.AudioPath, entry.StreamIndex, entry.DbPath,
-                progress,
-                OnSegmentAdded,
-                OnSegmentText,
-                entry.AsrModelName,
-                entry.AsrLanguageCode,
-                cts.Token,
-                OnAsrConfigEffective);
-
-            if (effectiveModel is not null &&
-                (!string.Equals(effectiveModel, entry.AsrModelName, StringComparison.Ordinal) ||
-                 !string.Equals(effectiveLang ?? "auto", entry.AsrLanguageCode, StringComparison.Ordinal)))
-            {
-                _controlDb.UpdateJobAsr(entry.JobId, effectiveModel, effectiveLang ?? "auto");
-            }
-
-            sw.Stop();
-            int elapsed = (int)sw.Elapsed.TotalSeconds;
-            _controlDb.UpdateJobStatus(entry.JobId, JobStatus.Complete, runTimeSeconds: elapsed);
-            lock (_lock) { _jobUiStates.Remove(entry.JobId); }
-            JobStatusChanged?.Invoke(entry.JobId, JobStatus.Complete, null, elapsed);
-        }
-        catch (OperationCanceledException)
-        {
-            sw.Stop();
-            _controlDb.UpdateJobStatus(entry.JobId, JobStatus.Cancelled,
-                runTimeSeconds: (int)sw.Elapsed.TotalSeconds);
-            lock (_lock) { _jobUiStates.Remove(entry.JobId); }
-            JobStatusChanged?.Invoke(entry.JobId, JobStatus.Cancelled, null, (int)sw.Elapsed.TotalSeconds);
-        }
-        catch (Exception ex)
-        {
-            sw.Stop();
-            string error = ex.ToString();
-            _controlDb.UpdateJobStatus(entry.JobId, JobStatus.Failed, error,
-                runTimeSeconds: (int)sw.Elapsed.TotalSeconds);
-            lock (_lock) { _jobUiStates.Remove(entry.JobId); }
-            JobStatusChanged?.Invoke(entry.JobId, JobStatus.Failed, error, (int)sw.Elapsed.TotalSeconds);
-        }
-        finally
-        {
-            lock (_lock) _activeCts.Remove(entry.JobId);
-        }
-    }
-
     /// <summary>
-    /// One queued job. <paramref name="AudioPath"/> is the input file (media for ASR, the
-    /// document for TTS) and <paramref name="DbPath"/> the results file (results DB for ASR,
-    /// alignment sidecar for TTS) — the names follow the jobs table's columns.
+    /// The one run ladder, shared by every job kind: take a cancellation token and a live UI
+    /// state, mark the job running, time it, and land it on complete / cancelled / failed. The
+    /// kind-specific work is entirely inside <see cref="IJobRunner.RunAsync"/>.
     /// </summary>
-    private record QueueEntry(
-        int JobId,
-        string AudioPath,
-        string DbPath,
-        int StreamIndex = -1,
-        string AsrLanguageCode = "auto",
-        string AsrModelName = "nvidia/parakeet-tdt-0.6b-v3",
-        JobKind Kind = JobKind.Asr,
-        TtsJobSettings? Tts = null);
+    private async Task RunJobAsync(QueueEntry entry)
+    {
+        Console.WriteLine($"[Queue] RunJobAsync starting for job {entry.JobId} ({entry.Kind})");
+        var runner = _runners[entry.Kind];
+        var cts    = new CancellationTokenSource();
+        var state  = runner.CreateUiState(entry);
+        lock (_lock) { _activeCts[entry.JobId] = cts; _uiStates[entry.JobId] = state; }
+
+        string runStamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
+        _controlDb.SetJobRunning(entry.JobId, runStamp);
+        JobStatusChanged?.Invoke(entry.JobId, JobStatus.Running, null, null);
+
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        void OnPercentChanged() => JobProgressUpdated?.Invoke(entry.JobId, state.Percent);
+
+        try
+        {
+            JobStatus status;
+            string?   error = null;
+            try
+            {
+                await runner.RunAsync(entry, state, OnPercentChanged, cts.Token);
+                status = JobStatus.Complete;
+            }
+            catch (OperationCanceledException)
+            {
+                status = JobStatus.Cancelled;
+            }
+            catch (Exception ex)
+            {
+                status = JobStatus.Failed;
+                error  = ex.ToString();
+            }
+
+            sw.Stop();
+            int elapsed = (int)sw.Elapsed.TotalSeconds;
+            _controlDb.UpdateJobStatus(entry.JobId, status, error, runTimeSeconds: elapsed);
+            lock (_lock) _uiStates.Remove(entry.JobId);
+            JobStatusChanged?.Invoke(entry.JobId, status, error, elapsed);
+        }
+        finally
+        {
+            // After the status event, as it always has been: a subscriber that asks
+            // IsJobActivelyRunning while handling the completion still sees the job as active.
+            lock (_lock) _activeCts.Remove(entry.JobId);
+        }
+    }
 }
