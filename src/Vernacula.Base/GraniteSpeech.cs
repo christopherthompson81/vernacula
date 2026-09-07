@@ -439,6 +439,57 @@ public sealed class GraniteSpeech : IDisposable
     internal static int MaxBatchSeen;
     private static readonly object _profileLock = new();
 
+    /// <summary>
+    /// The audio front end shared by every <c>Transcribe*</c> path: one waveform
+    /// through mel → encoder → projector, yielding the audio embeddings the decoder
+    /// prefill scatters into the prompt.
+    /// <para>
+    /// Every bundle variant runs this identically — only the decoder differs — so it
+    /// lives here once rather than being copied into each path. The three
+    /// <c>ref</c> timers accumulate (<c>+=</c>) when <c>_profile</c> is on and are
+    /// untouched otherwise; callers that time a single row simply pass a zeroed
+    /// local.
+    /// </para>
+    /// <para>
+    /// The returned <c>projectorTokens</c> is the audio-token count the projector
+    /// actually produced. It should equal <see cref="NumAudioTokens"/> of the
+    /// waveform length; the paths that assert that keep doing so themselves, since
+    /// the checks differ in wording and in which ones are fatal. Note that the
+    /// embeddings are materialized before any caller gets to run that assertion —
+    /// the copy happens here — so a bundle that disagrees with the formula pays one
+    /// wasted array copy on its way to the exception.
+    /// </para>
+    /// </summary>
+    private (float[] audioEmbeds, long audioDim, long projectorTokens) RunAudioPipeline(
+        float[]   waveform,
+        ref long  melMs,
+        ref long  encMs,
+        ref long  projMs)
+    {
+        var swStage = _profile ? System.Diagnostics.Stopwatch.StartNew() : null;
+
+        var audioT = new DenseTensor<float>(waveform, [1, waveform.Length]);
+        using var melResults = _mel.Run([NamedOnnxValue.CreateFromTensor("audio", audioT)]);
+        var inputFeatures = melResults[0].AsTensor<float>();
+        var ifShape = inputFeatures.Dimensions.ToArray();
+        var ifData = inputFeatures is DenseTensor<float> dT ? dT.ToArray() : inputFeatures.ToArray();
+        if (swStage != null) { swStage.Stop(); melMs += swStage.ElapsedMilliseconds; swStage.Restart(); }
+
+        using var encResults = _encoder.Run([NamedOnnxValue.CreateFromTensor(
+            "input_features", new DenseTensor<float>(ifData, ifShape))]);
+        var encoderHidden = encResults[0].AsTensor<float>();
+        var encShape = encoderHidden.Dimensions.ToArray();
+        var encData = encoderHidden.ToArray();
+        if (swStage != null) { swStage.Stop(); encMs += swStage.ElapsedMilliseconds; swStage.Restart(); }
+
+        using var projResults = _projector.Run([NamedOnnxValue.CreateFromTensor(
+            "encoder_hidden", new DenseTensor<float>(encData, encShape))]);
+        var ae = projResults[0].AsTensor<float>();
+        var result = (ae.ToArray(), ae.Dimensions[2], ae.Dimensions[1]);
+        if (swStage != null) { swStage.Stop(); projMs += swStage.ElapsedMilliseconds; }
+        return result;
+    }
+
     private (string text, long[] tokens)[] TranscribeBatch(float[][] waveforms, int maxNewTokens)
     {
         // Dynamic GQA bundle: B=1 per segment (Run 20 phase 4). Phase 5
@@ -490,37 +541,16 @@ public sealed class GraniteSpeech : IDisposable
                     $"Pre-segment audio to ≤{allowedSeconds} s.");
             }
 
-            // Mel
-            var swStage = _profile ? System.Diagnostics.Stopwatch.StartNew() : null;
-            var audioT = new DenseTensor<float>(waveforms[b], [1, waveforms[b].Length]);
-            using var melResults = _mel.Run([NamedOnnxValue.CreateFromTensor("audio", audioT)]);
-            var inputFeatures = melResults[0].AsTensor<float>();
-            var ifShape = inputFeatures.Dimensions.ToArray();
-            var ifData = inputFeatures is DenseTensor<float> dT ? dT.ToArray() : inputFeatures.ToArray();
-            if (swStage != null) { swStage.Stop(); melLocal += swStage.ElapsedMilliseconds; swStage.Restart(); }
-
-            // Encoder
-            using var encResults = _encoder.Run([NamedOnnxValue.CreateFromTensor(
-                "input_features", new DenseTensor<float>(ifData, ifShape))]);
-            var encoderHidden = encResults[0].AsTensor<float>();
-            var encShape = encoderHidden.Dimensions.ToArray();
-            var encData = encoderHidden.ToArray();
-            if (swStage != null) { swStage.Stop(); encLocal += swStage.ElapsedMilliseconds; swStage.Restart(); }
-
-            // Projector
-            using var projResults = _projector.Run([NamedOnnxValue.CreateFromTensor(
-                "encoder_hidden", new DenseTensor<float>(encData, encShape))]);
-            var ae = projResults[0].AsTensor<float>();
-            var projShape = ae.Dimensions.ToArray();
-            if (projShape[1] != audioTokens)
+            var (rowEmbeds, rowDim, rowTokens) = RunAudioPipeline(
+                waveforms[b], ref melLocal, ref encLocal, ref projLocal);
+            if (rowTokens != audioTokens)
                 throw new InvalidOperationException(
                     $"Audio token count mismatch (row {b}): formula predicts {audioTokens}, "
-                  + $"projector produced {projShape[1]}.");
+                  + $"projector produced {rowTokens}.");
 
-            audioEmbeds[b] = ae.ToArray();
+            audioEmbeds[b] = rowEmbeds;
             nAudio[b]      = audioTokens;
-            audioDim       = projShape[2];
-            if (swStage != null) { swStage.Stop(); projLocal += swStage.ElapsedMilliseconds; }
+            audioDim       = rowDim;
         }
 
         // ── Build batched, left-padded prompt ───────────────────────────
@@ -1000,33 +1030,15 @@ public sealed class GraniteSpeech : IDisposable
                   + $"--static-audio-len, or pre-segment audio.");
             }
 
-            var swStage = _profile ? System.Diagnostics.Stopwatch.StartNew() : null;
-            var audioT = new DenseTensor<float>(waveforms[b], [1, waveforms[b].Length]);
-            using var melResults = _mel.Run([NamedOnnxValue.CreateFromTensor("audio", audioT)]);
-            var inputFeatures = melResults[0].AsTensor<float>();
-            var ifShape = inputFeatures.Dimensions.ToArray();
-            var ifData = inputFeatures is DenseTensor<float> dT ? dT.ToArray() : inputFeatures.ToArray();
-            if (swStage != null) { swStage.Stop(); melLocal += swStage.ElapsedMilliseconds; swStage.Restart(); }
-
-            using var encResults = _encoder.Run([NamedOnnxValue.CreateFromTensor(
-                "input_features", new DenseTensor<float>(ifData, ifShape))]);
-            var encoderHidden = encResults[0].AsTensor<float>();
-            var encShape = encoderHidden.Dimensions.ToArray();
-            var encData = encoderHidden.ToArray();
-            if (swStage != null) { swStage.Stop(); encLocal += swStage.ElapsedMilliseconds; swStage.Restart(); }
-
-            using var projResults = _projector.Run([NamedOnnxValue.CreateFromTensor(
-                "encoder_hidden", new DenseTensor<float>(encData, encShape))]);
-            var ae = projResults[0].AsTensor<float>();
-            var projShape = ae.Dimensions.ToArray();
-            if (projShape[1] != audioTokens)
+            var (rowEmbeds, rowDim, rowTokens) = RunAudioPipeline(
+                waveforms[b], ref melLocal, ref encLocal, ref projLocal);
+            if (rowTokens != audioTokens)
                 throw new InvalidOperationException(
                     $"Audio token count mismatch (row {b}): formula predicts {audioTokens}, "
-                  + $"projector produced {projShape[1]}.");
-            audioEmbeds[b] = ae.ToArray();
+                  + $"projector produced {rowTokens}.");
+            audioEmbeds[b] = rowEmbeds;
             nAudio[b]      = audioTokens;
-            audioDim       = projShape[2];
-            if (swStage != null) { swStage.Stop(); projLocal += swStage.ElapsedMilliseconds; }
+            audioDim       = rowDim;
         }
 
         // ── Build padded prompt at fixed B ───────────────────────────────
@@ -1329,31 +1341,8 @@ public sealed class GraniteSpeech : IDisposable
         long melLocal = 0, encLocal = 0, projLocal = 0;
 
         // ── Mel + encoder + projector ──────────────────────────────────
-        var swStage = _profile ? System.Diagnostics.Stopwatch.StartNew() : null;
-        var audioT = new DenseTensor<float>(waveform, [1, waveform.Length]);
-        using var melResults = _mel.Run(
-            [NamedOnnxValue.CreateFromTensor("audio", audioT)]);
-        var inputFeatures = melResults[0].AsTensor<float>();
-        var ifShape = inputFeatures.Dimensions.ToArray();
-        var ifData = inputFeatures is DenseTensor<float> dT
-            ? dT.ToArray() : inputFeatures.ToArray();
-        if (swStage != null) { swStage.Stop(); melLocal = swStage.ElapsedMilliseconds; swStage.Restart(); }
-
-        using var encResults = _encoder.Run(
-            [NamedOnnxValue.CreateFromTensor(
-                "input_features", new DenseTensor<float>(ifData, ifShape))]);
-        var encoderHidden = encResults[0].AsTensor<float>();
-        var encShape = encoderHidden.Dimensions.ToArray();
-        var encData = encoderHidden.ToArray();
-        if (swStage != null) { swStage.Stop(); encLocal = swStage.ElapsedMilliseconds; swStage.Restart(); }
-
-        using var projResults = _projector.Run(
-            [NamedOnnxValue.CreateFromTensor(
-                "encoder_hidden", new DenseTensor<float>(encData, encShape))]);
-        var ae = projResults[0].AsTensor<float>();
-        long audioDim = ae.Dimensions[2];
-        var audioEmbedsRow = ae.ToArray();
-        if (swStage != null) { swStage.Stop(); projLocal = swStage.ElapsedMilliseconds; }
+        var (audioEmbedsRow, audioDim, _) = RunAudioPipeline(
+            waveform, ref melLocal, ref encLocal, ref projLocal);
 
         // ── Build prefill inputs ───────────────────────────────────────
         // input_ids [B, realLen]: row 0 is the real prompt, dummies are PAD.
@@ -1630,28 +1619,11 @@ public sealed class GraniteSpeech : IDisposable
                 throw new InvalidOperationException(
                     $"Segment too long: audio_tokens ({audioTokens}) > pinned A ({A}).");
 
-            var swStage = _profile ? System.Diagnostics.Stopwatch.StartNew() : null;
-            var audioT = new DenseTensor<float>(waveforms[b], [1, waveforms[b].Length]);
-            using var melResults = _mel.Run([NamedOnnxValue.CreateFromTensor("audio", audioT)]);
-            var inputFeatures = melResults[0].AsTensor<float>();
-            var ifShape = inputFeatures.Dimensions.ToArray();
-            var ifData = inputFeatures is DenseTensor<float> dT ? dT.ToArray() : inputFeatures.ToArray();
-            if (swStage != null) { swStage.Stop(); melLocal += swStage.ElapsedMilliseconds; swStage.Restart(); }
-
-            using var encResults = _encoder.Run([NamedOnnxValue.CreateFromTensor(
-                "input_features", new DenseTensor<float>(ifData, ifShape))]);
-            var encoderHidden = encResults[0].AsTensor<float>();
-            var encShape = encoderHidden.Dimensions.ToArray();
-            var encData = encoderHidden.ToArray();
-            if (swStage != null) { swStage.Stop(); encLocal += swStage.ElapsedMilliseconds; swStage.Restart(); }
-
-            using var projResults = _projector.Run([NamedOnnxValue.CreateFromTensor(
-                "encoder_hidden", new DenseTensor<float>(encData, encShape))]);
-            var ae = projResults[0].AsTensor<float>();
-            audioDim = ae.Dimensions[2];
-            audioEmbeds[b] = ae.ToArray();
+            var (rowEmbeds, rowDim, _) = RunAudioPipeline(
+                waveforms[b], ref melLocal, ref encLocal, ref projLocal);
+            audioDim = rowDim;
+            audioEmbeds[b] = rowEmbeds;
             nAudio[b] = audioTokens;
-            if (swStage != null) { swStage.Stop(); projLocal += swStage.ElapsedMilliseconds; }
         }
 
         // ── Build padded prompt at fixed B ───────────────────────────────
@@ -1969,34 +1941,12 @@ public sealed class GraniteSpeech : IDisposable
         long melLocal = 0, encLocal = 0, projLocal = 0;
 
         // ── Mel + encoder + projector (B=1) ──────────────────────────────
-        var swStage = _profile ? System.Diagnostics.Stopwatch.StartNew() : null;
-        var audioT = new DenseTensor<float>(waveform, [1, waveform.Length]);
-        using var melResults = _mel.Run(
-            [NamedOnnxValue.CreateFromTensor("audio", audioT)]);
-        var inputFeatures = melResults[0].AsTensor<float>();
-        var ifShape = inputFeatures.Dimensions.ToArray();
-        var ifData = inputFeatures is DenseTensor<float> dT ? dT.ToArray() : inputFeatures.ToArray();
-        if (swStage != null) { swStage.Stop(); melLocal = swStage.ElapsedMilliseconds; swStage.Restart(); }
-
-        using var encResults = _encoder.Run(
-            [NamedOnnxValue.CreateFromTensor(
-                "input_features", new DenseTensor<float>(ifData, ifShape))]);
-        var encoderHidden = encResults[0].AsTensor<float>();
-        var encShape = encoderHidden.Dimensions.ToArray();
-        var encData = encoderHidden.ToArray();
-        if (swStage != null) { swStage.Stop(); encLocal = swStage.ElapsedMilliseconds; swStage.Restart(); }
-
-        using var projResults = _projector.Run(
-            [NamedOnnxValue.CreateFromTensor(
-                "encoder_hidden", new DenseTensor<float>(encData, encShape))]);
-        var ae = projResults[0].AsTensor<float>();
-        long audioDim = ae.Dimensions[2];
-        if (ae.Dimensions[1] != audioTokens)
+        var (audioEmbedsRow, audioDim, projectorTokens) = RunAudioPipeline(
+            waveform, ref melLocal, ref encLocal, ref projLocal);
+        if (projectorTokens != audioTokens)
             throw new InvalidOperationException(
                 $"Audio token count mismatch: formula predicts {audioTokens}, "
-              + $"projector produced {ae.Dimensions[1]}.");
-        var audioEmbedsRow = ae.ToArray();
-        if (swStage != null) { swStage.Stop(); projLocal = swStage.ElapsedMilliseconds; }
+              + $"projector produced {projectorTokens}.");
 
         // ── Build prefill inputs at actual sizes ────────────────────────
         var inputIds = new long[realLen];
