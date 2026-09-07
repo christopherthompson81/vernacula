@@ -18,7 +18,6 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\Vernacula.Tts.Base\Vernacula.Tts.Base.csproj">
       <Private>true</Private>
-      <SetConfiguration>EP=Cuda</SetConfiguration>
     </ProjectReference>
   </ItemGroup>
 

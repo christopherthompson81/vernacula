@@ -27,11 +27,9 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\Vernacula.Base\Vernacula.Base.csproj">
       <Private>true</Private>
-      <SetConfiguration>EP=Cuda</SetConfiguration>
     </ProjectReference>
     <ProjectReference Include="..\..\src\Vernacula.Tts.Base\Vernacula.Tts.Base.csproj">
       <Private>true</Private>
-      <SetConfiguration>EP=Cuda</SetConfiguration>
     </ProjectReference>
   </ItemGroup>
 

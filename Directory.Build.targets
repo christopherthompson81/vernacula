@@ -1,47 +1,31 @@
 <Project>
 
   <!--
-    Repo-wide build rules that must run AFTER each project body. Directory.Build.props (imported
-    before it) cannot carry these: a `PackageReference Update` there would run before the item it
-    updates exists, and would silently do nothing.
+    Repo-wide build rules that must run AFTER each project body — Directory.Build.props is
+    imported before it, so anything that inspects a project's own items belongs here.
   -->
 
-  <!-- ⚠ THE CPU ONNX RUNTIME MUST NOT FLOW OUT OF THE PHONEMIZER. Vernacula.Phonemizer is a git
-       submodule and takes a plain (CPU) Microsoft.ML.OnnxRuntime reference for its neural G2P.
-       Without PrivateAssets it flows transitively into every consumer of Vernacula.Tts.Base, and
-       the CPU `libonnxruntime.so` lands in the same runtimes/<rid>/native/ directory as the GPU
-       one. Whichever copies last wins, so a CUDA build quietly runs on a CPU runtime — with no
-       build error, and the CUDA provider libraries still sitting next to it.
+  <!-- ⚠ THE CPU ONNX RUNTIME MUST NOT REACH A GPU BUILD'S OUTPUT. Vernacula.Phonemizer, a git
+       submodule, takes a plain (CPU) Microsoft.ML.OnnxRuntime reference for its neural G2P.
+       Vernacula.Tts.Base stops that package's native from flowing onward — ExcludeAssets="native"
+       on its ProjectReference, explained there — so no consumer needs the ExcludeAssets="all" shim
+       eight of them used to carry, and a new consumer is correct by default (#131).
 
-       Every EP-selecting consumer used to carry its own `ExcludeAssets="all"` shim to outrank it.
-       There were eight, each conditioned to stay in lockstep with the EP package group above it,
-       and the guard against a ninth was a comment. Cutting it off here makes a new consumer
-       correct by default (#131).
-
-       Scoped by project name because the submodule has no props file of its own, so this file
-       reaches it; edit it in the submodule instead and the fix would live in the wrong repo. The
-       phonemizer still compiles against ORT — PrivateAssets governs what flows to consumers, not
-       what the project itself resolves — and every consumer brings the EP-appropriate package. -->
-  <ItemGroup Condition="$(MSBuildProjectDirectory.StartsWith('$(MSBuildThisFileDirectory)external'))">
-    <PackageReference Update="Microsoft.ML.OnnxRuntime" PrivateAssets="all" />
-  </ItemGroup>
-
-  <!-- ⚠ AND THE RULE, BECAUSE THE ABOVE IS STILL SOMETHING SOMEONE CAN ROUTE AROUND. The scoping
-       is by directory rather than project name so a rename inside the submodule cannot quietly
-       switch it off, but a plain Microsoft.ML.OnnxRuntime added directly to a GPU consumer would
-       leak the same way, and the symptom is a working build that runs on the wrong runtime.
-
-       So: under a GPU execution provider, the CPU package must not contribute a native. Windows
-       and Linux only, the two platforms whose GPU packages actually ship one — on macOS x64 the
-       plain package IS the runtime, at a pinned 1.19.2, and is referenced deliberately.
+       This target is the rule behind that. An edge attribute is still something a direct plain
+       reference in a GPU consumer can sidestep, and the symptom of getting it wrong is a build
+       that succeeds and runs on the wrong runtime: the CPU `libonnxruntime.so` lands in the same
+       runtimes/<rid>/native/ directory as the GPU one, whichever copies last wins, and the CUDA
+       provider libraries sit uselessly beside it. So: under a GPU execution provider, the CPU
+       package must not contribute a native. Windows and Linux only, the two platforms whose GPU
+       packages actually ship one — on macOS x64 the plain package IS the runtime, at a pinned
+       1.19.2, and is referenced deliberately.
 
        A project that genuinely wants the CPU runtime while the rest of the build is on a GPU EP —
        a CPU-only test host, say — sets AllowCpuOnnxRuntime, which says so where a reader will
        see it.
 
        Vendored projects under external/ are exempt: the submodule owns that reference for its own
-       compilation, the rule above already stops it flowing to consumers, and its own bin/ is not
-       what anything ships. -->
+       compilation and its own tests, and its bin/ is not what anything here ships. -->
   <Target Name="RejectCpuOnnxRuntimeUnderGpuEp"
           AfterTargets="ResolveReferences"
           Condition="'$(EP)' != 'Cpu' AND '$(AllowCpuOnnxRuntime)' != 'true'
