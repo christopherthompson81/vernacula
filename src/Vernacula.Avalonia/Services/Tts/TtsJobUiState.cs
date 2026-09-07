@@ -23,7 +23,7 @@ internal record TtsProgressAction(ProgressEvent Progress) : TtsJobUiAction;
 /// minute); once the job completes the WAV on disk is the source and this state is dropped.
 /// </para>
 /// </summary>
-internal sealed class TtsJobUiState
+internal sealed class TtsJobUiState : IJobUiState
 {
     private readonly object                    _lock     = new();
     private readonly List<ChunkProducedEvent>  _chunks   = new();
