@@ -43,6 +43,7 @@ public sealed class VibeVoiceStreamingAsr : IDisposable
 
     private readonly int  _numLayers, _numKvHeads, _headDim, _hiddenSize;
     private readonly int  _maxKvTokens;          // cache ceiling baked into the export
+    private readonly int  _vocabSize;
     private readonly bool _encoderWantsFloat16;
     private bool _wantLogprobs;
 
@@ -88,6 +89,7 @@ public sealed class VibeVoiceStreamingAsr : IDisposable
         _headDim          = report.GetProperty("head_dim").GetInt32();
         _hiddenSize       = report.GetProperty("hidden_size").GetInt32();
         _maxKvTokens = report.GetProperty("static_kv_max_tokens").GetInt32();
+        _vocabSize   = report.GetProperty("vocab_size").GetInt32();
 
         SampleRate      = st.GetProperty("sample_rate").GetInt32();
         WindowSamples   = st.GetProperty("window_samples").GetInt32();
@@ -371,15 +373,28 @@ public sealed class VibeVoiceStreamingAsr : IDisposable
         binding.ClearBoundInputs();
         binding.ClearBoundOutputs();
 
-        // logits FIRST: GetOutputValues() returns values in binding order, not model order,
-        // so binding it after the cache tensors would silently hand back present_key_0.
-        binding.BindOutputToDevice("logits", OrtMemoryInfo.DefaultInstance);
+        // Bind a logits buffer we allocate and own, rather than letting the runtime allocate
+        // and fetching everything back with GetOutputValues(). That call also returns wrappers
+        // around the cache tensors, which are the same buffers we reuse on every later step —
+        // handing their lifetime to the runtime while we still depend on them invites exactly
+        // the kind of freed-pointer crash this loop must not have.
+        using var logitsVal = OrtValue.CreateAllocatedTensorValue(
+            OrtAllocator.DefaultInstance, TensorElementType.Float16,
+            [1, seqLen, _vocabSize]);
+        binding.BindOutput("logits", logitsVal);
 
         using var prefixVal = OrtValue.CreateTensorValueFromMemory(prefixIds, [1, prefixIds.Length]);
         binding.BindInput("prefix_input_ids", prefixVal);
-        using var audioVal = OrtValue.CreateTensorValueFromMemory(
-            OrtMemoryInfo.DefaultInstance, new Memory<Float16>(audioData, 0, audioCount * _hiddenSize),
-            [audioCount, _hiddenSize]);
+        // A zero-length Memory<T> over an empty array has no pinnable storage, so the tensor
+        // would carry a null data pointer into the runtime. Decode steps pass no audio, so this
+        // is the common case, not an edge one; the plain-array overload is what the
+        // non-streaming backend uses for it.
+        int audioElems = audioCount * _hiddenSize;
+        using var audioVal = audioElems > 0
+            ? OrtValue.CreateTensorValueFromMemory(
+                  OrtMemoryInfo.DefaultInstance, new Memory<Float16>(audioData, 0, audioElems),
+                  [audioCount, _hiddenSize])
+            : OrtValue.CreateTensorValueFromMemory(Array.Empty<Float16>(), [0, _hiddenSize]);
         binding.BindInput("audio_embeddings", audioVal);
         using var suffixVal = OrtValue.CreateTensorValueFromMemory(suffixIds, [1, suffixIds.Length]);
         binding.BindInput("suffix_input_ids", suffixVal);
@@ -397,9 +412,7 @@ public sealed class VibeVoiceStreamingAsr : IDisposable
         }
 
         _decoder.RunWithBinding(runOptions, binding);
-        var outputs = binding.GetOutputValues();
-        var result = ArgmaxAndLogprob(outputs[0], seqLen, _wantLogprobs);
-        outputs[0].Dispose();
+        var result = ArgmaxAndLogprob(logitsVal, seqLen, _wantLogprobs);
 
         kvPos = total;
         return result;

@@ -1076,3 +1076,50 @@ flagged Parakeet, because Sortformer's diarization model is named
 `diar_streaming_sortformer_4spk-v2.1.onnx`. It now matches the package folder prefix.
 
 Suite 168 pass.
+
+## Run 24 — 2026-09-07 16:30 — the app segfaulted at the end of a job
+
+**Reported.** The app crashed when a transcription finished. No console output — just KDE's
+crash notifier, which means a signal rather than a managed exception.
+
+**Getting the evidence.** `coredumpctl` had the dumps. The first backtrace was a jump to
+`0x0000000100000012` — not an address, a corrupted function pointer — with the frames beneath
+it inside `libonnxruntime.so`. A later dump from the same crash site showed live `libcuda`
+threads, confirming the decoder really was on the GPU, and an ORT worker still initialising
+on another thread. Symbolising went nowhere: the shipped runtime exports only its C API, so
+the offsets resolve to nothing useful.
+
+That was enough to characterise it: memory the runtime still expected to own, freed
+underneath it. Two things in the new backend could do that, and both were mine.
+
+**Cause 1 — the cache buffers' lifetime was handed to the runtime.** Each step called
+`binding.GetOutputValues()` to read the logits. That returns wrappers for *every* bound
+output, including the 56 cache tensors — the same buffers reused on every later step. Their
+release is then the runtime's business, not ours, while the loop still depends on them. The
+fix removes the call entirely: the logits go into an `OrtValue` allocated and owned here and
+bound by name, so nothing is fetched back and nothing else's lifetime is in question.
+
+**Cause 2 — a null data pointer on every decode step.** Audio embeddings were wrapped with
+the `Memory<T>` overload unconditionally, and a decode step passes no audio. A zero-length
+`Memory<T>` over an empty array has nothing to pin, so the tensor carried a null pointer into
+the runtime. The non-streaming backend has an explicit branch for exactly this case, using
+the plain-array overload; that branch was lost when the code was adapted. Restored.
+
+Neither reproduced in the CLI, which is why they survived: the CLI's short-lived process and
+lighter allocation pressure never collected the wrappers.
+
+**Confirmed fixed** by the reporter on a rebuilt binary.
+
+**Two other defects found while chasing it**, both real, neither the crash:
+
+- The transcript editor had no branch for `microsoft/vibevoice-asr-streaming`, so a finished
+  streaming job resolved *Parakeet's* vocabulary path and Parakeet's model-availability
+  check. Degraded silently — no confidence highlighting — rather than failing loudly.
+- Text emitted before the model names anyone arrives as speaker −1, and went to the results
+  database as `speaker_-1` with a diarization id of 0. Folded onto speaker 0.
+
+**A note on the harness.** An opt-in end-to-end test was written to run the real pipeline in
+process, and then deleted: this repository's build guard refuses the GPU runtime in that test
+project (it is marked CPU-only), so the test could never exercise the path that crashes. A
+test that cannot run is worse than no test. The reproduction that did work was the app itself
+under Xvfb with an isolated profile and a job seeded into the control database.
