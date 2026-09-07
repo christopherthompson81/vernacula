@@ -236,4 +236,68 @@ public class TtsJobPersistenceTests : IDisposable
         }
         finally { Thread.CurrentThread.CurrentCulture = previous; }
     }
+
+    /// <summary>
+    /// The point of storing settings as JSON (issue #130) is that a new engine knob is one edit
+    /// to the record. That only holds if rows written before the knob existed read back with the
+    /// knob's declared default rather than zero — System.Text.Json does honour a record's
+    /// optional constructor parameters, and this pins that, because if it ever stopped every
+    /// existing job would silently take 0 for the new field.
+    /// </summary>
+    [Fact]
+    public void SettingsWrittenBeforeAFieldExistedReadBackWithItsDefault()
+    {
+        string dbPath = Path.Combine(_dir, "control.db");
+        using (var _ = new ControlDb(dbPath)) { /* schema */ }
+
+        // Speed and NumStep absent, as they would be had they been added after this row.
+        using (var raw = new SqliteConnection($"Data Source={dbPath}"))
+        {
+            raw.Open();
+            using var cmd = raw.CreateCommand();
+            cmd.CommandText = """
+                INSERT INTO jobs
+                    (job_title, results_file, audio_file_path, audio_file_sha256sum,
+                     audio_file_datestamp, status, created_at, job_kind, job_settings)
+                VALUES ('partial', '/jobs/p_tts.json', '/docs/p.md', 'abc',
+                        '2026-01-01 00:00:00', 'complete', '2026-01-01 00:00:00', 'tts',
+                        '{"Backend":"Kokoro","Language":"","Voice":"af_heart"}')
+                """;
+            cmd.ExecuteNonQuery();
+        }
+
+        using var db = new ControlDb(dbPath);
+        var job = Assert.Single(db.GetJobs());
+        Assert.Equal("af_heart", job.TtsVoice);
+        Assert.Equal(1.0f, job.TtsSpeed);    // not 0
+        Assert.Equal(32, job.TtsNumStep);    // not 0
+    }
+
+    /// <summary>An unreadable settings blob must not take the whole job list down with it.</summary>
+    [Fact]
+    public void UnreadableSettingsLeaveTheJobListable()
+    {
+        string dbPath = Path.Combine(_dir, "control.db");
+        using (var _ = new ControlDb(dbPath)) { /* schema */ }
+
+        using (var raw = new SqliteConnection($"Data Source={dbPath}"))
+        {
+            raw.Open();
+            using var cmd = raw.CreateCommand();
+            cmd.CommandText = """
+                INSERT INTO jobs
+                    (job_title, results_file, audio_file_path, audio_file_sha256sum,
+                     audio_file_datestamp, status, created_at, job_kind, job_settings)
+                VALUES ('broken', '/jobs/b_tts.json', '/docs/b.md', 'abc',
+                        '2026-01-01 00:00:00', 'complete', '2026-01-01 00:00:00', 'tts',
+                        'not json at all')
+                """;
+            cmd.ExecuteNonQuery();
+        }
+
+        using var db = new ControlDb(dbPath);
+        var job = Assert.Single(db.GetJobs());
+        Assert.Equal("broken", job.JobTitle);
+        Assert.Null(job.TtsSettings);
+    }
 }

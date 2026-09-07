@@ -126,7 +126,14 @@ internal sealed class ControlDb : IDisposable
     {
         if (string.IsNullOrWhiteSpace(json)) return null;
         try { return System.Text.Json.JsonSerializer.Deserialize<TtsJobSettings>(json); }
-        catch (System.Text.Json.JsonException) { return null; }   // unreadable row → treat as unset
+        catch (System.Text.Json.JsonException ex)
+        {
+            // Treat an unreadable row as unset rather than refusing to open the whole job
+            // history, but say so: the job keeps its title and status while quietly losing the
+            // voice it was rendered with, and a requeue would render something else.
+            Console.Error.WriteLine($"[ControlDb] Ignoring unreadable job_settings: {ex.Message}");
+            return null;
+        }
     }
 
     /// <summary>
@@ -208,8 +215,6 @@ internal sealed class ControlDb : IDisposable
     public int InsertNewTtsJob(string title, string resultsFile, string documentPath,
                                string sha256, string documentDateStamp, TtsJobSettings tts)
         => InsertJob(JobKind.Tts, title, resultsFile, documentPath, sha256, documentDateStamp,
-                     streamIndex: -1, asrLanguageCode: "auto",
-                     asrModelName: "nvidia/parakeet-tdt-0.6b-v3",
                      settingsJson: SerializeTts(tts));
 
     /// <summary>
@@ -218,8 +223,10 @@ internal sealed class ControlDb : IDisposable
     /// result (and its Resume button) while the new run overwrote the files underneath it.
     /// </summary>
     private int InsertJob(JobKind kind, string title, string resultsFile, string inputPath,
-                          string sha256, string inputDateStamp, int streamIndex,
-                          string asrLanguageCode, string asrModelName, string? settingsJson)
+                          string sha256, string inputDateStamp, int streamIndex = -1,
+                          string asrLanguageCode = "auto",
+                          string asrModelName = "nvidia/parakeet-tdt-0.6b-v3",
+                          string? settingsJson = null)
     {
         string kindText = kind == JobKind.Tts ? "tts" : "asr";
         object settingsValue = (object?)settingsJson ?? DBNull.Value;
