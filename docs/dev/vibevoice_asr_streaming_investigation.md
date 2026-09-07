@@ -303,8 +303,7 @@ memory each step):**
 |---|---|---|---|---|---|---|
 | ORT 1.5B | 0.007 | 22/24 | 19 (same) | 432 | 1159 | 0.149 |
 
-The two differing chunks are one interjection rendered "Oh my" instead of "Oma" and one
-dropped comma. Both are inside the 0 to 1.3 % envelope the seeds produce (Run 3), and well
+The two differing chunks differ by one interjection spelled two ways and one dropped comma. Both are inside the 0 to 1.3 % envelope the seeds produce (Run 3), and well
 below the 7 to 13 % that the wrong encode mode produced, so the loop and the graphs are
 doing what upstream does. ORT already beats the PyTorch loop (0.149 vs 0.162) despite
 copying 56 KV tensors to and from the host every token; IO binding is the obvious perf step.
@@ -983,10 +982,13 @@ the end, so the provisional end time on an open turn is corrected rather than pe
 The CLI now prints each chunk as it is emitted, matching upstream's own demo:
 
 ```
-  [   2.9s] Speaker 0:I feel like this is like my second home.   Speaker 0:Some
-  [   5.9s] fans here, we love you, give them love, come on.
-  [   8.8s] [Applause]   Speaker 0:I.
+  [   2.9s] Speaker 0:<first speaker's opening line>   Speaker 0:<start of the next>
+  [   5.9s] <continues mid-sentence into this chunk>
+  [   8.8s] [Applause]   Speaker 0:<and so on>
 ```
+
+(Chunk text abstracted; the shape is what matters — a line per hop, turns marked inline, and
+a sentence that runs across a chunk boundary rather than being cut at it.)
 
 **Verification.** Parity unchanged (WER 0.008 on the 69 s clip, same as before the change).
 Five new tests pin the behaviour the promise depends on: turns visible before the recording
