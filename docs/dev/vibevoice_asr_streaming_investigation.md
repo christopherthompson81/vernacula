@@ -954,3 +954,47 @@ requirement, the cache ceiling, and the speaker-attribution difference between s
 **Not uploaded.** The two HF repos do not exist yet and publishing ~12 GiB to public repos is
 the user's call, so this stops at locally verified packages under
 `/mnt/data/models/vibevoice_streaming_publish/{1.5b,7b}`.
+
+## Run 21 — 2026-09-07 17:20 — does the app actually stream? (it did not)
+
+**Question (user's).** Upstream's doc says the model "transcribes while the audio is still
+arriving ... a transcript appears as the speaker talks." Does the desktop app do that?
+
+**No, and the first integration was worse than the backend it sat next to.** The decode loop
+was genuinely chunk-by-chunk and the progress line updated per chunk, but transcript rows were
+built from `ToSegments` *after* the whole recording finished, so nothing appeared in the
+transcript until the end. The non-streaming VibeVoice path already streamed rows through
+`onSegment` as they completed, so the streaming backend was the less streaming of the two.
+
+The cause was a real difficulty rather than an oversight, which is why it needs a design
+rather than a one-line fix: a speaker turn spans chunks and is only final when the *next*
+marker arrives, so there is no completed segment to emit at the moment a chunk lands.
+
+**Fix: `VibeVoiceStreamingAsr.SegmentAssembler`.** It folds chunks into turns incrementally
+and keeps the newest turn open so it grows as chunks arrive. Callers re-read `Segments` after
+each `Add`: entries beyond what they have shown are turns that just opened, and the last
+entry's text may have changed. `ToSegments` is now this class run over a finished list, so the
+batch and streaming paths cannot drift apart.
+
+The app adds rows for newly opened turns and rewrites the text of the one in progress, so the
+transcript fills in as decoding proceeds. The authoritative rows are still bulk-inserted at
+the end, so the provisional end time on an open turn is corrected rather than persisted wrong.
+
+The CLI now prints each chunk as it is emitted, matching upstream's own demo:
+
+```
+  [   2.9s] Speaker 0:I feel like this is like my second home.   Speaker 0:Some
+  [   5.9s] fans here, we love you, give them love, come on.
+  [   8.8s] [Applause]   Speaker 0:I.
+```
+
+**Verification.** Parity unchanged (WER 0.008 on the 69 s clip, same as before the change).
+Five new tests pin the behaviour the promise depends on: turns visible before the recording
+ends, the open turn growing rather than duplicating, incremental output equal to batch,
+monotonic turn starts, and text preserved when a recording contains no speaker marker at all.
+Suite 163 pass.
+
+**Still not streaming in the strict sense.** The app transcribes a file that already exists,
+so it streams *decoding*, not *capture*. Live microphone input would need an audio source
+feeding the same loop, which the backend is shaped for — it takes one window at a time and
+holds its own cache — but nothing upstream of it currently produces audio incrementally.

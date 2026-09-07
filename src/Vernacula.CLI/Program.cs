@@ -629,9 +629,16 @@ try
 
         using var streaming = new VibeVoiceStreamingAsr(dir);
         Console.WriteLine($"Transcribing (VibeVoice-ASR-Streaming, {streaming.HopSamples / (double)streaming.SampleRate:F2}s chunks)...");
+        // Print each chunk as the model emits it: this backend is meant to produce text while
+        // the audio is still arriving, and hiding that until the end would misrepresent it.
         int chunkCount = 0;
         var chunks = streaming.Transcribe(rawSamples, sampleRate, channels,
-            onChunk: c => { chunkCount++; if (showBenchmark) Console.Write($"\r  chunk {c.Index + 1}"); },
+            onChunk: c =>
+            {
+                chunkCount++;
+                if (!string.IsNullOrWhiteSpace(c.Text))
+                    Console.WriteLine($"  [{c.End,6:F1}s] {c.Text.Replace("\n", " ").Trim()}");
+            },
             ct: cts.Token);
         swAsr.Stop();
         foreach (var seg in VibeVoiceStreamingAsr.ToSegments(chunks))

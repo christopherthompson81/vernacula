@@ -188,22 +188,42 @@ internal class TranscriptionService
                     if (useVibeVoiceStreaming)
                     {
                         using var streaming = new VibeVoiceStreamingAsr(_settings.GetVibeVoiceStreamingModelsDir());
-                        // The streaming model emits one chunk per hop and only names a speaker
-                        // when the turn changes, so segments are only final once the whole
-                        // recording is decoded. Chunks drive progress; rows come from
-                        // ToSegments afterwards, and the shared code below inserts them.
-                        var streamChunks = streaming.Transcribe(
+                        // This model exists to show text while the audio is still arriving, so
+                        // the transcript is built as chunks land rather than at the end. The
+                        // newest turn stays open and grows, so each chunk adds any turns that
+                        // just started and rewrites the text of the one still in progress.
+                        var asm = new VibeVoiceStreamingAsr.SegmentAssembler();
+                        int shown = 0;
+                        streaming.Transcribe(
                             vibeVoiceAudio, vibeVoiceSampleRate, vibeVoiceChannels,
                             onChunk: c =>
                             {
+                                asm.Add(c);
+                                var segs = asm.Segments;
+                                for (; shown < segs.Count; shown++)
+                                {
+                                    var seg = segs[shown];
+                                    string sid = $"speaker_{seg.Speaker}";
+                                    onSegmentAdded(new SegmentRow
+                                    {
+                                        SegmentId          = shown,
+                                        SpeakerTag         = sid,
+                                        SpeakerDisplayName = sid,
+                                        StartTime          = seg.Start,
+                                        EndTime            = seg.End,
+                                    });
+                                }
+                                if (segs.Count > 0)
+                                    onSegmentText(segs.Count - 1, segs[^1].Content);
+
                                 double pct = vibeDuration > 0 ? c.End / vibeDuration * 100.0 : 0;
                                 progress.Report(new TranscriptionProgress(
                                     TranscriptionPhase.Recognizing, 0, 100,
                                     $"{c.End:F1}s / {vibeDuration:F1}s",
-                                    c.Index, c.Text, OverridePercent: pct));
+                                    Math.Max(0, segs.Count - 1), c.Text, OverridePercent: pct));
                             },
                             ct: ct);
-                        return VibeVoiceStreamingAsr.ToSegments(streamChunks);
+                        return asm.Finish();
                     }
 
                     using var vibe = new VibeVoiceAsr(

@@ -210,44 +210,76 @@ public sealed class VibeVoiceStreamingAsr : IDisposable
     }
 
     /// <summary>
-    /// Fold chunk texts into speaker turns. Upstream emits <c>\n Speaker N:</c> markers inline
-    /// and a turn may span chunks. The model gives no timestamps, so a turn boundary that
-    /// falls inside a chunk is placed proportionally to where it falls in that chunk's text;
-    /// starts are therefore approximate to within a chunk (2.93 s) and never decrease.
-    /// Text before the first marker (if any) is attributed to speaker -1.
+    /// Folds chunks into speaker turns as they arrive, so a caller can show the transcript
+    /// while the recording is still being decoded — which is the whole point of this model.
+    ///
+    /// Upstream emits <c>\n Speaker N:</c> markers inline and a turn runs until the next
+    /// marker, so the newest segment stays open and grows with each chunk. Callers should
+    /// re-read <see cref="Segments"/> after every <see cref="Add"/>: entries beyond what they
+    /// have already shown are new turns, and the last entry's text may have changed.
     /// </summary>
+    public sealed class SegmentAssembler
+    {
+        private readonly List<VibeVoiceSegment> _closed = [];
+        private readonly StringBuilder _open = new();
+        private int    _speaker = -1;
+        private double _start, _end;
+        private bool   _started;
+
+        /// <summary>Every turn so far. The last entry is still open and may grow.</summary>
+        public IReadOnlyList<VibeVoiceSegment> Segments
+        {
+            get
+            {
+                string t = _open.ToString().Trim();
+                if (t.Length == 0) return _closed;
+                return [.. _closed, new VibeVoiceSegment(_start, Math.Max(_end, _start), _speaker, t)];
+            }
+        }
+
+        public void Add(VibeVoiceStreamingChunk chunk)
+        {
+            if (!_started) { _start = chunk.Start; _started = true; }
+            int pos = 0;
+            foreach (Match m in SpeakerMarker.Matches(chunk.Text))
+            {
+                _open.Append(chunk.Text, pos, m.Index - pos);
+                double at = At(chunk, m.Index);
+                Close(at);
+                _speaker = int.Parse(m.Groups[1].Value);
+                _start   = at;
+                pos      = m.Index + m.Length;
+            }
+            _open.Append(chunk.Text, pos, chunk.Text.Length - pos);
+            _end = chunk.End;
+        }
+
+        /// <summary>Closes the final turn and returns every segment.</summary>
+        public IReadOnlyList<VibeVoiceSegment> Finish()
+        {
+            Close(_end);
+            return _closed;
+        }
+
+        private void Close(double end)
+        {
+            string t = _open.ToString().Trim();
+            if (t.Length > 0) _closed.Add(new VibeVoiceSegment(_start, Math.Max(end, _start), _speaker, t));
+            _open.Clear();
+        }
+
+        // The model gives no timestamps, so a turn boundary inside a chunk is placed
+        // proportionally to where it falls in that chunk's text: accurate to within one hop.
+        private static double At(VibeVoiceStreamingChunk c, int pos) =>
+            c.Text.Length == 0 ? c.Start : c.Start + (c.End - c.Start) * pos / c.Text.Length;
+    }
+
+    /// <summary>Folds a completed chunk list into speaker turns. Batch form of <see cref="SegmentAssembler"/>.</summary>
     public static IReadOnlyList<VibeVoiceSegment> ToSegments(IReadOnlyList<VibeVoiceStreamingChunk> chunks)
     {
-        var segs = new List<VibeVoiceSegment>();
-        int    curSpk = -1;
-        var    curText = new StringBuilder();
-        double curStart = chunks.Count > 0 ? chunks[0].Start : 0;
-
-        static double At(VibeVoiceStreamingChunk c, int pos) =>
-            c.Text.Length == 0 ? c.Start : c.Start + (c.End - c.Start) * pos / c.Text.Length;
-
-        void Flush(double end)
-        {
-            string t = curText.ToString().Trim();
-            if (t.Length > 0) segs.Add(new VibeVoiceSegment(curStart, Math.Max(end, curStart), curSpk, t));
-            curText.Clear();
-        }
-
-        foreach (var c in chunks)
-        {
-            int pos = 0;
-            foreach (Match m in SpeakerMarker.Matches(c.Text))
-            {
-                curText.Append(c.Text, pos, m.Index - pos);
-                Flush(At(c, m.Index));
-                curSpk   = int.Parse(m.Groups[1].Value);
-                curStart = At(c, m.Index);
-                pos = m.Index + m.Length;
-            }
-            curText.Append(c.Text, pos, c.Text.Length - pos);
-        }
-        if (chunks.Count > 0) Flush(chunks[^1].End);
-        return segs;
+        var asm = new SegmentAssembler();
+        foreach (var c in chunks) asm.Add(c);
+        return asm.Finish();
     }
 
     private static readonly Regex SpeakerMarker = new(@"\s*Speaker (\d+):", RegexOptions.Compiled);
