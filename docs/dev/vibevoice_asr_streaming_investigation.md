@@ -835,3 +835,49 @@ recording length. Package drops from 5.9 GB to 3.3 GB.
 small cards, batching the audio encoder across windows in file mode (the windows are all known
 up front, so they need not be encoded one at a time), and the re-priming work parked on
 `exp/vibevoice-sliding-window`.
+
+## Run 18 — 2026-09-07 15:40 — C# backend on the GQA package
+
+`VibeVoiceStreamingAsr` now targets the GQA package only (`decoder_gqa.onnx`; a package
+without `"attention": "GroupQueryAttention"` is rejected with a message naming the export
+script). Changes: one device tensor per layer per side allocated at the ceiling and bound as
+both `past_key_i` and `present_key_i`; the two int32 length inputs; float16 throughout
+(encoder input, audio embeddings, logits); a `MaxAudioSeconds` property derived from the
+ceiling; and an up-front length check that refuses an over-long recording before any
+compute, matching upstream's behaviour.
+
+**Two bugs, both about where memory lives.**
+
+1. The first working version ran the 69 s clip in **53.4 s** — 9× slower than Python.
+   `OrtValue.CreateAllocatedTensorValue(OrtAllocator.DefaultInstance, ...)` allocates in
+   **host** memory, so the whole 0.44 GiB cache was copied to the device and back on every
+   one of the 481 steps. Allocating from `new OrtAllocator(_decoder, cudaMemInfo)` instead
+   took it to 9.9 s. The IO binding was correct all along; the buffers it pointed at were not.
+2. `logits` must be bound **before** the cache tensors, because `GetOutputValues()` returns
+   binding order rather than model order — the same trap hit in Python (Run 12) and already
+   documented in `CohereTranscribe.cs`.
+
+**Where the time actually goes** (10-minute file, 4118 decoder steps, temporary
+instrumentation since removed):
+
+| stage | time |
+|---|---|
+| decoder `RunWithBinding` | 28.85 s |
+| audio encoder | 4.12 s |
+| argmax over 152k logits | 1.54 s |
+| binding and input construction | 0.32 s |
+| session load + tokenizer.json parse (startup) | ~5 s |
+
+**Result:** the C# decode loop runs at **142.7 steps/s against Python's 128.3**, an 11 %
+gain, confirming the direction predicted in Run 17 though not its magnitude (the 168 tok/s
+figure there was a synthetic single-step measurement and does not survive real workload
+variance). End-to-end the CLI is RTF **0.066** on the 10-minute file versus Python's 0.060,
+the difference being ~5 s of fixed startup that a longer job amortises.
+
+**Parity is exact:** WER **0.021** on the 10-minute file and **0.008** on the 69 s clip
+against the deterministic torch reference — identical to the Python runner on both, with
+matching speaker-turn counts (156 and 19).
+
+One deliberate change: log-probabilities are now opt-in (`computeLogprobs`, default off).
+The second pass needs a `Math.Exp` per vocabulary entry, 152k per token; measured at ~7 % of
+wall time here, and the CLI does not use the values.
