@@ -15,22 +15,27 @@ internal partial class SettingsViewModel
 {
     // ── Default engine ───────────────────────────────────────────────────────
 
+    /// <summary>One row per engine for the picker — the list is TtsEngines.All, not a hand-written set.</summary>
+    public ObservableCollection<TtsEngineOptionViewModel> TtsEngineOptions { get; } = new();
+
     [ObservableProperty]
-    [NotifyPropertyChangedFor(nameof(IsTtsChatterbox), nameof(IsTtsKokoro), nameof(IsTtsOmniVoice))]
-    private TtsBackendKind _selectedTtsBackend;
+    [NotifyPropertyChangedFor(nameof(ShowTtsSpeedDefault), nameof(ShowTtsStepsDefault),
+                              nameof(ShowTtsReferenceClipDefault), nameof(ShowTtsTokenizerDefault))]
+    private TtsEngine _selectedTtsEngine = TtsEngines.All[0];
 
-    public bool IsTtsChatterbox => SelectedTtsBackend == TtsBackendKind.Chatterbox;
-    public bool IsTtsKokoro     => SelectedTtsBackend == TtsBackendKind.Kokoro;
-    public bool IsTtsOmniVoice  => SelectedTtsBackend == TtsBackendKind.OmniVoice;
+    // The defaults section shows a control when the engine has that knob, not when it has that name.
+    public bool ShowTtsSpeedDefault         => SelectedTtsEngine.UsesSpeed;
+    public bool ShowTtsStepsDefault         => SelectedTtsEngine.UsesDiffusionSteps;
+    public bool ShowTtsReferenceClipDefault => SelectedTtsEngine.UsesReferenceClip;
+    /// <summary>Only the OmniVoice path needs a Qwen3 tokenizer pick; it is the one with a language picker.</summary>
+    public bool ShowTtsTokenizerDefault     => SelectedTtsEngine.UsesLanguage;
 
-    [RelayCommand] private void SetTtsBackend(string n)
+    [RelayCommand] private void SetTtsBackend(string n) => SelectedTtsEngine = TtsEngines.For(n);
+
+    partial void OnSelectedTtsEngineChanged(TtsEngine value)
     {
-        if (Enum.TryParse<TtsBackendKind>(n, out var k)) SelectedTtsBackend = k;
-    }
-
-    partial void OnSelectedTtsBackendChanged(TtsBackendKind value)
-    {
-        _svc.Current.TtsBackend = value.ToString();
+        foreach (var option in TtsEngineOptions) option.Refresh(value);
+        _svc.Current.TtsBackend = value.Kind.ToString();
         _svc.Save();
         OnTtsModelsChanged?.Invoke();
     }
@@ -107,12 +112,15 @@ internal partial class SettingsViewModel
         // the properties would fire the change hooks (a settings save, OnTtsModelsChanged) before
         // anything is wired. The analyzer only waives that for code textually inside a constructor.
 #pragma warning disable MVVMTK0034
-        _selectedTtsBackend     = TtsJobRunner.ParseBackend(_svc.Current.TtsBackend);
+        _selectedTtsEngine      = TtsEngines.For(_svc.Current.TtsBackend);
         _chatterboxVoicePath    = _svc.Current.ChatterboxVoicePath ?? "";
         _omniVoiceTokenizerJson = _svc.Current.OmniVoiceTokenizerJson ?? "";
         _kokoroSpeed            = _svc.Current.KokoroSpeed > 0 ? _svc.Current.KokoroSpeed : 1.0f;
         _omniVoiceNumStep       = _svc.Current.OmniVoiceNumStep is > 0 and <= 64 ? _svc.Current.OmniVoiceNumStep : 32;
 #pragma warning restore MVVMTK0034
+
+        foreach (var engine in TtsEngines.All)
+            TtsEngineOptions.Add(new TtsEngineOptionViewModel(engine, SelectedTtsEngine));
 
         void Changed() => OnTtsModelsChanged?.Invoke();
         TtsModelSets.Add(new(ModelManagerService.TtsModelSet.Kokoro, "Kokoro-82M",

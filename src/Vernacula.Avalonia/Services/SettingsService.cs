@@ -78,10 +78,9 @@ internal class SettingsService
             var legacy = JsonSerializer.Deserialize<LegacyReaderSettings>(File.ReadAllText(legacyPath));
             if (legacy is null) return;
 
-            bool changed = false;
             void Take(Func<string> get, Action<string> set, string? value)
             {
-                if (string.IsNullOrWhiteSpace(get()) && !string.IsNullOrWhiteSpace(value)) { set(value); changed = true; }
+                if (string.IsNullOrWhiteSpace(get()) && !string.IsNullOrWhiteSpace(value)) set(value);
             }
             var c = Current;
             Take(() => c.ChatterboxBundleDir, v => c.ChatterboxBundleDir = v, legacy.OnnxBundleDir);
@@ -94,10 +93,10 @@ internal class SettingsService
             Take(() => c.OmniVoiceTokenizerJson,  v => c.OmniVoiceTokenizerJson = v, legacy.OmniVoiceTokenizerJson);
             Take(() => c.OmniVoiceVoiceLib,       v => c.OmniVoiceVoiceLib = v,   legacy.OmniVoiceVoiceLib);
             Take(() => c.OmniVoiceVoice,          v => c.OmniVoiceVoice = v,      legacy.OmniVoiceVoice);
-            if (!string.IsNullOrWhiteSpace(legacy.TtsBackend))   { c.TtsBackend = legacy.TtsBackend; changed = true; }
-            if (!string.IsNullOrWhiteSpace(legacy.OmniVoiceLang)) { c.OmniVoiceLang = legacy.OmniVoiceLang; changed = true; }
-            if (legacy.KokoroSpeed > 0)                            { c.KokoroSpeed = legacy.KokoroSpeed; changed = true; }
-            if (legacy.OmniVoiceNumStep is > 0 and <= 64)          { c.OmniVoiceNumStep = legacy.OmniVoiceNumStep; changed = true; }
+            if (!string.IsNullOrWhiteSpace(legacy.TtsBackend))   c.TtsBackend = legacy.TtsBackend;
+            if (!string.IsNullOrWhiteSpace(legacy.OmniVoiceLang)) c.OmniVoiceLang = legacy.OmniVoiceLang;
+            if (legacy.KokoroSpeed > 0)                           c.KokoroSpeed = legacy.KokoroSpeed;
+            if (legacy.OmniVoiceNumStep is > 0 and <= 64)         c.OmniVoiceNumStep = legacy.OmniVoiceNumStep;
             c.TtsShowIpaAnnotation = legacy.ShowIpaAnnotation;
             c.TtsSettingsMigrated  = true;
             Save();

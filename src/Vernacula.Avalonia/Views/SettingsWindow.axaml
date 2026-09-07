@@ -1198,55 +1198,30 @@
                                    TextWrapping="Wrap"
                                    Margin="0,0,0,10" />
 
-                        <RadioButton GroupName="TtsBackend"
-                                     IsChecked="{Binding IsTtsKokoro, Mode=OneWay}"
-                                     Command="{Binding SetTtsBackendCommand}"
-                                     CommandParameter="Kokoro"
-                                     Foreground="{DynamicResource TextBrush}"
-                                     Margin="0,0,0,4">
-                            <StackPanel>
-                                <TextBlock Text="Kokoro-82M"
-                                           FontWeight="SemiBold"
-                                           Foreground="{DynamicResource TextBrush}" />
-                                <TextBlock Text="Small and fast. Named English voices (American and British), adjustable speed, word timing from the model's own durations."
-                                           Foreground="{DynamicResource SubtextBrush}"
-                                           FontSize="11"
-                                           TextWrapping="Wrap" />
-                            </StackPanel>
-                        </RadioButton>
-
-                        <RadioButton GroupName="TtsBackend"
-                                     IsChecked="{Binding IsTtsOmniVoice, Mode=OneWay}"
-                                     Command="{Binding SetTtsBackendCommand}"
-                                     CommandParameter="OmniVoice"
-                                     Foreground="{DynamicResource TextBrush}"
-                                     Margin="0,0,0,4">
-                            <StackPanel>
-                                <TextBlock Text="OmniVoice-IPA"
-                                           FontWeight="SemiBold"
-                                           Foreground="{DynamicResource TextBrush}" />
-                                <TextBlock Text="Any of the phonemizer's 190+ languages through the IPA fine-tune, in a stored voice from the voice library. Large model; word timing is estimated."
-                                           Foreground="{DynamicResource SubtextBrush}"
-                                           FontSize="11"
-                                           TextWrapping="Wrap" />
-                            </StackPanel>
-                        </RadioButton>
-
-                        <RadioButton GroupName="TtsBackend"
-                                     IsChecked="{Binding IsTtsChatterbox, Mode=OneWay}"
-                                     Command="{Binding SetTtsBackendCommand}"
-                                     CommandParameter="Chatterbox"
-                                     Foreground="{DynamicResource TextBrush}">
-                            <StackPanel>
-                                <TextBlock Text="Chatterbox"
-                                           FontWeight="SemiBold"
-                                           Foreground="{DynamicResource TextBrush}" />
-                                <TextBlock Text="English voice cloning from a short reference clip. Word timing from the model's cross-attention."
-                                           Foreground="{DynamicResource SubtextBrush}"
-                                           FontSize="11"
-                                           TextWrapping="Wrap" />
-                            </StackPanel>
-                        </RadioButton>
+                        <!-- One row per engine in the registry (TtsEngines.All), so a new
+                             engine appears here without a new block of XAML. -->
+                        <ItemsControl ItemsSource="{Binding TtsEngineOptions}">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <RadioButton GroupName="TtsBackend"
+                                                 IsChecked="{Binding IsSelected, Mode=OneWay}"
+                                                 Command="{Binding $parent[ItemsControl].DataContext.SetTtsBackendCommand}"
+                                                 CommandParameter="{Binding KindName}"
+                                                 Foreground="{DynamicResource TextBrush}"
+                                                 Margin="0,0,0,4">
+                                        <StackPanel>
+                                            <TextBlock Text="{Binding Name}"
+                                                       FontWeight="SemiBold"
+                                                       Foreground="{DynamicResource TextBrush}" />
+                                            <TextBlock Text="{Binding Description}"
+                                                       Foreground="{DynamicResource SubtextBrush}"
+                                                       FontSize="11"
+                                                       TextWrapping="Wrap" />
+                                        </StackPanel>
+                                    </RadioButton>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
                     </StackPanel>
                 </Border>
 
@@ -1259,7 +1234,7 @@
                     <StackPanel Spacing="10">
 
                         <!-- Kokoro: speed -->
-                        <StackPanel IsVisible="{Binding IsTtsKokoro}">
+                        <StackPanel IsVisible="{Binding ShowTtsSpeedDefault}">
                             <TextBlock Text="{Binding KokoroSpeed, StringFormat='Speed: {0:F2}×'}"
                                        FontWeight="SemiBold"
                                        Foreground="{DynamicResource TextBrush}" />
@@ -1270,44 +1245,46 @@
                                        FontSize="11" TextWrapping="Wrap" />
                         </StackPanel>
 
-                        <!-- OmniVoice: diffusion steps + optional tokenizer -->
-                        <StackPanel IsVisible="{Binding IsTtsOmniVoice}" Spacing="10">
-                            <StackPanel>
-                                <TextBlock Text="{Binding OmniVoiceNumStep, StringFormat='Diffusion steps: {0}'}"
-                                           FontWeight="SemiBold"
-                                           Foreground="{DynamicResource TextBrush}" />
-                                <Slider Minimum="8" Maximum="48" TickFrequency="4" IsSnapToTickEnabled="True"
-                                        Value="{Binding OmniVoiceNumStep}" />
-                                <TextBlock Text="More steps: cleaner audio, slower render. 32 is the usual trade-off."
-                                           Foreground="{DynamicResource SubtextBrush}"
-                                           FontSize="11" TextWrapping="Wrap" />
-                            </StackPanel>
-                            <StackPanel>
-                                <TextBlock Text="Qwen3 tokenizer.json (optional)"
-                                           FontWeight="SemiBold"
-                                           Foreground="{DynamicResource TextBrush}" />
-                                <TextBlock Text="Found automatically beside the graphs, in OMNIVOICE_MODEL_DIR, or in the Hugging Face cache. Pick it only when none of those apply."
-                                           Foreground="{DynamicResource SubtextBrush}"
-                                           FontSize="11" TextWrapping="Wrap" Margin="0,0,0,4" />
-                                <Grid ColumnDefinitions="*,Auto,Auto">
-                                    <TextBox Grid.Column="0"
-                                             Text="{Binding OmniVoiceTokenizerJson, Mode=OneWay}"
-                                             IsReadOnly="True"
-                                             Watermark="(auto-located)"
-                                             Margin="0,0,8,0" />
-                                    <Button Grid.Column="1" Content="Browse…"
-                                            Classes="secondary-button"
-                                            Command="{Binding PickOmniVoiceTokenizerCommand}"
-                                            Margin="0,0,6,0" />
-                                    <Button Grid.Column="2" Content="Clear"
-                                            Classes="secondary-button"
-                                            Command="{Binding ClearOmniVoiceTokenizerCommand}" />
-                                </Grid>
-                            </StackPanel>
+                        <!-- Diffusion steps, for an engine that has them -->
+                        <StackPanel IsVisible="{Binding ShowTtsStepsDefault}">
+                            <TextBlock Text="{Binding OmniVoiceNumStep, StringFormat='Diffusion steps: {0}'}"
+                                       FontWeight="SemiBold"
+                                       Foreground="{DynamicResource TextBrush}" />
+                            <Slider Minimum="8" Maximum="48" TickFrequency="4" IsSnapToTickEnabled="True"
+                                    Value="{Binding OmniVoiceNumStep}" />
+                            <TextBlock Text="More steps: cleaner audio, slower render. 32 is the usual trade-off."
+                                       Foreground="{DynamicResource SubtextBrush}"
+                                       FontSize="11" TextWrapping="Wrap" />
+                        </StackPanel>
+
+                        <!-- The Qwen3 tokenizer belongs to the phonemizing path, so it is gated on
+                             the language capability rather than on diffusion steps: an engine with
+                             a language but no steps still needs it. -->
+                        <StackPanel IsVisible="{Binding ShowTtsTokenizerDefault}">
+                            <TextBlock Text="Qwen3 tokenizer.json (optional)"
+                                       FontWeight="SemiBold"
+                                       Foreground="{DynamicResource TextBrush}" />
+                            <TextBlock Text="Found automatically beside the graphs, in OMNIVOICE_MODEL_DIR, or in the Hugging Face cache. Pick it only when none of those apply."
+                                       Foreground="{DynamicResource SubtextBrush}"
+                                       FontSize="11" TextWrapping="Wrap" Margin="0,0,0,4" />
+                            <Grid ColumnDefinitions="*,Auto,Auto">
+                                <TextBox Grid.Column="0"
+                                         Text="{Binding OmniVoiceTokenizerJson, Mode=OneWay}"
+                                         IsReadOnly="True"
+                                         Watermark="(auto-located)"
+                                         Margin="0,0,8,0" />
+                                <Button Grid.Column="1" Content="Browse…"
+                                        Classes="secondary-button"
+                                        Command="{Binding PickOmniVoiceTokenizerCommand}"
+                                        Margin="0,0,6,0" />
+                                <Button Grid.Column="2" Content="Clear"
+                                        Classes="secondary-button"
+                                        Command="{Binding ClearOmniVoiceTokenizerCommand}" />
+                            </Grid>
                         </StackPanel>
 
                         <!-- Chatterbox: default reference clip -->
-                        <StackPanel IsVisible="{Binding IsTtsChatterbox}">
+                        <StackPanel IsVisible="{Binding ShowTtsReferenceClipDefault}">
                             <TextBlock Text="Default reference voice clip"
                                        FontWeight="SemiBold"
                                        Foreground="{DynamicResource TextBrush}" />

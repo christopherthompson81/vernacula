@@ -19,13 +19,6 @@ internal static class TtsExportService
     /// <summary>One exported row.</summary>
     public sealed record SentenceRow(int Index, double StartSeconds, double EndSeconds, string Text, string Phonemes);
 
-    /// <summary>How the phoneme column was produced — named in the CSV so it is never mistaken for another scheme.</summary>
-    public static string PhonemeScheme(TtsBackendKind kind) => kind switch
-    {
-        TtsBackendKind.Kokoro => "kokoro",              // Kokoro's own vocabulary, exactly what the model consumed
-        _                     => "ipa",                 // vernacula-phonemizer canonical IPA
-    };
-
     // Terminal punctuation (Latin, ellipsis, CJK) followed by whitespace. Only whitespace
     // boundaries are cut so every sentence is a whole number of whitespace-split words —
     // the unit the alignment is keyed on. Paragraph breaks are whitespace too.
@@ -64,28 +57,10 @@ internal static class TtsExportService
     /// <summary>Phonemizes each sentence the way the job's engine would read it. Blocking; call off the UI thread.</summary>
     public static List<SentenceRow> BuildRows(
         IReadOnlyList<(string Text, double Start, double End)> sentences,
-        TtsBackendKind kind, string lang, string voice, string? phonemizerDataDir)
+        SettingsService settings, TtsJobSettings job)
     {
-        Func<string, string> phonemize;
-        switch (kind)
-        {
-            case TtsBackendKind.Kokoro:
-            {
-                bool british = voice.StartsWith("bf_", StringComparison.Ordinal) || voice.StartsWith("bm_", StringComparison.Ordinal);
-                var g2p = new KokoroPhonemizer(phonemizerDataDir);
-                phonemize = s => g2p.ToPhonemes(s, british);
-                break;
-            }
-            default:
-            {
-                if (PhonemizerData.Resolve(phonemizerDataDir) is null)
-                    throw new DirectoryNotFoundException(PhonemizerData.NotFoundMessage());
-                Registry.EnsureLanguages();
-                string code = string.IsNullOrWhiteSpace(lang) ? "en" : lang.Trim();
-                phonemize = s => OmniVoiceIpaTts.Phonemize(s, code);
-                break;
-            }
-        }
+        // The engine owns its own text → phonemes path, so the CSV shows what that engine reads.
+        var phonemize = TtsEngines.For(job.Backend).CreatePhonemizer(settings, job);
 
         var rows = new List<SentenceRow>(sentences.Count);
         for (int i = 0; i < sentences.Count; i++)

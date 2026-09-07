@@ -161,8 +161,8 @@ internal sealed partial class TtsReaderViewModel : ObservableObject, IDisposable
         _audioPath    = null;
         _audioDuration = 0;
         _sidecar      = null;
-        _lang         = AnnotationLangFor(job);
-        _sampleRate   = TtsJobRunner.SampleRateFor(new TtsJobSettings(job.TtsBackend, job.TtsLanguage, job.TtsVoice));
+        _lang         = TtsEngines.For(job).AnnotationLanguage(job);
+        _sampleRate   = TtsEngines.For(job).SampleRate;
         lock (_receivedLock) { _receivedAudio.Clear(); _receivedWords.Clear(); }
         _streamWordCursor = 0;
 
@@ -186,30 +186,17 @@ internal sealed partial class TtsReaderViewModel : ObservableObject, IDisposable
         }
     }
 
+    /// <summary>
+    /// "Kokoro-82M · af_heart · 1.00×" — the engine, then whatever it says identifies the job.
+    /// A job whose engine this build does not have is named by what it stored, not relabelled
+    /// as the fallback engine, and only its voice is shown (no engine is there to interpret it).
+    /// </summary>
     private static string DescribeJob(JobRecord job)
     {
-        var parts = new List<string> { job.TtsBackend };
-        if (!string.IsNullOrWhiteSpace(job.TtsLanguage))
-            parts.Add(LanguageCatalog.ByCode(job.TtsLanguage)?.Name ?? job.TtsLanguage);
-        if (!string.IsNullOrWhiteSpace(job.TtsVoice))
-            parts.Add(TtsJobRunner.ParseBackend(job.TtsBackend) == TtsBackendKind.Chatterbox
-                ? Path.GetFileName(job.TtsVoice) : job.TtsVoice);
-        if (TtsJobRunner.ParseBackend(job.TtsBackend) == TtsBackendKind.Kokoro)
-            parts.Add($"{job.TtsSpeed:F2}×");
-        if (TtsJobRunner.ParseBackend(job.TtsBackend) == TtsBackendKind.OmniVoice)
-            parts.Add($"{job.TtsNumStep} steps");
-        return string.Join("  ·  ", parts);
+        if (TtsEngines.TryFor(job.TtsBackend) is not { } engine)
+            return string.Join("  ·  ", new[] { job.TtsBackend, job.TtsVoice }.Where(p => !string.IsNullOrWhiteSpace(p)));
+        return string.Join("  ·  ", new[] { engine.DisplayName }.Concat(engine.DescribeJob(job)));
     }
-
-    /// <summary>The language the IPA annotation is read in: OmniVoice's picked language, Kokoro's
-    /// en/en-GB (its British voices are the bf_/bm_ ones), and en for Chatterbox.</summary>
-    private static string AnnotationLangFor(JobRecord job) => TtsJobRunner.ParseBackend(job.TtsBackend) switch
-    {
-        TtsBackendKind.OmniVoice => string.IsNullOrWhiteSpace(job.TtsLanguage) ? "en" : job.TtsLanguage.Trim(),
-        TtsBackendKind.Kokoro    => job.TtsVoice.StartsWith("bf_", StringComparison.Ordinal)
-                                    || job.TtsVoice.StartsWith("bm_", StringComparison.Ordinal) ? "en-GB" : "en",
-        _                        => "en",
-    };
 
     private static string ReadDocument(JobRecord job)
     {
@@ -669,10 +656,11 @@ internal sealed partial class TtsReaderViewModel : ObservableObject, IDisposable
         {
             await Task.Run(() =>
             {
-                var kind = TtsJobRunner.ParseBackend(job.TtsBackend);
+                var engine = TtsEngines.For(job);
+                var settings = new TtsJobSettings(job.TtsBackend, job.TtsLanguage, job.TtsVoice, job.TtsSpeed, job.TtsNumStep);
                 var sentences = TtsExportService.SplitSentences(sidecar.SourceText ?? _text, sidecar.Words);
-                var rows = TtsExportService.BuildRows(sentences, kind, _lang, job.TtsVoice, _settings.GetPhonemizerDataDir());
-                TtsExportService.WriteCsv(csvPath, rows, TtsExportService.PhonemeScheme(kind));
+                var rows = TtsExportService.BuildRows(sentences, _settings, settings);
+                TtsExportService.WriteCsv(csvPath, rows, engine.PhonemeScheme);
                 File.Copy(audioPath, wavPath, overwrite: true);
             });
             StatusMessage = Loc.Instance.T("tts_export_done", new()
