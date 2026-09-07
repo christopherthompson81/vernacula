@@ -265,3 +265,50 @@ this closes the "use it as upstream intends" step. Export design that follows fr
    investigation, not part of parity.
 4. Start with the 1.5B for export and parity work (fast iteration, 5 GiB), then apply the
    same recipe to the 7B.
+
+## Run 5 — 2026-09-07 13:30 — first ONNX export (1.5B) and ORT parity
+
+**Command.** `scripts/vibevoice_streaming_export/export_vibevoice_streaming_to_onnx.py
+--model_path <1.5B> --output-dir /mnt/data/models/vibevoice_streaming_export/1.5B_bf16_f32kv`
+(BF16 decoder, float32 KV cache, float32 audio encoder, legacy exporter, opset 18), then
+`test_streaming_parity.py` with ORT 1.29 CUDA at `extended` optimisation on the 69 s clip,
+compared against the deterministic Python reference from Run 3.
+
+**Question.** Does the export reproduce upstream's per-window loop, and how close is ORT to the
+PyTorch reference?
+
+**Export notes.**
+
+- Wrapper check before tracing: with a BF16 cache the wrapper's logits are *identical* to
+  upstream's forward on both the prompt prefill and the first audio window (max diff 0.0000,
+  same argmax). With the float32 KV patch logits move (max diff 4.9 on a 150k-vocab logit
+  vector) but the argmax is unchanged; this is the same precision path the non-streaming
+  package ships. The float32 audio encoder sits 0.56 % relative from upstream's BF16 towers.
+- The audio encoder graph is 2.77 GB (float32 conv towers, both encoders) and takes a dynamic
+  `num_samples` axis; `decoder_single.onnx` is 3.09 GB. Package total ~5.9 GB for the 1.5B.
+- The harness's memory watchdog killed the first full export during external-data
+  aggregation of the decoder (host had 111 GiB available; the watchdog looks at free, not
+  available). Re-running decoder-only in the foreground completed in a few minutes.
+- Verified after export that `past_key_0` feeds a `Concat` in every layer: transformers
+  4.57's `DynamicLayer.update` skips the concat when the cache is empty, and the dummy cache
+  used for tracing is empty, so this was worth checking rather than assuming.
+- `export-report.json` carries the streaming constants (window 83,200 samples, hop 70,400,
+  26 frames), the prompt token ids (plain and hotword head/tail variants), and the four
+  special ids, so the C# side needs no BPE encoder for the default prompt.
+
+**Parity result (1.5B, ORT CUDA, extended opt, 69 s clip, KV round-tripped through host
+memory each step):**
+
+| | WER vs torch deterministic | identical chunks | speaker turns | tokens | final KV length | RTF |
+|---|---|---|---|---|---|---|
+| ORT 1.5B | 0.007 | 22/24 | 19 (same) | 432 | 1159 | 0.149 |
+
+The two differing chunks are one interjection rendered "Oh my" instead of "Oma" and one
+dropped comma. Both are inside the 0 to 1.3 % envelope the seeds produce (Run 3), and well
+below the 7 to 13 % that the wrong encode mode produced, so the loop and the graphs are
+doing what upstream does. ORT already beats the PyTorch loop (0.149 vs 0.162) despite
+copying 56 KV tensors to and from the host every token; IO binding is the obvious perf step.
+
+**Implications.** The 1.5B package is parity-clean. Apply the same export to the 7B, then
+compare its parity (the 7B's seed envelope is wider, 1.7 to 2.7 %). After that: measure the
+package with IO-bound KV (the perf step), then the C# port against these same records.
