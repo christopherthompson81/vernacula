@@ -508,3 +508,42 @@ initializers itself and rewires the MatMuls: 197 folded.
   block 128 is not usable.
 - float16 and BF16 are equivalent in both parity and speed, so the float16 export is a fine
   base for quantization without a separate accuracy argument.
+
+## Run 10 — 2026-09-07 13:07 — the 7B: INT8 is what makes it usable
+
+**Command.** 7B static-KV decoder (`max_tokens` 12288, exported on CPU after the CUDA export
+OOMed), 7B float16 decoder, and 7B INT8 weight-only, each on the 69 s clip and the 10-minute
+file.
+
+**Raw result (WER vs the deterministic torch reference):**
+
+| 7B decoder | weights | 69 s WER | 69 s tok/s | 10 min | 10 min WER | GPU at end |
+|---|---|---|---|---|---|---|
+| BF16 dynamic (Run 6) | 15.2 GB | 0.023 | 34.6 | **OOM** | — | 20.72 GiB @ 69 s |
+| static KV (12288) | 15.2 GB | — | — | **OOM** | — | — |
+| float16 dynamic | 15.0 GB | 0.012 | 33.6 | **OOM** | — | 21.87 GiB @ 69 s |
+| **INT8 weight-only** | **7.8 GB** | **0.012** | **45.3** | **completes** | **0.016** | **18.90 GiB** |
+
+- **Only the INT8 build finishes a 10-minute file on a 24 GiB card.** It runs at RTF 0.250
+  with 188 speaker turns against the reference's 190, WER 0.016, which is *better* than the
+  BF16 build's 0.023 on the short clip and comfortably inside the 7B's own seed envelope
+  (0.017 to 0.027).
+- Static KV did **not** rescue the 7B. Pre-allocating 12288-position buffers costs about
+  2.8 GB for the 56 in and 56 out tensors, and every step's attention scores span the whole
+  buffer, so it OOMs sooner than the dynamic cache rather than later. Static remains
+  useful only where the buffer can be sized close to the actual job length; for the 7B on
+  this card, quantization is the lever that matters.
+- The 7B INT8 is 31 % faster than BF16 on the short clip (45.3 vs 34.6 tok/s) and halves the
+  weights.
+
+**Recommended shipping configuration after Runs 8-10.**
+
+| | decoder | why |
+|---|---|---|
+| 1.5B | INT8 weight-only, dynamic KV | parity identical to float16, 11-18 % faster, 9.8 GiB peak at 10 min |
+| 7B | INT8 weight-only, dynamic KV | the only build that completes long files on 24 GiB; parity better than BF16 |
+
+Neither needs the static-KV graph; it stays in the export script for cases where a buffer
+can be sized to the job (and it is the only way to bound the arena on a smaller card).
+Remaining perf idea, not yet tried: calibrated INT4 (GPTQ/AWQ) to see whether the 0.07 WER
+of round-to-nearest INT4 is recoverable, which would matter for CPU and 8 GiB cards.
