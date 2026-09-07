@@ -196,6 +196,9 @@ internal class TranscriptionService
                         int shown = 0;
                         streaming.Transcribe(
                             vibeVoiceAudio, vibeVoiceSampleRate, vibeVoiceChannels,
+                            // The editor colours words by confidence, so pay for the second
+                            // pass over the vocabulary here even though the CLI does not.
+                            computeLogprobs: true,
                             onChunk: c =>
                             {
                                 asm.Add(c);

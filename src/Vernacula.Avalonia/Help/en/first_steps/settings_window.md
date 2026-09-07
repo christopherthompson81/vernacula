@@ -66,6 +66,10 @@ the selected checkpoint needs more memory than the detected GPU reports.
 The two install into separate folders, so switching between them does not re-download the one
 you already have.
 
+A speaker in the result is not always a person: the model may give a distinct label to a
+non-speech source such as an audience, whose segment then reads something like "Applause and
+cheering". Rename or merge it in the editor like any other speaker.
+
 Recording length is capped rather than unlimited. The model keeps its whole context — that is
 how it tracks who is speaking without a separate diarizer — so each package is built with a
 ceiling set to the checkpoint's trained context: about **68 minutes** for the 1.5B and about

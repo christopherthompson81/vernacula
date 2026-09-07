@@ -1123,3 +1123,45 @@ process, and then deleted: this repository's build guard refuses the GPU runtime
 project (it is marked CPU-only), so the test could never exercise the path that crashes. A
 test that cannot run is worse than no test. The reproduction that did work was the app itself
 under Xvfb with an isolated profile and a job seeded into the control database.
+
+
+## Run 25 — 2026-09-07 19:00 — the 7B's "third speaker" is the crowd
+
+Run 14 flagged a third speaker label on the 7B's 30-minute run against two-speaker audio.
+Resolved: it is not drift and not a defect. Every occurrence is the same thing —
+
+```
+Speaker 2:Applause And Cheering
+```
+
+— and there are exactly three, at chunks 332, 379 and 426, one per repetition of the looped
+source. The model gives the audience its own label, and gives it the *same* label each time
+the same audio comes round, which is evidence the attribution is stable rather than wandering.
+
+**Consequence for the app, which is real if minor:** a speaker in the transcript need not be a
+person. A segment may arrive attributed to a speaker whose content is a non-speech event. The
+editor already lets a speaker be renamed, so this needs no code; it is documented in the help
+text so the label is not read as a transcription error.
+
+## Run 26 — 2026-09-07 19:20 — per-word confidence for the streaming backend
+
+The editor colours words by confidence for every other backend. This one produced none: the
+decode loop could compute log-probabilities but no caller asked, and the assembler dropped
+them anyway when folding chunks into turns.
+
+**The hard part is attribution, not computation.** A speaker turn is a slice of a chunk's
+text, so a segment must claim exactly the tokens that produced *its* characters. Tokens are
+byte-level, so byte offsets are not character offsets the moment anything is non-ASCII — and
+this model handles ten languages including Chinese, Japanese and Korean. `DecodeWithOffsets`
+therefore decodes each prefix to get true character offsets, and a chunk carries one offset
+per token. The assembler claims a token when any of its characters fall inside the range it is
+taking, and the speaker marker's own tokens go to neither side, since a marker is structure
+rather than speech.
+
+Confidences stay opt-in. The app asks for them because the editor shows them; the CLI asks
+only under `--benchmark`, since it prints text.
+
+**Verified** on the 69 s clip: 19 of 19 segments carry per-word confidence, and parity is
+unchanged at WER 0.008. Four tests pin the attribution: tokens follow text across a marker,
+they accumulate across chunks within one turn, marker tokens belong to neither side, and a
+segment reports *no* confidences rather than a mismatched count when they were not computed.

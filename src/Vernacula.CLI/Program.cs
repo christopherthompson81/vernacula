@@ -633,6 +633,7 @@ try
         // the audio is still arriving, and hiding that until the end would misrepresent it.
         int chunkCount = 0;
         var chunks = streaming.Transcribe(rawSamples, sampleRate, channels,
+            computeLogprobs: true,
             onChunk: c =>
             {
                 chunkCount++;
@@ -641,8 +642,14 @@ try
             },
             ct: cts.Token);
         swAsr.Stop();
-        foreach (var seg in VibeVoiceStreamingAsr.ToSegments(chunks))
-            results.Add((seg.Start, seg.End, $"speaker_{seg.Speaker}", seg.Content));
+        var streamSegs = VibeVoiceStreamingAsr.ToSegments(chunks);
+        foreach (var seg in streamSegs)
+            results.Add((seg.Start, seg.End, $"speaker_{Math.Max(0, seg.Speaker)}", seg.Content));
+        if (showBenchmark)
+        {
+            int withConf = streamSegs.Count(s2 => s2.TokenLogprobs.Count > 0);
+            Console.WriteLine($"  per-word confidence available on {withConf}/{streamSegs.Count} segment(s)");
+        }
         Console.WriteLine($"\r{chunkCount} chunk(s) → {results.Count} segment(s) ({swAsr.ElapsedMilliseconds}ms)");
     }
     else if (asrBackend == "cohere")
