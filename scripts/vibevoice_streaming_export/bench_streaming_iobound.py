@@ -32,6 +32,7 @@ def main():
     ap.add_argument("--out")
     ap.add_argument("--max_new_tokens", type=int, default=256)
     ap.add_argument("--opt-level", default="extended", choices=["basic", "extended", "all"])
+    ap.add_argument("--static", action="store_true", help="use decoder_single_static.onnx")
     args = ap.parse_args()
 
     md = Path(args.model_dir)
@@ -45,7 +46,8 @@ def main():
     prov = [("CUDAExecutionProvider", {"device_id": 0})]
     t0 = time.time()
     enc = ort.InferenceSession(str(md / "audio_encoder.onnx"), so, providers=prov)
-    dec = ort.InferenceSession(str(md / "decoder_single.onnx"), so, providers=prov)
+    dec = ort.InferenceSession(str(md / ("decoder_single_static.onnx" if args.static else "decoder_single.onnx")), so, providers=prov)
+    max_kv = rep.get("static_kv_max_tokens", 0) if args.static else 0
     load_s = time.time() - t0
     fp = _decoder_fp_inputs(dec)
     kv_np = np.float32 if rep["f32_kv_cache"] else fp["past_key_0"]
@@ -61,18 +63,26 @@ def main():
 
     # Empty tensors start on the host (a 0-byte device allocation segfaults in ORT 1.29);
     # every present_* output after the first step is device-resident.
-    past = [to_ort(n, np.zeros((1, KH, 0, HD), dtype=kv_np), {}, "cpu") for n in kv_names_in]
+    past = [to_ort(n, np.zeros((1, KH, max_kv, HD), dtype=kv_np), {}, "cpu") for n in kv_names_in]
+    kv_pos = 0
     empty_audio = np.zeros((0, H), dtype=np.float32)
     empty_ids = np.zeros((1, 0), dtype=np.int64)
 
     def step(prefix, audio_emb, suffix):
-        nonlocal past
+        nonlocal past, kv_pos
         # A fresh binding per step: IoBinding.clear_binding_inputs()/outputs() segfaults in
         # ORT 1.29's Python wrapper (the C# ClearBoundInputs is fine). Cheap to create.
         binding = dec.io_binding()
         keep = [to_ort("prefix_input_ids", np.asarray(prefix, np.int64).reshape(1, -1), fp, "cpu"),
                 to_ort("audio_embeddings", audio_emb, fp, "cpu"),
                 to_ort("suffix_input_ids", np.asarray(suffix, np.int64).reshape(1, -1), fp, "cpu")]
+        # np.asarray(...).size, not len(): an empty id array is shaped (1, 0), whose len() is 1.
+        seq_len = np.asarray(prefix).size + audio_emb.shape[0] + np.asarray(suffix).size
+        if args.static:
+            if kv_pos + seq_len > max_kv:
+                raise RuntimeError(f"static KV buffer full: {kv_pos}+{seq_len} > {max_kv}")
+            keep.append(ort.OrtValue.ortvalue_from_numpy(np.array(kv_pos, np.int64)))
+            binding.bind_ortvalue_input("kv_pos", keep[-1])
         for n, v in zip(("prefix_input_ids", "audio_embeddings", "suffix_input_ids"), keep):
             binding.bind_ortvalue_input(n, v)
         for n, v in zip(kv_names_in, past):
@@ -83,6 +93,7 @@ def main():
         dec.run_with_iobinding(binding)
         outs = binding.get_outputs()
         past = outs[1:]
+        kv_pos += seq_len
         logits = _ort_value_to_f32(outs[0])   # lm_head is BF16, so logits come back BF16
         return int(np.argmax(logits[0, -1]))
 
@@ -110,9 +121,9 @@ def main():
     import subprocess
     used = subprocess.run(["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"],
                           capture_output=True, text=True).stdout.strip()
-    rec = dict(audio=os.path.basename(args.audio), runtime="ort-cuda-iobound", opt_level=args.opt_level,
+    rec = dict(audio=os.path.basename(args.audio), runtime="ort-cuda-iobound" + ("-static" if args.static else ""), opt_level=args.opt_level,
                model_dir=str(md), duration_s=dur, load_s=load_s, gen_s=gen_s, rtf=gen_s / dur,
-               enc_s=enc_s, tokens=ntok, n_chunks=len(chunks), kv_len=int(past[0].shape()[2]),
+               enc_s=enc_s, tokens=ntok, n_chunks=len(chunks), kv_len=kv_pos if args.static else int(past[0].shape()[2]), static=args.static,
                chunk_done_s=times, chunks=chunks, text="".join(chunks),
                peak_gib=float(used) / 1024 if used else float("nan"), weights_gib=float("nan"))
     print(f"--- {rec['audio']}: {dur:.1f}s audio, {gen_s:.1f}s gen, RTF {rec['rtf']:.3f}, "

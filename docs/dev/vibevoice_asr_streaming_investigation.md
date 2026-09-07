@@ -438,3 +438,73 @@ IO-bound perf → C# backend → CLI are all in place for the 1.5B. Open items, 
    merges).
 5. The 1.5B labels every speaker `Speaker 0` on the interview clip while the 7B separates
    two; the app's default should be decided on more than one clip.
+
+## Run 8 — 2026-09-07 12:55 — static KV cache: a memory fix, not a speed fix
+
+**Command.** `--static-kv-max-tokens 16384` added to the streaming export (the non-streaming
+port's `StaticKVCache` wrapper, adapted to upstream's module layout), then
+`bench_streaming_iobound.py --static` on the 1.5B.
+
+**Question.** Does replacing the per-token `Concat` with a `ScatterElements` into
+pre-allocated buffers fix both the 7B's OOM and the throughput decay?
+
+**A bug found first.** The static run initially produced nonsense (WER 3.5, 2042 tokens for a
+432-token clip). The wrapper was exact in PyTorch step-for-step against the dynamic one, and
+the graph consumed `kv_pos` in every layer, so the fault was in my benchmark: it computed
+`seq_len` with `len()` on an empty id array of shape `(1, 0)`, which is 1, not 0. `kv_pos`
+therefore advanced one position too far on every decode step and the mask drifted off the
+cache. Dynamic mode never reads `seq_len`, which is why only static broke. Fixed by using
+`.size`.
+
+**Raw result (1.5B, correct):**
+
+| decoder | 69 s RTF | 69 s tok/s | 10 min RTF | 10 min tok/s | 10 min WER | GPU at end |
+|---|---|---|---|---|---|---|
+| dynamic | 0.087 | 71.7 | 0.125 | 49.9 | 0.023 | 10.91 GiB |
+| static (16384) | 0.262 | 24.6 | 0.251 | 24.9 | 0.023 | 12.66 GiB |
+
+Parity is unchanged (0.023 at 10 minutes either way), but static is **2× slower**, and
+flat: 24.6 tok/s at a 1.2k cache and 24.9 tok/s at a 9.7k cache. That is the point. Static
+attention costs the full `max_tokens` buffer on every step regardless of how much is
+filled, so its per-token cost is constant in `max_tokens` while dynamic's is proportional
+to the *current* length. Dynamic wins whenever the average cache length over a job is below
+the buffer size, which for a 16384 buffer means every job shorter than about an hour.
+
+**Conclusion: static KV is the answer to the 7B's OOM, not to throughput.** It should be
+exported with `max_tokens` sized to the longest job the app allows, and preferred only
+where the dynamic arena cannot fit. The 1.5B should keep the dynamic decoder.
+
+## Run 9 — 2026-09-07 13:00 — float16 decoder and weight-only quantization
+
+**Question (user's).** The decoder is a stock Qwen2 causal LM; is it resilient to
+quantization?
+
+**Getting there.** ORT's `MatMulNBitsQuantizer` skipped 254 of 255 MatMuls with "doesn't
+have const weight". Two reasons, both fixed in `quantize_decoder.py`: the exported weights
+are BF16 (the quantizer reads float32/float16), so a float16 decoder export was needed; and
+`torch.onnx` keeps `nn.Linear` weights as `[out, in]` initializers behind a `Transpose`, so
+the MatMul's B input is a node output rather than an initializer. ORT's own constant folding
+leaves those alone (the tensors are external data), so the script now transposes the
+initializers itself and rewires the MatMuls: 197 folded.
+
+**Raw result (1.5B, ORT CUDA, IO-bound, WER vs the deterministic torch reference):**
+
+| decoder | weights on disk | 69 s WER | 10 min WER | 69 s tok/s | 10 min tok/s | 10 min RTF | GPU at end |
+|---|---|---|---|---|---|---|---|
+| BF16 (shipped) | 2.9 GB | 0.011 | 0.023 | 71.7 | 49.9 | 0.125 | 10.91 GiB |
+| float16 | 2.9 GB | 0.008 | 0.020 | 67.5 | 46.8 | 0.132 | 10.80 GiB |
+| **INT8 weight-only** | **1.9 GB** | **0.008** | **0.021** | **79.9** | **55.3** | **0.112** | **9.80 GiB** |
+| INT4 (block 128) | 1.2 GB | 0.068 | 0.070 | 80.8 | 58.7 | 0.112 | 8.80 GiB |
+| INT4, LM head kept | 1.5 GB | 0.057 | 0.074 | 78.7 | 57.1 | 0.112 | 9.04 GiB |
+
+- **INT8 is free.** Parity is indistinguishable from float16 (0.008 / 0.021 vs 0.008 /
+  0.020), it is 11 to 18 % faster than BF16, and it saves 1 GB of weights and 1.1 GB of
+  VRAM. This is the configuration to ship.
+- **INT4 round-to-nearest is not.** 0.057 to 0.074 WER is 3× the ORT baseline and outside
+  the model's own seed envelope (0 to 1.3 % for this checkpoint); the speaker-turn count
+  drifts too (179 vs 152 over 10 minutes). Excluding the vocab projection barely helps, so
+  the loss is spread across the layers rather than concentrated in the head. A calibrated
+  method (GPTQ/AWQ) would be the thing to try before writing INT4 off, but plain RTN at
+  block 128 is not usable.
+- float16 and BF16 are equivalent in both parity and speed, so the float16 export is a fine
+  base for quantization without a separate accuracy argument.

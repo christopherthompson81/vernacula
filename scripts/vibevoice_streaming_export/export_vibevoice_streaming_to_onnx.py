@@ -33,7 +33,7 @@ OLD = HERE.parent / "vibevoice_export"
 sys.path.insert(0, str(OLD))
 from _common import flatten_past_key_values, kv_input_names, kv_output_names  # noqa: E402
 from export_vibevoice_asr_to_onnx import (  # noqa: E402
-    build_full_attention_mask, export_onnx_graph, f32_kv_cache_context,
+    StaticKVCache, build_full_attention_mask, export_onnx_graph, f32_kv_cache_context,
 )
 from transformers.cache_utils import DynamicCache  # noqa: E402
 
@@ -66,11 +66,19 @@ class StreamingAudioEncoder(nn.Module):
 
 
 class DecoderSingle(nn.Module):
-    def __init__(self, inner):
+    def __init__(self, inner, f32_lm_head=False):
         super().__init__()
         self.lm = inner.model.language_model      # transformers Qwen2Model
         self.lm_head = inner.lm_head
         self.cfg = inner.config.decoder_config
+        self.f32_lm_head = f32_lm_head
+
+    def project(self, h):
+        # BF16 logits collapse distinct values into ties that PyTorch and ORT break
+        # differently; a float32 projection (weights cast at compute time) removes most.
+        if self.f32_lm_head:
+            return torch.nn.functional.linear(h.to(torch.float32), self.lm_head.weight.to(torch.float32))
+        return self.lm_head(h)
 
     def forward(self, prefix_input_ids, audio_embeddings, suffix_input_ids, *past_key_values):
         emb = self.lm.embed_tokens
@@ -88,8 +96,33 @@ class DecoderSingle(nn.Module):
             config=self.cfg)
         out = self.lm(inputs_embeds=x, position_ids=position_ids, attention_mask=mask,
                       past_key_values=cache, use_cache=True)
-        logits = self.lm_head(out.last_hidden_state)
+        logits = self.project(out.last_hidden_state)
         return (logits, *flatten_past_key_values(out.past_key_values))
+
+
+class DecoderSingleStatic(DecoderSingle):
+    """decoder_single_static.onnx: same inputs plus kv_pos [] int64 and fixed-size
+    past_key/value_i [1,kv,max_tokens,head_dim]; present_* keep that shape (ScatterElements
+    into the buffer instead of Concat). The caller advances kv_pos by seq_len per call."""
+
+    def forward(self, prefix_input_ids, audio_embeddings, suffix_input_ids, kv_pos, *kv_buffers):
+        emb = self.lm.embed_tokens
+        x = torch.cat((emb(prefix_input_ids),
+                       audio_embeddings.to(emb.weight.dtype).unsqueeze(0),
+                       emb(suffix_input_ids)), dim=1)
+        q, max_tokens = x.shape[1], kv_buffers[0].shape[2]
+        position_ids = torch.arange(q, device=x.device).unsqueeze(0) + kv_pos
+        mask = build_full_attention_mask(attention_mask=None, query_length=q, kv_length=max_tokens,
+                                         past_length=kv_pos, dtype=x.dtype, device=x.device)
+        n = len(kv_buffers) // 2
+        cache = StaticKVCache([kv_buffers[2 * i] for i in range(n)], [kv_buffers[2 * i + 1] for i in range(n)], kv_pos)
+        out = self.lm(inputs_embeds=x, position_ids=position_ids, attention_mask=mask,
+                      past_key_values=cache, use_cache=True, cache_position=position_ids[0])
+        logits = self.project(out.last_hidden_state)
+        flat = []
+        for i in range(n):
+            flat += [cache._keys[i], cache._vals[i]]
+        return (logits, *flat)
 
 
 def load(model_path, dtype, device, attn):
@@ -134,6 +167,10 @@ def main():
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--f32-kv-cache", action="store_true", default=True)
     ap.add_argument("--bf16-kv-cache", dest="f32_kv_cache", action="store_false")
+    ap.add_argument("--f32-lm-head", action="store_true")
+    ap.add_argument("--static-kv-max-tokens", type=int, default=0,
+                    help="also export decoder_single_static.onnx with buffers of this length")
+    ap.add_argument("--skip-dynamic-decoder", action="store_true")
     ap.add_argument("--skip-audio-encoder", action="store_true")
     ap.add_argument("--skip-decoder", action="store_true")
     ap.add_argument("--overwrite", action="store_true")
@@ -184,16 +221,38 @@ def main():
                           exporter="legacy")
         del enc; gc.collect(); torch.cuda.empty_cache()
 
-    if not args.skip_decoder:
-        dec = DecoderSingle(model).eval()
-        kv_dtype = torch.float32 if args.f32_kv_cache else dtype
+    import contextlib
+    kv_dtype = torch.float32 if args.f32_kv_cache else dtype
+    if not args.skip_decoder and args.static_kv_max_tokens > 0:
+        dec = DecoderSingleStatic(model, args.f32_lm_head).eval()
+        pfx = torch.tensor([extras["prompt_token_ids"][:5]], dtype=torch.long, device=args.device)
+        aud = torch.zeros((4, hidden), dtype=dtype, device=args.device)
+        sfx = torch.tensor([[extras["speech_end_id"]]], dtype=torch.long, device=args.device)
+        kv_pos = torch.tensor(3, dtype=torch.long, device=args.device)
+        kv = [torch.zeros((1, kv_heads, args.static_kv_max_tokens, head_dim), dtype=kv_dtype, device=args.device)
+              for _ in range(2 * num_layers)]
+        print(f"exporting decoder_single_static.onnx (max_tokens {args.static_kv_max_tokens}, kv dtype {kv_dtype}, f32 lm head {args.f32_lm_head}) ...")
+        with (f32_kv_cache_context() if args.f32_kv_cache else contextlib.nullcontext()):
+            export_onnx_graph(
+                model=dec, args=(pfx, aud, sfx, kv_pos, *kv), output_path=out / "decoder_single_static.onnx",
+                input_names=["prefix_input_ids", "audio_embeddings", "suffix_input_ids", "kv_pos",
+                             *kv_input_names(num_layers)],
+                output_names=["logits", *kv_output_names(num_layers)], opset=args.opset,
+                dynamic_axes={"prefix_input_ids": {1: "prefix_len"},
+                              "audio_embeddings": {0: "num_audio_tokens"},
+                              "suffix_input_ids": {1: "suffix_len"},
+                              "logits": {1: "seq_len"}},
+                exporter="legacy")
+        del dec, kv; gc.collect(); torch.cuda.empty_cache()
+
+    if not args.skip_decoder and not args.skip_dynamic_decoder:
+        dec = DecoderSingle(model, args.f32_lm_head).eval()
         pfx = torch.tensor([extras["prompt_token_ids"][:5]], dtype=torch.long, device=args.device)
         aud = torch.zeros((4, hidden), dtype=dtype, device=args.device)
         sfx = torch.tensor([[extras["speech_end_id"]]], dtype=torch.long, device=args.device)
         kv = [torch.zeros((1, kv_heads, 0, head_dim), dtype=kv_dtype, device=args.device)
               for _ in range(2 * num_layers)]
-        print(f"exporting decoder_single.onnx (kv dtype {kv_dtype}) ...")
-        import contextlib
+        print(f"exporting decoder_single.onnx (kv dtype {kv_dtype}, f32 lm head {args.f32_lm_head}) ...")
         with (f32_kv_cache_context() if args.f32_kv_cache else contextlib.nullcontext()):
             export_onnx_graph(
                 model=dec, args=(pfx, aud, sfx, *kv), output_path=out / "decoder_single.onnx",
@@ -211,7 +270,9 @@ def main():
     report = {
         "model": "vibevoice_asr_streaming", "repo_id": mp.name, "dtype": args.dtype,
         "opset": args.opset, "device": args.device, "deterministic_audio": True,
-        "f32_kv_cache": bool(args.f32_kv_cache), "static_kv_cache": False,
+        "f32_kv_cache": bool(args.f32_kv_cache), "f32_lm_head": bool(args.f32_lm_head),
+        "static_kv_cache": args.static_kv_max_tokens > 0, "static_kv_max_tokens": args.static_kv_max_tokens,
+        "logits_dtype": "float32" if args.f32_lm_head else args.dtype,
         "audio_embeddings_dtype": "float32",
         "num_layers": num_layers, "num_kv_heads": kv_heads, "head_dim": head_dim,
         "hidden_size": hidden, "vocab_size": dc.vocab_size,
