@@ -38,16 +38,27 @@ dotnet build -c Release -p:EP=Cpu -p:Platform=x64
 
 ## Vernacula.Avalonia
 
+This project targets **two** frameworks: `net10.0-windows` and `net10.0`. NAudio 3 hands
+the Windows audio backend (`WaveOut`, in `NAudio.WinMM`) only to a Windows target
+framework, so `net10.0-windows` is the build with native playback and `net10.0` is the
+portable one that plays through `ffplay`. `dotnet build` builds both; `dotnet run` and
+`dotnet publish` act on one at a time and so need `-f`.
+
 ```bash
 cd src/Vernacula.Avalonia
 
-# Build
+# Build (both frameworks)
 dotnet build -c Release -p:EP=Cuda -p:Platform=x64
 
 # Or publish as self-contained (recommended for desktop install)
-dotnet publish -c Release -p:EP=Cuda -p:Platform=x64 \
+dotnet publish -c Release -f net10.0 -p:EP=Cuda -p:Platform=x64 \
   -r linux-x64 --self-contained true \
   -o ~/apps/vernacula-desktop
+
+# The same on Windows
+dotnet publish -c Release -f net10.0-windows -p:EP=Cuda -p:Platform=x64 \
+  -r win-x64 --self-contained true \
+  -o %USERPROFILE%/apps/vernacula-desktop
 ```
 
 For a Linux end-user install, the `install.sh` script at the repo root runs a self-contained publish and registers the `.desktop` entry for you — see [Installation](installation.md).

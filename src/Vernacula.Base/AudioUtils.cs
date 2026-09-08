@@ -232,7 +232,7 @@ public static class AudioUtils
             var wavSamples = new List<float>(wavSampleRate * wavChannels * 10);
             var wavBuffer = new float[8192];
             int wavRead;
-            while ((wavRead = sampleProvider.Read(wavBuffer, 0, wavBuffer.Length)) > 0)
+            while ((wavRead = sampleProvider.Read(wavBuffer)) > 0)
                 for (int i = 0; i < wavRead; i++) wavSamples.Add(wavBuffer[i]);
 
             return (wavSamples.ToArray(), wavSampleRate, wavChannels);
@@ -245,7 +245,12 @@ public static class AudioUtils
         var list   = new List<float>(sampleRate * channels * 10);
         var buffer = new float[8192];
         int read;
-        while ((read = reader.Read(buffer, 0, buffer.Length)) > 0)
+        // ⚠ THROUGH THE INTERFACE, DELIBERATELY. AudioFileReader carries both
+        // Read(Span<float>) (ISampleProvider) and Read(Span<byte>) (WaveStream) in NAudio 3;
+        // going through the interface pins the float overload rather than leaving it to
+        // overload resolution on a call whose failure mode is a silent byte-wise read.
+        ISampleProvider readerSamples = reader;
+        while ((read = readerSamples.Read(buffer)) > 0)
             for (int i = 0; i < read; i++) list.Add(buffer[i]);
 
         return (list.ToArray(), sampleRate, channels);
@@ -298,7 +303,7 @@ public static class AudioUtils
             var outList   = new List<float>((int)((long)mono.Length * Config.SampleRate / sampleRate + 1024));
             var outBuffer = new float[8192];
             int outRead;
-            while ((outRead = resampler.Read(outBuffer, 0, outBuffer.Length)) > 0)
+            while ((outRead = resampler.Read(outBuffer)) > 0)
                 for (int i = 0; i < outRead; i++) outList.Add(outBuffer[i]);
             at16k = outList.ToArray();
         }
@@ -323,7 +328,7 @@ public static class AudioUtils
             (int)((long)mono.Length * dstSampleRate / Math.Max(1, srcSampleRate) + 1024));
         var buf = new float[8192];
         int read;
-        while ((read = resampler.Read(buf, 0, buf.Length)) > 0)
+        while ((read = resampler.Read(buf)) > 0)
             for (int i = 0; i < read; i++) outList.Add(buf[i]);
         return outList.ToArray();
     }
@@ -423,11 +428,13 @@ public sealed class FloatArraySampleProvider : ISampleProvider
 
     public WaveFormat WaveFormat { get; }
 
-    public int Read(float[] buffer, int offset, int count)
+    // NAudio 3 replaced ISampleProvider.Read(float[], int, int) with Read(Span<float>);
+    // the offset the old signature carried is now the caller's slice.
+    public int Read(Span<float> buffer)
     {
-        int available = Math.Min(count, _data.Length - _position);
+        int available = Math.Min(buffer.Length, _data.Length - _position);
         if (available <= 0) return 0;
-        Array.Copy(_data, _position, buffer, offset, available);
+        _data.AsSpan(_position, available).CopyTo(buffer);
         _position += available;
         return available;
     }

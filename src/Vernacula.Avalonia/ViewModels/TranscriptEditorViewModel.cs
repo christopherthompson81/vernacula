@@ -9,6 +9,11 @@ using Avalonia.Media;
 using Avalonia.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
+// NAudio.Wave SPANS TWO PACKAGES IN NAudio 3. WaveFormat/IWaveProvider live in
+// NAudio.Core and resolve on every target framework; WaveOut lives in NAudio.WinMM,
+// which ships net9.0-windows7.0 only. That is why this project multi-targets
+// net10.0;net10.0-windows and why the WaveOut path below sits behind `#if WINDOWS` rather
+// than behind OperatingSystem.IsWindows() alone - see Vernacula.Avalonia.csproj.
 using NAudio.Wave;
 using SoundTouch;
 using Vernacula.Base;
@@ -28,7 +33,14 @@ internal partial class TranscriptEditorViewModel : ObservableObject, IDisposable
 
     private static readonly string? FfplayPath = FindExecutable("ffplay");
 
-    public static bool SupportsAudioPlayback => OperatingSystem.IsWindows() || FfplayPath is not null;
+#if WINDOWS
+    public static bool SupportsAudioPlayback => true;
+#else
+    // NOT OperatingSystem.IsWindows(). The net10.0 build carries no WinMM, so on a Windows
+    // host running it the WaveOut path does not exist and ffplay is the only backend; asking
+    // the OS would claim playback works and then take a branch that was never compiled.
+    public static bool SupportsAudioPlayback => FfplayPath is not null;
+#endif
     public static string PlaybackUnavailableReason =>
         "Playback requires Windows audio output or an `ffplay` executable in PATH.";
 
@@ -37,7 +49,11 @@ internal partial class TranscriptEditorViewModel : ObservableObject, IDisposable
     private float[]?         _fullAudio;
     private int              _audioSampleRate = Config.SampleRate;
     private int              _audioChannels   = 1;
-    private WaveOutEvent?    _waveOut;
+#if WINDOWS
+    // WaveOut, not WaveOutEvent: NAudio 3 renamed the event-callback device to WaveOut
+    // (NAudio 2's message-loop WaveOut became WaveOutWindow). A rename, not a behaviour change.
+    private WaveOut?         _waveOut;
+#endif
     private Process?         _playbackProcess;
     private DispatcherTimer? _playbackTimer;
     private bool             _preserveContinuousPlaybackPosition;
@@ -304,22 +320,22 @@ internal partial class TranscriptEditorViewModel : ObservableObject, IDisposable
 
         StopPlayback();
         TimeSpan leadIn = ConsumeInitialPlaybackLeadIn();
-        if (OperatingSystem.IsWindows())
-        {
-            var waveFormat = WaveFormat.CreateIeeeFloatWaveFormat(_audioSampleRate, _audioChannels);
-            var provider   = new SoundTouchWaveProvider(_fullAudio, startSample, count,
-                                                        waveFormat, _audioChannels, PlaybackSpeed,
-                                                        leadIn);
+#if WINDOWS
+        var waveFormat = WaveFormat.CreateIeeeFloatWaveFormat(_audioSampleRate, _audioChannels);
+        var provider   = new SoundTouchWaveProvider(_fullAudio, startSample, count,
+                                                    waveFormat, _audioChannels, PlaybackSpeed,
+                                                    leadIn);
 
-            _waveOut = new WaveOutEvent();
-            _waveOut.Init(provider);
-            _waveOut.PlaybackStopped += OnWaveOutStopped;
-            _waveOut.Play();
-        }
-        else if (!StartFfplayPlayback(seg.PlayStart + segOffsetSec, segDuration - segOffsetSec, leadIn))
+        _waveOut = new WaveOut();
+        _waveOut.Init(provider);
+        _waveOut.PlaybackStopped += OnWaveOutStopped;
+        _waveOut.Play();
+#else
+        if (!StartFfplayPlayback(seg.PlayStart + segOffsetSec, segDuration - segOffsetSec, leadIn))
         {
             return;
         }
+#endif
 
         IsPlaying = true;
         PlayCommand.NotifyCanExecuteChanged();
@@ -380,22 +396,22 @@ internal partial class TranscriptEditorViewModel : ObservableObject, IDisposable
         StopPlayback();
         TimeSpan leadIn = ConsumeInitialPlaybackLeadIn();
         double speed = PlaybackSpeed;
-        if (OperatingSystem.IsWindows())
-        {
-            var waveFormat = WaveFormat.CreateIeeeFloatWaveFormat(_audioSampleRate, _audioChannels);
-            var provider   = new SoundTouchWaveProvider(_fullAudio, startSample, count,
-                                                        waveFormat, _audioChannels, speed,
-                                                        leadIn);
+#if WINDOWS
+        var waveFormat = WaveFormat.CreateIeeeFloatWaveFormat(_audioSampleRate, _audioChannels);
+        var provider   = new SoundTouchWaveProvider(_fullAudio, startSample, count,
+                                                    waveFormat, _audioChannels, speed,
+                                                    leadIn);
 
-            _waveOut = new WaveOutEvent();
-            _waveOut.Init(provider);
-            _waveOut.PlaybackStopped += OnWaveOutStopped;
-            _waveOut.Play();
-        }
-        else if (!StartFfplayPlayback(startSec, null, leadIn))
+        _waveOut = new WaveOut();
+        _waveOut.Init(provider);
+        _waveOut.PlaybackStopped += OnWaveOutStopped;
+        _waveOut.Play();
+#else
+        if (!StartFfplayPlayback(startSec, null, leadIn))
         {
             return;
         }
+#endif
 
         IsPlaying = true;
         PlayCommand.NotifyCanExecuteChanged();
@@ -476,14 +492,11 @@ internal partial class TranscriptEditorViewModel : ObservableObject, IDisposable
     [RelayCommand(CanExecute = nameof(CanPause))]
     private void Pause()
     {
-        if (OperatingSystem.IsWindows())
-        {
-            _waveOut?.Pause();
-        }
-        else
-        {
-            StopFfplayPlayback();
-        }
+#if WINDOWS
+        _waveOut?.Pause();
+#else
+        StopFfplayPlayback();
+#endif
         _playbackTimer?.Stop();
         IsPlaying = false;
         PlayCommand.NotifyCanExecuteChanged();
@@ -585,6 +598,7 @@ internal partial class TranscriptEditorViewModel : ObservableObject, IDisposable
         HighlightedToken = best;
     }
 
+#if WINDOWS
     private void OnWaveOutStopped(object? sender, StoppedEventArgs e)
     {
         Dispatcher.UIThread.InvokeAsync(() =>
@@ -593,6 +607,7 @@ internal partial class TranscriptEditorViewModel : ObservableObject, IDisposable
             OnSegmentPlaybackComplete();
         });
     }
+#endif
 
     private void OnSegmentPlaybackComplete()
     {
@@ -621,20 +636,17 @@ internal partial class TranscriptEditorViewModel : ObservableObject, IDisposable
     {
         _playbackTimer?.Stop();
         _playbackTimer = null;
-        if (OperatingSystem.IsWindows())
+#if WINDOWS
+        if (_waveOut != null)
         {
-            if (_waveOut != null)
-            {
-                _waveOut.PlaybackStopped -= OnWaveOutStopped;
-                _waveOut.Stop();
-                _waveOut.Dispose();
-                _waveOut = null;
-            }
+            _waveOut.PlaybackStopped -= OnWaveOutStopped;
+            _waveOut.Stop();
+            _waveOut.Dispose();
+            _waveOut = null;
         }
-        else
-        {
-            StopFfplayPlayback();
-        }
+#else
+        StopFfplayPlayback();
+#endif
         IsPlaying = false;
         PlayCommand.NotifyCanExecuteChanged();
         PauseCommand.NotifyCanExecuteChanged();
@@ -1536,9 +1548,11 @@ internal partial class TranscriptEditorViewModel : ObservableObject, IDisposable
         return null;
     }
 
+#if WINDOWS
     /// <summary>
     /// Streams audio through SoundTouch on-the-fly, so tempo-stretching never
     /// blocks the UI thread. The source array is read directly (no copy).
+    /// Windows-only: its sole consumer is the WaveOut path above.
     /// </summary>
     private sealed class SoundTouchWaveProvider : IWaveProvider
     {
@@ -1576,12 +1590,14 @@ internal partial class TranscriptEditorViewModel : ObservableObject, IDisposable
             }
         }
 
-        public int Read(byte[] buffer, int offset, int count)
+        // NAudio 3 replaced IWaveProvider.Read(byte[], int, int) with Read(Span<byte>):
+        // the (offset, count) pair the old signature carried is now the caller's slice.
+        public int Read(Span<byte> buffer)
         {
             if (_leadingSilenceFloatsRemaining > 0)
             {
-                int silenceFloats = Math.Min(count / 4, _leadingSilenceFloatsRemaining);
-                buffer.AsSpan(offset, silenceFloats * 4).Clear();
+                int silenceFloats = Math.Min(buffer.Length / 4, _leadingSilenceFloatsRemaining);
+                buffer[..(silenceFloats * 4)].Clear();
                 _leadingSilenceFloatsRemaining -= silenceFloats;
                 return silenceFloats * 4;
             }
@@ -1590,14 +1606,14 @@ internal partial class TranscriptEditorViewModel : ObservableObject, IDisposable
             {
                 // 1.0× — copy raw bytes directly, no processing needed
                 int avail = (_srcEnd - _srcPos) * 4;
-                int copy  = Math.Min(count, avail);
+                int copy  = Math.Min(buffer.Length, avail);
                 if (copy <= 0) return 0;
-                Buffer.BlockCopy(_src, _srcPos * 4, buffer, offset, copy);
+                MemoryMarshal.AsBytes(_src.AsSpan(_srcPos, copy / 4)).CopyTo(buffer);
                 _srcPos += copy / 4;
                 return copy;
             }
 
-            int floatsNeeded = count / 4;
+            int floatsNeeded = buffer.Length / 4;
             const int FeedFrames = 4096;
 
             while (_outQ.Count < floatsNeeded)
@@ -1620,7 +1636,7 @@ internal partial class TranscriptEditorViewModel : ObservableObject, IDisposable
             }
 
             int toWrite = Math.Min(floatsNeeded, _outQ.Count);
-            var outSpan = MemoryMarshal.Cast<byte, float>(buffer.AsSpan(offset, toWrite * 4));
+            var outSpan = MemoryMarshal.Cast<byte, float>(buffer[..(toWrite * 4)]);
             for (int i = 0; i < toWrite; i++)
                 outSpan[i] = _outQ.Dequeue();
             return toWrite * 4;
@@ -1635,6 +1651,7 @@ internal partial class TranscriptEditorViewModel : ObservableObject, IDisposable
                     _outQ.Enqueue(recv[i]);
         }
     }
+#endif
 
     // ── IDisposable ───────────────────────────────────────────────────────────
 

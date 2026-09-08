@@ -28,8 +28,13 @@ ICON_DIR="$HOME/.local/share/icons/hicolor/256x256/apps"
 DESKTOP_FILE="$HOME/.local/share/applications/vernacula-desktop.desktop"
 
 echo "Building Vernacula-Desktop (EP=$EP)..."
+# -f is REQUIRED, not tidiness: Vernacula.Avalonia multi-targets net10.0;net10.0-windows
+# (NAudio 3 only hands WinMM to a Windows TFM — see the csproj), and `dotnet publish` on a
+# multi-targeted project with no -f fails with NETSDK1047. This is the Linux installer, so
+# net10.0 is the flavour it wants: the WaveOut path is compiled out and ffplay is the backend.
 dotnet publish "$SCRIPT_DIR/src/Vernacula.Avalonia/Vernacula.Avalonia.csproj" \
     -c Release \
+    -f net10.0 \
     -p:EP="$EP" \
     -p:Platform=x64 \
     -r linux-x64 \

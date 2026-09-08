@@ -264,7 +264,11 @@ internal static class AudioUtils
         var list   = new List<float>(reader.WaveFormat.SampleRate * channels * 10);
         var buffer = new float[8192];
         int read;
-        while ((read = reader.Read(buffer, 0, buffer.Length)) > 0)
+        // ⚠ THROUGH THE INTERFACE, DELIBERATELY — see the matching note in
+        // Vernacula.Base.AudioUtils.ReadAudio. AudioFileReader has both a float and a
+        // byte Span overload of Read in NAudio 3.
+        ISampleProvider readerSamples = reader;
+        while ((read = readerSamples.Read(buffer)) > 0)
         {
             for (int i = 0; i < read; i++)
                 list.Add(buffer[i]);
@@ -309,7 +313,7 @@ internal static class AudioUtils
         var outList   = new List<float>((int)((long)mono.Length * Config.SampleRate / sampleRate + 1024));
         var outBuffer = new float[8192];
         int outRead;
-        while ((outRead = resampler.Read(outBuffer, 0, outBuffer.Length)) > 0)
+        while ((outRead = resampler.Read(outBuffer)) > 0)
         {
             for (int i = 0; i < outRead; i++)
                 outList.Add(outBuffer[i]);
@@ -399,11 +403,13 @@ internal sealed class FloatArraySampleProvider : ISampleProvider
 
     public WaveFormat WaveFormat { get; }
 
-    public int Read(float[] buffer, int offset, int count)
+    // NAudio 3 replaced ISampleProvider.Read(float[], int, int) with Read(Span<float>);
+    // the offset the old signature carried is now the caller's slice.
+    public int Read(Span<float> buffer)
     {
-        int available = Math.Min(count, _data.Length - _position);
+        int available = Math.Min(buffer.Length, _data.Length - _position);
         if (available <= 0) return 0;
-        Array.Copy(_data, _position, buffer, offset, available);
+        _data.AsSpan(_position, available).CopyTo(buffer);
         _position += available;
         return available;
     }
