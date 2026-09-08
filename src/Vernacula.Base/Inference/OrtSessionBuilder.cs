@@ -225,7 +225,7 @@ public static class OrtSessionBuilder
 
         bool bypassCache = Environment.GetEnvironmentVariable("VERNACULA_ORT_NO_CACHE") == "1";
         string cacheBase = bypassCache ? "" : ComputeCacheBasePath(modelPath, ep, optLevel);
-        // All cache-key-derived paths. The five files form a small state
+        // All cache-key-derived paths. The six files form a small state
         // machine; the per-key disposition is encoded by which marker
         // (if any) exists alongside the actual cache file(s).
         string cachePathOnnx = cacheBase + ".onnx";   // primary cache (with _data sidecar)
@@ -250,23 +250,35 @@ public static class OrtSessionBuilder
         // Costs one cache miss. A graph that genuinely needs .ort re-escalates
         // on its own — and the .no-ext-init hint left behind stops this from
         // firing a second time.
-        if (useOrtFormat && !File.Exists(noExtInitHintPath))
+        // A .cache-disabled key from that era is migrated too: it means both
+        // old tiers failed, and the inline tier — which neither of them was —
+        // may well work. If it doesn't, the ladder walks the key straight back
+        // to disabled on its own.
+        if ((useOrtFormat || cacheDisabled) && !bypassCache && !File.Exists(noExtInitHintPath))
         {
             try
             {
+                // Order matters: clear the old markers BEFORE writing the new
+                // one. If a delete throws (locked file, EACCES) we're left
+                // with no hints at all, which replays the ladder from tier 1
+                // next run. Writing .no-ext-init first and then failing the
+                // delete would strand the key on .ort permanently, since the
+                // guard above would never be true again.
+                if (File.Exists(useOrtHintPath)) File.Delete(useOrtHintPath);
+                if (File.Exists(cacheDisabledPath)) File.Delete(cacheDisabledPath);
                 File.WriteAllText(noExtInitHintPath, "");
-                File.Delete(useOrtHintPath);
                 useOrtFormat = false;
+                cacheDisabled = false;
                 noExtInit = true;
                 try { if (File.Exists(cachePathOrt)) File.Delete(cachePathOrt); } catch { /* best-effort */ }
                 Console.WriteLine(
                     $"[cache-format] {Path.GetFileName(cachePathOnnx)}: " +
-                    "retrying inline .onnx in place of the .ort fallback (see issue #60); one cache miss to converge.");
+                    "retrying inline .onnx in place of the older fallback (see issue #60); one cache miss to converge.");
             }
             catch
             {
-                // Couldn't rewrite the hints — leave the .ort path exactly as
-                // it was rather than half-migrating.
+                // Couldn't rewrite the markers. Whatever survived on disk still
+                // describes a valid state, so just carry on with it.
             }
         }
 
@@ -322,6 +334,11 @@ public static class OrtSessionBuilder
                         $"[cache-format] {Path.GetFileName(cachePathOnnx)}: " +
                         "inline .onnx round-trip ALSO failed; switching to .ort for this model (see issue #60).");
                     try { File.Delete(cachePathOnnx); } catch { /* best-effort */ }
+                    // The inline tier never writes a _data sidecar, but a stale
+                    // one from a tier-1 write whose cleanup failed can still be
+                    // sitting here. Nothing downstream cleans it up once the key
+                    // escalates to .ort, so drop it now.
+                    try { File.Delete(cacheDataPath); } catch { /* best-effort */ }
                     try { File.WriteAllText(useOrtHintPath, ""); } catch { /* best-effort */ }
                     useOrtFormat = true;
                 }
@@ -381,13 +398,14 @@ public static class OrtSessionBuilder
             return o;
         }
 
+        Exception? inlineWriteFailure = null;
         if (noExtInit && !useOrtFormat)
         {
             // The inline tier is the one write that can fail on its own terms:
             // without the sidecar, a graph whose optimized initializers exceed
-            // protobuf's 2 GB message limit can't serialize at all. Catch that
-            // and drop to .ort rather than surfacing a cache-write failure as a
-            // model-load failure.
+            // protobuf's 2 GB message limit can't serialize at all. Retry on
+            // .ort rather than surfacing a cache-write failure as a model-load
+            // failure.
             var inlineOpts = BuildWriteOptions(out var inlineUsedCuda);
             try
             {
@@ -397,22 +415,36 @@ public static class OrtSessionBuilder
             catch (Exception ex)
             {
                 inlineOpts.Dispose();
-                Console.WriteLine(
-                    $"[cache-format] {Path.GetFileName(cachePathOnnx)}: " +
-                    $"inline .onnx write failed ({ex.GetType().Name}); falling back to .ort for this model (see issue #60).");
+                inlineWriteFailure = ex;
                 try { File.Delete(cachePathOnnx); } catch { /* best-effort */ }
-                try { File.WriteAllText(useOrtHintPath, ""); } catch { /* best-effort */ }
                 useOrtFormat = true;
             }
         }
 
         var opts = BuildWriteOptions(out var freshUsedCuda);
         usedCuda = freshUsedCuda;
-        return new InferenceSession(modelPath, opts);
+        var freshSession = new InferenceSession(modelPath, opts);
+
+        // Only now is the demotion justified. The catch above can't tell a real
+        // serializer limit from something transient and unrelated — CUDA OOM
+        // under memory pressure, a briefly unreadable source sidecar — and the
+        // .use-ort hint is sticky for the life of the cache key. Writing it only
+        // once .ort has demonstrably succeeded where inline failed keeps a bad
+        // afternoon from permanently downgrading a model that was fine.
+        if (inlineWriteFailure is not null)
+        {
+            Console.WriteLine(
+                $"[cache-format] {Path.GetFileName(cachePathOnnx)}: " +
+                $"inline .onnx write failed ({inlineWriteFailure.GetType().Name}), .ort succeeded; " +
+                "using .ort for this model (see issue #60).");
+            try { File.WriteAllText(useOrtHintPath, ""); } catch { /* best-effort */ }
+        }
+        return freshSession;
     }
 
     // Returns the cache-key path STEM (no extension). Caller appends
-    // ".onnx" / ".ort" / ".use-ort" / ".cache-disabled" as needed.
+    // ".onnx" / ".ort" / ".no-ext-init" / ".use-ort" / ".cache-disabled"
+    // as needed.
     private static string ComputeCacheBasePath(
         string modelPath, ExecutionProvider ep, GraphOptimizationLevel optLevel)
     {
@@ -426,8 +458,16 @@ public static class OrtSessionBuilder
             _ => "auto",
         };
         // Include mtime+size in a short hash so source edits invalidate.
+        // The source's external-data sidecar counts as source: the inline tier
+        // writes a cache file that still references it by name rather than
+        // copying the weights, so a sidecar swapped under an untouched .onnx
+        // would otherwise be a silent stale-weights HIT.
+        var sidecar = new FileInfo(modelPath + "_data");
+        var sidecarKey = sidecar.Exists
+            ? $"{sidecar.LastWriteTimeUtc.Ticks}|{sidecar.Length}"
+            : "no-sidecar";
         var keyBytes = Encoding.UTF8.GetBytes(
-            $"{fi.LastWriteTimeUtc.Ticks}|{fi.Length}|{epTag}|{optLevel}|{ortVer}");
+            $"{fi.LastWriteTimeUtc.Ticks}|{fi.Length}|{sidecarKey}|{epTag}|{optLevel}|{ortVer}");
         var hash = SHA256.HashData(keyBytes).AsSpan(0, 6);
         var hashHex = Convert.ToHexString(hash).ToLowerInvariant();
         var dir = fi.DirectoryName ?? ".";
