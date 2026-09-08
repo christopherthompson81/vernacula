@@ -1604,9 +1604,16 @@ internal partial class TranscriptEditorViewModel : ObservableObject, IDisposable
 
             if (_st is null)
             {
-                // 1.0× — copy raw bytes directly, no processing needed
+                // 1.0× — copy raw bytes directly, no processing needed.
+                //
+                // Rounded down to whole floats. The array-based original wrote exactly `copy`
+                // bytes with Buffer.BlockCopy, so a `copy` that was not a multiple of 4 still
+                // matched what it returned; the span version writes (copy / 4) * 4 and would
+                // otherwise claim up to 3 bytes it never wrote, handing WaveOut uninitialised
+                // audio. Not reachable while NAudio sizes its buffers to BlockAlign, but the
+                // write and the return value have to agree on their own terms.
                 int avail = (_srcEnd - _srcPos) * 4;
-                int copy  = Math.Min(buffer.Length, avail);
+                int copy  = Math.Min(buffer.Length, avail) / 4 * 4;
                 if (copy <= 0) return 0;
                 MemoryMarshal.AsBytes(_src.AsSpan(_srcPos, copy / 4)).CopyTo(buffer);
                 _srcPos += copy / 4;
