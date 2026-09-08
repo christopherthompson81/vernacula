@@ -60,6 +60,7 @@ The first launch opens a model download dialog. Approximate sizes:
 - VoxLingua107 LID: ~100 MB
 - Cohere Transcribe: ~7 GB
 - VibeVoice-ASR: ~3 GB (CUDA-only)
+- VibeVoice-ASR Streaming: ~3.2 GB for the 1.5B, ~9 GB for the 7B (CUDA-only; pick one in Settings)
 - KenLM models: 17–67 MB each (optional)
 
 All models are stored under `~/.local/share/Vernacula/models/`.
