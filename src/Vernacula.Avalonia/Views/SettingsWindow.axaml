@@ -261,7 +261,7 @@
                                            VerticalAlignment="Center"
                                            Text="{Binding GpuDetected, Converter={StaticResource BoolToStatusIcon}}"
                                            Foreground="{Binding GpuDetected, Converter={StaticResource BoolToStatusBrushSubtext}}" />
-                                <TextBlock Grid.Column="1" Text="NVIDIA GPU"
+                                <TextBlock Grid.Column="1" Text="{Binding GpuNameText}"
                                            Classes="check-label" />
                                 <TextBlock Grid.Column="2" Text="{Binding GpuVramText}"
                                            Foreground="{DynamicResource SubtextBrush}"
@@ -604,7 +604,7 @@
                                          CommandParameter="Small1_5B"
                                          Foreground="{DynamicResource TextBrush}">
                                 <StackPanel>
-                                    <TextBlock Text="1.5B — faster, ~7.4 GB VRAM"
+                                    <TextBlock Text="1.5B — faster, ~5 GB VRAM + 1.6 GB per hour of audio"
                                                Foreground="{DynamicResource TextBrush}" />
                                     <TextBlock Text="Best for transcription. Speaker labels are less reliable than the 7B."
                                                Foreground="{DynamicResource SubtextBrush}"
@@ -618,7 +618,7 @@
                                          Margin="0,4,0,0"
                                          Foreground="{DynamicResource TextBrush}">
                                 <StackPanel>
-                                    <TextBlock Text="7B — better speaker attribution, ~15.7 GB VRAM"
+                                    <TextBlock Text="7B — better speaker attribution, ~12 GB VRAM + 3.1 GB per hour of audio"
                                                Foreground="{DynamicResource TextBrush}" />
                                     <TextBlock Text="Separates speakers reliably; about half the speed of the 1.5B."
                                                Foreground="{DynamicResource SubtextBrush}"

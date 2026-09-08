@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using System.Text;
 
 namespace Vernacula.Base;
 
@@ -62,6 +63,18 @@ public static class HardwareInfo
     [DllImport("libnvidia-ml.so.1", EntryPoint = "nvmlDeviceGetCudaComputeCapability")]
     private static extern int NvmlDeviceGetCudaComputeCapabilityLinux(IntPtr device, out int major, out int minor);
 
+    [DllImport("nvml.dll", EntryPoint = "nvmlDeviceGetCount_v2")]
+    private static extern int NvmlDeviceGetCountWindows(out uint count);
+
+    [DllImport("libnvidia-ml.so.1", EntryPoint = "nvmlDeviceGetCount_v2")]
+    private static extern int NvmlDeviceGetCountLinux(out uint count);
+
+    [DllImport("nvml.dll", EntryPoint = "nvmlDeviceGetName")]
+    private static extern int NvmlDeviceGetNameWindows(IntPtr device, byte[] name, uint length);
+
+    [DllImport("libnvidia-ml.so.1", EntryPoint = "nvmlDeviceGetName")]
+    private static extern int NvmlDeviceGetNameLinux(IntPtr device, byte[] name, uint length);
+
     // ── GPU memory ────────────────────────────────────────────────────────────
 
     /// <summary>
@@ -87,6 +100,50 @@ public static class HardwareInfo
             finally { NvmlShutdownPlatform(); }
         }
         catch { return (0, 0); }
+    }
+
+    /// <summary>
+    /// Returns the marketing name of <paramref name="gpuId"/> ("NVIDIA RTX A4000"), or an
+    /// empty string when NVML is unavailable.
+    ///
+    /// Worth showing rather than a bare "NVIDIA GPU ✓": every CUDA path in this application is
+    /// pinned to device 0, so on a machine with more than one card the only way to tell which
+    /// one does the work is to name it (issue #149, reported on a two-GPU box).
+    /// </summary>
+    public static string GetGpuName(int gpuId = 0)
+    {
+        if (!OperatingSystem.IsWindows() && !OperatingSystem.IsLinux())
+            return "";
+
+        try
+        {
+            if (NvmlInitPlatform() != 0) return "";
+            try
+            {
+                if (NvmlDeviceGetHandleByIndexPlatform((uint)gpuId, out var device) != 0) return "";
+                var buf = new byte[96];
+                if (NvmlDeviceGetNamePlatform(device, buf, (uint)buf.Length) != 0) return "";
+                int len = Array.IndexOf(buf, (byte)0);
+                return Encoding.UTF8.GetString(buf, 0, len < 0 ? buf.Length : len);
+            }
+            finally { NvmlShutdownPlatform(); }
+        }
+        catch { return ""; }
+    }
+
+    /// <summary>Number of NVIDIA GPUs NVML can see, or 0 when it is unavailable.</summary>
+    public static int GetGpuCount()
+    {
+        if (!OperatingSystem.IsWindows() && !OperatingSystem.IsLinux())
+            return 0;
+
+        try
+        {
+            if (NvmlInitPlatform() != 0) return 0;
+            try { return NvmlDeviceGetCountPlatform(out uint count) == 0 ? (int)count : 0; }
+            finally { NvmlShutdownPlatform(); }
+        }
+        catch { return 0; }
     }
 
     /// <summary>
@@ -496,6 +553,16 @@ public static class HardwareInfo
         OperatingSystem.IsWindows()
             ? NvmlDeviceGetHandleByIndexWindows(index, out device)
             : NvmlDeviceGetHandleByIndexLinux(index, out device);
+
+    private static int NvmlDeviceGetCountPlatform(out uint count) =>
+        OperatingSystem.IsWindows()
+            ? NvmlDeviceGetCountWindows(out count)
+            : NvmlDeviceGetCountLinux(out count);
+
+    private static int NvmlDeviceGetNamePlatform(IntPtr device, byte[] name, uint length) =>
+        OperatingSystem.IsWindows()
+            ? NvmlDeviceGetNameWindows(device, name, length)
+            : NvmlDeviceGetNameLinux(device, name, length);
 
     private static int NvmlDeviceGetMemoryInfoPlatform(IntPtr device, out NvmlMemory memory) =>
         OperatingSystem.IsWindows()

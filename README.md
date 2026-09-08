@@ -28,8 +28,9 @@ More screenshots and a feature tour live in [docs/desktop-app.md](docs/desktop-a
 - **No audio length limits** — the default pipeline streams and segments, so file length is
   unbounded. The VibeVoice backends are the exception: they hold the whole recording in
   context to attribute speakers without a diarizer, which caps them at their context window
-  (about 68 minutes for VibeVoice-ASR Streaming 1.5B, 2 hours for the 7B). Over-long files are
-  refused up front rather than failing partway.
+  (about 68 minutes for VibeVoice-ASR Streaming 1.5B, 2 hours for the 7B, less on a card that
+  cannot hold that much context alongside the model). Over-long files are refused up front
+  rather than failing partway.
 - **Transcript editor** with confidence colouring, audio playback, and word-level timestamps
 - **Pluggable ASR backends** — Parakeet TDT v3, Cohere Transcribe, Qwen3-ASR, VibeVoice-ASR, VibeVoice-ASR Streaming, Whisper large-v3-turbo, IndicConformer, Granite Speech 4.1
 - **Shallow KenLM fusion** for domain-specific English (general, medical)

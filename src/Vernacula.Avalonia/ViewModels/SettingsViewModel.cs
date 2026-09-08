@@ -155,9 +155,22 @@ internal partial class SettingsViewModel : ObservableObject
     public bool IsVibeVoiceStreamingLarge => SelectedVibeVoiceStreamingSize == VibeVoiceStreamingSize.Large7B;
 
     /// <summary>
-    /// Warns when the selected checkpoint will not fit. Measured peaks on a 24 GB card at a
-    /// 16384-position cache: 7.4 GB for the 1.5B, 15.7 GB for the 7B
-    /// (docs/dev/vibevoice_asr_streaming_investigation.md, Runs 12-14).
+    /// The fixed device-memory cost of each checkpoint: weights plus the working set ONNX
+    /// Runtime needs around them, in GiB. Measured on the published packages (Run 34) at
+    /// 3.19 + 1.39 for the 1.5B and 9.03 + 2.36 for the 7B, rounded up.
+    /// </summary>
+    private static double VibeVoiceStreamingFixedGiB(VibeVoiceStreamingSize size) =>
+        size == VibeVoiceStreamingSize.Large7B ? 11.8 : 5.0;
+
+    /// <summary>GiB of KV cache one minute of audio costs: 16 positions a second, fp16.</summary>
+    private static double VibeVoiceStreamingCacheGiBPerMinute(VibeVoiceStreamingSize size) =>
+        60 * 16.0 * (size == VibeVoiceStreamingSize.Large7B ? 57344.0 : 28672.0) / (1 << 30);
+
+    /// <summary>
+    /// Says what this card can actually do with the selected checkpoint. The cache is now sized
+    /// to the recording rather than to the export ceiling (issue #150), so the honest answer is
+    /// not "fits / does not fit" but the length that fits: a 16 GB card runs the 7B fine for an
+    /// hour of audio and cannot run it for two.
     /// </summary>
     public string VibeVoiceStreamingSizeWarning
     {
@@ -165,11 +178,21 @@ internal partial class SettingsViewModel : ObservableObject
         {
             var (totalMb, _) = HardwareInfo.GetGpuMemoryMb();
             if (totalMb <= 0) return "";
-            double needGb = SelectedVibeVoiceStreamingSize == VibeVoiceStreamingSize.Large7B ? 15.7 : 7.4;
-            double haveGb = totalMb / 1024.0;
-            return haveGb < needGb
-                ? $"This card reports {haveGb:F1} GB of VRAM; this checkpoint peaks near {needGb:F1} GB."
-                : "";
+
+            double haveGiB  = totalMb / 1024.0;
+            double fixedGiB = VibeVoiceStreamingFixedGiB(SelectedVibeVoiceStreamingSize);
+            if (haveGiB < fixedGiB)
+                return $"This card reports {haveGiB:F1} GB of VRAM; this checkpoint needs about "
+                     + $"{fixedGiB:F1} GB before any audio is cached.";
+
+            // Leave a little for the desktop; a card is never entirely yours.
+            double capMinutes = SelectedVibeVoiceStreamingSize == VibeVoiceStreamingSize.Large7B ? 120 : 68;
+            double fits = (haveGiB - fixedGiB - 0.5)
+                        / VibeVoiceStreamingCacheGiBPerMinute(SelectedVibeVoiceStreamingSize);
+            return fits >= capMinutes
+                ? ""
+                : $"This card reports {haveGiB:F1} GB of VRAM, which fits about {fits:F0} minutes "
+                + $"of audio with this checkpoint rather than the full {capMinutes:F0}.";
         }
     }
 
@@ -308,6 +331,12 @@ internal partial class SettingsViewModel : ObservableObject
 
     [ObservableProperty] private bool   _gpuDetected          = false;
     [ObservableProperty] private string _gpuVramText          = "";
+    /// <summary>
+    /// Names the card in the hardware panel. Every CUDA path here is pinned to device 0, so on a
+    /// machine with two GPUs "NVIDIA GPU ✓" does not answer the question the user is asking
+    /// (issue #149) -- which of them is doing the work.
+    /// </summary>
+    [ObservableProperty] private string _gpuNameText          = "NVIDIA GPU";
     [ObservableProperty] private bool   _cudaToolkitInstalled = false;
     [ObservableProperty] private bool   _cudnnInstalled       = false;
     [ObservableProperty] private bool   _cudaEpWorking        = false;
@@ -758,6 +787,8 @@ internal partial class SettingsViewModel : ObservableObject
             // Collected off the UI thread, applied on it: these are bound properties, and raising
             // PropertyChanged from a thread-pool thread updates Avalonia bindings off the UI thread.
             long totalMb = 0;
+            string gpuName = "";
+            int gpuCount = 0;
             bool cudaToolkit = false, cudnnFound = false, cudaPresent = false, cudnnPresent = false;
 
             await Task.Run(() =>
@@ -777,6 +808,8 @@ internal partial class SettingsViewModel : ObservableObject
                 if (force) HardwareInfo.InvalidateCudaProbes();
 
                 (totalMb, _) = HardwareInfo.GetGpuMemoryMb();
+                gpuName = HardwareInfo.GetGpuName();
+                gpuCount = HardwareInfo.GetGpuCount();
                 cudaToolkit = HardwareInfo.IsCudaToolkitInstalled();
                 cudnnFound = HardwareInfo.IsCudnnInstalled();
                 cudaPresent = HardwareInfo.IsCudaRuntimePresent;
@@ -797,6 +830,9 @@ internal partial class SettingsViewModel : ObservableObject
             });
 
             GpuDetected          = totalMb > 0;
+            GpuNameText          = gpuName.Length == 0 ? "NVIDIA GPU"
+                                 : gpuCount > 1        ? $"{gpuName} (GPU 0 of {gpuCount})"
+                                 : gpuName;
             GpuVramText          = totalMb > 0
                 ? Loc.Instance.T("settings_hw_vram", new() { ["vram"] = $"{totalMb / 1024.0:F1}" })
                 : "";
