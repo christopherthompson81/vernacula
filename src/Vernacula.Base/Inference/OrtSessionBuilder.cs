@@ -130,20 +130,34 @@ public static class OrtSessionBuilder
     /// file, skip optimization (<c>ORT_DISABLE_ALL</c>), and load directly —
     /// typically 5–10× faster for large graphs.
     ///
-    /// <b>Layered cache format.</b> Three states per cache key, advanced by
+    /// <b>Layered cache format.</b> Four states per cache key, advanced by
     /// observed round-trip behavior:
     /// <list type="number">
-    ///   <item><description><b>.onnx</b> (primary). Fast: ORT can lazy-load
-    ///     weights from a <c>_data</c> external-initializer sidecar. Works
-    ///     for almost every graph.</description></item>
-    ///   <item><description><b>.ort</b> (fallback, marked by a
-    ///     <c>.use-ort</c> hint file). Used when the <c>.onnx</c> writer
-    ///     mishandles the graph — currently any graph containing a Loop
-    ///     subgraph (issue #56 — the <c>.onnx</c> serializer duplicates
-    ///     body-scope initializers into the outer scope). The <c>.ort</c>
-    ///     binary writer encodes subgraphs faithfully and round-trips at
-    ///     every opt level, but embeds all initializers inline so loads
-    ///     are slower for large graphs. Only used when needed.</description></item>
+    ///   <item><description><b>.onnx + sidecar</b> (primary). Fast: ORT can
+    ///     lazy-load weights from a <c>_data</c> external-initializer
+    ///     sidecar. Works for almost every graph.</description></item>
+    ///   <item><description><b>.onnx inline</b> (marked by a
+    ///     <c>.no-ext-init</c> hint file). Same format, written without the
+    ///     external-initializer session entries. Used when the primary tier
+    ///     can't round-trip, which happens for any graph carrying a
+    ///     control-flow subgraph (<c>Loop</c>, <c>If</c>): ORT's
+    ///     external-initializer writer appends a subgraph's initializers to
+    ///     that subgraph a second time instead of clearing first, and then
+    ///     rejects its own output with "<c>&lt;name&gt; initializer name is
+    ///     not unique</c>" (issue #60, still open upstream as of ORT 1.29).
+    ///     Dropping the sidecar entries sidesteps it. Counter-intuitively
+    ///     this is also the *fastest* tier for a graph whose source already
+    ///     has a <c>_data</c> sidecar: the cache file keeps pointing at the
+    ///     source's weights instead of copying them, so it's both smaller on
+    ///     disk and quicker to load than tier 1 would have been.</description></item>
+    ///   <item><description><b>.ort</b> (marked by a <c>.use-ort</c> hint
+    ///     file). ORT's binary format — a different serializer that
+    ///     round-trips at every opt level. Reached either when the inline
+    ///     tier also fails to round-trip, or when its write fails outright,
+    ///     which is what a >2 GB graph does once the sidecar is gone
+    ///     (protobuf message limit). Embeds all initializers inline, so
+    ///     loads are slower for large graphs. Only used when
+    ///     needed.</description></item>
     ///   <item><description><b>No cache</b> (last resort, marked by a
     ///     <c>.cache-disabled</c> sentinel). Used when even <c>.ort</c>
     ///     can't round-trip. Stops the broken write→fail→delete cycle.
@@ -152,10 +166,10 @@ public static class OrtSessionBuilder
     /// </list>
     ///
     /// Convergence costs one extra cache miss per state transition: a
-    /// Loop-bearing graph takes 2 runs to reach a steady-state cache hit
-    /// (run 1: write .onnx → run 2: .onnx reload fails, escalate to .ort
-    /// hint, write .ort in the same call → run 3+: .ort cache HIT).
-    /// Most graphs stay on the .onnx path forever.
+    /// subgraph-bearing graph takes 2 runs to reach a steady-state cache hit
+    /// (run 1: write .onnx+sidecar → run 2: reload fails, escalate to the
+    /// inline hint and rewrite .onnx in the same call → run 3+: cache HIT).
+    /// Most graphs stay on tier 1 forever.
     ///
     /// Cache key (in the path stem) embeds EP, ORT version, and source-file
     /// mtime+size, so source changes or ORT upgrades automatically invalidate
@@ -216,12 +230,45 @@ public static class OrtSessionBuilder
         // (if any) exists alongside the actual cache file(s).
         string cachePathOnnx = cacheBase + ".onnx";   // primary cache (with _data sidecar)
         string cacheDataPath = cachePathOnnx + "_data";
-        string cachePathOrt = cacheBase + ".ort";     // fallback for Loop-bearing graphs
-        string useOrtHintPath = cacheBase + ".use-ort";       // ".onnx round-trip failed, escalate to .ort"
+        string cachePathOrt = cacheBase + ".ort";     // last-resort fallback for subgraph-bearing graphs
+        string noExtInitHintPath = cacheBase + ".no-ext-init"; // ".onnx+sidecar round-trip failed, write .onnx inline"
+        string useOrtHintPath = cacheBase + ".use-ort";       // ".onnx round-trip failed both ways, escalate to .ort"
         string cacheDisabledPath = cacheBase + ".cache-disabled"; // "both formats failed, skip caching"
 
         bool cacheDisabled = !bypassCache && File.Exists(cacheDisabledPath);
         bool useOrtFormat = !bypassCache && !cacheDisabled && File.Exists(useOrtHintPath);
+        // .use-ort wins if both hints are somehow present — it's the later
+        // (more conservative) state in the escalation order.
+        bool noExtInit = !bypassCache && !cacheDisabled && !useOrtFormat
+                         && File.Exists(noExtInitHintPath);
+
+        // One-time migration for caches written before issue #60 was
+        // understood. A .use-ort hint with no .no-ext-init beside it was
+        // written by the old two-tier ladder, which jumped straight to .ort on
+        // a failed .onnx round-trip. We now know the sidecar is the trigger and
+        // that the inline tier is both faster and smaller, so retry it once.
+        // Costs one cache miss. A graph that genuinely needs .ort re-escalates
+        // on its own — and the .no-ext-init hint left behind stops this from
+        // firing a second time.
+        if (useOrtFormat && !File.Exists(noExtInitHintPath))
+        {
+            try
+            {
+                File.WriteAllText(noExtInitHintPath, "");
+                File.Delete(useOrtHintPath);
+                useOrtFormat = false;
+                noExtInit = true;
+                try { if (File.Exists(cachePathOrt)) File.Delete(cachePathOrt); } catch { /* best-effort */ }
+                Console.WriteLine(
+                    $"[cache-format] {Path.GetFileName(cachePathOnnx)}: " +
+                    "retrying inline .onnx in place of the .ort fallback (see issue #60); one cache miss to converge.");
+            }
+            catch
+            {
+                // Couldn't rewrite the hints — leave the .ort path exactly as
+                // it was rather than half-migrating.
+            }
+        }
 
         if (cacheDisabled)
         {
@@ -264,48 +311,103 @@ public static class OrtSessionBuilder
                     try { File.WriteAllText(cacheDisabledPath, ""); } catch { /* best-effort */ }
                     cacheDisabled = true;
                 }
-                else
+                else if (noExtInit)
                 {
-                    // .onnx round-trip failed; escalate to .ort fallback.
-                    // useOrtFormat=true makes the fall-through cache-write
-                    // path emit .ort this run — so by the end of *this* call
-                    // the .ort file is on disk, and the very next call sees
-                    // a cache HIT instead of having to repeat the cycle.
+                    // Inline .onnx ALSO failed to round-trip; escalate to .ort.
+                    // Not observed for any graph we ship — the inline tier
+                    // fixes both known cases — but the rung exists so a new
+                    // graph with some third serializer defect still ends up
+                    // cached rather than re-optimized on every load.
                     Console.WriteLine(
                         $"[cache-format] {Path.GetFileName(cachePathOnnx)}: " +
-                        ".onnx round-trip failed (likely a Loop-subgraph graph); switching to .ort for this model (see issue #56).");
+                        "inline .onnx round-trip ALSO failed; switching to .ort for this model (see issue #60).");
                     try { File.Delete(cachePathOnnx); } catch { /* best-effort */ }
-                    try { File.Delete(cacheDataPath); } catch { /* best-effort */ }
                     try { File.WriteAllText(useOrtHintPath, ""); } catch { /* best-effort */ }
                     useOrtFormat = true;
+                }
+                else
+                {
+                    // .onnx + external-initializer sidecar failed to round-trip.
+                    // That combination is the actual ORT bug (issue #60): the
+                    // external-initializer writer appends a subgraph's
+                    // initializers to that subgraph a second time instead of
+                    // clearing first, so ORT rejects its own output with
+                    // "<name> initializer name is not unique". Dropping just
+                    // the sidecar entries fixes it — and is *faster* than the
+                    // .ort fallback, because the inline graph keeps pointing at
+                    // the source model's existing _data sidecar instead of
+                    // copying every weight into the cache file.
+                    //
+                    // noExtInit=true makes the fall-through cache-write path
+                    // re-emit .onnx inline this run — so by the end of *this*
+                    // call the usable cache is on disk and the next call HITs.
+                    Console.WriteLine(
+                        $"[cache-format] {Path.GetFileName(cachePathOnnx)}: " +
+                        ".onnx round-trip failed (subgraph-bearing graph); rewriting without the external-initializer sidecar (see issue #60).");
+                    try { File.Delete(cachePathOnnx); } catch { /* best-effort */ }
+                    try { File.Delete(cacheDataPath); } catch { /* best-effort */ }
+                    try { File.WriteAllText(noExtInitHintPath, ""); } catch { /* best-effort */ }
+                    noExtInit = true;
                 }
             }
         }
 
         // Cache miss (or bypass, or this-model-disabled): load source,
         // optimize, optionally save the result for next time.
-        var opts = Create(ep, optLevel, enableProfiling: false, out var freshUsedCuda, disableTf32);
-        usedCuda = freshUsedCuda;
-        if (!bypassCache && !cacheDisabled)
+        SessionOptions BuildWriteOptions(out bool cudaUsed)
         {
-            opts.OptimizedModelFilePath = useOrtFormat ? cachePathOrt : cachePathOnnx;
+            var o = Create(ep, optLevel, enableProfiling: false, out cudaUsed, disableTf32);
+            if (bypassCache || cacheDisabled)
+                return o;
+            o.OptimizedModelFilePath = useOrtFormat ? cachePathOrt : cachePathOnnx;
             if (useOrtFormat)
             {
                 // .ort embeds all initializers inline; no _data sidecar.
-                opts.AddSessionConfigEntry("session.save_model_format", "ORT");
+                o.AddSessionConfigEntry("session.save_model_format", "ORT");
             }
-            else
+            else if (!noExtInit)
             {
                 // For >2GB graphs, force the optimized weights to an external-data
                 // sidecar; otherwise the serializer hits protobuf's 2GB limit.
-                opts.AddSessionConfigEntry(
+                // Skipped on the inline tier — this sidecar is what trips the
+                // ORT subgraph-initializer bug (issue #60).
+                o.AddSessionConfigEntry(
                     "session.optimized_model_external_initializers_file_name",
                     Path.GetFileName(cacheDataPath));
-                opts.AddSessionConfigEntry(
+                o.AddSessionConfigEntry(
                     "session.optimized_model_external_initializers_min_size_in_bytes",
                     externalInitializersMinBytes.ToString());
             }
+            return o;
         }
+
+        if (noExtInit && !useOrtFormat)
+        {
+            // The inline tier is the one write that can fail on its own terms:
+            // without the sidecar, a graph whose optimized initializers exceed
+            // protobuf's 2 GB message limit can't serialize at all. Catch that
+            // and drop to .ort rather than surfacing a cache-write failure as a
+            // model-load failure.
+            var inlineOpts = BuildWriteOptions(out var inlineUsedCuda);
+            try
+            {
+                usedCuda = inlineUsedCuda;
+                return new InferenceSession(modelPath, inlineOpts);
+            }
+            catch (Exception ex)
+            {
+                inlineOpts.Dispose();
+                Console.WriteLine(
+                    $"[cache-format] {Path.GetFileName(cachePathOnnx)}: " +
+                    $"inline .onnx write failed ({ex.GetType().Name}); falling back to .ort for this model (see issue #60).");
+                try { File.Delete(cachePathOnnx); } catch { /* best-effort */ }
+                try { File.WriteAllText(useOrtHintPath, ""); } catch { /* best-effort */ }
+                useOrtFormat = true;
+            }
+        }
+
+        var opts = BuildWriteOptions(out var freshUsedCuda);
+        usedCuda = freshUsedCuda;
         return new InferenceSession(modelPath, opts);
     }
 
