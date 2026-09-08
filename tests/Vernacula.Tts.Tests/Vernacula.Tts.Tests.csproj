@@ -29,6 +29,10 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\Vernacula.Tts.Base\Vernacula.Tts.Base.csproj">
       <Private>true</Private>
+      <!-- Deliberate, not a straggler: this project is CPU-only (AllowCpuOnnxRuntime above),
+           so Base must be built for the CPU provider or its GPU native would land here and the
+           build guard in Directory.Build.targets would reject it. Contrast the probe projects
+           under scripts/, where the same metadata was redundant and was removed. -->
       <SetConfiguration>EP=Cpu</SetConfiguration>
     </ProjectReference>
   </ItemGroup>

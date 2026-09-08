@@ -136,14 +136,23 @@ internal partial class MainViewModel : ObservableObject
         // Home → Results (load a completed ASR job) / Reader (open a completed TTS job)
         Home.LoadJobToResults = job =>
         {
-            if (job.IsTts)
+            // Exhaustive on purpose: an `else` here would open a future job kind in the
+            // transcript view, which would look like a bug in that feature rather than a
+            // missing case here.
+            switch (job.Kind)
             {
-                TtsReader.Open(job);
-                CurrentPanel = AppPanel.TtsReader;
-                return;
+                case JobKind.Tts:
+                    TtsReader.Open(job);
+                    CurrentPanel = AppPanel.TtsReader;
+                    break;
+                case JobKind.Asr:
+                    Results.Load(job.ResultsFile, job.AudioBaseName, _mainWindow, job.JobId);
+                    CurrentPanel = AppPanel.Results;
+                    break;
+                default:
+                    throw new InvalidOperationException(
+                        $"No completed-job view for {job.Kind}. Add a case here and in MonitorJob.");
             }
-            Results.Load(job.ResultsFile, job.AudioBaseName, _mainWindow, job.JobId);
-            CurrentPanel = AppPanel.Results;
         };
 
         // Reader → Home (back) / cancel the watched job
@@ -219,14 +228,20 @@ internal partial class MainViewModel : ObservableObject
         // Home → Progress (monitor a running / queued ASR job) / Reader (a TTS job)
         Home.MonitorJob = job =>
         {
-            if (job.IsTts)
+            switch (job.Kind)
             {
-                TtsReader.Open(job);
-                CurrentPanel = AppPanel.TtsReader;
-                return;
+                case JobKind.Tts:
+                    TtsReader.Open(job);
+                    CurrentPanel = AppPanel.TtsReader;
+                    break;
+                case JobKind.Asr:
+                    Progress.WatchJob(job.JobId, job.ResultsFile, job.AudioFilePath, job.AudioBaseName);
+                    CurrentPanel = AppPanel.Progress;
+                    break;
+                default:
+                    throw new InvalidOperationException(
+                        $"No running-job view for {job.Kind}. Add a case here and in LoadJobToResults.");
             }
-            Progress.WatchJob(job.JobId, job.ResultsFile, job.AudioFilePath, job.AudioBaseName);
-            CurrentPanel = AppPanel.Progress;
         };
 
         // Home → Bulk enqueue multiple files with auto-generated names
@@ -409,7 +424,7 @@ internal partial class MainViewModel : ObservableObject
                 job.IsActivelyRunning = true;
                 job.ProgressPercent   = _queue.GetJobProgress(job.JobId);
 
-                if (job.IsTts)
+                if (job.Kind == JobKind.Tts)
                 {
                     if (_queue.GetTtsJobLastProgress(job.JobId) is { } tp)
                         ApplyTtsProgress(job.JobId, tp);

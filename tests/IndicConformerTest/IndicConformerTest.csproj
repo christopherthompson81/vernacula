@@ -31,6 +31,10 @@
            runtime in the output directory, so suppress Base's transitive
            EP selection by passing EP=Cpu down the build graph. -->
       <Private>true</Private>
+      <!-- Deliberate, not a straggler: this project is CPU-only (AllowCpuOnnxRuntime above),
+           so Base must be built for the CPU provider or its GPU native would land here and the
+           build guard in Directory.Build.targets would reject it. Contrast the probe projects
+           under scripts/, where the same metadata was redundant and was removed. -->
       <SetConfiguration>EP=Cpu</SetConfiguration>
     </ProjectReference>
   </ItemGroup>
