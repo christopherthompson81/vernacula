@@ -1286,6 +1286,11 @@ Same transcript, same speed, 7.6 GiB less. A 16 GB card running the 7B now has a
 left for cache, which is around an hour of audio rather than the full two — reported up front
 rather than as an allocation failure.
 
+Ten minutes of audio through the same 7B peaks at 12.31 GiB (RTF 0.148, 205 chunks, 188
+segments) — 9.03 for the weights, 2.36 for the working set, 1.35 for a cache sized to the
+recording rather than 7.0 for one sized to two hours. That file now fits on a 16 GB card with
+room to spare, where before it could not be started.
+
 ### What the runtime now decides
 
 `PlanKvTokens` sizes the buffer from the recording (`16 positions/second × 2.5`, the factor
