@@ -37,6 +37,13 @@
                       PrivateAssets="all" />
   </ItemGroup>
 
+  <!-- FfmpegAudioDecoder.DecodeInvocations is a test seam: it lets the audio-format
+       tests assert that PCM WAV stays on the in-process NAudio path instead of only
+       asserting that it decoded somehow. -->
+  <ItemGroup>
+    <InternalsVisibleTo Include="Vernacula.Tests" />
+  </ItemGroup>
+
   <ItemGroup>
     <PackageReference Include="NAudio"            Version="3.1.0" />
     <PackageReference Include="MathNet.Numerics"  Version="5.0.0" />

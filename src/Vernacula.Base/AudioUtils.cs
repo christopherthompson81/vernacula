@@ -215,41 +215,66 @@ public static class AudioUtils
     // ── Audio I/O (NAudio only) ──────────────────────────────────────────────
 
     /// <summary>
-    /// Read an audio file via NAudio. Returns interleaved float samples in [-1, 1], the
-    /// sample rate, and the channel count.
+    /// Read an audio file. Returns interleaved float samples in [-1, 1], the sample rate,
+    /// and the channel count, all in the file's native layout.
     /// <para>
-    /// ⚠ PCM AND IEEE-FLOAT WAV ONLY, ON EVERY PLATFORM. This used to claim "WAV, MP3,
-    /// FLAC, M4A, OGG, AAC" and that was only ever true on Windows: those decoders are
-    /// MediaFoundation and ACM P/Invokes living in NAudio.WinMM/NAudio.Wasapi, which
-    /// NAudio 3 hands only to a Windows target framework — this project is net10.0, so
-    /// AudioFileReader now throws NotSupportedException for them. (Under NAudio 2.3.0 a
-    /// net10.0 resolve still received those assemblies, so they worked here on Windows and
-    /// threw on Linux.) #156 tracks routing the rest through ffmpeg, which would fix Linux
-    /// too rather than restoring a Windows-only path.
+    /// PCM and IEEE-float WAV are read in-process by NAudio. Everything else — MP3, FLAC,
+    /// M4A, AAC, OGG, Opus, non-PCM WAV (mu-law, A-law, ADPCM), video containers — is
+    /// decoded by shelling out to FFmpeg via <see cref="FfmpegAudioDecoder"/>, which needs
+    /// FFmpeg on PATH (already a documented prerequisite; see README.md).
     /// </para>
     /// <para>
-    /// For video containers or FFmpeg-only formats use the Avalonia-side ReadAudio overload.
+    /// ⚠ THE FFMPEG PATH IS NOT A WINDOWS FALLBACK — IT IS THE ONLY PATH FOR THESE FORMATS
+    /// ON EVERY PLATFORM. The MP3/FLAC/M4A/AAC and non-PCM-WAV decoders are MediaFoundation
+    /// and ACM P/Invokes living in NAudio.WinMM/NAudio.Wasapi, which NAudio 3 ships only to
+    /// a Windows target framework. This project is net10.0, so it has none of them on any
+    /// host. Under NAudio 2.3.0 a net10.0 resolve still received those assemblies, so these
+    /// formats worked here on Windows and threw on Linux; that asymmetry is what #156
+    /// removed, by giving both platforms the FFmpeg route rather than restoring a
+    /// Windows-only one.
+    /// </para>
+    /// <para>
+    /// To pick a specific audio stream out of a multi-stream file, call
+    /// <see cref="FfmpegAudioDecoder.Decode"/> directly.
     /// </para>
     /// </summary>
     public static (float[] samples, int sampleRate, int channels) ReadAudio(string path)
     {
-        if (!OperatingSystem.IsWindows() &&
-            string.Equals(Path.GetExtension(path), ".wav", StringComparison.OrdinalIgnoreCase))
+        if (string.Equals(Path.GetExtension(path), ".wav", StringComparison.OrdinalIgnoreCase))
         {
-            using var wavReader = new WaveFileReader(path);
-            ISampleProvider sampleProvider = wavReader.ToSampleProvider();
-            int wavSampleRate = sampleProvider.WaveFormat.SampleRate;
-            int wavChannels = sampleProvider.WaveFormat.Channels;
-
-            var wavSamples = new List<float>(wavSampleRate * wavChannels * 10);
-            var wavBuffer = new float[8192];
-            int wavRead;
-            while ((wavRead = sampleProvider.Read(wavBuffer)) > 0)
-                for (int i = 0; i < wavRead; i++) wavSamples.Add(wavBuffer[i]);
-
-            return (wavSamples.ToArray(), wavSampleRate, wavChannels);
+            try
+            {
+                return ReadPcmWav(path);
+            }
+            catch (Exception ex) when (ex is NotSupportedException or FormatException or InvalidDataException)
+            {
+                // A .wav that isn't PCM/IEEE-float — mu-law, A-law, ADPCM, or an MP3 in a
+                // WAV container. Decoding those is ACM's job and the cross-platform NAudio
+                // has no ACM, so hand it to FFmpeg like any other compressed format.
+                try
+                {
+                    return FfmpegAudioDecoder.Decode(path);
+                }
+                catch (Exception ffmpegEx)
+                {
+                    // ⚠ CARRY THE NAUDIO FAILURE FORWARD. This catch is deliberately wide
+                    // enough to include FormatException/InvalidDataException, which a
+                    // *corrupt or truncated* PCM WAV raises too — not just a non-PCM one.
+                    // Reporting only the ffmpeg error there would hide the fact that the
+                    // file was rejected as a WAV first, which is usually the real diagnosis.
+                    throw new InvalidOperationException(
+                        $"Could not read '{Path.GetFileName(path)}'. NAudio rejected it as WAV "
+                        + $"({ex.GetType().Name}: {ex.Message}), and the FFmpeg fallback also "
+                        + $"failed: {ffmpegEx.Message}", ffmpegEx);
+                }
+            }
         }
 
+        return FfmpegAudioDecoder.Decode(path);
+    }
+
+    private static (float[] samples, int sampleRate, int channels) ReadPcmWav(string path)
+    {
         using var reader = new AudioFileReader(path);
         int sampleRate = reader.WaveFormat.SampleRate;
         int channels   = reader.WaveFormat.Channels;
