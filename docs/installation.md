@@ -5,7 +5,11 @@ Vernacula runs on Linux, macOS, and Windows. The desktop app and CLI share the s
 ## Prerequisites
 
 - [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0)
-- FFmpeg libraries (`libavformat`, `libavcodec`, `libavutil`, `libswresample`, `libswscale`)
+- FFmpeg, both parts of it:
+  - the **libraries** (`libavformat`, `libavcodec`, `libavutil`, `libswresample`, `libswscale`), used in-process by the desktop app
+  - the **`ffmpeg` executable on `PATH`**, used by the CLI tools to decode anything that is not PCM/IEEE-float WAV (MP3, FLAC, M4A, AAC, OGG, Opus, mu-law/A-law/ADPCM WAV)
+
+  A distro package or a Homebrew install gives you both. A libraries-only install builds and runs the desktop app but leaves the CLIs unable to read compressed audio.
 - **For GPU acceleration:** NVIDIA GPU with the **CUDA 13** runtime installed (Linux/Windows), or DirectML support (Windows)
 
 > ⚠ **CUDA 13, not 12.** The bundled ONNX Runtime (1.29) links `libcudart.so.13` / `cudart64_13.dll`;
@@ -30,7 +34,7 @@ sudo apt install ffmpeg
 sudo dnf install ffmpeg
 ```
 
-On macOS, install FFmpeg via Homebrew (`brew install ffmpeg`). On Windows, install the FFmpeg shared libraries and ensure they are on `PATH`.
+On macOS, install FFmpeg via Homebrew (`brew install ffmpeg`), which provides the libraries and the executable together. On Windows, install an FFmpeg build that contains both the shared libraries and `ffmpeg.exe`, and ensure the directory holding them is on `PATH` — a libraries-only package leaves the CLI tools unable to decode compressed audio.
 
 ## Linux desktop installer
 

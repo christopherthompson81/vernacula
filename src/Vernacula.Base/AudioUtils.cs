@@ -251,7 +251,22 @@ public static class AudioUtils
                 // A .wav that isn't PCM/IEEE-float — mu-law, A-law, ADPCM, or an MP3 in a
                 // WAV container. Decoding those is ACM's job and the cross-platform NAudio
                 // has no ACM, so hand it to FFmpeg like any other compressed format.
-                return FfmpegAudioDecoder.Decode(path);
+                try
+                {
+                    return FfmpegAudioDecoder.Decode(path);
+                }
+                catch (Exception ffmpegEx)
+                {
+                    // ⚠ CARRY THE NAUDIO FAILURE FORWARD. This catch is deliberately wide
+                    // enough to include FormatException/InvalidDataException, which a
+                    // *corrupt or truncated* PCM WAV raises too — not just a non-PCM one.
+                    // Reporting only the ffmpeg error there would hide the fact that the
+                    // file was rejected as a WAV first, which is usually the real diagnosis.
+                    throw new InvalidOperationException(
+                        $"Could not read '{Path.GetFileName(path)}'. NAudio rejected it as WAV "
+                        + $"({ex.GetType().Name}: {ex.Message}), and the FFmpeg fallback also "
+                        + $"failed: {ffmpegEx.Message}", ffmpegEx);
+                }
             }
         }
 

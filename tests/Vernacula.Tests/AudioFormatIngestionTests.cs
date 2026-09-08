@@ -95,13 +95,35 @@ public class AudioFormatIngestionTests : IDisposable
 
     // ── The in-process path: PCM WAV never needed ffmpeg and still must not use it ──
 
+    /// <summary>
+    /// Run <paramref name="read"/> and assert it never reached ffmpeg.
+    /// <para>
+    /// ⚠ THE DELTA IS THE POINT. Asserting only that the tone decoded would pass
+    /// identically if ReadAudio started routing every WAV through the subprocess —
+    /// which is the regression these two tests exist to catch. Watching the decode
+    /// counter is what makes them load-bearing. Safe against xunit's parallelism:
+    /// this is the only class in the assembly that decodes audio, and xunit runs the
+    /// tests within one class sequentially.
+    /// </para>
+    /// </summary>
+    private static void AssertReadWithoutFfmpeg(Func<(float[], int, int)> read, int expectedChannels = 1)
+    {
+        int before = FfmpegAudioDecoder.DecodeInvocations;
+        var got = read();
+        int after = FfmpegAudioDecoder.DecodeInvocations;
+
+        Assert.True(before == after,
+            $"expected the in-process NAudio path, but ffmpeg was invoked {after - before} time(s)");
+        AssertDecodedTone(got, expectedChannels);
+    }
+
     [Fact]
     public void PcmWav_ReadsWithoutFfmpeg()
     {
         RequireFfmpeg();  // only to build the fixture
         string path = MakeFixture("tone_pcm16.wav", "-acodec", "pcm_s16le");
 
-        AssertDecodedTone(AudioUtils.ReadAudio(path));
+        AssertReadWithoutFfmpeg(() => AudioUtils.ReadAudio(path));
     }
 
     [Fact]
@@ -110,7 +132,7 @@ public class AudioFormatIngestionTests : IDisposable
         RequireFfmpeg();
         string path = MakeFixture("tone_f32.wav", "-acodec", "pcm_f32le");
 
-        AssertDecodedTone(AudioUtils.ReadAudio(path));
+        AssertReadWithoutFfmpeg(() => AudioUtils.ReadAudio(path));
     }
 
     /// <summary>Native rate and channel count survive; ReadAudio must not resample or downmix.</summary>
@@ -143,6 +165,29 @@ public class AudioFormatIngestionTests : IDisposable
     }
 
     /// <summary>
+    /// The reported sample rate must be the DECODER's, not the source file's.
+    /// <para>
+    /// Opus always decodes at 48 kHz whatever went in, so a 44.1 kHz tone encoded to
+    /// Opus and read back must report 48000. An earlier draft took the rate from a
+    /// separate ffprobe call, which can disagree with what ffmpeg actually emits -
+    /// implicit-SBR HE-AAC being the case that silently doubles it. This build has no
+    /// HE-AAC encoder (no libfdk_aac), so that exact case is not covered here; this
+    /// pins the general property that rate follows the decoder.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void Opus_ReportsTheDecoderSampleRateNotTheSourceRate()
+    {
+        RequireFfmpeg();
+        Assert.NotEqual(48000, SourceRate);  // the test is meaningless if these match
+        string path = MakeFixture("tone_rate.opus", "-c:a", "libopus");
+
+        var got = AudioUtils.ReadAudio(path);
+        Assert.Equal(48000, got.sampleRate);
+        AssertDecodedTone(got);
+    }
+
+    /// <summary>
     /// A .wav that isn't PCM. The extension sends it down the NAudio path first, which
     /// throws, and it has to land on ffmpeg rather than propagating the exception.
     /// </summary>
@@ -155,7 +200,11 @@ public class AudioFormatIngestionTests : IDisposable
         RequireFfmpeg();
         string path = MakeFixture(fileName, "-acodec", codec);
 
-        AssertDecodedTone(AudioUtils.ReadAudio(path));
+        int before = FfmpegAudioDecoder.DecodeInvocations;
+        var got = AudioUtils.ReadAudio(path);
+        Assert.True(FfmpegAudioDecoder.DecodeInvocations > before,
+            "a non-PCM .wav should have fallen through to ffmpeg");
+        AssertDecodedTone(got);
     }
 
     // ── Failure modes should say something useful ──
