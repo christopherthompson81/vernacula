@@ -56,12 +56,16 @@ They differ far more in speaker attribution than in transcription accuracy:
 
 | | VRAM | Speed | Speaker labels |
 |---|---|---|---|
-| **1.5B** | about 7.4 GB | roughly 2x real time on an RTX 3090 | Weaker. On a two-person interview it labelled every turn as one speaker. |
-| **7B** | about 15.7 GB | roughly half the 1.5B's speed | Reliable. It separated the same interview correctly and held both labels across a 30-minute recording. |
+| **1.5B** | about 5 GB, plus 1.6 GB an hour of audio | roughly 2x real time on an RTX 3090 | Weaker. On a two-person interview it labelled every turn as one speaker. |
+| **7B** | about 12 GB, plus 3.1 GB an hour of audio | roughly half the 1.5B's speed | Reliable. It separated the same interview correctly and held both labels across a 30-minute recording. |
 
 Pick the 1.5B when you want a transcript and the speaker labels are incidental, or when the
-card is small. Pick the 7B when who-said-what matters. A warning appears under the picker if
-the selected checkpoint needs more memory than the detected GPU reports.
+card is small. Pick the 7B when who-said-what matters.
+
+The second VRAM figure is the model's memory of the recording so far, which is how it tracks
+who is speaking; it is allocated for the file in front of it, so a five-minute file costs a
+fraction of an hour-long one. A warning appears under the picker when the detected GPU cannot
+hold the checkpoint, or when it can hold it but not for the full recording length.
 
 The two install into separate folders, so switching between them does not re-download the one
 you already have.
@@ -78,8 +82,9 @@ cheering". Rename or merge it in the editor like any other speaker.
 Recording length is capped rather than unlimited. The model keeps its whole context — that is
 how it tracks who is speaking without a separate diarizer — so each package is built with a
 ceiling set to the checkpoint's trained context: about **68 minutes** for the 1.5B and about
-**2 hours** for the 7B. A longer file is refused up front with a message naming the limit,
-instead of failing partway through. Note that speed tapers as the context fills, so the last
+**2 hours** for the 7B. A smaller card lowers that further, because the memory of the
+recording has to fit alongside the model. Either way a file that is too long is refused up
+front with a message naming the length that would fit, instead of failing partway through. Note that speed tapers as the context fills, so the last
 minutes of a very long recording decode more slowly than the first.
 
 ### IndicConformer language selection

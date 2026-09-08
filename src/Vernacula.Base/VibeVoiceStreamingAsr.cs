@@ -46,6 +46,14 @@ public sealed class VibeVoiceStreamingAsr : IDisposable
     private readonly int  _vocabSize;
     private readonly bool _encoderWantsFloat16;
 
+    /// <summary>
+    /// The buffer length the decoder graph *requires*, or 0 when it declares the length
+    /// symbolically and the runtime may choose. Packages exported before issue #150 baked the
+    /// ceiling into the graph, and ORT rejects any other size outright, so they keep the old
+    /// behaviour of paying for the whole ceiling on every run.
+    /// </summary>
+    private readonly int _fixedKvTokens;
+
     /// <summary>Longest recording this package can transcribe, from its cache ceiling.</summary>
     public double MaxAudioSeconds => _maxKvTokens / PositionsPerSecond;
 
@@ -53,11 +61,111 @@ public sealed class VibeVoiceStreamingAsr : IDisposable
     /// Cache positions consumed per second of audio. Each hop contributes its frames, the two
     /// speech markers, the chunk-end token and the text generated for it; only the last varies,
     /// with speech density. Measured at ~16.0 (Run 14), against a floor of ~9.9 for audio with
-    /// no speech at all. Used only to refuse an obviously-too-long recording before any work:
-    /// dense speech can still exhaust the cache mid-run, which <see cref="Step"/> reports, and
-    /// a very sparse recording may be refused slightly early.
+    /// no speech at all.
     /// </summary>
     private const double PositionsPerSecond = 16.0;
+
+    /// <summary>
+    /// How much of the estimate to allocate. The estimate is an average and the buffer cannot
+    /// grow once the run starts, so a recording denser than average would otherwise fail
+    /// part-way through -- which costs the whole job. 2.5x the measured 16.0 clears the
+    /// theoretical fixed floor of 9.9 with room for far more text than any measured file
+    /// produced, and costs nothing on a card that has the memory anyway.
+    /// </summary>
+    private const double KvSafetyFactor = 2.5;
+
+    /// <summary>Prompt, hotwords, and the rounding on the last partial window.</summary>
+    private const int PromptPositionSlack = 512;
+
+    /// <summary>Never allocate a cache too small to hold the prompt and a few windows.</summary>
+    private const int MinKvTokens = 2048;
+
+    /// <summary>
+    /// Device memory one cached position costs: a key and a value, every layer, float16.
+    /// 28 KiB for the 1.5B, 56 KiB for the 7B.
+    /// </summary>
+    public long KvBytesPerPosition => (long)_numLayers * 2 * _numKvHeads * _headDim * 2;
+
+    /// <summary>
+    /// Device memory the run needs beyond the weights and the cache: ONNX Runtime's CUDA arena,
+    /// the encoder's activations for one window, and the logits buffer. Measured against the
+    /// published packages at 1.39 GiB (1.5B) and 2.36 GiB (7B) — Run 34 — so it scales with the
+    /// decoder's hidden size, and this rounds up on both rather than sailing close.
+    /// </summary>
+    public long WorkingSetBytes => (1L << 30) + (long)_hiddenSize * 512 * 1024;
+
+    /// <summary>
+    /// Cache positions to allocate for a recording of <paramref name="audioSeconds"/>, and the
+    /// reason if none will do.
+    ///
+    /// The cache used to be allocated at the export's ceiling on every run. That ceiling exists
+    /// so a two-hour recording *can* be transcribed, and paying it up front costs 7.0 GiB on the
+    /// 7B — enough on its own to put a 16 GB card over the line before a frame is encoded, for a
+    /// one-minute file (issue #150). So the buffer is sized to the recording in hand and only
+    /// then clamped to what the card has free.
+    ///
+    /// The estimate is <see cref="PositionsPerSecond"/>, an average; <see cref="KvSafetyFactor"/>
+    /// covers speech denser than average, and running out anyway is reported by <see cref="Step"/>.
+    /// </summary>
+    private int ChooseKvTokens(double audioSeconds)
+    {
+        var (_, freeMb) = HardwareInfo.GetGpuMemoryMb();
+        return PlanKvTokens(audioSeconds, _maxKvTokens, _fixedKvTokens, KvBytesPerPosition,
+                            WorkingSetBytes, freeMb > 0 ? freeMb * 1024L * 1024L : 0);
+    }
+
+    /// <summary>
+    /// The arithmetic behind <see cref="ChooseKvTokens"/>, separated from the model so it can be
+    /// driven directly by tests: every branch here is a refusal or a clamp that is otherwise only
+    /// reachable with a particular card and a particular recording in front of you.
+    /// </summary>
+    /// <param name="freeBytes">Free device memory, or 0 when NVML could not say.</param>
+    /// <param name="fixedKvTokens">
+    ///   The length the graph insists on, or 0 when the runtime may choose.
+    /// </param>
+    internal static int PlanKvTokens(
+        double audioSeconds, int maxKvTokens, int fixedKvTokens, long kvBytesPerPosition,
+        long workingSetBytes, long freeBytes)
+    {
+        // The prompt, its hotwords, and the rounding on the last partial window all sit outside
+        // the per-second estimate.
+        long needed = (long)Math.Ceiling(audioSeconds * PositionsPerSecond) + PromptPositionSlack;
+        if (needed > maxKvTokens)
+            throw new InvalidOperationException(
+                $"Recording is about {audioSeconds / 60:F1} minutes, which is estimated to need " +
+                $"more than this model's {maxKvTokens}-position cache (about " +
+                $"{maxKvTokens / PositionsPerSecond / 60:F0} minutes of audio). Re-export with a " +
+                "larger --max-tokens, or split the recording.");
+
+        long want = fixedKvTokens > 0
+            ? fixedKvTokens
+            // Math.Min on the floor as well: a package exported with a ceiling below the floor
+            // would otherwise reach Math.Clamp with min above max, which throws.
+            : Math.Clamp((long)(needed * KvSafetyFactor), Math.Min(MinKvTokens, maxKvTokens), maxKvTokens);
+        if (freeBytes <= 0)
+            return (int)want;   // No NVML answer: size to the recording and let ORT complain.
+
+        long budget     = freeBytes - workingSetBytes;
+        long affordable = budget > 0 ? budget / kvBytesPerPosition : 0;
+        // A graph with a baked-in length has to have all of it; one that lets us choose only
+        // has to cover the recording.
+        long required = fixedKvTokens > 0 ? fixedKvTokens : needed;
+        if (affordable < required)
+            throw new InvalidOperationException(
+                $"Not enough free GPU memory for a {audioSeconds / 60:F1}-minute recording: its " +
+                $"cache needs about {required * kvBytesPerPosition / (double)(1L << 30):F1} GiB and " +
+                $"{Math.Max(0, budget) / (double)(1L << 30):F1} GiB is free once the model and its " +
+                "working set are accounted for. " +
+                (fixedKvTokens > 0
+                    ? "This package was exported with a fixed cache length, so it pays for its "
+                    + "whole context on every run; re-download it to have the cache sized to the "
+                    + "recording instead."
+                    : $"About {affordable / PositionsPerSecond / 60:F0} minutes would fit right "
+                    + "now — close other GPU applications, use the 1.5B checkpoint, or split the "
+                    + "recording."));
+
+        return (int)Math.Min(want, affordable);
+    }
 
     // Streaming constants from export-report.json["streaming"]
     public int SampleRate     { get; }
@@ -119,6 +227,11 @@ public sealed class VibeVoiceStreamingAsr : IDisposable
         _encoderWantsFloat16 =
             _audioEncoder.InputMetadata.TryGetValue("input_values", out var encMeta)
             && encMeta.ElementDataType == TensorElementType.Float16;
+        _fixedKvTokens =
+            _decoder.InputMetadata.TryGetValue("past_key_0", out var kvMeta)
+            && kvMeta.Dimensions.Length == 4 && kvMeta.Dimensions[2] > 0
+                ? kvMeta.Dimensions[2]
+                : 0;
     }
 
     /// <summary>
@@ -142,13 +255,7 @@ public sealed class VibeVoiceStreamingAsr : IDisposable
         int totalChunks = audio.Length == 0 ? 0 : (audio.Length + HopSamples - 1) / HopSamples;
         var chunks = new List<VibeVoiceStreamingChunk>(totalChunks);
 
-        double estimated = audio.Length / (double)SampleRate * PositionsPerSecond;
-        if (estimated > _maxKvTokens)
-            throw new InvalidOperationException(
-                $"Recording is about {audio.Length / (double)SampleRate / 60:F1} minutes, which is " +
-                $"estimated to need more than this model's {_maxKvTokens}-position cache " +
-                $"(about {MaxAudioSeconds / 60:F0} minutes of audio). Re-export with a larger " +
-                "--max-tokens, or split the recording.");
+        int kvTokens = ChooseKvTokens(audio.Length / (double)SampleRate);
 
         // The cache must live on the device. Allocating it from OrtAllocator.DefaultInstance
         // puts it in host memory, and every step then copies the whole buffer both ways --
@@ -172,7 +279,7 @@ public sealed class VibeVoiceStreamingAsr : IDisposable
         using var ownedAlloc = deviceAlloc;
         using var binding    = _decoder.CreateIoBinding();
         using var runOptions = new RunOptions();
-        var kvBuffers = CreateSharedKvBuffers(deviceAlloc);
+        var kvBuffers = CreateSharedKvBuffers(deviceAlloc, kvTokens);
         long kvPos    = 0;
         var window  = new float[WindowSamples];
         var emptyAudio = Array.Empty<Float16>();
@@ -183,7 +290,7 @@ public sealed class VibeVoiceStreamingAsr : IDisposable
             long[] prompt = hotwordTokenIds is { Length: > 0 }
                 ? [.. _promptHotwordsHeadIds, .. hotwordTokenIds, .. _promptTailIds]
                 : _promptTokenIds;
-            Step(prompt, emptyAudio, 0, emptyIds, kvBuffers, ref kvPos, binding, runOptions, false);
+            Step(prompt, emptyAudio, 0, emptyIds, kvBuffers, kvTokens, ref kvPos, binding, runOptions, false);
 
             // 2 — one window per hop, zero-padded at the end of the recording
             for (int ci = 0; ci < totalChunks; ci++)
@@ -197,7 +304,7 @@ public sealed class VibeVoiceStreamingAsr : IDisposable
                 int numFrames = frames.Length / _hiddenSize;
 
                 long next = Step([_speechStartId], frames, numFrames, [_speechEndId],
-                                 kvBuffers, ref kvPos, binding, runOptions, false).token;
+                                 kvBuffers, kvTokens, ref kvPos, binding, runOptions, false).token;
                 var ids = new List<long>();
                 // Only collected when asked for: the second pass over the vocabulary costs a
                 // Math.Exp per entry. Left empty otherwise rather than filled with NaN, so a
@@ -207,11 +314,11 @@ public sealed class VibeVoiceStreamingAsr : IDisposable
                 {
                     if (next == _textChunkEndId || next == _eosTokenId) break;
                     ids.Add(next);
-                    var (tok, lp) = Step([next], emptyAudio, 0, emptyIds, kvBuffers, ref kvPos, binding, runOptions, computeLogprobs);
+                    var (tok, lp) = Step([next], emptyAudio, 0, emptyIds, kvBuffers, kvTokens, ref kvPos, binding, runOptions, computeLogprobs);
                     logprobs?.Add(lp);
                     next = tok;
                 }
-                Step([_textChunkEndId], emptyAudio, 0, emptyIds, kvBuffers, ref kvPos, binding, runOptions, false);
+                Step([_textChunkEndId], emptyAudio, 0, emptyIds, kvBuffers, kvTokens, ref kvPos, binding, runOptions, false);
 
                 var (chunkText, tokenCharEnds) = DecodeWithOffsets(ids);
                 var chunk = new VibeVoiceStreamingChunk(
@@ -377,13 +484,14 @@ public sealed class VibeVoiceStreamingAsr : IDisposable
     // ── Decoder ───────────────────────────────────────────────────────────────
 
     /// <summary>
-    /// One device tensor per layer per side, allocated once at the export's ceiling and never
-    /// resized. Each is bound as BOTH past_key_i and present_key_i so GroupQueryAttention
-    /// writes the new keys in place instead of producing a larger tensor every step.
+    /// One device tensor per layer per side, allocated once at the size
+    /// <see cref="ChooseKvTokens"/> settled on and never resized. Each is bound as BOTH
+    /// past_key_i and present_key_i so GroupQueryAttention writes the new keys in place
+    /// instead of producing a larger tensor every step.
     /// </summary>
-    private OrtValue[] CreateSharedKvBuffers(OrtAllocator allocator)
+    private OrtValue[] CreateSharedKvBuffers(OrtAllocator allocator, int kvTokens)
     {
-        long[] shape = [1, _numKvHeads, _maxKvTokens, _headDim];
+        long[] shape = [1, _numKvHeads, kvTokens, _headDim];
         var kvs = new OrtValue[_numLayers * 2];
         for (int i = 0; i < kvs.Length; i++)
             kvs[i] = OrtValue.CreateAllocatedTensorValue(allocator, TensorElementType.Float16, shape);
@@ -397,15 +505,18 @@ public sealed class VibeVoiceStreamingAsr : IDisposable
     /// </summary>
     private (long token, float logprob) Step(
         long[] prefixIds, Float16[] audioData, int audioCount, long[] suffixIds,
-        OrtValue[] kvBuffers, ref long kvPos, OrtIoBinding binding, RunOptions runOptions,
-        bool wantLogprob)
+        OrtValue[] kvBuffers, int kvCapacity, ref long kvPos, OrtIoBinding binding,
+        RunOptions runOptions, bool wantLogprob)
     {
         int seqLen = prefixIds.Length + audioCount + suffixIds.Length;
         long total = kvPos + seqLen;
-        if (total > _maxKvTokens)
+        if (total > kvCapacity)
             throw new InvalidOperationException(
-                $"KV cache full: {total} positions needed, ceiling is {_maxKvTokens}. " +
-                $"This package handles about {MaxAudioSeconds / 60:F0} minutes of audio.");
+                $"KV cache full: {total} positions needed, {kvCapacity} allocated. This recording " +
+                $"holds more speech than the {PositionsPerSecond:F0}-positions-per-second estimate " +
+                (kvCapacity < _maxKvTokens
+                    ? "and the free GPU memory allowed for; close other GPU applications or split the recording."
+                    : $"allowed for; this package handles about {MaxAudioSeconds / 60:F0} minutes of audio."));
 
         binding.ClearBoundInputs();
         binding.ClearBoundOutputs();
