@@ -126,7 +126,7 @@ Question: is the ORT bug PR #59 worked around still live upstream, and is
 the root cause in issue #56/#60 stated correctly? Cloned upstream ORT to
 `~/Programming/onnxruntime` (shallow, HEAD `bb331b7`) and built a probe
 matrix against ORT 1.23.2 / 1.24.4 / 1.29.0 (`onnxruntime-gpu` wheels in
-`/mnt/data/ort-loop-repro/venv-gpu-*`).
+per-version venvs, since deleted).
 
 First attempt reproduced **nothing**. The real
 `conditional_decoder_loop.onnx` round-tripped cleanly:
@@ -181,7 +181,9 @@ fine.
 
 ## Run 6 — 2026-09-08 09:10 — Minimal reproducer
 
-`/mnt/data/ort-loop-repro/make_minimal_extinit.py` builds a ~4 MB graph
+A generator script (since deleted along with the rest of the scratch tree — the
+shape is fully described here, and upstream carries its own reproducer) builds
+a ~4 MB graph
 with the two features that matter:
 
 - a Loop body owning a **small** initializer (below the 1 MB threshold, so
@@ -405,3 +407,21 @@ open — it's about reporting the bug upstream, and the upstream defect
 (missing `clear_initializer()` in `AddExternalInitializersToGraphProtoImpl`,
 Run 8) is untouched by any of this. What changed is that we no longer pay
 for it.
+
+## Outcome — 2026-09-08 11:55
+
+Upstream already had it. [microsoft/onnxruntime#32474](https://github.com/microsoft/onnxruntime/pull/32474)
+was opened roughly 90 minutes before I went to file, with a character-identical
+`graph.cc` change (same two `clear_*` calls, same `DISABLE_SPARSE_TENSORS`
+guard) reached from the other trigger path — `onnx.save(save_as_external_data=True)`,
+whose symptom is a data-location error rather than "initializer name is not
+unique". Corroborating detail posted as a comment there rather than duplicating
+it as a new issue; nothing of ours was filed.
+
+Issue #60 closed. PR #153 means a fixed upstream writer would gain us nothing
+anyway: the inline `.onnx` tier is faster than the sidecar path it replaced.
+
+The scratch tree (`/mnt/data/ort-loop-repro`, `/mnt/data/ort-build`, the ORT
+source clone) was deleted once the upstream fix was confirmed in flight. Every
+finding above is reproducible from the descriptions here; nothing depended on
+those files surviving.
