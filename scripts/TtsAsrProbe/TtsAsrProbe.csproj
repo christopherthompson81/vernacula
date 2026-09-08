@@ -26,10 +26,8 @@
     <!-- No SetConfiguration: EP is a global property that already reaches every referenced
          project with the same value. Overriding it per reference builds Base twice and lets
          restore and build disagree about which runtime package applies. -->
-    <ProjectReference Include="..\..\src\Vernacula.Tts.Base\Vernacula.Tts.Base.csproj">
-    </ProjectReference>
-    <ProjectReference Include="..\..\src\Vernacula.Base\Vernacula.Base.csproj">
-    </ProjectReference>
+    <ProjectReference Include="..\..\src\Vernacula.Tts.Base\Vernacula.Tts.Base.csproj" />
+    <ProjectReference Include="..\..\src\Vernacula.Base\Vernacula.Base.csproj" />
   </ItemGroup>
 
 </Project>
