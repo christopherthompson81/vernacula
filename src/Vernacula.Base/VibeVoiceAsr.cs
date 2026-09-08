@@ -323,7 +323,7 @@ public sealed class VibeVoiceAsr : IDisposable
         var outList   = new List<float>((int)((long)mono.Length * SampleRate / sampleRate + 1024));
         var outBuffer = new float[8192];
         int read;
-        while ((read = resampler.Read(outBuffer, 0, outBuffer.Length)) > 0)
+        while ((read = resampler.Read(outBuffer)) > 0)
             for (int i = 0; i < read; i++) outList.Add(outBuffer[i]);
 
         return outList.ToArray();

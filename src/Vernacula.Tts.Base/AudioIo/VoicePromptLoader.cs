@@ -38,7 +38,7 @@ public static class VoicePromptLoader
             var outList = new List<float>((int)((long)mono.Length * ChatterboxConstants.S3GenSr / sr + 1024));
             var buf = new float[8192];
             int n;
-            while ((n = resampler.Read(buf, 0, buf.Length)) > 0)
+            while ((n = resampler.Read(buf)) > 0)
                 for (int i = 0; i < n; i++) outList.Add(buf[i]);
             at24k = outList.ToArray();
         }
@@ -62,12 +62,12 @@ public static class VoicePromptLoader
         private int _pos;
         public FloatArraySampleProvider(float[] data, WaveFormat fmt) { _data = data; WaveFormat = fmt; }
         public WaveFormat WaveFormat { get; }
-        public int Read(float[] buffer, int offset, int count)
+        public int Read(Span<float> buffer)
         {
             int remain = _data.Length - _pos;
-            int take = Math.Min(remain, count);
+            int take = Math.Min(remain, buffer.Length);
             if (take <= 0) return 0;
-            Array.Copy(_data, _pos, buffer, offset, take);
+            _data.AsSpan(_pos, take).CopyTo(buffer);
             _pos += take;
             return take;
         }

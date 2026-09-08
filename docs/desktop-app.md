@@ -53,8 +53,17 @@ Built with [Avalonia UI](https://avaloniaui.net/) — runs on any desktop enviro
 
 ```bash
 cd src/Vernacula.Avalonia
-dotnet run
+
+# Windows — native WinMM audio output, no external player needed
+dotnet run -f net10.0-windows
+
+# Linux / macOS — playback goes through ffplay
+dotnet run -f net10.0
 ```
+
+`-f` is required because the desktop app targets two frameworks. NAudio 3 hands the
+Windows audio backend (`WaveOut`) only to a Windows target framework, so `net10.0-windows`
+is what carries native playback; `net10.0` is the portable build and uses `ffplay`.
 
 For packaged installs on Linux, see [Installation](installation.md). For custom build configurations, see [Building from source](building.md).
 

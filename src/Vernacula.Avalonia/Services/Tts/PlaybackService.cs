@@ -4,6 +4,11 @@ using System.IO;
 using System.Threading.Channels;
 using System.Threading.Tasks;
 using Avalonia.Threading;
+// NAudio.Wave SPANS TWO PACKAGES IN NAudio 3. BufferedWaveProvider, AudioFileReader and
+// WaveFormat live in NAudio.Core and resolve on every target framework; WaveOut lives
+// in NAudio.WinMM, which ships net9.0-windows7.0 only. Hence the net10.0;net10.0-windows
+// multi-target on this project, and `#if WINDOWS` rather than OperatingSystem.IsWindows()
+// wherever WaveOut is touched - see Vernacula.Avalonia.csproj.
 using NAudio.Wave;
 
 namespace Vernacula.App.Services.Tts;
@@ -11,10 +16,10 @@ namespace Vernacula.App.Services.Tts;
 /// <summary>
 /// Cross-platform streaming audio playback for the reader UI. Mirrors
 /// the platform split used by Vernacula.Avalonia.TranscriptEditorViewModel
-/// (WaveOutEvent on Windows, ffplay elsewhere) but in streaming form:
+/// (WaveOut on Windows, ffplay elsewhere) but in streaming form:
 ///
 ///   Windows: NAudio's <see cref="BufferedWaveProvider"/> fed into
-///            <see cref="WaveOutEvent"/>. Samples are appended as
+///            <see cref="WaveOut"/>. Samples are appended as
 ///            synthesis produces them; WaveOut pulls from the buffer
 ///            continuously.
 ///   Other  : <c>ffplay -f f32le -ar 24000 -ac 1 -i pipe:0</c>. Raw
@@ -40,13 +45,18 @@ public sealed class PlaybackService : IDisposable
     private static readonly string? FfplayPath = FindExecutable("ffplay");
 
     // Backend state (only one set in use at a time).
+#if WINDOWS
     private BufferedWaveProvider? _bufferedProvider;
-    private WaveOutEvent? _waveOut;
+    // WaveOut, not WaveOutEvent: NAudio 3 renamed the event-callback device to WaveOut
+    // (NAudio 2's message-loop WaveOut became WaveOutWindow). WaveOutEvent survives as an
+    // obsolete alias, so this is a rename with no behaviour change.
+    private WaveOut? _waveOut;
     // Held alongside _waveOut on the file-playback path so we can dispose
-    // it in Stop(). WaveOutEvent.Dispose() does NOT dispose the WaveStream
+    // it in Stop(). WaveOut.Dispose() does NOT dispose the WaveStream
     // it was given via Init — without holding our own ref, every Play
     // would leak an open file handle (Windows keeps the WAV locked too).
     private AudioFileReader? _fileReader;
+#endif
     private Process? _ffplayProcess;
     private Stream? _ffplayStdin;
 
@@ -120,7 +130,14 @@ public sealed class PlaybackService : IDisposable
     /// UI swap the Play/Pause/Resume button label.</summary>
     public event Action<bool>? IsPausedChanged;
 
-    public bool CanPlayOnThisPlatform => OperatingSystem.IsWindows() || FfplayPath is not null;
+#if WINDOWS
+    public bool CanPlayOnThisPlatform => true;
+#else
+    // NOT OperatingSystem.IsWindows(). The net10.0 build carries no WinMM, so on a Windows
+    // host running it the WaveOut path does not exist and ffplay is the only backend; asking
+    // the OS would claim playback works and then take a branch that was never compiled.
+    public bool CanPlayOnThisPlatform => FfplayPath is not null;
+#endif
     public string? UnavailableReason => CanPlayOnThisPlatform
         ? null
         : "Audio playback requires Windows audio output or an `ffplay` executable in PATH.";
@@ -139,27 +156,27 @@ public sealed class PlaybackService : IDisposable
         lock (_totalLock) _totalEstimatedSec = 0;
         PositionSeconds = 0;
 
-        if (OperatingSystem.IsWindows())
+#if WINDOWS
+        var fmt = WaveFormat.CreateIeeeFloatWaveFormat(sampleRate, 1);
+        // 60 s of headroom — the writer task throttles when the
+        // buffer is more than half-full, so this is the absolute
+        // ceiling rather than the working size.
+        //
+        // NAudio 3 made BufferLength read-only and moved sizing into the constructor as a
+        // duration, so the byte arithmetic that used to spell this out is gone; the format
+        // already knows its own byte rate.
+        _bufferedProvider = new BufferedWaveProvider(fmt, TimeSpan.FromSeconds(60))
         {
-            var fmt = WaveFormat.CreateIeeeFloatWaveFormat(sampleRate, 1);
-            // 60 s of headroom — the writer task throttles when the
-            // buffer is more than half-full, so this is the absolute
-            // ceiling rather than the working size.
-            _bufferedProvider = new BufferedWaveProvider(fmt)
-            {
-                BufferLength = sampleRate * 4 /* bytes per float */ * 60,
-                DiscardOnBufferOverflow = false,
-            };
-            _waveOut = new WaveOutEvent();
-            _waveOut.Init(_bufferedProvider);
-            _waveOut.Play();
-        }
-        else
-        {
-            if (FfplayPath is null)
-                throw new InvalidOperationException(UnavailableReason!);
-            StartFfplayStdin(sampleRate);
-        }
+            DiscardOnBufferOverflow = false,
+        };
+        _waveOut = new WaveOut();
+        _waveOut.Init(_bufferedProvider);
+        _waveOut.Play();
+#else
+        if (FfplayPath is null)
+            throw new InvalidOperationException(UnavailableReason!);
+        StartFfplayStdin(sampleRate);
+#endif
 
         // Unbounded so AppendSamples NEVER blocks its caller — the synth
         // pipeline must stay free to produce the next chunk while audio
@@ -210,7 +227,7 @@ public sealed class PlaybackService : IDisposable
                 var bytes = new byte[samples.Length * 4];
                 Buffer.BlockCopy(samples, 0, bytes, 0, bytes.Length);
 
-                if (OperatingSystem.IsWindows())
+#if WINDOWS
                 {
                     var bp = _bufferedProvider;
                     if (bp is null) break;
@@ -234,7 +251,7 @@ public sealed class PlaybackService : IDisposable
                     }
                     if (tornDown) break;
                 }
-                else
+#else
                 {
                     var stdin = _ffplayStdin;
                     if (stdin is null) break;
@@ -251,6 +268,7 @@ public sealed class PlaybackService : IDisposable
                         break;
                     }
                 }
+#endif
             }
         }
         catch (ChannelClosedException) { /* channel completed by Stop/EndOfStream */ }
@@ -277,14 +295,16 @@ public sealed class PlaybackService : IDisposable
         var writer = _writerTask;
         if (writer is not null)
             try { await writer.ConfigureAwait(false); } catch { }
-        if (!OperatingSystem.IsWindows() && _ffplayStdin is not null)
+#if !WINDOWS
+        if (_ffplayStdin is not null)
         {
             try { _ffplayStdin.Close(); } catch { /* already closed */ }
         }
+#endif
     }
 
     /// <summary>Suspend audio output without tearing down the backend.
-    /// On Windows uses <see cref="WaveOutEvent.Pause"/>; on Linux sends
+    /// On Windows uses <see cref="WaveOut.Pause"/>; on Linux sends
     /// SIGSTOP to the ffplay process so the kernel freezes it. The
     /// internal audio buffer and writer task stay alive — Resume picks
     /// up exactly where Pause left off. Wall-clock position is frozen
@@ -293,14 +313,14 @@ public sealed class PlaybackService : IDisposable
     public void Pause()
     {
         if (!IsPlaying || IsPaused) return;
-        if (OperatingSystem.IsWindows())
-        {
-            try { _waveOut?.Pause(); } catch { /* device race */ }
-        }
-        else if (_ffplayProcess is not null)
+#if WINDOWS
+        try { _waveOut?.Pause(); } catch { /* device race */ }
+#else
+        if (_ffplayProcess is not null)
         {
             SendSignalToProcess(_ffplayProcess, "STOP");
         }
+#endif
         _pausedAt = DateTime.UtcNow;
         StopTickTimer();
         // Order matters: clear IsPlaying BEFORE setting IsPaused so any
@@ -319,14 +339,14 @@ public sealed class PlaybackService : IDisposable
         if (!IsPaused) return;
         var pauseDuration = DateTime.UtcNow - _pausedAt;
         _startedUtc = _startedUtc.Add(pauseDuration);
-        if (OperatingSystem.IsWindows())
-        {
-            try { _waveOut?.Play(); } catch { /* device race */ }
-        }
-        else if (_ffplayProcess is not null)
+#if WINDOWS
+        try { _waveOut?.Play(); } catch { /* device race */ }
+#else
+        if (_ffplayProcess is not null)
         {
             SendSignalToProcess(_ffplayProcess, "CONT");
         }
+#endif
         IsPaused = false;
         IsPlaying = true;
         StartTickTimer();
@@ -363,32 +383,25 @@ public sealed class PlaybackService : IDisposable
     /// via <see cref="SeekIntoFile"/> instead.</summary>
     public void SeekTo(double seconds)
     {
-        if (OperatingSystem.IsWindows())
-        {
-            if (_bufferedProvider is null) return;
-            // BufferedWaveProvider doesn't expose seek directly — for an
-            // in-RAM stream the simplest thing is to truncate the buffer
-            // (drop anything before the seek point) and re-anchor the
-            // wall-clock. Forward seek = drop bytes; backward seek
-            // beyond what's in the buffer = clamp to current position.
-            // For MVP, we just re-anchor the wall-clock and let WaveOut
-            // continue playing what's in the buffer — meaning seek only
-            // affects the HIGHLIGHT, not the audio. Acceptable for
-            // click-to-highlight UX; full audio-seek is follow-up.
-            _startedUtc = DateTime.UtcNow.AddSeconds(-seconds);
-            PositionSeconds = seconds;
-            PositionChanged?.Invoke(PositionSeconds);
-        }
-        else
-        {
-            // Same MVP compromise: re-anchor wall-clock, highlight jumps,
-            // audio continues from wherever ffplay was. Seeking ffplay
-            // requires either a seekable input (file) or restarting the
-            // process — both are larger surgeries deferred for now.
-            _startedUtc = DateTime.UtcNow.AddSeconds(-seconds);
-            PositionSeconds = seconds;
-            PositionChanged?.Invoke(PositionSeconds);
-        }
+#if WINDOWS
+        // BufferedWaveProvider doesn't expose seek directly — for an
+        // in-RAM stream the simplest thing is to truncate the buffer
+        // (drop anything before the seek point) and re-anchor the
+        // wall-clock. Forward seek = drop bytes; backward seek
+        // beyond what's in the buffer = clamp to current position.
+        // For MVP, we just re-anchor the wall-clock and let WaveOut
+        // continue playing what's in the buffer — meaning seek only
+        // affects the HIGHLIGHT, not the audio. Acceptable for
+        // click-to-highlight UX; full audio-seek is follow-up.
+        if (_bufferedProvider is null) return;
+#endif
+        // On ffplay the same MVP compromise applies with no buffer to guard on:
+        // re-anchor the wall-clock, the highlight jumps, and audio continues from
+        // wherever ffplay was. Seeking ffplay needs either a seekable input (file) or
+        // restarting the process — both larger surgeries, deferred.
+        _startedUtc = DateTime.UtcNow.AddSeconds(-seconds);
+        PositionSeconds = seconds;
+        PositionChanged?.Invoke(PositionSeconds);
     }
 
     /// <summary>Post-streaming seek into the on-disk WAV file. Restarts
@@ -407,17 +420,17 @@ public sealed class PlaybackService : IDisposable
         seconds = Math.Clamp(seconds, 0, audioDurationSec);
         _endOfStream = true;
 
-        if (OperatingSystem.IsWindows())
+#if WINDOWS
         {
             _fileReader = new AudioFileReader(audioPath)
             {
                 CurrentTime = TimeSpan.FromSeconds(seconds),
             };
-            var player = new WaveOutEvent();
+            var player = new WaveOut();
             _waveOut = player;
             _waveOut.Init(_fileReader);
             // ⚠ ONLY STOP IF THIS PLAYER IS STILL THE CURRENT ONE. A seek during playback
-            // Stop()s the previous WaveOutEvent, whose PlaybackStopped is delivered
+            // Stop()s the previous WaveOut, whose PlaybackStopped is delivered
             // asynchronously — after the new player has started — and an unconditional
             // Stop() there tore the new playback down within milliseconds.
             _waveOut.PlaybackStopped += (sender, _) => Dispatcher.UIThread.InvokeAsync(() =>
@@ -426,12 +439,13 @@ public sealed class PlaybackService : IDisposable
             });
             _waveOut.Play();
         }
-        else
+#else
         {
             if (FfplayPath is null)
                 throw new InvalidOperationException(UnavailableReason!);
             StartFfplayFile(audioPath, seconds);
         }
+#endif
 
         IsPlaying = true;
         PositionSeconds = seconds;
@@ -444,7 +458,11 @@ public sealed class PlaybackService : IDisposable
         // Allow Stop after Pause too — without IsPaused in this check
         // we'd early-return because the timer was stopped by Pause and
         // IsPlaying is false during pause.
+#if WINDOWS
         if (!IsPlaying && !IsPaused && _waveOut is null && _ffplayProcess is null) return;
+#else
+        if (!IsPlaying && !IsPaused && _ffplayProcess is null) return;
+#endif
         StopTickTimer();
 
         // ORDER MATTERS for immediate-stop UX. Audio backends are torn
@@ -456,6 +474,7 @@ public sealed class PlaybackService : IDisposable
         // drain its internal decoded-PCM buffer (sometimes seconds) on
         // -autoexit before the kill landed. Killing first prevents
         // that drain.
+#if WINDOWS
         if (_waveOut is not null)
         {
             try { _waveOut.Stop(); } catch { /* shutdown race */ }
@@ -467,6 +486,7 @@ public sealed class PlaybackService : IDisposable
             _fileReader.Dispose();
             _fileReader = null;
         }
+#endif
         if (_ffplayProcess is not null)
         {
             try { if (!_ffplayProcess.HasExited) _ffplayProcess.Kill(entireProcessTree: true); }
@@ -484,7 +504,9 @@ public sealed class PlaybackService : IDisposable
         _audioChannel?.Writer.TryComplete();
         _audioChannel = null;
         _writerTask = null;
+#if WINDOWS
         _bufferedProvider = null;
+#endif
 
         var finalPos = PositionSeconds;
         IsPaused = false;
