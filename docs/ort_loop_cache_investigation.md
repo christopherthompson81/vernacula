@@ -119,3 +119,289 @@ for normal graphs and uses `.ort` only where it has to. The sentinel
 infrastructure built in PR #58 is still there as a third tier; it
 has not been observed to trigger and probably never will for our
 current graphs, but it's cheap defense-in-depth.
+
+## Run 4 — 2026-09-08 09:07 — Upstream re-verification (issue #60)
+
+Question: is the ORT bug PR #59 worked around still live upstream, and is
+the root cause in issue #56/#60 stated correctly? Cloned upstream ORT to
+`~/Programming/onnxruntime` (shallow, HEAD `bb331b7`) and built a probe
+matrix against ORT 1.23.2 / 1.24.4 / 1.29.0 (`onnxruntime-gpu` wheels in
+`/mnt/data/ort-loop-repro/venv-gpu-*`).
+
+First attempt reproduced **nothing**. The real
+`conditional_decoder_loop.onnx` round-tripped cleanly:
+
+| ORT | EP | `.onnx` reload |
+|---|---|---|
+| 1.24.4 | CPU | OK (4.6 s) |
+| 1.23.2 | CUDA | OK (3.3 s) |
+
+That directly contradicts Run 1, which reported RELOAD-FAIL at every opt
+level on 1.23.2. Two synthetic Loop graphs (body-owned initializers;
+body capturing outer-scope initializers by name, the shape
+`merge_cond_decoder_loop.py` actually emits) also round-tripped fine on
+1.29.0.
+
+Negative result worth keeping: **the Loop op alone does not trigger the
+bug.** Neither does the CUDA EP, nor the opt level, nor outer-scope
+capture. Run 1's "bug is in the `.onnx` writer" conclusion was reached
+from a probe that didn't isolate the trigger.
+
+## Run 5 — 2026-09-08 09:09 — The actual trigger: external-initializer sidecar
+
+The probe was missing what `OrtSessionBuilder.CreateCachedSession`
+actually sets on the write pass:
+
+```
+session.optimized_model_external_initializers_file_name  = <cache>.onnx_data
+session.optimized_model_external_initializers_min_size_in_bytes = 1048576
+```
+
+Adding those two entries reproduces it verbatim, at every opt level:
+
+```
+INVALID_GRAPH : ... In Node, ("", Loop, "", -1) : ... ,
+Error t_now_1d_axes initializer name is not unique
+```
+
+| ORT | EP | ext-init off | ext-init on |
+|---|---|---|---|
+| 1.23.2 | CUDA | OK | **RELOAD-FAIL** |
+| 1.24.4 | CUDA | OK | **RELOAD-FAIL** |
+| 1.29.0 | CUDA | OK | **RELOAD-FAIL** |
+| 1.29.0 | CPU  | OK | **RELOAD-FAIL** |
+
+**Still live on 1.29.0, the current release** — which is also the version
+`Directory.Build.props` pins for the app, so the `.use-ort` sentinel sitting
+in `/mnt/data/models/chatterbox_export` is current, not stale.
+
+The bug is EP-independent (CPU reproduces) and opt-level-independent, but
+it needs the external-initializer writer. The `.onnx` serializer per se is
+fine.
+
+## Run 6 — 2026-09-08 09:10 — Minimal reproducer
+
+`/mnt/data/ort-loop-repro/make_minimal_extinit.py` builds a ~4 MB graph
+with the two features that matter:
+
+- a Loop body owning a **small** initializer (below the 1 MB threshold, so
+  it stays inline on write) — mirrors `t_now_1d_axes`, the axes input of
+  an Unsqueeze in the real body
+- an outer initializer **above** the threshold, which is what makes ORT
+  take the external-initializer path at all
+
+Fails identically on 1.29.0 / CPU. So the upstream report needs no 575 MB
+attachment and no GPU — a self-contained script is enough.
+
+## Run 7 — 2026-09-08 09:10 — Mechanism: duplication is *within* the body
+
+Dumped the initializer lists of ORT's own output:
+
+```
+outer initializers:            ['big_w', 'trip_count_const', 'loop_cond_init']
+body of the_loop initializers: ['t_now_1d_axes', 'body_bias',
+                                't_now_1d_axes', 'body_bias']
+```
+
+Every body initializer is written **twice into the same body subgraph**.
+
+This corrects issue #56's stated root cause ("these end up in *both* the
+outer graph's initializer list AND the body subgraph's"). Nothing is
+hoisted to the outer scope — the body list is simply appended to without
+being cleared first. The renaming and Constant-node workarounds tried in
+#56 could never have helped: any body-scope initializer duplicates.
+
+## Run 8 — 2026-09-08 09:11 — Located the upstream defect
+
+`onnxruntime/core/graph/graph.cc` has two sibling serializers that walk
+subgraphs the same way. The custom-handler one clears first:
+
+```cpp
+// ToGraphProtoWithCustomInitializerHandlingImpl, ~line 5390
+// Clear pre-existing initializers from the subgraph proto. The subgraph
+// proto was populated by Node::ToProto -> Graph::ToGraphProto() const,
+// which already inlined in-memory data. The recursive Impl call below
+// will re-add all initializers via the custom handler, so we must clear
+// to avoid duplicates.
+subgraph_proto->clear_initializer();
+subgraph_proto->clear_sparse_initializer();
+```
+
+`AddExternalInitializersToGraphProtoImpl` (~line 5191) has the identical
+loop and **no clear** before recursing. The subgraph proto arrives already
+populated by `Node::ToProto`, then the recursive call appends the same
+initializers again.
+
+So the fix upstream looks like the same two `clear_*` calls in the
+external-initializer path — the codebase already documents why they're
+needed a hundred lines further down.
+
+**Implications for us:**
+- The `.ort` fallback shipped in PR #59 stays correct and stays necessary.
+- A cheaper workaround now exists that we didn't know about: writing the
+  `.onnx` cache *without* the external-initializer entries round-trips
+  fine. Only worth taking for graphs that fit under protobuf's 2 GB limit
+  — which `conditional_decoder_loop` (575 MB) does. Worth measuring
+  against the `.ort` path's load time before changing anything.
+- Issue #60's draft upstream body needs rewriting: its affected-versions
+  line, its reproducer, and its root-cause paragraph are all wrong in
+  ways that would get the report bounced.
+
+## Run 9 — 2026-09-08 09:14 — Blast radius: which graphs actually fell back
+
+Swept `/mnt/data/models` for the sentinels the layered cache writes:
+
+```
+chatterbox_export/conditional_decoder_loop.opt.cuda.b21b9e70895b.use-ort
+nfa_ctc_onnx/nemo128.opt.cuda.df335d933882.use-ort   (May 17)
+nfa_ctc_onnx/nemo128.opt.cuda.912d0b9335e7.use-ort   (Sep 7)
+```
+
+No `.cache-disabled` anywhere — the third tier still has never fired.
+
+**`nemo128.onnx` is a second affected graph, and nobody noticed.** It's the
+NeMo log-mel preprocessor in the NFA CTC bundle (and the same op contract
+the Parakeet export uses). Its failure names a different op:
+
+```
+In Node, ("/If", If, "", -1) : ... , Error /Constant_34_output_0
+initializer name is not unique
+```
+
+Two corrections to the mental model from that:
+
+1. **It isn't a `Loop` bug — it's a subgraph bug.** `If` branches duplicate
+   the same way. Any control-flow op with a body qualifies.
+2. `nemo128.onnx`'s `If` branches ship with **empty** initializer lists.
+   The duplicated `/Constant_34_output_0` is a constant ORT itself folded
+   into the branch, and it happens at `DISABLE_ALL` — so ORT inserts
+   branch-scope constants even with optimization nominally off. That's the
+   detail the `merge_cond_decoder_loop.py` docstring guessed at back in May
+   and couldn't confirm.
+
+Issue #60's title and draft body both need to say "subgraph", not "Loop".
+
+## Run 10 — 2026-09-08 09:15 — The perf path that was never measured
+
+With the trigger known, there's a third cache disposition the earlier runs
+never tried: write `.onnx` but **without** the external-initializer session
+entries. Run 1 ruled out `.onnx` wholesale, so this was never on the table.
+
+`conditional_decoder_loop.onnx`, ORT 1.29.0 / CUDA, best of 3:
+
+| disposition | write | warm load | cache size |
+|---|---:|---:|---:|
+| miss (no cache) | — | 1906 ms | — |
+| `.ort` (**ships today**, PR #59) | 3024 ms | 1550 ms | 577 MB |
+| `.onnx`, no ext-init (**untested until now**) | 1980 ms | **1303 ms** | **168 MB** |
+
+**247 ms faster per warm load than the shipping fallback, and 409 MB
+smaller on disk.** The size collapse is the mechanism: without the
+ext-init entries ORT leaves the optimized graph pointing at the *source*
+model's existing `.onnx_data` sidecar rather than copying 577 MB of
+weights into a new file, so the warm load mmaps weights it was going to
+mmap anyway. `.ort` embeds everything inline, which is exactly the
+lazy-load loss Run 2 measured on the LM graph.
+
+`nemo128.onnx` for completeness: miss 16 ms, `.ort` warm 11 ms, `.onnx`
+warm 10 ms. Real but worthless — a 1 ms graph. The fallback costs nothing
+there and only the Chatterbox graph is worth changing anything for.
+
+Caveat: this measures **load**, not numerical correctness. A
+`ChatterboxSmoke` parity run against the no-ext-init cache is required
+before this ships.
+
+**Why ext-init can't simply be dropped globally:** `language_model.onnx`
+has a 6.1 GB weight sidecar and its optimized cache writes a 2.0 GB one.
+Without ext-init that write hits protobuf's 2 GB message limit. The
+entries are load-bearing for large graphs and merely harmful for
+subgraph-bearing ones.
+
+Suggested shape, if we act on this: insert a tier, so the ladder becomes
+`.onnx` + ext-init → `.onnx` no-ext-init → `.ort` → sentinel. The
+no-ext-init tier catches every subgraph-bearing graph under 2 GB (both
+known cases), and a >2 GB subgraph-bearing graph would fail its write and
+fall through to `.ort` as today.
+
+## Run 11 — 2026-09-08 09:24 — Implementation: inline `.onnx` tier
+
+Added a third rung to `OrtSessionBuilder`'s ladder, between the primary
+and `.ort`: same `.onnx` format, written *without* the two
+external-initializer session entries, marked by a `.no-ext-init` hint.
+
+```
+.onnx + sidecar  →  .onnx inline  →  .ort  →  .cache-disabled
+```
+
+Two safety properties the new rung needs, both implemented:
+
+- **Write can fail on its own terms.** Without the sidecar, a graph whose
+  optimized initializers exceed protobuf's 2 GB message limit can't
+  serialize at all — `language_model.onnx` writes a 2.0 GB sidecar and is
+  exactly that case. The inline write is wrapped so a failure escalates to
+  `.ort` instead of surfacing a cache-write failure as a model-load
+  failure. (`language_model` never reaches the tier — it round-trips fine
+  on tier 1 — but a future >2 GB subgraph-bearing graph would.)
+- **Legacy hint migration.** A `.use-ort` with no `.no-ext-init` beside it
+  was written by the old two-tier ladder. Retried once on the inline tier,
+  costing one cache miss; the hint left behind stops it repeating. Without
+  this, every machine that ran the old code keeps its Chatterbox graph on
+  the slow tier forever, since cache keys only invalidate on ORT upgrade
+  or model change.
+
+Convergence, from a cleared cache (ChatterboxSmoke, CUDA):
+
+| run | what happened | cond-decoder load |
+|---|---|---|
+| 1 | write `.onnx` + sidecar | 2143 ms (miss) |
+| 2 | reload fails → `[cache-format]` → rewrite inline, same call | 2153 ms (miss) |
+| 3+ | **cache HIT** | **1431 ms** |
+
+Seeded a legacy `.use-ort` and confirmed the migration path separately:
+run 1 logs the retry and misses (2012 ms), run 2 HITs (1508 ms).
+
+Steady state, all four graphs — no regression on the three that never
+left tier 1:
+
+```
+speech_encoder.onnx           1057 ms  cache=HIT
+embed_tokens.onnx               30 ms  cache=HIT
+language_model.onnx            408 ms  cache=HIT
+conditional_decoder_loop.onnx 1395 ms  cache=HIT
+Loaded sessions in 2896 ms total
+```
+
+vs **1776 ms** for the same graph on `.ort` in Run 3. Cache on disk for
+that graph: **168 MB, down from 577 MB.**
+
+## Run 12 — 2026-09-08 09:29 — Parity, and the non-determinism floor
+
+Load time proves nothing about numerics, so: 3 runs on the inline cache
+vs 3 cache-bypassed baselines, same voice and text, comparing the output
+waveforms.
+
+First attempt looked alarming — every pair differed, including two
+cache-bypassed runs compared against *each other*. That's the answer,
+not the problem: this pipeline is not bitwise reproducible run to run
+(CUDA non-determinism, and `ScatterND with reduction=='none'` warns about
+exactly this). So the comparison has to be against the floor, not zero.
+
+| comparison | max abs diff | mean abs diff |
+|---|---|---|
+| no-cache vs no-cache (floor) | 7.265e-02 | 6.624e-04 |
+| inline-HIT vs inline-HIT (floor) | 7.395e-02 | 7.757e-04 |
+| **inline-HIT vs no-cache** | 9.249e-02 | 8.574e-04 |
+
+Cross-configuration difference sits in the same order as the pipeline's
+own run-to-run spread, and waveform RMS agrees to 5 significant figures
+(0.046366 / 0.046361 / 0.046363). **The inline cache introduces no
+deviation beyond noise the pipeline already has.** It is not a proof of
+bitwise equivalence, and no such proof is available here.
+
+`dotnet test tests/Vernacula.Tests`: 40/40 pass.
+
+**Status:** shipped in the working tree, not committed. Issue #60 stays
+open — it's about reporting the bug upstream, and the upstream defect
+(missing `clear_initializer()` in `AddExternalInitializersToGraphProtoImpl`,
+Run 8) is untouched by any of this. What changed is that we no longer pay
+for it.
