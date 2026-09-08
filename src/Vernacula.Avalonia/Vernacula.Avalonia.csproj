@@ -43,6 +43,17 @@
     <AvaloniaUseCompiledBindingsByDefault>false</AvaloniaUseCompiledBindingsByDefault>
   </PropertyGroup>
 
+  <!-- The second half of the NAudio.WinForms exclusion documented beside the PackageReference
+       below. Scoped to the Windows TFM because that is the only one where any package in the
+       graph declares a framework reference at all: NAudio.WinForms is the sole entry with a
+       "frameworkReferences" block in project.assets.json, so this drops exactly that one and
+       nothing else today. If a future package legitimately needs a transitive framework
+       reference, it will go missing here — loudly, as unresolved types at compile time, not
+       as a silently different build. -->
+  <PropertyGroup Condition="'$(TargetFramework)' == 'net10.0-windows'">
+    <DisableTransitiveFrameworkReferences>true</DisableTransitiveFrameworkReferences>
+  </PropertyGroup>
+
   <ItemGroup>
     <AvaloniaResource Include="Assets\**" />
   </ItemGroup>
@@ -101,6 +112,41 @@
     <PackageReference Include="MathNet.Numerics" Version="5.0.0" />
     <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.11" />
     <PackageReference Include="NAudio" Version="3.1.0" />
+    <!--
+      ⚠ NAudio.WinForms IS PINNED ONLY TO THROW IT AWAY, AND THAT IS LOAD-BEARING TWICE.
+      The net9.0-windows7.0 dependency group of the NAudio metapackage includes
+      NAudio.WinForms, whose nuspec declares:
+
+          <frameworkReference name="Microsoft.WindowsDesktop.App.WindowsForms" />
+
+      Nothing here uses a WinForms control — this is an Avalonia app — but that reference
+      arrives anyway on the Windows TFM, and it costs two things:
+
+        1. It breaks the LINUX build outright. The Windows Desktop targeting pack is not
+           part of the Linux SDK, so `dotnet build` of net10.0-windows on ubuntu fails with
+           NETSDK1073 ("The FrameworkReference 'Microsoft.WindowsDesktop.App.WindowsForms'
+           was not recognized"). CI builds the whole solution on ubuntu, so this took the
+           whole job down, and no amount of testing on a Windows box could have shown it —
+           there the pack is present and everything looks fine.
+        2. It changes what the shipped Windows app needs at RUNTIME, from the base .NET
+           runtime to the Windows Desktop runtime, for an assembly we never load.
+
+      It takes BOTH knobs below, because assets and framework references travel separately:
+      ExcludeAssets="all" keeps NAudio.WinForms.dll out of the output but leaves the
+      frameworkReferences entry in project.assets.json, which ResolvePackageAssets still
+      turns into a real FrameworkReference. DisableTransitiveFrameworkReferences is what
+      stops that half. Verified by dumping @(FrameworkReference) after ResolveReferences:
+      with only the first, Microsoft.WindowsDesktop.App.WindowsForms is still there.
+
+      EnableWindowsTargeting=true would also have fixed (1) — by making the Linux SDK
+      download the Windows desktop packs — but it fixes only the symptom, leaves (2) in
+      place, and pays a download to carry an assembly we do not want.
+
+      The condition is required, not tidiness: NAudio.WinForms has no net10.0-compatible
+      assets, so an unconditional reference fails restore on the portable TFM with NU1202.
+    -->
+    <PackageReference Include="NAudio.WinForms" Version="3.1.0" ExcludeAssets="all"
+                      Condition="'$(TargetFramework)' == 'net10.0-windows'" />
     <PackageReference Include="SoundTouch.Net" Version="2.1.2" />
     <PackageReference Include="ClosedXML" Version="0.104.1" />
     <PackageReference Include="DocumentFormat.OpenXml" Version="3.3.0" />
