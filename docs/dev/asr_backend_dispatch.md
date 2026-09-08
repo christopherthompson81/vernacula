@@ -101,9 +101,22 @@ drift vector — but it does mean defensive callers should validate via
 ### 3. `ModelManagerService.ActiveRepos` *[throw]*
 
 `src/Vernacula.Avalonia/Services/ModelManagerService.cs`. Switch
-expression with explicit Parakeet arm; default throws. VibeVoice is
-handled in an early-return above the switch (it can be the
-segmentation backend even when the AsrBackend isn't VibeVoice).
+expression with explicit Parakeet arm; default throws. Two backends are
+handled by early returns above the switch, and their **order matters**:
+
+1. `VibeVoiceStreaming` first, because it forces
+   `SegmentationMode.VibeVoiceBuiltin` (it segments itself) and would
+   otherwise be caught by the test below and sent to the non-streaming
+   package — a different model, and 17 GB of it. This shipped as a bug
+   once; see `ModelRepoSelectionTests`.
+2. `VibeVoice`, or *any* backend whose segmentation is
+   `VibeVoiceBuiltin`, since VibeVoice can be the segmentation backend
+   even when the AsrBackend is something else.
+
+`ModelRepoSelectionTests` asserts on the resolved file list rather than
+on the existence of a mapping, which is the gap that let the ordering
+bug through: every other check here asks whether a backend maps to
+*something*, not whether it maps to the *right* thing.
 
 ### 4. `TranscriptionService` Phase-4 dispatch *[manual]*
 

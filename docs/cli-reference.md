@@ -44,11 +44,14 @@ Output:
   --export-format <md|txt|json|srt>   Output format (default: md)
 
 ASR backend:
-  --asr <parakeet|cohere|qwen3asr|vibevoice|whisper|granite>   ASR backend (default: parakeet)
+  --asr <parakeet|cohere|qwen3asr|vibevoice|vibevoice-streaming|whisper|granite>
+                                      ASR backend (default: parakeet)
   --language <code>                   Force language for Cohere ASR (ISO 639-1: en, fr, de, ...)
   --cohere-model <dir>                Override Cohere model dir (default: <models-dir>/cohere_transcribe)
   --qwen3asr-model <dir>              Override Qwen3-ASR model dir
   --vibevoice-model <dir>             Override VibeVoice-ASR model dir
+  --vibevoice-streaming-model <dir>   Override VibeVoice-ASR Streaming model dir
+  --hotwords <a,b,c>                  Bias VibeVoice-ASR Streaming toward these names or terms
 
 Parakeet decoding:
   --precision <fp32|int8>             Model precision (default: fp32)
