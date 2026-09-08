@@ -138,8 +138,27 @@ public class AlignmentSidecarTests : IDisposable
     [Fact]
     public void SegmentConventionsAreDerivedFromTheSidecarPath()
     {
-        string sidecar = Path.Combine("/jobs", "abc_tts.json");
-        Assert.Equal(Path.Combine("/jobs", "abc_tts_segments"), AlignmentSidecar.SegmentsDirFor(sidecar));
+        // ⚠ ASSERT THE CONVENTION, NOT A LITERAL PATH STRING. This used to compare against
+        // Path.Combine("/jobs", "abc_tts_segments"), which pinned an exact string that only
+        // held where the hard-coded "/" happened to be the platform separator. On Windows
+        // Path.Combine treats a leading "/" as an opaque first component and leaves it alone,
+        // while SegmentsDirFor round-trips through Path.GetDirectoryName, which normalises it
+        // to "\" — so the two sides disagreed at position 0 ("/jobs\…" vs "\jobs\…") even
+        // though both name the same directory and Windows treats the separators as
+        // interchangeable. The code was right; the assertion was over-specified (#154). It
+        // passed on Linux, which is the only platform CI has ever run, so it went unnoticed
+        // until the suite was first run on Windows.
+        //
+        // What SegmentsDirFor actually promises — see its own docstring — is "beside the
+        // sidecar, named {stem}_segments". Asserting those two facts separately says the same
+        // thing without hard-coding a separator, and the stem check still catches the
+        // extension being left on (abc_tts.json_segments).
+        string sidecar  = Path.Combine(_dir, "abc_tts.json");
+        string segments = AlignmentSidecar.SegmentsDirFor(sidecar);
+
+        Assert.Equal(Path.GetDirectoryName(sidecar), Path.GetDirectoryName(segments));
+        Assert.Equal("abc_tts_segments", Path.GetFileName(segments));
+
         Assert.Equal("seg_0000.wav", AlignmentSidecar.SegmentFileName(0));
         Assert.Equal("seg_0042.wav", AlignmentSidecar.SegmentFileName(42));
         // Sorts lexically in index order, which is what a directory listing relies on.
