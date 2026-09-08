@@ -215,9 +215,21 @@ public static class AudioUtils
     // ── Audio I/O (NAudio only) ──────────────────────────────────────────────
 
     /// <summary>
-    /// Read an audio file via NAudio (WAV, MP3, FLAC, M4A, OGG, AAC).
-    /// Returns interleaved float samples in [-1, 1], the sample rate, and channel count.
-    /// For video containers or FFmpeg-only formats use the WPF-side ReadAudio overload.
+    /// Read an audio file via NAudio. Returns interleaved float samples in [-1, 1], the
+    /// sample rate, and the channel count.
+    /// <para>
+    /// ⚠ PCM AND IEEE-FLOAT WAV ONLY, ON EVERY PLATFORM. This used to claim "WAV, MP3,
+    /// FLAC, M4A, OGG, AAC" and that was only ever true on Windows: those decoders are
+    /// MediaFoundation and ACM P/Invokes living in NAudio.WinMM/NAudio.Wasapi, which
+    /// NAudio 3 hands only to a Windows target framework — this project is net10.0, so
+    /// AudioFileReader now throws NotSupportedException for them. (Under NAudio 2.3.0 a
+    /// net10.0 resolve still received those assemblies, so they worked here on Windows and
+    /// threw on Linux.) #156 tracks routing the rest through ffmpeg, which would fix Linux
+    /// too rather than restoring a Windows-only path.
+    /// </para>
+    /// <para>
+    /// For video containers or FFmpeg-only formats use the Avalonia-side ReadAudio overload.
+    /// </para>
     /// </summary>
     public static (float[] samples, int sampleRate, int channels) ReadAudio(string path)
     {

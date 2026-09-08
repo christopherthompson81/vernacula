@@ -245,9 +245,18 @@ internal static class AudioUtils
         ReadAudio(string path, int streamIndex = -1)
     {
         string ext = Path.GetExtension(path);
-        bool preferFfmpegForCompressedAudio =
-            !OperatingSystem.IsWindows()
-            && CrossPlatformFfmpegAudioExtensions.Contains(ext);
+#if WINDOWS
+        // The Windows build's NAudio carries MediaFoundation, which decodes these directly.
+        bool preferFfmpegForCompressedAudio = false;
+#else
+        // ⚠ COMPILE-TIME, NOT OperatingSystem.IsWindows(). MP3/FLAC/M4A/AAC decoding lives in
+        // MediaFoundation, which NAudio 3 ships only to a Windows target framework. The
+        // net10.0 build has none of it on ANY host, so it has to route these to ffmpeg even
+        // when it happens to be running on Windows — asking the OS would send them to an
+        // AudioFileReader that throws NotSupportedException. Same reasoning as the WaveOut
+        // guards in PlaybackService; see Vernacula.Avalonia.csproj.
+        bool preferFfmpegForCompressedAudio = CrossPlatformFfmpegAudioExtensions.Contains(ext);
+#endif
         bool useFFmpeg = streamIndex >= 0
                       || FFmpegDecoder.VideoExtensions.Contains(ext)
                       || FFmpegDecoder.FfmpegAudioExtensions.Contains(ext)
@@ -256,7 +265,8 @@ internal static class AudioUtils
         if (useFFmpeg)
             return FFmpegDecoder.DecodeStream(path, streamIndex >= 0 ? streamIndex : 0);
 
-        // ── NAudio path (WAV, MP3, FLAC, M4A, OGG, AAC) ──────────────────────
+        // ── NAudio path. PCM/IEEE-float WAV on both target frameworks, plus MP3, FLAC,
+        //    M4A and AAC on the Windows one, where MediaFoundation is present. ──────
         using var reader = new AudioFileReader(path);
         int sampleRate = reader.WaveFormat.SampleRate;
         int channels   = reader.WaveFormat.Channels;
