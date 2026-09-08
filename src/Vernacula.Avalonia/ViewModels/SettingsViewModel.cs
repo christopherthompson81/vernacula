@@ -31,7 +31,7 @@ internal partial class SettingsViewModel : ObservableObject
     private SegmentationMode _selectedSegmentation;
 
     [ObservableProperty]
-    [NotifyPropertyChangedFor(nameof(IsAsrParakeet), nameof(IsAsrCohere), nameof(IsAsrQwen3Asr), nameof(IsAsrVibeVoice), nameof(IsAsrVibeVoiceStreaming), nameof(IsAsrIndicConformer), nameof(IsAsrWhisperTurbo), nameof(IsAsrGraniteSpeech), nameof(ShowStandardSegmentationOptions), nameof(ShowVibeVoiceBuiltinSegmentation), nameof(ShowDiariZenInSegmentation), nameof(ShowGatedSegmentationHint), nameof(CanUseVibeVoiceAsr), nameof(VibeVoiceAsrLabel), nameof(VibeVoiceAsrDescription), nameof(CanUseVibeVoiceStreamingAsr), nameof(VibeVoiceStreamingAsrLabel), nameof(VibeVoiceStreamingAsrDescription), nameof(ShowVibeVoiceStreamingSizePicker), nameof(ShowCohereLanguagePicker), nameof(ShowQwen3AsrLanguagePicker), nameof(ShowIndicConformerLanguagePicker), nameof(ShowWhisperTurboLanguagePicker))]
+    [NotifyPropertyChangedFor(nameof(IsAsrParakeet), nameof(IsAsrCohere), nameof(IsAsrQwen3Asr), nameof(IsAsrVibeVoice), nameof(IsAsrVibeVoiceStreaming), nameof(IsAsrIndicConformer), nameof(IsAsrWhisperTurbo), nameof(IsAsrGraniteSpeech), nameof(ShowStandardSegmentationOptions), nameof(ShowVibeVoiceBuiltinSegmentation), nameof(ShowDiariZenInSegmentation), nameof(ShowGatedSegmentationHint), nameof(CanUseVibeVoiceAsr), nameof(VibeVoiceAsrLabel), nameof(VibeVoiceAsrDescription), nameof(CanUseVibeVoiceStreamingAsr), nameof(VibeVoiceStreamingOnCpu), nameof(VibeVoiceStreamingAsrLabel), nameof(VibeVoiceStreamingAsrDescription), nameof(ShowVibeVoiceStreamingSizePicker), nameof(ShowCohereLanguagePicker), nameof(ShowQwen3AsrLanguagePicker), nameof(ShowIndicConformerLanguagePicker), nameof(ShowWhisperTurboLanguagePicker))]
     private AsrBackend _selectedAsrBackend;
 
     [ObservableProperty]
@@ -149,60 +149,92 @@ internal partial class SettingsViewModel : ObservableObject
     public bool IsAsrWhisperTurbo   => SelectedAsrBackend == AsrBackend.WhisperTurbo;
     public bool IsAsrGraniteSpeech  => SelectedAsrBackend == AsrBackend.GraniteSpeech;
     public bool CanUseVibeVoiceAsr  => CudaEpWorking;
-    public bool CanUseVibeVoiceStreamingAsr => CudaEpWorking;
+    /// <summary>
+    /// Always selectable. The backend takes its KV cache from host memory when the session is
+    /// not on CUDA, so a machine without a working CUDA provider transcribes correctly — it is
+    /// simply slow. Measured at RTF 12.2 on a 16-thread CPU against 0.20 on an RTX 3090, with
+    /// byte-identical text and speaker labels (Run 35). Gating the option off meant refusing a
+    /// working configuration; the description says what it costs instead.
+    /// </summary>
+    public bool CanUseVibeVoiceStreamingAsr => true;
+
+    /// <summary>Whether this machine will run the streaming backend on the GPU or the CPU.</summary>
+    public bool VibeVoiceStreamingOnCpu => !CudaEpWorking;
 
     public bool IsVibeVoiceStreamingSmall => SelectedVibeVoiceStreamingSize == VibeVoiceStreamingSize.Small1_5B;
     public bool IsVibeVoiceStreamingLarge => SelectedVibeVoiceStreamingSize == VibeVoiceStreamingSize.Large7B;
 
     /// <summary>
-    /// The fixed device-memory cost of each checkpoint: weights plus the working set ONNX
-    /// Runtime needs around them, in GiB. Measured on the published packages (Run 34) at
-    /// 3.19 + 1.39 for the 1.5B and 9.03 + 2.36 for the 7B, rounded up.
+    /// The shape of each published package, as the settings window has to know it before
+    /// anything is downloaded: bytes of weights on disk, the decoder's hidden size, the KV
+    /// geometry, and the export's context ceiling in positions. The memory arithmetic itself
+    /// lives in <see cref="VibeVoiceStreamingBudget"/>, which is what the backend uses on the
+    /// package it has actually loaded — one model, two callers.
     /// </summary>
-    private static double VibeVoiceStreamingFixedGiB(VibeVoiceStreamingSize size) =>
-        size == VibeVoiceStreamingSize.Large7B ? 11.8 : 5.0;
-
-    /// <summary>GiB of KV cache one minute of audio costs: 16 positions a second, fp16.</summary>
-    private static double VibeVoiceStreamingCacheGiBPerMinute(VibeVoiceStreamingSize size) =>
-        60 * 16.0 * (size == VibeVoiceStreamingSize.Large7B ? 57344.0 : 28672.0) / (1 << 30);
+    internal static (long WeightBytes, int HiddenSize, int Layers, int KvHeads, int HeadDim, int Ceiling)
+        VibeVoiceStreamingShape(VibeVoiceStreamingSize size) =>
+            size == VibeVoiceStreamingSize.Large7B
+                ? (9_700_788_736L, 3584, 28, 4, 128, 131072)
+                : (3_421_310_464L, 1536, 28, 2, 128,  65536);
 
     /// <summary>
-    /// Says what this card can actually do with the selected checkpoint. The cache is now sized
-    /// to the recording rather than to the export ceiling (issue #150), so the honest answer is
-    /// not "fits / does not fit" but the length that fits: a 16 GB card runs the 7B fine for an
-    /// hour of audio and cannot run it for two.
+    /// Says what this card can actually do with the selected checkpoint. The cache is sized to
+    /// the recording rather than to the export ceiling (issue #150), so the honest answer is
+    /// not "fits / does not fit" but the length that fits: a 16 GB card runs the 7B for about
+    /// an hour of audio and cannot run it for the full two.
+    ///
+    /// Reads FREE memory, not total. The runtime decides on what is free when the job starts,
+    /// and a card is never entirely yours — the desktop alone is most of a gigabyte. Quoting
+    /// the total overstated exactly the small-card case this warning exists for.
     /// </summary>
     public string VibeVoiceStreamingSizeWarning
     {
         get
         {
-            var (totalMb, _) = HardwareInfo.GetGpuMemoryMb();
-            if (totalMb <= 0) return "";
-
-            double haveGiB  = totalMb / 1024.0;
-            double fixedGiB = VibeVoiceStreamingFixedGiB(SelectedVibeVoiceStreamingSize);
-            if (haveGiB < fixedGiB)
-                return $"This card reports {haveGiB:F1} GB of VRAM; this checkpoint needs about "
-                     + $"{fixedGiB:F1} GB before any audio is cached.";
-
-            // Leave a little for the desktop; a card is never entirely yours.
-            double capMinutes = SelectedVibeVoiceStreamingSize == VibeVoiceStreamingSize.Large7B ? 120 : 68;
-            double fits = (haveGiB - fixedGiB - 0.5)
-                        / VibeVoiceStreamingCacheGiBPerMinute(SelectedVibeVoiceStreamingSize);
-            return fits >= capMinutes
-                ? ""
-                : $"This card reports {haveGiB:F1} GB of VRAM, which fits about {fits:F0} minutes "
-                + $"of audio with this checkpoint rather than the full {capMinutes:F0}.";
+            var (totalMb, freeMb) = HardwareInfo.GetGpuMemoryMb();
+            if (totalMb <= 0 || freeMb <= 0) return "";
+            return VibeVoiceStreamingWarningFor(SelectedVibeVoiceStreamingSize, freeMb * 1024L * 1024L);
         }
     }
 
+    /// <summary>
+    /// The warning itself, given a checkpoint and the free memory to spend on it. Separated from
+    /// the NVML read so it can be tested: the bug this replaced was in the threshold, not the
+    /// arithmetic, and a threshold is only reachable with a particular card in front of you.
+    /// </summary>
+    internal static string VibeVoiceStreamingWarningFor(VibeVoiceStreamingSize size, long freeBytes)
+    {
+        var shape = VibeVoiceStreamingShape(size);
+        double fits = VibeVoiceStreamingBudget.MinutesThatFit(
+            freeBytes, shape.WeightBytes, shape.HiddenSize,
+            VibeVoiceStreamingBudget.KvBytesPerPosition(shape.Layers, shape.KvHeads, shape.HeadDim),
+            shape.Ceiling);
+
+        double freeGiB = freeBytes / (double)(1L << 30);
+        if (fits <= 0)
+        {
+            double fixedGiB = (shape.WeightBytes + VibeVoiceStreamingBudget.WorkingSetBytes(shape.HiddenSize))
+                            / (double)(1L << 30);
+            return $"This card has {freeGiB:F1} GB of VRAM free; this checkpoint needs about "
+                 + $"{fixedGiB:F1} GB before any audio is cached.";
+        }
+
+        // The ceiling the package itself carries, not a rounded figure: quoting "2 hours" here
+        // would call a card short at 130 minutes and stay silent at 125.
+        double capMinutes = VibeVoiceStreamingBudget.CeilingMinutes(shape.Ceiling);
+        return fits >= capMinutes
+            ? ""
+            : $"This card has {freeGiB:F1} GB of VRAM free, which fits about {fits:F0} minutes "
+            + $"of audio with this checkpoint rather than the full {capMinutes:F0}.";
+    }
+
     public bool ShowVibeVoiceStreamingSizeWarning => VibeVoiceStreamingSizeWarning.Length > 0;
-    public string VibeVoiceStreamingAsrLabel => CanUseVibeVoiceStreamingAsr
-        ? "VibeVoice-ASR Streaming"
-        : "VibeVoice-ASR Streaming (Unavailable - CUDA Missing)";
-    public string VibeVoiceStreamingAsrDescription => CanUseVibeVoiceStreamingAsr
-        ? "Chunked ASR with built-in speaker attribution, in 10 languages. Text appears as the recording is decoded rather than after it finishes. Recording length is capped by the checkpoint's context: about 68 minutes (1.5B) or 2 hours (7B)."
-        : "Unavailable because the CUDA execution provider check did not pass.";
+    public string VibeVoiceStreamingAsrLabel => VibeVoiceStreamingOnCpu
+        ? "VibeVoice-ASR Streaming (CPU - very slow)"
+        : "VibeVoice-ASR Streaming";
+    public string VibeVoiceStreamingAsrDescription => VibeVoiceStreamingOnCpu
+        ? "Chunked ASR with built-in speaker attribution, in 10 languages. No CUDA provider was found, so this runs on the CPU: the transcript is the same but decoding takes roughly 12x the length of the recording, so a 10-minute file is about two hours. Use the 1.5B, and prefer another backend for anything long."
+        : "Chunked ASR with built-in speaker attribution, in 10 languages. Text appears as the recording is decoded rather than after it finishes. Recording length is capped by the checkpoint's context: about 68 minutes (1.5B) or 2 hours (7B).";
     public string VibeVoiceAsrLabel => CanUseVibeVoiceAsr ? "VibeVoice-ASR" : "VibeVoice-ASR (Unavailable - CUDA Missing)";
     public string VibeVoiceAsrDescription => CanUseVibeVoiceAsr
         ? "Whole-recording ASR with built-in diarization. Downloads into the vibevoice_asr models folder."
@@ -852,6 +884,7 @@ internal partial class SettingsViewModel : ObservableObject
                 : (HardwareInfo.CudaProbeNote ?? FirstLine(cudaMessage) ?? "");
             OnPropertyChanged(nameof(CanUseVibeVoiceAsr));
             OnPropertyChanged(nameof(CanUseVibeVoiceStreamingAsr));
+            OnPropertyChanged(nameof(VibeVoiceStreamingOnCpu));
             OnPropertyChanged(nameof(VibeVoiceStreamingAsrLabel));
             OnPropertyChanged(nameof(VibeVoiceStreamingAsrDescription));
             OnPropertyChanged(nameof(VibeVoiceAsrLabel));

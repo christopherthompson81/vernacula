@@ -55,6 +55,7 @@
        that are deliberately not part of the public API. -->
   <ItemGroup>
     <InternalsVisibleTo Include="Vernacula.Tests" />
+    <InternalsVisibleTo Include="AsrBackendCoverage" />
   </ItemGroup>
 
 </Project>

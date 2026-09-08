@@ -70,6 +70,12 @@ hold the checkpoint, or when it can hold it but not for the full recording lengt
 The two install into separate folders, so switching between them does not re-download the one
 you already have.
 
+**Without an NVIDIA GPU.** The backend still runs, on the CPU, and produces the same transcript
+and the same speaker labels — but roughly 12 times slower than the recording is long, so a
+ten-minute file takes about two hours. The option is offered rather than hidden, labelled
+"(CPU — very slow)". For anything but a short clip, another backend is the better answer on a
+machine without CUDA.
+
 **Hotwords.** A text box under the size picker takes names or technical terms, separated by
 commas, which are spliced into the model's prompt to bias recognition toward them. On
 upstream's own demo clip this is the difference between "Y-voice" and "VibeVoice", and between

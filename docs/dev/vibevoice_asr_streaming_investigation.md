@@ -1301,9 +1301,11 @@ gets exactly that dimension, so an older download keeps working unchanged.
 
 ### The 1.5B "not using the GPU"
 
-Not reproduced, and the screenshots argue against it. This backend cannot silently fall back:
-the KV cache comes from a CUDA device allocator, and a decoder session that is not on CUDA has
-none, which raises before the first window. Task Manager's Performance page shows GPU 0 at 0%
+Not reproduced, and the screenshots argue against it. At the time of this run the backend
+could not fall back at all: the KV cache came from a CUDA device allocator, and a decoder
+session that is not on CUDA has none, so it raised before the first window. (Run 35 changes
+that — the refusal turned out to be a choice, not a constraint — but it means the reported run
+was on the GPU or it would not have produced a transcript.) Task Manager's Performance page shows GPU 0 at 0%
 *and 77 °C* — the utilisation graph there does not include the compute engine by default,
 while the temperature does not lie. CPU sits at 30% of eight logical processors, which is a
 session feeding a GPU, not one running a 1.5B decoder.
@@ -1312,3 +1314,67 @@ The real gap is that nothing in the application answers the question. On a two-G
 "NVIDIA GPU ✓" does not say *which* card, and every CUDA path here is pinned to device 0. The
 hardware panel now names it, from `nvmlDeviceGetName`, and says "GPU 0 of 2" when there is
 more than one.
+
+
+
+## Run 35 — 2026-09-08 08:20 — the CPU refusal was a choice, not a constraint
+
+Reviewing Run 34 the question came back: why does this backend refuse to run without CUDA at
+all? The refusal was mine. `CreateSharedKvBuffers` takes its tensors from an allocator, and the
+only reason that allocator had to be a CUDA one is that a CUDA session copies a host-allocated
+cache both ways on every step — measured at 9x slower back in Run 12. On a session that is
+already on the CPU, host memory is simply where the cache belongs.
+
+So the CUDA allocator is now attempted and its absence tolerated, and the cache sizing moved
+after that decision: free VRAM is the constraint when the cache lands on the device and is not
+a constraint worth modelling when it lands in host memory, where the whole ceiling is 1.75 GiB
+against system memory measured in tens of gigabytes.
+
+Measured on the published 1.5B, 30 seconds of two-speaker audio, same package both ways:
+
+| build | RTF | text | speaker labels |
+|---|---|---|---|
+| EP=Cuda, RTX 3090 | 0.198 | — | 9 segments |
+| EP=Cpu, 16 threads | 12.23 | identical | identical |
+
+Identical output, about 62x slower. `com.microsoft::GroupQueryAttention` has a working CPU
+kernel for this graph's float16 tensors, which was the open question; nothing had to be
+changed in the export.
+
+RTF 12 is not a substitute for a GPU — a ten-minute file is about two hours — but it is the
+difference between a machine that can run this backend and one that cannot, and the earlier
+behaviour refused a configuration that works. The settings window now offers it on any
+machine, labelled "(CPU - very slow)" with the cost stated in the description, rather than
+greyed out as "Unavailable - CUDA Missing".
+
+An earlier reading of this run had the speaker labels diverging on CPU. They do not: that
+comparison was against a 60-second run, and against the same 30 seconds the two agree exactly.
+Worth recording because it is the mistake this comparison exists to avoid.
+
+
+Regression-checked on the GPU after the reordering: the 7B on the same 60-second file gives an
+identical transcript at RTF 0.194 against 0.196 before, so tolerating a missing CUDA allocator
+costs the CUDA path nothing.
+
+### The picker and the planner disagreed twice
+
+Reviewing the Run 34 code turned up three defects in the settings warning, two of which a
+single-point test would have missed.
+
+**It compared against a rounded ceiling.** The 7B warned only below 120 minutes, but the
+package carries 131,072 positions — about 136. A card good for 125 minutes was told it was
+fine. It now derives the figure from the package's own ceiling.
+
+**It measured the card by total VRAM while the planner measures free.** That overstated
+capacity by a gigabyte or more, in exactly the small-card case the warning exists for.
+
+**It could promise a length the planner then refuses.** Found by a test that runs the picker's
+own answer through `PlanKvTokens`. Two causes, each sufficient on its own: the picker ignored
+the prompt slack and the two rounded opposite ways, and the picker ignored the context ceiling
+entirely, so a large card was told "68 minutes" for a 1.5B whose ceiling allows 67.7.
+
+The first version of that test checked one card size and passed with either mitigation removed
+— luck, not coverage. Sweeping about 1,170 card sizes per checkpoint makes each mitigation
+independently load-bearing: remove either and the sweep fails. The arithmetic now lives in
+`VibeVoiceStreamingBudget`, which the backend and the settings window both call, rather than in
+two copies that had to agree and did not.

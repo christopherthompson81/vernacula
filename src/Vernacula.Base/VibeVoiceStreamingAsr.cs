@@ -57,13 +57,8 @@ public sealed class VibeVoiceStreamingAsr : IDisposable
     /// <summary>Longest recording this package can transcribe, from its cache ceiling.</summary>
     public double MaxAudioSeconds => _maxKvTokens / PositionsPerSecond;
 
-    /// <summary>
-    /// Cache positions consumed per second of audio. Each hop contributes its frames, the two
-    /// speech markers, the chunk-end token and the text generated for it; only the last varies,
-    /// with speech density. Measured at ~16.0 (Run 14), against a floor of ~9.9 for audio with
-    /// no speech at all.
-    /// </summary>
-    private const double PositionsPerSecond = 16.0;
+    /// <inheritdoc cref="VibeVoiceStreamingBudget.PositionsPerSecond"/>
+    private const double PositionsPerSecond = VibeVoiceStreamingBudget.PositionsPerSecond;
 
     /// <summary>
     /// How much of the estimate to allocate. The estimate is an average and the buffer cannot
@@ -74,25 +69,18 @@ public sealed class VibeVoiceStreamingAsr : IDisposable
     /// </summary>
     private const double KvSafetyFactor = 2.5;
 
-    /// <summary>Prompt, hotwords, and the rounding on the last partial window.</summary>
-    private const int PromptPositionSlack = 512;
+    /// <inheritdoc cref="VibeVoiceStreamingBudget.PromptPositionSlack"/>
+    private const int PromptPositionSlack = VibeVoiceStreamingBudget.PromptPositionSlack;
 
     /// <summary>Never allocate a cache too small to hold the prompt and a few windows.</summary>
     private const int MinKvTokens = 2048;
 
-    /// <summary>
-    /// Device memory one cached position costs: a key and a value, every layer, float16.
-    /// 28 KiB for the 1.5B, 56 KiB for the 7B.
-    /// </summary>
-    public long KvBytesPerPosition => (long)_numLayers * 2 * _numKvHeads * _headDim * 2;
+    /// <inheritdoc cref="VibeVoiceStreamingBudget.KvBytesPerPosition"/>
+    public long KvBytesPerPosition =>
+        VibeVoiceStreamingBudget.KvBytesPerPosition(_numLayers, _numKvHeads, _headDim);
 
-    /// <summary>
-    /// Device memory the run needs beyond the weights and the cache: ONNX Runtime's CUDA arena,
-    /// the encoder's activations for one window, and the logits buffer. Measured against the
-    /// published packages at 1.39 GiB (1.5B) and 2.36 GiB (7B) — Run 34 — so it scales with the
-    /// decoder's hidden size, and this rounds up on both rather than sailing close.
-    /// </summary>
-    public long WorkingSetBytes => (1L << 30) + (long)_hiddenSize * 512 * 1024;
+    /// <inheritdoc cref="VibeVoiceStreamingBudget.WorkingSetBytes"/>
+    public long WorkingSetBytes => VibeVoiceStreamingBudget.WorkingSetBytes(_hiddenSize);
 
     /// <summary>
     /// Cache positions to allocate for a recording of <paramref name="audioSeconds"/>, and the
@@ -107,11 +95,16 @@ public sealed class VibeVoiceStreamingAsr : IDisposable
     /// The estimate is <see cref="PositionsPerSecond"/>, an average; <see cref="KvSafetyFactor"/>
     /// covers speech denser than average, and running out anyway is reported by <see cref="Step"/>.
     /// </summary>
-    private int ChooseKvTokens(double audioSeconds)
+    private int ChooseKvTokens(double audioSeconds, bool onDevice)
     {
-        var (_, freeMb) = HardwareInfo.GetGpuMemoryMb();
+        long freeBytes = 0;
+        if (onDevice)
+        {
+            var (_, freeMb) = HardwareInfo.GetGpuMemoryMb();
+            if (freeMb > 0) freeBytes = freeMb * 1024L * 1024L;
+        }
         return PlanKvTokens(audioSeconds, _maxKvTokens, _fixedKvTokens, KvBytesPerPosition,
-                            WorkingSetBytes, freeMb > 0 ? freeMb * 1024L * 1024L : 0);
+                            WorkingSetBytes, freeBytes);
     }
 
     /// <summary>
@@ -255,28 +248,32 @@ public sealed class VibeVoiceStreamingAsr : IDisposable
         int totalChunks = audio.Length == 0 ? 0 : (audio.Length + HopSamples - 1) / HopSamples;
         var chunks = new List<VibeVoiceStreamingChunk>(totalChunks);
 
-        int kvTokens = ChooseKvTokens(audio.Length / (double)SampleRate);
-
-        // The cache must live on the device. Allocating it from OrtAllocator.DefaultInstance
-        // puts it in host memory, and every step then copies the whole buffer both ways --
-        // measured at 9x slower than the Python harness before this was fixed.
+        // The cache belongs on the device when there is one. Allocating it from
+        // OrtAllocator.DefaultInstance puts it in host memory, and a CUDA session then copies
+        // the whole buffer both ways every step -- measured at 9x slower than the Python
+        // harness before this was fixed. On a CPU session host memory is simply where it goes.
         using var cudaMemInfo = new OrtMemoryInfo(OrtMemoryInfo.allocatorCUDA, OrtAllocatorType.DeviceAllocator, 0, OrtMemType.Default);
-        OrtAllocator deviceAlloc;
+        OrtAllocator? cudaAlloc = null;
         try
         {
-            deviceAlloc = new OrtAllocator(_decoder, cudaMemInfo);
+            cudaAlloc = new OrtAllocator(_decoder, cudaMemInfo);
         }
-        catch (OnnxRuntimeException ex)
+        catch (OnnxRuntimeException)
         {
-            // ORT reports this as "No requested allocator available", which says nothing about
-            // the cause. It means the decoder session is not running on CUDA, so there is no
-            // device allocator to take the KV cache from.
-            throw new InvalidOperationException(
-                "VibeVoice-ASR-Streaming needs the CUDA execution provider: the decoder session " +
-                "has no device allocator for its KV cache. Check that CUDA is available and that " +
-                "this build ships the GPU ONNX Runtime.", ex);
+            // "No requested allocator available" — the decoder session is not on CUDA, so there
+            // is no device allocator to take the cache from. Not fatal: the same buffers work in
+            // host memory when the session is on the CPU too, and the cost of that is speed
+            // rather than correctness. Refusing here would have made a GPU the price of entry.
         }
-        using var ownedAlloc = deviceAlloc;
+        using var ownedAlloc = cudaAlloc;
+        OrtAllocator deviceAlloc = cudaAlloc ?? OrtAllocator.DefaultInstance;
+
+        // Sized after the allocator is settled, because the budget depends on where the cache
+        // lands: VRAM is the constraint on the device, and on the host it is not a constraint
+        // worth modelling -- the whole ceiling is 7.0 GiB against system memory measured in
+        // tens of gigabytes.
+        int kvTokens = ChooseKvTokens(audio.Length / (double)SampleRate, onDevice: cudaAlloc is not null);
+
         using var binding    = _decoder.CreateIoBinding();
         using var runOptions = new RunOptions();
         var kvBuffers = CreateSharedKvBuffers(deviceAlloc, kvTokens);
