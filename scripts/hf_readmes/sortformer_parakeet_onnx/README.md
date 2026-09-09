@@ -33,7 +33,7 @@ co-located here so a single download brings up the full pipeline.
 
 - **DFT-basis mel frontend replaces `torch.stft`.** ORT's STFT op diverged from NeMo (cosine ≈ 0.23 on first inspection); the replacement uses precomputed cos/sin basis matrices as Conv1D weights, with center-padded windows and standard ops only. Restored bit-for-bit parity to the NeMo reference.
 - **Streaming Sortformer 6→3 ONNX contract.** NeMo's `concat_and_pad()` isn't ONNX-traceable; the custom exporter replaces dynamic per-batch slicing with fixed-shape ops at 992 chunk frames (124 subsampled at 8× downsampling). Inputs: `chunk, chunk_lengths, spkcache, spkcache_lengths, fifo, fifo_lengths`. Outputs: `spkcache_fifo_chunk_preds, chunk_pre_encode_embs, chunk_pre_encode_lengths`.
-- **CoreML-compilable Sortformer variant for Apple Silicon.** The stock diarization graph cannot be compiled by ONNX Runtime's CoreML EP at all (`Failed to create MLModel … error code: -14`), so the Neural Engine was unreachable on macOS. `diar_streaming_sortformer_4spk-v2.1.coreml.onnx` is a fully static re-export plus four value-preserving graph rewrites that compile as a **single** CoreML partition — 52.3 ms/chunk vs 196.3 ms on CPU and 113.0 ms on WebGPU (M5, ORT 1.24.4). It is a **steady-state-only** graph with a different input contract; read [Sortformer CoreML variant](#sortformer-coreml-variant) before using it.
+- **CoreML-compilable Sortformer variant for Apple Silicon.** The stock diarization graph cannot be compiled by ONNX Runtime's CoreML EP at all (`Failed to create MLModel … error code: -14`), so the Neural Engine was unreachable on macOS. `diar_streaming_sortformer_4spk-v2.1.coreml.onnx` is a fully static re-export plus four value-preserving graph rewrites that compile as a **single** CoreML partition — 51.5 ms/chunk vs 171.8 ms on CPU (M5, ORT 1.29.0). It is a **steady-state-only** graph with a different input contract; read [Sortformer CoreML variant](#sortformer-coreml-variant) before using it.
 - **Dynamic-batch encoder + dynamic-batch joint decoder** for Parakeet TDT (preprocessor still batch-1 post-export). INT8 variants of encoder, decoder-joint, and Sortformer ship for CPU-only inference.
 - **Chunk-by-chunk parity diagnostic** ([`compare_sortformer_chunk_outputs.py`](https://github.com/christopherthompson81/vernacula/blob/main/scripts/nemo_export/compare_sortformer_chunk_outputs.py)) compares NeMo vs ONNX state evolution across streaming chunks to localise drift to either model output or carry-state.
 - **Preprocessor export sweep** ([`tune_nemo128_export.py`](https://github.com/christopherthompson81/vernacula/blob/main/scripts/nemo_export/tune_nemo128_export.py)) scores wrapper / custom / DFT modes against a legacy reference with feature-level and encoder-output deltas — the tooling that picked the DFT path in the first bullet.
@@ -65,20 +65,32 @@ outright. The variant fixes the shapes at export time and applies four rewrites 
 51 all-False `Where` masks, rewrite 34 constant zero `Pad`s as `Concat`s, pre-transpose
 180 `Gemm` weights) to reach a single CoreML partition instead of 71.
 
-Measured on an M5, ORT 1.24.4, chunk=992 / spkcache=188 / fifo=124:
+Measured on an M5 (Mac17,3, macOS 26.6.2), **ORT 1.29.0** — the version Vernacula builds
+against — chunk=992 / spkcache=188 / fifo=124:
 
 | model | EP | inference | cold load | warm load |
 |---|---|---|---|---|
-| stock dynamic | CPU | 196.3 ms | 0.53 s | — |
-| stock dynamic | WebGPU | 113.0 ms | 0.45 s | — |
+| stock dynamic | CPU | 171.8 ms | 0.50 s | — |
 | stock dynamic | CoreML | *fails to compile* | — | — |
-| CoreML variant | CPU | 170.3 ms | 0.15 s | — |
-| CoreML variant | WebGPU | 101.7 ms | 0.13 s | — |
-| **CoreML variant** | **CoreML** | **52.3 ms** | **2.1 s** | **0.2 s** |
+| CoreML variant | CPU | 154.0 ms | — | — |
+| **CoreML variant** | **CoreML** | **51.5 ms** | **2.2 s** | **0.16 s** |
 
-Outputs match the stock graph on the CPU EP to `3.3e-07` (`preds`) for a full chunk. The
-static shapes alone also make it ~13% faster on CPU and ~10% faster on WebGPU, so it is
-not purely a macOS artifact.
+**3.34× vs the stock graph on CPU.** The CoreML EP takes the whole graph as a single
+partition (1751 of 1751 nodes). Outputs match the stock graph to `4.470E-07` (`preds`,
+rms 7.616E-08) running CoreML against stock-on-CPU, and to `3.576E-07` CPU-to-CPU. The
+static shapes alone also make it ~10% faster on plain CPU, so it is not purely a macOS
+artifact.
+
+The stock graph's CoreML failure reproduces on 1.29.0 exactly as described above —
+`Input: _ConstantOfShape_1_output_0 has unbounded dimension which is not supported`.
+
+An earlier round on **ORT 1.24.4** measured 52.3 ms for the variant on CoreML, alongside
+196.3 ms (CPU) and 113.0 ms (WebGPU) for the stock graph and 101.7 ms for the variant on
+WebGPU. Those CPU/WebGPU baselines disagree with other figures recorded for the same
+machine and ORT (163.5 ms / 94.0 ms) and have not been reconciled; treat the 1.29.0 table
+above as authoritative and the 1.24.4 baselines as indicative only. WebGPU was not
+re-measured on 1.29.0 — the provider is absent from the `onnxruntime` PyPI wheel and ships
+only in the packaged app.
 
 **This is not a drop-in replacement.** Four things differ:
 
@@ -87,7 +99,7 @@ not purely a macOS artifact.
 | inputs | 6 (`chunk`, `spkcache`, `fifo` + 3 `*_lengths`) | **3** (`chunk`, `spkcache`, `fifo`) |
 | shapes | dynamic | fixed `[1,992,128]` / `[1,188,512]` / `[1,124,512]` |
 | `spkcache_fifo_chunk_preds` | `[batch, time_out, 4]` | `[1, 436, 4]` |
-| graph optimization level | any | **`ORT_ENABLE_BASIC` or lower** |
+| graph optimization level | any | any on ORT 1.29.0; **`ORT_ENABLE_BASIC` or lower** on 1.26.0 (see note 3) |
 
 1. **All three lengths are baked in, so this graph is steady-state only.** Pass full-size,
    zero-padded buffers. Zero-filled `spkcache`/`fifo` during warm-up are fine — the stock
@@ -97,15 +109,20 @@ not purely a macOS artifact.
    speaker probabilities by up to **0.54** (rms 0.24) on a 0..1 scale — enough to flip
    speaker assignments. Route that one chunk per recording to the stock dynamic graph,
    which is in this same repo.
-3. **Create the session at `ORT_ENABLE_BASIC` or lower.** At `ORT_ENABLE_EXTENDED` and
-   above ORT 1.26.0 fails to load the file outright (`AddInitializedOrtValue Attempt to
-   replace the existing tensor`, from `MatMulAddFusion` re-running over an
-   already-optimized graph). BASIC is the right level regardless: EXTENDED also shatters
-   CoreML partitioning (69 → 191).
-4. **CoreML partitioning is ORT-version dependent.** Validated on **1.24.4**; ORT 1.29.0
-   splits the same graph into 194 partitions and diverges at ~1e-2. Re-validate on any ORT
-   upgrade. Set the CoreML EP's `ModelCacheDirectory` or every load pays the 2.1 s compile
-   instead of 0.2 s.
+3. **Check the graph optimization level against your ORT.** On **1.29.0 this is a
+   non-issue**: all four levels load, hold the single partition, and give identical
+   outputs (`4.470E-07`). On **1.26.0**, `ORT_ENABLE_EXTENDED` and above fail to load the
+   file outright (`AddInitializedOrtValue Attempt to replace the existing tensor`, from
+   `MatMulAddFusion` re-running over an already-optimized graph), so pin to
+   `ORT_ENABLE_BASIC` there. A separate 1.24.4 measurement found EXTENDED shattering
+   CoreML partitioning (69 → 191) on the earlier four-input graph; that does not reproduce
+   on 1.29.0 with this artifact.
+4. **CoreML partitioning is ORT-version dependent — re-validate on any ORT upgrade.**
+   Validated on **1.24.4** and **1.29.0**, which both reach a single partition. An earlier
+   note here claimed 1.29.0 split the graph into 194 partitions and diverged at ~1e-2;
+   that was measured against a different build of the graph and **does not reproduce** —
+   1.29.0 gives 1 partition and `4.470E-07`. Set the CoreML EP's `ModelCacheDirectory` or
+   every load pays the 2.2 s compile instead of 0.16 s.
 
 `fp16` was measured faster still (22.3 ms) but is **not** shipped: `chunk_pre_encode_embs`
 diverges to 9.8e-02 there and those embeddings feed back into the speaker cache and FIFO,

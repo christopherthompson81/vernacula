@@ -459,3 +459,45 @@ Steps 1–3 pass on the runtime the macOS build actually ships. Step 4 — HF up
    chunk to the dynamic graph ships a file that silently degrades the end of every
    recording by up to 0.54 on `preds` (Run 3). The routing is the precondition for the
    51.5 ms being usable at all.
+
+## Published — 2026-09-09
+
+`diar_streaming_sortformer_4spk-v2.1.coreml.onnx` is live in
+`christopherthompson81/sortformer_parakeet_onnx`: 526,897,872 B, md5
+`890c59cc71dedfff9f1c3d7f10924422` — the artifact built and measured in Run 7.
+
+The manifest was **extended, not regenerated**. `make_manifest.py` has no merge mode
+(`--files`/`--all` are exclusive and the result is written wholesale to
+`<model-dir>/manifest.json`), so running step 4 as originally written would have replaced
+the published 9-entry manifest with a 1-entry file. Instead the live manifest was pulled,
+the new entry inserted, and every original entry checked byte-identical before upload:
+9 → 10 files, `version: 2` preserved, none removed. **`make_manifest.py` still needs a
+merge flag before anyone runs step 4 literally.**
+
+The model card was corrected before syncing rather than published as-is. It carried three
+claims that Run 7 disproved or superseded:
+
+* the headline and perf table were ORT 1.24.4 (52.3 ms vs 196.3 ms CPU / 113.0 ms WebGPU);
+  now leads with the 1.29.0 measurements — 51.5 ms vs 171.8 ms CPU, **3.34×**, single
+  partition, `4.470E-07`.
+* `ORT_ENABLE_BASIC or lower` was stated as an unconditional contract term; it is a 1.26.0
+  defect and is now scoped to that version.
+* the "1.29.0 splits into 194 partitions and diverges at ~1e-2" caveat is marked as not
+  reproducing.
+
+The 1.24.4 CPU/WebGPU baselines (196.3 / 113.0) still disagree with the figures recorded
+elsewhere for the same machine and ORT (163.5 / 94.0). That is unresolved and the card now
+says so; this machine measured **171.8 ms** for the stock graph on CPU under 1.29.0, which
+does not settle which 1.24.4 figure was right. Both the playbook and
+`scripts/nemo_export/README.md` still carry the older numbers.
+
+Also confirmed on 1.29.0: the **stock** dynamic graph still fails to compile under CoreML
+(`Input: _ConstantOfShape_1_output_0 has unbounded dimension which is not supported`), so
+the variant's reason to exist is intact on the shipped runtime.
+
+**Still not consumable from the app.** `Sortformer.cs` gained CoreML/WebGPU selectability
+in `b3410d6` (it was the one call site #164 missed, so macOS diarization had been on the
+CPU EP regardless of the requested provider), but the tail-chunk routing does not exist:
+`ProcessChunk` sends a short `chunk_lengths` on the last chunk of every recording, and this
+graph bakes it to 992. Until a caller routes that one chunk to the stock graph, the
+published file must not be wired in as a drop-in — see Run 3 for the 0.54 error it causes.
