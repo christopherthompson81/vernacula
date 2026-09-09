@@ -659,22 +659,27 @@ internal class ModelManagerService
     {
         string current = Environment.GetEnvironmentVariable("PATH") ?? "";
 
-        // Idempotent: this runs again on every Re-check, and appending unconditionally would grow
-        // PATH without bound over a session.
-        var already = new HashSet<string>(
-            current.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries)
-                   .Select(p => p.Trim().TrimEnd(Path.DirectorySeparatorChar)),
-            StringComparer.OrdinalIgnoreCase);
+        // ⚠ REMOVE THEM FIRST, DO NOT SKIP WHAT IS ALREADY THERE. Passing over a directory because
+        // it is somewhere on PATH already leaves the probe's ranking unapplied on exactly the
+        // machine this method exists for: the NVIDIA installer commonly puts BOTH toolkits on PATH,
+        // with the older one first, and then nothing is prepended and the loader still binds the
+        // CUDA 12 copy of every library whose name does not carry the major -- cudnn64_9.dll,
+        // curand64_10.dll, cufft64_11.dll. Only the cudart/cublas names would have been right, and
+        // the AddDllDirectory registrations can no longer correct the order for the rest.
+        var wanted = new HashSet<string>(directories.Select(Normalise), StringComparer.OrdinalIgnoreCase);
 
-        var missing = directories
-            .Where(d => !already.Contains(d.TrimEnd(Path.DirectorySeparatorChar)))
-            .ToList();
+        var rest = current.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries)
+                          .Where(p => !wanted.Contains(Normalise(p)))
+                          .ToList();
 
-        if (missing.Count == 0)
-            return;
+        string updated = string.Join(Path.PathSeparator, directories.Concat(rest));
 
-        Environment.SetEnvironmentVariable(
-            "PATH", string.Join(Path.PathSeparator, missing) + Path.PathSeparator + current);
+        // Idempotent: a second call finds the directories already at the front and rebuilds the
+        // same string, so a Re-check neither grows PATH nor writes for the sake of writing.
+        if (!string.Equals(updated, current, StringComparison.Ordinal))
+            Environment.SetEnvironmentVariable("PATH", updated);
+
+        static string Normalise(string dir) => dir.Trim().TrimEnd(Path.DirectorySeparatorChar);
     }
 
     /// <param name="Available">Whether a CUDA session was actually created.</param>
@@ -752,7 +757,14 @@ internal class ModelManagerService
             // ⚠ TWO AUDIENCES. The log gets everything; the caller gets a line a UI can show.
             // Returning the dump meant a settings label whose first line was "CUDA check failed on
             // Linux." -- the failure named, the reason buried under a stack trace.
-            string detail = $"CUDA check failed on {GetPlatformName()}.\nException: {ex.GetType().Name}\n{ex.Message}\n\nInner: {ex.InnerException?.Message}\n\nStack:\n{ex.StackTrace}";
+            //
+            // ⚠ AND THE PROBE'S NOTE GOES IN THE LOG, NOT ONLY ON SCREEN. The case this check is
+            // worst at explaining is a driver too old for the installed CUDA: everything is present,
+            // so the probe passes, and the session then throws a bare numeric CUDA error. The UI
+            // reads the note from HardwareInfo, but cuda_debug.txt is what gets attached to a bug
+            // report, and it was the one place the answer did not appear.
+            string note = HardwareInfo.CudaProbeNote is { } n ? $"\n{n}" : "";
+            string detail = $"CUDA check failed on {GetPlatformName()}.{note}\nException: {ex.GetType().Name}\n{ex.Message}\n\nInner: {ex.InnerException?.Message}\n\nStack:\n{ex.StackTrace}";
             File.WriteAllText(logPath, detail);
             string summary = $"{ex.GetType().Name}: {ex.Message}"
                            + (ex.InnerException is null ? "" : $" ({ex.InnerException.Message})");

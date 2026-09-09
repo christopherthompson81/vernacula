@@ -68,11 +68,87 @@ public class CudaCheckTests
         Assert.NotEmpty(a.Message);
     }
 
+    /// <summary>
+    /// The registered directories have to end up in FRONT of whatever is already on PATH, not
+    /// merely present on it.
+    ///
+    /// The NVIDIA installer commonly leaves both toolkits on PATH with the older one first. An
+    /// implementation that skips a directory it finds already there writes nothing at all on that
+    /// machine, and the loader goes on binding the CUDA 12 copy of every library whose name does
+    /// not carry its major -- cudnn64_9.dll, curand64_10.dll -- which is the failure the whole
+    /// registration exists to prevent, in its least visible form.
+    /// </summary>
+    [Fact]
+    public void TheCudaDirectoriesGoToTheFrontOfPathEvenWhenAlreadyOnIt()
+    {
+        string? original = Environment.GetEnvironmentVariable("PATH");
+        try
+        {
+            string[] wanted = [@"C:\cuda13\bin\x64", @"C:\cudnn9\bin"];
+            // The older toolkit first, the newer one already present (with a trailing separator, as
+            // PATH entries are often written), and an unrelated entry that must survive.
+            Environment.SetEnvironmentVariable(
+                "PATH", @"C:\cuda12\bin;C:\cuda13\bin\x64\;C:\Windows\system32");
+
+            PrependToProcessPath(wanted);
+            var after = Environment.GetEnvironmentVariable("PATH")!.Split(Path.PathSeparator);
+
+            Assert.Equal(wanted[0], after[0]);
+            Assert.Equal(wanted[1], after[1]);
+            Assert.Contains(@"C:\cuda12\bin", after);            // unrelated entries survive
+            Assert.Contains(@"C:\Windows\system32", after);
+            Assert.DoesNotContain(@"C:\cuda13\bin\x64\", after); // and the stale copy is gone, not duplicated
+
+            // A Re-check runs this again; it must not grow PATH or reorder anything a second time.
+            string once = Environment.GetEnvironmentVariable("PATH")!;
+            PrependToProcessPath(wanted);
+            Assert.Equal(once, Environment.GetEnvironmentVariable("PATH"));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("PATH", original);
+        }
+    }
+
+    private static void PrependToProcessPath(string[] directories)
+    {
+        var method = typeof(ModelManagerService).GetMethod(
+            "PrependToProcessPath", BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.NotNull(method);
+        method!.Invoke(null, [directories]);
+    }
+
+    /// <summary>
+    /// ⚠ THE REAL CHECK, WITH ITS SIDE EFFECTS PUT BACK. Calling it for real is the point -- a test
+    /// against a reimplementation would not have caught the dependency this file exists for -- but
+    /// it writes the developer's own %LOCALAPPDATA%\Vernacula\cuda_debug.txt and edits the test
+    /// process's PATH. Leaving either changed means a test run silently overwrites the diagnostic a
+    /// user is about to attach to a bug report, with a failure from a CPU-only test host.
+    /// </summary>
     private static ModelManagerService.CudaCheck CheckIn(string modelsDir)
     {
-        var settings = new SettingsService();
-        settings.Current.ModelsDir = modelsDir;
-        return new ModelManagerService(settings).CheckCuda();
+        string logPath = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "Vernacula", "cuda_debug.txt");
+        byte[]? log = File.Exists(logPath) ? File.ReadAllBytes(logPath) : null;
+        string? path = Environment.GetEnvironmentVariable("PATH");
+
+        try
+        {
+            var settings = new SettingsService();
+            settings.Current.ModelsDir = modelsDir;
+            return new ModelManagerService(settings).CheckCuda();
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("PATH", path);
+            try
+            {
+                if (log is not null) File.WriteAllBytes(logPath, log);
+                else if (File.Exists(logPath)) File.Delete(logPath);
+            }
+            catch { /* best-effort: a restore failure must not fail the test it is cleaning up after */ }
+        }
     }
 
     private sealed class TempModelsDir : IDisposable

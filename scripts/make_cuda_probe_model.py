@@ -52,10 +52,11 @@ def main() -> None:
     out = session.run(None, {"X": np.ones((1, 1, 1, 1), dtype=np.float32)})[0]
     assert out.shape == (1, 1, 1, 1) and out.ravel()[0] == 1.0, out
 
+    # Printed as the C# literal it becomes, continuations included, so it can be pasted verbatim.
     encoded = base64.b64encode(payload).decode()
     print(f"// {len(payload)} bytes")
     for i in range(0, len(encoded), WRAP):
-        prefix = "    " if i else ""
+        prefix = "    " if i == 0 else "        + "
         print(f'{prefix}"{encoded[i:i + WRAP]}"')
 
 
