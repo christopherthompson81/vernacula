@@ -84,20 +84,29 @@ public class CudaCheckTests
         string? original = Environment.GetEnvironmentVariable("PATH");
         try
         {
-            string[] wanted = [@"C:\cuda13\bin\x64", @"C:\cudnn9\bin"];
+            // Built from the platform's own separators: the method is not Windows-only even though
+            // only Windows calls it, and CI runs this on Linux, where ';' and '\' are ordinary
+            // filename characters rather than separators.
+            string sep = Path.DirectorySeparatorChar.ToString();
+            string cuda13 = Path.Combine("cuda13", "bin", "x64");
+            string cudnn9 = Path.Combine("cudnn9", "bin");
+            string cuda12 = Path.Combine("cuda12", "bin");
+            string unrelated = Path.Combine("usr", "bin");
+
+            string[] wanted = [cuda13, cudnn9];
             // The older toolkit first, the newer one already present (with a trailing separator, as
             // PATH entries are often written), and an unrelated entry that must survive.
             Environment.SetEnvironmentVariable(
-                "PATH", @"C:\cuda12\bin;C:\cuda13\bin\x64\;C:\Windows\system32");
+                "PATH", string.Join(Path.PathSeparator, [cuda12, cuda13 + sep, unrelated]));
 
             PrependToProcessPath(wanted);
             var after = Environment.GetEnvironmentVariable("PATH")!.Split(Path.PathSeparator);
 
             Assert.Equal(wanted[0], after[0]);
             Assert.Equal(wanted[1], after[1]);
-            Assert.Contains(@"C:\cuda12\bin", after);            // unrelated entries survive
-            Assert.Contains(@"C:\Windows\system32", after);
-            Assert.DoesNotContain(@"C:\cuda13\bin\x64\", after); // and the stale copy is gone, not duplicated
+            Assert.Contains(cuda12, after);          // unrelated entries survive
+            Assert.Contains(unrelated, after);
+            Assert.DoesNotContain(cuda13 + sep, after); // and the stale copy is gone, not duplicated
 
             // A Re-check runs this again; it must not grow PATH or reorder anything a second time.
             string once = Environment.GetEnvironmentVariable("PATH")!;
