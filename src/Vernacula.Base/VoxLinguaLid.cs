@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Microsoft.ML.OnnxRuntime;
 using Microsoft.ML.OnnxRuntime.Tensors;
+using Vernacula.Base.Inference;
 using Vernacula.Base.Models;
 
 namespace Vernacula.Base;
@@ -289,27 +290,30 @@ public sealed class VoxLinguaLid : IDisposable
             IntraOpNumThreads = Math.Min(8, Math.Max(1, Environment.ProcessorCount)),
         };
 
-        switch (ep)
+        if (!OrtSessionBuilder.TryAppendPlatformAccelerator(opts, ep))
         {
-            case ExecutionProvider.Auto:
-                if (HardwareInfo.CanProbeCudaExecutionProvider())
-                {
+            switch (ep)
+            {
+                case ExecutionProvider.Auto:
+                    if (HardwareInfo.CanProbeCudaExecutionProvider())
+                    {
+                        try { opts.AppendExecutionProvider_CUDA(0); }
+                        catch { /* fall through to CPU */ }
+                    }
+                    try { opts.AppendExecutionProvider_DML(0); }
+                    catch { /* not available */ }
+                    break;
+                case ExecutionProvider.Cuda:
                     try { opts.AppendExecutionProvider_CUDA(0); }
-                    catch { /* fall through to CPU */ }
-                }
-                try { opts.AppendExecutionProvider_DML(0); }
-                catch { /* not available */ }
-                break;
-            case ExecutionProvider.Cuda:
-                try { opts.AppendExecutionProvider_CUDA(0); }
-                catch (EntryPointNotFoundException)
-                { throw new InvalidOperationException(HardwareInfo.CudaUnavailableMessage(providerMissing: true)); }
-                break;
-            case ExecutionProvider.DirectML:
-                try { opts.AppendExecutionProvider_DML(0); }
-                catch (EntryPointNotFoundException)
-                { throw new InvalidOperationException("DirectML EP not available."); }
-                break;
+                    catch (EntryPointNotFoundException)
+                    { throw new InvalidOperationException(HardwareInfo.CudaUnavailableMessage(providerMissing: true)); }
+                    break;
+                case ExecutionProvider.DirectML:
+                    try { opts.AppendExecutionProvider_DML(0); }
+                    catch (EntryPointNotFoundException)
+                    { throw new InvalidOperationException("DirectML EP not available."); }
+                    break;
+            }
         }
 
         return new InferenceSession(modelPath, opts);

@@ -252,8 +252,13 @@ internal static class Program
                 case "cpu": epEnum = ExecutionProvider.Cpu; break;
                 case "cuda": epEnum = ExecutionProvider.Cuda; break;
                 case "auto": epEnum = ExecutionProvider.Auto; break;
+                // macOS accelerators. Both need an osx-arm64 build (-p:EP=Cpu); the plain
+                // package is the one whose native carries them.
+                case "coreml": epEnum = ExecutionProvider.CoreML; break;
+                case "webgpu": epEnum = ExecutionProvider.WebGpu; break;
                 default:
-                    Console.Error.WriteLine($"--ep must be cpu, cuda or auto (got \"{ep}\").");
+                    Console.Error.WriteLine(
+                        $"--ep must be cpu, cuda, coreml, webgpu or auto (got \"{ep}\").");
                     return 2;
             }
         }
@@ -513,7 +518,8 @@ internal static class Program
           --out <wav>             Output path (24 kHz mono float32 WAV). Required.
           --num-step <n>          Diffusion steps (default 32).
           --target-tokens <n>     Override the duration estimate (25 tokens ≈ 1 s).
-          --ep cpu|cuda|auto      Execution provider (default auto). CUDA runs full fp32; TF32 is
+          --ep <name>             Execution provider (default auto): cpu, cuda, auto, or on
+                                  macOS coreml | webgpu. CUDA runs full fp32; TF32 is
                                   disabled because the diffusion loop degrades into noise under it.
                                   The IPA diff works on every provider (it is a graph rewrite, not a
                                   weight fold), so CUDA needs no pre-merged model.

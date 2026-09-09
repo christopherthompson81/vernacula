@@ -1,5 +1,6 @@
 using Microsoft.ML.OnnxRuntime;
 using Microsoft.ML.OnnxRuntime.Tensors;
+using Vernacula.Base.Inference;
 using Vernacula.Base.Models;
 using System.Collections.Concurrent;
 using System.Text.Json;
@@ -954,9 +955,14 @@ public sealed class DiariZenDiarizer : IDisposable
         if (configuredWorkers.HasValue)
             return configuredWorkers.Value;
 
-        if (ep == ExecutionProvider.Cuda || ep == ExecutionProvider.DirectML)
+        // One worker per accelerator: parallel sessions contend for the same device
+        // instead of adding throughput. CoreML and WebGpu count here too.
+        if (ep is ExecutionProvider.Cuda or ExecutionProvider.DirectML
+                or ExecutionProvider.CoreML or ExecutionProvider.WebGpu)
             return 1;
         if (ep == ExecutionProvider.Auto && HardwareInfo.CanProbeCudaExecutionProvider())
+            return 1;
+        if (ep == ExecutionProvider.Auto && OperatingSystem.IsMacOS())
             return 1;
 
         int intraOpThreads = Math.Max(1, Config.GetDiariZenSegmentationIntraOpThreads());
@@ -1139,25 +1145,28 @@ public sealed class DiariZenDiarizer : IDisposable
             IntraOpNumThreads = Config.GetDiariZenSegmentationIntraOpThreads()
         };
 
-        switch (ep)
+        if (!OrtSessionBuilder.TryAppendPlatformAccelerator(opts, ep))
         {
-            case ExecutionProvider.Auto:
-                if (HardwareInfo.CanProbeCudaExecutionProvider())
-                {
-                    try { opts.AppendExecutionProvider_CUDA(0); } catch { }
-                }
-                try { opts.AppendExecutionProvider_DML(0); }  catch { }
-                break;
-            case ExecutionProvider.Cuda:
-                try { opts.AppendExecutionProvider_CUDA(0); }
-                catch (EntryPointNotFoundException)
-                { throw new InvalidOperationException(HardwareInfo.CudaUnavailableMessage(providerMissing: true)); }
-                break;
-            case ExecutionProvider.DirectML:
-                try { opts.AppendExecutionProvider_DML(0); }
-                catch (EntryPointNotFoundException)
-                { throw new InvalidOperationException("DirectML EP not available."); }
-                break;
+            switch (ep)
+            {
+                case ExecutionProvider.Auto:
+                    if (HardwareInfo.CanProbeCudaExecutionProvider())
+                    {
+                        try { opts.AppendExecutionProvider_CUDA(0); } catch { }
+                    }
+                    try { opts.AppendExecutionProvider_DML(0); }  catch { }
+                    break;
+                case ExecutionProvider.Cuda:
+                    try { opts.AppendExecutionProvider_CUDA(0); }
+                    catch (EntryPointNotFoundException)
+                    { throw new InvalidOperationException(HardwareInfo.CudaUnavailableMessage(providerMissing: true)); }
+                    break;
+                case ExecutionProvider.DirectML:
+                    try { opts.AppendExecutionProvider_DML(0); }
+                    catch (EntryPointNotFoundException)
+                    { throw new InvalidOperationException("DirectML EP not available."); }
+                    break;
+            }
         }
 
         return new InferenceSession(segmentationModelPath, opts);

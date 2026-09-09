@@ -4,6 +4,7 @@ User and reference documentation for Vernacula. Start with [Installation](instal
 
 ## Getting started
 
+- [CoreML ONNX playbook](coreml_onnx_playbook.md) — making ONNX graphs fast under CoreML on Apple Silicon
 - [Installation](installation.md) — .NET 10, FFmpeg, GPU prerequisites, Linux installer
 - [Desktop app](desktop-app.md) — features, screenshots, walkthrough
 - [CLI reference](cli-reference.md) — invocation, arguments, examples

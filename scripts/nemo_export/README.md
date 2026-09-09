@@ -225,6 +225,65 @@ This candidate keeps logical length inputs but trims the fixed-size cache/fifo
 buffers before concatenation, which is useful when investigating whether a more
 static streaming contract gives ORT or TensorRT a better graph.
 
+### Apple CoreML (single-partition) export
+
+`--static-streaming-batch1` fixes the input shapes but still trims the cache and
+FIFO by a *tensor value*, which makes every downstream shape data-dependent and
+stops CoreML compiling the graph at all. `--coreml-static-batch1` drops that trim
+-- safe because `spkcache` and `fifo` are always full at runtime, and the chunk is
+concatenated **last**, so the summed logical length still masks the padded tail of
+a short final chunk. `--coreml-const-lengths` then bakes the two buffer lengths in
+as constants:
+
+```bash
+python scripts/nemo_export/export_sortformer_nemo_to_onnx.py \
+  --nemo ~/models/diar_streaming_sortformer_4spk-v2.1.nemo \
+  --output ~/models/sortformer_coreml.onnx \
+  --opset 17 \
+  --coreml-static-batch1 --coreml-const-lengths \
+  --chunk-frames 992 --fixed-spkcache-frames 188 --fixed-fifo-frames 124 \
+  --overwrite
+```
+
+That alone compiles under CoreML but leaves ~70 partitions, because a `Where`
+(padding mask) and a `Pad` in every encoder layer stay on CPU and split the graph.
+Post-process to collapse them:
+
+```bash
+python scripts/nemo_export/coreml_optimize_sortformer.py \
+  --input ~/models/sortformer_coreml.onnx \
+  --output ~/models/sortformer_coreml_final.onnx \
+  --verify --reference ~/models/diar_streaming_sortformer_4spk-v2.1.onnx
+```
+
+Measured on an M5, ORT 1.24.4, chunk=992 / cache=188 / fifo=124:
+
+| stage | partitions | inference | cold load | warm load |
+|---|---|---|---|---|
+| shipped dynamic model | fails to compile | -- | -- | -- |
+| `--coreml-static-batch1` | 71 | 166.0 ms | -- | -- |
+| `+ --coreml-const-lengths` | 69 | -- | -- | -- |
+| `+ Where removed` | 35 | 97.0 ms | -- | -- |
+| `+ Pad -> Concat` | **1** | 51.3 ms | 101.0 s | 20.8 s |
+| `+ Gemm pre-transpose` | **1** | **52.3 ms** | **2.1 s** | **0.2 s** |
+
+Reference on the same machine: CPU 163.5 ms, WebGPU 94.0 ms. Outputs match the
+original dynamic model to 3.6e-07 (preds) and 0.0 (embeddings).
+
+The Gemm pre-transpose is the load-time fix: ORT's CoreML EP writes the weight
+transposes it synthesizes for `Gemm(transB=0)` as hex-float TEXT inline in
+`model.mil` (1.49 GB for 0.39 GB of weights), and re-parses that on every load.
+See [docs/coreml_onnx_playbook.md](../../docs/coreml_onnx_playbook.md) for the
+full set of techniques and how to apply them to other models.
+
+Caveats: the graph assumes a full cache and FIFO, which `Sortformer.cs` always
+supplies; constant folding prunes the two baked `*_lengths`, so the graph takes
+four inputs, not six. `chunk_lengths` stays live on purpose -- `ProcessChunk`
+passes `min(start + chunkStride, totalFrames) - start`, which is **short for the
+final chunk of every recording**, and baking a constant there would let that
+chunk's zero-padded tail be attended to as real audio. CoreML partitioning is
+ORT-version dependent -- validated on 1.24.4.
+
 For a safer structure-only experiment that keeps dynamic time dimensions but
 specializes the graph to batch size 1, use:
 
