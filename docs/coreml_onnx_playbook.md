@@ -18,7 +18,7 @@ Inference figures are from an idle machine; load figures are stable.
 |---|---|---|---|---|---|
 | shipped dynamic model | *fails to compile* (`error -14`) | — | — | — | — |
 | `--coreml-static-batch1` | 71 | 166.0 ms | — | — | — |
-| `+ const lengths` | 69 | — | — | — | — |
+| `+ const lengths` (all three — see Technique 2) | 69 | — | — | — | — |
 | `+ all-False `Where` removed` | 35 | 97.0 ms | — | — | — |
 | `+ `Pad` → `Concat`` | **1** | 51.3 ms | 101.0 s | 20.8 s | 1.49 GB |
 | `+ Gemm pre-transpose` | **1** | 52.3 ms | **2.1 s** | **0.2 s** | **0.00 GB** |
@@ -27,6 +27,9 @@ Reference on the same machine: **CPU 163.5 ms, WebGPU 94.0 ms.**
 Outputs match the original dynamic model to `3.6e-07` (preds) and `0.0` (embeddings).
 
 Net: **3.2× vs CPU, 1.8× vs WebGPU, and load went from 101 s to 2.1 s.**
+
+⚠ **On ORT 1.24.4 — which is not the ORT the macOS build ships.** Read the first
+caveat at the bottom before treating any of this as a shipped speedup.
 
 ## The core mental model
 
@@ -95,12 +98,27 @@ If lengths are constant at runtime, make them graph constants
 
 > ⚠ **Check each length separately.** In Sortformer only `spkcache_lengths` and
 > `fifo_lengths` are genuinely constant. `chunk_lengths` is short for the last
-> chunk of every recording, so baking it would silently change the diarization at
-> the end of every file — a constant that is *usually* right is a correctness bug,
-> not an optimization. Verify against the calling code, not the steady state.
+> chunk of every recording, so baking it *does* silently change the diarization at
+> the end of every file — measured on the shipped model, up to **0.54** (rms 0.24)
+> on `preds`' 0..1 scale, enough to flip speaker assignments. Verify against the
+> calling code, not the steady state.
 
 **Worth knowing: on its own this barely helped** (71 → 69 partitions). Its real
 value is enabling Technique 3 — it turns the masks into foldable constants.
+
+> ⚠ **And that is the trap, because the two halves of this technique conflict.**
+> The attention mask is a function of **all three** lengths, so leaving the one
+> non-constant length live keeps the mask data-dependent and **Technique 3 removes
+> nothing at all** — 0 of 51 `Where` nodes, four inputs instead of three, and no
+> path past 69 partitions. There is no middle setting: you either bake a length
+> that is sometimes wrong, or you keep the whole mask. Sortformer's resolution is
+> to bake all three behind an explicit opt-in
+> (`--coreml-const-chunk-length`) and give the resulting steady-state graph a
+> **caller obligation**: route the final, short chunk of each recording to the
+> unspecialized graph. Every other chunk is full-length, so that costs one
+> inference per recording and keeps the output exact. Expect to find this shape
+> wherever "the axes are constant at runtime" turns out to mean "constant except
+> at the edges".
 
 ## Technique 3 — Delete all-False `Where` masks
 
@@ -111,6 +129,12 @@ folds to a constant that is **entirely False** (Sortformer: shape
 `(1,1,436,436)`, 436 = 188+124+124 — the tensor is exactly full).
 `Where(false, -10000, x)` is just `x`. These are identities whose only effect is
 fragmenting the graph.
+
+**Precondition:** *every* length feeding the mask must be a graph constant
+(Technique 2, including the awkward one). While any of them is a live input the
+mask cannot fold, the condition is not an initializer, and this technique is a
+no-op — a silent one, since the transform simply reports 0 removed and the
+pipeline continues to a graph that looks finished.
 
 **Do:** rewire consumers to the data input and delete the node. Verify the mask
 really is all-False first — it is a provable property, so assert it rather than
@@ -198,10 +222,22 @@ ORT_ENABLE_EXTENDED: 191 partitions  <- much worse
 `ORT_ENABLE_ALL` additionally emits hardware-specific `NhwcFusedConv` that makes
 the saved model **unloadable**. Fold at `BASIC` only.
 
-**Load pre-optimized models with `ORT_DISABLE_ALL`.** Re-optimizing an
-already-optimized graph throws
+**Load pre-optimized models with `ORT_DISABLE_ALL` — or `ORT_ENABLE_BASIC`, but
+never higher.** Re-optimizing an already-optimized graph throws
 `AddInitializedOrtValue Attempt to replace the existing tensor`.
-`OrtSessionBuilder.CreateCachedSession` already does this for cache hits.
+`OrtSessionBuilder.CreateCachedSession` already does this for cache hits, but
+`Create` defaults to `ORT_ENABLE_ALL`, so a *fresh* session on a pre-optimized
+file — which is exactly what the shipped CoreML variant is — has to pass the level
+explicitly or it throws at load.
+
+Bisected on ORT 1.26.0 with `disabled_optimizers`: the thrower is
+**`MatMulAddFusion`**, an EXTENDED-level pass. It reshapes >2D `MatMul` inputs so
+it can emit a `Gemm`, and the already-folded graph is full of the initializers it
+generates (`gemm_input_shape_token_N`, `gemm_output_reshape_token_N_new_shape`)
+because the fold pass already ran it. Renaming all 340 of those out of the way does
+**not** fix it, so it collides on something the fusion mints fresh — treat it as an
+ORT defect to route around, not a graph to reshape. The four transforms here are
+innocent: a BASIC-folded graph with *none* of them applied fails identically.
 
 **The CoreML provider options do not help load time.** Measured, all identical
 to three significant figures: `SpecializationStrategy=FastPrediction`,
@@ -309,17 +345,28 @@ never going near CoreML — it is bit-exact and costs nothing.
 ## Tooling
 
 - `scripts/nemo_export/export_sortformer_nemo_to_onnx.py` — `--coreml-static-batch1`,
-  `--coreml-const-lengths` (Techniques 1–2)
+  `--coreml-const-lengths`, `--coreml-const-chunk-length` (Techniques 1–2). All three
+  are needed to reach one partition; the first two alone stop at 69.
 - `scripts/nemo_export/coreml_optimize_sortformer.py` — Techniques 3–5 plus
   `--verify` against the original model. The graph transforms are model-agnostic;
   only the verification harness is Sortformer-specific.
 
 ## Caveats
 
-- **ORT-version sensitive.** Validated on **1.24.4**. Python ORT 1.29.0
-  partitions the same graph into 194 and diverges at ~1e-2. Re-validate on any
-  ORT upgrade.
+- **⚠ Every number here was measured on ORT 1.24.4, which the macOS build does not
+  ship.** `Directory.Build.props` pins 1.24.4 only for DirectML; an Apple Silicon
+  build is `-p:EP=Cpu` and takes the default, **1.29.0** — where the one data point
+  we have says this same graph splits into **194** partitions and diverges at
+  **~1e-2**. Until that is re-run on 1.29.0, the speedup below is a property of a
+  runtime no user of the shipped build is holding. This is the open question, and it
+  gates shipping the variant at all; see
+  `docs/investigations/sortformer_coreml_publish_investigation.md`.
 - **Steady-state only.** The static graph assumes full cache/FIFO and a
-  full-length chunk. Warm-up chunks must be zero-padded to full size.
+  full-length chunk. Warm-up chunks must be zero-padded to full size — free, since
+  the runtime already reports those two lengths as the full buffer size — but the
+  final short chunk of each recording must go to the unspecialized graph instead
+  (Technique 2's warning).
 - **Contract changes.** Folding prunes the now-unused `*_lengths`, so the graph
   takes three inputs, not six, at fixed shapes. Callers need a variant path.
+- **Load level is part of the contract**, not a tuning knob: `ORT_ENABLE_BASIC` or
+  lower, or the file does not open. See the anti-patterns above.

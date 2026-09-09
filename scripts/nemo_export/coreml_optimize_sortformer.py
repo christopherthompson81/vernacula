@@ -4,7 +4,13 @@ CoreML execution provider can compile as a SINGLE partition.
 
 Run this on the output of:
 
-    export_sortformer_nemo_to_onnx.py --coreml-static-batch1 --coreml-const-lengths
+    export_sortformer_nemo_to_onnx.py --coreml-static-batch1 --coreml-const-lengths \
+        --coreml-const-chunk-length
+
+All three flags matter. Without --coreml-const-chunk-length the padding mask stays
+a function of the live chunk_lengths input, transform 1 below finds 0 of 51 nodes,
+and the graph stops at ~69 partitions. See that flag's help for the correctness
+obligation it puts on the caller.
 
 Background
 ----------
@@ -27,8 +33,8 @@ Measured on an M5 (ORT 1.24.4, Sortformer 4spk v2.1, chunk=992/cache=188/fifo=12
 
 The two transforms
 ------------------
-1. `Where` (51x). With constant lengths the attention padding mask folds to a
-   compile-time constant that is ALL FALSE -- the sequence is fully packed
+1. `Where` (51x). With ALL THREE lengths constant the attention padding mask folds
+   to a compile-time constant that is ALL FALSE -- the sequence is fully packed
    (188 + 124 + 124 = 436). `Where(false, -10000, x)` is exactly `x`, so these
    are identities that exist only to break up the graph. Removed by rewiring
    consumers to the data input. Numerically exact.
@@ -48,6 +54,10 @@ Caveats
 * The result is steady-state only: full cache/fifo and a full-length chunk.
 * Folding prunes the now-unused *_lengths inputs, so the graph takes three
   inputs (chunk, spkcache, fifo), not six.
+* The result is an already-optimized graph: create its session at
+  ORT_ENABLE_BASIC or lower. EXTENDED and above throw
+  `AddInitializedOrtValue Attempt to replace the existing tensor` from
+  MatMulAddFusion, and OrtSessionBuilder.Create defaults to ORT_ENABLE_ALL.
 * Partitioning behaviour is ORT-version dependent. Validated on 1.24.4.
 """
 from __future__ import annotations
@@ -265,7 +275,7 @@ def prune(g) -> None:
     del g.value_info[:]          # let ORT re-infer
 
 
-def verify(original: str, optimized: str, tol: float) -> bool:
+def verify(original: str, optimized: str, static_src: str, tol: float) -> bool:
     import onnxruntime as ort
 
     rng = np.random.default_rng(7)
@@ -282,29 +292,44 @@ def verify(original: str, optimized: str, tol: float) -> bool:
 
     ref_sess = session(original)
 
-    # Build the feed from the model's OWN signature. The frame counts follow
-    # --chunk-frames / --fixed-spkcache-frames / --fixed-fifo-frames at export time,
-    # so hardcoding them here made --verify usable on exactly one configuration.
-    shapes = {i.name: i.shape for i in ref_sess.get_inputs()}
-    feed = {}
-    for i in ref_sess.get_inputs():
+    # Take the buffer shapes from --input, the pre-transform static export, and derive
+    # every input from those. Reading them off the reference instead made the documented
+    # usage (--reference <the shipped DYNAMIC model>) the one case that could never
+    # work: a dynamic graph has no shapes to read. Hardcoding them, the version before
+    # that, made --verify usable on exactly one frame configuration.
+    #
+    # Baked lengths are dropped from the signature at export time, so --input does not
+    # necessarily declare all six inputs either -- hence synthesize by NAME, for the
+    # union of what the two graphs ask for, rather than iterating one signature.
+    src_sess = session(static_src)
+    shapes = {i.name: i.shape for i in src_sess.get_inputs()}
+    for i in src_sess.get_inputs():
         if any(not isinstance(d, int) for d in i.shape):
             raise SystemExit(
-                f"--verify needs a static graph; input {i.name} has shape {i.shape}")
+                f"--verify needs a static --input; input {i.name} has shape {i.shape}")
+
+    def synth(i):
         np_dtype = NP.get(i.type)
         if np_dtype is None:
             raise SystemExit(f"--verify cannot synthesize input {i.name} of type {i.type}")
-        if np_dtype == np.int64:
-            # A `<buffer>_lengths` input. Steady state is the buffer's own frame count,
-            # which is what the CoreML graph was specialized for.
-            buf = i.name[: -len("_lengths")] if i.name.endswith("_lengths") else None
-            if buf is None or buf not in shapes:
-                raise SystemExit(f"--verify cannot infer a value for integer input {i.name}")
-            feed[i.name] = np.full(i.shape, shapes[buf][1], np.int64)
-        else:
-            feed[i.name] = rng.standard_normal(i.shape).astype(np_dtype)
+        if np_dtype != np.int64:
+            if i.name not in shapes:
+                raise SystemExit(
+                    f"--verify cannot synthesize {i.name}: --input does not declare it")
+            return rng.standard_normal(shapes[i.name]).astype(np_dtype)
+        # A `<buffer>_lengths` input. Steady state is the buffer's own frame count, which
+        # is the value the CoreML graph was specialized for -- and the value that makes
+        # the reference compute the same thing this graph has baked in.
+        buf = i.name[: -len("_lengths")] if i.name.endswith("_lengths") else None
+        if buf is None or buf not in shapes:
+            raise SystemExit(f"--verify cannot infer a value for integer input {i.name}")
+        return np.full([1], shapes[buf][1], np.int64)
 
-    ref = run(ref_sess, feed)
+    feed = {i.name: synth(i) for i in src_sess.get_inputs()}
+    for i in ref_sess.get_inputs():
+        feed.setdefault(i.name, synth(i))
+
+    ref = run(ref_sess, {i.name: feed[i.name] for i in ref_sess.get_inputs()})
 
     # Feed the optimized model only what it still declares: --coreml-const-lengths
     # folds the baked lengths away, and prune() then drops them from the signature.
@@ -312,7 +337,7 @@ def verify(original: str, optimized: str, tol: float) -> bool:
     opt_feed = {}
     for i in opt_sess.get_inputs():
         if i.name not in feed:
-            raise SystemExit(f"optimized model expects input {i.name}, absent from the original")
+            raise SystemExit(f"optimized model expects input {i.name}, absent from --input")
         arr = feed[i.name]
         opt_feed[i.name] = arr.astype(np.float16) if i.type == "tensor(float16)" else arr
     got = run(opt_sess, opt_feed)
@@ -382,7 +407,7 @@ def main() -> None:
         if not args.reference:
             raise SystemExit("--verify needs --reference <original dynamic .onnx>")
         print("\nverifying against reference on CPU EP:")
-        if not verify(os.path.expanduser(args.reference), dst, args.tolerance):
+        if not verify(os.path.expanduser(args.reference), dst, src, args.tolerance):
             sys.exit(1)
         print("PARITY: PASS")
 
