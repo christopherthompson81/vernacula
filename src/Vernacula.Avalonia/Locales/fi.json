@@ -38,8 +38,6 @@
   "settings_hw_recheck": "Tarkista uudelleen",
   "settings_hw_download_cuda": "Lataa CUDA Toolkit ↗",
   "settings_hw_download_cudnn": "Lataa cuDNN ↗",
-  "settings_hw_batch_ceiling": "Dynaaminen eräkoko mukautuu sekä segmenttien määrään että vapaaseen VRAM-muistiin. Nykyinen yläraja: ~{secs} s audiota per ajo.",
-  "settings_hw_batch_fallback": "Dynaaminen eräkoko mukautuu sekä segmenttimäärään että vapaaseen VRAM-muistiin. Nykyinen yläraja: ~{secs}s ääntä per ajo (GPU:ta ei havaittu — käytetään oletusarvoa).",
   "settings_hw_no_gpu": "GPU-kiihdytystä ei havaittu — päättely suoritetaan CPU:lla.",
   "settings_checking_hash": "Hashataan {file} ({i}/{n})…",
   "settings_models_up_to_date": "Kaikki mallit ovat ajan tasalla ✓",

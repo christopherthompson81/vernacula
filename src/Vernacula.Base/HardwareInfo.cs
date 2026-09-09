@@ -75,6 +75,18 @@ public static class HardwareInfo
     [DllImport("libnvidia-ml.so.1", EntryPoint = "nvmlDeviceGetName")]
     private static extern int NvmlDeviceGetNameLinux(IntPtr device, byte[] name, uint length);
 
+    [DllImport("nvml.dll", EntryPoint = "nvmlSystemGetCudaDriverVersion_v2")]
+    private static extern int NvmlSystemGetCudaDriverVersionWindows(out int version);
+
+    [DllImport("libnvidia-ml.so.1", EntryPoint = "nvmlSystemGetCudaDriverVersion_v2")]
+    private static extern int NvmlSystemGetCudaDriverVersionLinux(out int version);
+
+    [DllImport("nvml.dll", EntryPoint = "nvmlSystemGetDriverVersion")]
+    private static extern int NvmlSystemGetDriverVersionWindows(byte[] version, uint length);
+
+    [DllImport("libnvidia-ml.so.1", EntryPoint = "nvmlSystemGetDriverVersion")]
+    private static extern int NvmlSystemGetDriverVersionLinux(byte[] version, uint length);
+
     // ── GPU memory ────────────────────────────────────────────────────────────
 
     /// <summary>
@@ -123,6 +135,58 @@ public static class HardwareInfo
                 if (NvmlDeviceGetHandleByIndexPlatform((uint)gpuId, out var device) != 0) return "";
                 var buf = new byte[96];
                 if (NvmlDeviceGetNamePlatform(device, buf, (uint)buf.Length) != 0) return "";
+                int len = Array.IndexOf(buf, (byte)0);
+                return Encoding.UTF8.GetString(buf, 0, len < 0 ? buf.Length : len);
+            }
+            finally { NvmlShutdownPlatform(); }
+        }
+        catch { return ""; }
+    }
+
+    /// <summary>
+    /// The highest CUDA version the installed display driver can run, as (major, minor), or (0, 0)
+    /// when NVML cannot say. This is NOT the toolkit on disk: it is what the driver supports, which
+    /// is the ceiling everything else lives under.
+    /// </summary>
+    public static (int Major, int Minor) GetDriverCudaVersion()
+    {
+        if (!OperatingSystem.IsWindows() && !OperatingSystem.IsLinux())
+            return (0, 0);
+
+        try
+        {
+            if (NvmlInitPlatform() != 0) return (0, 0);
+            try
+            {
+                int rc = OperatingSystem.IsWindows()
+                    ? NvmlSystemGetCudaDriverVersionWindows(out int version)
+                    : NvmlSystemGetCudaDriverVersionLinux(out version);
+                // NVML encodes 12.8 as 12080: major = v / 1000, minor = (v % 1000) / 10.
+                return rc != 0 || version <= 0 ? (0, 0) : (version / 1000, version % 1000 / 10);
+            }
+            finally { NvmlShutdownPlatform(); }
+        }
+        catch { return (0, 0); }
+    }
+
+    /// <summary>The display driver's own version string ("571.96"), or empty when NVML cannot say.
+    /// Worth naming beside the CUDA version it supports: the driver version is what the user sees
+    /// in GeForce Experience and on NVIDIA's download page.</summary>
+    public static string GetDriverVersion()
+    {
+        if (!OperatingSystem.IsWindows() && !OperatingSystem.IsLinux())
+            return "";
+
+        try
+        {
+            if (NvmlInitPlatform() != 0) return "";
+            try
+            {
+                var buf = new byte[80];   // NVML_SYSTEM_DRIVER_VERSION_BUFFER_SIZE
+                int rc = OperatingSystem.IsWindows()
+                    ? NvmlSystemGetDriverVersionWindows(buf, (uint)buf.Length)
+                    : NvmlSystemGetDriverVersionLinux(buf, (uint)buf.Length);
+                if (rc != 0) return "";
                 int len = Array.IndexOf(buf, (byte)0);
                 return Encoding.UTF8.GetString(buf, 0, len < 0 ? buf.Length : len);
             }
@@ -221,6 +285,9 @@ public static class HardwareInfo
     /// <param name="RuntimePresent">The runtime is on the machine, whether or not it can be used.
     /// Distinguishing that from "absent" is what stops the UI offering a download link beside a note
     /// saying the library is already installed and merely unreachable.</param>
+    /// <param name="DriverNote">Why the display driver cannot run what is installed, when that is
+    /// the problem. Its own field because it is the one cause the file probes are blind to: they
+    /// look on disk, and a driver is not a file we can find.</param>
     private sealed record CudaProbeResult(
         bool Runtime,
         bool Cudnn,
@@ -228,7 +295,8 @@ public static class HardwareInfo
         string? CudnnNote,
         IReadOnlyCollection<string> DllDirectories,
         bool RuntimePresent = false,
-        bool CudnnPresent = false);
+        bool CudnnPresent = false,
+        string? DriverNote = null);
 
     /// <summary>
     /// ⚠ A Lazy, NOT A HAND-ROLLED CACHE. CanProbeCudaExecutionProvider is asked at every
@@ -258,9 +326,10 @@ public static class HardwareInfo
         // turning "no CUDA" at one unreadable directory into a hard failure at every model init.
         try
         {
-            return OperatingSystem.IsWindows() ? ProbeWindows()
-                 : OperatingSystem.IsLinux() ? ProbeLinux()
-                 : Unknown();
+            var found = OperatingSystem.IsWindows() ? ProbeWindows()
+                      : OperatingSystem.IsLinux() ? ProbeLinux()
+                      : Unknown();
+            return found with { DriverNote = ProbeDriver() };
         }
         catch (Exception ex)
         {
@@ -270,6 +339,33 @@ public static class HardwareInfo
 
         static CudaProbeResult Unknown() =>
             new(false, false, null, null, Array.Empty<string>());
+    }
+
+    /// <summary>
+    /// Whether the display driver is new enough to run the CUDA this build links.
+    ///
+    /// ⚠ THE CAUSE THE FILE PROBES CANNOT SEE, AND THE ONE THIS MACHINE MOST OFTEN HAS. CUDA and
+    /// cuDNN are found by looking on disk, so unpacking CUDA 13 beside a driver from the CUDA 12
+    /// era earns two ticks and then fails at cudaSetDevice with a bare numeric CUDA error. Minor
+    /// versions are compatible within a major; a major is not, and the fix is a NEWER DRIVER --
+    /// the opposite of what "no CUDA found" would send someone off to install.
+    ///
+    /// A note only; it does not veto <see cref="CanProbeCudaExecutionProvider"/>. Data-centre
+    /// forward-compatibility packages let a newer runtime run on an older driver, and refusing to
+    /// try would break those installs for a prediction. Creating the session stays the source of
+    /// truth; this explains the failure the user is about to see.
+    /// </summary>
+    private static string? ProbeDriver()
+    {
+        var (major, minor) = GetDriverCudaVersion();
+        if (major == 0 || major >= RequiredCudaMajor)
+            return null;
+
+        var driver = GetDriverVersion();
+        var named = driver.Length == 0 ? "The NVIDIA display driver" : $"NVIDIA display driver {driver}";
+        return $"{named} supports CUDA up to {major}.{minor}, and this build needs CUDA "
+             + $"{RequiredCudaMajor}. It is the DRIVER that has to be newer -- installing another "
+             + "CUDA toolkit beside it will not change this. Update the driver.";
     }
 
     /// <summary>
@@ -388,15 +484,21 @@ public static class HardwareInfo
     /// <see cref="CudaRuntimeNote"/> so a cuDNN problem is never reported as the runtime's.</summary>
     public static string? CudnnNote => Probe.CudnnNote;
 
-    /// <summary>Both notes, for a caller that just wants to say what is wrong.</summary>
+    /// <summary>Why the display driver cannot run this build's CUDA, when that is the problem. Null
+    /// when the driver is new enough or NVML cannot say.</summary>
+    public static string? CudaDriverNote => Probe.DriverNote;
+
+    /// <summary>Every note, for a caller that just wants to say what is wrong. In install order:
+    /// the runtime, then cuDNN, then the driver that has to be able to run them.</summary>
     public static string? CudaProbeNote
     {
         get
         {
-            // One snapshot: reading the two notes through their own properties could take them from
+            // One snapshot: reading the notes through their own properties could take them from
             // different generations if a refresh landed between the reads.
             var probe = Probe;
-            var notes = new[] { probe.RuntimeNote, probe.CudnnNote }.Where(n => n is not null).ToArray();
+            var notes = new[] { probe.RuntimeNote, probe.CudnnNote, probe.DriverNote }
+                .Where(n => n is not null).ToArray();
             return notes.Length == 0 ? null : string.Join(" ", notes);
         }
     }

@@ -149,6 +149,19 @@ internal partial class SettingsViewModel : ObservableObject
     public bool IsAsrWhisperTurbo   => SelectedAsrBackend == AsrBackend.WhisperTurbo;
     public bool IsAsrGraniteSpeech  => SelectedAsrBackend == AsrBackend.GraniteSpeech;
     public bool CanUseVibeVoiceAsr  => CudaEpWorking;
+
+    /// <summary>
+    /// Whether the VRAM batch budget describes what the selected backend does.
+    ///
+    /// ⚠ TWO BACKENDS, NOT ALL OF THEM. The figure comes from the fitted curve in
+    /// <see cref="Config.VramSlopePerSample"/>, which only Parakeet and IndicConformer consume;
+    /// every other backend transcribes one segment at a time and the number describes nothing it
+    /// does. Shown beside VibeVoice Streaming -- whose length limit is real, and is the context
+    /// ceiling in minutes rather than anything to do with VRAM batching -- it read as a cap on how
+    /// much audio could be transcribed at all.
+    /// </summary>
+    public bool ShowBatchCeiling =>
+        SelectedAsrBackend is AsrBackend.Parakeet or AsrBackend.IndicConformer;
     /// <summary>
     /// Always selectable. The backend takes its KV cache from host memory when the session is
     /// not on CUDA, so a machine without a working CUDA provider transcribes correctly — it is
@@ -581,6 +594,7 @@ internal partial class SettingsViewModel : ObservableObject
 
         _svc.Save();
         OnPropertyChanged(nameof(ShowCohereLanguagePicker));
+        OnPropertyChanged(nameof(ShowBatchCeiling));
         OnSegmentationChanged?.Invoke();
         OnAsrBackendChanged?.Invoke();
         _ = CheckModelsAsync();
@@ -854,10 +868,11 @@ internal partial class SettingsViewModel : ObservableObject
 
                 var cudaCheck = _modelMgr.CheckCuda();
                 cudaOk = cudaCheck.Available;
-                // Only when the check actually ran: otherwise the message is about something else --
-                // on first launch, a model file that has not been downloaded yet -- and showing it
-                // here would blame CUDA for it.
-                cudaMessage = cudaCheck.Ran ? cudaCheck.Message : null;
+                // Always shown now. The message used to be suppressed when the check could not run,
+                // because the check needed a downloaded model and its "no preprocessor" message
+                // would have blamed CUDA for a missing file; it probes a built-in graph instead, so
+                // every message it returns really is about CUDA.
+                cudaMessage = cudaCheck.Message;
                 bf16After = HardwareInfo.SupportsBf16Acceleration();
             });
 
@@ -905,7 +920,12 @@ internal partial class SettingsViewModel : ObservableObject
                 if (ModelSelectionChanged is not null) await ModelSelectionChanged();
             }
 
-            if (!CudaEpWorking && SelectedAsrBackend is AsrBackend.VibeVoice or AsrBackend.VibeVoiceStreaming)
+            // ⚠ THE NON-STREAMING BACKEND ONLY. That one genuinely requires CUDA, so a selection it
+            // cannot honour has to go somewhere. The streaming backend does not: it is documented as
+            // always selectable (see CanUseVibeVoiceStreamingAsr) and says "(CPU - very slow)" in its
+            // own label, so moving the user off it here silently overrode a choice they had been
+            // shown the cost of and made anyway.
+            if (!CudaEpWorking && SelectedAsrBackend is AsrBackend.VibeVoice)
                 SelectedAsrBackend = AsrBackend.Parakeet;
 
             // Batch ceiling — query free VRAM (accurate post-load figure)
@@ -953,7 +973,7 @@ internal partial class SettingsViewModel : ObservableObject
 
     private void ApplyBatchCeilingText()
     {
-        string key   = _batchIsFallback ? "settings_hw_batch_fallback" : "settings_hw_batch_ceiling";
+        string key = _batchIsFallback ? "settings_hw_batch_budget_fallback" : "settings_hw_batch_budget";
         BatchCeilingText = Loc.Instance.T(key, new() { ["secs"] = $"{_batchSecs:F0}" });
     }
 

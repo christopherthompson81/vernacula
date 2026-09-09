@@ -38,8 +38,6 @@
   "settings_hw_recheck": "Kontrollér igen",
   "settings_hw_download_cuda": "Download CUDA Toolkit ↗",
   "settings_hw_download_cudnn": "Download cuDNN ↗",
-  "settings_hw_batch_ceiling": "Dynamisk batchstørrelse tilpasses efter segmentantal og ledig VRAM. Nuværende loft: ~{secs}s lyd pr. kørsel.",
-  "settings_hw_batch_fallback": "Dynamisk batchstørrelse tilpasses både segmentantal og ledig VRAM. Nuværende loft: ~{secs}s lyd pr. kørsel (GPU ikke registreret – bruger standard).",
   "settings_hw_no_gpu": "Ingen accelererbar GPU registreret — inferens køres på CPU.",
   "settings_checking_hash": "Hashing {file} ({i}/{n})…",
   "settings_models_up_to_date": "Alle modeller er opdaterede ✓",

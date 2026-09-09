@@ -38,8 +38,6 @@
   "settings_hw_recheck": "Erneut prüfen",
   "settings_hw_download_cuda": "CUDA Toolkit herunterladen ↗",
   "settings_hw_download_cudnn": "cuDNN herunterladen ↗",
-  "settings_hw_batch_ceiling": "Dynamische Stapelgrößenanpassung berücksichtigt Segmentanzahl und freien VRAM. Aktuelles Limit: ~{secs}s Audio pro Durchlauf.",
-  "settings_hw_batch_fallback": "Dynamische Stapelgrößenanpassung berücksichtigt Segmentanzahl und freien VRAM. Aktuelles Maximum: ~{secs}s Audio pro Durchlauf (GPU nicht erkannt – Standardwert wird verwendet).",
   "settings_hw_no_gpu": "Kein beschleunigungsfähiges GPU erkannt – Inferenz wird auf der CPU ausgeführt.",
   "settings_checking_hash": "Hashwert wird berechnet für {file} ({i}/{n})…",
   "settings_models_up_to_date": "Alle Modelle sind aktuell ✓",

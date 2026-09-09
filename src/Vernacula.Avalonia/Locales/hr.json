@@ -38,8 +38,6 @@
   "settings_hw_recheck": "Provjeri ponovo",
   "settings_hw_download_cuda": "Preuzmi CUDA Toolkit ↗",
   "settings_hw_download_cudnn": "Preuzmi cuDNN ↗",
-  "settings_hw_batch_ceiling": "Dinamičko grupiranje prilagođava se broju segmenata i slobodnom VRAM-u. Trenutno ograničenje: ~{secs}s zvuka po pokretanju.",
-  "settings_hw_batch_fallback": "Dinamička veličina grupe prilagođava se broju segmenata i slobodnoj VRAM memoriji. Trenutno ograničenje: ~{secs}s zvuka po izvođenju (GPU nije otkriven — koristi se zadana vrijednost).",
   "settings_hw_no_gpu": "Nije pronađen GPU s podrškom za ubrzanje — zaključivanje će se izvršavati na CPU-u.",
   "settings_checking_hash": "Hashiranje {file} ({i}/{n})…",
   "settings_models_up_to_date": "Svi modeli su ažurni ✓",

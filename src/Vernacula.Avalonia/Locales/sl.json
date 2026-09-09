@@ -38,8 +38,6 @@
   "settings_hw_recheck": "Znova preveri",
   "settings_hw_download_cuda": "Prenesi orodjarna CUDA ↗",
   "settings_hw_download_cudnn": "Prenesi cuDNN ↗",
-  "settings_hw_batch_ceiling": "Dinamična velikost serije se prilagaja številu segmentov in prostemu pomnilniku VRAM. Trenutna zgornja meja: ~{secs} s zvoka na zagon.",
-  "settings_hw_batch_fallback": "Dinamično določanje velikosti serije se prilagaja številu segmentov in razpoložljivemu VRAM-u. Trenutna omejitev: ~{secs} s zvoka na zagon (GPU ni zaznan – uporablja se privzeta vrednost).",
   "settings_hw_no_gpu": "Noben pospeševalni GPU ni zaznan — sklepanje bo potekalo na CPU.",
   "settings_checking_hash": "Razpršujem {file} ({i}/{n})…",
   "settings_models_up_to_date": "Vsi modeli so posodobljeni ✓",

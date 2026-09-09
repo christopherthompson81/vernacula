@@ -359,8 +359,9 @@
                                        IsVisible="{Binding GpuDetected,
                                                             Converter={StaticResource InvBoolToVis}}" />
 
-                            <!-- Batch ceiling -->
+                            <!-- Batch budget — only for the backends that batch -->
                             <TextBlock Text="{Binding BatchCeilingText}"
+                                       IsVisible="{Binding ShowBatchCeiling}"
                                        Foreground="{DynamicResource SubtextBrush}"
                                        FontSize="12"
                                        TextWrapping="Wrap"

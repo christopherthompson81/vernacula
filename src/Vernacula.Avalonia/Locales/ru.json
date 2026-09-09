@@ -38,8 +38,6 @@
   "settings_hw_recheck": "Повторная проверка",
   "settings_hw_download_cuda": "Скачать CUDA Toolkit ↗",
   "settings_hw_download_cudnn": "Скачать cuDNN ↗",
-  "settings_hw_batch_ceiling": "Динамический размер пакета адаптируется к числу сегментов и свободной памяти GPU. Текущий лимит: ~{secs} с аудио за один запуск.",
-  "settings_hw_batch_fallback": "Динамический размер пакета адаптируется к количеству сегментов и доступной VRAM. Текущий предел: ~{secs} с аудио за запуск (GPU не обнаружен — используется значение по умолчанию).",
   "settings_hw_no_gpu": "GPU с поддержкой ускорения не обнаружен — вывод будет выполняться на CPU.",
   "settings_checking_hash": "Хеширование {file} ({i}/{n})…",
   "settings_models_up_to_date": "Все модели актуальны ✓",
