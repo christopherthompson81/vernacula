@@ -38,8 +38,6 @@
   "settings_hw_recheck": "Iċċekkja mill-ġdid",
   "settings_hw_download_cuda": "Niżżel CUDA Toolkit ↗",
   "settings_hw_download_cudnn": "Niżżel cuDNN ↗",
-  "settings_hw_batch_ceiling": "Id-daqs dinamiku tal-lott jadatta ruħu għall-għadd tas-segmenti u l-VRAM libera. Limitu attwali: ~{secs}s ta' awdjo kull ħidma.",
-  "settings_hw_batch_fallback": "Id-daqs dinamiku tal-lottijiet jadatta għall-għadd tas-segmenti u l-VRAM liberu. Limitu attwali: ~{secs}s ta' awdjo kull eżekuzzjoni (GPU mhux imsib — jintuża d-default).",
   "settings_hw_no_gpu": "Ma nstab l-ebda GPU aċċellerabbli — l-inferenza se taħdem fuq il-CPU.",
   "settings_checking_hash": "Qed nagħmel l-hashing ta' {file} ({i}/{n})…",
   "settings_models_up_to_date": "Il-mudelli kollha huma aġġornati ✓",

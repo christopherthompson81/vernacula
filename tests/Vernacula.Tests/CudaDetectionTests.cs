@@ -78,6 +78,41 @@ public class CudaDetectionTests
         if (HardwareInfo.IsCudnnInstalled()) Assert.True(HardwareInfo.IsCudnnPresent);
     }
 
+    /// <summary>
+    /// The driver is the one cause the file probes cannot see: they look on disk, and CUDA 13
+    /// unpacked beside a CUDA 12-era driver earns a tick from both of them and then fails at
+    /// cudaSetDevice with a bare numeric error. If the explanation does not come from here it does
+    /// not come at all -- and it has to point at the driver rather than at the toolkit, because
+    /// installing more CUDA is the one action that cannot fix it.
+    /// </summary>
+    [Fact]
+    public void ADriverTooOldForThisBuildIsNamedAsTheReason()
+    {
+        if (!OperatingSystem.IsWindows() && !OperatingSystem.IsLinux())
+            Assert.Skip("CUDA detection only applies to Windows and Linux.");
+
+        HardwareInfo.InvalidateCudaProbes();
+        var (major, _) = HardwareInfo.GetDriverCudaVersion();
+        if (major == 0)
+            Assert.Skip("No NVIDIA driver is visible through NVML on this machine.");
+
+        var note = HardwareInfo.CudaDriverNote;
+
+        if (major < HardwareInfo.RequiredCudaMajor)
+        {
+            Assert.NotNull(note);
+            Assert.Contains($"CUDA {HardwareInfo.RequiredCudaMajor}", note);
+            Assert.Contains("driver", note, StringComparison.OrdinalIgnoreCase);
+            // And it has to reach the user: the message the UI shows is assembled elsewhere.
+            Assert.Contains(note, HardwareInfo.CudaUnavailableMessage());
+        }
+        else
+        {
+            // A driver new enough is not something to complain about.
+            Assert.Null(note);
+        }
+    }
+
     [Fact]
     public void InvalidatingReallyThrowsTheAnswerAway()
     {

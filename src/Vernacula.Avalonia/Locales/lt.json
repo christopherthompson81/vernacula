@@ -38,8 +38,6 @@
   "settings_hw_recheck": "Pakartotinai patikrinti",
   "settings_hw_download_cuda": "Atsisiųsti CUDA įrankių rinkinį ↗",
   "settings_hw_download_cudnn": "Atsisiųsti cuDNN ↗",
-  "settings_hw_batch_ceiling": "Dinaminis paketų dydis prisitaiko prie segmentų skaičiaus ir laisvos vaizdo plokštės atminties. Dabartinė riba: ~{secs}s garso vienam paleidimui.",
-  "settings_hw_batch_fallback": "Dinaminis paketų dydis prisitaiko prie segmentų skaičiaus ir laisvos VRAM. Dabartinė riba: ~{secs}s garso per vieną paleidimą (GPU neaptiktas — naudojama numatytoji reikšmė).",
   "settings_hw_no_gpu": "GPU pagreičio nepavyko aptikti — išvedimas bus vykdomas CPU.",
   "settings_checking_hash": "Maišoma {file} ({i}/{n})…",
   "settings_models_up_to_date": "Visi modeliai atnaujinti ✓",

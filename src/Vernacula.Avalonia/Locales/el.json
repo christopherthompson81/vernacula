@@ -38,8 +38,6 @@
   "settings_hw_recheck": "Επανέλεγχος",
   "settings_hw_download_cuda": "Λήψη CUDA Toolkit ↗",
   "settings_hw_download_cudnn": "Λήψη cuDNN ↗",
-  "settings_hw_batch_ceiling": "Το δυναμικό μέγεθος δέσμης προσαρμόζεται στον αριθμό τμημάτων και την ελεύθερη VRAM. Τρέχον όριο: ~{secs}s ήχου ανά εκτέλεση.",
-  "settings_hw_batch_fallback": "Δυναμική δέσμευση παρτίδων που προσαρμόζεται στον αριθμό τμημάτων και τη διαθέσιμη VRAM. Τρέχον ανώτατο όριο: ~{secs}s ήχου ανά εκτέλεση (GPU δεν εντοπίστηκε — χρήση προεπιλογής).",
   "settings_hw_no_gpu": "Δεν εντοπίστηκε επιταχυνόμενη GPU — η εξαγωγή συμπερασμάτων θα εκτελεστεί στην CPU.",
   "settings_checking_hash": "Κατακερματισμός {file} ({i}/{n})…",
   "settings_models_up_to_date": "Όλα τα μοντέλα είναι ενημερωμένα ✓",

@@ -632,16 +632,82 @@ internal class ModelManagerService
 
             foreach (var cookie in previous)
                 if (cookie != IntPtr.Zero) RemoveDllDirectory(cookie);
+
+            PrependToProcessPath(HardwareInfo.GetWindowsCudaDllDirectories());
         }
+    }
+
+    /// <summary>
+    /// Puts the same directories on this process's PATH.
+    ///
+    /// ⚠ AddDllDirectory ALONE IS NOT ENOUGH, WHICH IS NOT OBVIOUS. Directories registered that way
+    /// are only searched by a load that opts into the user-directory search, or by a process that
+    /// has called SetDefaultDllDirectories; a plain desktop build of this app is neither, so the
+    /// registrations above were inert and onnxruntime_providers_cuda.dll failed to load on
+    /// cublasLt64_13.dll -- a file sitting in a directory we had just "added". The failure is
+    /// swallowed and lands the user on the CPU, which is exactly the symptom this whole path exists
+    /// to prevent. PATH is what the default search actually reads, so it gets the directories too.
+    ///
+    /// Prepended rather than appended: a machine with an older toolkit already on PATH is the
+    /// normal case (that is how a CUDA 13 install arrives beside a CUDA 12 one), and the required
+    /// major has to win. Additive on purpose -- SetDefaultDllDirectories would fix the same problem
+    /// by REMOVING PATH from the search for every other native this app loads, which is a much
+    /// larger blast radius than the one bug being fixed. The AddDllDirectory registrations stay for
+    /// the MSIX case, where the restricted search excludes PATH instead.
+    /// </summary>
+    private static void PrependToProcessPath(IReadOnlyCollection<string> directories)
+    {
+        string current = Environment.GetEnvironmentVariable("PATH") ?? "";
+
+        // ⚠ REMOVE THEM FIRST, DO NOT SKIP WHAT IS ALREADY THERE. Passing over a directory because
+        // it is somewhere on PATH already leaves the probe's ranking unapplied on exactly the
+        // machine this method exists for: the NVIDIA installer commonly puts BOTH toolkits on PATH,
+        // with the older one first, and then nothing is prepended and the loader still binds the
+        // CUDA 12 copy of every library whose name does not carry the major -- cudnn64_9.dll,
+        // curand64_10.dll, cufft64_11.dll. Only the cudart/cublas names would have been right, and
+        // the AddDllDirectory registrations can no longer correct the order for the rest.
+        var wanted = new HashSet<string>(directories.Select(Normalise), StringComparer.OrdinalIgnoreCase);
+
+        var rest = current.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries)
+                          .Where(p => !wanted.Contains(Normalise(p)))
+                          .ToList();
+
+        string updated = string.Join(Path.PathSeparator, directories.Concat(rest));
+
+        // Idempotent: a second call finds the directories already at the front and rebuilds the
+        // same string, so a Re-check neither grows PATH nor writes for the sake of writing.
+        if (!string.Equals(updated, current, StringComparison.Ordinal))
+            Environment.SetEnvironmentVariable("PATH", updated);
+
+        static string Normalise(string dir) => dir.Trim().TrimEnd(Path.DirectorySeparatorChar);
     }
 
     /// <param name="Available">Whether a CUDA session was actually created.</param>
     /// <param name="Message">One line, suitable for a label. The full detail goes to the log.</param>
-    /// <param name="Ran">False when the check could not be attempted at all -- a missing model file,
-    /// say. ⚠ THE DIFFERENCE MATTERS TO THE UI: on first launch, before models are downloaded, this
-    /// returns false with a message about a missing preprocessor, and showing that as the reason
-    /// CUDA is unavailable sends someone to fix a CUDA install that was never broken.</param>
-    public record CudaCheck(bool Available, string Message, bool Ran);
+    public record CudaCheck(bool Available, string Message);
+
+    /// <summary>
+    /// The graph this check runs on: a 1×1×1×1 Conv with its weight as an initializer. 130 bytes,
+    /// carried here rather than read from disk.
+    ///
+    /// ⚠ IT MUST NOT BE A DOWNLOADED MODEL. This check used to load the Parakeet preprocessor, so
+    /// every machine that did not happen to have that one file answered "CUDA unavailable" no
+    /// matter how good its CUDA install was -- a fresh install before the first download, a models
+    /// directory pointed elsewhere or not yet migrated, or anyone using a VibeVoice backend, which
+    /// never downloads Parakeet at all. Everything downstream believed it: the Setup panel's CUDA
+    /// row went red, VibeVoice-ASR was greyed out as "CUDA Missing", the streaming backend was
+    /// labelled "(CPU - very slow)", and the selected backend was reset -- on a machine whose GPU
+    /// was fine and whose CUDA and cuDNN rows, which ask the hardware rather than the models
+    /// directory, both showed a tick.
+    ///
+    /// Conv rather than something simpler because it is a node the CUDA EP claims, so session
+    /// creation has to build a CUDA kernel and copy the initializer to the device instead of
+    /// partitioning the whole graph back to the CPU and telling us nothing.
+    /// Regenerate with scripts/make_cuda_probe_model.py.
+    /// </summary>
+    private const string CudaProbeModelBase64 =
+        "CAkSADp2ChYKAVgKAVcSAVkaBXByb2JlIgRDb252Eg1jdWRhX2VwX3Byb2JlKhMIAQgBCAEIARABQgFXSgQAAIA/WhsKAVgS"
+        + "FgoUCAESEAoCCAEKAggBCgIIAQoCCAFiGwoBWRIWChQIARIQCgIIAQoCCAEKAggBCgIIAUIECgAQDQ==";
 
     public CudaCheck CheckCuda()
     {
@@ -650,27 +716,20 @@ internal class ModelManagerService
             "Vernacula", "cuda_debug.txt");
         Directory.CreateDirectory(Path.GetDirectoryName(logPath)!);
 
-        string modelFile = Path.Combine(_settings.GetParakeetModelsDir(), Config.PreprocessorFile);
-        if (!File.Exists(modelFile))
-        {
-            string msg = $"{Config.PreprocessorFile} not found at: {modelFile}";
-            File.WriteAllText(logPath, msg);
-            return new CudaCheck(false, msg, Ran: false);
-        }
         try
         {
             if (OperatingSystem.IsMacOS())
             {
                 const string macOsMessage = "CUDA execution is not supported on macOS.";
                 File.WriteAllText(logPath, macOsMessage);
-                return new CudaCheck(false, macOsMessage, Ran: true);
+                return new CudaCheck(false, macOsMessage);
             }
 
             if (!OperatingSystem.IsWindows() && !OperatingSystem.IsLinux())
             {
                 string unsupportedMessage = $"CUDA execution is not supported on {RuntimeInformation.OSDescription}.";
                 File.WriteAllText(logPath, unsupportedMessage);
-                return new CudaCheck(false, unsupportedMessage, Ran: true);
+                return new CudaCheck(false, unsupportedMessage);
             }
 
             if (!HardwareInfo.CanProbeCudaExecutionProvider())
@@ -682,27 +741,34 @@ internal class ModelManagerService
                 // written for exactly that case unreachable from the UI.
                 var unavailableMessage = HardwareInfo.CudaUnavailableMessage();
                 File.WriteAllText(logPath, unavailableMessage);
-                return new CudaCheck(false, unavailableMessage, Ran: true);
+                return new CudaCheck(false, unavailableMessage);
             }
 
             AddCudaToSearchPath();
-            var opts = new SessionOptions();
+            using var opts = new SessionOptions();
             opts.AppendExecutionProvider_CUDA(0);
-            using var session = new InferenceSession(modelFile, opts);
+            using var session = new InferenceSession(Convert.FromBase64String(CudaProbeModelBase64), opts);
             string msg = $"CUDA OK on {GetPlatformName()}";
             File.WriteAllText(logPath, msg);
-            return new CudaCheck(true, msg, Ran: true);
+            return new CudaCheck(true, msg);
         }
         catch (Exception ex)
         {
             // ⚠ TWO AUDIENCES. The log gets everything; the caller gets a line a UI can show.
             // Returning the dump meant a settings label whose first line was "CUDA check failed on
             // Linux." -- the failure named, the reason buried under a stack trace.
-            string detail = $"CUDA check failed on {GetPlatformName()}.\nException: {ex.GetType().Name}\n{ex.Message}\n\nInner: {ex.InnerException?.Message}\n\nStack:\n{ex.StackTrace}";
+            //
+            // ⚠ AND THE PROBE'S NOTE GOES IN THE LOG, NOT ONLY ON SCREEN. The case this check is
+            // worst at explaining is a driver too old for the installed CUDA: everything is present,
+            // so the probe passes, and the session then throws a bare numeric CUDA error. The UI
+            // reads the note from HardwareInfo, but cuda_debug.txt is what gets attached to a bug
+            // report, and it was the one place the answer did not appear.
+            string note = HardwareInfo.CudaProbeNote is { } n ? $"\n{n}" : "";
+            string detail = $"CUDA check failed on {GetPlatformName()}.{note}\nException: {ex.GetType().Name}\n{ex.Message}\n\nInner: {ex.InnerException?.Message}\n\nStack:\n{ex.StackTrace}";
             File.WriteAllText(logPath, detail);
             string summary = $"{ex.GetType().Name}: {ex.Message}"
                            + (ex.InnerException is null ? "" : $" ({ex.InnerException.Message})");
-            return new CudaCheck(false, summary, Ran: true);
+            return new CudaCheck(false, summary);
         }
     }
 

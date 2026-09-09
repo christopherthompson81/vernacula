@@ -38,8 +38,6 @@
   "settings_hw_recheck": "Opnieuw controleren",
   "settings_hw_download_cuda": "Download CUDA Toolkit ↗",
   "settings_hw_download_cudnn": "Download cuDNN ↗",
-  "settings_hw_batch_ceiling": "Dynamische batchgrootte past zich aan op segmentaantal en beschikbaar VRAM. Huidige limiet: ~{secs}s audio per run.",
-  "settings_hw_batch_fallback": "Dynamische batchgrootte past zich aan op segmentaantal en vrij VRAM. Huidige limiet: ~{secs}s audio per run (GPU niet gedetecteerd — standaardwaarde gebruikt).",
   "settings_hw_no_gpu": "Geen versnelbare GPU gedetecteerd — inferentie wordt uitgevoerd op CPU.",
   "settings_checking_hash": "Hashen van {file} ({i}/{n})…",
   "settings_models_up_to_date": "Alle modellen zijn up-to-date ✓",

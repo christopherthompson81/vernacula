@@ -38,8 +38,6 @@
   "settings_hw_recheck": "Провери отново",
   "settings_hw_download_cuda": "Изтегляне на CUDA Toolkit ↗",
   "settings_hw_download_cudnn": "Изтегли cuDNN ↗",
-  "settings_hw_batch_ceiling": "Динамичното групиране се адаптира спрямо броя сегменти и свободната VRAM. Текущ лимит: ~{secs}с аудио на изпълнение.",
-  "settings_hw_batch_fallback": "Динамичното групиране адаптира размера на партидата спрямо броя сегменти и свободната VRAM. Текущо ограничение: ~{secs}s аудио на изпълнение (GPU не е открит — използва се стойност по подразбиране).",
   "settings_hw_no_gpu": "Не е открит GPU с поддръжка на ускорение — изводът ще се изпълни на CPU.",
   "settings_checking_hash": "Хеширане на {file} ({i}/{n})…",
   "settings_models_up_to_date": "Всички модели са актуални ✓",

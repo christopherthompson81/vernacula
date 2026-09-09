@@ -38,8 +38,6 @@
   "settings_hw_recheck": "Znova skontrolovať",
   "settings_hw_download_cuda": "Stiahnuť CUDA Toolkit ↗",
   "settings_hw_download_cudnn": "Stiahnuť cuDNN ↗",
-  "settings_hw_batch_ceiling": "Dynamická veľkosť dávky sa prispôsobuje počtu segmentov aj voľnej pamäti VRAM. Aktuálny strop: ~{secs} s zvuku na jedno spustenie.",
-  "settings_hw_batch_fallback": "Dynamická veľkosť dávky sa prispôsobuje počtu segmentov aj voľnej pamäti VRAM. Aktuálny strop: ~{secs} s zvuku na beh (GPU nezistené — používa sa predvolená hodnota).",
   "settings_hw_no_gpu": "Nebol zistený žiadny akcelerovateľný GPU — inferencia bude prebiehať na CPU.",
   "settings_checking_hash": "Hashuje sa {file} ({i}/{n})…",
   "settings_models_up_to_date": "Všetky modely sú aktuálne ✓",

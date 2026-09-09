@@ -38,8 +38,6 @@
   "settings_hw_recheck": "Sprawdź ponownie",
   "settings_hw_download_cuda": "Pobierz CUDA Toolkit ↗",
   "settings_hw_download_cudnn": "Pobierz cuDNN ↗",
-  "settings_hw_batch_ceiling": "Dynamiczny rozmiar partii dostosowuje się do liczby segmentów i dostępnej pamięci VRAM. Aktualny limit: ~{secs}s audio na przebieg.",
-  "settings_hw_batch_fallback": "Dynamiczne wsadowanie dostosowuje się do liczby segmentów i dostępnej pamięci VRAM. Bieżący limit: ~{secs}s audio na przebieg (nie wykryto GPU — używam wartości domyślnej).",
   "settings_hw_no_gpu": "Nie wykryto GPU obsługującego akcelerację — wnioskowanie będzie wykonywane na CPU.",
   "settings_checking_hash": "Obliczanie skrótu {file} ({i}/{n})…",
   "settings_models_up_to_date": "Wszystkie modele są aktualne ✓",

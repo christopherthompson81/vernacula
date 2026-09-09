@@ -38,8 +38,6 @@
   "settings_hw_recheck": "Újraellenőrzés",
   "settings_hw_download_cuda": "CUDA Toolkit letöltése ↗",
   "settings_hw_download_cudnn": "cuDNN letöltése ↗",
-  "settings_hw_batch_ceiling": "Dinamikus kötegméret igazodik a szegmensszámhoz és a szabad VRAM-hoz. Jelenlegi korlát: ~{secs} mp hanganyag futásonként.",
-  "settings_hw_batch_fallback": "A dinamikus kötegméret a szegmensszámhoz és a szabad VRAM-hoz igazodik. Jelenlegi korlát: ~{secs} mp hanganyag futásonként (GPU nem észlelhető – alapértelmezett érték használatban).",
   "settings_hw_no_gpu": "Nem található gyorsítható GPU – a következtetés CPU-n fog futni.",
   "settings_checking_hash": "{file} hashelése ({i}/{n})…",
   "settings_models_up_to_date": "Minden modell naprakész ✓",

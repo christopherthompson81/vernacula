@@ -38,8 +38,6 @@
   "settings_hw_recheck": "Pārbaudīt atkārtoti",
   "settings_hw_download_cuda": "Lejupielādēt CUDA rīkkomplektu ↗",
   "settings_hw_download_cudnn": "Lejupielādēt cuDNN ↗",
-  "settings_hw_batch_ceiling": "Dinamiskā partijas izmēra noteikšana pielāgojas gan segmentu skaitam, gan brīvajai VRAM. Pašreizējais ierobežojums: ~{secs}s audio vienā reizē.",
-  "settings_hw_batch_fallback": "Dinamiskais partiju lielums pielāgojas segmentu skaitam un brīvajai VRAM. Pašreizējais ierobežojums: ~{secs}s audio vienā reizē (GPU nav konstatēts — tiek izmantota noklusējuma vērtība).",
   "settings_hw_no_gpu": "Nav konstatēts paātrinājumam piemērots GPU — secinājumi tiks veikti uz CPU.",
   "settings_checking_hash": "Tiek aprēķināta jaucējvērtība: {file} ({i}/{n})…",
   "settings_models_up_to_date": "Visi modeļi ir atjaunināti ✓",

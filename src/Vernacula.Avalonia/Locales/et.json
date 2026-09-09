@@ -38,8 +38,6 @@
   "settings_hw_recheck": "Kontrolli uuesti",
   "settings_hw_download_cuda": "Laadi alla CUDA Toolkit ↗",
   "settings_hw_download_cudnn": "Laadi alla cuDNN ↗",
-  "settings_hw_batch_ceiling": "Dünaamiline partiisuuruse määramine kohandub nii segmentide arvu kui ka vaba VRAM-i järgi. Praegune ülempiir: ~{secs} s heli käivituse kohta.",
-  "settings_hw_batch_fallback": "Dünaamiline partiimahu määramine kohandub segmentide arvu ja vaba VRAM-i järgi. Praegune ülempiir: ~{secs}s heli käivituse kohta (GPU-d ei tuvastatud — kasutatakse vaikeväärtust).",
   "settings_hw_no_gpu": "GPU-d ei tuvastatud — järeldamine käivitatakse CPU-l.",
   "settings_checking_hash": "Räsistan faili {file} ({i}/{n})…",
   "settings_models_up_to_date": "Kõik mudelid on ajakohased ✓",

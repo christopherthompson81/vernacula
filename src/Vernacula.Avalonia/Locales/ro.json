@@ -38,8 +38,6 @@
   "settings_hw_recheck": "Reverificare",
   "settings_hw_download_cuda": "Descarcă CUDA Toolkit ↗",
   "settings_hw_download_cudnn": "Descarcă cuDNN ↗",
-  "settings_hw_batch_ceiling": "Dimensionarea dinamică a loturilor se adaptează la numărul de segmente și VRAM-ul disponibil. Limita curentă: ~{secs}s de audio per rulare.",
-  "settings_hw_batch_fallback": "Dimensionarea dinamică a loturilor se adaptează la numărul de segmente și la VRAM-ul disponibil. Limita curentă: ~{secs}s de audio per rulare (GPU nedetectat — se folosește valoarea implicită).",
   "settings_hw_no_gpu": "Niciun GPU accelerabil detectat — inferența va rula pe CPU.",
   "settings_checking_hash": "Se calculează hash-ul pentru {file} ({i}/{n})…",
   "settings_models_up_to_date": "Toate modelele sunt actualizate ✓",

@@ -38,8 +38,6 @@
   "settings_hw_recheck": "Volver a verificar",
   "settings_hw_download_cuda": "Descargar CUDA Toolkit ↗",
   "settings_hw_download_cudnn": "Descargar cuDNN ↗",
-  "settings_hw_batch_ceiling": "El tamaño de lote dinámico se adapta al número de segmentos y la VRAM disponible. Límite actual: ~{secs}s de audio por ejecución.",
-  "settings_hw_batch_fallback": "El tamaño de lote dinámico se adapta al número de segmentos y la VRAM disponible. Límite actual: ~{secs}s de audio por ejecución (GPU no detectada — usando valor predeterminado).",
   "settings_hw_no_gpu": "No se detectó ninguna GPU acelerada — la inferencia se ejecutará en CPU.",
   "settings_checking_hash": "Calculando hash de {file} ({i}/{n})…",
   "settings_models_up_to_date": "Todos los modelos están actualizados ✓",
