@@ -226,7 +226,11 @@ internal class TranscriptionService
                                 for (; shown < segs.Count; shown++)
                                 {
                                     var seg = segs[shown];
-                                    string sid = $"speaker_{seg.Speaker}";
+                                    // Same fold as the persist loop below: text the model
+                                    // attributed to nobody is speaker -1, and showing
+                                    // "speaker_-1" here and "speaker_0" after the reload would
+                                    // be two names for one turn.
+                                    string sid = $"speaker_{Math.Max(0, seg.Speaker)}";
                                     onSegmentAdded(new SegmentRow
                                     {
                                         SegmentId          = shown,
@@ -283,10 +287,11 @@ internal class TranscriptionService
                 }, ct).ConfigureAwait(false);
 
                 db.BeginBulkInsert();
-                // The label the model gives a speaker is not a row id: a recording decoded in
-                // several passes carries labels shifted past the previous pass's, and a pass
-                // that never says "Speaker 0" leaves a gap. So each label is inserted on first
-                // sight and the row it actually got is what the segments reference.
+                // Row ids are the app's speaker identity — GetSegments derives the tag back
+                // from them — so a segment has to reference the row its speaker actually got
+                // rather than a number derived from the label. The assembler hands out labels
+                // densely in first-appearance order, so the two agree, and taking the id from
+                // the insert keeps them agreeing without relying on that.
                 var vibeSpeakerRows = new Dictionary<int, int>();
                 foreach (var seg in vibeSegs)
                 {

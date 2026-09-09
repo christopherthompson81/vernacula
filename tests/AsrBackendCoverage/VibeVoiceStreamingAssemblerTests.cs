@@ -194,6 +194,35 @@ public class VibeVoiceStreamingAssemblerTests
     }
 
     [Fact]
+    public void LabelsAreDenseEvenWhenTheModelsNumbersAreNot()
+    {
+        // The results database keys speakers by row id and derives the tag back from it, so a
+        // gap in the labels makes a segment's tag and its speaker's name disagree. The model is
+        // under no obligation to count from zero, and a pass boundary shifts whatever it does.
+        var segs = VibeVoiceStreamingAsr.ToSegments(
+        [
+            InPass(0, 0, " \n Speaker 3:Third. \n Speaker 7:Seventh."),
+            InPass(1, 1, " \n Speaker 2:Second."),
+        ]);
+        Assert.Equal([0, 1, 2], segs.Select(s => s.Speaker));
+    }
+
+    [Fact]
+    public void APassWithNothingToSayConsumesNoLabel()
+    {
+        // Labels are handed out to turns, not to passes: a stretch of silence must not leave a
+        // hole in the numbering.
+        var segs = VibeVoiceStreamingAsr.ToSegments(
+        [
+            InPass(0, 0, " \n Speaker 0:Before."),
+            InPass(1, 1, "   "),
+            InPass(2, 2, " \n Speaker 0:After."),
+        ]);
+        Assert.Equal([0, 1], segs.Select(s => s.Speaker));
+        Assert.Equal(["Before.", "After."], segs.Select(s => s.Content));
+    }
+
+    [Fact]
     public void ChunksWithNoSpeakerMarkerStillProduceText()
     {
         // A recording whose speaker never changes emits no markers at all; the text must not

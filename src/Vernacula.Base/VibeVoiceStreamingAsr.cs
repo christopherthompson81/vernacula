@@ -163,7 +163,17 @@ public sealed class VibeVoiceStreamingAsr : IDisposable
         // Below the cap this is "size it to the recording". At the cap — a recording longer than
         // the export's context, or than this card can hold — it is "size it to one pass", and the
         // recording is transcribed in as many passes as it takes.
-        long want = Math.Min((long)(needed * KvSafetyFactor), cap);
+        //
+        // A tenth is left unspent when the cap comes from memory rather than from the export.
+        // `affordable` is what the memory model says is spare, and that model is an estimate
+        // which has been wrong in this direction before (Run 34): spending all of it would put
+        // the arena's own growth over the line partway through a long job — the failure this
+        // issue opened with, except hours in rather than up front. The export ceiling is not an
+        // estimate, so it is spent in full. A recording that fits is given what it needs either
+        // way, so the length the settings window promises is still the length that is allocated.
+        long usable = affordable < maxKvTokens ? cap - cap / 10 : cap;
+        if (needed <= cap) usable = Math.Max(usable, needed);
+        long want = Math.Min((long)(needed * KvSafetyFactor), usable);
         want = Math.Max(want, Math.Min(MinKvTokens, cap));
 
         // The floor is only a floor when the recording has to be split: a short file that fits
@@ -401,14 +411,18 @@ public sealed class VibeVoiceStreamingAsr : IDisposable
         private double _start, _end;
         private bool   _started;
         private int    _pass;
-        /// <summary>Added to the model's own numbering, so this pass cannot reuse a label.</summary>
-        private int    _speakerBase;
         /// <summary>
-        /// Highest label handed out so far. Starts at 0 rather than -1 because 0 is spoken for
-        /// even before a marker: text the model attributes to nobody is reported as speaker -1
-        /// and folded onto 0 downstream, and a later pass must not land on top of it.
+        /// Labels, in order of first appearance, keyed by the pass that produced them: the same
+        /// "Speaker 1" either side of a cache reset is two different people and gets two labels.
+        ///
+        /// The model's own numbering cannot be handed out as-is. It restarts at every boundary,
+        /// and consumers count on labels being dense and ascending — the results database keys
+        /// speakers by row id and derives the tag back from it, so a gap makes the tag and the
+        /// name disagree. Entries are created when a turn is first built, which is also when the
+        /// <see cref="Segments"/> preview builds the open turn: the open turn is always the
+        /// newest one, so previewing it assigns the label it was going to get anyway.
         /// </summary>
-        private int    _maxSpeaker;
+        private readonly Dictionary<(int Pass, int Speaker), int> _labels = [];
 
         /// <summary>Every turn so far. The last entry is still open and may grow.</summary>
         public IReadOnlyList<VibeVoiceSegment> Segments
@@ -429,13 +443,9 @@ public sealed class VibeVoiceStreamingAsr : IDisposable
                 // The cache was reset here, so the turn in progress cannot continue across the
                 // boundary and the numbering on the far side means something else.
                 Close(chunk.Start);
-                _pass        = chunk.Pass;
-                _speakerBase = _maxSpeaker + 1;
-                // Claimed immediately: a pass that never names anyone still occupies its base,
-                // and the pass after it has to start above that.
-                _maxSpeaker  = _speakerBase;
-                _speaker     = -1;
-                _start       = chunk.Start;
+                _pass    = chunk.Pass;
+                _speaker = -1;
+                _start   = chunk.Start;
             }
             int pos = 0;
             foreach (Match m in SpeakerMarker.Matches(chunk.Text))
@@ -444,7 +454,6 @@ public sealed class VibeVoiceStreamingAsr : IDisposable
                 double at = At(chunk, m.Index);
                 Close(at);
                 _speaker = int.Parse(m.Groups[1].Value);
-                _maxSpeaker = Math.Max(_maxSpeaker, Label);
                 _start   = at;
                 // The marker's own tokens belong to no turn: they are structure, not speech.
                 pos = m.Index + m.Length;
@@ -478,17 +487,24 @@ public sealed class VibeVoiceStreamingAsr : IDisposable
         }
 
         /// <summary>
-        /// The label the open turn gets: the model's own number in the first pass, shifted past
-        /// every label already used in a later one. Text the model attributed to nobody keeps
-        /// its -1 in the first pass — callers already fold that onto 0 — and takes the base in a
-        /// later one, which is where speaker 0 of that pass would land anyway.
+        /// The label for the turn being built, allocating one if this speaker has not been seen
+        /// in this pass before. Text the model attributed to nobody keeps the -1 callers already
+        /// fold onto 0 in the first pass, but still consumes its label, so the first speaker of
+        /// a later pass cannot land on top of it.
         /// </summary>
-        private int Label => _speaker < 0
-            ? (_speakerBase == 0 ? -1 : _speakerBase)
-            : _speakerBase + _speaker;
+        private int Label()
+        {
+            var key = (_pass, _speaker);
+            if (!_labels.TryGetValue(key, out int label))
+            {
+                label = _labels.Count;
+                _labels[key] = label;
+            }
+            return _speaker < 0 && _pass == 0 ? -1 : label;
+        }
 
         private VibeVoiceSegment Build(string text, double end) =>
-            new(_start, end, Label, text)
+            new(_start, end, Label(), text)
             {
                 TokenIds      = _openTokens.ToArray(),
                 TokenLogprobs = _openLogprobs.Count == _openTokens.Count ? _openLogprobs.ToArray() : [],

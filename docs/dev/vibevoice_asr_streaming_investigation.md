@@ -1468,12 +1468,41 @@ cache position is cheap (28 KiB) next to a 1.39 GiB working-set reserve — and 
 stable between runs. Two things worth recording from that:
 
 - With 6.67 GiB free the 10-minute run peaked at 6.12 GiB against a 656 MiB cache, so the fixed
-  cost is about 5.5 GiB where the budget models 4.58 (3.19 weights + 1.39 working set). The
-  reserve is if anything a little *low*, not conservative — the same direction of error as the
-  allocation failure that opened this issue.
+  cost is about 5.5 GiB where the *settings picker* models 4.58 (3.19 weights + 1.39 working
+  set). The picker therefore over-promises by nearly a gigabyte's worth of minutes on a card
+  near the line. The runtime planner is not wrong in the same way — it reads free memory after
+  the weights are resident, so its reserve only has to cover growth after that point, measured
+  here at about 0.84 GiB against the 1.39 GiB it holds back.
 - A 30-minute file — the reporter's case, near enough — transcribes in a single pass on a card
   with 6.1 GiB free, which is the outcome that matters most: splitting is the fallback, not the
   normal path.
+
+### Review follow-ups
+
+Three defects came out of reviewing the above, two of them consequences of the split itself.
+
+**The split path spent every byte the memory model called spare.** Below the cap the cache is
+`needed × 2.5`, which usually leaves slack; at the cap — now the normal path for a long file
+rather than a refusal — `want == affordable` exactly, and the arena's own growth had nothing to
+grow into. Given the picker's ~0.9 GiB optimism above, that is the allocation failure this issue
+opened with, moved to an hour into the job. A tenth of the cap is now left unspent when the cap
+comes from memory. The export ceiling is not an estimate and is still spent in full, and a
+recording that fits is still given what it needs, so the picker and the planner still agree.
+
+**Speaker labels have to be dense, not just disjoint.** The first version shifted each pass's
+numbering past the previous pass's highest label. That is disjoint but not gapless — a pass that
+decodes to silence, or a model that does not start its numbering at zero, leaves a hole — and the
+results database keys speakers by row id and derives the tag back from it (`'speaker_' ||
+(speaker_id - 1)`), so a hole makes a segment's tag disagree with its speaker's name. Labels are
+now allocated per `(pass, model number)` in order of first appearance, which is dense by
+construction and still disjoint across passes. The persist loop takes the row id the insert
+returned rather than deriving one, so the two cannot drift apart even if that changes again.
+
+**The live speaker tag did not match the saved one.** The streaming callback showed
+`speaker_{seg.Speaker}` while the persist loop folded the assembler's "attributed to nobody" -1
+onto 0, so an unattributed opening turn was `speaker_-1` in the progress list and `speaker_0`
+after the reload. Pre-existing, but a pass boundary can produce one unattributed turn per pass,
+so it stopped being rare.
 
 ### What the user sees
 

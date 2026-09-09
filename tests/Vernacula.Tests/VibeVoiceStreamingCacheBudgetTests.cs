@@ -60,6 +60,21 @@ public class VibeVoiceStreamingCacheBudgetTests
     }
 
     [Fact]
+    public void ACacheBoundedByMemoryLeavesTheCardSomeHeadroom()
+    {
+        // The memory model is an estimate. Spending every byte it calls spare would leave the
+        // arena's own growth nothing to grow into — and on the split path that failure lands
+        // partway through a long job rather than before it starts.
+        long free   = Work7B + 10 * 60 * 16 * Kv7B;
+        int  tokens = Plan(30 * 60, freeBytes: free);
+        Assert.True(tokens * Kv7B < free - Work7B,
+            "a memory-bounded cache should not claim the whole budget");
+
+        // The export ceiling is not an estimate, so it is spent in full.
+        Assert.Equal(Max7B, Plan(Max7B / 16.0 + 600, freeBytes: 40L * GiB));
+    }
+
+    [Fact]
     public void AFreeVramShortfallTakesWhatTheCardHasInsteadOfRefusing()
     {
         // The reported case: room for the working set and about ten minutes of cache, asked for
@@ -67,7 +82,7 @@ public class VibeVoiceStreamingCacheBudgetTests
         // answer is now ten minutes of cache and three passes through it.
         long free   = Work7B + 10 * 60 * 16 * Kv7B;
         int  tokens = Plan(30 * 60, freeBytes: free);
-        Assert.InRange(tokens, (int)(9 * 60 * 16), (int)(10 * 60 * 16));
+        Assert.InRange(tokens, (int)(8 * 60 * 16), (int)(10 * 60 * 16));
         Assert.True(tokens * Kv7B <= free - Work7B, "the cache must still fit in what is free");
     }
 
