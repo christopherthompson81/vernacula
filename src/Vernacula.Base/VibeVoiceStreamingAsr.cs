@@ -24,12 +24,17 @@ namespace Vernacula.Base;
 /// present_key_i are bound to the SAME device tensor, allocated once, and the kernel updates
 /// it in place. Attention costs only the filled length, so VRAM is flat in recording length
 /// and throughput does not decay (docs/dev/vibevoice_asr_streaming_investigation.md, Run 12).
-/// The buffer ceiling bounds job length; exceeding it raises before any work is done.
 ///
-/// Loop: prefill the prompt once; then for every window feed
+/// Loop: prefill the prompt; then for every window feed
 /// [speech_start] + frames + [speech_end], greedy-decode until &lt;|text_chunk_end|&gt; or EOS,
 /// then feed &lt;|text_chunk_end|&gt; itself so the cache always ends on it. The KV cache lives
-/// on the device and grows for the whole recording; upstream never evicts.
+/// on the device and grows for the whole pass; upstream never evicts.
+///
+/// A recording that needs more cache than the export or the card allows is decoded in several
+/// such passes: the cache is reset and the prompt re-prefilled, which bounds VRAM by the pass
+/// rather than by the recording. Nothing survives a reset, so the model renumbers its speakers
+/// from scratch and <see cref="SegmentAssembler"/> keeps the passes' labels disjoint rather
+/// than pretending they line up (issue #150).
 /// </summary>
 public sealed class VibeVoiceStreamingAsr : IDisposable
 {
@@ -54,7 +59,10 @@ public sealed class VibeVoiceStreamingAsr : IDisposable
     /// </summary>
     private readonly int _fixedKvTokens;
 
-    /// <summary>Longest recording this package can transcribe, from its cache ceiling.</summary>
+    /// <summary>
+    /// Longest stretch this package decodes as one pass, from its cache ceiling. Recordings
+    /// longer than this are decoded in several passes rather than refused.
+    /// </summary>
     public double MaxAudioSeconds => _maxKvTokens / PositionsPerSecond;
 
     /// <inheritdoc cref="VibeVoiceStreamingBudget.PositionsPerSecond"/>
@@ -92,8 +100,12 @@ public sealed class VibeVoiceStreamingAsr : IDisposable
     /// one-minute file (issue #150). So the buffer is sized to the recording in hand and only
     /// then clamped to what the card has free.
     ///
+    /// When the recording needs more than the clamp allows, the answer is the clamp rather than
+    /// a refusal: <see cref="Transcribe"/> resets the cache and re-prefills the prompt when the
+    /// next window would not fit, so a recording of any length runs in passes that do fit.
+    ///
     /// The estimate is <see cref="PositionsPerSecond"/>, an average; <see cref="KvSafetyFactor"/>
-    /// covers speech denser than average, and running out anyway is reported by <see cref="Step"/>.
+    /// covers speech denser than average, and speech denser still only shortens a pass.
     /// </summary>
     private int ChooseKvTokens(double audioSeconds, bool onDevice)
     {
@@ -120,44 +132,62 @@ public sealed class VibeVoiceStreamingAsr : IDisposable
         double audioSeconds, int maxKvTokens, int fixedKvTokens, long kvBytesPerPosition,
         long workingSetBytes, long freeBytes)
     {
+        // Free device memory, less what a run needs beyond the cache. long.MaxValue when NVML
+        // could not say: an unknown card is not a reason to allocate the ceiling, but it is no
+        // reason to refuse either, so only the recording and the export decide.
+        long budget     = freeBytes > 0 ? freeBytes - workingSetBytes : long.MaxValue;
+        long affordable = freeBytes <= 0 ? long.MaxValue
+                        : budget > 0     ? budget / kvBytesPerPosition
+                        : 0;
+
+        // A graph with a baked-in length has to have all of it, whatever the recording needs,
+        // and there is nothing to plan: ORT rejects any other size.
+        if (fixedKvTokens > 0)
+        {
+            if (affordable < fixedKvTokens)
+                throw new InvalidOperationException(
+                    $"Not enough free GPU memory for this package: its cache needs about " +
+                    $"{fixedKvTokens * kvBytesPerPosition / (double)(1L << 30):F1} GiB and " +
+                    $"{Math.Max(0, budget) / (double)(1L << 30):F1} GiB is free once the model and " +
+                    "its working set are accounted for. This package was exported with a fixed " +
+                    "cache length, so it pays for its whole context on every run; re-download it " +
+                    "to have the cache sized to the recording instead.");
+            return fixedKvTokens;
+        }
+
         // The prompt, its hotwords, and the rounding on the last partial window all sit outside
         // the per-second estimate.
         long needed = (long)Math.Ceiling(audioSeconds * PositionsPerSecond) + PromptPositionSlack;
-        if (needed > maxKvTokens)
-            throw new InvalidOperationException(
-                $"Recording is about {audioSeconds / 60:F1} minutes, which is estimated to need " +
-                $"more than this model's {maxKvTokens}-position cache (about " +
-                $"{maxKvTokens / PositionsPerSecond / 60:F0} minutes of audio). Re-export with a " +
-                "larger --max-tokens, or split the recording.");
+        long cap    = Math.Min(maxKvTokens, affordable);
 
-        long want = fixedKvTokens > 0
-            ? fixedKvTokens
-            // Math.Min on the floor as well: a package exported with a ceiling below the floor
-            // would otherwise reach Math.Clamp with min above max, which throws.
-            : Math.Clamp((long)(needed * KvSafetyFactor), Math.Min(MinKvTokens, maxKvTokens), maxKvTokens);
-        if (freeBytes <= 0)
-            return (int)want;   // No NVML answer: size to the recording and let ORT complain.
+        // Below the cap this is "size it to the recording". At the cap — a recording longer than
+        // the export's context, or than this card can hold — it is "size it to one pass", and the
+        // recording is transcribed in as many passes as it takes.
+        //
+        // A tenth is left unspent when the cap comes from memory rather than from the export.
+        // `affordable` is what the memory model says is spare, and that model is an estimate
+        // which has been wrong in this direction before (Run 34): spending all of it would put
+        // the arena's own growth over the line partway through a long job — the failure this
+        // issue opened with, except hours in rather than up front. The export ceiling is not an
+        // estimate, so it is spent in full. A recording that fits is given what it needs either
+        // way, so the length the settings window promises is still the length that is allocated.
+        long usable = affordable < maxKvTokens ? cap - cap / 10 : cap;
+        if (needed <= cap) usable = Math.Max(usable, needed);
+        long want = Math.Min((long)(needed * KvSafetyFactor), usable);
+        want = Math.Max(want, Math.Min(MinKvTokens, cap));
 
-        long budget     = freeBytes - workingSetBytes;
-        long affordable = budget > 0 ? budget / kvBytesPerPosition : 0;
-        // A graph with a baked-in length has to have all of it; one that lets us choose only
-        // has to cover the recording.
-        long required = fixedKvTokens > 0 ? fixedKvTokens : needed;
-        if (affordable < required)
+        // The floor is only a floor when the recording has to be split: a short file that fits
+        // in less than the floor is one pass and costs what it costs. Below the floor there is
+        // nothing worth splitting into, and passes that short would spend most of their cache
+        // re-reading the prompt.
+        if (want < Math.Min(MinKvTokens, needed))
             throw new InvalidOperationException(
-                $"Not enough free GPU memory for a {audioSeconds / 60:F1}-minute recording: its " +
-                $"cache needs about {required * kvBytesPerPosition / (double)(1L << 30):F1} GiB and " +
+                "Not enough free GPU memory to transcribe with this checkpoint: " +
                 $"{Math.Max(0, budget) / (double)(1L << 30):F1} GiB is free once the model and its " +
-                "working set are accounted for. " +
-                (fixedKvTokens > 0
-                    ? "This package was exported with a fixed cache length, so it pays for its "
-                    + "whole context on every run; re-download it to have the cache sized to the "
-                    + "recording instead."
-                    : $"About {affordable / PositionsPerSecond / 60:F0} minutes would fit right "
-                    + "now — close other GPU applications, use the 1.5B checkpoint, or split the "
-                    + "recording."));
+                "working set are accounted for, which is not enough cache to be worth decoding a " +
+                "pass into. Close other GPU applications, or use the 1.5B checkpoint.");
 
-        return (int)Math.Min(want, affordable);
+        return (int)want;
     }
 
     // Streaming constants from export-report.json["streaming"]
@@ -281,18 +311,36 @@ public sealed class VibeVoiceStreamingAsr : IDisposable
         var window  = new float[WindowSamples];
         var emptyAudio = Array.Empty<Float16>();
         var emptyIds   = Array.Empty<long>();
+        // The most one window can cost: its two speech markers, its frames, every token the
+        // decoder is allowed to generate for it, and the chunk-end token fed back afterwards.
+        // A pass ends before a window that would not fit, so the cache never overflows and the
+        // planner's average-based estimate only decides how long a pass tends to be.
+        long worstCaseWindow = 2 + FramesPerWindow + maxNewTokensPerChunk + 1;
+
         try
         {
-            // 1 — prompt prefill
             long[] prompt = hotwordTokenIds is { Length: > 0 }
                 ? [.. _promptHotwordsHeadIds, .. hotwordTokenIds, .. _promptTailIds]
                 : _promptTokenIds;
-            Step(prompt, emptyAudio, 0, emptyIds, kvBuffers, kvTokens, ref kvPos, binding, runOptions, false);
 
-            // 2 — one window per hop, zero-padded at the end of the recording
+            // One window per hop, zero-padded at the end of the recording, in as many passes as
+            // the cache takes: the first window of a pass prefills the prompt at position 0, and
+            // a pass ends as soon as the next window would not fit (issue #150).
+            int pass = -1;
             for (int ci = 0; ci < totalChunks; ci++)
             {
                 ct.ThrowIfCancellationRequested();
+                if (pass < 0 || kvPos + worstCaseWindow > kvTokens)
+                {
+                    kvPos = 0;
+                    pass++;
+                    Step(prompt, emptyAudio, 0, emptyIds, kvBuffers, kvTokens, ref kvPos, binding, runOptions, false);
+                    if (kvPos + worstCaseWindow > kvTokens)
+                        throw new InvalidOperationException(
+                            $"A {kvTokens}-position cache does not hold the prompt and one window " +
+                            $"({kvPos} + {worstCaseWindow} positions). Free GPU memory, or use the " +
+                            "1.5B checkpoint.");
+                }
                 int start = ci * HopSamples;
                 int n = Math.Min(WindowSamples, audio.Length - start);
                 Array.Copy(audio, start, window, 0, n);
@@ -320,6 +368,7 @@ public sealed class VibeVoiceStreamingAsr : IDisposable
                 var (chunkText, tokenCharEnds) = DecodeWithOffsets(ids);
                 var chunk = new VibeVoiceStreamingChunk(
                     Index: ci,
+                    Pass:  pass,
                     Start: start / (double)SampleRate,
                     End:   Math.Min(start + HopSamples, audio.Length) / (double)SampleRate,
                     Text:  chunkText,
@@ -345,6 +394,12 @@ public sealed class VibeVoiceStreamingAsr : IDisposable
     /// marker, so the newest segment stays open and grows with each chunk. Callers should
     /// re-read <see cref="Segments"/> after every <see cref="Add"/>: entries beyond what they
     /// have already shown are new turns, and the last entry's text may have changed.
+    ///
+    /// A long recording is decoded in passes with an empty cache between them, so the model's
+    /// numbering restarts and its "Speaker 1" after a boundary is not the one before it. The
+    /// numbering is therefore shifted past everything already used: the passes get disjoint
+    /// labels, and deciding that two of them are the same person is left to whoever can
+    /// actually tell (issue #150).
     /// </summary>
     public sealed class SegmentAssembler
     {
@@ -355,6 +410,19 @@ public sealed class VibeVoiceStreamingAsr : IDisposable
         private int    _speaker = -1;
         private double _start, _end;
         private bool   _started;
+        private int    _pass;
+        /// <summary>
+        /// Labels, in order of first appearance, keyed by the pass that produced them: the same
+        /// "Speaker 1" either side of a cache reset is two different people and gets two labels.
+        ///
+        /// The model's own numbering cannot be handed out as-is. It restarts at every boundary,
+        /// and consumers count on labels being dense and ascending — the results database keys
+        /// speakers by row id and derives the tag back from it, so a gap makes the tag and the
+        /// name disagree. Entries are created when a turn is first built, which is also when the
+        /// <see cref="Segments"/> preview builds the open turn: the open turn is always the
+        /// newest one, so previewing it assigns the label it was going to get anyway.
+        /// </summary>
+        private readonly Dictionary<(int Pass, int Speaker), int> _labels = [];
 
         /// <summary>Every turn so far. The last entry is still open and may grow.</summary>
         public IReadOnlyList<VibeVoiceSegment> Segments
@@ -370,6 +438,15 @@ public sealed class VibeVoiceStreamingAsr : IDisposable
         public void Add(VibeVoiceStreamingChunk chunk)
         {
             if (!_started) { _start = chunk.Start; _started = true; }
+            if (chunk.Pass != _pass)
+            {
+                // The cache was reset here, so the turn in progress cannot continue across the
+                // boundary and the numbering on the far side means something else.
+                Close(chunk.Start);
+                _pass    = chunk.Pass;
+                _speaker = -1;
+                _start   = chunk.Start;
+            }
             int pos = 0;
             foreach (Match m in SpeakerMarker.Matches(chunk.Text))
             {
@@ -409,8 +486,25 @@ public sealed class VibeVoiceStreamingAsr : IDisposable
             }
         }
 
+        /// <summary>
+        /// The label for the turn being built, allocating one if this speaker has not been seen
+        /// in this pass before. Text the model attributed to nobody keeps the -1 callers already
+        /// fold onto 0 in the first pass, but still consumes its label, so the first speaker of
+        /// a later pass cannot land on top of it.
+        /// </summary>
+        private int Label()
+        {
+            var key = (_pass, _speaker);
+            if (!_labels.TryGetValue(key, out int label))
+            {
+                label = _labels.Count;
+                _labels[key] = label;
+            }
+            return _speaker < 0 && _pass == 0 ? -1 : label;
+        }
+
         private VibeVoiceSegment Build(string text, double end) =>
-            new(_start, end, _speaker, text)
+            new(_start, end, Label(), text)
             {
                 TokenIds      = _openTokens.ToArray(),
                 TokenLogprobs = _openLogprobs.Count == _openTokens.Count ? _openLogprobs.ToArray() : [],
@@ -507,13 +601,12 @@ public sealed class VibeVoiceStreamingAsr : IDisposable
     {
         int seqLen = prefixIds.Length + audioCount + suffixIds.Length;
         long total = kvPos + seqLen;
+        // A backstop. Transcribe ends a pass before a window that would not fit, so reaching
+        // this means a single window cost more than its worst case — not that the recording is
+        // too long, which is no longer a way to fail.
         if (total > kvCapacity)
             throw new InvalidOperationException(
-                $"KV cache full: {total} positions needed, {kvCapacity} allocated. This recording " +
-                $"holds more speech than the {PositionsPerSecond:F0}-positions-per-second estimate " +
-                (kvCapacity < _maxKvTokens
-                    ? "and the free GPU memory allowed for; close other GPU applications or split the recording."
-                    : $"allowed for; this package handles about {MaxAudioSeconds / 60:F0} minutes of audio."));
+                $"KV cache full: {total} positions needed, {kvCapacity} allocated.");
 
         binding.ClearBoundInputs();
         binding.ClearBoundOutputs();
@@ -656,6 +749,11 @@ public sealed class VibeVoiceStreamingAsr : IDisposable
 /// not currently carried onto the segments <see cref="VibeVoiceStreamingAsr.ToSegments"/>
 /// produces, so the editor shows no per-word confidence for this backend yet.</para>
 /// </summary>
+/// <param name="Pass">
+///   Which decoding pass produced this chunk. A recording longer than the cache is decoded in
+///   passes, each starting from an empty cache, so nothing — least of all speaker identity —
+///   carries from one pass to the next. Zero for a recording that fits in one.
+/// </param>
 public sealed record VibeVoiceStreamingChunk(
     int Index, double Start, double End, string Text, long[] TokenIds, float[] TokenLogprobs,
-    int[] TokenCharEnds);
+    int[] TokenCharEnds, int Pass = 0);

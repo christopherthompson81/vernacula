@@ -39,6 +39,10 @@ public class VibeVoiceStreamingSizeWarningTests
         string w = Warn(VibeVoiceStreamingSize.Large7B, 15.3);
         Assert.Contains("rather than the full", w);
         Assert.Contains("136", w);   // the package's own ceiling, not a rounded "120"
+        // And it is a limit on one pass, not on the file: saying otherwise would send someone
+        // away from a recording the app now transcribes (issue #150).
+        Assert.Contains("at a time", w);
+        Assert.Contains("passes", w);
     }
 
     [Fact]

@@ -1378,3 +1378,137 @@ The first version of that test checked one card size and passed with either miti
 independently load-bearing: remove either and the sweep fails. The arithmetic now lives in
 `VibeVoiceStreamingBudget`, which the backend and the settings window both call, rather than in
 two copies that had to agree and did not.
+
+
+## Run 36 — 2026-09-09 10:20 — a recording too long for the cache is decoded in passes (issue #150)
+
+The reporter came back with the other half of #150: with the cache now sized to the recording,
+a 28-minute file on their 16 GB card is refused up front — "about N minutes would fit right
+now" — where before the whole thing failed on allocation. Their suggestion was to cut the audio
+with ffmpeg and stitch the pieces back together.
+
+The reason that had not been done is speaker identity. This model attributes speakers *because*
+it keeps the whole recording in context; cut the context and its "Speaker 1" on the far side of
+the cut is a fresh guess with no relationship to the "Speaker 1" before it. Matching them up
+means embedding-based re-identification, which is a diarizer — the component this backend exists
+to avoid.
+
+The question this run answers is whether that matters enough to justify refusing the job. It
+does not: labelling the passes disjointly and letting the user merge them turns a refusal into a
+transcript with a naming chore attached.
+
+### What was built
+
+- The planner no longer refuses a recording that needs more cache than the export ceiling or the
+  card allows. It returns the largest cache that *is* allowed, and the run decodes into it as
+  many times as the file takes. The only refusals left are a package with a baked-in cache length
+  the card cannot hold (ORT rejects a shorter buffer, so there is nothing to split into) and a
+  card with less than `MinKvTokens` to spare, which is not enough to be worth a pass.
+- The pass boundary is decided at run time, not planned: before each window, if `kvPos +
+  worstCaseWindow` exceeds the cache, the position counter resets to 0 and the prompt is
+  re-prefilled. Worst case is the two speech markers, the window's frames, every token the
+  decoder is allowed to emit for it, and the chunk-end token — about 16 seconds of audio's worth
+  of slack on a pass measured in minutes. The cache therefore cannot overflow mid-window, which
+  is what the 2.5x safety factor used to be insuring against, and dense speech shortens a pass
+  instead of failing one.
+- `VibeVoiceStreamingChunk` carries its pass index; `SegmentAssembler` closes the open turn at a
+  boundary and shifts the model's numbering past every label already handed out. Pass 0 keeps the
+  model's own numbers, so nothing changes for a recording that fits.
+
+### Measured, 1.5B on the RTX 3090, 10-minute two-person interview
+
+The card is far too large to force a split honestly, so the cache was pinned with a temporary
+`VERNACULA_KV_TOKENS` env override (removed before commit) at 4096 positions — about 3.4 minutes
+of audio, three passes over this file.
+
+| | chunks | segments | speakers | wall |
+|---|---|---|---|---|
+| one pass (24,000-position cache) | 205 | 155 | `speaker_0` ×155 | 46.5 s |
+| three passes (4,096) | 205 | 163 | `speaker_0` ×65, `speaker_1` ×58, `speaker_2` ×40 | 40.2 s |
+
+Same 205 chunks and the same audio coverage, so nothing is dropped or decoded twice at a
+boundary. The eight extra segments are the turns the resets cut in half. Word-level similarity
+between the two transcripts is 0.925, and the differences are spread through the file rather than
+clustered at the two cuts — comma placement, sentence splits, and near-homophones of the kind
+this decoder varies on between any two runs, not damage from the reset.
+
+At the cut itself:
+
+```
+  [ 234.7s] Speaker 0:<a sentence, running on to the end of the chunk>
+  -- cache reset for pass 2; speaker numbers restart here --
+  [ 237.6s] Speaker 0:<the next words of that same sentence, as a new turn>
+```
+
+(Chunk text abstracted, as above.) The sentence is cut, as it must be — the second pass has no
+idea a sentence was in progress — but the audio is continuous, nothing is repeated or dropped
+across the boundary, and the model re-opens with a speaker marker of its own accord.
+
+This file is the interesting case for labelling: whole, the model calls everyone `speaker_0`;
+split, each pass names its own `speaker_0` and the assembler renumbers them 0, 1, 2. That is
+three labels for what is probably two people — which is exactly the trade being made. The
+alternative on offer was no transcript.
+
+### Negative result: forcing a planner-driven split on a 24 GB card is finicky
+
+Ballast (`run34/ballast.py`) was used to make the card look small. Eight attempts, none of which
+landed on a planner-chosen split:
+
+| ballast | free before the run | file | result |
+|---|---|---|---|
+| 17.4, 17.2 GiB | 4.7, 4.9 GiB | 30 min | refused: nothing left after the working-set reserve |
+| 16.6, 16.3, 16.05 GiB | 5.6, 5.6, 5.9 GiB | 10/30 min | refused |
+| 15.6 GiB | 6.6 GiB | 30 min | refused |
+| 15.5 GiB | 6.7 GiB | 10 min | one pass, 24,000-position cache |
+| 15.0 GiB | 6.1 GiB | 30 min | one pass, 614 chunks, 439 segments, 146 s |
+
+The band between "refuses" and "does not need to split" is only a few hundred MB wide, because a
+cache position is cheap (28 KiB) next to a 1.39 GiB working-set reserve — and the two runs at
+6.6 and 6.1 GiB free came out on opposite sides of it, so where the boundary falls is not even
+stable between runs. Two things worth recording from that:
+
+- With 6.67 GiB free the 10-minute run peaked at 6.12 GiB against a 656 MiB cache, so the fixed
+  cost is about 5.5 GiB where the *settings picker* models 4.58 (3.19 weights + 1.39 working
+  set). The picker therefore over-promises by nearly a gigabyte's worth of minutes on a card
+  near the line. The runtime planner is not wrong in the same way — it reads free memory after
+  the weights are resident, so its reserve only has to cover growth after that point, measured
+  here at about 0.84 GiB against the 1.39 GiB it holds back.
+- A 30-minute file — the reporter's case, near enough — transcribes in a single pass on a card
+  with 6.1 GiB free, which is the outcome that matters most: splitting is the fallback, not the
+  normal path.
+
+### Review follow-ups
+
+Three defects came out of reviewing the above, two of them consequences of the split itself.
+
+**The split path spent every byte the memory model called spare.** Below the cap the cache is
+`needed × 2.5`, which usually leaves slack; at the cap — now the normal path for a long file
+rather than a refusal — `want == affordable` exactly, and the arena's own growth had nothing to
+grow into. Given the picker's ~0.9 GiB optimism above, that is the allocation failure this issue
+opened with, moved to an hour into the job. A tenth of the cap is now left unspent when the cap
+comes from memory. The export ceiling is not an estimate and is still spent in full, and a
+recording that fits is still given what it needs, so the picker and the planner still agree.
+
+**Speaker labels have to be dense, not just disjoint.** The first version shifted each pass's
+numbering past the previous pass's highest label. That is disjoint but not gapless — a pass that
+decodes to silence, or a model that does not start its numbering at zero, leaves a hole — and the
+results database keys speakers by row id and derives the tag back from it (`'speaker_' ||
+(speaker_id - 1)`), so a hole makes a segment's tag disagree with its speaker's name. Labels are
+now allocated per `(pass, model number)` in order of first appearance, which is dense by
+construction and still disjoint across passes. The persist loop takes the row id the insert
+returned rather than deriving one, so the two cannot drift apart even if that changes again.
+
+**The live speaker tag did not match the saved one.** The streaming callback showed
+`speaker_{seg.Speaker}` while the persist loop folded the assembler's "attributed to nobody" -1
+onto 0, so an unattributed opening turn was `speaker_-1` in the progress list and `speaker_0`
+after the reload. Pre-existing, but a pass boundary can produce one unattributed turn per pass,
+so it stopped being rare.
+
+### What the user sees
+
+The CLI prints `-- cache reset for pass N; speaker numbers restart here --` in the streamed
+output; the app appends `· pass N, new speaker labels` to the progress line. The settings warning
+changed from "fits about N minutes rather than the full 136" to saying that is how much is held
+*at a time*, that longer recordings are still transcribed in passes, and that the same person may
+appear under two labels. The help page and README say the same. The merge itself is the speaker
+rename the editor already has.

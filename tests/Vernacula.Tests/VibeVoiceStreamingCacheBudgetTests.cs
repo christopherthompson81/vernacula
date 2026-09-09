@@ -7,8 +7,11 @@ namespace Vernacula.Tests;
 /// <summary>
 /// How large a KV cache a run allocates. The old answer was "the export's ceiling, always",
 /// which cost 7.0 GiB on the 7B for a one-minute file and put the checkpoint out of reach of a
-/// 16 GB card (issue #150). These drive the arithmetic directly, because every branch in it is
-/// otherwise only reachable with a particular card and a particular recording in front of you.
+/// 16 GB card (issue #150). The second half of that issue is the other direction: a recording
+/// too long for the cache is no longer refused, it is decoded in passes, so the planner's job
+/// at the limit is to size one pass rather than to say no. These drive the arithmetic directly,
+/// because every branch in it is otherwise only reachable with a particular card and a
+/// particular recording in front of you.
 /// </summary>
 public class VibeVoiceStreamingCacheBudgetTests
 {
@@ -39,11 +42,11 @@ public class VibeVoiceStreamingCacheBudgetTests
         => Assert.Equal(Max7B, Plan((Max7B - 512) / 16.0, freeBytes: 20L * GiB));
 
     [Fact]
-    public void ARecordingLongerThanTheContextIsRefusedBeforeAnyWork()
+    public void ARecordingLongerThanTheContextTakesTheCeilingAndIsSplit()
     {
-        var ex = Assert.Throws<InvalidOperationException>(
-            () => Plan(Max7B / 16.0 + 600, freeBytes: 40L * GiB));
-        Assert.Contains("131072-position cache", ex.Message);
+        // It used to be refused. A cache that cannot hold the recording holds one pass of it,
+        // and the run resets between passes (issue #150).
+        Assert.Equal(Max7B, Plan(Max7B / 16.0 + 600, freeBytes: 40L * GiB));
     }
 
     [Fact]
@@ -57,13 +60,51 @@ public class VibeVoiceStreamingCacheBudgetTests
     }
 
     [Fact]
-    public void AFreeVramShortfallIsRefusedWithTheLengthThatWouldFit()
+    public void ACacheBoundedByMemoryLeavesTheCardSomeHeadroom()
     {
-        // Room for the working set and about ten minutes of cache, asked for thirty.
-        long free = Work7B + 10 * 60 * 16 * Kv7B;
+        // The memory model is an estimate. Spending every byte it calls spare would leave the
+        // arena's own growth nothing to grow into — and on the split path that failure lands
+        // partway through a long job rather than before it starts.
+        long free   = Work7B + 10 * 60 * 16 * Kv7B;
+        int  tokens = Plan(30 * 60, freeBytes: free);
+        Assert.True(tokens * Kv7B < free - Work7B,
+            "a memory-bounded cache should not claim the whole budget");
+
+        // The export ceiling is not an estimate, so it is spent in full.
+        Assert.Equal(Max7B, Plan(Max7B / 16.0 + 600, freeBytes: 40L * GiB));
+    }
+
+    [Fact]
+    public void AFreeVramShortfallTakesWhatTheCardHasInsteadOfRefusing()
+    {
+        // The reported case: room for the working set and about ten minutes of cache, asked for
+        // thirty. Refusing this is what made a 28-minute file impossible on a 16 GB card; the
+        // answer is now ten minutes of cache and three passes through it.
+        long free   = Work7B + 10 * 60 * 16 * Kv7B;
+        int  tokens = Plan(30 * 60, freeBytes: free);
+        Assert.InRange(tokens, (int)(8 * 60 * 16), (int)(10 * 60 * 16));
+        Assert.True(tokens * Kv7B <= free - Work7B, "the cache must still fit in what is free");
+    }
+
+    [Fact]
+    public void ACardWithNoRoomForACacheAtAllIsStillRefused()
+    {
+        // Splitting has a floor: below a cache that holds a couple of minutes there is nothing
+        // useful to split into, and the run should say so rather than thrash.
+        long free = Work7B + 600 * Kv7B;
         var ex = Assert.Throws<InvalidOperationException>(() => Plan(30 * 60, freeBytes: free));
         Assert.Contains("Not enough free GPU memory", ex.Message);
-        Assert.Contains("10 minutes would fit", ex.Message);
+    }
+
+    [Fact]
+    public void AVeryLongRecordingOnASmallCardIsSizedByTheCardNotTheRecording()
+    {
+        // Both limits bite at once: the card affords less than the ceiling, and the recording
+        // needs more than either. The card wins, and neither is a refusal.
+        long free   = Work7B + 20L * 60 * 16 * Kv7B;
+        int  tokens = Plan(4 * 60 * 60, freeBytes: free);
+        Assert.True(tokens < Max7B, "the ceiling is not affordable here");
+        Assert.True(tokens * Kv7B <= free - Work7B, "the cache must fit in what is free");
     }
 
     [Fact]
@@ -82,6 +123,8 @@ public class VibeVoiceStreamingCacheBudgetTests
         // rejects any other size, so they keep paying for the whole ceiling.
         Assert.Equal(Max7B, Plan(60, freeBytes: 20L * GiB, fixedTokens: Max7B));
 
+        // Nothing can be split out of a fixed length either: ORT rejects a shorter buffer, so
+        // this stays the one length-related refusal.
         var ex = Assert.Throws<InvalidOperationException>(
             () => Plan(60, freeBytes: 6L * GiB, fixedTokens: Max7B));
         Assert.Contains("re-download", ex.Message);

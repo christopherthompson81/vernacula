@@ -636,12 +636,21 @@ try
         // Print each chunk as the model emits it: this backend is meant to produce text while
         // the audio is still arriving, and hiding that until the end would misrepresent it.
         int chunkCount = 0;
+        int lastPass   = 0;
         var chunks = streaming.Transcribe(rawSamples, sampleRate, channels,
             hotwordTokenIds: hotwordIds,
             computeLogprobs: true,
             onChunk: c =>
             {
                 chunkCount++;
+                if (c.Pass != lastPass)
+                {
+                    // Say it where it happens: the speaker numbers below the line are a fresh
+                    // set, and nothing knows whether they are the same people as above it.
+                    lastPass = c.Pass;
+                    Console.WriteLine(
+                        $"  -- cache reset for pass {c.Pass + 1}; speaker numbers restart here --");
+                }
                 if (!string.IsNullOrWhiteSpace(c.Text))
                     Console.WriteLine($"  [{c.End,6:F1}s] {c.Text.Replace("\n", " ").Trim()}");
             },

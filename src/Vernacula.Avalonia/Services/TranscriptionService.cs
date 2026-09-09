@@ -226,7 +226,11 @@ internal class TranscriptionService
                                 for (; shown < segs.Count; shown++)
                                 {
                                     var seg = segs[shown];
-                                    string sid = $"speaker_{seg.Speaker}";
+                                    // Same fold as the persist loop below: text the model
+                                    // attributed to nobody is speaker -1, and showing
+                                    // "speaker_-1" here and "speaker_0" after the reload would
+                                    // be two names for one turn.
+                                    string sid = $"speaker_{Math.Max(0, seg.Speaker)}";
                                     onSegmentAdded(new SegmentRow
                                     {
                                         SegmentId          = shown,
@@ -240,9 +244,14 @@ internal class TranscriptionService
                                     onSegmentText(segs.Count - 1, segs[^1].Content);
 
                                 double pct = vibeDuration > 0 ? c.End / vibeDuration * 100.0 : 0;
+                                // A recording too long for the cache is decoded in passes, and
+                                // the speaker numbering restarts with each one. Say so while it
+                                // is happening rather than leaving the extra speakers to be
+                                // discovered in the transcript.
+                                string pass = c.Pass > 0 ? $" · pass {c.Pass + 1}, new speaker labels" : "";
                                 progress.Report(new TranscriptionProgress(
                                     TranscriptionPhase.Recognizing, 0, 100,
-                                    $"{c.End:F1}s / {vibeDuration:F1}s",
+                                    $"{c.End:F1}s / {vibeDuration:F1}s{pass}",
                                     Math.Max(0, segs.Count - 1), c.Text, OverridePercent: pct));
                             },
                             ct: ct);
@@ -278,7 +287,12 @@ internal class TranscriptionService
                 }, ct).ConfigureAwait(false);
 
                 db.BeginBulkInsert();
-                var seenVibeSpeakers = new HashSet<int>();
+                // Row ids are the app's speaker identity — GetSegments derives the tag back
+                // from them — so a segment has to reference the row its speaker actually got
+                // rather than a number derived from the label. The assembler hands out labels
+                // densely in first-appearance order, so the two agree, and taking the id from
+                // the insert keeps them agreeing without relying on that.
+                var vibeSpeakerRows = new Dictionary<int, int>();
                 foreach (var seg in vibeSegs)
                 {
                     // The streaming model can emit text before it names anyone, which the
@@ -286,10 +300,11 @@ internal class TranscriptionService
                     // writing "speaker_-1" and a diarization id of 0, which no consumer expects.
                     int speaker     = Math.Max(0, seg.Speaker);
                     string spkId    = $"speaker_{speaker}";
-                    int diarSpkId   = speaker + 1;
-
-                    if (seenVibeSpeakers.Add(speaker))
-                        db.InsertSpeaker(spkId);
+                    if (!vibeSpeakerRows.TryGetValue(speaker, out int diarSpkId))
+                    {
+                        diarSpkId = db.AddSpeaker(spkId);
+                        vibeSpeakerRows[speaker] = diarSpkId;
+                    }
 
                     // VibeVoice does not emit timestamps, so we synthesize them uniformly over
                     // the segment while preserving the real decoder token ids and logprobs.
