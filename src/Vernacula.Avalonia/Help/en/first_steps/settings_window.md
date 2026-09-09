@@ -85,13 +85,21 @@ A speaker in the result is not always a person: the model may give a distinct la
 non-speech source such as an audience, whose segment then reads something like "Applause and
 cheering". Rename or merge it in the editor like any other speaker.
 
-Recording length is capped rather than unlimited. The model keeps its whole context — that is
-how it tracks who is speaking without a separate diarizer — so each package is built with a
-ceiling set to the checkpoint's trained context: about **68 minutes** for the 1.5B and about
-**2 hours** for the 7B. A smaller card lowers that further, because the memory of the
-recording has to fit alongside the model. Either way a file that is too long is refused up
-front with a message naming the length that would fit, instead of failing partway through. Note that speed tapers as the context fills, so the last
-minutes of a very long recording decode more slowly than the first.
+Long recordings are decoded in passes. The model keeps its whole context — that is how it
+tracks who is speaking without a separate diarizer — so how much audio it can hold at once is
+bounded by the checkpoint's trained context, about **68 minutes** for the 1.5B and about **2
+hours** for the 7B, and by how much of your card is free, which on a small card is the lower of
+the two. A recording longer than that is not refused: the model's context is cleared and
+decoding continues, as many times as the file needs.
+
+What that costs is the speaker numbering, not the transcript. Nothing survives the reset, so
+the model starts naming speakers from scratch and there is no reliable way to tell that its
+"Speaker 1" after a reset is the same person as before it. Rather than guess, each pass gets
+its own labels — `speaker_0`, `speaker_1` in the first stretch, then `speaker_2`, `speaker_3`
+in the next — and you merge the ones that are the same person in the editor. The Settings page
+tells you how much audio your card holds at a time, and the progress line says when a new pass
+starts. Note that speed tapers as the context fills, so the last minutes of a pass decode more
+slowly than the first.
 
 ### IndicConformer language selection
 

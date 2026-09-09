@@ -137,6 +137,62 @@ public class VibeVoiceStreamingAssemblerTests
         Assert.Equal(2, segs[1].TokenIds.Count);
     }
 
+    private static VibeVoiceStreamingChunk InPass(int pass, int i, string text) =>
+        new(i, i * 2.933, (i + 1) * 2.933, text, [], [], [], pass);
+
+    [Fact]
+    public void ASecondPassGetsItsOwnSpeakerLabels()
+    {
+        // A recording too long for the cache is decoded in passes, and the model renumbers from
+        // scratch after each reset. Its "Speaker 0" on the far side is not the same person, so
+        // the labels must not collide — deciding they are the same person is the user's call.
+        var segs = VibeVoiceStreamingAsr.ToSegments(
+        [
+            InPass(0, 0, " \n Speaker 0:Hello. \n Speaker 1:Hi."),
+            InPass(1, 1, " \n Speaker 0:Later on. \n Speaker 1:Indeed."),
+        ]);
+
+        Assert.Equal(4, segs.Count);
+        Assert.Equal([0, 1, 2, 3], segs.Select(s => s.Speaker));
+        Assert.Equal(["Hello.", "Hi.", "Later on.", "Indeed."], segs.Select(s => s.Content));
+    }
+
+    [Fact]
+    public void ATurnDoesNotRunAcrossAPassBoundary()
+    {
+        // Nothing survives the cache reset, so text either side of it belongs to two turns even
+        // when the model names nobody in either.
+        var segs = VibeVoiceStreamingAsr.ToSegments([InPass(0, 0, "before"), InPass(1, 1, "after")]);
+        Assert.Equal(2, segs.Count);
+        Assert.Equal("before", segs[0].Content);
+        Assert.Equal("after", segs[1].Content);
+        Assert.NotEqual(segs[0].Speaker, segs[1].Speaker);
+    }
+
+    [Fact]
+    public void PassesThatNameNobodyStillDoNotShareALabel()
+    {
+        // The unnamed opening turn folds onto speaker 0 downstream, so a later pass has to start
+        // above it — and a pass with no markers at all still consumes a label of its own.
+        var segs = VibeVoiceStreamingAsr.ToSegments(
+        [
+            InPass(0, 0, "one"),
+            InPass(1, 1, "two"),
+            InPass(2, 2, " \n Speaker 0:three"),
+        ]);
+        var labels = segs.Select(s => System.Math.Max(0, s.Speaker)).ToList();
+        Assert.Equal(3, segs.Count);
+        Assert.Equal(labels.Count, labels.Distinct().Count());
+    }
+
+    [Fact]
+    public void ASinglePassKeepsTheModelsOwnNumbering()
+    {
+        // The common case must be untouched by any of the above: no pass boundary, no shift.
+        var segs = VibeVoiceStreamingAsr.ToSegments(Conversation);
+        Assert.Equal([0, 1, 0], segs.Select(s => s.Speaker));
+    }
+
     [Fact]
     public void ChunksWithNoSpeakerMarkerStillProduceText()
     {

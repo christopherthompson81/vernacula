@@ -180,8 +180,9 @@ internal partial class SettingsViewModel : ObservableObject
     /// <summary>
     /// Says what this card can actually do with the selected checkpoint. The cache is sized to
     /// the recording rather than to the export ceiling (issue #150), so the honest answer is
-    /// not "fits / does not fit" but the length that fits: a 16 GB card runs the 7B for about
-    /// an hour of audio and cannot run it for the full two.
+    /// not "fits / does not fit" but how much audio is decoded at a time: a 16 GB card runs the
+    /// 7B for about an hour before it has to reset the cache and start a new pass, which costs
+    /// the speaker numbering rather than the transcript.
     ///
     /// Reads FREE memory, not total. The runtime decides on what is free when the job starts,
     /// and a card is never entirely yours — the desktop alone is most of a gigabyte. Quoting
@@ -224,8 +225,10 @@ internal partial class SettingsViewModel : ObservableObject
         double capMinutes = VibeVoiceStreamingBudget.CeilingMinutes(shape.Ceiling);
         return fits >= capMinutes
             ? ""
-            : $"This card has {freeGiB:F1} GB of VRAM free, which fits about {fits:F0} minutes "
-            + $"of audio with this checkpoint rather than the full {capMinutes:F0}.";
+            : $"This card has {freeGiB:F1} GB of VRAM free, which holds about {fits:F0} minutes "
+            + $"of audio at a time with this checkpoint rather than the full {capMinutes:F0}. "
+            + "Longer recordings are still transcribed, in passes of about that length; speaker "
+            + "labels are not carried across a pass, so the same person may appear twice.";
     }
 
     public bool ShowVibeVoiceStreamingSizeWarning => VibeVoiceStreamingSizeWarning.Length > 0;
@@ -234,7 +237,7 @@ internal partial class SettingsViewModel : ObservableObject
         : "VibeVoice-ASR Streaming";
     public string VibeVoiceStreamingAsrDescription => VibeVoiceStreamingOnCpu
         ? "Chunked ASR with built-in speaker attribution, in 10 languages. No CUDA provider was found, so this runs on the CPU: the transcript is the same but decoding takes roughly 12x the length of the recording, so a 10-minute file is about two hours. Use the 1.5B, and prefer another backend for anything long."
-        : "Chunked ASR with built-in speaker attribution, in 10 languages. Text appears as the recording is decoded rather than after it finishes. Recording length is capped by the checkpoint's context: about 68 minutes (1.5B) or 2 hours (7B).";
+        : "Chunked ASR with built-in speaker attribution, in 10 languages. Text appears as the recording is decoded rather than after it finishes. Anything longer than the checkpoint's context (about 68 minutes for the 1.5B, 2 hours for the 7B, less on a card with little free memory) is decoded in passes, each with its own set of speaker labels.";
     public string VibeVoiceAsrLabel => CanUseVibeVoiceAsr ? "VibeVoice-ASR" : "VibeVoice-ASR (Unavailable - CUDA Missing)";
     public string VibeVoiceAsrDescription => CanUseVibeVoiceAsr
         ? "Whole-recording ASR with built-in diarization. Downloads into the vibevoice_asr models folder."

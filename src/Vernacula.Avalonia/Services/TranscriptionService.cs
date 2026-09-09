@@ -240,9 +240,14 @@ internal class TranscriptionService
                                     onSegmentText(segs.Count - 1, segs[^1].Content);
 
                                 double pct = vibeDuration > 0 ? c.End / vibeDuration * 100.0 : 0;
+                                // A recording too long for the cache is decoded in passes, and
+                                // the speaker numbering restarts with each one. Say so while it
+                                // is happening rather than leaving the extra speakers to be
+                                // discovered in the transcript.
+                                string pass = c.Pass > 0 ? $" · pass {c.Pass + 1}, new speaker labels" : "";
                                 progress.Report(new TranscriptionProgress(
                                     TranscriptionPhase.Recognizing, 0, 100,
-                                    $"{c.End:F1}s / {vibeDuration:F1}s",
+                                    $"{c.End:F1}s / {vibeDuration:F1}s{pass}",
                                     Math.Max(0, segs.Count - 1), c.Text, OverridePercent: pct));
                             },
                             ct: ct);
