@@ -325,17 +325,22 @@ Done on this machine (all machine-independent, all committed):
 pending — publishing a 527 MB file whose only measured win is on an ORT the app does not
 ship would be advertising a benefit no user of the shipped build receives.
 
-To run on the MacBook Air, in order:
+`scripts/nemo_export/coreml_partition_probe.py` exists so each of these is one command;
+the PR body carries the same list with the commands filled in. In order:
 
-1. `pip install onnxruntime==1.29.0`, then load
-   `diar_streaming_sortformer_4spk-v2.1.coreml.onnx` on the CoreML EP and log the partition
-   count and CoreML-vs-CPU diffs. **This one answers the go/no-go**; everything below is
-   moot if 1.29.0 cannot be made to behave.
-2. Repeat on 1.24.4 to confirm this box's ORT-1.26.0-folded file reproduces the 1-partition
-   result at all — if it does not, the artifact has to be *built* on the Mac (fold under the
-   ORT it will run on) and this box only ever cross-checks numerics.
-3. Confirm the file loads at `ORT_ENABLE_BASIC` and fails at `ORT_ENABLE_ALL` on the Mac's
-   ORT too (Run 5 found this on 1.26.0 and traced it to `MatMulAddFusion`). If it fails at
-   BASIC as well, the whole artifact needs rebuilding without the ORT fold round-trip.
-4. Only then: `scripts/make_manifest.py` / `scripts/upload_to_hf.py --sync-readme`, from
-   whichever machine built the file that passed.
+1. On **ORT 1.29.0** (what an Apple Silicon build ships), probe the variant on the CoreML EP
+   and read the partition count and the CoreML-vs-CPU diffs. **This answers the go/no-go**;
+   everything below is moot if 1.29.0 cannot be made to behave.
+2. Repeat on 1.24.4, to learn whether a file folded under a *different* ORT (1.26.0, on the
+   Linux box) reproduces the 1-partition result at all. If it does not, the shippable
+   artifact has to be **built** on the Mac — fold under the ORT it will run on — and the
+   Linux box only ever cross-checks numerics.
+3. Confirm the load-level constraint holds there too: loads at `ORT_ENABLE_BASIC`, throws at
+   `ORT_ENABLE_ALL` (Run 5, traced to `MatMulAddFusion`). If it throws at BASIC as well, the
+   artifact needs rebuilding without the ORT fold round-trip and this whole approach needs
+   rethinking.
+4. Only then publish: `scripts/make_manifest.py` then
+   `scripts/upload_to_hf.py --sync-readme`, from whichever machine built the file that
+   passed, and add the `manifest.json` entry by extending the published manifest rather than
+   regenerating it (the live one deliberately omits `sortformer/`, the int8 variants and
+   `silero_vad.onnx`, so `--all` would silently change what the app validates).
