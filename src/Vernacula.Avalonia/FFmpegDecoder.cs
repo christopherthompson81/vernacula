@@ -54,6 +54,16 @@ internal static unsafe class FFmpegDecoder
         // the system-installed FFmpeg from dlopen when we don't. Force it to
         // empty so Linux/macOS/Windows fall back to ldconfig / DYLD / PATH.
         string? runtimesDir = FindNativeRuntimeDirectory(rootPath);
+
+        // macOS: Homebrew's unversioned `ffmpeg` formula tracks the latest major
+        // (9.x, i.e. libavformat.63) whose sonames FFmpeg.AutoGen cannot bind.
+        // The formula that DOES match (ffmpeg@6 for AutoGen 6.x) is keg-only, so
+        // its libraries are deliberately kept off the default dyld search path.
+        // An empty RootPath therefore resolves nothing, every stub stays unbound,
+        // and the first call throws NotSupportedException. Probe the Homebrew
+        // prefixes for an install whose soname matches this binding.
+        runtimesDir ??= FindMacOsFFmpegDirectory();
+
         ffmpeg.RootPath = runtimesDir ?? string.Empty;
 
         _initialized = true;
@@ -69,6 +79,49 @@ internal static unsafe class FFmpegDecoder
 
             if (Directory.EnumerateFiles(candidate, "*avformat*").Any())
                 return candidate;
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Locate a macOS FFmpeg installation whose libavformat major version matches
+    /// the one FFmpeg.AutoGen was generated against. FFmpeg.AutoGen binds sonames
+    /// at a fixed major, so a mismatched install is worse than none: it resolves
+    /// nothing and fails later at the call site rather than here.
+    /// Returns null on other platforms, or when no matching install is present.
+    /// </summary>
+    private static string? FindMacOsFFmpegDirectory()
+    {
+        if (!OperatingSystem.IsMacOS())
+            return null;
+
+        string soname = $"libavformat.{ffmpeg.LIBAVFORMAT_VERSION_MAJOR}.dylib";
+
+        // Apple-silicon Homebrew lives at /opt/homebrew, Intel at /usr/local.
+        foreach (string prefix in new[] { "/opt/homebrew", "/usr/local" })
+        {
+            // The unversioned formula, if it happens to be the right major.
+            string libDir = Path.Combine(prefix, "lib");
+            if (File.Exists(Path.Combine(libDir, soname)))
+                return libDir;
+
+            // Otherwise any keg-only ffmpeg@N formula that matches.
+            string optDir = Path.Combine(prefix, "opt");
+            try
+            {
+                if (!Directory.Exists(optDir))
+                    continue;
+
+                foreach (string keg in Directory.EnumerateDirectories(optDir, "ffmpeg*"))
+                {
+                    string kegLib = Path.Combine(keg, "lib");
+                    if (File.Exists(Path.Combine(kegLib, soname)))
+                        return kegLib;
+                }
+            }
+            catch (UnauthorizedAccessException) { /* unreadable prefix: skip */ }
+            catch (IOException)                 { /* unreadable prefix: skip */ }
         }
 
         return null;

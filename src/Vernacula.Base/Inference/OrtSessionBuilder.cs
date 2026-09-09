@@ -54,6 +54,18 @@ public static class OrtSessionBuilder
         switch (ep)
         {
             case ExecutionProvider.Auto:
+                // macOS has neither CUDA nor DirectML. The osx-arm64 ORT build
+                // ships CoreML + WebGPU; Auto picks WebGPU because it is the safe
+                // choice for ANY graph, including the stock dynamic-shape exports
+                // that CoreML cannot compile at all. CoreML is faster once a model
+                // has been through docs/coreml_onnx_playbook.md, but that is a
+                // per-model property, so selecting it is left explicit.
+                if (OperatingSystem.IsMacOS())
+                {
+                    try { opts.AppendExecutionProvider("WebGPU", new Dictionary<string, string>()); }
+                    catch { }
+                    break;
+                }
                 if (HardwareInfo.CanProbeCudaExecutionProvider())
                 {
                     try
@@ -98,12 +110,42 @@ public static class OrtSessionBuilder
                 }
                 break;
 
+            case ExecutionProvider.CoreML:
+                try { AppendCoreML(opts); }
+                catch (Exception ex)
+                {
+                    throw new InvalidOperationException(
+                        "CoreML EP not available in the current ONNX Runtime build.", ex);
+                }
+                break;
+
+            case ExecutionProvider.WebGpu:
+                try { opts.AppendExecutionProvider("WebGPU", new Dictionary<string, string>()); }
+                catch (Exception ex)
+                {
+                    throw new InvalidOperationException(
+                        "WebGPU EP not available in the current ONNX Runtime build.", ex);
+                }
+                break;
+
             case ExecutionProvider.Cpu:
                 break;
         }
 
         return opts;
     }
+
+    // Append the CoreML EP. Uses the ML Program format (CoreML's current IR --
+    // the legacy NeuralNetwork format is frozen) and lets CoreML pick among CPU,
+    // GPU and ANE. Note that CoreML silently declines any node whose shape has an
+    // unbounded dimension, so graphs with a dynamic time axis end up heavily
+    // partitioned; measure before preferring this over CPU.
+    private static void AppendCoreML(SessionOptions opts)
+        => opts.AppendExecutionProvider("CoreML", new Dictionary<string, string>
+        {
+            ["ModelFormat"] = "MLProgram",
+            ["MLComputeUnits"] = "ALL",
+        });
 
     // Append the CUDA EP, optionally forcing full-fp32 matmul (use_tf32=0). TF32's ~1e-2
     // error is fine for one-shot models but COMPOUNDS catastrophically through OmniVoice's
@@ -453,8 +495,14 @@ public static class OrtSessionBuilder
         var epTag = ep switch
         {
             ExecutionProvider.Cpu => "cpu",
-            ExecutionProvider.Cuda or ExecutionProvider.Auto => "cuda",
+            // Auto resolves to a different provider per platform, so its tag has to
+            // follow -- otherwise a macOS Auto run and an explicit WebGpu run build
+            // two copies of the same optimised graph under different keys.
+            ExecutionProvider.Auto => OperatingSystem.IsMacOS() ? "webgpu" : "cuda",
+            ExecutionProvider.Cuda => "cuda",
             ExecutionProvider.DirectML => "dml",
+            ExecutionProvider.CoreML => "coreml",
+            ExecutionProvider.WebGpu => "webgpu",
             _ => "auto",
         };
         // Include mtime+size in a short hash so source edits invalidate.

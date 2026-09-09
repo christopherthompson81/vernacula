@@ -56,6 +56,31 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--coreml-static-batch1",
+        action="store_true",
+        help=(
+            "Export a fully static batch-1 graph for Apple CoreML. Like "
+            "--static-streaming-batch1 it fixes chunk/spkcache/fifo shapes, but it also drops "
+            "the length-based trimming: the fixed buffers are concatenated whole. That trim is "
+            "a no-op at runtime anyway (Vernacula always passes *_lengths equal to the buffer "
+            "size), yet it slices by a tensor VALUE, which makes every downstream shape "
+            "data-dependent and prevents CoreML from building an execution plan. Callers of "
+            "this graph must pass full-size, zero-padded buffers."
+        ),
+    )
+    parser.add_argument(
+        "--coreml-const-lengths",
+        action="store_true",
+        help=(
+            "With --coreml-static-batch1, replace the three *_lengths inputs with baked-in "
+            "constants (chunk/spkcache/fifo frame counts). The tensors stay in the graph "
+            "signature but are unused, so the caller is unchanged. This lets constant folding "
+            "erase the Range/Expand mask-building ops that otherwise force ~120 nodes back onto "
+            "CPU and fragment the CoreML graph into dozens of partitions. STEADY-STATE ONLY: "
+            "the graph then assumes full cache/fifo and a full-length chunk."
+        ),
+    )
+    parser.add_argument(
         "--dynamic-streaming-batch1",
         action="store_true",
         help=(
@@ -160,6 +185,11 @@ def build_wrapper(
     *,
     static_streaming_batch1: bool = False,
     dynamic_streaming_batch1: bool = False,
+    coreml_static_batch1: bool = False,
+    coreml_const_lengths: bool = False,
+    const_chunk_frames: int = 0,
+    const_spkcache_frames: int = 0,
+    const_fifo_frames: int = 0,
 ) -> Any:
     class SortformerExportWrapper(nn.Module):
         def __init__(self, inner: Any) -> None:
@@ -167,9 +197,28 @@ def build_wrapper(
             self.inner = inner
 
         def forward(self, chunk: Any, chunk_lengths: Any, spkcache: Any, spkcache_lengths: Any, fifo: Any, fifo_lengths: Any) -> tuple[Any, Any, Any]:
+            if coreml_const_lengths:
+                # Bake the steady-state lengths in as graph constants. The runtime always
+                # feeds exactly these values (Sortformer.cs sets *_lengths to each buffer's
+                # own size, and a full chunk is chunk_frames mel frames), so this changes no
+                # numerics in steady state -- but it turns the mask construction into foldable
+                # constants instead of data-dependent Range/Expand chains.
+                chunk_lengths = torch.tensor([const_chunk_frames], dtype=torch.int64)
+                spkcache_lengths = torch.tensor([const_spkcache_frames], dtype=torch.int64)
+                fifo_lengths = torch.tensor([const_fifo_frames], dtype=torch.int64)
             chunk_pre_encode_embs, chunk_pre_encode_lengths = self.inner.encoder.pre_encode(x=chunk, lengths=chunk_lengths)
             chunk_pre_encode_lengths = chunk_pre_encode_lengths.to(torch.int64)
-            if static_streaming_batch1:
+            if coreml_static_batch1:
+                # Fully static: concatenate the whole fixed buffers. No slice bound
+                # depends on a tensor value, so every downstream shape stays inferable
+                # and CoreML can compile the graph. Masking still happens downstream
+                # via the summed logical lengths passed to frontend_encoder.
+                spkcache_fifo_chunk_pre_encode_embs = torch.cat(
+                    [spkcache, fifo, chunk_pre_encode_embs],
+                    dim=1,
+                )
+                spkcache_fifo_chunk_pre_encode_lengths = chunk_pre_encode_lengths + spkcache_lengths + fifo_lengths
+            elif static_streaming_batch1:
                 spk_len = spkcache_lengths[0].to(torch.int64)
                 fifo_len = fifo_lengths[0].to(torch.int64)
                 chunk_len = chunk_pre_encode_lengths[0].to(torch.int64)
@@ -233,9 +282,13 @@ def main() -> None:
         raise SystemExit(f".nemo file not found: {nemo_path}")
     if output_path.exists() and not args.overwrite:
         raise SystemExit(f"Output already exists: {output_path}. Re-run with --overwrite.")
-    if args.static_streaming_batch1 and args.dynamic_streaming_batch1:
-        raise SystemExit("Choose only one of --static-streaming-batch1 or --dynamic-streaming-batch1.")
-    if (args.static_streaming_batch1 or args.dynamic_streaming_batch1) and args.batch_size != 1:
+    if args.coreml_const_lengths and not args.coreml_static_batch1:
+        raise SystemExit("--coreml-const-lengths requires --coreml-static-batch1.")
+    if sum([args.static_streaming_batch1, args.dynamic_streaming_batch1, args.coreml_static_batch1]) > 1:
+        raise SystemExit(
+            "Choose at most one of --static-streaming-batch1, --dynamic-streaming-batch1, --coreml-static-batch1."
+        )
+    if (args.static_streaming_batch1 or args.dynamic_streaming_batch1 or args.coreml_static_batch1) and args.batch_size != 1:
         raise SystemExit("The batch-1 streaming-specialized export modes currently require --batch-size 1.")
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -253,6 +306,11 @@ def main() -> None:
         nn,
         model,
         static_streaming_batch1=args.static_streaming_batch1,
+        coreml_static_batch1=args.coreml_static_batch1,
+        coreml_const_lengths=args.coreml_const_lengths,
+        const_chunk_frames=args.chunk_frames,
+        const_spkcache_frames=args.fixed_spkcache_frames,
+        const_fifo_frames=args.fixed_fifo_frames,
         dynamic_streaming_batch1=args.dynamic_streaming_batch1,
     )
     wrapper.eval()
@@ -260,12 +318,19 @@ def main() -> None:
     batch = args.batch_size
     chunk = torch.randn(batch, args.chunk_frames, feature_dim)
     chunk_lengths = torch.full((batch,), args.chunk_frames, dtype=torch.int64)
-    spkcache_frames = args.fixed_spkcache_frames if args.static_streaming_batch1 else 0
-    fifo_frames = args.fixed_fifo_frames if args.static_streaming_batch1 else 0
+    _fixed_shapes = args.static_streaming_batch1 or args.coreml_static_batch1
+    spkcache_frames = args.fixed_spkcache_frames if _fixed_shapes else 0
+    fifo_frames = args.fixed_fifo_frames if _fixed_shapes else 0
     spkcache = torch.zeros(batch, spkcache_frames, emb_dim)
-    spkcache_lengths = torch.zeros((batch,), dtype=torch.int64)
     fifo = torch.zeros(batch, fifo_frames, emb_dim)
-    fifo_lengths = torch.zeros((batch,), dtype=torch.int64)
+    if args.coreml_static_batch1:
+        # Trace with steady-state lengths so any folded constant matches the shape
+        # the runtime actually feeds (lengths always equal the buffer size).
+        spkcache_lengths = torch.full((batch,), spkcache_frames, dtype=torch.int64)
+        fifo_lengths = torch.full((batch,), fifo_frames, dtype=torch.int64)
+    else:
+        spkcache_lengths = torch.zeros((batch,), dtype=torch.int64)
+        fifo_lengths = torch.zeros((batch,), dtype=torch.int64)
     dynamo = resolve_export_bool(args.dynamo, default=False)
     optimize = resolve_export_bool(args.optimize, default=dynamo)
     export_kwargs: dict[str, Any] = {
@@ -277,7 +342,7 @@ def main() -> None:
         "verify": args.verify,
         "do_constant_folding": not args.no_constant_folding,
     }
-    if not args.static_streaming_batch1:
+    if not _fixed_shapes:
         dynamic_axes = {
             "chunk": {1: "time_chunk"} if args.dynamic_streaming_batch1 else {0: "batch", 1: "time_chunk"},
             "spkcache": {1: "time_cache"} if args.dynamic_streaming_batch1 else {0: "batch", 1: "time_cache"},
@@ -328,6 +393,15 @@ def main() -> None:
         )
         metadata.notes.append(
             "The static candidate trims fixed-size cache/fifo buffers using the provided logical lengths before concatenation."
+        )
+    if args.coreml_static_batch1:
+        metadata.notes.append(
+            f"Exported a fully static CoreML batch-1 candidate: chunk={args.chunk_frames}, "
+            f"spkcache={args.fixed_spkcache_frames}, fifo={args.fixed_fifo_frames}."
+        )
+        metadata.notes.append(
+            "No length-based trimming: fixed buffers are concatenated whole so no shape is "
+            "data-dependent. Callers must pass full-size, zero-padded buffers."
         )
     if args.dynamic_streaming_batch1:
         metadata.notes.append(
