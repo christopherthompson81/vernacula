@@ -76,7 +76,7 @@ against — chunk=992 / spkcache=188 / fifo=124:
 | **CoreML variant** | **CoreML** | **51.5 ms** | **2.2 s** | **0.16 s** |
 
 **3.34× vs the stock graph on CPU.** The CoreML EP takes the whole graph as a single
-partition (1751 of 1751 nodes). Outputs match the stock graph to `4.470E-07` (`preds`,
+partition (1751 of 1751 nodes), measured at `ORT_ENABLE_BASIC` (see note 3). Outputs match the stock graph to `4.470E-07` (`preds`,
 rms 7.616E-08) running CoreML against stock-on-CPU, and to `3.576E-07` CPU-to-CPU. The
 static shapes alone also make it ~10% faster on plain CPU, so it is not purely a macOS
 artifact.
@@ -99,7 +99,7 @@ only in the packaged app.
 | inputs | 6 (`chunk`, `spkcache`, `fifo` + 3 `*_lengths`) | **3** (`chunk`, `spkcache`, `fifo`) |
 | shapes | dynamic | fixed `[1,992,128]` / `[1,188,512]` / `[1,124,512]` |
 | `spkcache_fifo_chunk_preds` | `[batch, time_out, 4]` | `[1, 436, 4]` |
-| graph optimization level | any | any on ORT 1.29.0; **`ORT_ENABLE_BASIC` or lower** on 1.26.0 (see note 3) |
+| graph optimization level | any | **`ORT_ENABLE_BASIC` or lower** |
 
 1. **All three lengths are baked in, so this graph is steady-state only.** Pass full-size,
    zero-padded buffers. Zero-filled `spkcache`/`fifo` during warm-up are fine — the stock
@@ -109,14 +109,26 @@ only in the packaged app.
    speaker probabilities by up to **0.54** (rms 0.24) on a 0..1 scale — enough to flip
    speaker assignments. Route that one chunk per recording to the stock dynamic graph,
    which is in this same repo.
-3. **Check the graph optimization level against your ORT.** On **1.29.0 this is a
-   non-issue**: all four levels load, hold the single partition, and give identical
-   outputs (`4.470E-07`). On **1.26.0**, `ORT_ENABLE_EXTENDED` and above fail to load the
-   file outright (`AddInitializedOrtValue Attempt to replace the existing tensor`, from
-   `MatMulAddFusion` re-running over an already-optimized graph), so pin to
-   `ORT_ENABLE_BASIC` there. A separate 1.24.4 measurement found EXTENDED shattering
-   CoreML partitioning (69 → 191) on the earlier four-input graph; that does not reproduce
-   on 1.29.0 with this artifact.
+3. **Create the session at `ORT_ENABLE_BASIC` or lower.** At `ORT_ENABLE_EXTENDED` and
+   above, ORT fails to load the file outright — `AddInitializedOrtValue Attempt to replace
+   the existing tensor`, from `MatMulAddFusion` re-running over an already-optimized graph.
+   Confirmed on both 1.26.0 and 1.29.0.
+
+   ⚠ **This is masked when the CoreML EP is registered.** CoreML claims the whole graph
+   before the CPU fusions run, so on macOS all four levels appear to load — but the moment
+   the graph falls back to the CPU EP (CoreML absent from the build, a non-Apple machine,
+   or `MLComputeUnits` declining it) the same session options throw. Pin BASIC regardless
+   of platform; it costs nothing, since the file is already an optimized graph.
+
+   | level | CPU EP | CoreML EP registered |
+   |---|---|---|
+   | `ORT_DISABLE_ALL` | loads | loads |
+   | `ORT_ENABLE_BASIC` | loads | loads |
+   | `ORT_ENABLE_EXTENDED` | **fails** | loads |
+   | `ORT_ENABLE_ALL` | **fails** | loads |
+
+   A separate 1.24.4 measurement found EXTENDED also shattering CoreML partitioning
+   (69 → 191) on the earlier four-input graph.
 4. **CoreML partitioning is ORT-version dependent — re-validate on any ORT upgrade.**
    Validated on **1.24.4** and **1.29.0**, which both reach a single partition. An earlier
    note here claimed 1.29.0 split the graph into 194 partitions and diverged at ~1e-2;

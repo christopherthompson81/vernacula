@@ -404,25 +404,40 @@ and ORT's BASIC fold trims it to 1751 at load. #162's "1751 nodes" was the post-
 so Run 4's "1788 vs 1751, expected from a different ORT" was explaining a difference that
 was never there.
 
-### Checklist step 3 — the load-level constraint is gone on 1.29.0
+### Checklist step 3 — the load-level constraint holds, and the CoreML EP hides it
 
-Run 5 found `ORT_ENABLE_EXTENDED` and above throwing
-`AddInitializedOrtValue Attempt to replace the existing tensor` (`MatMulAddFusion`). That
-does not reproduce here. All four levels load, hold one partition, and stay correct:
+**Corrected 2026-09-09, after the first pass got this wrong.** The probe defaults to
+`--ep coreml`, so the level matrix was only ever run with the CoreML EP registered:
 
-| level | loads | partitions | inference |
+| level | loads (coreml) | partitions | inference |
 |---|---|---|---|
 | `ORT_DISABLE_ALL` | yes | 1 (1788/1788) | 83.9 ms |
 | `ORT_ENABLE_BASIC` | yes | 1 (1751/1751) | 51.6 ms |
 | `ORT_ENABLE_EXTENDED` | yes | 1 (1751/1751) | 52.0 ms |
 | `ORT_ENABLE_ALL` | yes | 1 (1751/1751) | 51.9 ms |
 
-At `ORT_ENABLE_ALL` — what `OrtSessionBuilder.Create` actually defaults to — parity is
-unchanged at `4.470E-07`. So it was an ORT 1.26.0 re-optimization defect, and the model
-card should **not** carry the `ORT_ENABLE_BASIC`-only contract term as an unconditional
-rule. Note the playbook's separate claim that EXTENDED worsens CoreML partitioning
-(69 → 191) was measured on 1.24.4 against the `chunk_lengths`-live graph; it does not hold
-for this artifact on 1.29.0.
+That reads as "Run 5's constraint is a 1.26.0 defect". It is not. Loading the same file on
+the **CPU EP alone** on the same ORT 1.29.0:
+
+| level | CPU EP | CoreML EP registered |
+|---|---|---|
+| `ORT_DISABLE_ALL` | loads | loads |
+| `ORT_ENABLE_BASIC` | loads | loads |
+| `ORT_ENABLE_EXTENDED` | **fails** | loads |
+| `ORT_ENABLE_ALL` | **fails** | loads |
+
+Same `AddInitializedOrtValue Attempt to replace the existing tensor` from
+`MatMulAddFusion`. CoreML claims the whole graph in `GetCapability` before the CPU-side
+fusions get to run, so the fusion never fires and the defect is invisible — on the one EP
+this artifact is built for. **Run 5 was right; `ORT_ENABLE_BASIC` or lower is a real,
+version-independent contract term**, and it matters most in exactly the case the CoreML EP
+cannot cover: a fallback to CPU when CoreML is absent or declines the graph.
+
+The lesson for the probe: `--ep` selects what you measure *and* what you can see. A
+load-level matrix is only meaningful per-EP.
+
+(The playbook's separate claim that EXTENDED worsens CoreML partitioning, 69 → 191, was
+measured on 1.24.4 against the `chunk_lengths`-live graph and is untested here.)
 
 ### The probe could not have reported any of this
 
@@ -480,8 +495,8 @@ claims that Run 7 disproved or superseded:
 * the headline and perf table were ORT 1.24.4 (52.3 ms vs 196.3 ms CPU / 113.0 ms WebGPU);
   now leads with the 1.29.0 measurements — 51.5 ms vs 171.8 ms CPU, **3.34×**, single
   partition, `4.470E-07`.
-* `ORT_ENABLE_BASIC or lower` was stated as an unconditional contract term; it is a 1.26.0
-  defect and is now scoped to that version.
+* `ORT_ENABLE_BASIC or lower` was briefly and wrongly scoped to 1.26.0 on the basis of a
+  CoreML-EP-only matrix; corrected the same day. It is unconditional — see step 3 above.
 * the "1.29.0 splits into 194 partitions and diverges at ~1e-2" caveat is marked as not
   reproducing.
 
