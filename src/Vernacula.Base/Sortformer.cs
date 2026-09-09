@@ -1,5 +1,6 @@
 using Microsoft.ML.OnnxRuntime;
 using Microsoft.ML.OnnxRuntime.Tensors;
+using Vernacula.Base.Inference;
 using Vernacula.Base.Models;
 
 // ── Buffer pooling for median filter ──────────────────────────────────────────
@@ -57,27 +58,36 @@ public sealed class SortformerStreamer : IDisposable
     public SortformerStreamer(string modelPath, ExecutionProvider ep = ExecutionProvider.Auto)
     {
         var opts = new SessionOptions();
-        switch (ep)
+
+        // CoreML / WebGpu / macOS-Auto are handled centrally -- this class is the one
+        // ORT call site #164 did not route through the shared helper, so until now
+        // ExecutionProvider.CoreML and .WebGpu fell through the switch below with no
+        // matching case and Auto appended nothing on macOS, silently running every
+        // diarization on the CPU EP. See OrtSessionBuilder.TryAppendPlatformAccelerator.
+        if (!OrtSessionBuilder.TryAppendPlatformAccelerator(opts, ep))
         {
-            case ExecutionProvider.Auto:
-                if (HardwareInfo.CanProbeCudaExecutionProvider())
-                {
-                    try { opts.AppendExecutionProvider_CUDA(0); } catch { }
-                }
-                try { opts.AppendExecutionProvider_DML(0);  } catch { }
-                break;
-            case ExecutionProvider.Cuda:
-                try { opts.AppendExecutionProvider_CUDA(0); }
-                catch (EntryPointNotFoundException)
-                { throw new InvalidOperationException(HardwareInfo.CudaUnavailableMessage(providerMissing: true)); }
-                break;
-            case ExecutionProvider.DirectML:
-                try { opts.AppendExecutionProvider_DML(0); }
-                catch (EntryPointNotFoundException)
-                { throw new InvalidOperationException("DirectML EP not available. Build with -p:EP=DirectML (Windows only)."); }
-                break;
-            case ExecutionProvider.Cpu:
-                break;
+            switch (ep)
+            {
+                case ExecutionProvider.Auto:
+                    if (HardwareInfo.CanProbeCudaExecutionProvider())
+                    {
+                        try { opts.AppendExecutionProvider_CUDA(0); } catch { }
+                    }
+                    try { opts.AppendExecutionProvider_DML(0);  } catch { }
+                    break;
+                case ExecutionProvider.Cuda:
+                    try { opts.AppendExecutionProvider_CUDA(0); }
+                    catch (EntryPointNotFoundException)
+                    { throw new InvalidOperationException(HardwareInfo.CudaUnavailableMessage(providerMissing: true)); }
+                    break;
+                case ExecutionProvider.DirectML:
+                    try { opts.AppendExecutionProvider_DML(0); }
+                    catch (EntryPointNotFoundException)
+                    { throw new InvalidOperationException("DirectML EP not available. Build with -p:EP=DirectML (Windows only)."); }
+                    break;
+                case ExecutionProvider.Cpu:
+                    break;
+            }
         }
 
         string resolvedModelPath = Config.GetSortformerModelPath(modelPath);
