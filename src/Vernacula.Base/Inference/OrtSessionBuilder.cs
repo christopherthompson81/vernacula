@@ -62,8 +62,14 @@ public static class OrtSessionBuilder
                 // per-model property, so selecting it is left explicit.
                 if (OperatingSystem.IsMacOS())
                 {
-                    try { opts.AppendExecutionProvider("WebGPU", new Dictionary<string, string>()); }
-                    catch { }
+                    // Gated on the provider actually being in this build: Auto is what the
+                    // desktop app uses everywhere and it has no EP setting, so a throw here
+                    // would break every model load with no way out. See ProviderAvailable.
+                    if (ProviderAvailable(WebGpuProviderName))
+                    {
+                        try { AppendWebGpu(opts); }
+                        catch { }
+                    }
                     break;
                 }
                 if (HardwareInfo.CanProbeCudaExecutionProvider())
@@ -146,6 +152,111 @@ public static class OrtSessionBuilder
             ["ModelFormat"] = "MLProgram",
             ["MLComputeUnits"] = "ALL",
         });
+
+    // The short names AppendExecutionProvider takes, and the long names
+    // GetAvailableProviders reports. They are not the same strings.
+    private const string WebGpuProviderName = "WebGpuExecutionProvider";
+    private const string CoreMLProviderName = "CoreMLExecutionProvider";
+
+    private static void AppendWebGpu(SessionOptions opts)
+        => opts.AppendExecutionProvider("WebGPU", new Dictionary<string, string>());
+
+    /// <summary>
+    /// Whether this ONNX Runtime build actually carries the named provider.
+    /// </summary>
+    /// <remarks>
+    /// ⚠ A Lazy for the same reason as HardwareInfo's CUDA probe: this is asked at every
+    /// model-init site and those run in parallel.
+    ///
+    /// This matters most for Auto. Registering an absent provider throws, which the Auto path
+    /// swallows -- but on macOS the desktop app has no EP setting (every service defaults to
+    /// Auto), so anything Auto cannot recover from takes down every model load with no way for
+    /// the user to opt out. Asking ORT what it has is cheaper and more honest than registering
+    /// blind and catching. Notably the macOS-x64 pin (ORT 1.19.2) predates the WebGPU EP
+    /// entirely, and a Windows/Linux EP=DirectML or EP=Cuda build has no WebGPU either.
+    ///
+    /// It answers "is the provider IN this build", not "will a device be found". A build that
+    /// has the provider but no usable Metal adapter still fails at session creation.
+    /// </remarks>
+    private static readonly Lazy<HashSet<string>> _availableProviders = new(
+        () =>
+        {
+            try
+            {
+                return new HashSet<string>(
+                    OrtEnv.Instance().GetAvailableProviders(), StringComparer.OrdinalIgnoreCase);
+            }
+            catch
+            {
+                // Never let a probe failure be worse than not probing.
+                return new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            }
+        },
+        LazyThreadSafetyMode.ExecutionAndPublication);
+
+    /// <summary>
+    /// Fail an explicitly requested provider with the reason, rather than letting
+    /// AppendExecutionProvider throw something that does not say what to do about it.
+    /// </summary>
+    private static void RequireProvider(string providerName, string display)
+    {
+        if (ProviderAvailable(providerName))
+            return;
+
+        string built = string.Join(", ", _availableProviders.Value.OrderBy(p => p));
+        throw new InvalidOperationException(
+            $"{display} is not in this ONNX Runtime build (it has: {built}). {display} is macOS "
+          + "arm64 only, and comes from the plain Microsoft.ML.OnnxRuntime package -- build with "
+          + "-p:EP=Cpu on Apple Silicon. A Cuda or DirectML build carries no macOS accelerator.");
+    }
+
+    private static bool ProviderAvailable(string name)
+    {
+        var have = _availableProviders.Value;
+        // An empty set means the probe itself failed; fall back to trying, which is the
+        // pre-probe behaviour.
+        return have.Count == 0 || have.Contains(name);
+    }
+
+    /// <summary>
+    /// Append the macOS accelerator implied by <paramref name="ep"/>, returning true when one
+    /// was actually registered.
+    /// </summary>
+    /// <remarks>
+    /// The DiariZen-family backends (WeSpeakerEmbedder, VoxLinguaLid, DiariZenDiarizer) build
+    /// their own <see cref="SessionOptions"/> because each sets its own thread counts, so they
+    /// cannot route through <see cref="Create(ExecutionProvider)"/>. They still have to agree
+    /// with it about what Auto/CoreML/WebGpu mean, and three hand-rolled switches had already
+    /// drifted once. This is the shared tail they call instead of growing a fourth copy.
+    /// A false return means "nothing macOS-specific applies" -- the caller should run its
+    /// ordinary CUDA/DirectML path, which lands on CPU here.
+    /// </remarks>
+    public static bool TryAppendPlatformAccelerator(SessionOptions opts, ExecutionProvider ep)
+    {
+        switch (ep)
+        {
+            case ExecutionProvider.CoreML:
+                RequireProvider(CoreMLProviderName, "CoreML");
+                AppendCoreML(opts);
+                return true;
+
+            case ExecutionProvider.WebGpu:
+                RequireProvider(WebGpuProviderName, "WebGPU");
+                AppendWebGpu(opts);
+                return true;
+
+            // Auto prefers WebGPU on macOS (see the Auto case in Create). Best effort:
+            // if the provider is not in this ORT build, fall back rather than throw.
+            case ExecutionProvider.Auto when OperatingSystem.IsMacOS():
+                if (!ProviderAvailable(WebGpuProviderName))
+                    return false;
+                try { AppendWebGpu(opts); return true; }
+                catch { return false; }
+
+            default:
+                return false;
+        }
+    }
 
     // Append the CUDA EP, optionally forcing full-fp32 matmul (use_tf32=0). TF32's ~1e-2
     // error is fine for one-shot models but COMPOUNDS catastrophically through OmniVoice's

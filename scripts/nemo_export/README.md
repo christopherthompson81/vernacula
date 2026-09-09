@@ -230,9 +230,10 @@ static streaming contract gives ORT or TensorRT a better graph.
 `--static-streaming-batch1` fixes the input shapes but still trims the cache and
 FIFO by a *tensor value*, which makes every downstream shape data-dependent and
 stops CoreML compiling the graph at all. `--coreml-static-batch1` drops that trim
-(it is a no-op at runtime anyway -- Vernacula always passes `*_lengths` equal to
-each buffer's own size), and `--coreml-const-lengths` bakes the steady-state
-lengths in as constants:
+-- safe because `spkcache` and `fifo` are always full at runtime, and the chunk is
+concatenated **last**, so the summed logical length still masks the padded tail of
+a short final chunk. `--coreml-const-lengths` then bakes the two buffer lengths in
+as constants:
 
 ```bash
 python scripts/nemo_export/export_sortformer_nemo_to_onnx.py \
@@ -275,9 +276,13 @@ transposes it synthesizes for `Gemm(transB=0)` as hex-float TEXT inline in
 See [docs/coreml_onnx_playbook.md](../../docs/coreml_onnx_playbook.md) for the
 full set of techniques and how to apply them to other models.
 
-Caveats: steady-state only (full cache/FIFO, full-length chunk); constant folding
-prunes the unused `*_lengths`, so the graph takes three inputs, not six; and
-CoreML partitioning is ORT-version dependent -- validated on 1.24.4.
+Caveats: the graph assumes a full cache and FIFO, which `Sortformer.cs` always
+supplies; constant folding prunes the two baked `*_lengths`, so the graph takes
+four inputs, not six. `chunk_lengths` stays live on purpose -- `ProcessChunk`
+passes `min(start + chunkStride, totalFrames) - start`, which is **short for the
+final chunk of every recording**, and baking a constant there would let that
+chunk's zero-padded tail be attended to as real audio. CoreML partitioning is
+ORT-version dependent -- validated on 1.24.4.
 
 For a safer structure-only experiment that keeps dynamic time dimensions but
 specializes the graph to batch size 1, use:

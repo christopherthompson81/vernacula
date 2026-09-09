@@ -71,9 +71,11 @@ traps:
    ```
 
    makes every subsequent shape data-dependent even with fixed input shapes.
-   In Sortformer the trim was a **no-op at runtime** — `Sortformer.cs` always
-   passes `*_lengths` equal to each buffer's own size — so it was destroying
-   compilability for nothing.
+   In Sortformer the trim was a **no-op at runtime** for `spkcache` and `fifo` —
+   `Sortformer.cs` always passes those two `*_lengths` equal to each buffer's own
+   size — so it was destroying compilability for nothing. The chunk is the
+   exception, and it survives only because it is concatenated *last*: the summed
+   logical length still masks a short final chunk's padded tail.
 
 **Do:** add an export mode that fixes the input shapes *and* concatenates whole
 buffers with no length-based trimming. See `--coreml-static-batch1` in
@@ -90,6 +92,12 @@ axes genuinely vary needs bucketing, and that trade is real.
 If lengths are constant at runtime, make them graph constants
 (`--coreml-const-lengths`). Mask construction then folds instead of building
 `Range`/`Expand` chains from tensor values.
+
+> ⚠ **Check each length separately.** In Sortformer only `spkcache_lengths` and
+> `fifo_lengths` are genuinely constant. `chunk_lengths` is short for the last
+> chunk of every recording, so baking it would silently change the diarization at
+> the end of every file — a constant that is *usually* right is a correctness bug,
+> not an optimization. Verify against the calling code, not the steady state.
 
 **Worth knowing: on its own this barely helped** (71 → 69 partitions). Its real
 value is enabling Technique 3 — it turns the masks into foldable constants.

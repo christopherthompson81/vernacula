@@ -61,23 +61,26 @@ def parse_args() -> argparse.Namespace:
         help=(
             "Export a fully static batch-1 graph for Apple CoreML. Like "
             "--static-streaming-batch1 it fixes chunk/spkcache/fifo shapes, but it also drops "
-            "the length-based trimming: the fixed buffers are concatenated whole. That trim is "
-            "a no-op at runtime anyway (Vernacula always passes *_lengths equal to the buffer "
-            "size), yet it slices by a tensor VALUE, which makes every downstream shape "
-            "data-dependent and prevents CoreML from building an execution plan. Callers of "
-            "this graph must pass full-size, zero-padded buffers."
+            "the length-based trimming: the fixed buffers are concatenated whole. Dropping it "
+            "is safe because spkcache and fifo are always full at runtime, and the chunk is "
+            "concatenated LAST, so the summed logical length still masks the padded tail of a "
+            "short final chunk. The trim itself slices by a tensor VALUE, which makes every "
+            "downstream shape data-dependent and prevents CoreML from building an execution "
+            "plan. Callers of this graph must pass full-size, zero-padded buffers."
         ),
     )
     parser.add_argument(
         "--coreml-const-lengths",
         action="store_true",
         help=(
-            "With --coreml-static-batch1, replace the three *_lengths inputs with baked-in "
-            "constants (chunk/spkcache/fifo frame counts). The tensors stay in the graph "
-            "signature but are unused, so the caller is unchanged. This lets constant folding "
-            "erase the Range/Expand mask-building ops that otherwise force ~120 nodes back onto "
-            "CPU and fragment the CoreML graph into dozens of partitions. STEADY-STATE ONLY: "
-            "the graph then assumes full cache/fifo and a full-length chunk."
+            "With --coreml-static-batch1, replace the spkcache_lengths and fifo_lengths "
+            "inputs with baked-in constants. Those two tensors stay in the graph signature "
+            "but are unused, so the caller is unchanged. This lets constant folding erase the "
+            "Range/Expand mask-building ops that otherwise force nodes back onto CPU and "
+            "fragment the CoreML graph into extra partitions. chunk_lengths is NOT baked: it "
+            "is short for the final chunk of every recording, so a constant there would attend "
+            "to that chunk's zero-padded tail as real audio. The graph does assume a full "
+            "cache and fifo, which Sortformer.cs always supplies."
         ),
     )
     parser.add_argument(
@@ -198,12 +201,18 @@ def build_wrapper(
 
         def forward(self, chunk: Any, chunk_lengths: Any, spkcache: Any, spkcache_lengths: Any, fifo: Any, fifo_lengths: Any) -> tuple[Any, Any, Any]:
             if coreml_const_lengths:
-                # Bake the steady-state lengths in as graph constants. The runtime always
-                # feeds exactly these values (Sortformer.cs sets *_lengths to each buffer's
-                # own size, and a full chunk is chunk_frames mel frames), so this changes no
-                # numerics in steady state -- but it turns the mask construction into foldable
-                # constants instead of data-dependent Range/Expand chains.
-                chunk_lengths = torch.tensor([const_chunk_frames], dtype=torch.int64)
+                # Bake the two BUFFER lengths in as graph constants. Sortformer.cs feeds
+                # spkcache_lengths/fifo_lengths as each buffer's own size on every call, so
+                # folding them away changes no numerics -- it turns their mask construction
+                # into foldable constants instead of data-dependent Range/Expand chains.
+                #
+                # ⚠ chunk_lengths is deliberately NOT baked. It is the one length the runtime
+                # does NOT always set to the buffer size: ProcessChunk passes
+                # min(start + chunkStride, totalFrames) - start, which is SHORT for the final
+                # chunk of every recording. Baking chunk_frames there would let the
+                # zero-padded tail of that last chunk be attended to as real audio, changing
+                # the diarization output at the end of every file. It stays a real input; only
+                # its mask stays data-dependent, which costs a few partitions, not correctness.
                 spkcache_lengths = torch.tensor([const_spkcache_frames], dtype=torch.int64)
                 fifo_lengths = torch.tensor([const_fifo_frames], dtype=torch.int64)
             chunk_pre_encode_embs, chunk_pre_encode_lengths = self.inner.encoder.pre_encode(x=chunk, lengths=chunk_lengths)
@@ -402,6 +411,14 @@ def main() -> None:
         metadata.notes.append(
             "No length-based trimming: fixed buffers are concatenated whole so no shape is "
             "data-dependent. Callers must pass full-size, zero-padded buffers."
+        )
+    if args.coreml_const_lengths:
+        metadata.notes.append(
+            f"spkcache_lengths={args.fixed_spkcache_frames} and fifo_lengths="
+            f"{args.fixed_fifo_frames} are baked in as graph constants; both inputs remain in "
+            "the signature but are ignored, and may be pruned from it after folding. "
+            "chunk_lengths is still a live input. This graph is valid only for a full cache "
+            "and fifo."
         )
     if args.dynamic_streaming_batch1:
         metadata.notes.append(

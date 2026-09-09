@@ -71,7 +71,7 @@ def basic_fold(src: str, dst: str) -> None:
     ort.InferenceSession(src, so, providers=["CPUExecutionProvider"])
 
 
-def drop_allfalse_where(g) -> int:
+def drop_allfalse_where(g, shapes: dict) -> int:
     init = {i.name: i for i in g.initializer}
     rewire, drop = {}, set()
     for idx, n in enumerate(g.node):
@@ -79,6 +79,15 @@ def drop_allfalse_where(g) -> int:
             continue
         mask = numpy_helper.to_array(init[n.input[0]])
         if mask.dtype != np.bool_ or mask.any():
+            continue
+        # Where BROADCASTS all three inputs. An all-False Where equals its false
+        # branch only when that branch is already the broadcast shape -- otherwise
+        # rewiring past it drops the broadcast and hands consumers a smaller
+        # tensor, which is a silent numeric change (or a load-time shape error).
+        fs, os_ = shapes.get(n.input[2]), shapes.get(n.output[0])
+        if fs is None or os_ is None or any(d is None for d in fs) or any(d is None for d in os_):
+            continue
+        if list(fs) != list(os_):
             continue
         rewire[n.output[0]] = n.input[2]
         drop.add(idx)
@@ -124,8 +133,15 @@ def pad_to_concat(g, shapes: dict, dtypes: dict) -> int:
             continue
         if next((a.s.decode() for a in n.attribute if a.name == "mode"), "constant") != "constant":
             continue
-        if len(n.input) > 2 and n.input[2] in init:
-            if float(numpy_helper.to_array(init[n.input[2]]).reshape(-1)[0]) != 0.0:
+        # constant_value must be KNOWN zero. A third input that is present and
+        # non-empty but is not a zero initializer (e.g. computed at runtime) is
+        # disqualifying -- rewriting it to a Concat against zeros would silently
+        # change the numerics.
+        if len(n.input) > 2 and n.input[2]:
+            if n.input[2] not in init:
+                continue
+            cv = numpy_helper.to_array(init[n.input[2]]).reshape(-1)
+            if cv.size == 0 or float(cv[0]) != 0.0:
                 continue
         ish = shapes.get(n.input[0])
         if ish is None or any(d is None for d in ish):
@@ -134,11 +150,20 @@ def pad_to_concat(g, shapes: dict, dtypes: dict) -> int:
         if dt is None:
             continue
         np_dtype = np.dtype(onnx.helper.tensor_dtype_to_np_dtype(dt))
+        # Opset 18's optional `axes` input remaps what `pads` refers to. Resolving it
+        # is not worth it here; skip rather than misapply the pads to the wrong axes.
+        if len(n.input) > 3 and n.input[3]:
+            continue
         pads = numpy_helper.to_array(init[n.input[1]]).astype(int).tolist()
         r = len(ish)
         if len(pads) != 2 * r:
             continue
         begins, ends = pads[:r], pads[r:]
+        # ONNX Pad allows NEGATIVE pads, which crop rather than pad. A Concat cannot
+        # express that, and a negative extent would reach np.zeros as a negative
+        # dimension and abort the run.
+        if any(p < 0 for p in pads):
+            continue
         axes = [i for i in range(r) if begins[i] or ends[i]]
         if len(axes) != 1:
             continue
@@ -216,7 +241,11 @@ def restore_folded_outputs(g) -> int:
             raise SystemExit(f"graph output {o.name} has neither producer nor initializer")
         src = o.name + "_const"
         init[o.name].name = src
-        g.node.append(helper.make_node("Identity", [src], [o.name], name=o.name + "_id"))
+        # Must go at the FRONT: the renamed initializer may feed other nodes, which
+        # now read this Identity's output. ONNX requires a node to precede its
+        # consumers, and check_model(full_check=False) does not catch a violation --
+        # ORT rejects the model only at session creation.
+        g.node.insert(0, helper.make_node("Identity", [src], [o.name], name=o.name + "_id"))
         fixed += 1
     return fixed
 
@@ -240,29 +269,54 @@ def verify(original: str, optimized: str, tol: float) -> bool:
     import onnxruntime as ort
 
     rng = np.random.default_rng(7)
-    chunk = rng.standard_normal((1, 992, 128)).astype(np.float32)
-    spk = rng.standard_normal((1, 188, 512)).astype(np.float32)
-    fifo = rng.standard_normal((1, 124, 512)).astype(np.float32)
+    NP = {"tensor(float)": np.float32, "tensor(float16)": np.float16, "tensor(int64)": np.int64}
 
-    def run(path, feed, opt=None):
+    def session(path, opt=None):
         so = ort.SessionOptions()
         if opt is not None:
             so.graph_optimization_level = opt
-        s = ort.InferenceSession(path, so, providers=["CPUExecutionProvider"])
+        return ort.InferenceSession(path, so, providers=["CPUExecutionProvider"])
+
+    def run(s, feed):
         return dict(zip([o.name for o in s.get_outputs()], s.run(None, feed)))
 
-    ref = run(original, {
-        "chunk": chunk, "chunk_lengths": np.array([992], np.int64),
-        "spkcache": spk, "spkcache_lengths": np.array([188], np.int64),
-        "fifo": fifo, "fifo_lengths": np.array([124], np.int64)})
-    import onnx as _onnx
-    om = _onnx.load(optimized, load_external_data=False)
-    itype = {v.name: v.type.tensor_type.elem_type for v in om.graph.input}
-    def cast(name, arr):
-        return arr.astype(np.float16) if itype.get(name) == _onnx.TensorProto.FLOAT16 else arr
-    got = run(optimized, {"chunk": cast("chunk", chunk), "spkcache": cast("spkcache", spk),
-                          "fifo": cast("fifo", fifo)},
-              ort.GraphOptimizationLevel.ORT_DISABLE_ALL)
+    ref_sess = session(original)
+
+    # Build the feed from the model's OWN signature. The frame counts follow
+    # --chunk-frames / --fixed-spkcache-frames / --fixed-fifo-frames at export time,
+    # so hardcoding them here made --verify usable on exactly one configuration.
+    shapes = {i.name: i.shape for i in ref_sess.get_inputs()}
+    feed = {}
+    for i in ref_sess.get_inputs():
+        if any(not isinstance(d, int) for d in i.shape):
+            raise SystemExit(
+                f"--verify needs a static graph; input {i.name} has shape {i.shape}")
+        np_dtype = NP.get(i.type)
+        if np_dtype is None:
+            raise SystemExit(f"--verify cannot synthesize input {i.name} of type {i.type}")
+        if np_dtype == np.int64:
+            # A `<buffer>_lengths` input. Steady state is the buffer's own frame count,
+            # which is what the CoreML graph was specialized for.
+            buf = i.name[: -len("_lengths")] if i.name.endswith("_lengths") else None
+            if buf is None or buf not in shapes:
+                raise SystemExit(f"--verify cannot infer a value for integer input {i.name}")
+            feed[i.name] = np.full(i.shape, shapes[buf][1], np.int64)
+        else:
+            feed[i.name] = rng.standard_normal(i.shape).astype(np_dtype)
+
+    ref = run(ref_sess, feed)
+
+    # Feed the optimized model only what it still declares: --coreml-const-lengths
+    # folds the baked lengths away, and prune() then drops them from the signature.
+    opt_sess = session(optimized, ort.GraphOptimizationLevel.ORT_DISABLE_ALL)
+    opt_feed = {}
+    for i in opt_sess.get_inputs():
+        if i.name not in feed:
+            raise SystemExit(f"optimized model expects input {i.name}, absent from the original")
+        arr = feed[i.name]
+        opt_feed[i.name] = arr.astype(np.float16) if i.type == "tensor(float16)" else arr
+    got = run(opt_sess, opt_feed)
+
     ok = True
     for k in ("spkcache_fifo_chunk_preds", "chunk_pre_encode_embs"):
         a, b = ref[k], got[k]
@@ -308,7 +362,7 @@ def main() -> None:
 
     m = onnx.load(folded)
     g = m.graph
-    print(f"[2/5] removing all-False Where ...      {drop_allfalse_where(g):3d} removed")
+    print(f"[2/5] removing all-False Where ...      {drop_allfalse_where(g, shapes):3d} removed")
     print(f"[3/5] rewriting Pad -> Concat ...       {pad_to_concat(g, shapes, dtypes):3d} converted")
     print(f"[4/5] pre-transposing Gemm weights ...  {pretranspose_gemm(g):3d} converted")
     restore_folded_outputs(g)

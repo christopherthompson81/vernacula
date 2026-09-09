@@ -174,8 +174,13 @@ switch (ep)
     case "cuda":     epEnum = ExecutionProvider.Cuda;     break;
     case "cpu":      epEnum = ExecutionProvider.Cpu;      break;
     case "directml": epEnum = ExecutionProvider.DirectML; break;
+    // macOS accelerators. Both need an osx-arm64 build (-p:EP=Cpu); the plain
+    // package is the one whose native carries them.
+    case "coreml":   epEnum = ExecutionProvider.CoreML;   break;
+    case "webgpu":   epEnum = ExecutionProvider.WebGpu;   break;
     default:
-        Console.Error.WriteLine($"Unknown EP: {ep}. Choose cpu, cuda, directml, or auto.");
+        Console.Error.WriteLine(
+            $"Unknown EP: {ep}. Choose cpu, cuda, directml, coreml, webgpu, or auto.");
         return 2;
 }
 
@@ -656,9 +661,12 @@ static void PrintUsage()
         Optional:
           --out <wav>              Output WAV path. Default: chatterbox_out.wav
           --ep <name>              Execution provider, one of:
-                                     auto      — CUDA, fall back to DirectML (default)
+                                     auto      — CUDA, fall back to DirectML; WebGPU
+                                                 on macOS (default)
                                      cuda      — CUDA only, fail if unavailable
                                      directml  — DirectML only, fail if unavailable
+                                     coreml    — CoreML only (macOS), fail if unavailable
+                                     webgpu    — WebGPU only (macOS), fail if unavailable
                                      cpu       — CPU only
                                    The csproj's `-p:EP=...` build flag must include
                                    the runtime you ask for here (cuda needs OnnxRuntime.Gpu,

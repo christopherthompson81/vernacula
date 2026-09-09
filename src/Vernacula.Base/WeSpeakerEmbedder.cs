@@ -2,6 +2,7 @@ using System.Numerics;
 using MathNet.Numerics.IntegralTransforms;
 using Microsoft.ML.OnnxRuntime;
 using Microsoft.ML.OnnxRuntime.Tensors;
+using Vernacula.Base.Inference;
 using Vernacula.Base.Models;
 
 namespace Vernacula.Base;
@@ -129,21 +130,24 @@ public sealed class WeSpeakerEmbedder : IDisposable
         // Keep per-session threading low and use outer parallelism across
         // multiple embedding jobs instead of oversubscribing CPU cores.
         opts.IntraOpNumThreads = Config.GetDiariZenEmbeddingIntraOpThreads();
-        switch (ep)
+        if (!OrtSessionBuilder.TryAppendPlatformAccelerator(opts, ep))
         {
-            case ExecutionProvider.Auto:
-                if (HardwareInfo.CanProbeCudaExecutionProvider())
-                {
-                    try { opts.AppendExecutionProvider_CUDA(0); } catch { }
-                }
-                try { opts.AppendExecutionProvider_DML(0); }  catch { }
-                break;
-            case ExecutionProvider.Cuda:
-                opts.AppendExecutionProvider_CUDA(0);
-                break;
-            case ExecutionProvider.DirectML:
-                opts.AppendExecutionProvider_DML(0);
-                break;
+            switch (ep)
+            {
+                case ExecutionProvider.Auto:
+                    if (HardwareInfo.CanProbeCudaExecutionProvider())
+                    {
+                        try { opts.AppendExecutionProvider_CUDA(0); } catch { }
+                    }
+                    try { opts.AppendExecutionProvider_DML(0); }  catch { }
+                    break;
+                case ExecutionProvider.Cuda:
+                    opts.AppendExecutionProvider_CUDA(0);
+                    break;
+                case ExecutionProvider.DirectML:
+                    opts.AppendExecutionProvider_DML(0);
+                    break;
+            }
         }
         _session = new InferenceSession(modelPath, opts);
         var inputNames = _session.InputMetadata.Keys.ToArray();
