@@ -283,7 +283,11 @@ internal class TranscriptionService
                 }, ct).ConfigureAwait(false);
 
                 db.BeginBulkInsert();
-                var seenVibeSpeakers = new HashSet<int>();
+                // The label the model gives a speaker is not a row id: a recording decoded in
+                // several passes carries labels shifted past the previous pass's, and a pass
+                // that never says "Speaker 0" leaves a gap. So each label is inserted on first
+                // sight and the row it actually got is what the segments reference.
+                var vibeSpeakerRows = new Dictionary<int, int>();
                 foreach (var seg in vibeSegs)
                 {
                     // The streaming model can emit text before it names anyone, which the
@@ -291,10 +295,11 @@ internal class TranscriptionService
                     // writing "speaker_-1" and a diarization id of 0, which no consumer expects.
                     int speaker     = Math.Max(0, seg.Speaker);
                     string spkId    = $"speaker_{speaker}";
-                    int diarSpkId   = speaker + 1;
-
-                    if (seenVibeSpeakers.Add(speaker))
-                        db.InsertSpeaker(spkId);
+                    if (!vibeSpeakerRows.TryGetValue(speaker, out int diarSpkId))
+                    {
+                        diarSpkId = db.AddSpeaker(spkId);
+                        vibeSpeakerRows[speaker] = diarSpkId;
+                    }
 
                     // VibeVoice does not emit timestamps, so we synthesize them uniformly over
                     // the segment while preserving the real decoder token ids and logprobs.
