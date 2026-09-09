@@ -344,3 +344,118 @@ the PR body carries the same list with the commands filled in. In order:
    passed, and add the `manifest.json` entry by extending the published manifest rather than
    regenerating it (the live one deliberately omits `sortformer/`, the int8 variants and
    `silero_vad.onnx`, so `--all` would silently change what the app validates).
+
+## Run 7 — 2026-09-09 — the Mac. The 1.29.0 blocker does not reproduce
+
+Environment: MacBook Air (Apple Silicon), macOS 25.6.0, export venv rebuilt here on
+python 3.12.14 / **onnxruntime 1.29.0** (the version an `EP=Cpu` osx-arm64 build takes,
+per Run 6). Source checkpoint downloaded fresh from `nvidia/diar_streaming_sortformer_4spk-v2.1`;
+reference dynamic model `~/models/diar_streaming_sortformer_4spk-v2.1.onnx`, md5
+`647a22cef31f59dc2c314fa783b2581d` — the same file Run 1 used.
+
+### Build reproduces the Linux run
+
+Same two commands as Runs 1 and 4. Transform counts are identical:
+
+```
+[2/5] removing all-False Where ...       51 removed
+[3/5] rewriting Pad -> Concat ...        34 converted
+[4/5] pre-transposing Gemm weights ...  180 converted
+[5/5] wrote diar_streaming_sortformer_4spk-v2.1.coreml.onnx (527 MB), 1788 nodes,
+      inputs=['chunk', 'spkcache', 'fifo']
+```
+
+Artifact: 526,897,872 B, md5 `890c59cc71dedfff9f1c3d7f10924422` — 42 bytes off the Linux
+build, as expected from folding under a different ORT.
+
+`verify()` against the shipped dynamic model, CPU EP, seed 7:
+
+| | this Mac (ORT 1.29.0) | Linux (Run 4, ORT 1.26.0) | #162 (ORT 1.24.4) |
+|---|---|---|---|
+| `preds` maxAbs | 3.576E-07 | 3.278E-07 | 3.576E-07 |
+| `embs` maxAbs | **0.000E+00** | 3.052E-05 | 0.0 |
+
+The `embs` figure confirms Run 4's diagnosis: the Linux `3.052E-05` was reference-side
+`ORT_ENABLE_ALL` fusion, not the variant. It is exactly zero when both sides match.
+
+### Checklist step 1 — CoreML EP on ORT 1.29.0. **GO.**
+
+```
+partitions      1 (1751/1751 nodes on the EP)  <- single partition
+All nodes placed on [CoreMLExecutionProvider]
+```
+
+| | #162's caveat for 1.29.0 | measured here on 1.29.0 |
+|---|---|---|
+| partitions | 194 | **1** |
+| CoreML-vs-CPU `preds` | ~1e-2 | **4.470E-07** (rms 7.616E-08) |
+| inference | — | **51.5 ms** (min/max 51.3/51.7) |
+| cold / warm load | — | **2.2 s / 0.16 s** |
+
+CPU EP on this machine, same graph: **154.0 ms**, so **2.99× vs CPU**. WebGPU could not be
+compared — it is not in the pip `onnxruntime` wheel, only in the C# package's natives.
+
+**The Run 6 blocker is retired.** Whatever produced "194 partitions / ~1e-2" in #162, it is
+not what 1.29.0 does with the artifact this pipeline builds. Pinning macOS to 1.24.4
+(Run 6, option 2) is unnecessary.
+
+The 1751 node count also resolves a loose end: `coreml_optimize_sortformer.py` writes 1788,
+and ORT's BASIC fold trims it to 1751 at load. #162's "1751 nodes" was the post-load count,
+so Run 4's "1788 vs 1751, expected from a different ORT" was explaining a difference that
+was never there.
+
+### Checklist step 3 — the load-level constraint is gone on 1.29.0
+
+Run 5 found `ORT_ENABLE_EXTENDED` and above throwing
+`AddInitializedOrtValue Attempt to replace the existing tensor` (`MatMulAddFusion`). That
+does not reproduce here. All four levels load, hold one partition, and stay correct:
+
+| level | loads | partitions | inference |
+|---|---|---|---|
+| `ORT_DISABLE_ALL` | yes | 1 (1788/1788) | 83.9 ms |
+| `ORT_ENABLE_BASIC` | yes | 1 (1751/1751) | 51.6 ms |
+| `ORT_ENABLE_EXTENDED` | yes | 1 (1751/1751) | 52.0 ms |
+| `ORT_ENABLE_ALL` | yes | 1 (1751/1751) | 51.9 ms |
+
+At `ORT_ENABLE_ALL` — what `OrtSessionBuilder.Create` actually defaults to — parity is
+unchanged at `4.470E-07`. So it was an ORT 1.26.0 re-optimization defect, and the model
+card should **not** carry the `ORT_ENABLE_BASIC`-only contract term as an unconditional
+rule. Note the playbook's separate claim that EXTENDED worsens CoreML partitioning
+(69 → 191) was measured on 1.24.4 against the `chunk_lengths`-live graph; it does not hold
+for this artifact on 1.29.0.
+
+### The probe could not have reported any of this
+
+`coreml_partition_probe.py` printed `partitions  not reported` on a graph that was at one
+partition — a no-go reading on a go. Three defects, all fixed in this commit:
+
+* `make_session` read the captured stderr *inside* the `with` block, while the `seek(0)`
+  sat in the context manager's `finally`. `dup2` makes fd 2 share the file offset, so the
+  read happened at end-of-writes and returned `""`, always. Reproduced standalone.
+* The `GetCapability` summary is WARNING **only when partitions > 1**; at one partition it
+  is INFO. Both the session logger (`SessionOptions.log_severity_level`, was 2) and the
+  default logger gate it, so both had to drop to INFO. The comment at `PARTITION_RE`
+  claiming "logs this at warning level" was the root of it.
+* The "requested EP did not take the graph" guard tested `get_providers()[0]`, which is the
+  *registration* list, not the assignment list — an EP that registers and claims zero nodes
+  still sits at index 0. It now checks the supported-node count, and correctly caught the
+  absent WebGPU EP during this run.
+
+(Also `--runs 0` left `got` unbound, crashing the parity block with `NameError`.)
+
+### Where that leaves the publish
+
+Steps 1–3 pass on the runtime the macOS build actually ships. Step 4 — HF upload and the
+`manifest.json` entry — is still **not done**, and now has two blockers of its own:
+
+1. `make_manifest.py` has no merge mode (`--files` and `--all` are exclusive and the result
+   is written wholesale to `<model-dir>/manifest.json`), so step 4 as written destroys the
+   live manifest with a one-entry file — the same failure the step's own warning attributes
+   only to `--all`. The published manifest has to be hand-extended, or the tool needs a
+   merge flag.
+2. **The tail-chunk routing does not exist.** `Sortformer.cs` has no CoreML path at all;
+   `ProcessChunk` still passes `min(start + chunkStride, totalFrames) - start` for every
+   chunk. Publishing the steady-state artifact before a caller can route the final short
+   chunk to the dynamic graph ships a file that silently degrades the end of every
+   recording by up to 0.54 on `preds` (Run 3). The routing is the precondition for the
+   51.5 ms being usable at all.

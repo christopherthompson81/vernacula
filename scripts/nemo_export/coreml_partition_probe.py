@@ -75,8 +75,11 @@ def capture_native_stderr():
 def build_options(ort, level: str, verbose: bool):
     so = ort.SessionOptions()
     so.graph_optimization_level = getattr(ort.GraphOptimizationLevel, LEVELS[level])
-    # Partition counts are logged at WARNING; node placement needs VERBOSE.
-    so.log_severity_level = 0 if verbose else 2
+    # The GetCapability partition summary is INFO when it is a single partition, so
+    # WARNING (2) drops the one outcome worth detecting. The session logger gates it
+    # first, the default logger second -- both have to be lowered (see make_session).
+    # Costs nothing on the console: this all lands in the captured temp file.
+    so.log_severity_level = 0 if verbose else 1
     if verbose:
         so.log_verbosity_level = 1
     return so
@@ -100,11 +103,22 @@ def providers_for(ep: str, cache_dir: str | None):
 def make_session(ort, model: str, ep: str, level: str, cache_dir: str | None, verbose: bool):
     """Returns (session, seconds, captured EP log)."""
     so = build_options(ort, level, verbose)
-    with capture_native_stderr() as log:
-        t0 = time.perf_counter()
-        sess = ort.InferenceSession(model, so, providers=providers_for(ep, cache_dir))
-        elapsed = time.perf_counter() - t0
-        text = log.read()
+    # The CoreML EP emits its GetCapability summary at WARNING only when it produced
+    # more than one partition; the single-partition case -- the outcome this probe
+    # exists to detect -- goes out at INFO. It is also written through the *default*
+    # logger, which SessionOptions.log_severity_level does not lower.
+    ort.set_default_logger_severity(0 if verbose else 1)
+    try:
+        with capture_native_stderr() as log:
+            t0 = time.perf_counter()
+            sess = ort.InferenceSession(model, so, providers=providers_for(ep, cache_dir))
+            elapsed = time.perf_counter() - t0
+            # dup2 makes fd 2 share this file's offset, so it already sits at
+            # end-of-writes: without the seek, read() returns "".
+            log.seek(0)
+            text = log.read()
+    finally:
+        ort.set_default_logger_severity(2)
     return sess, elapsed, text
 
 
@@ -132,7 +146,9 @@ def synth_feed(sess, seed: int) -> dict:
     return feed
 
 
-def report_placement(log: str) -> None:
+def report_placement(log: str):
+    """Prints the partition summary. Returns (partitions, total, supported), or None
+    if the EP did not log one (the CPU and WebGPU EPs never do)."""
     m = PARTITION_RE.search(log)
     if m:
         parts, total, supported = (int(x) for x in m.groups())
@@ -143,6 +159,7 @@ def report_placement(log: str) -> None:
     fell_back = re.findall(r"Node\(s\) placed on \[CPUExecutionProvider\][^\n]*", log)
     for line in fell_back[:1]:
         print(f"  {line.strip()}")
+    return (int(m.group(1)), int(m.group(2)), int(m.group(3))) if m else None
 
 
 def main() -> None:
@@ -186,15 +203,22 @@ def main() -> None:
         print(f"  warm            {warm:.2f} s")
     actually_used = sess.get_providers()
     print(f"  providers used  {', '.join(actually_used)}")
-    if args.ep != "cpu" and actually_used[0] == "CPUExecutionProvider":
-        print("  ⚠ the requested EP did not take the graph -- numbers below are CPU numbers")
-    report_placement(log)
+    placement = report_placement(log)
+    # get_providers() is the *registration* list, in priority order -- it says nothing
+    # about which EP was actually assigned nodes. An EP that registers and then claims
+    # zero nodes still sits at index 0, so the node count is the real check.
+    if args.ep != "cpu":
+        if actually_used[0] == "CPUExecutionProvider":
+            print("  ⚠ the requested EP is not present in this build -- numbers below are CPU numbers")
+        elif placement is not None and placement[2] == 0:
+            print("  ⚠ the requested EP registered but claimed 0 nodes -- numbers below are CPU numbers")
 
     feed = synth_feed(sess, args.seed)
     out_names = [o.name for o in sess.get_outputs()]
     for _ in range(args.warmup):
         sess.run(None, feed)
     times = []
+    got = None
     for _ in range(args.runs):
         t0 = time.perf_counter()
         got = sess.run(None, feed)
@@ -204,8 +228,13 @@ def main() -> None:
     print(f"  min / max       {min(times):.1f} / {max(times):.1f} ms")
 
     if args.reference:
+        ref_so = build_options(ort, "basic", False)
+        # The reference session is created outside the stderr capture, so keep it at
+        # WARNING -- build_options lowers to INFO for the partition summary we only
+        # want from the probed session.
+        ref_so.log_severity_level = 2
         ref_sess = ort.InferenceSession(
-            os.path.expanduser(args.reference), build_options(ort, "basic", False),
+            os.path.expanduser(args.reference), ref_so,
             providers=["CPUExecutionProvider"])
         ref_feed = {}
         for i in ref_sess.get_inputs():
@@ -215,6 +244,8 @@ def main() -> None:
                 # The reference declares inputs the specialized graph baked away.
                 ref_feed.update(synth_feed_missing(i, feed))
         ref = dict(zip([o.name for o in ref_sess.get_outputs()], ref_sess.run(None, ref_feed)))
+        if got is None:          # --runs 0: nothing timed, but parity was still asked for
+            got = sess.run(None, feed)
         mine = dict(zip(out_names, got))
         print(f"\nparity vs {os.path.basename(args.reference)} (CPU EP, steady state)")
         for k in ("spkcache_fifo_chunk_preds", "chunk_pre_encode_embs"):
