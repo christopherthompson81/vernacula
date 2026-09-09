@@ -14,6 +14,7 @@ It now covers both models in your pipeline:
 - `export_sortformer_nemo_to_onnx.py`: exports streaming Sortformer `.nemo` to the same six-input / three-output ONNX contract used by Vernacula's inference code.
 - `export_silero_vad_to_onnx.py`: exports Silero VAD to ONNX.
 - `benchmark_sortformer_rtf.py`: benchmarks Sortformer NeMo-vs-ONNX diarization RTF on CPU or CUDA.
+- `coreml_partition_probe.py`: reports what an execution provider does with a static Sortformer graph — partition count, load and inference time, parity against the dynamic graph. This is the measurement that decides whether a CoreML variant is worth shipping, and it has to run on Apple Silicon.
 - `compare_sortformer_chunk_outputs.py`: compares two Sortformer backends chunk-by-chunk to locate streaming parity drift.
 - `tune_nemo128_export.py`: runs multiple preprocessor export candidates and scores them against a legacy reference — use this if the default export mode needs tuning.
 - `setup_nemo_export_env.py`: creates the Python export venv.
