@@ -4,6 +4,7 @@ using System.Security.Cryptography;
 using System.Text.Json;
 using Microsoft.ML.OnnxRuntime;
 using Vernacula.Base;
+using Vernacula.Base.Inference;
 using Vernacula.Base.Models;
 using Vernacula.App.Models;
 using Vernacula.App.Services.Tts;
@@ -122,45 +123,38 @@ internal class ModelManagerService
             new(Path.Combine("diarizen", Config.DiariZenLdaDir, "plda_tr.bin"), $"{Config.DiariZenLdaDir}/plda_tr.bin"),
         ];
 
-    private static readonly ModelAsset[] AsrFilesFp32 = BuildAsrFilesFp32();
-
-    /// <summary>
-    /// The fp32 ASR assets to fetch. The CoreML encoder buckets are included ONLY on
-    /// Apple Silicon.
-    /// </summary>
-    /// <remarks>
-    /// They are ~153 MB for all four and inert anywhere else — CoreML-specific exports that
-    /// <see cref="Parakeet"/> only opens when the CoreML EP is present. They add no weight
-    /// download: their external weights ARE <c>encoder-model.onnx.data</c>, already in this
-    /// list, which is why each bucket is only its own graph.
-    ///
-    /// ⚠ WITHOUT THIS THE BUCKETS ARE UNREACHABLE IN THE APP. Detection keys on the files
-    /// being present beside the stock encoder, and nothing else puts them there; publishing
-    /// them to HuggingFace and listing them in manifest.json is not enough on its own.
-    /// </remarks>
-    private static ModelAsset[] BuildAsrFilesFp32()
-    {
-        var assets = new List<ModelAsset>
-        {
+    private static readonly ModelAsset[] AsrFilesFp32 =
+        [
             new(Path.Combine(Config.ParakeetSubDir, Config.PreprocessorFile), Config.PreprocessorFile),
             new(Path.Combine(Config.ParakeetSubDir, Config.EncoderFile), Config.EncoderFile),
             new(Path.Combine(Config.ParakeetSubDir, $"{Config.EncoderFile}.data"), $"{Config.EncoderFile}.data"),
             new(Path.Combine(Config.ParakeetSubDir, Config.DecoderJointFile), Config.DecoderJointFile),
             new(Path.Combine(Config.ParakeetSubDir, Config.VocabFile), Config.VocabFile),
             new(Path.Combine(Config.ParakeetSubDir, Config.AsrConfigFile), Config.AsrConfigFile)
-        };
+        ];
 
-        if (OperatingSystem.IsMacOS() && RuntimeInformation.OSArchitecture == Architecture.Arm64)
-        {
-            foreach (int frames in Config.ParakeetCoreMLEncoderFrames)
-            {
-                string file = Config.ParakeetCoreMLEncoderFile(frames);
-                assets.Add(new(Path.Combine(Config.ParakeetSubDir, file), file));
-            }
-        }
-
-        return assets.ToArray();
-    }
+    /// <summary>
+    /// Model files an earlier version fetched and this one does not, as file-name prefixes
+    /// under a bundle subdirectory. Deleted on the next download pass.
+    /// </summary>
+    /// <remarks>
+    /// The Parakeet CoreML encoder buckets (`encoder-model.coreml-<frames>.onnx`) were an
+    /// experiment: static-shape re-exports that reach the Neural Engine, exact and a genuine
+    /// 1.56x on inference, but a bucket session costs ~2.9 s to open and a static-shape
+    /// design needs several, so the ANE's win went straight back into loading. WebGPU runs
+    /// the stock dynamic graph ~1.5x faster with no buckets at all. Retired.
+    ///
+    /// ⚠ THEY DO NOT GO QUIETLY. Each shipped bucket also leaves a compiled CoreML bundle of
+    /// roughly 4.4 GB in the cache root, and the existing prune only reclaims superseded
+    /// versions of a model something still opens -- so a model that simply stops being used
+    /// is never reclaimed at all. Four buckets is up to ~17.6 GB that would sit there
+    /// forever. <see cref="OrtSessionBuilder.ForgetCoreMLCacheFor"/> is what actually gets
+    /// it back.
+    /// </remarks>
+    private static readonly (string SubDir, string FilePrefix)[] RetiredAssets =
+        [
+            (Config.ParakeetSubDir, "encoder-model.coreml-"),
+        ];
 
     private static readonly ModelAsset[] CohereFiles =
         [
@@ -846,11 +840,40 @@ internal class ModelManagerService
     {
         string dir = _settings.GetModelsDir();
         Directory.CreateDirectory(dir);
+        RemoveRetiredAssets(dir);
 
         var missing = DownloadableFiles()
             .Where(asset => !File.Exists(Path.Combine(dir, asset.LocalRelativePath)))
             .ToList();
         await DownloadMissingAssetsAsync(dir, missing, progress, ct);
+    }
+
+    /// <summary>
+    /// Deletes model files this version no longer uses, and the compiled CoreML bundles
+    /// they left behind. Best-effort and silent: reclaiming disk must never be the reason a
+    /// download fails.
+    /// </summary>
+    private static void RemoveRetiredAssets(string modelsDir)
+    {
+        foreach (var (subDir, filePrefix) in RetiredAssets)
+        {
+            try
+            {
+                string bundleDir = Path.Combine(modelsDir, subDir);
+                if (Directory.Exists(bundleDir))
+                {
+                    foreach (string f in Directory.EnumerateFiles(bundleDir, filePrefix + "*"))
+                    {
+                        try { File.Delete(f); } catch { }
+                    }
+                }
+
+                // The compiled bundles are the big half: ~4.4 GB apiece against ~25 MB of
+                // graph, and nothing else ever reclaims them once the model stops being used.
+                OrtSessionBuilder.ForgetCoreMLCacheFor(filePrefix);
+            }
+            catch { /* retiring is opportunistic; never let it break a download */ }
+        }
     }
 
     public async Task DownloadMissingDiariZenModelsAsync(

@@ -968,14 +968,11 @@ try
         Console.WriteLine();
         swAsr.Stop();
 
-        // Say where the encoding actually ran. "CoreML was requested" and "CoreML ran" are
-        // different claims -- a missing bucket, a signature mismatch or a segment longer
-        // than the largest bucket all fall back silently and correctly, and without this
-        // the only symptom is a number that did not improve.
-        if (parakeet.CoreMLSegmentCount > 0 || parakeet.StockSegmentCount > 0)
-            Console.WriteLine($"Encoder routing  : {parakeet.CoreMLSegmentCount} segment(s) on CoreML buckets, "
-                              + $"{parakeet.StockSegmentCount} on the stock graph, "
-                              + $"{parakeet.EncoderMs:F0}ms in the encoder ({parakeet.CoreMLLoadMs:F0}ms of it opening buckets)");
+        // Report the encoder's own share. "A provider was requested" and "it ran there" are
+        // different claims, and without a number the only symptom of a silent fallback is a
+        // time that did not improve.
+        if (showBenchmark)
+            Console.WriteLine($"Encoder          : {parakeet.EncoderMs:F0}ms");
     }
 
     // Sort by start time (Recognize may return results in batch order)

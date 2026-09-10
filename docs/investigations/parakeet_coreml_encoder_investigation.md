@@ -342,6 +342,30 @@ across files — or when the ladder is re-cut for the observed distribution.
 
 Diarization is unaffected and is a clear win: 13.1 s → 6.6 s on the same file.
 
+## Retired — 2026-09-10
+
+**Decision: the encoder buckets are not shipped.** Removed from the download list, from
+`Parakeet`, and from `Config`; the published files stay on HuggingFace for anyone
+reproducing this, and the exporter and Technique 6 stay in the playbook, because the
+technique is sound and generalises — it is this *application* of it that does not pay.
+
+The case against, in one line each:
+
+* WebGPU runs the **stock dynamic graph** at 7.1 s against the CPU EP's 10.8 s on the same
+  10-minute file — faster than the buckets manage (19.5 s including load), with no
+  re-export, no padding waste, no bucketing and no compiled cache.
+* The ANE's 1.56× on inference is real and is spent entirely on opening bucket sessions
+  (~2.9 s each, and a static-shape design needs several).
+* Real segments fill a bucket ~47%, so half the padded work is wasted before loading counts.
+
+What retiring costs, and why it needed more than deleting a list entry: each shipped bucket
+leaves a **~4.4 GB compiled CoreML bundle** in the cache root, and the existing prune only
+reclaims superseded versions of a model something still opens — a model that simply stops
+being used is never reclaimed at all. Four buckets is ~17.6 GB that would have sat there
+forever on every Mac that fetched them. `OrtSessionBuilder.ForgetCoreMLCacheFor` is the
+reclaim; `ModelManagerService.RemoveRetiredAssets` runs it on the next download pass.
+Measured on this machine: **19.20 GB reclaimed**, Sortformer's own CoreML cache untouched.
+
 ## Where this leaves the variant
 
 Done and validated as an artifact. **Not yet consumable from the app**, and the

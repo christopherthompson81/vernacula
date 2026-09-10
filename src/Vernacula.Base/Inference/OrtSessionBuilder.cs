@@ -261,6 +261,60 @@ public static class OrtSessionBuilder
     /// pruning when a new version's directory is first created. Prune at process start
     /// instead if that ever stops being narrow enough.
     /// </remarks>
+    /// <summary>
+    /// Deletes every cached CoreML bundle for models whose file name starts with
+    /// <paramref name="fileNamePrefix"/>. Returns the bytes reclaimed.
+    /// </summary>
+    /// <remarks>
+    /// For retiring a model, which <see cref="PruneStaleVersions"/> cannot do: that prune
+    /// only runs when a NEW version of a model is opened, so a model that stops being used
+    /// keeps its compiled bundle forever. At ~4.4 GB per Parakeet CoreML bucket that is not
+    /// a rounding error.
+    ///
+    /// Matches on the cache directory name, which is `{pathHash}-{basename}-{version...}`
+    /// — hence the search for the basename after the hash rather than at the start.
+    /// Best-effort: a bundle in use by a live session stays, and the next call gets it.
+    /// </remarks>
+    public static long ForgetCoreMLCacheFor(string fileNamePrefix)
+    {
+        string? root = CoreMLCacheRoot.Value;
+        if (root is null || !Directory.Exists(root))
+            return 0;
+
+        long reclaimed = 0;
+        try
+        {
+            foreach (string dir in Directory.EnumerateDirectories(root))
+            {
+                string name = Path.GetFileName(dir);
+                int dash = name.IndexOf('-');
+                if (dash < 0 || !name.AsSpan(dash + 1).StartsWith(fileNamePrefix, StringComparison.Ordinal))
+                    continue;
+
+                long size = DirectorySize(dir);
+                TryDelete(dir);
+                if (!Directory.Exists(dir))
+                    reclaimed += size;
+            }
+        }
+        catch { /* the root vanished, or is not ours to walk */ }
+        return reclaimed;
+    }
+
+    private static long DirectorySize(string dir)
+    {
+        try
+        {
+            long total = 0;
+            foreach (string f in Directory.EnumerateFiles(dir, "*", SearchOption.AllDirectories))
+            {
+                try { total += new FileInfo(f).Length; } catch { }
+            }
+            return total;
+        }
+        catch { return 0; }
+    }
+
     private static void PruneStaleVersions(string root, string prefix, string keep, string modelPath)
     {
         try

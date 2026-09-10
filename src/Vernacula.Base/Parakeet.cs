@@ -25,30 +25,8 @@ public sealed class Parakeet : IDisposable
     private readonly int[] _stateShape1;
     private readonly int[] _stateShape2;
 
-    /// <summary>Whether CoreML encoder buckets may be used at all for this instance.</summary>
-    private readonly bool _coreMlEligible;
-
-    /// <summary>
-    /// Bucket mel-frame size → its session, or null once an open has been tried and failed.
-    /// Opened lazily: each bucket costs a ~22 s first compile and ~4.4 GB of CoreML cache,
-    /// so a run that never sees a 30 s segment never pays for the 3000 bucket.
-    /// </summary>
-    private readonly Dictionary<int, InferenceSession?> _coreMlEncoders = [];
-
     /// <summary>Wall-clock milliseconds spent inside the encoder, whichever graph ran it.</summary>
     public double EncoderMs { get; private set; }
-
-    /// <summary>
-    /// Of <see cref="EncoderMs"/>, the part spent opening CoreML bucket sessions rather
-    /// than running inference. Charged once per bucket per instance, not per segment.
-    /// </summary>
-    public double CoreMLLoadMs { get; private set; }
-
-    /// <summary>Segments encoded on a CoreML bucket. Diagnostics; also what the tests assert.</summary>
-    public int CoreMLSegmentCount { get; private set; }
-
-    /// <summary>Segments encoded on the stock graph — too long for any bucket, or no buckets present.</summary>
-    public int StockSegmentCount { get; private set; }
 
     /// <summary>
     /// Decoding beam width. <c>1</c> (default) runs the fast greedy-batch
@@ -93,11 +71,6 @@ public sealed class Parakeet : IDisposable
         _preprocessor = new InferenceSession(
             Path.Combine(modelPath, Config.PreprocessorFile), cpuOpts);
 
-        // ⚠ The CoreML buckets are a SEPARATE artifact with a different contract, so the
-        // stock encoder still has to run somewhere: it handles anything longer than the
-        // largest bucket, and everything when the buckets are absent. Asking for CoreML
-        // here would throw -- the stock graph cannot compile under that EP (see
-        // TryOpenCoreMLEncoder) -- so it needs some other provider.
         // ⚠ ONE SessionOptions PER SESSION. Handing the same options object to two sessions
         // segfaults the process on the WebGPU EP: the second Dispose lands in
         // `webgpu::BufferManager::Release` on already-freed buffers. It kills the process at
@@ -112,11 +85,6 @@ public sealed class Parakeet : IDisposable
                                              OrtSessionBuilder.Create(stockEp));
         _decoderJoint = new InferenceSession(Path.Combine(modelPath, decoderJointFile),
                                              OrtSessionBuilder.Create(stockEp));
-
-        // Only fp32 has CoreML buckets. An int8 request is an explicit ask for the
-        // quantized graph; silently serving fp32 from the ANE would change precision
-        // behind the caller's back.
-        _coreMlEligible = encoderFile == Config.EncoderFile && CoreMLWanted(ep);
 
         (_vocab, _vocabSize, _blankIdx) = GetVocab();
 
@@ -226,249 +194,18 @@ public sealed class Parakeet : IDisposable
         return (features, featLens);
     }
 
-    /// <summary>
-    /// Whether a CoreML bucket may be used, given the caller's provider choice.
-    /// </summary>
+    /// <summary>Which provider the encoder and decoder-joint sessions run on.</summary>
     /// <remarks>
-    /// ⚠ <b>Auto does NOT opt in here, unlike the Sortformer variant.</b> The Sortformer
-    /// gate reasons that presence of a matching artifact is checkable evidence CoreML suits
-    /// the model. For Parakeet that evidence now exists and it says the opposite — measured
-    /// end to end on an M5, a 10-minute recording, 132 segments, warm CoreML cache:
+    /// The encoder graph does not compile under the CoreML EP at all — it declares unbounded
+    /// dimensions, which CoreML's MIL runtime rejects outright — so a CoreML request resolves
+    /// to Auto, i.e. the best remaining provider, which is WebGPU on macOS.
     ///
-    /// <code>
-    ///                       CPU EP      CoreML buckets
-    ///   encoder inference   13.6 s       8.7 s     <- the ANE does win, 1.56x
-    ///   opening buckets      0.0 s      11.7 s     <- and then loses it all here
-    ///   encoder total       13.6 s      20.4 s
-    /// </code>
-    ///
-    /// The inference win is real but small in absolute terms (~5 s on a 10-minute file),
-    /// because the CPU EP batches and is already good at this — and a bucket session costs
-    /// ~2.9 s to open even warm, charged per bucket per instance. Modelling every ladder
-    /// from 1 to 4 buckets against a real segment distribution puts the best at ~16.5 s,
-    /// still behind the CPU's 13.6 s: fewer buckets means less loading but more padding
-    /// waste and more segments falling through to the stock graph.
-    ///
-    /// Real segments are also much shorter than the buckets — p50 2.3 s against a 4 s
-    /// smallest bucket — so mean fill is only ~47% and half the padded work is wasted.
-    ///
-    /// So an explicit CoreML request is honoured, and Auto stays on the CPU EP until either
-    /// the session-open cost is hidden (opening buckets concurrently with diarization, or
-    /// keeping them alive across files) or the ladder is re-cut for the observed
-    /// distribution. Diarization is unaffected: the Sortformer variant is a clear win
-    /// (13.1 s -> 6.6 s on the same file) and Auto still takes it.
-    /// </remarks>
-    private static bool CoreMLWanted(ExecutionProvider ep) => ep == ExecutionProvider.CoreML;
-
-    /// <summary>
-    /// Which provider the STOCK encoder and decoder-joint sessions run on, given what the
-    /// caller asked for.
-    /// </summary>
-    /// <remarks>
-    /// A CoreML request cannot go to these sessions: the stock graph does not compile under
-    /// that EP at all (see <see cref="TryOpenCoreMLEncoder"/>), so it resolves to Auto — the
-    /// best remaining provider, which is WebGPU on macOS.
-    ///
-    /// This briefly returned the CPU EP on macOS to dodge a teardown segfault. That was the
-    /// wrong fix for a correctly-observed crash: the cause was one `SessionOptions` shared
-    /// between two sessions, not the WebGPU EP, and it is fixed at the constructor. Keeping
-    /// the dodge would have cost macOS the ~1.5× WebGPU gives the stock encoder over the CPU
-    /// EP (7.1 s vs 10.8 s over a 10-minute recording).
+    /// Static-shape re-exports that DO compile under CoreML were built, measured and retired;
+    /// see docs/investigations/parakeet_coreml_encoder_investigation.md. WebGPU runs the
+    /// stock dynamic graph ~1.5× faster than the CPU EP with no re-export at all.
     /// </remarks>
     private static ExecutionProvider StockEncoderProvider(ExecutionProvider ep) =>
         ep == ExecutionProvider.CoreML ? ExecutionProvider.Auto : ep;
-
-    /// <summary>The smallest bucket that fits <paramref name="melFrames"/>, or -1.</summary>
-    private static int BucketFor(long melFrames)
-    {
-        foreach (int frames in Config.ParakeetCoreMLEncoderFrames)
-            if (melFrames <= frames)
-                return frames;
-        return -1;      // longer than the largest bucket: the stock graph takes it
-    }
-
-    /// <summary>
-    /// The bucket session for <paramref name="melFrames"/>, opening it on first use, or
-    /// null to fall back to the stock encoder.
-    /// </summary>
-    private InferenceSession? CoreMLEncoder(int melFrames)
-    {
-        if (_coreMlEncoders.TryGetValue(melFrames, out var cached))
-            return cached;
-
-        var sw = System.Diagnostics.Stopwatch.StartNew();
-        InferenceSession? session = TryOpenCoreMLEncoder(_modelPath, melFrames);
-        CoreMLLoadMs += sw.Elapsed.TotalMilliseconds;
-        _coreMlEncoders[melFrames] = session;
-        return session;
-    }
-
-    /// <summary>
-    /// Opens one CoreML encoder bucket, or returns null to run stock-only.
-    /// </summary>
-    /// <remarks>
-    /// ⚠ THE FILENAME IS NOT THE CONTRACT. A bucket exported for a different mel count, or
-    /// an older export without <c>pad_keep</c>, lands at this exact path and loads fine —
-    /// then throws on the first segment, turning a graceful fallback into a failed run.
-    /// Check the signature.
-    /// </remarks>
-    private static InferenceSession? TryOpenCoreMLEncoder(string modelPath, int melFrames)
-    {
-        string path = Path.Combine(modelPath, Config.ParakeetCoreMLEncoderFile(melFrames));
-        if (!File.Exists(path))
-            return null;
-
-        InferenceSession? sess = null;
-        try
-        {
-            // Always CoreML, never the caller's `ep`: under Auto that would build a WebGPU
-            // session for a graph exported specifically for the CoreML EP.
-            var opts = OrtSessionBuilder.Create(
-                ExecutionProvider.CoreML, GraphOptimizationLevel.ORT_ENABLE_BASIC,
-                coreMlModelPath: path);
-            sess = new InferenceSession(path, opts);
-
-            if (!SignatureMatchesBucketContract(sess, melFrames))
-            {
-                sess.Dispose();
-                return null;
-            }
-            return sess;
-        }
-        catch
-        {
-            // Missing provider, a graph this ORT declines, anything: the stock encoder
-            // handles every segment on its own.
-            sess?.Dispose();
-            return null;
-        }
-    }
-
-    /// <summary>
-    /// Whether a candidate graph is the bucket <see cref="EncodeOnBucket"/> knows how to
-    /// feed: exactly <c>audio_signal [1, 128, F]</c> and <c>pad_keep [1, F]</c>.
-    /// </summary>
-    private static bool SignatureMatchesBucketContract(InferenceSession sess, int melFrames)
-    {
-        var expected = new (string Name, int[] Dims)[]
-        {
-            ("audio_signal", [1, Config.NMels, melFrames]),
-            ("pad_keep",     [1, melFrames]),
-        };
-
-        var meta = sess.InputMetadata;
-        if (meta.Count != expected.Length)
-            return false;
-
-        foreach (var (name, dims) in expected)
-        {
-            if (!meta.TryGetValue(name, out var m) || m.Dimensions.Length != dims.Length)
-                return false;
-            for (int i = 0; i < dims.Length; i++)
-                if (m.Dimensions[i] != dims[i])   // a dynamic axis is negative, so it fails too
-                    return false;
-        }
-        return true;
-    }
-
-    /// <summary>
-    /// Encodes ONE segment on a CoreML bucket: zero-pad the features to the bucket and
-    /// hand the graph an honest <c>pad_keep</c>.
-    /// </summary>
-    /// <remarks>
-    /// ⚠ <c>pad_keep</c> MUST reflect the true frame count. All-ones on a short segment is
-    /// exactly the "bake the length" behaviour this export exists to avoid: measured on
-    /// real speech it moves the encoder output by 0.17–0.24 and changes the transcript by
-    /// 2–4% WER on 8–20 s segments, worse on short ones — and it fails silently, since the
-    /// graph is perfectly happy to be lied to.
-    /// </remarks>
-    private static float[] EncodeOnBucket(
-        InferenceSession sess, float[,,] features, int b, int D, int melFrames, long trueFrames)
-    {
-        var signal = new float[D * melFrames];
-        var keep   = new float[melFrames];
-        int valid  = (int)Math.Min(trueFrames, melFrames);
-        for (int d = 0; d < D; d++)
-            for (int t = 0; t < valid; t++)
-                signal[d * melFrames + t] = features[b, d, t];
-        for (int t = 0; t < valid; t++)
-            keep[t] = 1f;
-
-        using var results = sess.Run(new List<NamedOnnxValue>
-        {
-            NamedOnnxValue.CreateFromTensor("audio_signal",
-                new DenseTensor<float>(signal, [1, D, melFrames])),
-            NamedOnnxValue.CreateFromTensor("pad_keep",
-                new DenseTensor<float>(keep, [1, melFrames])),
-        });
-
-        var outT = results.First(r => r.Name == "outputs").AsTensor<float>();
-        var flat = new float[outT.Length];
-        for (int i = 0; i < flat.Length; i++) flat[i] = outT.GetValue(i);
-        return flat;                                    // [1, D_enc, T_enc] flattened
-    }
-
-    /// <summary>
-    /// Encodes a whole batch one segment at a time on CoreML buckets, or returns null to
-    /// leave the batch to the stock encoder.
-    /// </summary>
-    /// <remarks>
-    /// All-or-nothing per batch, deliberately: <see cref="MakeBatches"/> groups
-    /// length-sorted segments, so a batch is nearly homogeneous and a mixed routing would
-    /// buy a sub-batch stock call's worth of complexity for almost nothing. In practice the
-    /// short batches go to the ANE and a batch holding a >30 s segment goes to the stock
-    /// graph whole.
-    ///
-    /// Dropping batching costs nothing here even though the stock path batches up to 32:
-    /// measured on an M5, the CPU EP is FASTER at batch 1 (141.8 ms/segment) than at
-    /// batch 8 (162.7 ms), because it already saturates its threads on a single segment.
-    /// </remarks>
-    private (float[,,] encoderOut, long[] encoderLens)? TryEncodeViaCoreML(
-        float[,,] features, long[] lens)
-    {
-        int B = features.GetLength(0);
-        int D = features.GetLength(1);
-
-        var buckets  = new int[B];
-        var sessions = new InferenceSession[B];
-        for (int b = 0; b < B; b++)
-        {
-            buckets[b] = BucketFor(lens[b]);
-            if (buckets[b] < 0)
-                return null;                                  // longer than every bucket
-            var sess = CoreMLEncoder(buckets[b]);
-            if (sess is null)
-                return null;                                  // absent, or a bad signature
-            sessions[b] = sess;
-        }
-
-        var encLens  = new long[B];
-        var outputs  = new float[B][];
-        int maxT = 0, dEnc = 0;
-        for (int b = 0; b < B; b++)
-        {
-            int bucketT = Config.ParakeetEncodedFrames(buckets[b]);
-            outputs[b]  = EncodeOnBucket(sessions[b], features, b, D, buckets[b], lens[b]);
-            dEnc        = outputs[b].Length / bucketT;
-            // From the TRUE frame count, not the bucket's: the padded tail is masked out
-            // of the encoder, and decoding it would transcribe silence.
-            encLens[b]  = Math.Min(Config.ParakeetEncodedFrames((int)lens[b]), bucketT);
-            maxT        = Math.Max(maxT, (int)encLens[b]);
-        }
-
-        var encoderOut = new float[B, maxT, dEnc];
-        for (int b = 0; b < B; b++)
-        {
-            int bucketT = Config.ParakeetEncodedFrames(buckets[b]);
-            var flat    = outputs[b];                          // [1, dEnc, bucketT]
-            for (int d = 0; d < dEnc; d++)
-                for (int t = 0; t < encLens[b]; t++)
-                    encoderOut[b, t, d] = flat[d * bucketT + t];
-        }
-
-        CoreMLSegmentCount += B;
-        return (encoderOut, encLens);
-    }
 
     private (float[,,] encoderOut, long[] encoderLens) Encode(float[,,] features, long[] lens)
     {
@@ -479,13 +216,6 @@ public sealed class Parakeet : IDisposable
 
     private (float[,,] encoderOut, long[] encoderLens) EncodeInner(float[,,] features, long[] lens)
     {
-        if (_coreMlEligible)
-        {
-            var routed = TryEncodeViaCoreML(features, lens);
-            if (routed is not null)
-                return routed.Value;
-        }
-        StockSegmentCount += features.GetLength(0);
 
         int B = features.GetLength(0);
         int D = features.GetLength(1);
@@ -954,8 +684,6 @@ public sealed class Parakeet : IDisposable
         _preprocessor.Dispose();
         _encoder.Dispose();
         _decoderJoint.Dispose();
-        foreach (var sess in _coreMlEncoders.Values)
-            sess?.Dispose();
     }
 }
 

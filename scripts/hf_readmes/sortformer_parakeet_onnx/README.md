@@ -241,11 +241,19 @@ load-level restriction — they load at any `GraphOptimizationLevel`.
 twice (once in the `.mlpackage`, once in the compiled `.mlmodelc`). That, not download
 size, is what should decide how many buckets you deploy.
 
-⚠ **Not yet wired into Vernacula.** These are published so the runtime work can proceed
-against a fixed artifact; the app has no CoreML path for Parakeet yet, and which buckets
-it will ship is still open. End to end the encoder is ~78% of ASR time, so a 2.5× there is
-~1.9× overall — the TDT decoder's per-step `LSTM` is the remaining share and does not
-benefit from CoreML (measured: 0.652 ms vs 0.643 ms on CPU).
+⚠ **Retired: Vernacula does not ship these.** They were wired into the app, measured end
+to end, and removed. The graphs are exact and the ANE genuinely wins the inference
+(1.56×) — but a bucket session costs ~2.9 s to open, a static-shape design needs several,
+and that hands the win straight back. On the same 10-minute recording the encoder took
+19.5 s through the buckets (10.1 s inference + 9.4 s loading) against **10.8 s on the CPU
+EP** and **7.1 s on WebGPU**, which runs the stock `encoder-model.onnx` unmodified with no
+bucketing at all.
+
+They remain here for anyone reproducing the work or targeting the Neural Engine
+specifically, where they are still the only route to it. Two things to budget for if you
+do: each bucket compiles to a **~4.4 GB** CoreML bundle that nothing reclaims once you
+stop using it, and real speech segments fill a bucket only about half way, so roughly half
+the padded work is wasted.
 
 Built with
 [`export_parakeet_coreml_encoder.py`](https://github.com/christopherthompson81/vernacula/blob/main/scripts/nemo_export/export_parakeet_coreml_encoder.py):
