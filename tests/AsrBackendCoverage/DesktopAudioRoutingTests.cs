@@ -5,6 +5,7 @@ using Xunit;
 
 // Vernacula.App and Vernacula.Base each declare an AudioUtils, and the point of this file is
 // that they are different classes with different routing. Alias rather than import.
+using Vernacula.App.Services;
 using AppAudioUtils = Vernacula.App.AudioUtils;
 using FFmpegDecoder  = Vernacula.App.FFmpegDecoder;
 
@@ -117,6 +118,48 @@ public class DesktopAudioRoutingTests
             Assert.False(ManagedAudioDecoders.Handles(ext),
                 $"{ext} is a video container and cannot be decoded in-process, but the "
                 + "managed table claims it");
+    }
+
+    /// <summary>
+    /// What justifies downloading 111 MB of FFmpeg.
+    /// <para>
+    /// ⚠ THE "All files" FILTER IS WHY THIS IS A LIST AND NOT A NEGATION. The picker lets a
+    /// user select anything, so defining "needs FFmpeg" as "not in the managed table" made a
+    /// mistyped .txt start the download. It has to name formats FFmpeg can actually help with.
+    /// </para>
+    /// </summary>
+    [Theory]
+    [InlineData("recording.m4a", true)]
+    [InlineData("archive.flac", true)]
+    [InlineData("meeting.mp4", true)]
+    [InlineData("clip.mkv", true)]
+    [InlineData("memo.mp3", false)]
+    [InlineData("memo.wav", false)]
+    [InlineData("note.opus", false)]
+    [InlineData("tone.aiff", false)]
+    [InlineData("notes.txt", false)]
+    [InlineData("scan.pdf", false)]
+    [InlineData("no-extension", false)]
+    public void NeedsFfmpeg_OnlyForMediaWeCannotDecodeOurselves(string fileName, bool expected)
+    {
+        Assert.Equal(expected, FfmpegProvisioningService.NeedsFfmpeg(fileName));
+    }
+
+    /// <summary>
+    /// Nothing the managed table owns may ever ask for a download — that would be a 111 MB
+    /// fetch for a file we can already read.
+    /// </summary>
+    [Theory]
+    [InlineData(".wav")]
+    [InlineData(".mp3")]
+    [InlineData(".aiff")]
+    [InlineData(".aif")]
+    [InlineData(".ogg")]
+    [InlineData(".oga")]
+    [InlineData(".opus")]
+    public void ManagedFormats_NeverTriggerADownload(string extension)
+    {
+        Assert.False(FfmpegProvisioningService.NeedsFfmpeg("recording" + extension));
     }
 
     private static void AssertHalfSecondTone(float[] samples, int sampleRate, int channels)

@@ -270,7 +270,23 @@ internal static class AudioUtils
             catch (Exception ex) when (ManagedAudioDecoders.IsFormatRejection(ex))
             {
                 // The bytes do not match the extension. FFmpeg sniffs content, so let it try.
-                return FFmpegDecoder.DecodeStream(path, 0);
+                try
+                {
+                    return FFmpegDecoder.DecodeStream(path, 0);
+                }
+                catch (Exception ffmpegEx)
+                {
+                    // ⚠ CARRY THE MANAGED FAILURE FORWARD, exactly as Vernacula.Base does.
+                    // Without this, a truncated MP3 on a machine with no FFmpeg surfaces as
+                    // "this format needs FFmpeg" — self-contradictory for an MP3, silent about
+                    // the file being broken, and an invitation to install 111 MB that will not
+                    // help. This is the surface #176 was reported against; it is the one that
+                    // most needs to say what actually went wrong.
+                    throw new InvalidOperationException(
+                        $"Could not read '{Path.GetFileName(path)}'. It was rejected as "
+                        + $"{managed.Name} ({ex.GetType().Name}: {ex.Message}), and the FFmpeg "
+                        + $"fallback also failed: {ffmpegEx.Message}", ffmpegEx);
+                }
             }
         }
 

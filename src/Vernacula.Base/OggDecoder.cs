@@ -113,8 +113,13 @@ public static class OggDecoder
         // belongs to the Ogg reader, and DecodeNextPacket returning null is how it reports a
         // packet it could not use. Trusting it to always advance would make a malformed or
         // truncated file — which is to say, a file a user could plausibly hand us — able to
-        // spin this thread forever with no output and no error. A run of empty packets this
-        // long is a broken stream either way, so stop and let the caller fall back to FFmpeg.
+        // spin this thread forever with no output and no error.
+        //
+        // ⚠ AND HITTING THE BOUND THROWS RATHER THAN RETURNING WHAT IT HAS. Returning a short
+        // decode would be the same silent-data-loss failure this project rejected NLayer 1.16.0
+        // for: a transcript quietly missing its second half, at plausible timestamps, with no
+        // error anywhere. Throwing routes the file to FFmpeg, which handles truncated streams
+        // properly — and if FFmpeg is absent the user gets a message instead of a wrong answer.
         const int maxConsecutiveEmpty = 64;
         int emptyRun = 0;
 
@@ -123,7 +128,11 @@ public static class OggDecoder
             short[] pcm = ogg.DecodeNextPacket();
             if (pcm is null || pcm.Length == 0)
             {
-                if (++emptyRun > maxConsecutiveEmpty) break;
+                if (++emptyRun > maxConsecutiveEmpty)
+                    throw new InvalidDataException(
+                        $"'{Path.GetFileName(path)}' stopped yielding Opus audio after "
+                        + $"{count} samples ({maxConsecutiveEmpty} unusable packets in a row); "
+                        + "the stream looks truncated or corrupt.");
                 continue;
             }
             emptyRun = 0;

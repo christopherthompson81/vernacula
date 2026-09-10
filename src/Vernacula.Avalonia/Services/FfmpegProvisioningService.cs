@@ -60,7 +60,7 @@ internal sealed class FfmpegProvisioningService
     /// ⚠ CHANGING THIS MEANS CHANGING THE HASH. The hash is the only thing standing between a
     /// user and an executable served by whoever controls the network in between, so it is
     /// verified before a single byte is unpacked. Recompute with:
-    ///   <c>sha256sum ffmpeg-&lt;version&gt;-essentials_build.zip</c>
+    ///   <c>sha256sum ffmpeg-<version>-essentials_build.zip</c>
     /// </summary>
     private static readonly Build Source = new(
         Version: "9.0.1",
@@ -120,9 +120,35 @@ internal sealed class FfmpegProvisioningService
         OperatingSystem.IsWindows() && System.Runtime.InteropServices.RuntimeInformation.OSArchitecture
             is System.Runtime.InteropServices.Architecture.X64;
 
+    /// <summary>
+    /// Media formats Vernacula claims to open but cannot decode itself. This is the set that
+    /// justifies a download.
+    /// <para>
+    /// ⚠ "NOT IN THE MANAGED TABLE" IS NOT THE SAME QUESTION, AND USING IT COST 111 MB. The
+    /// file picker offers an "All files" filter, so a mistyped selection — a .txt, a .pdf —
+    /// answered "needs FFmpeg" and started the download. Provisioning has to be driven by a
+    /// list of things FFmpeg can actually help with, not by the absence of an entry elsewhere.
+    /// </para>
+    /// <para>
+    /// Non-PCM WAV (mu-law, A-law, ADPCM) is the one gap: .wav is absent here because the
+    /// overwhelming majority are PCM and the extension alone cannot tell. Those are discovered
+    /// at decode time and reported with the actionable message rather than prefetched.
+    /// </para>
+    /// </summary>
+    private static readonly HashSet<string> FfmpegAudioExtensions =
+        new(StringComparer.OrdinalIgnoreCase)
+        {
+            ".flac", ".m4a", ".m4b", ".aac", ".wma", ".amr", ".ac3", ".caf", ".mka", ".spx",
+        };
+
     /// <summary>True when <paramref name="path"/> is a format that cannot be read without FFmpeg.</summary>
-    public static bool NeedsFfmpeg(string path) =>
-        !ManagedAudioDecoders.Handles(Path.GetExtension(path));
+    public static bool NeedsFfmpeg(string path)
+    {
+        string ext = Path.GetExtension(path);
+        if (ManagedAudioDecoders.Handles(ext)) return false;
+
+        return FfmpegAudioExtensions.Contains(ext) || FFmpegDecoder.VideoExtensions.Contains(ext);
+    }
 
     /// <summary>
     /// Make FFmpeg available if it is not already, and report whether it now is.
@@ -134,15 +160,17 @@ internal sealed class FfmpegProvisioningService
     {
         if (IsInstalled) return true;
         if (!CanDownload) return false;
+        if (InFailureCooldown) return false;
 
-        await _gate.WaitAsync(ct);
+        await _gate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
             // Re-check inside the gate: while this caller waited, the one ahead of it may
-            // have finished the download, and this would otherwise fetch it a second time.
+            // have finished the download — or failed — and this would otherwise repeat it.
             if (IsInstalled) return true;
+            if (InFailureCooldown) return false;
 
-            await DownloadAsync(progress, ct);
+            await DownloadAsync(progress, ct).ConfigureAwait(false);
             return IsInstalled;
         }
         catch (OperationCanceledException)
@@ -151,6 +179,7 @@ internal sealed class FfmpegProvisioningService
         }
         catch (Exception ex)
         {
+            _lastFailureUtc = DateTime.UtcNow;
             Console.WriteLine($"[FFmpeg] provisioning failed: {ex}");
             return false;
         }
@@ -160,6 +189,25 @@ internal sealed class FfmpegProvisioningService
         }
     }
 
+    /// <summary>
+    /// ⚠ A FAILED DOWNLOAD MUST NOT BE RETRIED PER FILE. Adding a folder of fifty recordings
+    /// on a connection that is down means fifty full attempts, each running to its own
+    /// timeout, before the first file is queued. Remembering the failure for a few minutes
+    /// keeps a bulk add responsive, while still letting a user who fixes their network try
+    /// again without restarting the app.
+    /// </summary>
+    private static readonly TimeSpan FailureCooldown = TimeSpan.FromMinutes(5);
+    private static DateTime _lastFailureUtc = DateTime.MinValue;
+
+    private static bool InFailureCooldown => DateTime.UtcNow - _lastFailureUtc < FailureCooldown;
+
+    /// <summary>
+    /// ⚠ ConfigureAwait(false) ON EVERY AWAIT HERE, AND IT IS NOT DECORATION. EnqueueFileAsync
+    /// is awaited from an Avalonia command, so without it every continuation resumes on the UI
+    /// thread — including the SHA-256 over 111 MB and, worse, the fully synchronous Extract()
+    /// that inflates ~180 MB of executables. The window would freeze for seconds immediately
+    /// after the progress bar reached 100%, which reads as a crash.
+    /// </summary>
     private async Task DownloadAsync(IProgress<DownloadProgress>? progress, CancellationToken ct)
     {
         string target = FfmpegBinaries.ManagedDirectory;
@@ -173,27 +221,27 @@ internal sealed class FfmpegProvisioningService
 
         try
         {
-            using (var response = await _http.GetAsync(Source.Url, HttpCompletionOption.ResponseHeadersRead, ct))
+            using (var response = await _http.GetAsync(Source.Url, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false))
             {
                 response.EnsureSuccessStatusCode();
                 long total = response.Content.Headers.ContentLength ?? ApproximateDownloadBytes;
 
-                using var http = await response.Content.ReadAsStreamAsync(ct);
+                using var http = await response.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
                 using var file = File.Create(staging);
 
                 var buffer = new byte[1 << 20];
                 long done = 0;
                 int read;
-                while ((read = await http.ReadAsync(buffer, ct)) > 0)
+                while ((read = await http.ReadAsync(buffer, ct).ConfigureAwait(false)) > 0)
                 {
-                    await file.WriteAsync(buffer.AsMemory(0, read), ct);
+                    await file.WriteAsync(buffer.AsMemory(0, read), ct).ConfigureAwait(false);
                     done += read;
                     progress?.Report(new DownloadProgress(
                         $"ffmpeg {Source.Version}", 0, 1, done, total, total, 0));
                 }
             }
 
-            string actual = await Sha256Async(staging, ct);
+            string actual = await Sha256Async(staging, ct).ConfigureAwait(false);
             if (!string.Equals(actual, Source.Sha256, StringComparison.OrdinalIgnoreCase))
                 throw new InvalidOperationException(
                     $"Downloaded FFmpeg archive has SHA-256 {actual}, expected {Source.Sha256}. "
@@ -247,7 +295,7 @@ internal sealed class FfmpegProvisioningService
     {
         using var sha = SHA256.Create();
         await using var stream = File.OpenRead(path);
-        byte[] hash = await sha.ComputeHashAsync(stream, ct);
+        byte[] hash = await sha.ComputeHashAsync(stream, ct).ConfigureAwait(false);
         return Convert.ToHexString(hash).ToLowerInvariant();
     }
 }

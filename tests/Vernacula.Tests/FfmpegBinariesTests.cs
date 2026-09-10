@@ -103,11 +103,17 @@ public class FfmpegBinariesTests : IDisposable
     [Fact]
     public void MissingBinaryMessage_SaysWhatFailedAndWhatToDo()
     {
-        string message = FfmpegBinaries.MissingBinaryMessage("ffprobe", @"C:\recordings\meeting.m4a");
+        // ⚠ BUILT WITH Path.Combine, NOT WRITTEN AS A LITERAL. Path.GetFileName splits on the
+        // running platform's separators only, so a hard-coded Windows path stays whole under
+        // Linux and the "does not contain the directory" assertion fails there — on the test,
+        // not on the code. The message itself is fine: its paths come from the real OS.
+        string directory = Path.Combine(Path.GetTempPath(), "recordings");
+        string message = FfmpegBinaries.MissingBinaryMessage(
+            "ffprobe", Path.Combine(directory, "meeting.m4a"));
 
         Assert.Contains("ffprobe", message);          // which tool
         Assert.Contains("meeting.m4a", message);      // which file
-        Assert.DoesNotContain(@"C:\recordings", message);  // but not the whole path
+        Assert.DoesNotContain(directory, message);    // but not the whole path
         Assert.Contains("FFmpeg", message);           // what to install
         Assert.Contains("docs/installation.md", message);
         Assert.Contains("MP3", message);              // and the way out that needs nothing

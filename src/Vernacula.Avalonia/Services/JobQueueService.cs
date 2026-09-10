@@ -124,7 +124,8 @@ internal sealed class JobQueueService
     /// files (audio-only, or single-stream video), creates exactly one job.
     /// Returns the list of job IDs that were created.
     /// </summary>
-    public async Task<List<int>> EnqueueFileAsync(string filePath, string title)
+    public async Task<List<int>> EnqueueFileAsync(
+        string filePath, string title, CancellationToken ct = default)
     {
         // ⚠ THE ONE CHOKE POINT FOR "DOES THIS FILE NEED FFMPEG?". Every file entering the app
         // passes through here, and it is the last moment at which fetching FFmpeg is a
@@ -140,7 +141,10 @@ internal sealed class JobQueueService
         {
             try
             {
-                await _ffmpeg.TryEnsureAsync(FfmpegDownloadProgress);
+                // The token is plumbed rather than used today: no caller has one to give, but
+                // the download is the one thing here that can run for minutes, so the moment a
+                // cancel button exists it should reach this and not need the signature changed.
+                await _ffmpeg.TryEnsureAsync(FfmpegDownloadProgress, ct);
             }
             finally
             {

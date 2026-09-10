@@ -105,8 +105,14 @@ public static class FfmpegBinaries
         string? path = Environment.GetEnvironmentVariable("PATH");
         if (path is null) return false;
 
-        foreach (string dir in path.Split(Path.PathSeparator))
+        foreach (string entry in path.Split(Path.PathSeparator))
         {
+            // ⚠ TRIM THE QUOTES. Windows accepts quoted PATH entries ("C:\Program Files\..."),
+            // and Path.Combine on one keeps the quote, so File.Exists says no. Missing a real
+            // install that way is not harmless: resolution falls through to the downloaded
+            // copy, silently shadowing the FFmpeg the user chose to install — the opposite of
+            // what docs/installation.md promises.
+            string dir = entry.Trim().Trim('"');
             if (dir.Length == 0) continue;
             try
             {

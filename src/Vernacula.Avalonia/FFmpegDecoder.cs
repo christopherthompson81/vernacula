@@ -408,6 +408,9 @@ internal static unsafe class FFmpegDecoder
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             UseShellExecute = false,
+            // Without this a GUI app flashes a console window every time it probes a video —
+            // which, since AutoGen's soname rarely matches an installed FFmpeg, is the usual path.
+            CreateNoWindow = true,
         };
         psi.ArgumentList.Add("-v");
         psi.ArgumentList.Add("error");
