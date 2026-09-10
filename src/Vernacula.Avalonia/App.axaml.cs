@@ -173,7 +173,10 @@ public partial class App : Application
                 var sortformerDir = Settings.GetSortformerModelsDir();
                 if (Directory.Exists(sortformerDir))
                 {
-                    using var streamer = new SortformerStreamer(sortformerDir);
+                    // Same provider the real transcription will use, or the warm-up
+                    // compiles a graph for a provider nothing goes on to use.
+                    using var streamer = new SortformerStreamer(
+                        sortformerDir, Settings.Current.ResolvedExecutionProvider);
                     streamer.Warmup();
                     Console.WriteLine("[App] Sortformer model warmup complete.");
                 }

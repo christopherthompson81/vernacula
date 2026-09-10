@@ -432,7 +432,7 @@ internal class TranscriptionService
             var (streamer, melSpec, totalFrames, chunkStride, numChunks) =
                 await Task.Run(() =>
                 {
-                    var s = new SortformerStreamer(sortformerModelsDir);
+                    var s = new SortformerStreamer(sortformerModelsDir, _settings.Current.ResolvedExecutionProvider);
                     var m = AudioUtils.LogMelSpectrogram(audio);
                     var p = s.GetPredParams(m);
                     return (s, m, p.totalFrames, p.chunkStride, p.numChunks);

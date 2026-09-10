@@ -412,7 +412,19 @@ public sealed class SortformerStreamer : IDisposable
         {
             var col = new (float score, int t)[T];
             for (int t = 0; t < T; t++) col[t] = (scores[t, s], t);
-            Array.Sort(col, (a, b) => b.score.CompareTo(a.score));
+
+            // NeMo picks which frames to boost with torch.topk(scores, k, dim=1), which on
+            // CPU is deterministic and keeps the LOWEST indices among equal values
+            // (verified: 12 tied values, k=5 -> indices 0..4). Without the same rule the
+            // boosted SET differs whenever scores tie -- and they tie constantly, because
+            // float32 sigmoid saturates to exactly 1.0 above ~16.6 logits, so confident
+            // frames produce bit-identical preds and bit-identical scores. A different
+            // boosted set then changes the final selection.
+            Array.Sort(col, (a, b) =>
+            {
+                int byScore = b.score.CompareTo(a.score);
+                return byScore != 0 ? byScore : a.t.CompareTo(b.t);
+            });
 
             for (int i = 0; i < Math.Min(nBoostPerSpk, T); i++)
             {

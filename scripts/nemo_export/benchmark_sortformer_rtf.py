@@ -232,7 +232,10 @@ class SortformerPipelineBase:
         boost = scale_factor * math.log(0.5)
         total_frames = scores.shape[0]
         for spk in range(scores.shape[1]):
-            order = np.argsort(scores[:, spk])[::-1]
+            # torch.topk keeps the LOWEST indices among ties; argsort()[::-1] reverses
+            # them to the highest. Sort on (-score, index) instead. See Sortformer.cs.
+            col = scores[:, spk]
+            order = sorted(range(len(col)), key=lambda t: (-col[t], t))
             for t_idx in order[: min(n_boost_per_spk, total_frames)]:
                 if not np.isneginf(scores[t_idx, spk]):
                     scores[t_idx, spk] -= boost
