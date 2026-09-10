@@ -179,6 +179,14 @@ class BenchmarkSummary:
     avg_num_segments: float
 
 
+def cache_tie_key(item: tuple[float, int, int]) -> tuple[float, int, int]:
+    """Sort key for the compressed cache's global selection: score descending, then
+    FRAME-MAJOR. Shared with sortformer_compress_parity.py so the two cannot drift.
+    See Sortformer.cs.SelectCacheFrames for why the tie order is what it is."""
+    score, t_idx, s_idx = item
+    return (-score, t_idx, s_idx)
+
+
 class SortformerPipelineBase:
     def __init__(self) -> None:
         self.reset_state()
@@ -232,8 +240,10 @@ class SortformerPipelineBase:
         boost = scale_factor * math.log(0.5)
         total_frames = scores.shape[0]
         for spk in range(scores.shape[1]):
-            # torch.topk keeps the LOWEST indices among ties; argsort()[::-1] reverses
-            # them to the highest. Sort on (-score, index) instead. See Sortformer.cs.
+            # #170 recorded that torch.topk keeps the LOWEST indices among ties. It does
+            # not -- it returns a mid-range block whose offset follows no rule and does not
+            # reproduce across torch builds. Lowest-t is kept anyway: deterministic,
+            # unbiased over time, and no order would match NeMo. See Sortformer.cs.Boost.
             col = scores[:, spk]
             order = sorted(range(len(col)), key=lambda t: (-col[t], t))
             for t_idx in order[: min(n_boost_per_spk, total_frames)]:
@@ -267,13 +277,18 @@ class SortformerPipelineBase:
             for s_idx in range(NUM_SPEAKERS):
                 flat.append((float(ext_scores[t_idx, s_idx]), t_idx, s_idx))
 
-        # Deterministic tie-break on the speaker-major flattened index, matching
-        # Sortformer.cs. Does not guarantee agreement with torch.topk on saturated
-        # (exactly-1.0) predictions -- see #165.
-        ext_t_sort = ext_scores.shape[0]
-        flat.sort(key=lambda item: (-item[0], item[2] * ext_t_sort + item[1]))
+        # FRAME-MAJOR tie-break, matching Sortformer.cs.SelectCacheFrames. The
+        # speaker-major flattened index this used to sort on ordered every speaker-0 entry
+        # ahead of every speaker-1 entry, so tied scores filled the cache from the
+        # low-numbered slots down ([69, 47, 36, 36] on a fully saturated fixture, against
+        # NeMo's [36, 49, 54, 49]; frame-major gives [38, 55, 49, 46]). No order matches
+        # NeMo -- torch.topk's is a quickselect artifact -- but a monotone bias toward
+        # whichever speaker landed in slot 0 is worth not having. Inert below ~20%
+        # saturation, where no tie straddles the cut at all. See #171.
+        flat.sort(key=cache_tie_key)
         # NeMo marks -inf picks DISABLED (mean silence embedding, zero preds) and sorts
-        # them last via max_index. See Sortformer.cs.
+        # them last via max_index. The kept rows' ORDER stays speaker-major -- that is
+        # NeMo's torch.sort over speaker-major indices, not a tie rule. See Sortformer.cs.
         ext_t = ext_scores.shape[0]
         picked = []
         for sc, t, sp in flat[:SPEAKER_CACHE_LENGTH]:

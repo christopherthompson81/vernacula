@@ -459,13 +459,22 @@ public sealed class SortformerStreamer : IDisposable
             var col = new (float score, int t)[T];
             for (int t = 0; t < T; t++) col[t] = (scores[t, s], t);
 
-            // NeMo picks which frames to boost with torch.topk(scores, k, dim=1), which on
-            // CPU is deterministic and keeps the LOWEST indices among equal values
-            // (verified: 12 tied values, k=5 -> indices 0..4). Without the same rule the
-            // boosted SET differs whenever scores tie -- and they tie constantly, because
-            // float32 sigmoid saturates to exactly 1.0 above ~16.6 logits, so confident
-            // frames produce bit-identical preds and bit-identical scores. A different
-            // boosted set then changes the final selection.
+            // NeMo picks which frames to boost with torch.topk(scores, k, dim=1), and
+            // #170 recorded that torch keeps the LOWEST indices among equal values. THAT IS
+            // NOT TRUE. Measured on torch 2.11.0 (x86-64), topk over tied values returns a
+            // contiguous block from the MIDDLE of the range, at an offset with no simple
+            // rule: zeros(12) k=5 -> 6..10, not 0..4; zeros(312) k=35 -> 196..230;
+            // zeros(1248) k=188 -> 664..851. It is stable within a build and independent of
+            // thread count, which is the signature of a quickselect partition rather than a
+            // documented ordering guarantee -- and #170's own fixture does not reproduce, so
+            // the order very likely differs by platform too.
+            //
+            // Ties are constant here: float32 sigmoid saturates to exactly 1.0 above ~16.6
+            // logits, so confident frames produce bit-identical preds and bit-identical
+            // scores. There is therefore no tie order that would match NeMo, and lowest-t is
+            // kept because it is deterministic, unbiased over time and readable -- not
+            // because it agrees with torch. See #171 and
+            // docs/investigations/sortformer_topk_ties_investigation.md.
             Array.Sort(col, (a, b) =>
             {
                 int byScore = b.score.CompareTo(a.score);
@@ -480,6 +489,70 @@ public sealed class SortformerStreamer : IDisposable
                     scores[t, s] -= boost;
             }
         }
+    }
+
+    /// <summary>
+    /// Orders the flattened (score, frame, speaker) entries so that the first
+    /// <paramref name="keep"/> are the cache's picks. Pure and deterministic; hoisted out of
+    /// <see cref="CompressCache"/> so the tie behaviour can be tested directly.
+    /// </summary>
+    /// <remarks>
+    /// ⚠ TIES CANNOT BE RESOLVED THE WAY NeMo RESOLVES THEM. Sortformer's float32 sigmoid
+    /// saturates to exactly 1.0 above ~16.6 logits, so a confidently single-speaker stream
+    /// produces bit-identical preds rows and hence bit-identical scores. NeMo's choice among
+    /// those is whatever `torch.topk` happens to return, which is a quickselect artifact --
+    /// a contiguous block from the middle of the tied range, at an offset following no rule,
+    /// and not reproducing across torch builds (see the note in <see cref="Boost"/>). There
+    /// is no order to match, so the port picks one that is at least well-behaved.
+    ///
+    /// It breaks ties FRAME-MAJOR (earliest frame first, speaker only as a final
+    /// disambiguator). The obvious alternative -- the speaker-major flattened index, which
+    /// this used to do -- is what the entries are laid out in, but it orders every
+    /// speaker-0 entry ahead of every speaker-1 entry, so on tied scores the cache fills
+    /// from the low-numbered slots down. Measured on a 100%-saturated fixture, that gave a
+    /// per-speaker split of [69, 47, 36, 36] against NeMo's [36, 49, 54, 49]; frame-major
+    /// gives [38, 55, 49, 46]. Neither matches NeMo and neither can, but a monotone bias
+    /// toward whichever speaker landed in slot 0 is a property worth not having, and
+    /// speaker IDs here are arbitrary slot assignments.
+    ///
+    /// This is inert outside the saturated regime: ties that actually straddle the cut need
+    /// bit-identical scores, and none occur below ~20% saturated frames (measured 0 at 0%,
+    /// 5% and 20%), which is why fidelity DER is unaffected. See #171.
+    /// </remarks>
+    internal static (int tIdx, int sIdx, bool disabled, int order)[] SelectCacheFrames(
+        (float score, int tIdx, int sIdx)[] flat, int keep, int extT, int realFrames)
+    {
+        // Array.Sort is an unstable introsort, so a tie rule is required for determinism at
+        // all, never mind for agreement with the Python mirror.
+        Array.Sort(flat, (a, b) =>
+        {
+            int byScore = b.score.CompareTo(a.score);
+            if (byScore != 0) return byScore;
+            int byFrame = a.tIdx.CompareTo(b.tIdx);
+            return byFrame != 0 ? byFrame : a.sIdx.CompareTo(b.sIdx);
+        });
+
+        // NeMo's _get_topk_indices replaces any picked entry whose score is -inf with
+        // max_index, which marks it DISABLED: _gather_spkcache_and_preds then substitutes
+        // the mean silence embedding and zero preds, and the huge index sorts it last.
+        // Treating only the silence pad (t >= realFrames) as disabled left a -inf pick
+        // holding its real embedding and real preds at its natural position. It fires
+        // whenever fewer than `keep` frames survive the -inf masking -- sparse or
+        // low-confidence audio, and the early stream.
+        //
+        // Note the ORDER of the kept rows stays SPEAKER-MAJOR: that is NeMo's
+        // torch.sort(topk_indices) over speaker-major flattened indices, it is not a tie
+        // rule, and it is not what changed above. -inf picks go to the very end via
+        // max_index, while the silence pad keeps its natural place at the tail of its
+        // speaker's block. Ordering both alike is not equivalent and measurably worse.
+        return flat[..keep]
+            .Select(x => (
+                x.tIdx,
+                x.sIdx,
+                disabled: float.IsNegativeInfinity(x.score) || x.tIdx >= realFrames,
+                order: float.IsNegativeInfinity(x.score) ? int.MaxValue : x.sIdx * extT + x.tIdx))
+            .OrderBy(x => x.order)
+            .ToArray();
     }
 
     // ── Cache compression ─────────────────────────────────────────────────────
@@ -545,42 +618,8 @@ public sealed class SortformerStreamer : IDisposable
             for (int s = 0; s < S; s++)
                 flat[t * S + s] = (extScores[t, s], t, s);
 
-        // ⚠ TIES ARE NOT RESOLVED THE WAY torch.topk RESOLVES THEM, and cannot be here.
-        // Sortformer's float32 sigmoid saturates to exactly 1.0 for logits above ~16.6, so
-        // a confidently single-speaker stream produces bit-identical preds rows and hence
-        // bit-identical scores; which of them the top-k keeps is then arbitrary on both
-        // sides. Array.Sort is an unstable introsort, so without a tie rule this was also
-        // arbitrary between runs. Falling back to the speaker-major flattened index at
-        // least makes the port deterministic and keeps it in step with the Python mirror.
-        // It does not guarantee agreement with NeMo on saturated audio -- see #165.
-        Array.Sort(flat, (a, b) =>
-        {
-            int byScore = b.score.CompareTo(a.score);
-            if (byScore != 0) return byScore;
-            return (a.sIdx * extT + a.tIdx).CompareTo(b.sIdx * extT + b.tIdx);
-        });
-
         int keep = Config.SpeakerCacheLength;
-
-        // NeMo's _get_topk_indices replaces any picked entry whose score is -inf with
-        // max_index, which marks it DISABLED: _gather_spkcache_and_preds then substitutes
-        // the mean silence embedding and zero preds, and the huge index sorts it last.
-        // This treated only the silence pad (t >= T) as disabled, so a -inf pick kept its
-        // real embedding and real preds at its natural position. It fires whenever fewer
-        // than `keep` frames survive the -inf masking -- sparse or low-confidence audio,
-        // and the early stream.
-        // NeMo sorts the picked entries by their SPEAKER-MAJOR flattened index, after
-        // substituting max_index for any -inf pick -- so -inf picks land at the very end
-        // while the silence pad keeps its natural place at the tail of its speaker's block.
-        // Ordering both alike is not equivalent and measurably worse.
-        var selected = flat[..keep]
-            .Select(x => (
-                x.tIdx,
-                x.sIdx,
-                disabled: float.IsNegativeInfinity(x.score) || x.tIdx >= T,
-                order: float.IsNegativeInfinity(x.score) ? int.MaxValue : x.sIdx * extT + x.tIdx))
-            .OrderBy(x => x.order)
-            .ToArray();
+        var selected = SelectCacheFrames(flat, keep, extT, T);
 
         var newEmbs  = new float[1, keep, Config.EmbeddingDimension];
         var newPreds = new float[1, keep, S];
