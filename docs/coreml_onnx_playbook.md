@@ -31,6 +31,23 @@ Net: **3.2× vs CPU, 1.8× vs WebGPU, and load went from 101 s to 2.1 s.**
 ⚠ **On ORT 1.24.4 — which is not the ORT the macOS build ships.** Read the first
 caveat at the bottom before treating any of this as a shipped speedup.
 
+## What this bought on Parakeet
+
+Measured on an M5, ORT **1.29.0**, the 0.6B TDT encoder (24 conformer layers,
+d_model 1024, full-context `rel_pos`). Techniques 1 and 6 only; no post-processing.
+
+| stage | partitions | inference (10 s bucket) |
+|---|---|---|
+| shipped dynamic model | *fails to compile* (`error -14`), 84 | — |
+| static bucket + mask hoisted to an input | **1** (1453/1453 nodes) | **58.2 ms** |
+| same graph, CPU EP | — | 146.9 ms |
+| shipped dynamic model, CPU EP | — | 143.6 ms |
+
+**2.5× vs CPU, holding at every bucket from 4 s to 30 s.** Parity against the shipped
+encoder is 2e-7…6e-6 on real speech, with 7/7 identical transcripts through the full
+TDT decode — and the mask rewrite is `0.000E+00` in PyTorch, so the residual is
+ONNX/EP float noise, not the technique.
+
 ## The core mental model
 
 The CoreML EP fuses only the ops it fully supports. Everything else stays on
@@ -119,6 +136,11 @@ value is enabling Technique 3 — it turns the masks into foldable constants.
 > inference per recording and keeps the output exact. Expect to find this shape
 > wherever "the axes are constant at runtime" turns out to mean "constant except
 > at the edges".
+>
+> **"There is no middle setting" holds only if the mask has to stay derived.** When
+> the lengths vary on *every* call there is no one-inference escape hatch and this
+> trade has no acceptable answer — take the mask out of the graph instead
+> (Technique 6). That is exact at any length and needs neither of these flags.
 
 ## Technique 3 — Delete all-False `Where` masks
 
@@ -165,6 +187,17 @@ the zero tensors. Match the zero constant's **dtype** to the padded tensor or
 Sortformer: 34 converted, 35 → **1** partition, 97 ms → 51 ms. Biggest
 throughput win of the four.
 
+> ⚠ **On ORT 1.29.0 this technique is a no-op: the CoreML EP now accepts `Pad`.**
+> Verified directly — a one-node `Pad` graph (constant mode, `[0,0,4,0,0,4]`) reports
+> `1 partition, 1/1 nodes supported`. Parakeet's encoder carries 48 `Pad`s and reaches
+> one partition with them left alone; converting them changed neither the partition
+> count nor the inference time (58.1 ms with `Pad`, 59.4 ms with `Concat` — noise).
+> The op table shipped in the `onnxruntime` wheel
+> (`tools/mobile_helpers/coreml_supported_mlprogram_ops.md`) still omits `Pad`, so it
+> is stale; probe rather than trust it. Keep the transform for 1.24.4, and check
+> before spending a fold round-trip on it — see the note under Technique 5 about what
+> that round-trip costs you.
+
 ## Technique 5 — Pre-transpose `Gemm` weights (the load-time fix)
 
 **Symptom:** enormous first-load and warm-load times, and a `model.mil` far
@@ -197,7 +230,105 @@ This is the highest-leverage item in the playbook and it generalizes to **any**
 transformer export, because `transB=0` is what `torch.onnx.export` emits by
 default.
 
-## Technique 6 — `ModelCacheDirectory`
+> **But the trigger is `Gemm` specifically, not "transformer".** Parakeet's encoder
+> traces to 289 `MatMul` and **zero** `Gemm` — its linears run on 3D `[B,T,D]`
+> activations, where the exporter emits `MatMul`, while Sortformer's ran on 2D
+> reshapes, where it emits `Gemm`. `MatMul`-with-constant-weight takes the binary
+> path already: 2.36 GB of weights produced a **4.5 MB** `model.mil`, versus
+> Sortformer's 1.49 GB for 0.39 GB. So check the op mix before assuming the
+> pathology, and diagnose it the way step 4 says — by `model.mil` size, not by
+> reasoning about the architecture.
+>
+> That matters more than it sounds, because applying this transform (or Technique 3
+> or 4) means folding the graph through ORT first, and **that round-trip is what
+> makes the artifact refuse to load above `ORT_ENABLE_BASIC`** (`MatMulAddFusion`;
+> see the anti-patterns). A graph that needs none of them never round-trips and has
+> no such contract term — Parakeet's ships straight from `torch.onnx.export` and
+> loads at every optimization level. Reach for the transforms when the partition
+> count says to, not by default.
+
+## Technique 6 — Hoist the mask into a graph input
+
+**Use when:** the "constant except at the edges" trade in Technique 2 has no
+acceptable answer, because the lengths genuinely vary on every call.
+
+Techniques 2 and 3 offer only two settings — bake a length that is sometimes wrong,
+or keep the whole data-dependent mask and stay fragmented. Sortformer escapes that
+because exactly one inference per recording is short, so the runtime can route it to
+the unspecialized graph. **A model whose every call has a different length has no
+such escape**, and the cost of pretending otherwise is not small: on Parakeet, baking
+the length moves the encoder output by 0.17–0.24 on valid frames and changes the
+transcript by 2–4% WER on 8–20 s segments, worse on short ones.
+
+There is a third setting. The mask is *derived* data — the only thing the length is
+used for. Take it out of the graph and accept it as an input:
+
+```
+audio_signal  [1, 128, F]     features, zero-padded to a fixed bucket
+pad_keep      [1, F]          1.0 for a real frame, 0.0 for padding
+```
+
+Now the shapes are static, the `Range`/`Less`/`Expand`/`ConstantOfShape` chain is
+**gone rather than folded**, and the masking is exact at any true length ≤ the
+bucket. Parakeet: 4955 → 1453 nodes, `Where` 90 → **0**, one partition, and parity
+against the shipped dynamic encoder of 2e-7…6e-6 with identical transcripts.
+
+**Do it in float, not bool.** Feed a keep-mask of 1.0/0.0 and rewrite each masking
+site as arithmetic — `Add`/`Mul` are CoreML-supported, and it sidesteps the question
+of whether the EP takes a bool input at all:
+
+| NeMo | rewrite | why it is exact |
+|---|---|---|
+| `scores.masked_fill(mask, -INF_VAL)` | `scores + (keep - 1) * INF_VAL` | masked entries become `s - 10000` instead of `-10000`; both underflow to 0 in the softmax, and both are zeroed by the next line anyway |
+| `softmax(...).masked_fill(mask, 0.0)` | `softmax(...) * keep` | identical |
+| `apply_channel_mask` | `x * keep` | already a multiply |
+
+**Patch the module instances, not the classes** (`types.MethodType`), so nothing
+else in the export process is affected.
+
+> ⚠ **Find every masking site first. There are more than the obvious one.** In NeMo's
+> conformer the length reaches masking at **four** resolutions: `_create_masks` builds
+> the attention and conv-module masks at the encoder rate, and — easy to miss —
+> `MaskedConvSequential` re-masks between *every strided conv in the subsampler*.
+> Hoisting only `_create_masks` left a **1e-2 error spread across all frames**, which
+> reads like a tolerance question rather than a bug, and does not look like a boundary
+> artifact. Do not chase it through ONNX: run the patched and unpatched modules
+> side by side in PyTorch on the same input and bisect the substitutions one at a
+> time. The target is `0.000E+00`, and it is reachable — anything else means a site
+> is still deriving its own mask.
+
+**The masks at different rates are usually slices of each other, not separate
+inputs.** Each subsampler stage halves the length as
+`L_k = (L_{k-1} - 1) // 2 + 1 = ceil(L_{k-1} / 2)`, and `keep[2i]` is 1 exactly while
+`2i < L` — which is `ceil(L / 2)` entries. So stage *k*'s mask is `keep[0::2]` applied
+*k* times, and one mel-rate input feeds all four via constant-parameter `Slice`
+(supported). Prove the identity exhaustively over every length before relying on it;
+it is a five-line check.
+
+**What it costs: bucketing.** Static shapes mean a fixed `F`, so a caller with
+variable input pads up to the next bucket and pays for the padding. Measured on an
+M5, one bucket per row:
+
+| bucket | CoreML | CPU EP | speedup |
+|---|---|---|---|
+| 400 frames (4 s) | 34.9 ms | 87.2 ms | 2.50× |
+| 1000 frames (10 s) | 58.2 ms | 146.9 ms | 2.52× |
+| 2000 frames (20 s) | 110.9 ms | 279.4 ms | 2.52× |
+| 3000 frames (30 s) | 165.2 ms | 445.7 ms | 2.70× |
+
+≈ 16 ms fixed + 4.75 ms per second of audio, so the speedup holds at every size and
+padding waste is proportional rather than catastrophic. Note the ladder is a
+*runtime* cost, not a download one: every bucket traces the same parameters in the
+same order, so the weight sidecars come out **byte-identical** — one shared
+`.data` file and an ~25 MB graph per bucket. Verify by digest rather than assuming;
+a torch or NeMo change that reorders the trace would break it silently.
+
+**The real per-bucket cost is the CoreML cache: ~4.4 GB each**, because the EP stores
+the weights twice — once in the `.mlpackage` under `Data/`, once in the compiled
+`.mlmodelc`. Four buckets is 18 GB on disk. Budget for it, prune stale entries, and
+let it argue for a short ladder.
+
+## Technique 7 — `ModelCacheDirectory`
 
 Set the CoreML provider option `ModelCacheDirectory` to persist the compiled
 model across processes. Necessary but not a substitute for Technique 5:
@@ -335,6 +466,12 @@ capability question (can we express this at all?) rather than a performance one.
 
 ## Diagnostic workflow for a new model
 
+0. **Ask what the varying axes actually are, and how the caller uses them.** This
+   decides which branch of the playbook you are on before you measure anything.
+   Constant at runtime, or constant except at the edges → Techniques 1–3, and read
+   Technique 2's warning. Genuinely different on every call → Technique 6, and do not
+   spend time on the bake-a-length path; it was measured on Parakeet and it costs
+   2–4% WER.
 1. **Does it compile?** Load with the CoreML EP. `error -14` → Technique 1.
 2. **Count partitions.** The EP logs it at warning level:
    ```
@@ -347,22 +484,64 @@ capability question (can we express this at all?) rather than a performance one.
    `Node(s) placed on [CPUExecutionProvider]`. Group by op type — the offenders
    are usually two or three types repeated per layer.
 4. **Check `model.mil` size** in the cache dir against the model's real weight
-   volume. Much larger → Technique 5.
+   volume. Much larger → Technique 5. (Sortformer: 1.49 GB for 0.39 GB of weights.
+   Parakeet: 4.5 MB for 2.36 GB — nothing to fix.)
 5. **Verify parity at every step**, against the *original* model, not the
-   previous step — errors compound quietly otherwise.
+   previous step — errors compound quietly otherwise. **Verify in the framework
+   before you verify through ONNX**: when a rewrite changes what the model computes,
+   a PyTorch-vs-PyTorch comparison isolates it from export and EP noise, and gives
+   you a real `0.000E+00` to aim at rather than a tolerance to argue about.
+   Bisect substitutions one at a time — the mask hoist looked like a 1e-2 tolerance
+   question until that turned it into "three masking sites are still missing".
 
 ## Applying to other models
 
 | model | outlook |
 |---|---|
 | Sortformer | **Done.** Axes constant at runtime; ideal case. |
-| Parakeet encoder | Plausible. Length genuinely varies → needs bucketing, and padding waste is a real cost. Technique 5 applies regardless. |
-| Parakeet TDT decoder | Poor. `Loop` subgraphs are badly handled by the CoreML EP; `OrtSessionBuilder` already carries a `.ort` workaround for Loop graphs (issue #56). Likely stays CPU. |
+| Parakeet encoder | **Done, via Technique 6.** One partition, 2.5× over CPU at every bucket, bit-exact. Baking the length (the Sortformer recipe) was measured and rejected — 2–4% WER. |
+| Parakeet TDT decoder | **Measured, and not worth it** — and not a `Loop` graph, as recorded here previously. It is 42 nodes with two `LSTM`s, stepped from C#. With its shapes frozen (they are all constant in the greedy path) it puts **23 of 27 nodes on CoreML**, only `LSTM` declining — and runs at **0.652 ms vs 0.643 ms on CPU**. The work per call is too small to pay for two partition boundaries. See "when not to bother" below. |
+| `nemo128` preprocessor | **No.** 6 partitions, 31/89 nodes, and CoreML is *slower*: 2.95 ms vs 1.71 ms. `Parakeet.cs` already pins it to CPU, correctly. It is 1% of pipeline time. |
+| Silero VAD | **Cannot.** Fails to compile outright — `Error compiling model: Failed to parse the model specification`; it carries three `If` subgraphs. Costs 2.0 ms per second of audio (1.2 s for a 10-minute recording), once per recording. |
 | KV-cache decoders (Cohere, Qwen3, VibeVoice, Granite) | Untested. Fixed cache lengths would help; per-step dynamic KV growth is the obstacle. |
 | Conv-heavy (Silero VAD, DeepFilterNet3, WeSpeaker) | Promising — conv is the ANE's strength and these graphs are simpler. Start here for quick wins. |
 
-**Technique 5 is worth applying to every model unconditionally**, including ones
-never going near CoreML — it is bit-exact and costs nothing.
+### When not to bother — profile the pipeline, not the model
+
+Partition count tells you whether a graph *can* go fast. It says nothing about
+whether the pipeline gets faster, and two of the three checks below are cheaper than
+any of the techniques above.
+
+**Is the model actually where the time goes?** Measured over 72.5 s of real speech,
+ten segments, timing each ORT session separately:
+
+| stage | share | after the encoder's 2.5× |
+|---|---|---|
+| `nemo128` preprocessor | 1.0% | 1.8% |
+| encoder | 77.9% | 58.5% |
+| `decoder_joint` (×20–94 calls per segment) | 21.2% | 39.8% |
+
+A 2.5× on the encoder is **1.88× end to end**. Everything else in the stack was
+either slower on CoreML or unable to compile, so that is the whole prize — and it is
+worth knowing before, not after.
+
+**Is the per-call work big enough to pay for the boundary?** A partition boundary
+costs a copy and a sync each way. `decoder_joint` reaches 23/27 nodes on the EP and
+still does not move (0.652 vs 0.643 ms) because each call is one frame and one token.
+Small-and-frequent loses to CoreML even when it partitions well; the encoder wins
+because each call is 10 s of audio through 24 layers.
+
+**Does a runtime fallback hide the answer?** The first `decoder_joint` probe reported
+2 partitions and identical timing — because its CoreML partitions then failed to
+compile on unbounded dims and silently fell back to CPU. The capability report and
+the timing were both "fine" while nothing ran on the EP. Freeze shapes (Technique 1)
+*before* concluding anything from a timing comparison, and check the log for
+`has unbounded dimension` rather than trusting a clean partition count.
+
+**Technique 5 is worth applying to every model that has `Gemm` nodes**, including
+ones never going near CoreML — it is bit-exact and costs nothing. Check first: a
+`MatMul`-only export (Parakeet) does not have the problem, and applying the transform
+means a fold round-trip that adds a load-level contract term.
 
 ## Tooling
 
@@ -372,6 +551,13 @@ never going near CoreML — it is bit-exact and costs nothing.
 - `scripts/nemo_export/coreml_optimize_sortformer.py` — Techniques 3–5 plus
   `--verify` against the original model. The graph transforms are model-agnostic;
   only the verification harness is Sortformer-specific.
+- `scripts/nemo_export/export_parakeet_coreml_encoder.py` — Techniques 1 and 6 for the
+  Parakeet encoder: static buckets, mask hoisted to a `pad_keep` input, all four
+  masking sites rewritten as arithmetic. Needs **no** post-processing — the raw export
+  is already one partition — and emits one shared weight sidecar for every bucket.
+- `scripts/nemo_export/coreml_partition_probe.py` — the partition/timing/load-level
+  probe. `--ep` selects what you measure *and* what you can see: a load-level matrix
+  is only meaningful per-EP.
 
 ## Caveats
 
