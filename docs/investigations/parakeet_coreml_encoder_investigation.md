@@ -261,7 +261,8 @@ remaining work is all on the C# side or is a product decision:
 2. **`Parakeet.cs` has no CoreML path.** It batches up to 32 segments padded to the
    batch max and reads `encoded_lengths` off the model. The CoreML path is batch-1,
    picks a bucket per segment, builds `pad_keep`, and computes the encoded length
-   itself (`calc_encoded_length`, three iterations of `(L + 2 - 3) // 2 + 1`).
+   itself (`calc_encoded_length`, folding the `subsampler_stages` the export report
+   records -- three ×2 stages for this checkpoint).
    Dropping batching costs nothing — Run 8 shows batch-1 is the best CPU case anyway
    — and the expected end-to-end gain is **1.88×**, not 2.5×, because the decoder is
    then 40% of the pipeline.

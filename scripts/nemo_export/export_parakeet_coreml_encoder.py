@@ -53,15 +53,14 @@ The caller's obligations:
 * zero-pad the mel features to the bucket and set `pad_keep` to match the true
   frame count. Passing all-ones for a short segment is the mistake this design
   exists to avoid.
-* compute the true output length itself (`calc_encoded_length`, the same formula
-  NeMo's `calc_length` uses) and ignore encoder output past it. The graph has no
-  length output because it has no length input.
+* compute the true output length itself with `calc_encoded_length` and the
+  `subsampler_stages` recorded in the report, and ignore encoder output past it. The
+  graph has no length output because it has no length input.
 """
 from __future__ import annotations
 
 import argparse
 import json
-import math
 from pathlib import Path
 from typing import Any
 
@@ -84,44 +83,128 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
-def calc_encoded_length(frames: int, *, sampling_num: int = 3, kernel: int = 3,
-                        stride: int = 2, all_paddings: int = 2) -> int:
-    """NeMo's `calc_length` for the dw_striding subsampler, in plain ints.
+def subsampler_stages(encoder: Any) -> list:
+    """The (kernel, stride, padding) of each strided conv in the subsampler.
 
-    The C# caller needs the identical formula, since the graph no longer reports
-    an encoded length of its own.
+    Read off the loaded model rather than hardcoded, because two things downstream
+    have to agree with the real graph: `calc_encoded_length` (which the C# caller
+    reimplements) and the stride-2 decimation in `_patch_masking`. A ×4-subsampling
+    or different-kernel checkpoint would otherwise export a self-consistent graph
+    while the reported frame count was wrong, with no failure signal.
+
+    Mirrors what `MaskedConvSequential.forward` itself consults: `layer.stride[0]`,
+    `layer.kernel_size[0]`, and `layer.padding` (or the CausalConv2D paddings).
+    """
+    stages = []
+    for layer in encoder.pre_encode.conv:
+        stride = getattr(layer, "stride", None)
+        if stride is None or stride == (1, 1):
+            continue
+        if hasattr(layer, "_left_padding"):
+            padding = (layer._left_padding, layer._right_padding)
+        else:
+            padding = layer.padding
+        stages.append((int(layer.kernel_size[0]), int(stride[0]),
+                       (int(padding[0]), int(padding[1]))))
+    if not stages:
+        raise SystemExit("found no strided conv in encoder.pre_encode.conv -- this "
+                         "export cannot infer the subsampling geometry.")
+    return stages
+
+
+def calc_encoded_length(frames: int, stages: list) -> int:
+    """NeMo's subsampler length arithmetic, in plain ints.
+
+    The C# caller needs the identical formula, since the graph no longer reports an
+    encoded length of its own. `coreml-encoder-report.json` records `stages` so the
+    caller reimplements the geometry this checkpoint actually has.
     """
     length = frames
-    for _ in range(sampling_num):
-        length = math.floor((length + all_paddings - kernel) / stride) + 1
+    for kernel, stride, padding in stages:
+        length = (length + padding[0] + padding[1] - kernel) // stride + 1
     return length
 
 
-def check_mask_decimation(frames: int, *, sampling_num: int = 3, kernel: int = 3,
-                          stride: int = 2, all_paddings: int = 2) -> None:
-    """Prove `keep[0::2]` is the stage mask, for every true length in this bucket.
+def check_mask_decimation(frames: int, stages: list) -> None:
+    """Prove `keep[:, 0::2]` is the stage mask, for every true length in this bucket.
 
     The whole export rests on this: the subsampler's per-stage masks are
     `arange(T_k) < length_k`, and the graph instead decimates one input mask by 2.
-    That is only the same tensor because `length_k = ceil(length_{k-1} / 2)` and
-    `keep[2i]` is 1 exactly while `2i < length`. It is cheap to check outright, and a
-    NeMo change to `calculate_conv_output_size` would otherwise cost a silent 1e-2
-    that looks like a tolerance question.
+    That is only the same tensor when `length_k = ceil(length_{k-1} / 2)`, since
+    `keep[2i]` is 1 exactly while `2i < length`.
+
+    Calls **NeMo's own** `calculate_conv_output_size` on the geometry read off the
+    loaded model. An earlier version of this check recomputed the formula inline with
+    the geometry hardcoded, which made it a tautology -- `(x + 2 - 3) // 2 + 1` *is*
+    `ceil(x / 2)`, so it could never fail, and it would not have noticed NeMo
+    changing the arithmetic at all. That is the opposite of the guarantee it exists
+    to give.
     """
+    from nemo.collections.asr.parts.submodules.subsampling import calculate_conv_output_size
+
+    for stage, (kernel, stride, padding) in enumerate(stages):
+        if stride != 2:
+            raise SystemExit(
+                f"subsampler stage {stage} has stride {stride}, not 2. "
+                f"`_patch_masking` decimates the mask with a hardcoded `keep[:, 0::2]`, "
+                f"which is only correct at stride 2 -- do not ship this export.")
+
     for length in range(1, frames + 1):
-        kept, current = length, length
-        width = frames
-        for _ in range(sampling_num):
-            width = (width + all_paddings - kernel) // stride + 1
+        kept = current = length
+        for stage, (kernel, stride, padding) in enumerate(stages):
             # what the decimated mask keeps: indices 2i < kept, i.e. ceil(kept / 2)
             kept = -(-kept // 2)
-            current = (current + all_paddings - kernel) // stride + 1
+            current = int(calculate_conv_output_size(current, kernel, stride, padding))
             if kept != current:
                 raise SystemExit(
                     f"mask decimation does not match NeMo's arithmetic at bucket "
-                    f"{frames}, true length {length}: decimated mask keeps {kept} "
-                    f"frames, calc_length says {current}. The stride-2 slice in "
-                    f"_patch_masking is no longer valid -- do not ship this export.")
+                    f"{frames}, true length {length}, subsampler stage {stage}: the "
+                    f"decimated mask keeps {kept} frames, calculate_conv_output_size "
+                    f"says {current}. The stride-2 slice in `_patch_masking` is no "
+                    f"longer valid -- do not ship this export.")
+
+
+def require_supported_encoder(encoder: Any) -> None:
+    """Refuse any encoder whose masking this export does not actually reproduce.
+
+    `create_masks` below returns only the padding mask. NeMo's real `_create_masks`
+    builds `att_mask` from `att_context_size`/`att_context_style` FIRST -- `triu`/`tril`
+    for a limited regular context, a chunk mask for `chunked_limited` -- and only then
+    ANDs the padding mask into it. On a limited-context checkpoint this export would
+    therefore produce a graph that attends over the whole utterance: wrong, silent, and
+    invisible to a parity check run against the same wrong assumption.
+
+    None of these are hypothetical variations on some other model; they are all
+    settings real NeMo conformer checkpoints ship with.
+    """
+    problems = []
+    if encoder.self_attention_model != "rel_pos":
+        problems.append(
+            f"self_attention_model is {encoder.self_attention_model!r}, not 'rel_pos'. "
+            "'rel_pos_local_attn' uses the Longformer attention, which never calls the "
+            "patched forward_attention at all.")
+    if list(encoder.att_context_size) != [-1, -1]:
+        problems.append(
+            f"att_context_size is {list(encoder.att_context_size)}, not [-1, -1]. A "
+            "limited context contributes a triangular/chunked mask that this export drops.")
+    if encoder.att_context_style != "regular":
+        problems.append(
+            f"att_context_style is {encoder.att_context_style!r}, not 'regular'.")
+    if getattr(encoder, "reduction_position", None) is not None:
+        problems.append(
+            f"reduction_position is {encoder.reduction_position}, not None. The encoder "
+            "re-creates its masks mid-stack after reduction_subsampling, and the hoisted "
+            "mask would then be the wrong length.")
+    sdpa = {bool(getattr(layer.self_attn, "use_pytorch_sdpa", False)) for layer in encoder.layers}
+    if sdpa != {False}:
+        problems.append(
+            "use_pytorch_sdpa is True on at least one layer. That path bypasses "
+            "forward_attention and calls masked_fill_ on the mask directly, which fails "
+            "on the float keep tensor.")
+    if problems:
+        raise SystemExit(
+            "this checkpoint's encoder is not one this export reproduces faithfully:\n  - "
+            + "\n  - ".join(problems))
 
 
 def _patch_masking(torch: Any, encoder: Any) -> None:
@@ -203,6 +286,10 @@ def _patch_masking(torch: Any, encoder: Any) -> None:
         # Returning the hoisted mask here is what takes mask construction out of the
         # graph entirely. att_keep[i, j] = keep[i] * keep[j] -- a masked query row
         # keeps nothing, matching NeMo's symmetric `pad_mask & pad_mask.T`.
+        #
+        # This is the PADDING mask only. It is the whole mask solely because
+        # require_supported_encoder has established att_context_size == [-1, -1] and
+        # att_context_style == 'regular', where NeMo's triu/tril contribute nothing.
         keep = self._exp_enc_keep
         return keep, keep.unsqueeze(2) * keep.unsqueeze(1)
 
@@ -236,14 +323,24 @@ def build_wrapper(torch: Any, nn: Any, model: Any, frames: int) -> Any:
 
 
 def _all_tensors(graph: Any):
-    """Every tensor that can carry external data: initializers AND the tensors sitting
-    inside `Constant` node attributes, which the exporter spills too."""
+    """Every tensor that can carry external data: initializers, the tensors sitting
+    inside `Constant` node attributes (which the exporter spills too), and the same
+    again inside any subgraph.
+
+    Subgraphs are latent for this trace -- it has no `If`/`Loop` -- but
+    `repoint_external_data` is the step the whole shared-sidecar claim rests on, and
+    a tensor it missed would point at a per-tensor file that consolidation deleted.
+    """
     yield from graph.initializer
     for node in graph.node:
         for attr in node.attribute:
             if attr.HasField("t"):
                 yield attr.t
             yield from attr.tensors
+            if attr.HasField("g"):
+                yield from _all_tensors(attr.g)
+            for sub in attr.graphs:
+                yield from _all_tensors(sub)
 
 
 def consolidate_external_data(onnx_path: Path, sidecar: str) -> None:
@@ -262,6 +359,13 @@ def consolidate_external_data(onnx_path: Path, sidecar: str) -> None:
     stale = {kv.value for t in _all_tensors(meta.graph) for kv in t.external_data
              if kv.key == "location"}
     model = onnx.load(str(onnx_path))          # pulls the loose files into memory
+    # onnx APPENDS: save_external_data opens the target "r+b" and seeks to the end, so
+    # writing over a sidecar left by an earlier --overwrite run doubles its size. It
+    # fails silently, because the new offsets point into the appended tail and the
+    # graph still loads -- but the digest no longer matches the published weights.
+    target = onnx_path.parent / sidecar
+    if target.exists():
+        target.unlink()
     onnx.save_model(model, str(onnx_path), save_as_external_data=True,
                     all_tensors_to_one_file=True, location=sidecar, size_threshold=0)
     for loc in stale:
@@ -292,8 +396,9 @@ def repoint_external_data(onnx_path: Path, sidecar: str) -> None:
     onnx.save_model(model, str(onnx_path))
 
 
-def export_bucket(torch: Any, nn: Any, model: Any, frames: int, dst: Path, opset: int) -> dict:
-    encoded = calc_encoded_length(frames)
+def export_bucket(torch: Any, nn: Any, model: Any, frames: int, dst: Path, opset: int,
+                  stages: list) -> dict:
+    encoded = calc_encoded_length(frames, stages)
     wrapper = build_wrapper(torch, nn, model, frames)
 
     audio_signal = torch.randn(1, model.encoder._feat_in, frames)
@@ -324,7 +429,7 @@ def export_bucket(torch: Any, nn: Any, model: Any, frames: int, dst: Path, opset
     }
 
 
-def share_weights(out_dir: Path, exported: list, sidecar: str) -> bool:
+def share_weights(out_dir: Path, exported: list, sidecar: str, overwrite: bool) -> bool:
     """Collapse the per-bucket weight sidecars into one, if they are byte-identical.
 
     Every bucket traces the same parameters in the same order, so the sidecars come
@@ -337,7 +442,28 @@ def share_weights(out_dir: Path, exported: list, sidecar: str) -> bool:
         print("  ! the buckets' weight files differ; keeping one sidecar per bucket")
         return False
     keep = out_dir / (exported[0]["file"] + ".data")
-    keep.replace(out_dir / sidecar)
+    target = out_dir / sidecar
+
+    # --weights-name defaults to the PUBLISHED sidecar's filename, and pointing
+    # --output-dir at the existing model directory is the natural thing to do given
+    # that reusing those weights is the point. So do not overwrite it blind.
+    if target.exists() and target != keep:
+        if md5(target) == exported[0]["weights_md5"]:
+            print(f"  {sidecar} already present and identical; keeping it")
+            keep.unlink()
+            for bucket in exported[1:]:
+                (out_dir / (bucket["file"] + ".data")).unlink()
+            for bucket in exported:
+                repoint_external_data(out_dir / bucket["file"], sidecar)
+            return True
+        if not overwrite:
+            raise SystemExit(
+                f"{target} exists and its contents differ from the weights just "
+                f"exported. That is the published sidecar's filename, so overwriting it "
+                f"would replace the shipped weights with different bytes. Re-run with "
+                f"--overwrite to replace it, or pass --weights-name to write elsewhere.")
+        print(f"  ! replacing {sidecar}, whose contents differ from this export")
+    keep.replace(target)
     for bucket in exported[1:]:
         (out_dir / (bucket["file"] + ".data")).unlink()
     for bucket in exported:
@@ -354,12 +480,6 @@ def main() -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     buckets = sorted(set(args.frames))
-    for frames in buckets:
-        if frames % 8 != 0:
-            raise SystemExit(
-                f"--frames {frames} is not a multiple of 8. The subsampler strides by 8, "
-                "so a bucket that is not a multiple of 8 wastes frames and makes the "
-                "caller's pad_keep arithmetic fiddlier for nothing.")
 
     import torch
     from torch import nn
@@ -368,6 +488,19 @@ def main() -> None:
     model = ASRModel.restore_from(str(nemo_path), map_location="cpu")
     model.freeze()
     model.eval()
+    require_supported_encoder(model.encoder)
+    stages = subsampler_stages(model.encoder)
+    total_stride = 1
+    for _, stride, _ in stages:
+        total_stride *= stride
+    print(f"subsampler: {len(stages)} strided stages, total stride {total_stride} "
+          f"(kernel/stride/padding {stages})")
+
+    for frames in buckets:
+        if frames % total_stride != 0:
+            raise SystemExit(
+                f"--frames {frames} is not a multiple of the subsampler's total stride "
+                f"({total_stride}). A bucket that is not wastes frames for nothing.")
 
     exported = []
     for frames in buckets:
@@ -375,11 +508,11 @@ def main() -> None:
         if dst.exists() and not args.overwrite:
             raise SystemExit(f"{dst} exists. Re-run with --overwrite.")
         print(f"exporting {frames} mel frames ({frames / 100:.1f} s) -> {dst.name} ...")
-        check_mask_decimation(frames)
-        exported.append(export_bucket(torch, nn, model, frames, dst, args.opset))
+        check_mask_decimation(frames, stages)
+        exported.append(export_bucket(torch, nn, model, frames, dst, args.opset, stages))
         print(f"  {exported[-1]['bytes'] / 1e6:.0f} MB graph, {exported[-1]['encoded_frames']} encoded frames")
 
-    shared = share_weights(out_dir, exported, args.weights_name)
+    shared = share_weights(out_dir, exported, args.weights_name, args.overwrite)
     weights = out_dir / args.weights_name
     if shared:
         print(f"  all {len(exported)} buckets share {args.weights_name} "
@@ -392,6 +525,10 @@ def main() -> None:
         "opset": args.opset,
         "weights_file": args.weights_name if shared else "one per bucket",
         "weights_md5": exported[0]["weights_md5"] if shared else None,
+        # The C# caller reimplements calc_encoded_length; record the geometry it must
+        # use rather than leaving it to assume this checkpoint's x8 dw_striding.
+        "subsampler_stages": [
+            {"kernel": k, "stride": st, "padding": list(p)} for k, st, p in stages],
         "inputs": {
             "audio_signal": "[1, 128, mel_frames] float32, zero-padded mel features",
             "pad_keep": "[1, mel_frames] float32, 1.0 real / 0.0 padding",
@@ -400,8 +537,9 @@ def main() -> None:
         "caller_obligations": [
             "pad_keep must reflect the TRUE frame count; all-ones on a short segment "
             "reproduces the accuracy loss this export exists to avoid",
-            "the graph has no encoded_lengths output -- compute it with calc_encoded_length "
-            "and ignore output frames past it",
+            "the graph has no encoded_lengths output -- compute it by folding "
+            "subsampler_stages below (out = (in + pad0 + pad1 - kernel) // stride + 1 per "
+            "stage) and ignore output frames past it",
         ],
         "buckets": exported,
     }

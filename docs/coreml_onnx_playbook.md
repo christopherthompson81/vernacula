@@ -270,7 +270,9 @@ pad_keep      [1, F]          1.0 for a real frame, 0.0 for padding
 
 Now the shapes are static, the `Range`/`Less`/`Expand`/`ConstantOfShape` chain is
 **gone rather than folded**, and the masking is exact at any true length ≤ the
-bucket. Parakeet: 4955 → 1453 nodes, `Where` 90 → **0**, one partition, and parity
+bucket. Parakeet: 4955 → 4104 nodes at export (ORT's load-time BASIC fold takes it
+the rest of the way to 1453 — that part is not this technique's doing), `Where` 90 →
+**0**, `Range`/`Less`/`Equal`/`Expand` gone, one partition, and parity
 against the shipped dynamic encoder of 2e-7…6e-6 with identical transcripts.
 
 **Do it in float, not bool.** Feed a keep-mask of 1.0/0.0 and rewrite each masking
@@ -444,12 +446,20 @@ replacing the runtime.
 EP cannot currently express:
 
 1. **Stateful models** (macOS 14+). CoreML natively supports state tensors held
-   across predictions — the natural fit for KV-cache decoders and for the
-   Parakeet TDT decoder, both of which the CoreML EP handles poorly because they
-   are `Loop` subgraphs. This is the strongest argument.
+   across predictions — the natural fit for KV-cache decoders. ⚠ This used to name
+   the Parakeet TDT decoder as the strongest case, on the grounds that it is a `Loop`
+   subgraph. It is not a `Loop` subgraph, and it has since been measured: frozen, it
+   already puts 23 of 27 nodes on the EP and runs at 0.652 ms against 0.643 ms on
+   CPU. Its problem is that each call is too small to pay for a partition boundary,
+   which a native path would not fix. The untested KV-cache decoders are the real
+   case here.
 2. **Enumerated / flexible shapes.** CoreML accepts a declared *set* of allowed
    input shapes and compiles for each. That could handle Parakeet's variable
-   audio length better than ONNX-side bucketing, without padding waste.
+   audio length better than ONNX-side bucketing, without padding waste — and there is
+   now a number on what bucketing costs: **4.4 GB of compiled cache per bucket**,
+   which is the ladder's real constraint. Note the padding waste itself is mild
+   (≈16 ms fixed + 4.75 ms per second of audio), so this is a disk-footprint argument
+   rather than a throughput one.
 3. **`coremltools` compression.** Its fp16, palettization and quantization are
    better calibrated than `onnxconverter-common`, which fights graphs containing
    explicit `Cast` nodes (see the fp16 section).

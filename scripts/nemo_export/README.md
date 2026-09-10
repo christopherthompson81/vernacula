@@ -125,15 +125,18 @@ Contract, per bucket of `F` mel frames:
 |---|---|
 | in | `audio_signal [1, 128, F]` — mel features, zero-padded to `F` |
 | in | `pad_keep [1, F]` — 1.0 for a real frame, 0.0 for padding |
-| out | `outputs [1, 1024, T]`, `T = calc_encoded_length(F)` |
+| out | `outputs [1, 1024, T]`, `T = calc_encoded_length(F, stages)` |
 
 Two caller obligations, both of which fail silently rather than loudly:
 
 * **`pad_keep` must be honest.** All-ones on a short segment is exactly the
   bake-the-length behaviour this export exists to avoid — worth 2–4% WER.
 * **There is no `encoded_lengths` output**, because there is no length input. Compute
-  it with `calc_encoded_length` (three iterations of `(L + 2 - 3) // 2 + 1`) and
-  ignore output frames past it.
+  it by folding the `subsampler_stages` the report records
+  (`out = (in + pad0 + pad1 - kernel) // stride + 1` per strided stage; three ×2
+  stages for this checkpoint) and ignore output frames past it. The stages are
+  reported rather than hardcoded because a different checkpoint's geometry would
+  otherwise trim the output at the wrong frame with no failure signal.
 
 Unlike the Sortformer CoreML variant this needs **no** post-processing pass and has
 no load-level contract term: the raw export is already a single partition and loads
