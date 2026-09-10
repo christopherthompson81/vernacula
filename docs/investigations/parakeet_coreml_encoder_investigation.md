@@ -302,9 +302,11 @@ at **~16.5 s**, still behind the CPU's 13.6 s — fewer buckets means less loadi
 padding and more fall-through. There is no ladder that wins without first removing the
 load cost.
 
-Context for why the bar is high: the CPU EP encoder does 10 minutes in 13.6 s here, within
-about 2× of an RTX 3090 (~7 s). The baseline is strong, so a 1.56× on the ANE is only
-~5 s — the same order as session setup.
+For scale: the whole pipeline takes **31.4 s** here against **~7 s on an RTX 3090** — the
+M5 is roughly **4.5× slower end to end**. So this is not a case of "the baseline is already
+fast enough"; there is real headroom on Apple Silicon. What blocks the buckets from
+claiming any of it is specifically the per-session load cost, which is why the fix is to
+hide or amortise that rather than to give up on the ANE.
 
 **So `Auto` deliberately does NOT select the buckets** (unlike the Sortformer variant,
 where Auto does). An explicit `--ep coreml` still gets them. The gate can be reopened when
