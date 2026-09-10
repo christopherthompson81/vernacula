@@ -85,6 +85,15 @@ Console.WriteLine($"routed (CoreML)    : variantLoaded={routed.loaded,-5} steady
 if (!routed.loaded) { Console.WriteLine("\n!! variant not loaded -- routing never exercised"); return 1; }
 if (routed.steady == 0) { Console.WriteLine("\n!! steady-state graph never used"); return 1; }
 
+// Auto must reach the variant on its own -- that is the whole claim of the detection
+// path, and without asserting it the harness passes even if Auto stops detecting.
+if (!auto.loaded) { Console.WriteLine("\n!! Auto did not detect the variant"); return 1; }
+if (auto.steady != routed.steady)
+{
+    Console.WriteLine($"\n!! Auto routed {auto.steady} chunks, explicit CoreML routed {routed.steady}");
+    return 1;
+}
+
 if (base_.preds.Count != routed.preds.Count)
 { Console.WriteLine($"\n!! chunk count differs: {base_.preds.Count} vs {routed.preds.Count}"); return 1; }
 

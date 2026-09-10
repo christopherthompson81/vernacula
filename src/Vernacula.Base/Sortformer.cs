@@ -31,7 +31,13 @@ public sealed class SortformerStreamer : IDisposable
     /// <see cref="UsesSteadyStateGraph"/> for when it is loaded and
     /// <see cref="ProcessChunk"/> for which chunks it is allowed to see.
     /// </summary>
-    private readonly InferenceSession? _steadySession;
+    private InferenceSession? _steadySession;
+
+    /// <summary>Set once the first open has been attempted, successfully or not.</summary>
+    private bool _steadySessionAttempted;
+
+    private readonly string _modelPath;
+    private readonly ExecutionProvider _ep;
 
     /// <summary>
     /// True when the CoreML steady-state graph is loaded alongside the stock one.
@@ -39,6 +45,27 @@ public sealed class SortformerStreamer : IDisposable
     /// speedup on the Apple Neural Engine.
     /// </summary>
     public bool UsesSteadyStateGraph => _steadySession is not null;
+
+    /// <summary>
+    /// The steady-state graph, opened on first genuine need.
+    /// </summary>
+    /// <remarks>
+    /// ⚠ DELIBERATELY NOT OPENED IN THE CONSTRUCTOR. No chunk can route here until the
+    /// cache and FIFO are both full -- 188 + 124 subsampled frames, roughly 40 s of audio.
+    /// TranscriptionService builds a streamer per transcription, so an eager open made
+    /// every diarization of a shorter clip load, compile and dispose a ~527 MB graph that
+    /// handled zero chunks. It did the same on every app launch, where Warmup() runs one
+    /// chunk from a freshly reset state and therefore always routes to the stock graph.
+    /// </remarks>
+    private InferenceSession? SteadyStateSession()
+    {
+        if (_steadySessionAttempted)
+            return _steadySession;
+
+        _steadySessionAttempted = true;
+        _steadySession = TryOpenSteadyStateSession(_modelPath, _ep);
+        return _steadySession;
+    }
 
     /// <summary>Chunks sent to the steady-state graph since the last <see cref="ResetState"/>.</summary>
     public int SteadyStateChunkCount { get; private set; }
@@ -138,7 +165,8 @@ public sealed class SortformerStreamer : IDisposable
         opts.OptimizedModelFilePath = OptimisedModelPath;
 
         _session = new InferenceSession(resolvedModelPath, opts);
-        _steadySession = TryOpenSteadyStateSession(modelPath, ep);
+        _modelPath = modelPath;
+        _ep = ep;
         ResetState();
     }
 
@@ -146,12 +174,13 @@ public sealed class SortformerStreamer : IDisposable
     /// Opens the CoreML steady-state graph, or returns null to run stock-only.
     /// </summary>
     /// <remarks>
-    /// Gated on <see cref="ExecutionProvider.CoreML"/> being asked for explicitly. The
-    /// variant is only worth its second resident session on the Neural Engine (51.5 ms vs
-    /// 171.8 ms for the stock graph on CPU, M5 / ORT 1.29.0); on any other provider it
-    /// buys ~10% for another ~527 MB, which is not a trade to make silently. Auto does not
-    /// select it for the same reason `OrtSessionBuilder` leaves CoreML explicit: whether
-    /// CoreML beats the alternatives is a per-model property.
+    /// Auto selects this too, not just an explicit CoreML request. `OrtSessionBuilder`'s
+    /// Auto case declines CoreML because suitability is a per-model property -- but here
+    /// that property is checkable rather than assumed: the artifact is present beside the
+    /// stock model and its signature either matches this class's contract or it does not.
+    /// Worth it only on the Neural Engine (51.5 ms vs 171.8 ms for the stock graph on CPU,
+    /// M5 / ORT 1.29.0), which is why the gate still requires the CoreML EP; an explicit
+    /// Cpu or WebGpu opts out even when the artifact is present.
     ///
     /// ⚠ Two things here are load-bearing:
     /// <list type="bullet">
@@ -632,12 +661,16 @@ public sealed class SortformerStreamer : IDisposable
         //
         // Anything that is not exactly steady state goes to the stock graph.
 
-        bool steadyState =
-            _steadySession is not null
-            && currentLen == chunkStride
+        // Shape test first, THEN open: this is the only place that knows a chunk is
+        // actually eligible, and opening costs ~527 MB and up to ~3 s.
+        bool steadyShapes =
+            currentLen == chunkStride
             && chunkStride == Config.ChunkLength * Config.Subsampling
             && cacheT == Config.SpeakerCacheLength
             && fifoT == Config.FifoLength;
+
+        InferenceSession? steadySession = steadyShapes ? SteadyStateSession() : null;
+        bool steadyState = steadySession is not null;
 
         var inputs = new List<NamedOnnxValue>(steadyState ? 3 : 6)
         {
@@ -665,7 +698,7 @@ public sealed class SortformerStreamer : IDisposable
 
         if (steadyState) SteadyStateChunkCount++; else StockChunkCount++;
 
-        using var results = (steadyState ? _steadySession! : _session).Run(inputs);
+        using var results = (steadyState ? steadySession! : _session).Run(inputs);
         var predsT = results.First(r => r.Name == "spkcache_fifo_chunk_preds").AsTensor<float>();
         var embsT  = results.First(r => r.Name == "chunk_pre_encode_embs").AsTensor<float>();
 
