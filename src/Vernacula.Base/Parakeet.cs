@@ -26,6 +26,13 @@ public sealed class Parakeet : IDisposable
     private readonly int[] _stateShape2;
 
     /// <summary>
+    /// Wall-clock milliseconds spent inside the encoder, accumulated over this instance's
+    /// lifetime. Never reset: callers build a Parakeet per run and report once, so a running
+    /// total is what they want — anything reusing an instance across reports must diff it.
+    /// </summary>
+    public double EncoderMs { get; private set; }
+
+    /// <summary>
     /// Decoding beam width. <c>1</c> (default) runs the fast greedy-batch
     /// decoder. Values &gt; 1 enable TDT beam search (slower; 3–5× at beam=4).
     /// </summary>
@@ -68,9 +75,20 @@ public sealed class Parakeet : IDisposable
         _preprocessor = new InferenceSession(
             Path.Combine(modelPath, Config.PreprocessorFile), cpuOpts);
 
-        var gpuOpts = OrtSessionBuilder.Create(ep);
-        _encoder      = new InferenceSession(Path.Combine(modelPath, encoderFile),      gpuOpts);
-        _decoderJoint = new InferenceSession(Path.Combine(modelPath, decoderJointFile), gpuOpts);
+        // ⚠ ONE SessionOptions PER SESSION. Handing the same options object to two sessions
+        // segfaults the process on the WebGPU EP: the second Dispose lands in
+        // `webgpu::BufferManager::Release` on already-freed buffers. It kills the process at
+        // teardown -- AFTER transcription and BEFORE the caller writes anything out -- so
+        // the symptom is a crash and a missing transcript rather than a bad one.
+        //
+        // Reproduced down to two sessions and one shared options object, with nothing else
+        // involved: shared -> SIGSEGV, one options object each -> clean. This was previously
+        // recorded here as an ORT teardown bug to route around; it is ours.
+        ExecutionProvider stockEp = StockEncoderProvider(ep);
+        _encoder      = new InferenceSession(Path.Combine(modelPath, encoderFile),
+                                             OrtSessionBuilder.Create(stockEp));
+        _decoderJoint = new InferenceSession(Path.Combine(modelPath, decoderJointFile),
+                                             OrtSessionBuilder.Create(stockEp));
 
         (_vocab, _vocabSize, _blankIdx) = GetVocab();
 
@@ -180,7 +198,27 @@ public sealed class Parakeet : IDisposable
         return (features, featLens);
     }
 
+    /// <summary>Which provider the encoder and decoder-joint sessions run on.</summary>
+    /// <remarks>
+    /// The encoder graph does not compile under the CoreML EP at all — it declares unbounded
+    /// dimensions, which CoreML's MIL runtime rejects outright — so a CoreML request resolves
+    /// to Auto, i.e. the best remaining provider, which is WebGPU on macOS.
+    ///
+    /// Static-shape re-exports that DO compile under CoreML were built, measured and retired;
+    /// see docs/investigations/parakeet_coreml_encoder_investigation.md. WebGPU runs the
+    /// stock dynamic graph ~1.5× faster than the CPU EP with no re-export at all.
+    /// </remarks>
+    private static ExecutionProvider StockEncoderProvider(ExecutionProvider ep) =>
+        ep == ExecutionProvider.CoreML ? ExecutionProvider.Auto : ep;
+
     private (float[,,] encoderOut, long[] encoderLens) Encode(float[,,] features, long[] lens)
+    {
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        try { return EncodeInner(features, lens); }
+        finally { EncoderMs += sw.Elapsed.TotalMilliseconds; }
+    }
+
+    private (float[,,] encoderOut, long[] encoderLens) EncodeInner(float[,,] features, long[] lens)
     {
         int B = features.GetLength(0);
         int D = features.GetLength(1);

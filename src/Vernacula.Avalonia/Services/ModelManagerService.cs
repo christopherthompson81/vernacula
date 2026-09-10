@@ -4,6 +4,7 @@ using System.Security.Cryptography;
 using System.Text.Json;
 using Microsoft.ML.OnnxRuntime;
 using Vernacula.Base;
+using Vernacula.Base.Inference;
 using Vernacula.Base.Models;
 using Vernacula.App.Models;
 using Vernacula.App.Services.Tts;
@@ -130,6 +131,29 @@ internal class ModelManagerService
             new(Path.Combine(Config.ParakeetSubDir, Config.DecoderJointFile), Config.DecoderJointFile),
             new(Path.Combine(Config.ParakeetSubDir, Config.VocabFile), Config.VocabFile),
             new(Path.Combine(Config.ParakeetSubDir, Config.AsrConfigFile), Config.AsrConfigFile)
+        ];
+
+    /// <summary>
+    /// Model files an earlier version fetched and this one does not, as file-name prefixes
+    /// under a bundle subdirectory. Deleted on the next download pass.
+    /// </summary>
+    /// <remarks>
+    /// The Parakeet CoreML encoder buckets (`encoder-model.coreml-<frames>.onnx`) were an
+    /// experiment: static-shape re-exports that reach the Neural Engine, exact and a genuine
+    /// 1.56x on inference, but a bucket session costs ~2.9 s to open and a static-shape
+    /// design needs several, so the ANE's win went straight back into loading. WebGPU runs
+    /// the stock dynamic graph ~1.5x faster with no buckets at all. Retired.
+    ///
+    /// ⚠ THEY DO NOT GO QUIETLY. Each shipped bucket also leaves a compiled CoreML bundle of
+    /// roughly 4.4 GB in the cache root, and the existing prune only reclaims superseded
+    /// versions of a model something still opens -- so a model that simply stops being used
+    /// is never reclaimed at all. Four buckets is up to ~17.6 GB that would sit there
+    /// forever. <see cref="OrtSessionBuilder.ForgetCoreMLCacheFor"/> is what actually gets
+    /// it back.
+    /// </remarks>
+    private static readonly (string SubDir, string FilePrefix)[] RetiredAssets =
+        [
+            (Config.ParakeetSubDir, "encoder-model.coreml-"),
         ];
 
     private static readonly ModelAsset[] CohereFiles =
@@ -816,12 +840,54 @@ internal class ModelManagerService
     {
         string dir = _settings.GetModelsDir();
         Directory.CreateDirectory(dir);
+        await RemoveRetiredAssetsAsync();
 
         var missing = DownloadableFiles()
             .Where(asset => !File.Exists(Path.Combine(dir, asset.LocalRelativePath)))
             .ToList();
         await DownloadMissingAssetsAsync(dir, missing, progress, ct);
     }
+
+    /// <summary>
+    /// Deletes model files this version no longer uses, and the compiled CoreML bundles
+    /// they left behind. Best-effort and silent: reclaiming disk must never be the reason
+    /// something else fails.
+    /// </summary>
+    /// <remarks>
+    /// ⚠ Call this on STARTUP, not only from the download path. The users carrying the
+    /// orphaned bundles are exactly the ones who already have every model on disk and
+    /// therefore never press "Download models" — reclaiming only on a download pass means
+    /// the pass never happens for them, and ~17.6 GB sits there indefinitely.
+    ///
+    /// Off the calling thread because it is not cheap: it stats every file of up to four
+    /// ~4.4 GB bundles to report what it freed, then deletes them. On the UI thread that is
+    /// a visible freeze.
+    /// </remarks>
+    public Task<long> RemoveRetiredAssetsAsync() => Task.Run(() =>
+    {
+        long reclaimed = 0;
+        string modelsDir = _settings.GetModelsDir();
+        foreach (var (subDir, filePrefix) in RetiredAssets)
+        {
+            try
+            {
+                string bundleDir = Path.Combine(modelsDir, subDir);
+                if (Directory.Exists(bundleDir))
+                {
+                    foreach (string f in Directory.EnumerateFiles(bundleDir, filePrefix + "*"))
+                    {
+                        try { reclaimed += new FileInfo(f).Length; File.Delete(f); } catch { }
+                    }
+                }
+
+                // The compiled bundles are the big half: ~4.4 GB apiece against ~25 MB of
+                // graph, and nothing else ever reclaims them once the model stops being used.
+                reclaimed += OrtSessionBuilder.ForgetCoreMLCacheFor(filePrefix);
+            }
+            catch { /* retiring is opportunistic; never let it break anything else */ }
+        }
+        return reclaimed;
+    });
 
     public async Task DownloadMissingDiariZenModelsAsync(
         IProgress<DownloadProgress> progress,

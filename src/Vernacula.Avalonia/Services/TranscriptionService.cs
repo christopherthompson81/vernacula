@@ -1290,7 +1290,7 @@ internal class TranscriptionService
                     ? 4 : _settings.Current.ParakeetBeamWidth;
 
                 using var parakeet = new ParakeetAsr(parakeetModelsDir, encoderFile, decoderJointFile,
-                    beamWidth: effectiveBeam);
+                    ep: _settings.Current.ResolvedExecutionProvider, beamWidth: effectiveBeam);
                 if (lmActive)
                 {
                     parakeet.LmScorer        = KenLmScorer.LoadArpa(lmPath!);

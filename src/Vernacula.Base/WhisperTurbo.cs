@@ -139,10 +139,13 @@ public sealed class WhisperTurbo : IDisposable
 
     public WhisperTurbo(string modelsDir, ExecutionProvider ep = ExecutionProvider.Auto)
     {
-        var opts = OrtSessionBuilder.Create(ep);
-        _mel     = new InferenceSession(Path.Combine(modelsDir, MelFile),     opts);
-        _encoder = new InferenceSession(Path.Combine(modelsDir, EncoderFile), opts);
-        _decoder = new InferenceSession(Path.Combine(modelsDir, DecoderFile), opts);
+        // ⚠ ONE SessionOptions PER SESSION -- sharing one across sessions segfaults the
+        // process on the WebGPU EP, in webgpu::BufferManager::Release under the second
+        // Dispose. It dies at teardown, after the work and before the caller writes its
+        // output, so the symptom is a crash and a missing result rather than a wrong one.
+        _mel     = new InferenceSession(Path.Combine(modelsDir, MelFile),     OrtSessionBuilder.Create(ep));
+        _encoder = new InferenceSession(Path.Combine(modelsDir, EncoderFile), OrtSessionBuilder.Create(ep));
+        _decoder = new InferenceSession(Path.Combine(modelsDir, DecoderFile), OrtSessionBuilder.Create(ep));
 
         _idToToken       = LoadTokenizerVocab(Path.Combine(modelsDir, TokenizerFile));
         _byteLevelDecode = BuildByteLevelDecode();
