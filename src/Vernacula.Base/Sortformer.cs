@@ -1,5 +1,6 @@
 using Microsoft.ML.OnnxRuntime;
 using Microsoft.ML.OnnxRuntime.Tensors;
+using Vernacula.Base.Inference;
 using Vernacula.Base.Models;
 
 // ── Buffer pooling for median filter ──────────────────────────────────────────
@@ -24,6 +25,27 @@ namespace Vernacula.Base;
 public sealed class SortformerStreamer : IDisposable
 {
     private readonly InferenceSession _session;
+
+    /// <summary>
+    /// The CoreML steady-state graph, or null when it is not in use. See
+    /// <see cref="UsesSteadyStateGraph"/> for when it is loaded and
+    /// <see cref="ProcessChunk"/> for which chunks it is allowed to see.
+    /// </summary>
+    private readonly InferenceSession? _steadySession;
+
+    /// <summary>
+    /// True when the CoreML steady-state graph is loaded alongside the stock one.
+    /// Both stay resident (~1 GB combined), which is the cost of the ~3.3x chunk
+    /// speedup on the Apple Neural Engine.
+    /// </summary>
+    public bool UsesSteadyStateGraph => _steadySession is not null;
+
+    /// <summary>Chunks sent to the steady-state graph since the last <see cref="ResetState"/>.</summary>
+    public int SteadyStateChunkCount { get; private set; }
+
+    /// <summary>Chunks sent to the stock graph since the last <see cref="ResetState"/> --
+    /// warm-up, the short tail chunk, and everything when the variant is not loaded.</summary>
+    public int StockChunkCount { get; private set; }
 
     // ── Reusable buffers for chunk processing (eliminates per-chunk allocations) ──
     private float[]? _chunkDataBuffer;
@@ -57,27 +79,48 @@ public sealed class SortformerStreamer : IDisposable
     public SortformerStreamer(string modelPath, ExecutionProvider ep = ExecutionProvider.Auto)
     {
         var opts = new SessionOptions();
-        switch (ep)
+
+        // ⚠ THE STOCK GRAPH CAN NEVER RUN ON THE CoreML EP. It slices by tensor value, so
+        // every downstream shape is data-dependent, and CoreML's MIL runtime rejects
+        // unbounded dimensions outright -- session creation throws
+        // "Failed to create MLModel ... error code: -14" rather than falling back. That
+        // incompatibility is the entire reason the steady-state variant exists.
+        //
+        // So asking this class for CoreML means "use the CoreML variant where it is valid",
+        // and the stock graph it falls back to for warm-up and the tail chunk has to run
+        // somewhere else. Auto picks the best remaining provider (WebGPU on macOS, else CPU)
+        // and never throws.
+        ExecutionProvider stockEp = ep == ExecutionProvider.CoreML ? ExecutionProvider.Auto : ep;
+
+        // CoreML / WebGpu / macOS-Auto are handled centrally -- this class is the one
+        // ORT call site #164 did not route through the shared helper, so until now
+        // ExecutionProvider.CoreML and .WebGpu fell through the switch below with no
+        // matching case and Auto appended nothing on macOS, silently running every
+        // diarization on the CPU EP. See OrtSessionBuilder.TryAppendPlatformAccelerator.
+        if (!OrtSessionBuilder.TryAppendPlatformAccelerator(opts, stockEp))
         {
-            case ExecutionProvider.Auto:
-                if (HardwareInfo.CanProbeCudaExecutionProvider())
-                {
-                    try { opts.AppendExecutionProvider_CUDA(0); } catch { }
-                }
-                try { opts.AppendExecutionProvider_DML(0);  } catch { }
-                break;
-            case ExecutionProvider.Cuda:
-                try { opts.AppendExecutionProvider_CUDA(0); }
-                catch (EntryPointNotFoundException)
-                { throw new InvalidOperationException(HardwareInfo.CudaUnavailableMessage(providerMissing: true)); }
-                break;
-            case ExecutionProvider.DirectML:
-                try { opts.AppendExecutionProvider_DML(0); }
-                catch (EntryPointNotFoundException)
-                { throw new InvalidOperationException("DirectML EP not available. Build with -p:EP=DirectML (Windows only)."); }
-                break;
-            case ExecutionProvider.Cpu:
-                break;
+            switch (stockEp)
+            {
+                case ExecutionProvider.Auto:
+                    if (HardwareInfo.CanProbeCudaExecutionProvider())
+                    {
+                        try { opts.AppendExecutionProvider_CUDA(0); } catch { }
+                    }
+                    try { opts.AppendExecutionProvider_DML(0);  } catch { }
+                    break;
+                case ExecutionProvider.Cuda:
+                    try { opts.AppendExecutionProvider_CUDA(0); }
+                    catch (EntryPointNotFoundException)
+                    { throw new InvalidOperationException(HardwareInfo.CudaUnavailableMessage(providerMissing: true)); }
+                    break;
+                case ExecutionProvider.DirectML:
+                    try { opts.AppendExecutionProvider_DML(0); }
+                    catch (EntryPointNotFoundException)
+                    { throw new InvalidOperationException("DirectML EP not available. Build with -p:EP=DirectML (Windows only)."); }
+                    break;
+                case ExecutionProvider.Cpu:
+                    break;
+            }
         }
 
         string resolvedModelPath = Config.GetSortformerModelPath(modelPath);
@@ -95,7 +138,100 @@ public sealed class SortformerStreamer : IDisposable
         opts.OptimizedModelFilePath = OptimisedModelPath;
 
         _session = new InferenceSession(resolvedModelPath, opts);
+        _steadySession = TryOpenSteadyStateSession(modelPath, ep);
         ResetState();
+    }
+
+    /// <summary>
+    /// Opens the CoreML steady-state graph, or returns null to run stock-only.
+    /// </summary>
+    /// <remarks>
+    /// Gated on <see cref="ExecutionProvider.CoreML"/> being asked for explicitly. The
+    /// variant is only worth its second resident session on the Neural Engine (51.5 ms vs
+    /// 171.8 ms for the stock graph on CPU, M5 / ORT 1.29.0); on any other provider it
+    /// buys ~10% for another ~527 MB, which is not a trade to make silently. Auto does not
+    /// select it for the same reason `OrtSessionBuilder` leaves CoreML explicit: whether
+    /// CoreML beats the alternatives is a per-model property.
+    ///
+    /// ⚠ Two things here are load-bearing:
+    /// <list type="bullet">
+    /// <item><c>ORT_ENABLE_BASIC</c> -- the file is already an optimized graph, and
+    /// re-optimizing one at EXTENDED or above throws `AddInitializedOrtValue Attempt to
+    /// replace the existing tensor` (`MatMulAddFusion`). The CoreML EP hides this by
+    /// claiming the whole graph before the CPU fusions run, so it only surfaces on a
+    /// fallback to CPU -- which is exactly what happens when CoreML declines.</item>
+    /// <item>No <c>OptimizedModelFilePath</c> -- the stock session writes one, and pointing
+    /// both at the same file would have them overwrite each other. Re-saving an already
+    /// optimized graph is also the round-trip that causes the throw above.</item>
+    /// </list>
+    /// A failure to open is not fatal: the stock graph handles every chunk on its own.
+    /// </remarks>
+    private static InferenceSession? TryOpenSteadyStateSession(string modelPath, ExecutionProvider ep)
+    {
+        if (ep != ExecutionProvider.CoreML)
+            return null;
+
+        string path = Config.GetSortformerCoreMLModelPath(modelPath);
+        if (!File.Exists(path))
+            return null;
+
+        InferenceSession? sess = null;
+        try
+        {
+            var opts = OrtSessionBuilder.Create(ep, GraphOptimizationLevel.ORT_ENABLE_BASIC);
+            sess = new InferenceSession(path, opts);
+
+            // ⚠ THE FILENAME IS NOT THE CONTRACT. An export made before
+            // --coreml-const-chunk-length existed lands at this exact path with FOUR
+            // inputs (chunk_lengths still live), and one made with different
+            // --fixed-*-frames has the wrong fixed dims. Both load fine and then throw
+            // out of ProcessChunk on the first steady chunk -- turning a graceful
+            // fall-back into a failed run. Check the signature, not the name.
+            if (!SignatureMatchesSteadyStateContract(sess))
+            {
+                sess.Dispose();
+                return null;
+            }
+            return sess;
+        }
+        catch
+        {
+            // Missing provider, a graph this ORT will not take, anything: fall back to
+            // stock-only rather than failing diarization outright.
+            sess?.Dispose();
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Whether a candidate graph is the steady-state variant this class knows how to feed:
+    /// exactly the three tensors <see cref="ProcessChunk"/> sends, at exactly the shapes it
+    /// sends them, with every <c>*_lengths</c> input folded away.
+    /// </summary>
+    private static bool SignatureMatchesSteadyStateContract(InferenceSession sess)
+    {
+        var expected = new (string Name, int[] Dims)[]
+        {
+            ("chunk",    new[] { 1, Config.ChunkLength * Config.Subsampling, Config.NMels }),
+            ("spkcache", new[] { 1, Config.SpeakerCacheLength,               Config.EmbeddingDimension }),
+            ("fifo",     new[] { 1, Config.FifoLength,                       Config.EmbeddingDimension }),
+        };
+
+        var meta = sess.InputMetadata;
+        if (meta.Count != expected.Length)
+            return false;
+
+        foreach (var (name, dims) in expected)
+        {
+            if (!meta.TryGetValue(name, out var m))
+                return false;
+            if (m.Dimensions.Length != dims.Length)
+                return false;
+            for (int i = 0; i < dims.Length; i++)
+                if (m.Dimensions[i] != dims[i])   // a dynamic axis is negative here, so it fails too
+                    return false;
+        }
+        return true;
     }
 
     /// <summary>
@@ -110,6 +246,8 @@ public sealed class SortformerStreamer : IDisposable
         _fifoPreds     = new float[1, 0, Config.NumSpeakers];
         _meanSilEmb    = new float[Config.EmbeddingDimension];
         _nSilFrames    = 0;
+        SteadyStateChunkCount = 0;
+        StockChunkCount       = 0;
 
         // Clear reusable buffers so they reallocate to the right size for the new run
         _chunkDataBuffer = null;
@@ -353,26 +491,62 @@ public sealed class SortformerStreamer : IDisposable
         int cacheT = spkcache.GetLength(1);
         int fifoT  = fifo.GetLength(1);
 
-        var inputs = new List<NamedOnnxValue>
+        // ── Which graph gets this chunk ──────────────────────────────────────
+        // The steady-state graph has all three *_lengths baked in as constants, so it is
+        // correct ONLY when the real lengths equal the baked ones. Two cases fail that:
+        //
+        //   * the LAST chunk of every recording, where `currentLen` is short. Its
+        //     zero-padded tail would be attended to as real audio, moving that chunk's
+        //     speaker probabilities by up to 0.54 (rms 0.24) on a 0..1 scale -- enough to
+        //     flip speaker assignments outright. This is the whole reason for the routing.
+        //   * WARM-UP, where the cache and FIFO have not filled yet. ResetState starts
+        //     both at length 0 and they grow, so the fixed [1,188,512] / [1,124,512]
+        //     inputs do not even match until steady state is reached.
+        //
+        // Anything that is not exactly steady state goes to the stock graph.
+        //
+        // ⚠ In practice this fires on only every OTHER chunk, not on all of them after
+        // warm-up. The FIFO pop below clamps popLen to the whole FIFO -- it computes
+        // (newFifoT - FifoLength) + newFifoT, which always exceeds newFifoT -- so _fifo
+        // is drained to 0 on every pop and fifoT alternates 124, 0, 124, 0. The measured
+        // routing over a 5-minute file is "...S.S.S.S..." Correct, but it leaves roughly
+        // half the available speedup on the table. That formula predates this change and
+        // altering it would move diarization output for every backend, so it is tracked
+        // separately rather than fixed here.
+        bool steadyState =
+            _steadySession is not null
+            && currentLen == chunkStride
+            && chunkStride == Config.ChunkLength * Config.Subsampling
+            && cacheT == Config.SpeakerCacheLength
+            && fifoT == Config.FifoLength;
+
+        var inputs = new List<NamedOnnxValue>(steadyState ? 3 : 6)
         {
             NamedOnnxValue.CreateFromTensor("chunk",
                 new DenseTensor<float>(chunkData,
                     new[] { 1, chunkStride, Config.NMels })),
-            NamedOnnxValue.CreateFromTensor("chunk_lengths",
-                new DenseTensor<long>(new long[] { currentLen }, new[] { 1 })),
             NamedOnnxValue.CreateFromTensor("spkcache",
                 new DenseTensor<float>(Flatten3D(spkcache, 1, cacheT, D),
                     new[] { 1, cacheT, D })),
-            NamedOnnxValue.CreateFromTensor("spkcache_lengths",
-                new DenseTensor<long>(new long[] { cacheT }, new[] { 1 })),
             NamedOnnxValue.CreateFromTensor("fifo",
                 new DenseTensor<float>(Flatten3D(fifo, 1, fifoT, D),
                     new[] { 1, fifoT, D })),
-            NamedOnnxValue.CreateFromTensor("fifo_lengths",
-                new DenseTensor<long>(new long[] { fifoT }, new[] { 1 })),
         };
+        if (!steadyState)
+        {
+            // The steady-state graph does not declare these -- they were folded out of its
+            // signature when they became constants, so passing them would be an error.
+            inputs.Add(NamedOnnxValue.CreateFromTensor("chunk_lengths",
+                new DenseTensor<long>(new long[] { currentLen }, new[] { 1 })));
+            inputs.Add(NamedOnnxValue.CreateFromTensor("spkcache_lengths",
+                new DenseTensor<long>(new long[] { cacheT }, new[] { 1 })));
+            inputs.Add(NamedOnnxValue.CreateFromTensor("fifo_lengths",
+                new DenseTensor<long>(new long[] { fifoT }, new[] { 1 })));
+        }
 
-        using var results = _session.Run(inputs);
+        if (steadyState) SteadyStateChunkCount++; else StockChunkCount++;
+
+        using var results = (steadyState ? _steadySession! : _session).Run(inputs);
         var predsT = results.First(r => r.Name == "spkcache_fifo_chunk_preds").AsTensor<float>();
         var embsT  = results.First(r => r.Name == "chunk_pre_encode_embs").AsTensor<float>();
 
@@ -808,5 +982,9 @@ public sealed class SortformerStreamer : IDisposable
 
     // ── IDisposable ───────────────────────────────────────────────────────────
 
-    public void Dispose() => _session.Dispose();
+    public void Dispose()
+    {
+        _session.Dispose();
+        _steadySession?.Dispose();
+    }
 }

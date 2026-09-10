@@ -14,6 +14,7 @@ It now covers both models in your pipeline:
 - `export_sortformer_nemo_to_onnx.py`: exports streaming Sortformer `.nemo` to the same six-input / three-output ONNX contract used by Vernacula's inference code.
 - `export_silero_vad_to_onnx.py`: exports Silero VAD to ONNX.
 - `benchmark_sortformer_rtf.py`: benchmarks Sortformer NeMo-vs-ONNX diarization RTF on CPU or CUDA.
+- `coreml_partition_probe.py`: reports what an execution provider does with a static Sortformer graph — partition count, load and inference time, parity against the dynamic graph. This is the measurement that decides whether a CoreML variant is worth shipping, and it has to run on Apple Silicon.
 - `compare_sortformer_chunk_outputs.py`: compares two Sortformer backends chunk-by-chunk to locate streaming parity drift.
 - `tune_nemo128_export.py`: runs multiple preprocessor export candidates and scores them against a legacy reference — use this if the default export mode needs tuning.
 - `setup_nemo_export_env.py`: creates the Python export venv.
@@ -233,17 +234,25 @@ stops CoreML compiling the graph at all. `--coreml-static-batch1` drops that tri
 -- safe because `spkcache` and `fifo` are always full at runtime, and the chunk is
 concatenated **last**, so the summed logical length still masks the padded tail of
 a short final chunk. `--coreml-const-lengths` then bakes the two buffer lengths in
-as constants:
+as constants, and `--coreml-const-chunk-length` bakes the third:
 
 ```bash
 python scripts/nemo_export/export_sortformer_nemo_to_onnx.py \
   --nemo ~/models/diar_streaming_sortformer_4spk-v2.1.nemo \
   --output ~/models/sortformer_coreml.onnx \
   --opset 17 \
-  --coreml-static-batch1 --coreml-const-lengths \
+  --coreml-static-batch1 --coreml-const-lengths --coreml-const-chunk-length \
   --chunk-frames 992 --fixed-spkcache-frames 188 --fixed-fifo-frames 124 \
   --overwrite
 ```
+
+**All three flags are required to reach one partition, and the third one carries a
+correctness obligation** -- read the caveats below before using it. The attention
+padding mask is a function of all three lengths, so with `chunk_lengths` still live
+the mask never folds to a constant and the `Where` removal below finds **0 of 51**
+nodes, leaving four inputs and ~69 partitions. Drop
+`--coreml-const-chunk-length` and you get a graph that is correct for every chunk
+and no faster under CoreML than the CPU EP.
 
 That alone compiles under CoreML but leaves ~70 partitions, because a `Where`
 (padding mask) and a `Pad` in every encoder layer stay on CPU and split the graph.
@@ -268,7 +277,8 @@ Measured on an M5, ORT 1.24.4, chunk=992 / cache=188 / fifo=124:
 | `+ Gemm pre-transpose` | **1** | **52.3 ms** | **2.1 s** | **0.2 s** |
 
 Reference on the same machine: CPU 163.5 ms, WebGPU 94.0 ms. Outputs match the
-original dynamic model to 3.6e-07 (preds) and 0.0 (embeddings).
+original dynamic model to 3.6e-07 (preds) for a full chunk (independently
+reproduced at 3.3e-07 on a Linux rebuild under ORT 1.26.0).
 
 The Gemm pre-transpose is the load-time fix: ORT's CoreML EP writes the weight
 transposes it synthesizes for `Gemm(transB=0)` as hex-float TEXT inline in
@@ -276,13 +286,31 @@ transposes it synthesizes for `Gemm(transB=0)` as hex-float TEXT inline in
 See [docs/coreml_onnx_playbook.md](../../docs/coreml_onnx_playbook.md) for the
 full set of techniques and how to apply them to other models.
 
-Caveats: the graph assumes a full cache and FIFO, which `Sortformer.cs` always
-supplies; constant folding prunes the two baked `*_lengths`, so the graph takes
-four inputs, not six. `chunk_lengths` stays live on purpose -- `ProcessChunk`
-passes `min(start + chunkStride, totalFrames) - start`, which is **short for the
-final chunk of every recording**, and baking a constant there would let that
-chunk's zero-padded tail be attended to as real audio. CoreML partitioning is
-ORT-version dependent -- validated on 1.24.4.
+Caveats:
+
+* The graph assumes a genuinely full cache and FIFO. `Sortformer.cs` does NOT always
+  supply that -- `ResetState` starts both buffers at length 0 and they grow -- so the
+  caller has to route warm-up chunks to the stock graph too, not just the short tail
+  chunk. Constant folding prunes the baked `*_lengths` from the signature, so with all
+  three baked the graph takes **three** inputs (`chunk`, `spkcache`, `fifo`), not six.
+  Without `--coreml-const-chunk-length` it takes four.
+* **The steady-state graph must never see the final chunk of a recording.**
+  `ProcessChunk` passes `min(start + chunkStride, totalFrames) - start`, which is
+  short for the last chunk of every file, and a baked `chunk_lengths` lets that
+  chunk's zero-padded tail be attended to as real audio. Measured on the shipped
+  model: up to **0.54** (rms 0.24) on `preds`' 0..1 scale -- enough to flip speaker
+  assignments. A caller must route that one chunk to the unspecialized graph.
+* **Create the session at `ORT_ENABLE_BASIC` or lower.** The post-processed file is
+  an already-optimized graph, and re-optimizing one at EXTENDED or above throws
+  `AddInitializedOrtValue Attempt to replace the existing tensor`
+  (`MatMulAddFusion`). `OrtSessionBuilder.Create` defaults to `ORT_ENABLE_ALL`.
+* **CoreML partitioning is ORT-version dependent, and the table above is 1.24.4.**
+  An Apple Silicon build of Vernacula ships **1.29.0**. That was once believed to split
+  this graph into 194 partitions and diverge at ~1e-2; **it does not** -- measured on an
+  M5 under 1.29.0 the graph reaches **1 partition** and `4.470E-07` against the stock
+  model, at 51.5 ms vs 171.8 ms for stock-on-CPU. Re-validate on any further ORT change;
+  see
+  [docs/investigations/sortformer_coreml_publish_investigation.md](../../docs/investigations/sortformer_coreml_publish_investigation.md).
 
 For a safer structure-only experiment that keeps dynamic time dimensions but
 specializes the graph to batch size 1, use:

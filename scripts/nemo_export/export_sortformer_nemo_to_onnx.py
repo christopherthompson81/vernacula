@@ -84,6 +84,27 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--coreml-const-chunk-length",
+        action="store_true",
+        help=(
+            "With --coreml-const-lengths, ALSO bake chunk_lengths in as a constant, "
+            "producing a graph specialized for a FULL chunk. This is what turns the "
+            "attention padding mask into an all-False constant, which is the "
+            "precondition for coreml_optimize_sortformer.py to delete its 51 Where "
+            "nodes and reach a single CoreML partition -- without it the mask stays a "
+            "function of chunk_lengths, none of the Where nodes can be removed, and the "
+            "graph fragments into ~69 partitions with no CoreML win at all. "
+            "⚠ The resulting graph is WRONG for a short chunk: it attends to the "
+            "zero-padded tail as real audio, which moves that chunk's speaker "
+            "probabilities by up to 0.54 on a 0..1 scale (measured; see "
+            "docs/investigations/sortformer_coreml_publish_investigation.md). Since "
+            "Sortformer.cs sends a short chunk_lengths for the final chunk of EVERY "
+            "recording, a caller of this graph must route that one chunk to a "
+            "non-specialized graph instead. Opt in only when building the CoreML "
+            "steady-state variant, never for a general-purpose export."
+        ),
+    )
+    parser.add_argument(
         "--dynamic-streaming-batch1",
         action="store_true",
         help=(
@@ -190,6 +211,7 @@ def build_wrapper(
     dynamic_streaming_batch1: bool = False,
     coreml_static_batch1: bool = False,
     coreml_const_lengths: bool = False,
+    coreml_const_chunk_length: bool = False,
     const_chunk_frames: int = 0,
     const_spkcache_frames: int = 0,
     const_fifo_frames: int = 0,
@@ -206,15 +228,27 @@ def build_wrapper(
                 # folding them away changes no numerics -- it turns their mask construction
                 # into foldable constants instead of data-dependent Range/Expand chains.
                 #
-                # ⚠ chunk_lengths is deliberately NOT baked. It is the one length the runtime
-                # does NOT always set to the buffer size: ProcessChunk passes
-                # min(start + chunkStride, totalFrames) - start, which is SHORT for the final
-                # chunk of every recording. Baking chunk_frames there would let the
-                # zero-padded tail of that last chunk be attended to as real audio, changing
-                # the diarization output at the end of every file. It stays a real input; only
-                # its mask stays data-dependent, which costs a few partitions, not correctness.
+                # ⚠ chunk_lengths is NOT baked unless --coreml-const-chunk-length says so.
+                # It is the one length the runtime does NOT always set to the buffer size:
+                # ProcessChunk passes min(start + chunkStride, totalFrames) - start, which is
+                # SHORT for the final chunk of every recording, and baking chunk_frames there
+                # lets that chunk's zero-padded tail be attended to as real audio. Measured on
+                # the shipped dynamic model, that moves the final chunk's speaker
+                # probabilities by up to 0.54 (rms 0.24) on a 0..1 scale -- enough to flip
+                # speaker assignments, not a tolerance question. See
+                # docs/investigations/sortformer_coreml_publish_investigation.md.
+                #
+                # It is nonetheless the ONLY way to a single CoreML partition: the attention
+                # padding mask is a function of chunk_lengths, so while that input is live the
+                # mask cannot fold to the all-False constant that lets
+                # coreml_optimize_sortformer.py delete its 51 Where nodes (69 partitions and
+                # ~no CoreML win, vs 1 partition and 3.2x over CPU). Hence the opt-in flag,
+                # and hence the obligation it puts on the caller: the steady-state graph must
+                # never see the final chunk of a recording.
                 spkcache_lengths = torch.tensor([const_spkcache_frames], dtype=torch.int64)
                 fifo_lengths = torch.tensor([const_fifo_frames], dtype=torch.int64)
+                if coreml_const_chunk_length:
+                    chunk_lengths = torch.tensor([const_chunk_frames], dtype=torch.int64)
             chunk_pre_encode_embs, chunk_pre_encode_lengths = self.inner.encoder.pre_encode(x=chunk, lengths=chunk_lengths)
             chunk_pre_encode_lengths = chunk_pre_encode_lengths.to(torch.int64)
             if coreml_static_batch1:
@@ -293,6 +327,8 @@ def main() -> None:
         raise SystemExit(f"Output already exists: {output_path}. Re-run with --overwrite.")
     if args.coreml_const_lengths and not args.coreml_static_batch1:
         raise SystemExit("--coreml-const-lengths requires --coreml-static-batch1.")
+    if args.coreml_const_chunk_length and not args.coreml_const_lengths:
+        raise SystemExit("--coreml-const-chunk-length requires --coreml-const-lengths.")
     if sum([args.static_streaming_batch1, args.dynamic_streaming_batch1, args.coreml_static_batch1]) > 1:
         raise SystemExit(
             "Choose at most one of --static-streaming-batch1, --dynamic-streaming-batch1, --coreml-static-batch1."
@@ -317,6 +353,7 @@ def main() -> None:
         static_streaming_batch1=args.static_streaming_batch1,
         coreml_static_batch1=args.coreml_static_batch1,
         coreml_const_lengths=args.coreml_const_lengths,
+        coreml_const_chunk_length=args.coreml_const_chunk_length,
         const_chunk_frames=args.chunk_frames,
         const_spkcache_frames=args.fixed_spkcache_frames,
         const_fifo_frames=args.fixed_fifo_frames,
@@ -413,12 +450,27 @@ def main() -> None:
             "data-dependent. Callers must pass full-size, zero-padded buffers."
         )
     if args.coreml_const_lengths:
+        # The "chunk_lengths is still a live input" clause is only true WITHOUT
+        # --coreml-const-chunk-length; with it, the next note says the opposite. This
+        # report is the artifact's authoritative contract, so it must not say both.
+        chunk_len_clause = (
+            "chunk_lengths is still a live input. "
+            if not args.coreml_const_chunk_length else ""
+        )
         metadata.notes.append(
             f"spkcache_lengths={args.fixed_spkcache_frames} and fifo_lengths="
             f"{args.fixed_fifo_frames} are baked in as graph constants; both inputs remain in "
             "the signature but are ignored, and may be pruned from it after folding. "
-            "chunk_lengths is still a live input. This graph is valid only for a full cache "
-            "and fifo."
+            f"{chunk_len_clause}This graph is valid only for a full cache and fifo."
+        )
+    if args.coreml_const_chunk_length:
+        metadata.notes.append(
+            f"chunk_lengths={args.chunk_frames} is ALSO baked in as a graph constant. This is "
+            "a STEADY-STATE-ONLY graph: it attends to a short chunk's zero-padded tail as "
+            "real audio, so the caller must route the final (short) chunk of every recording "
+            "to a graph that still takes chunk_lengths as an input. In exchange the attention "
+            "padding mask folds to an all-False constant, which is what lets "
+            "coreml_optimize_sortformer.py reach a single CoreML partition."
         )
     if args.dynamic_streaming_batch1:
         metadata.notes.append(
