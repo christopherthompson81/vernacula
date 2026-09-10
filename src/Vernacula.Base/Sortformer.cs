@@ -398,23 +398,47 @@ public sealed class SortformerStreamer : IDisposable
 
         var preds2d = Slice3DTo2D(spkcachePreds, T, S);
 
-        int cachePerSpk       = Config.SpeakerCacheLength / S - 3;
+        int cachePerSpk       = Config.SpeakerCacheLength / S - Config.SpeakerCacheSilenceFrames;
         int strongBoostPerSpk = (int)(cachePerSpk * 0.75);
         int weakBoostPerSpk   = (int)(cachePerSpk * 1.5);
         int minPosPerSpk      = (int)(cachePerSpk * 0.5);
 
         float[,] scores = SpeakerQualityScores(preds2d, minPosPerSpk);
+
+        // NeMo boosts frames newly appended to the cache before the boosts below:
+        //     if self.scores_boost_latest > 0:
+        //         scores[:, self.spkcache_len:, :] += self.scores_boost_latest
+        // Everything past SpeakerCacheLength is what this pop just promoted out of the
+        // FIFO. Without it those frames compete against already-established ones on raw
+        // score alone and are evicted almost immediately, so the cache stops refreshing.
+        //
+        // This was missing entirely. On 90 s of real speech it is the single largest
+        // divergence from NeMo's streaming: frame-level speaker agreement 89.6% -> 97.3%.
+        // It is invisible on synthetic tones, which is why it survived earlier checks.
+        for (int t = Config.SpeakerCacheLength; t < T; t++)
+            for (int s2 = 0; s2 < S; s2++)
+                scores[t, s2] += Config.ScoresBoostLatest;
+
         Boost(scores, strongBoostPerSpk, 2.0f);
         Boost(scores, weakBoostPerSpk,   1.0f);
 
-        int silRows   = 3 * S;
+        // NeMo appends spkcache_sil_frames_per_spk rows at +inf, so each speaker's block in
+        // the flattened score matrix carries that many guaranteed picks and the compressed
+        // cache always reserves S * that many slots for the mean silence embedding:
+        //     pad = torch.full((batch, self.spkcache_sil_frames_per_spk, n_spk), float('inf'))
+        //
+        // This was 3 * S rows at NEGATIVE infinity -- four times as many rows, and a sign
+        // that guaranteed they were never selected, so the cache held no silence frames at
+        // all. cachePerSpk already subtracts SpeakerCacheSilenceFrames on the assumption
+        // that those slots are spoken for.
+        int silRows   = Config.SpeakerCacheSilenceFrames;
         var extScores = new float[T + silRows, S];
         for (int t = 0; t < T; t++)
             for (int s = 0; s < S; s++)
                 extScores[t, s] = scores[t, s];
         for (int t = T; t < T + silRows; t++)
             for (int s = 0; s < S; s++)
-                extScores[t, s] = float.NegativeInfinity;
+                extScores[t, s] = float.PositiveInfinity;
 
         int extT  = T + silRows;
         int total = extT * S;

@@ -45,6 +45,19 @@ public static class Config
     public const int    NumSpeakers              = 4;
     public const int    SpeakerCacheLength       = 188;
     public const int    SpeakerCacheUpdatePeriod = 124;
+
+    /// <summary>
+    /// NeMo's `scores_boost_latest`: added to the compression score of frames newly
+    /// appended to the speaker cache, so a frame just promoted out of the FIFO is not
+    /// immediately outscored by older, better-established ones.
+    /// </summary>
+    public const float  ScoresBoostLatest        = 0.05f;
+
+    /// <summary>
+    /// NeMo's `spkcache_sil_frames_per_spk`: slots per speaker in the compressed cache
+    /// reserved for the mean silence embedding.
+    /// </summary>
+    public const int    SpeakerCacheSilenceFrames = 3;
     public const double FrameDuration            = 0.08; // 80 ms per frame
 
     public const float  SilThreshold    = 0.2f;

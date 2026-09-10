@@ -31,6 +31,8 @@ EMBEDDING_DIMENSION = 512
 NUM_SPEAKERS = 4
 SPEAKER_CACHE_LENGTH = 188
 SPEAKER_CACHE_UPDATE_PERIOD = 124
+SCORES_BOOST_LATEST = 0.05
+SPKCACHE_SIL_FRAMES = 3
 FRAME_DURATION = 0.08
 
 SIL_THRESHOLD = 0.2
@@ -236,17 +238,20 @@ class SortformerPipelineBase:
 
         preds2d = self._spkcache_preds[0]
         total_frames = preds2d.shape[0]
-        cache_per_spk = SPEAKER_CACHE_LENGTH // NUM_SPEAKERS - 3
+        cache_per_spk = SPEAKER_CACHE_LENGTH // NUM_SPEAKERS - SPKCACHE_SIL_FRAMES
         strong_boost = int(cache_per_spk * 0.75)
         weak_boost = int(cache_per_spk * 1.5)
         min_pos_per_spk = int(cache_per_spk * 0.5)
 
         scores = self.speaker_quality_scores(preds2d, min_pos_per_spk)
+        # NeMo: scores[:, spkcache_len:, :] += scores_boost_latest. See Sortformer.cs.
+        scores[SPEAKER_CACHE_LENGTH:, :] += SCORES_BOOST_LATEST
         self.boost(scores, strong_boost, 2.0)
         self.boost(scores, weak_boost, 1.0)
 
-        sil_rows = 3 * NUM_SPEAKERS
-        ext_scores = np.full((total_frames + sil_rows, NUM_SPEAKERS), -np.inf, dtype=np.float32)
+        # NeMo appends spkcache_sil_frames_per_spk rows at +inf, not 3*n_spk at -inf.
+        sil_rows = SPKCACHE_SIL_FRAMES
+        ext_scores = np.full((total_frames + sil_rows, NUM_SPEAKERS), np.inf, dtype=np.float32)
         ext_scores[:total_frames] = scores
 
         flat: list[tuple[float, int, int]] = []
