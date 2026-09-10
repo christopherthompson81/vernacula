@@ -11,6 +11,7 @@ using ParakeetAsr = Vernacula.Base.Parakeet;
 string? audioPath       = null;
 string? modelDir        = null;         // legacy --model: a models ROOT, or a flat Parakeet bundle
 string? modelsDirFlag   = null;         // --models-dir: the models root, as the desktop app means it
+string? epFlag          = null;         // --ep: execution provider for diarization (#165)
 string? outputPath      = null;
 string? segmentsPath    = null;
 string  exportFormat    = "md";
@@ -55,6 +56,7 @@ for (int i = 0; i < args.Length; i++)
         case "--audio":         audioPath    = args[++i]; break;
         case "--model":         modelDir     = args[++i]; break;
         case "--models-dir":    modelsDirFlag = args[++i]; break;
+        case "--ep":            epFlag       = args[++i].ToLowerInvariant(); break;
         case "--output":        outputPath   = args[++i]; break;
         case "--segments":      segmentsPath = args[++i]; break;
         case "--export-format": exportFormat = args[++i].ToLowerInvariant(); break;
@@ -223,6 +225,27 @@ if (audioPath is null)
 diarization ??= asrBackend is "vibevoice" or "vibevoice-streaming" ? "vibevoice-asr-builtin" : "sortformer";
 
 // Validate that vibevoice-asr-builtin is only used with vibevoice ASR
+// --ep, resolved once. Diarization is the only consumer today; the ASR backends still
+// take Auto (#165 item 1 asks for the flag, this is the diarization half of it).
+ExecutionProvider diarizationEp = ExecutionProvider.Auto;
+if (epFlag is not null)
+{
+    switch (epFlag)
+    {
+        case "auto":   diarizationEp = ExecutionProvider.Auto;      break;
+        case "cpu":    diarizationEp = ExecutionProvider.Cpu;       break;
+        case "cuda":   diarizationEp = ExecutionProvider.Cuda;      break;
+        // macOS accelerators. Both need an osx-arm64 build (-p:EP=Cpu); the plain package
+        // is the one whose native carries them. coreml additionally opts Sortformer into
+        // the steady-state variant when that file is present beside the stock model.
+        case "coreml": diarizationEp = ExecutionProvider.CoreML;    break;
+        case "webgpu": diarizationEp = ExecutionProvider.WebGpu;    break;
+        default:
+            Console.Error.WriteLine($"--ep must be auto, cpu, cuda, coreml or webgpu (got \"{epFlag}\").");
+            return 2;
+    }
+}
+
 if (diarization == "vibevoice-asr-builtin" && asrBackend is not ("vibevoice" or "vibevoice-streaming"))
 {
     Console.Error.WriteLine("Error: --diarization vibevoice-asr-builtin requires --asr vibevoice or vibevoice-streaming.");
@@ -406,7 +429,7 @@ try
 
             var sw1 = Stopwatch.StartNew();
             Console.Write("Loading Sortformer model... ");
-            using var sortformer = new SortformerStreamer(modelsRoot);
+            using var sortformer = new SortformerStreamer(modelsRoot, diarizationEp);
             Console.WriteLine($"DONE ({sw1.ElapsedMilliseconds,6} ms)");
 
             var sw2 = Stopwatch.StartNew();
@@ -459,7 +482,7 @@ try
         else
         {
             Console.Write("Diarizing (Sortformer)... ");
-            using var sortformer = new SortformerStreamer(modelsRoot);
+            using var sortformer = new SortformerStreamer(modelsRoot, diarizationEp);
             segs = sortformer.Diarize(audio,
                 (idx, total) => Console.Write($"\r  Diarizing chunk {idx}/{total}..."));
             swDiar.Stop();
@@ -1348,6 +1371,8 @@ static void PrintUsage()
     Console.WriteLine("  --output <path>                    Override output file path");
     Console.WriteLine("  --diarization <backend>            Diarization backend: sortformer, diarizen, vad, vibevoice-asr-builtin");
     Console.WriteLine("                                     (default: sortformer, or vibevoice-asr-builtin when --asr vibevoice)");
+    Console.WriteLine("  --ep <provider>                    Execution provider for diarization: auto, cpu, cuda, coreml, webgpu");
+    Console.WriteLine("                                     coreml uses the steady-state Sortformer variant when present (macOS, arm64)");
     Console.WriteLine("  --vad                              Use VAD instead of diarization (deprecated)");
     Console.WriteLine("  --asr <parakeet|cohere|qwen3asr|vibevoice|vibevoice-streaming|whisper|granite>");
     Console.WriteLine("                                     ASR backend (default: parakeet)");

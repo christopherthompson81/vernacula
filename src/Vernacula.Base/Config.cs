@@ -13,6 +13,15 @@ public static class Config
     // ── Diarization (Sortformer) ─────────────────────────────────────────────
     public const string SortformerSubDir = "sortformer";
     public const string SortformerFile = "diar_streaming_sortformer_4spk-v2.1.onnx";
+
+    /// <summary>
+    /// The CoreML steady-state Sortformer graph. Optional: present only if the user has
+    /// downloaded it. Fixed shapes and three inputs (all three `*_lengths` are baked in),
+    /// so it is valid ONLY for a full-length chunk over a full cache and FIFO --
+    /// <see cref="SortformerStreamer.ProcessChunk"/> routes every other chunk to
+    /// <see cref="SortformerFile"/>.
+    /// </summary>
+    public const string SortformerCoreMLFile = "diar_streaming_sortformer_4spk-v2.1.coreml.onnx";
     public const string SortformerDataFile = "diar_streaming_sortformer_4spk-v2.1.onnx.data";
     public const string SortformerModelOverrideEnvVar = "VERNACULA_SORTFORMER_MODEL_FILE";
     /// <summary>
@@ -304,6 +313,20 @@ public static class Config
         return File.Exists(subDirPath)
             ? subDirPath
             : Path.Combine(modelDir, SortformerFile);
+    }
+
+    /// <summary>
+    /// The CoreML steady-state variant beside whatever <see cref="GetSortformerModelPath"/>
+    /// resolved, so a subdirectory layout or a <c>VERNACULA_SORTFORMER_MODEL_FILE</c>
+    /// override finds its sibling. The file is optional; callers check existence.
+    /// </summary>
+    public static string GetSortformerCoreMLModelPath(string modelDir)
+    {
+        string stock = GetSortformerModelPath(modelDir);
+        string? dir  = Path.GetDirectoryName(stock);
+        return string.IsNullOrEmpty(dir)
+            ? SortformerCoreMLFile
+            : Path.Combine(dir, SortformerCoreMLFile);
     }
 
     public static int GetDiariZenSegmentationIntraOpThreads()
