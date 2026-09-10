@@ -147,11 +147,49 @@ public static class OrtSessionBuilder
     // unbounded dimension, so graphs with a dynamic time axis end up heavily
     // partitioned; measure before preferring this over CPU.
     private static void AppendCoreML(SessionOptions opts)
-        => opts.AppendExecutionProvider("CoreML", new Dictionary<string, string>
+    {
+        var cfg = new Dictionary<string, string>
         {
             ["ModelFormat"] = "MLProgram",
             ["MLComputeUnits"] = "ALL",
-        });
+        };
+
+        // Without this the EP recompiles the CoreML model on EVERY session creation.
+        // Measured on the Sortformer steady-state graph, session load drops 2.99 s -> 0.85 s,
+        // and TranscriptionService builds a streamer per transcription, so it is ~2 s of
+        // per-run latency for a directory. Best-effort -- if the cache dir cannot be
+        // created, drop the option rather than fail the session.
+        //
+        // ⚠ IT IS NOT SMALL AND NOTHING PRUNES IT. The compiled .mlmodelc for the 527 MB
+        // Sortformer variant alone is ~1.0 GB, and ORT keys entries by graph, so every model
+        // and every re-export of one adds another. Trading ~2 s per run for unbounded disk
+        // is the right default for a desktop app, but it wants a cap or a cleanup path.
+        string? dir = CoreMLCacheDirectory.Value;
+        if (dir is not null)
+            cfg["ModelCacheDirectory"] = dir;
+
+        opts.AppendExecutionProvider("CoreML", cfg);
+    }
+
+    /// <summary>
+    /// Where the CoreML EP caches compiled `.mlmodelc` bundles, or null if it cannot be
+    /// created. Lazy because every model-init site asks and those run in parallel.
+    /// </summary>
+    private static readonly Lazy<string?> CoreMLCacheDirectory = new(() =>
+    {
+        try
+        {
+            string dir = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "Vernacula", "coreml-cache");
+            Directory.CreateDirectory(dir);
+            return dir;
+        }
+        catch
+        {
+            return null;
+        }
+    });
 
     // The short names AppendExecutionProvider takes, and the long names
     // GetAvailableProviders reports. They are not the same strings.
