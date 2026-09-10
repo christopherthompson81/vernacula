@@ -171,31 +171,6 @@ def port_stages(B, preds2d, n_frames, ks):
     return stages, picked
 
 
-def gather_outputs(mods, preds_t, embs_t, picked, n_frames, sil):
-    """The compressed (embs, preds) a given flat selection produces.
-
-    Mirrors _gather_spkcache_and_preds: a pick whose score is -inf, or that lands in the
-    silence pad, is DISABLED -- mean silence embedding and zero preds -- and the rest are
-    gathered in speaker-major index order.
-    """
-    import numpy as np
-    ext_t = n_frames + sil
-    flat_scores = None
-    rows_e, rows_p = [], []
-    mean_sil = embs_t[0].mean(axis=0)
-    order = sorted(picked, key=lambda i: (1 << 62) if flat_scores is not None and
-                   np.isneginf(flat_scores[i]) else i)
-    for i in order:
-        t = i % ext_t
-        if t >= n_frames:
-            rows_e.append(mean_sil)
-            rows_p.append(np.zeros(preds_t.shape[2], dtype=np.float32))
-        else:
-            rows_e.append(embs_t[0, t])
-            rows_p.append(preds_t[0, t])
-    return np.stack(rows_e), np.stack(rows_p)
-
-
 def interchangeable(preds2d, picked_a, picked_b, n_frames, sil) -> tuple[int, int]:
     """Of the frames the two sides disagree on, how many are INTERCHANGEABLE -- same
     preds row as a frame the other side picked? Saturated frames are identical to each
@@ -297,7 +272,9 @@ def main() -> int:
     worst = 0.0
     for frac in args.saturated:
         preds = make_fixture(n_frames, n_spk, frac, args.seed)
-        preds_t = torch.from_numpy(preds)
+        # from_numpy ALIASES; the fixture is read again below, so hand NeMo its own copy
+        # rather than audit every callee for an in-place op.
+        preds_t = torch.from_numpy(preds.copy())
         nemo_st, nemo_picked, _, _, ks = nemo_stages(mods, preds_t)
         port_st, port_picked = port_stages(B, preds[0], n_frames, ks)
 
@@ -314,6 +291,13 @@ def main() -> int:
         print(f"    selection       {len(ns - ps)}/{len(ns)} indices differ; "
               f"selected score multisets {'EQUAL' if same_scores else 'DIFFER'}"
               f"{'  -> tie order only' if same_scores and ns != ps else ''}")
+        def mix(picked):
+            from collections import Counter
+            c = Counter(i // (n_frames + mods.spkcache_sil_frames_per_spk) for i in picked)
+            return [c[s] for s in range(n_spk)]
+
+        print(f"    speaker mix     NeMo {mix(nemo_picked)}   port {mix(port_picked)}")
+
         diff_rows, same_pred_multiset = interchangeable(
             preds[0], nemo_picked, port_picked, n_frames, mods.spkcache_sil_frames_per_spk)
         print(f"    preds rows      {diff_rows}/{len(ns)} of the selected rows are not "

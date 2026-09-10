@@ -522,6 +522,12 @@ public sealed class SortformerStreamer : IDisposable
     internal static (int tIdx, int sIdx, bool disabled, int order)[] SelectCacheFrames(
         (float score, int tIdx, int sIdx)[] flat, int keep, int extT, int realFrames)
     {
+        // CompressCache always has extT * S >= keep by construction, but this is reachable
+        // on its own now, and slicing past the end would be a confusing IndexOutOfRange.
+        if (keep < 0 || keep > flat.Length)
+            throw new ArgumentOutOfRangeException(
+                nameof(keep), keep, $"cannot keep {keep} of {flat.Length} scored entries.");
+
         // Array.Sort is an unstable introsort, so a tie rule is required for determinism at
         // all, never mind for agreement with the Python mirror.
         Array.Sort(flat, (a, b) =>
