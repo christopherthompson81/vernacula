@@ -35,25 +35,42 @@ public class SortformerCacheSelectionTests
     [Fact]
     public void HighestScoresWin_AndKeptRowsComeBackSpeakerMajor()
     {
-        // Distinct scores decreasing with t, so the first Keep/Spk frames of every speaker
-        // are the obvious picks and nothing depends on the tie rule.
+        // Distinct scores decreasing with t, so the picks are the obvious ones and nothing
+        // depends on the tie rule -- except that one speaker is masked to -inf partway
+        // through, which is what gives the ordering assertion teeth. Comparing the kept rows
+        // against sIdx * frames + tIdx alone cannot fail: that recomputes the key they were
+        // sorted by. Only a -inf pick, which takes the max_index branch instead,
+        // distinguishes "ordered speaker-major" from "ordered by the sort key".
+        // 160 live entries for a 188-row cache, so the selection is forced to take -inf
+        // picks -- which only happens when fewer frames survive masking than the cache
+        // holds. Two live speakers, so speaker-major ordering is a real constraint.
         int frames = 100;
         var scores = new float[frames, Spk];
         for (int t = 0; t < frames; t++)
             for (int s = 0; s < Spk; s++)
-                scores[t, s] = frames - t;
+                scores[t, s] = s switch
+                {
+                    0 => frames - t,
+                    1 => t < 60 ? frames - t : float.NegativeInfinity,
+                    _ => float.NegativeInfinity,
+                };
 
         var selected = SortformerStreamer.SelectCacheFrames(Flat(scores), Keep, frames, frames);
 
         Assert.Equal(Keep, selected.Length);
-        Assert.All(selected, x => Assert.False(x.disabled));
-        Assert.True(selected.Max(x => x.tIdx) < Keep / Spk + 1);
+        Assert.Contains(selected, x => x.disabled);
 
-        // The kept rows are ordered by NeMo's speaker-major flattened index. That ordering
-        // is torch.sort(topk_indices), not a tie rule, and is deliberately not what the
-        // frame-major tie-break below changed.
-        var order = selected.Select(x => x.sIdx * frames + x.tIdx).ToArray();
+        // Live picks come back in speaker-major order -- NeMo's torch.sort(topk_indices),
+        // not a tie rule, and deliberately not what the frame-major tie-break changed.
+        var live = selected.Where(x => !x.disabled).ToArray();
+        var order = live.Select(x => x.sIdx * frames + x.tIdx).ToArray();
         Assert.Equal(order.OrderBy(v => v).ToArray(), order);
+
+        // The -inf picks land after every live one, rather than in speaker-major position.
+        int lastLive = Array.FindLastIndex(selected, x => !x.disabled);
+        Assert.True(selected.Skip(lastLive + 1).All(x => x.disabled));
+        Assert.Equal(160, live.Length);
+        Assert.DoesNotContain(live, x => x.sIdx >= 2);
     }
 
     [Fact]

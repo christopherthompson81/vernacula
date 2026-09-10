@@ -24,59 +24,53 @@ Question: reproduce #170's check, then repeat it at the sizes Sortformer really 
 (188); `_boost_topk_scores` takes `k` = 35 or 70 per speaker over `n_frames` (≈ 312).
 
 `sortformer_compress_parity.py --probe-topk-ties` (written during this run, and needing
-nothing but torch), comparing `torch.topk`'s picks against sorting by `(-value, index)`:
+nothing but torch). Verbatim:
 
 ```
-A. the #170 experiment, reproduced
-  12 tied values                          k=  5   lowest-index rule: DIFFERS
-      topk picked but rule would not: [6, 7, 8, 9, 10]
-      rule picks but topk did not   : [0, 1, 2, 3, 4]
+torch 2.11.0+cu128
 
-B. at the real flattened size
-  all tied, numel=1248                    k=188   DIFFERS   topk picked [664..851]
-  50 distinct + 1198 tied, numel=1248     k=188   DIFFERS
-  all tied, numel=2000                    k=188   DIFFERS   topk picked [1251..]
+  case                       k             span   gaps  contiguous  lowest-index?
+  zeros(n=12    )            5            6..10      0        True  DIFFERS
+  zeros(n=312   )           35         196..233      1       False  DIFFERS
+  zeros(n=312   )           70         157..233      2       False  DIFFERS
+  zeros(n=1248  )          188         664..935      4       False  DIFFERS
+  zeros(n=2000  )          188       1251..1499      1       False  DIFFERS
 
-C. the boost call sites
-  all tied, numel=312                     k= 35   DIFFERS   topk picked [196..230]
-  all tied, numel=312                     k= 70   DIFFERS   topk picked [157..226]
-  all tied, numel=1248                    k= 35   DIFFERS   topk picked [820..854]
+  50 distinct + 1198 tied, k=188: keeps 50/50 of the distinct entries, then 138 tied ones spanning 649..947
 
-D. dim=1 on a 3D tensor (the actual boost call)
-  boost topk on zeros, k=35: speaker 0 -> [196..205]...   matches range(35)? False
+  20 repeats in one process: stable
+  threads 1/2/4 first index: [664, 664, 664]  (thread-independent)
+
+  If any row says MATCHES, the tie order differs by platform and #171's premise
+  is unfixable by construction. If all say DIFFERS, this build agrees with the
+  Linux measurement and the ports' rule is arbitrary-but-deterministic, as documented.
 ```
 
 **The premise is false, and not just at scale — the #170 fixture itself does not reproduce
 here.** `torch.topk(torch.zeros(12), 5)` returns `[6,7,8,9,10]` on this build, not `[0..4]`.
-Checked against the `sorted=` flag, since NeMo calls `topk(..., sorted=False)` at both
-sites and #170 may have tested the default:
 
-```
-zeros(n=12)   k=5   sorted=True  -> [6, 7, 8, 9, 10]
-zeros(n=12)   k=5   sorted=False -> [6, 7, 8, 9, 10]
-zeros(n=1248) k=188 sorted=True  -> [664, 665, ...]
-zeros(n=1248) k=188 sorted=False -> [664, 665, ...]
-```
+Checked the `sorted=` flag too, since NeMo calls `topk(..., sorted=False)` at both sites and
+#170 may have tested the default: it makes no difference. `zeros(12)` k=5 gives `6..10` and
+`zeros(1248)` k=188 gives `664..935` either way. That flag orders the values that come
+*back*; it does not change which are chosen.
 
-The flag makes no difference — `sorted` orders the *returned* values, it does not change
-which are selected. So that is not the explanation either.
+What torch returns is a **mid-range subset** of the tied entries, at an offset following no
+rule (n=12,k=5 → 6; n=312,k=35 → 196; n=312,k=70 → 157; n=1248,k=188 → 664; n=2000,k=188 →
+1251), and — apart from the smallest case — **not contiguous**: 1, 2, 4 and 1 gaps
+respectively. That is the signature of a quickselect partition, not of a documented
+ordering guarantee. It is stable across 20 repeats and identical at 1, 2 and 4 threads.
 
-What torch actually returns is a **contiguous block from the middle** of the tied range, at
-an offset that follows no simple rule (n=12,k=5 → 6; n=312,k=35 → 196; n=312,k=70 → 157;
-n=1248,k=188 → 664; n=2000,k=188 → 1251). That is the signature of a quickselect partition,
-not of a documented ordering guarantee. It is stable within this build:
+> ⚠ The first version of this entry said "a contiguous block from the middle", with spans of
+> `196..230` and `664..851`. Both wrong: the sets have holes, and those endpoints were
+> `start + k` inferred from a script that printed only the first eight indices, not read off
+> the data. Caught in review of the PR — which is a pointed failure, since the whole finding
+> is that #170 recorded a `topk` claim it had not checked. The probe now prints `gaps` and
+> `contiguous` precisely so a span alone can never be mistaken for a set again.
 
-```
-repeat determinism (20 runs, same process): STABLE
-threads=1 / 2 / 4: starts at 664 in every case
-```
-
-So it is deterministic *here*, but it is an artifact of one CPU kernel's pivot choices, not
-a property of `topk`. The obvious suspicion is that #170's `[0..4]` came off a different
-torch build — that work was done on the Apple Silicon machine, which has a different CPU
-kernel. If so, the tie order is **platform-dependent**, and "match NeMo's tie-breaking" is
-not a well-posed target: there is no single answer to match. Unverified from here; it needs
-one command on the Mac (below).
+The obvious suspicion is that #170's `[0..4]` came off a different torch build — that work
+was done on the Apple Silicon machine, which has a different CPU kernel. If so, the tie order
+is **platform-dependent**, and "match NeMo's tie-breaking" is not a well-posed target: there
+is no single answer to match. Unverified from here; it needs one command on the Mac (below).
 
 Implication for the ports: the lowest-index rule in `Sortformer.cs`, in
 `benchmark_sortformer_rtf.py` and in the three comments citing #170 is **not** "what
@@ -174,9 +168,16 @@ does, and only when more than one entry sits at the cut value.
 | 0% | 0.0 | 0.0 |
 | 5% | 0.0 | 0.0 |
 | 20% | 0.0 | 0.0 |
-| 50% | 84.8 | 0.0 |
-| 85% | 257.6 | 122.4 |
-| 100% | 350.5 | 126.1 |
+| 50% | 77.2 | 0.0 |
+| 85% | 218.8 | 122.4 |
+| 100% | 327.4 | 126.1 |
+
+> ⚠ The boost column first read 84.8 / 257.6 / 350.5, because both boost passes were scored
+> against `boost_latest`. The weak pass does not see that matrix — it top-k's the
+> *strong-boosted* scores, where 33 entries per speaker have already moved up by 2·log 2,
+> which shifts the weak cut and its tie multiplicity. Caught in review; the numbers above are
+> the corrected ones. The zero rows are unaffected either way — there are no exact ties at
+> all below 50% — so the safety argument this run exists to make never depended on it.
 
 **The tie rule cannot fire below ~20% saturated frames.** Ties need bit-identical scores,
 which need bit-identical preds, which need saturation. So a change to the tie rule is
@@ -224,7 +225,38 @@ one real finding worth acting on was the *port's own* speaker-slot bias (Run 3),
 
 ## Review pass — 2026-09-09
 
-Self-review of the change turned up four things, all fixed:
+A `/code-review high` pass over the branch found no functional defect in `Sortformer.cs` —
+it read `SelectCacheFrames` as a faithful hoist with only the tie comparator changed — but
+it found that **the evidence this work ships was itself partly unverified**, which for this
+particular change is the worst place to be wrong. Eight findings, all fixed:
+
+* **The replacement `torch.topk` claim was as unchecked as #170's.** "A contiguous block
+  from the middle", spans `196..230` and `664..851`. The sets have holes, and those
+  endpoints were `start + k` inferred rather than read. Corrected in Run 1 above, in three
+  comments, and in the probe, which now prints `gaps` and `contiguous`.
+* **`--probe-topk-ties` could not detect the property it exists to establish**: it printed
+  only `first..last`, which is identical for a contiguous block and for the scattered set
+  torch returns — which is exactly how the wrong claim survived. That is the command the
+  Mac is told to run to close #171, so it now prints length, gaps, a contiguous flag, a
+  partial-tie case and the thread sweep.
+* **The weak-boost tie count used the wrong matrix** (Run 4, corrected above).
+* **Run 1's transcript was not the shipped tool's output** — lettered sections and rows the
+  probe never produced. It is now pasted verbatim from the probe.
+* `boundary_tie`'s `(v > cut).sum() >= k` guard was unreachable, since `cut = v[k-1]` on a
+  descending sort means at most `k-1` entries can exceed it. Replaced with the check that
+  was meant: the cut is unambiguous when exactly `k` entries are `>=` it.
+* `SelectCacheFrames` was documented "Pure and deterministic" while sorting the caller's
+  array in place. The one production caller builds it fresh, but this file pools buffers
+  elsewhere, so the remark now says so.
+* **`HighestScoresWin_AndKeptRowsComeBackSpeakerMajor` asserted a tautology**: it recomputed
+  `sIdx * frames + tIdx`, the very key the entries were sorted by, on a fixture with no
+  `-inf` and no pad rows, so no entry could take the `max_index` branch and the assertion
+  could not fail for any implementation. The fixture now starves the cache (160 live entries
+  for 188 rows) so `-inf` picks actually fire — verified by watching the new version fail
+  before the fixture was fixed.
+* `interchangeable` was annotated `-> tuple[int, int]` and returns `(int, bool)`.
+
+The earlier self-review, before that pass, had already turned up four more:
 
 * `gather_outputs` in the new harness was never called and would have thrown if it were —
   it reads `flat_scores`, bound to `None` on the line above. Deleted; `interchangeable`

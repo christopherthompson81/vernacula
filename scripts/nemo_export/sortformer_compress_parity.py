@@ -69,24 +69,47 @@ def parse_args() -> argparse.Namespace:
 def probe_topk_ties() -> int:
     """Does torch.topk keep the lowest indices among ties, as #170 recorded?
 
-    On torch 2.11.0/x86-64 it does not, at any size including #170's own fixture: it
-    returns a contiguous block from the middle of the tied range. Whether that holds on
-    other builds is the open question -- if some build DOES return 0..k-1, the tie order
+    On torch 2.11.0/x86-64 it does not, at any size including #170's own fixture. What it
+    returns instead is a mid-range SUBSET -- mostly-but-not-always contiguous -- so this
+    prints the gap count as well as the span. Reporting only the span is how a wrong
+    "contiguous block" claim got into this repo twice; two different sets can share
+    endpoints, and a span alone cannot tell them apart.
+
+    The open question is whether some build DOES return 0..k-1. If one does, the tie order
     is platform-dependent and 'match NeMo' is not a well-posed target at all.
     """
     import torch
-    print(f"torch {torch.__version__}, {torch.get_num_threads()} threads\n")
-    print(f"  {'case':34} {'k':>5}  {'topk picks':>18}  lowest-index rule?")
+    print(f"torch {torch.__version__}\n")
+    print(f"  {'case':22} {'k':>5} {'span':>16} {'gaps':>6} {'contiguous':>11}  lowest-index?")
     for n, k in ((12, 5), (312, 35), (312, 70), (1248, 188), (2000, 188)):
         idx = sorted(torch.topk(torch.zeros(n), k, sorted=False).indices.tolist())
-        lowest = idx == list(range(k))
+        gaps = sum(1 for a, b in zip(idx, idx[1:]) if b != a + 1)
         span = f"{idx[0]}..{idx[-1]}"
-        print(f"  zeros(n={n:<5})                        {k:>5}  {span:>18}  "
-              f"{'MATCHES' if lowest else 'DIFFERS'}")
+        print(f"  zeros(n={n:<6}){'':7} {k:>5} {span:>16} {gaps:>6} {str(gaps == 0):>11}  "
+              f"{'MATCHES' if idx == list(range(k)) else 'DIFFERS'}")
+
+    # A partial tie, which is the shape that actually occurs: a few distinct scores above a
+    # large tied block. Only the tied part is at the tie rule's mercy.
+    x = torch.zeros(1248)
+    x[:50] = torch.linspace(5, 1, 50)
+    idx = sorted(torch.topk(x, 188, sorted=False).indices.tolist())
+    kept_distinct = sum(1 for i in idx if i < 50)
+    print(f"\n  50 distinct + 1198 tied, k=188: keeps {kept_distinct}/50 of the distinct "
+          f"entries, then {len(idx) - kept_distinct} tied ones spanning {idx[50]}..{idx[-1]}")
+
     x = torch.zeros(1248)
     runs = {tuple(torch.topk(x, 188, sorted=False).indices.tolist()) for _ in range(20)}
     print(f"\n  20 repeats in one process: {'stable' if len(runs) == 1 else 'NOT STABLE'}")
-    print("  If any row says MATCHES, the tie order differs by platform and #171's premise")
+    saved = torch.get_num_threads()
+    starts = []
+    for t in (1, 2, 4):
+        torch.set_num_threads(t)
+        starts.append(sorted(torch.topk(x, 188, sorted=False).indices.tolist())[0])
+    torch.set_num_threads(saved)
+    print(f"  threads 1/2/4 first index: {starts}  "
+          f"{'(thread-independent)' if len(set(starts)) == 1 else '(THREAD-DEPENDENT)'}")
+
+    print("\n  If any row says MATCHES, the tie order differs by platform and #171's premise")
     print("  is unfixable by construction. If all say DIFFERS, this build agrees with the")
     print("  Linux measurement and the ports' rule is arbitrary-but-deterministic, as documented.")
     return 0
@@ -171,7 +194,7 @@ def port_stages(B, preds2d, n_frames, ks):
     return stages, picked
 
 
-def interchangeable(preds2d, picked_a, picked_b, n_frames, sil) -> tuple[int, int]:
+def interchangeable(preds2d, picked_a, picked_b, n_frames, sil) -> tuple[int, bool]:
     """Of the frames the two sides disagree on, how many are INTERCHANGEABLE -- same
     preds row as a frame the other side picked? Saturated frames are identical to each
     other, so swapping them changes which embedding the cache holds but not what the
@@ -219,10 +242,13 @@ def boundary_tie(values, k: int) -> int:
     if k >= len(v):
         return 0
     cut = v[k - 1]
-    if not np.isfinite(cut) or int((v > cut).sum()) >= k:
+    if not np.isfinite(cut):
         return 0
-    n_at_cut = int((v == cut).sum())
-    return n_at_cut if n_at_cut > 1 else 0
+    # The cut is unambiguous when exactly k entries are >= it: every tied entry at the cut
+    # value is inside the kept set, so which of them is "chosen" decides nothing.
+    if int((v >= cut).sum()) == k:
+        return 0
+    return int((v == cut).sum())
 
 
 def report_tie_incidence(mods, B, n_frames: int, seeds: int = 8) -> None:
@@ -233,10 +259,14 @@ def report_tie_incidence(mods, B, n_frames: int, seeds: int = 8) -> None:
         for seed in range(seeds):
             preds = make_fixture(n_frames, B.NUM_SPEAKERS, frac, seed)
             stages, _, _, _, ks = nemo_stages(mods, torch.from_numpy(preds))
-            after = stages["boost_latest"]
+            # Each boost pass top-k's the matrix the PREVIOUS pass produced: strong sees
+            # boost_latest, weak sees the strong-boosted scores. Measuring both against
+            # boost_latest scores the weak cut on a matrix NeMo never top-k's -- the strong
+            # pass has already moved 33 entries per speaker up by 2*log 2, which shifts the
+            # weak cut and its tie multiplicity.
             for spk in range(B.NUM_SPEAKERS):
-                for k in (ks["strong"], ks["weak"]):
-                    boost_hits += boundary_tie(after[:, spk], k)
+                boost_hits += boundary_tie(stages["boost_latest"][:, spk], ks["strong"])
+                boost_hits += boundary_tie(stages["strong_boost"][:, spk], ks["weak"])
             final_hits += boundary_tie(stages["padded"].T.reshape(-1), B.SPEAKER_CACHE_LENGTH)
         print(f"  {frac:>9.0%} {boost_hits / seeds:>22.1f} {final_hits / seeds:>26.1f}")
     print("\n  Zero on both columns means the tie rule cannot change the output at that")

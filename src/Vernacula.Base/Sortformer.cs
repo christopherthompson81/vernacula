@@ -461,13 +461,23 @@ public sealed class SortformerStreamer : IDisposable
 
             // NeMo picks which frames to boost with torch.topk(scores, k, dim=1), and
             // #170 recorded that torch keeps the LOWEST indices among equal values. THAT IS
-            // NOT TRUE. Measured on torch 2.11.0 (x86-64), topk over tied values returns a
-            // contiguous block from the MIDDLE of the range, at an offset with no simple
-            // rule: zeros(12) k=5 -> 6..10, not 0..4; zeros(312) k=35 -> 196..230;
-            // zeros(1248) k=188 -> 664..851. It is stable within a build and independent of
-            // thread count, which is the signature of a quickselect partition rather than a
-            // documented ordering guarantee -- and #170's own fixture does not reproduce, so
-            // the order very likely differs by platform too.
+            // NOT TRUE. Measured on torch 2.11.0 (x86-64) via
+            // `sortformer_compress_parity.py --probe-topk-ties`, topk over tied values
+            // returns a MID-RANGE SUBSET, at an offset with no simple rule and usually with
+            // holes in it:
+            //
+            //     zeros(12)   k=5    -> 6..10        0 gaps   (not 0..4)
+            //     zeros(312)  k=35   -> 196..233     1 gap
+            //     zeros(312)  k=70   -> 157..233     2 gaps
+            //     zeros(1248) k=188  -> 664..935     4 gaps
+            //     zeros(2000) k=188  -> 1251..1499   1 gap
+            //
+            // It is stable across repeats and independent of thread count, which is the
+            // signature of a quickselect partition rather than a documented ordering
+            // guarantee -- and #170's own fixture does not reproduce, so the order very
+            // likely differs by platform too. (An earlier version of this comment called the
+            // result a contiguous block and quoted spans of start+k. It is not contiguous
+            // and those endpoints were inferred rather than read. Quote the probe.)
             //
             // Ties are constant here: float32 sigmoid saturates to exactly 1.0 above ~16.6
             // logits, so confident frames produce bit-identical preds and bit-identical
@@ -493,17 +503,24 @@ public sealed class SortformerStreamer : IDisposable
 
     /// <summary>
     /// Orders the flattened (score, frame, speaker) entries so that the first
-    /// <paramref name="keep"/> are the cache's picks. Pure and deterministic; hoisted out of
-    /// <see cref="CompressCache"/> so the tie behaviour can be tested directly.
+    /// <paramref name="keep"/> are the cache's picks, and returns those picks.
+    /// Deterministic, and hoisted out of <see cref="CompressCache"/> so the tie behaviour
+    /// can be tested directly.
     /// </summary>
+    /// <remarks>
+    /// ⚠ SORTS <paramref name="flat"/> IN PLACE. The production caller builds it fresh and
+    /// never reads it again, but this file pools buffers elsewhere, so a future caller that
+    /// hands over a reused array would find it silently reordered.
+    /// </remarks>
     /// <remarks>
     /// ⚠ TIES CANNOT BE RESOLVED THE WAY NeMo RESOLVES THEM. Sortformer's float32 sigmoid
     /// saturates to exactly 1.0 above ~16.6 logits, so a confidently single-speaker stream
     /// produces bit-identical preds rows and hence bit-identical scores. NeMo's choice among
     /// those is whatever `torch.topk` happens to return, which is a quickselect artifact --
-    /// a contiguous block from the middle of the tied range, at an offset following no rule,
-    /// and not reproducing across torch builds (see the note in <see cref="Boost"/>). There
-    /// is no order to match, so the port picks one that is at least well-behaved.
+    /// a mid-range subset of the tied entries, at an offset following no rule, usually with
+    /// holes in it, and not reproducing across torch builds (see the note in
+    /// <see cref="Boost"/>). There is no order to match, so the port picks one that is at
+    /// least well-behaved.
     ///
     /// It breaks ties FRAME-MAJOR (earliest frame first, speaker only as a final
     /// disambiguator). The obvious alternative -- the speaker-major flattened index, which
@@ -517,7 +534,8 @@ public sealed class SortformerStreamer : IDisposable
     ///
     /// This is inert outside the saturated regime: ties that actually straddle the cut need
     /// bit-identical scores, and none occur below ~20% saturated frames (measured 0 at 0%,
-    /// 5% and 20%), which is why fidelity DER is unaffected. See #171.
+    /// 5% and 20% by `sortformer_compress_parity.py --tie-incidence`), which is why fidelity
+    /// DER is unaffected. See #171.
     /// </remarks>
     internal static (int tIdx, int sIdx, bool disabled, int order)[] SelectCacheFrames(
         (float score, int tIdx, int sIdx)[] flat, int keep, int extT, int realFrames)

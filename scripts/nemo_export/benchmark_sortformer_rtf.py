@@ -241,9 +241,11 @@ class SortformerPipelineBase:
         total_frames = scores.shape[0]
         for spk in range(scores.shape[1]):
             # #170 recorded that torch.topk keeps the LOWEST indices among ties. It does
-            # not -- it returns a mid-range block whose offset follows no rule and does not
-            # reproduce across torch builds. Lowest-t is kept anyway: deterministic,
-            # unbiased over time, and no order would match NeMo. See Sortformer.cs.Boost.
+            # not -- it returns a mid-range SUBSET, usually with holes, whose offset follows
+            # no rule and does not reproduce across torch builds (see
+            # sortformer_compress_parity.py --probe-topk-ties). Lowest-t is kept anyway:
+            # deterministic, unbiased over time, and no order would match NeMo. See
+            # Sortformer.cs.Boost.
             col = scores[:, spk]
             order = sorted(range(len(col)), key=lambda t: (-col[t], t))
             for t_idx in order[: min(n_boost_per_spk, total_frames)]:
