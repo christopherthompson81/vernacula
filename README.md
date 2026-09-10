@@ -64,7 +64,7 @@ A KenLM build pipeline for Parakeet shallow fusion lives in [scripts/kenlm_build
 
 ## Quick start
 
-**Install prerequisites** — [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0) plus FFmpeg. Full setup (including GPU) is in [docs/installation.md](docs/installation.md).
+**Install prerequisites** — [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0). FFmpeg is optional: WAV, MP3, AIFF, Ogg Vorbis and Ogg Opus are decoded in-process, and FFmpeg is only needed for FLAC, M4A/AAC, WMA and video containers — on Windows the desktop app can fetch it for you. Full setup (including GPU) is in [docs/installation.md](docs/installation.md).
 
 **Run the desktop app:**
 
@@ -98,7 +98,7 @@ Full argument reference and more examples in [docs/cli-reference.md](docs/cli-re
 Full documentation lives in [`docs/`](docs/).
 
 **Getting started**
-- [Installation](docs/installation.md) — .NET 10, FFmpeg, GPU prerequisites, Linux installer
+- [Installation](docs/installation.md) — .NET 10, audio formats and FFmpeg, GPU prerequisites, Linux installer
 - [Desktop app](docs/desktop-app.md) — features, screenshots, walkthrough
 - [CLI reference](docs/cli-reference.md) — invocation, arguments, examples
 - [Models](docs/models.md) — required and optional model downloads

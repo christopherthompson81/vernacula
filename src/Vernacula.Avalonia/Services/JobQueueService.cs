@@ -20,6 +20,32 @@ internal sealed class JobQueueService
     private readonly ControlDb       _controlDb;
     private readonly SettingsService _settings;
 
+    /// <summary>Fetches FFmpeg on demand for the formats Vernacula cannot decode itself.</summary>
+    private readonly FfmpegProvisioningService _ffmpeg = new();
+
+    /// <summary>
+    /// Fired on any thread while FFmpeg is being downloaded, so the UI can say why adding a
+    /// file is taking a moment. Subscribers must marshal to the UI thread themselves.
+    /// </summary>
+    public event Action<DownloadProgress>? FfmpegDownloadProgressed;
+
+    /// <summary>
+    /// Fired on any thread once a download ends, however it ended.
+    /// <para>
+    /// ⚠ THE PROGRESS EVENT ALONE LEAVES THE UI LYING. Its last report is "111 / 111 MB",
+    /// and nothing else on the Home screen recomputes that status line, so without this the
+    /// app sits there claiming to be downloading FFmpeg for the rest of the session — and
+    /// says it just as loudly when the download failed.
+    /// </para>
+    /// </summary>
+    public event Action? FfmpegDownloadFinished;
+
+    // ⚠ NOT Progress<T>: it captures and posts to the SynchronizationContext it was built on,
+    // which would make this the one event in this class that arrives on the UI thread. Every
+    // other one fires wherever the work happened and says so; keep that uniform.
+    private IProgress<DownloadProgress> FfmpegDownloadProgress =>
+        new DirectProgress<DownloadProgress>(p => FfmpegDownloadProgressed?.Invoke(p));
+
     /// <summary>One runner per job kind; the queue never branches on kind itself.</summary>
     private readonly Dictionary<JobKind, IJobRunner> _runners;
 
@@ -98,8 +124,34 @@ internal sealed class JobQueueService
     /// files (audio-only, or single-stream video), creates exactly one job.
     /// Returns the list of job IDs that were created.
     /// </summary>
-    public async Task<List<int>> EnqueueFileAsync(string filePath, string title)
+    public async Task<List<int>> EnqueueFileAsync(
+        string filePath, string title, CancellationToken ct = default)
     {
+        // ⚠ THE ONE CHOKE POINT FOR "DOES THIS FILE NEED FFMPEG?". Every file entering the app
+        // passes through here, and it is the last moment at which fetching FFmpeg is a
+        // background task rather than an interruption: the alternative is discovering the gap
+        // partway through a transcription run. Formats Vernacula decodes itself (WAV, MP3,
+        // AIFF, Ogg Vorbis, Ogg Opus) skip it entirely and never touch the network.
+        //
+        // Best-effort by design: if it cannot be fetched, enqueueing still proceeds and the
+        // decode raises the actionable "install FFmpeg or convert the file" error. Failing
+        // here instead would turn a missing optional dependency into a file that cannot even
+        // be added to the queue.
+        if (FfmpegProvisioningService.NeedsFfmpeg(filePath) && !FfmpegProvisioningService.IsInstalled)
+        {
+            try
+            {
+                // The token is plumbed rather than used today: no caller has one to give, but
+                // the download is the one thing here that can run for minutes, so the moment a
+                // cancel button exists it should reach this and not need the signature changed.
+                await _ffmpeg.TryEnsureAsync(FfmpegDownloadProgress, ct);
+            }
+            finally
+            {
+                FfmpegDownloadFinished?.Invoke();
+            }
+        }
+
         if (FFmpegDecoder.VideoExtensions.Contains(Path.GetExtension(filePath)))
         {
             var streams = await Task.Run(() => FFmpegDecoder.ProbeAudioStreams(filePath));
@@ -372,5 +424,11 @@ internal sealed class JobQueueService
             // IsJobActivelyRunning while handling the completion still sees the job as active.
             lock (_lock) _activeCts.Remove(entry.JobId);
         }
+    }
+
+    /// <summary>An <see cref="IProgress{T}"/> that reports on the calling thread.</summary>
+    private sealed class DirectProgress<T>(Action<T> report) : IProgress<T>
+    {
+        public void Report(T value) => report(value);
     }
 }

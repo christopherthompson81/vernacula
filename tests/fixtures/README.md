@@ -1,16 +1,17 @@
 # Test fixtures
 
-## `tone_*.mp3`
+## `tone_*.mp3`, `tone_*.ogg`, `tone_*.opus`, `tone_*.aiff`
 
 ⚠ **These are the only committed binary fixtures, and the reason is the bug they guard.**
 Every other audio case in `tests/Vernacula.Tests/AudioFormatIngestionTests.cs` synthesises its
-fixture with `ffmpeg` at test time and skips when `ffmpeg` is absent. MP3 cannot: the whole
-point of `Mp3Decoder` is that MP3 decodes **without** `ffmpeg` installed, which is exactly the
-machine where a generated fixture could not be built and the test would skip — leaving #176
-(MP3 stopped working on Windows the moment #156 routed it to the `ffmpeg` executable) free to
-come back unnoticed. A committed file is what makes the test run everywhere.
+fixture with `ffmpeg` at test time and skips when `ffmpeg` is absent. These formats cannot: the
+whole point of the in-process decoders is that they work **without** `ffmpeg` installed, which
+is exactly the machine where a generated fixture could not be built and the test would skip —
+leaving #176 (MP3 stopped working on Windows the moment #156 routed it to the `ffmpeg`
+executable) free to come back unnoticed. A committed file is what makes the test run
+everywhere.
 
-A 0.5 s 440 Hz tone, encoded with LAME. Regenerate with:
+All of them are the same 0.5 s 440 Hz tone. Regenerate with:
 
 ```sh
 ffmpeg -v error -y -f lavfi -i sine=frequency=440:sample_rate=44100:duration=0.5 \

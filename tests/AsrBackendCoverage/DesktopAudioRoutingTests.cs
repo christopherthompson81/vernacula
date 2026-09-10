@@ -5,12 +5,14 @@ using Xunit;
 
 // Vernacula.App and Vernacula.Base each declare an AudioUtils, and the point of this file is
 // that they are different classes with different routing. Alias rather than import.
+using Vernacula.App.Services;
 using AppAudioUtils = Vernacula.App.AudioUtils;
+using FFmpegDecoder  = Vernacula.App.FFmpegDecoder;
 
 namespace Vernacula.Tests.AsrBackendCoverage;
 
 /// <summary>
-/// MP3 routing for the desktop app's own <c>ReadAudio</c> (issue #176).
+/// In-process audio routing for the desktop app's own <c>ReadAudio</c> (issue #176 and follow-up).
 ///
 /// <para>
 /// ⚠ THE DESKTOP APP HAS A SECOND ReadAudio, AND THAT IS THE WHOLE REASON THIS FILE EXISTS.
@@ -40,7 +42,7 @@ public class DesktopAudioRoutingTests
         return path;
     }
 
-    // 44.1/48 kHz are MPEG-1, 16 kHz is MPEG-2 LSF, 8 kHz is MPEG-2.5 — different decode
+    // MP3: 44.1/48 kHz are MPEG-1, 16 kHz is MPEG-2 LSF, 8 kHz is MPEG-2.5 — different decode
     // paths, and the low-rate ones are where a bad decoder loses half the audio silently.
     // See the note in tests/Vernacula.Tests/AudioFormatIngestionTests.cs.
     [Theory]
@@ -62,6 +64,106 @@ public class DesktopAudioRoutingTests
 
         // Half a second of a 440 Hz tone: enough samples for the duration to be right, and
         // loud enough that a decoder returning a correctly-sized buffer of nothing fails.
+        AssertHalfSecondTone(samples, sampleRate, channels);
+    }
+
+    /// <summary>
+    /// The formats the managed table owns all have to reach it through the app's ReadAudio,
+    /// not just MP3 — Ogg Opus is what a WhatsApp voice note arrives as, and AIFF needs no
+    /// decoder the app did not already have.
+    /// </summary>
+    [Theory]
+    [InlineData("tone_mono_44100.ogg", 44100, 1)]     // Ogg Vorbis
+    [InlineData("tone_stereo_48000.opus", 48000, 2)]  // Ogg Opus, always 48 kHz
+    [InlineData("tone_opus_in_ogg.ogg", 48000, 1)]    // Opus under a .ogg extension
+    public void Ogg_DecodesInProcessWithNativeLayout(string fixture, int expectedRate, int expectedChannels)
+    {
+        int before = OggDecoder.DecodeInvocations;
+
+        var (samples, sampleRate, channels) = AppAudioUtils.ReadAudio(Fixture(fixture));
+
+        Assert.True(OggDecoder.DecodeInvocations > before,
+            "the desktop ReadAudio should decode Ogg through the in-process decoder");
+        Assert.Equal(expectedRate, sampleRate);
+        Assert.Equal(expectedChannels, channels);
+        AssertHalfSecondTone(samples, sampleRate, channels);
+    }
+
+    /// <summary>AIFF is read by NAudio.Core, which the app has always had.</summary>
+    [Fact]
+    public void Aiff_DecodesInProcess()
+    {
+        var (samples, sampleRate, channels) = AppAudioUtils.ReadAudio(Fixture("tone_mono_8000.aiff"));
+
+        Assert.Equal(8000, sampleRate);
+        Assert.Equal(1, channels);
+        AssertHalfSecondTone(samples, sampleRate, channels);
+    }
+
+    /// <summary>
+    /// ⚠ THE TWO ROUTING LISTS MUST NOT OVERLAP, AND THIS IS THE GUARD. #176 was two lists
+    /// that disagreed about MP3. An extension named in both the managed table and the app's
+    /// FFmpeg-only set is that same bug in miniature: whichever check runs first silently
+    /// wins, and the loser is dead configuration that reads as intent.
+    /// </summary>
+    [Fact]
+    public void FfmpegOnlyExtensions_DoNotOverlapTheManagedTable()
+    {
+        foreach (string ext in FFmpegDecoder.FfmpegAudioExtensions)
+            Assert.False(ManagedAudioDecoders.Handles(ext),
+                $"{ext} is claimed both by the managed decoder table and by the app's "
+                + "FFmpeg-only list; exactly one of them should own it");
+
+        foreach (string ext in FFmpegDecoder.VideoExtensions)
+            Assert.False(ManagedAudioDecoders.Handles(ext),
+                $"{ext} is a video container and cannot be decoded in-process, but the "
+                + "managed table claims it");
+    }
+
+    /// <summary>
+    /// What justifies downloading 111 MB of FFmpeg.
+    /// <para>
+    /// ⚠ THE "All files" FILTER IS WHY THIS IS A LIST AND NOT A NEGATION. The picker lets a
+    /// user select anything, so defining "needs FFmpeg" as "not in the managed table" made a
+    /// mistyped .txt start the download. It has to name formats FFmpeg can actually help with.
+    /// </para>
+    /// </summary>
+    [Theory]
+    [InlineData("recording.m4a", true)]
+    [InlineData("archive.flac", true)]
+    [InlineData("meeting.mp4", true)]
+    [InlineData("clip.mkv", true)]
+    [InlineData("memo.mp3", false)]
+    [InlineData("memo.wav", false)]
+    [InlineData("note.opus", false)]
+    [InlineData("tone.aiff", false)]
+    [InlineData("notes.txt", false)]
+    [InlineData("scan.pdf", false)]
+    [InlineData("no-extension", false)]
+    public void NeedsFfmpeg_OnlyForMediaWeCannotDecodeOurselves(string fileName, bool expected)
+    {
+        Assert.Equal(expected, FfmpegProvisioningService.NeedsFfmpeg(fileName));
+    }
+
+    /// <summary>
+    /// Nothing the managed table owns may ever ask for a download — that would be a 111 MB
+    /// fetch for a file we can already read.
+    /// </summary>
+    [Theory]
+    [InlineData(".wav")]
+    [InlineData(".mp3")]
+    [InlineData(".aiff")]
+    [InlineData(".aif")]
+    [InlineData(".ogg")]
+    [InlineData(".oga")]
+    [InlineData(".opus")]
+    public void ManagedFormats_NeverTriggerADownload(string extension)
+    {
+        Assert.False(FfmpegProvisioningService.NeedsFfmpeg("recording" + extension));
+    }
+
+    private static void AssertHalfSecondTone(float[] samples, int sampleRate, int channels)
+    {
         double seconds = (double)(samples.Length / channels) / sampleRate;
         Assert.InRange(seconds, 0.4, 0.75);
 

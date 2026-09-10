@@ -368,6 +368,23 @@ internal partial class MainViewModel : ObservableObject
 
         // ── Queue event wiring ────────────────────────────────────────────────
 
+        // Adding an M4A or a video on a machine with no FFmpeg fetches one first, which takes
+        // long enough that silence reads as a hang. The Home status line already carries
+        // "models are downloading" messages, so this goes there rather than inventing a
+        // second place for the same kind of news.
+        queue.FfmpegDownloadProgressed += p =>
+        {
+            string text = p.TotalBytes > 0
+                ? $"Downloading FFmpeg for this audio format… {p.BytesDownloaded / 1_000_000} / {p.TotalBytes / 1_000_000} MB"
+                : "Downloading FFmpeg for this audio format…";
+            Dispatcher.UIThread.Post(() => Home.ModelStatusText = text);
+        };
+
+        // Put the line back to whatever it should say, rather than leaving it stuck on the
+        // last byte count. CheckModelsAsync recomputes it from scratch.
+        queue.FfmpegDownloadFinished += () =>
+            Dispatcher.UIThread.Post(async () => await Home.CheckModelsAsync());
+
         queue.JobStatusChanged += (jobId, status, error, runTimeSecs) =>
         {
             Console.WriteLine($"[MainVM] JobStatusChanged event: jobId={jobId} status={status}");

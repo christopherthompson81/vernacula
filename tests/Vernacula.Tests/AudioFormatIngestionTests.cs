@@ -9,18 +9,19 @@ namespace Vernacula.Tests;
 ///
 /// The regression these lock down: NAudio 3's cross-platform build decodes only
 /// PCM/IEEE-float WAV, so everything else — MP3, FLAC, M4A, non-PCM WAV — threw
-/// NotSupportedException out of the CLI surface on every platform. Reading those
-/// now goes through FFmpeg, except MP3, which goes through NLayer in-process.
+/// NotSupportedException out of the CLI surface on every platform. WAV, MP3, AIFF,
+/// Ogg Vorbis and Ogg Opus are decoded in-process now; the rest goes through FFmpeg.
 ///
-/// Fixtures are synthesised with ffmpeg rather than committed, so there is no
-/// binary test data in the repo and every case is generated from the same
-/// known-good source tone. Skips when ffmpeg is absent, as on a hosted runner.
+/// Fixtures for the FFmpeg formats are synthesised with ffmpeg rather than committed,
+/// so every case is generated from the same known-good source tone. Those skip when
+/// ffmpeg is absent, as on a hosted runner.
 ///
-/// ⚠ MP3 IS THE ONE EXCEPTION, AND IT HAS TO BE. #176 is "MP3 stopped working on
-/// Windows", and the machine it broke on is precisely the machine with no ffmpeg —
-/// where a synthesised fixture cannot be built and a skipping test proves nothing.
-/// Those cases read committed fixtures from tests/fixtures/ instead, and assert that
-/// the decode never reached the subprocess. See tests/fixtures/README.md.
+/// ⚠ THE IN-PROCESS FORMATS USE COMMITTED FIXTURES, AND THEY HAVE TO. What those cases
+/// assert is "decodes with no ffmpeg installed", and the machine that is true on is
+/// precisely the machine where a synthesised fixture cannot be built — a skipping test
+/// there proves nothing, which is how #176 shipped. They read from tests/fixtures/
+/// instead, and assert the decode never reached the subprocess. See
+/// tests/fixtures/README.md.
 ///
 /// ⚠ EVERY AUDIO DECODE IN THIS ASSEMBLY LIVES IN THIS ONE CLASS, DELIBERATELY. The
 /// routing assertions watch process-wide decode counters, so a second test class
@@ -43,14 +44,19 @@ public class AudioFormatIngestionTests : IDisposable
     private static void RequireFfmpeg()
     {
         if (!FfmpegAudioDecoder.IsAvailable)
-            Assert.Skip("ffmpeg/ffprobe not on PATH.");
+            Assert.Skip("ffmpeg not found on PATH or in the managed directory.");
     }
 
     /// <summary>Synthesise a 440 Hz tone in the requested container/codec.</summary>
     private string MakeFixture(string fileName, params string[] extraArgs)
     {
         string path = Path.Combine(_dir, fileName);
-        var psi = new ProcessStartInfo("ffmpeg")
+        // ⚠ RESOLVE IT THE WAY THE CODE UNDER TEST DOES. RequireFfmpeg above asks
+        // FfmpegAudioDecoder, which since #176's follow-up also finds a copy the desktop app
+        // downloaded into the managed directory. A bare "ffmpeg" here would disagree with
+        // that gate on exactly those machines: the skip would not fire and every fixture
+        // build would throw Win32Exception instead.
+        var psi = new ProcessStartInfo(FfmpegBinaries.ResolveExecutable("ffmpeg"))
         {
             RedirectStandardOutput = true,
             RedirectStandardError = true,
@@ -238,29 +244,38 @@ public class AudioFormatIngestionTests : IDisposable
     }
 
     /// <summary>
-    /// Run <paramref name="read"/> and assert MP3 took the managed decoder, not ffmpeg.
+    /// Run <paramref name="read"/> and assert it took an in-process decoder, not ffmpeg.
     /// <para>
-    /// ⚠ BOTH COUNTERS, NOT JUST ONE. "ffmpeg wasn't called" would also hold if ReadAudio
-    /// threw before reaching it, and "NLayer was called" would hold if ReadAudio then fell
+    /// ⚠ TWO COUNTERS, NOT ONE. "ffmpeg wasn't called" would also hold if ReadAudio threw
+    /// before reaching it, and "the managed decoder ran" would hold if ReadAudio then fell
     /// through to ffmpeg anyway. #176 is the second shape: MP3 decoded fine, through the
-    /// wrong route, on a machine that happened to have ffmpeg installed.
+    /// wrong route, on a machine that happened to have ffmpeg installed — which is every CI
+    /// runner, so the weaker assertion would have stayed green through the whole regression.
     /// </para>
     /// </summary>
     private static (float[] samples, int sampleRate, int channels)
-        ReadAssertingManagedMp3(Func<(float[], int, int)> read)
+        ReadAssertingManaged(Func<(float[], int, int)> read, Func<int> managedCounter)
     {
-        int ffmpegBefore = FfmpegAudioDecoder.DecodeInvocations;
-        int nlayerBefore = Mp3Decoder.DecodeInvocations;
+        int ffmpegBefore  = FfmpegAudioDecoder.DecodeInvocations;
+        int managedBefore = managedCounter();
 
         var got = read();
 
         Assert.True(FfmpegAudioDecoder.DecodeInvocations == ffmpegBefore,
-            $"MP3 must not need ffmpeg, but it was invoked "
+            $"this format must not need ffmpeg, but it was invoked "
             + $"{FfmpegAudioDecoder.DecodeInvocations - ffmpegBefore} time(s)");
-        Assert.True(Mp3Decoder.DecodeInvocations == nlayerBefore + 1,
-            "MP3 should have gone through the in-process NLayer decoder exactly once");
+        Assert.True(managedCounter() == managedBefore + 1,
+            "the file should have gone through its in-process decoder exactly once");
         return got;
     }
+
+    private static (float[] samples, int sampleRate, int channels)
+        ReadAssertingManagedMp3(Func<(float[], int, int)> read) =>
+        ReadAssertingManaged(read, () => Mp3Decoder.DecodeInvocations);
+
+    private static (float[] samples, int sampleRate, int channels)
+        ReadAssertingManagedOgg(Func<(float[], int, int)> read) =>
+        ReadAssertingManaged(read, () => OggDecoder.DecodeInvocations);
 
     /// <summary>
     /// Goertzel magnitude at <paramref name="hz"/>. Used to check the decoder produced the
@@ -428,6 +443,125 @@ public class AudioFormatIngestionTests : IDisposable
             () => AudioUtils.ReadAudio(Path.Combine(_dir, "nope.mp3")));
 
         Assert.Equal(before, FfmpegAudioDecoder.DecodeInvocations);
+    }
+
+    // ── The rest of what Vernacula decodes without ffmpeg ──
+
+    /// <summary>
+    /// ⚠ AIFF NEEDED NO NEW DEPENDENCY AND STILL DID NOT WORK. NAudio.Core has always carried
+    /// AiffFileReader, on every platform; ReadAudio simply never routed to it, so an
+    /// uncompressed AIFF — a file format that is a header and raw PCM — was being handed to a
+    /// subprocess, and failed outright when that subprocess was not installed.
+    /// </summary>
+    [Fact]
+    public void Aiff_ReadsWithoutFfmpeg()
+    {
+        int before = FfmpegAudioDecoder.DecodeInvocations;
+        var got = AudioUtils.ReadAudio(Fixture("tone_mono_8000.aiff"));
+
+        Assert.Equal(before, FfmpegAudioDecoder.DecodeInvocations);
+        Assert.Equal(8000, got.sampleRate);
+        Assert.Equal(1, got.channels);
+        AssertDecodedTone(got);
+        AssertIs440HzTone(got);
+    }
+
+    /// <summary>Ogg Vorbis, decoded by NVorbis in-process.</summary>
+    [Fact]
+    public void OggVorbis_ReadsWithoutFfmpeg()
+    {
+        var got = ReadAssertingManagedOgg(() => AudioUtils.ReadAudio(Fixture("tone_mono_44100.ogg")));
+
+        Assert.Equal(44100, got.sampleRate);
+        Assert.Equal(1, got.channels);
+        AssertDecodedTone(got);
+        AssertIs440HzTone(got);
+    }
+
+    /// <summary>
+    /// Ogg Opus, decoded by Concentus in-process. Opus only ever decodes at 48 kHz, so that
+    /// is what must be reported — the decoder's rate, not the source's, which is the same
+    /// contract Opus_ReportsTheDecoderSampleRateNotTheSourceRate pins for the ffmpeg path.
+    /// </summary>
+    [Fact]
+    public void OggOpus_ReadsWithoutFfmpegAt48kHz()
+    {
+        var got = ReadAssertingManagedOgg(() => AudioUtils.ReadAudio(Fixture("tone_stereo_48000.opus")));
+
+        Assert.Equal(48000, got.sampleRate);
+        Assert.Equal(2, got.channels);
+        AssertDecodedTone(got, expectedChannels: 2);
+        AssertIs440HzTone(got);
+    }
+
+    /// <summary>
+    /// ⚠ .ogg IS A CONTAINER, NOT A CODEC, AND THIS IS THE CASE THAT PROVES IT MATTERS.
+    /// Messaging apps hand out Opus under a .ogg extension constantly. A decoder chosen from
+    /// the extension would give this file to Vorbis, which would reject it — so the fixture
+    /// here is Opus wearing the wrong name, and it has to come back as 48 kHz Opus.
+    /// </summary>
+    [Fact]
+    public void OpusInsideAnOggExtension_IsSniffedNotAssumed()
+    {
+        var got = ReadAssertingManagedOgg(() => AudioUtils.ReadAudio(Fixture("tone_opus_in_ogg.ogg")));
+
+        Assert.Equal(48000, got.sampleRate);   // Vorbis would have reported the source rate
+        Assert.Equal(1, got.channels);
+        AssertDecodedTone(got);
+        AssertIs440HzTone(got);
+    }
+
+    /// <summary>
+    /// The list docs/installation.md promises works on a machine with no FFmpeg at all. If an
+    /// entry drops out of the managed table, the docs become wrong and this fails.
+    /// </summary>
+    [Theory]
+    [InlineData(".wav")]
+    [InlineData(".mp3")]
+    [InlineData(".aiff")]
+    [InlineData(".aif")]
+    [InlineData(".ogg")]
+    [InlineData(".oga")]
+    [InlineData(".opus")]
+    public void ManagedTable_ClaimsTheFormatsTheDocsPromise(string extension)
+    {
+        Assert.True(ManagedAudioDecoders.Handles(extension),
+            $"{extension} is documented as decoding without FFmpeg, but no in-process decoder claims it");
+    }
+
+    /// <summary>And it must not claim the ones it cannot actually read.</summary>
+    [Theory]
+    [InlineData(".flac")]
+    [InlineData(".m4a")]
+    [InlineData(".aac")]
+    [InlineData(".wma")]
+    [InlineData(".mp4")]
+    [InlineData(".mkv")]
+    public void ManagedTable_DoesNotClaimFormatsThatNeedFfmpeg(string extension)
+    {
+        Assert.False(ManagedAudioDecoders.Handles(extension),
+            $"{extension} has no in-process decoder, so claiming it would route the file to a "
+            + "decoder that cannot read it instead of to FFmpeg");
+    }
+
+    /// <summary>
+    /// An .ogg carrying something that is neither Vorbis nor Opus — FLAC-in-Ogg, Speex — has
+    /// to reach ffmpeg rather than failing outright. FLAC-in-Ogg is the fixture because it is
+    /// lossless, so the tone assertions stay exact; Speex overshoots [-1, 1] slightly, which
+    /// would mean loosening a bound that is doing real work elsewhere.
+    /// </summary>
+    [Fact]
+    public void OggWithAnUnsupportedCodec_FallsBackToFfmpeg()
+    {
+        RequireFfmpeg();
+        string path = MakeFixture("flac_in.ogg", "-c:a", "flac");
+
+        int before = FfmpegAudioDecoder.DecodeInvocations;
+        var got = AudioUtils.ReadAudio(path);
+
+        Assert.True(FfmpegAudioDecoder.DecodeInvocations > before,
+            "an Ogg stream with no in-process decoder should have fallen through to ffmpeg");
+        AssertDecodedTone(got);
     }
 
     // ── Failure modes should say something useful ──

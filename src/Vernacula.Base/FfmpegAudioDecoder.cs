@@ -11,9 +11,10 @@ namespace Vernacula.Base;
 /// ⚠ SUBPROCESS, NOT A LIBRARY BINDING, DELIBERATELY. <c>Vernacula.Avalonia</c>
 /// uses FFmpeg.AutoGen in-process, but <c>Vernacula.Base</c> is referenced by
 /// every CLI and test project; a native package reference here would land in
-/// all of them. The <c>ffmpeg</c> EXECUTABLE has to be on PATH — which is a
-/// different requirement from the FFmpeg shared libraries AutoGen needs, and
-/// docs/installation.md now asks for both. See issue #156.
+/// all of them. The <c>ffmpeg</c> EXECUTABLE has to be resolvable through
+/// <see cref="FfmpegBinaries"/> — PATH, or a copy the desktop app downloaded —
+/// which is a different requirement from the FFmpeg shared libraries AutoGen
+/// needs, and docs/installation.md asks for both. See issues #156 and #176.
 /// </para>
 /// <para>
 /// ⚠ METADATA COMES FROM THE WAV HEADER FFMPEG EMITS, NOT FROM <c>ffprobe</c>.
@@ -35,38 +36,11 @@ public static class FfmpegAudioDecoder
     /// <summary>Number of decodes performed. Test seam for asserting routing.</summary>
     internal static int DecodeInvocations;
 
-    /// <summary>True when <c>ffmpeg</c> can be launched.</summary>
-    /// <remarks>
-    /// Not cached: one process spawn, and callers use this for test gating and
-    /// error messages rather than in a loop.
-    /// </remarks>
-    public static bool IsAvailable
-    {
-        get
-        {
-            try
-            {
-                using var probe = Process.Start(new ProcessStartInfo("ffmpeg", "-version")
-                {
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true,
-                    UseShellExecute = false,
-                    CreateNoWindow = true,
-                });
-                if (probe is null) return false;
-                probe.StandardOutput.ReadToEnd();
-                probe.StandardError.ReadToEnd();
-                probe.WaitForExit();
-                return probe.ExitCode == 0;
-            }
-            catch
-            {
-                // Win32Exception (not on PATH) and anything else the platform throws
-                // while spawning both mean the same thing here: no usable ffmpeg.
-                return false;
-            }
-        }
-    }
+    /// <summary>
+    /// True when <c>ffmpeg</c> can be launched — from PATH, or from a copy the desktop app
+    /// downloaded. See <see cref="FfmpegBinaries"/>.
+    /// </summary>
+    public static bool IsAvailable => FfmpegBinaries.IsAvailable("ffmpeg");
 
     /// <summary>
     /// Decode <paramref name="path"/> to interleaved float samples in [-1, 1],
@@ -87,7 +61,7 @@ public static class FfmpegAudioDecoder
         // decoder actually produced, and the payload is plain float32 after it.
         // On a pipe ffmpeg cannot backfill the RIFF/data sizes, so those fields are
         // placeholders -- we read the payload to EOF and ignore them.
-        var psi = new ProcessStartInfo("ffmpeg")
+        var psi = new ProcessStartInfo(FfmpegBinaries.ResolveExecutable("ffmpeg"))
         {
             RedirectStandardOutput = true,
             RedirectStandardError = true,
@@ -110,11 +84,7 @@ public static class FfmpegAudioDecoder
         }
         catch (Exception ex) when (ex is not InvalidOperationException)
         {
-            throw new InvalidOperationException(
-                $"Could not run 'ffmpeg', needed to decode '{Path.GetFileName(path)}'. "
-                + "Vernacula decodes everything except PCM/IEEE-float WAV by running the ffmpeg "
-                + "executable, which must be on PATH (see the prerequisites in docs/installation.md). "
-                + "Alternatively, convert the file to PCM WAV.", ex);
+            throw new InvalidOperationException(FfmpegBinaries.MissingBinaryMessage("ffmpeg", path), ex);
         }
 
         using (proc)

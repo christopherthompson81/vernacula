@@ -25,7 +25,7 @@
   <!-- Shared with tests/Vernacula.Tests: the desktop app has its own ReadAudio, so the MP3
        routing has to be pinned on both. See tests/fixtures/README.md. -->
   <ItemGroup>
-    <None Include="..\fixtures\*.mp3"
+    <None Include="..\fixtures\tone_*.*"
           Link="fixtures\%(Filename)%(Extension)"
           CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>

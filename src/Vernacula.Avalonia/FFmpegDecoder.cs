@@ -3,6 +3,7 @@ using System.Runtime.InteropServices;
 using System.Text.Json;
 using FFmpeg.AutoGen;
 using Vernacula.App.Models;
+using Vernacula.Base;
 
 namespace Vernacula.App;
 
@@ -23,11 +24,20 @@ internal static unsafe class FFmpegDecoder
             ".ts",  ".mts", ".m2ts", ".3gp",
         };
 
-    /// <summary>Audio-only extensions that NAudio cannot handle reliably.</summary>
+    /// <summary>
+    /// Audio-only extensions that need FFmpeg on every platform.
+    /// <para>
+    /// ⚠ .ogg, .opus AND .aiff USED TO BE HERE AND MUST NOT COME BACK. They are decoded
+    /// in-process now (NVorbis, Concentus, and NAudio.Core's own AIFF reader), and
+    /// <see cref="Vernacula.Base.ManagedAudioDecoders"/> is consulted before this set. An
+    /// entry here for a format that table owns is dead config at best, and at worst it is
+    /// the two-lists-that-disagree problem that produced #176.
+    /// </para>
+    /// </summary>
     public static readonly HashSet<string> FfmpegAudioExtensions =
         new(StringComparer.OrdinalIgnoreCase)
         {
-            ".opus", ".wma", ".aiff", ".ogg",
+            ".wma",
         };
 
     // ── Initialisation ────────────────────────────────────────────────────────
@@ -171,6 +181,29 @@ internal static unsafe class FFmpegDecoder
     /// </summary>
     public static List<AudioStreamInfo> ProbeAudioStreams(string filePath)
     {
+        try
+        {
+            return ProbeAudioStreamsAutoGen(filePath);
+        }
+        catch (NotSupportedException)
+        {
+            // ⚠ THE SAME FALLBACK DecodeStream HAS, AND ITS ABSENCE HERE WAS A BUG. With no
+            // FFmpeg shared libraries present, AutoGen leaves its stubs unbound and every
+            // call throws NotSupportedException. DecodeStream has always caught that and
+            // shelled out; this did not, so adding a video file threw out of
+            // JobQueueService.EnqueueFileAsync before anything was decoded — silently
+            // swallowed on the single-file path, unhandled on the bulk one. The file simply
+            // never appeared in the queue.
+            //
+            // Worth knowing: FFmpeg.AutoGen binds a fixed soname (avformat-60, i.e. FFmpeg
+            // 6.x), and current FFmpeg releases ship 61/62/63. So on an up-to-date system
+            // install this is not an edge case — it is the normal path.
+            return ProbeAudioStreamsViaCli(filePath);
+        }
+    }
+
+    private static List<AudioStreamInfo> ProbeAudioStreamsAutoGen(string filePath)
+    {
         var result = new List<AudioStreamInfo>();
         AVFormatContext* fmtCtx = null;
 
@@ -306,11 +339,12 @@ internal static unsafe class FFmpegDecoder
         }
 
         string mapSpecifier = $"0:{stream.StreamIndex}";
-        var psi = new ProcessStartInfo("ffmpeg")
+        var psi = new ProcessStartInfo(FfmpegBinaries.ResolveExecutable("ffmpeg"))
         {
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             UseShellExecute = false,
+            CreateNoWindow = true,
         };
         psi.ArgumentList.Add("-v");
         psi.ArgumentList.Add("error");
@@ -324,8 +358,7 @@ internal static unsafe class FFmpegDecoder
         psi.ArgumentList.Add("pcm_f32le");
         psi.ArgumentList.Add("-");
 
-        using var process = Process.Start(psi)
-            ?? throw new InvalidOperationException("Failed to start ffmpeg process.");
+        using var process = Start(psi, "ffmpeg", filePath);
 
         using var ms = new MemoryStream();
         process.StandardOutput.BaseStream.CopyTo(ms);
@@ -345,13 +378,39 @@ internal static unsafe class FFmpegDecoder
         return (samples, stream.SampleRate, stream.Channels);
     }
 
+    /// <summary>
+    /// Launch an FFmpeg tool, turning "it isn't installed" into a sentence the user can act on.
+    /// <para>
+    /// ⚠ Process.Start THROWS Win32Exception WHEN THE BINARY IS ABSENT — it does not return
+    /// null — so the old `?? throw` guarded the case that never happens and let the case that
+    /// does happen escape raw. What reached the UI was "An error occurred trying to start
+    /// process 'ffprobe' ... The system cannot find the file specified", which names neither
+    /// the file being opened nor anything the user could install.
+    /// </para>
+    /// </summary>
+    private static Process Start(ProcessStartInfo psi, string toolName, string filePath)
+    {
+        try
+        {
+            return Process.Start(psi)
+                   ?? throw new InvalidOperationException($"Process.Start returned null for {toolName}.");
+        }
+        catch (Exception ex) when (ex is not InvalidOperationException)
+        {
+            throw new InvalidOperationException(FfmpegBinaries.MissingBinaryMessage(toolName, filePath), ex);
+        }
+    }
+
     private static List<AudioStreamInfo> ProbeAudioStreamsViaCli(string filePath)
     {
-        var psi = new ProcessStartInfo("ffprobe")
+        var psi = new ProcessStartInfo(FfmpegBinaries.ResolveExecutable("ffprobe"))
         {
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             UseShellExecute = false,
+            // Without this a GUI app flashes a console window every time it probes a video —
+            // which, since AutoGen's soname rarely matches an installed FFmpeg, is the usual path.
+            CreateNoWindow = true,
         };
         psi.ArgumentList.Add("-v");
         psi.ArgumentList.Add("error");
@@ -362,8 +421,7 @@ internal static unsafe class FFmpegDecoder
         psi.ArgumentList.Add("json");
         psi.ArgumentList.Add(filePath);
 
-        using var process = Process.Start(psi)
-            ?? throw new InvalidOperationException("Failed to start ffprobe process.");
+        using var process = Start(psi, "ffprobe", filePath);
 
         string stdout = process.StandardOutput.ReadToEnd();
         string stderr = process.StandardError.ReadToEnd();
