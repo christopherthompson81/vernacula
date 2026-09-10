@@ -16,6 +16,9 @@ It now covers both models in your pipeline:
 - `benchmark_sortformer_rtf.py`: benchmarks Sortformer NeMo-vs-ONNX diarization RTF on CPU or CUDA.
 - `coreml_partition_probe.py`: reports what an execution provider does with a static Sortformer graph — partition count, load and inference time, parity against the dynamic graph. This is the measurement that decides whether a CoreML variant is worth shipping, and it has to run on Apple Silicon.
 - `compare_sortformer_chunk_outputs.py`: compares two Sortformer backends chunk-by-chunk to locate streaming parity drift.
+- `sortformer_fidelity_der.py`: scores the ported streaming loop against NeMo's own
+  `forward_streaming` as DER, with optimal speaker mapping and a collar. Catches drift in
+  the port that per-frame comparisons miss; `--max-der` makes it a gate.
 - `tune_nemo128_export.py`: runs multiple preprocessor export candidates and scores them against a legacy reference — use this if the default export mode needs tuning.
 - `setup_nemo_export_env.py`: creates the Python export venv.
 - `requirements.txt`: export dependencies.
@@ -349,6 +352,42 @@ Notes:
   pipeline RTF against the original audio duration.
 - `--ort-profile profile.json` saves an ONNX Runtime profile for the ONNX path.
 - `--ort-provider tensorrt` tries TensorRT first and falls back to CUDA if engine build fails.
+
+## Sortformer Fidelity DER
+
+Answers "has the streaming port drifted from its reference implementation" -- the question
+that matters continuously for a port. It is **not** an accuracy benchmark: it says nothing
+about whether NeMo itself is right, and 0% is consistent with both sides being wrong
+together. For absolute numbers you need a labelled corpus; NVIDIA evaluates this
+checkpoint on AMI, VoxConverse v0.3 and DIHARD III.
+
+```bash
+python scripts/nemo_export/sortformer_fidelity_der.py \
+  --audio sample_01.wav sample_02.wav \
+  --nemo ~/models/diar_streaming_sortformer_4spk-v2.1.nemo \
+  --onnx ~/models/diar_streaming_sortformer_4spk-v2.1.onnx \
+  --max-der 1.0
+```
+
+Why DER rather than per-frame agreement: it applies pyannote's optimal speaker mapping
+(so a pure relabelling scores 0 instead of looking like total disagreement), applies a
+collar (so a one-frame boundary shift is not an error), and scores the **segments the
+application emits** -- median filter and binarization included.
+
+Two constraints are load-bearing, both learned the hard way in #165 item 9:
+
+* **The reference must be NeMo itself, never `benchmark_sortformer_rtf.py`.** That module
+  is a transcription of the same C# loop, so it shares the port's bugs and they cancel out.
+  A wrong-signed boost in cache compression survived three rounds of measurement that way.
+* **The reference must be rebuilt at Vernacula's schedule.** The checkpoint ships
+  `chunk_len=188 / fifo_len=0 / lc=rc=1` against Vernacula's 124/124/0/0, and mutating a
+  restored model's attributes does not fully reconfigure it -- it makes agreement worse.
+  The script rebuilds `SortformerModules` from the model's cfg and loads the weights in.
+
+Measured after the #165 item 9 fixes, on three 90 s samples: **DER 0.000%**, identical
+segment and speaker counts. Reintroducing just the boost sign gives DER 3.192%
+(confusion 2.370%, speaker-count accuracy 0.33 -- it invents a third speaker), which is
+the negative control confirming the metric discriminates.
 
 ## Sortformer Chunk Comparison
 

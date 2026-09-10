@@ -31,6 +31,8 @@ EMBEDDING_DIMENSION = 512
 NUM_SPEAKERS = 4
 SPEAKER_CACHE_LENGTH = 188
 SPEAKER_CACHE_UPDATE_PERIOD = 124
+SCORES_BOOST_LATEST = 0.05
+SPKCACHE_SIL_FRAMES = 3
 FRAME_DURATION = 0.08
 
 SIL_THRESHOLD = 0.2
@@ -209,11 +211,13 @@ class SortformerPipelineBase:
         clipped_p = np.maximum(preds2d, 0.25)
         clipped_q = np.maximum(1.0 - preds2d, 0.25)
         scores = np.log(clipped_p) - np.log(clipped_q)
-        scores += np.sum(np.log(clipped_q), axis=1, keepdims=True) - math.log(math.sqrt(2.0))
+        # NeMo: ... - math.log(0.5), not log(sqrt(2)). See Sortformer.cs.
+        scores += np.sum(np.log(clipped_q), axis=1, keepdims=True) - math.log(0.5)
 
-        pos_count = np.sum(scores > 0.0, axis=0)
+        # NeMo masks non-speech to -inf BEFORE counting positives.
         mask_neg = preds2d <= 0.5
         scores[mask_neg] = -np.inf
+        pos_count = np.sum(scores > 0.0, axis=0)
         for spk in range(NUM_SPEAKERS):
             if pos_count[spk] >= min_pos_per_spk:
                 mask = (~mask_neg[:, spk]) & (scores[:, spk] <= 0.0)
@@ -222,13 +226,16 @@ class SortformerPipelineBase:
 
     @staticmethod
     def boost(scores: np.ndarray, n_boost_per_spk: int, scale_factor: float) -> None:
-        log_half = 0.5 * math.log(2.0)
+        # NeMo: scores[topk] -= scale_factor * math.log(0.5), i.e. ADD 0.693*scale.
+        # This was `0.5 * log(2)` subtracted -- wrong sign, half the magnitude.
+        # See Sortformer.cs.
+        boost = scale_factor * math.log(0.5)
         total_frames = scores.shape[0]
         for spk in range(scores.shape[1]):
             order = np.argsort(scores[:, spk])[::-1]
             for t_idx in order[: min(n_boost_per_spk, total_frames)]:
                 if not np.isneginf(scores[t_idx, spk]):
-                    scores[t_idx, spk] -= scale_factor * log_half
+                    scores[t_idx, spk] -= boost
 
     def compress_cache(self) -> None:
         if self._spkcache_preds is None:
@@ -236,17 +243,20 @@ class SortformerPipelineBase:
 
         preds2d = self._spkcache_preds[0]
         total_frames = preds2d.shape[0]
-        cache_per_spk = SPEAKER_CACHE_LENGTH // NUM_SPEAKERS - 3
+        cache_per_spk = SPEAKER_CACHE_LENGTH // NUM_SPEAKERS - SPKCACHE_SIL_FRAMES
         strong_boost = int(cache_per_spk * 0.75)
         weak_boost = int(cache_per_spk * 1.5)
         min_pos_per_spk = int(cache_per_spk * 0.5)
 
         scores = self.speaker_quality_scores(preds2d, min_pos_per_spk)
+        # NeMo: scores[:, spkcache_len:, :] += scores_boost_latest. See Sortformer.cs.
+        scores[SPEAKER_CACHE_LENGTH:, :] += SCORES_BOOST_LATEST
         self.boost(scores, strong_boost, 2.0)
         self.boost(scores, weak_boost, 1.0)
 
-        sil_rows = 3 * NUM_SPEAKERS
-        ext_scores = np.full((total_frames + sil_rows, NUM_SPEAKERS), -np.inf, dtype=np.float32)
+        # NeMo appends spkcache_sil_frames_per_spk rows at +inf, not 3*n_spk at -inf.
+        sil_rows = SPKCACHE_SIL_FRAMES
+        ext_scores = np.full((total_frames + sil_rows, NUM_SPEAKERS), np.inf, dtype=np.float32)
         ext_scores[:total_frames] = scores
 
         flat: list[tuple[float, int, int]] = []
@@ -254,13 +264,25 @@ class SortformerPipelineBase:
             for s_idx in range(NUM_SPEAKERS):
                 flat.append((float(ext_scores[t_idx, s_idx]), t_idx, s_idx))
 
-        flat.sort(key=lambda item: item[0], reverse=True)
-        selected = sorted(flat[:SPEAKER_CACHE_LENGTH], key=lambda item: (item[2], item[1]))
+        # Deterministic tie-break on the speaker-major flattened index, matching
+        # Sortformer.cs. Does not guarantee agreement with torch.topk on saturated
+        # (exactly-1.0) predictions -- see #165.
+        ext_t_sort = ext_scores.shape[0]
+        flat.sort(key=lambda item: (-item[0], item[2] * ext_t_sort + item[1]))
+        # NeMo marks -inf picks DISABLED (mean silence embedding, zero preds) and sorts
+        # them last via max_index. See Sortformer.cs.
+        ext_t = ext_scores.shape[0]
+        picked = []
+        for sc, t, sp in flat[:SPEAKER_CACHE_LENGTH]:
+            neg_inf = math.isinf(sc) and sc < 0
+            picked.append((sc, t, sp, neg_inf or t >= total_frames,
+                           (1 << 62) if neg_inf else sp * ext_t + t))
+        selected = sorted(picked, key=lambda it: it[4])
 
         new_embs = np.zeros((1, SPEAKER_CACHE_LENGTH, EMBEDDING_DIMENSION), dtype=np.float32)
         new_preds = np.zeros((1, SPEAKER_CACHE_LENGTH, NUM_SPEAKERS), dtype=np.float32)
-        for i, (_, t_idx, _) in enumerate(selected):
-            if t_idx >= total_frames:
+        for i, (_, t_idx, _, disabled, _order) in enumerate(selected):
+            if disabled:
                 new_embs[0, i] = self._mean_sil_emb
             else:
                 new_embs[0, i] = self._spkcache[0, t_idx]
@@ -323,9 +345,15 @@ class SortformerPipelineBase:
             self._fifo = self._fifo[:, pop_len:]
             self._fifo_preds = self._fifo_preds[:, pop_len:]
             self._spkcache = np.concatenate([self._spkcache, pop_embs], axis=1)
-            self._spkcache_preds = pop_preds if self._spkcache_preds is None else np.concatenate([self._spkcache_preds, pop_preds], axis=1)
+            # NeMo appends only when spkcache_preds exists and defers the first seed to
+            # compression time, so it uses THIS pass's preds. See Sortformer.cs.
+            if self._spkcache_preds is not None:
+                self._spkcache_preds = np.concatenate([self._spkcache_preds, pop_preds], axis=1)
 
             if self._spkcache.shape[1] > SPEAKER_CACHE_LENGTH:
+                if self._spkcache_preds is None:
+                    sc_fresh = preds[:, :cache_t]
+                    self._spkcache_preds = np.concatenate([sc_fresh, pop_preds], axis=1)
                 self.compress_cache()
 
         return chunk_preds[0], inference_seconds

@@ -303,23 +303,39 @@ public sealed class SortformerStreamer : IDisposable
     private void UpdateSilenceProfile(float[,,] embs, float[,,] preds)
     {
         int T = embs.GetLength(1);
+        int D = Config.EmbeddingDimension;
+
+        // NeMo's _get_silence_profile sums the WHOLE chunk's silence frames and divides
+        // once:
+        //     sil_emb_sum = sum(emb_seq * is_sil)
+        //     upd_mean    = (mean_sil_emb * n_sil_frames + sil_emb_sum) / max(upd_n, 1)
+        // This re-divided and rounded to float on every frame, which drifts. It went
+        // unnoticed while the -inf silence pad kept _meanSilEmb out of the cache; now that
+        // the pad is +inf it populates S * SpeakerCacheSilenceFrames rows on every
+        // compression, so the difference reaches the model.
+        int silCount = 0;
+        var silSum = new double[D];
         for (int t = 0; t < T; t++)
         {
             float probSum = 0f;
             for (int s = 0; s < Config.NumSpeakers; s++)
                 probSum += preds[0, t, s];
+            if (probSum >= Config.SilThreshold)
+                continue;
 
-            if (probSum < Config.SilThreshold)
-            {
-                _nSilFrames++;
-                var meanSilEmb = _meanSilEmb!;
-                for (int d = 0; d < Config.EmbeddingDimension; d++)
-                {
-                    double oldSum = meanSilEmb[d] * (_nSilFrames - 1);
-                    meanSilEmb[d] = (float)((oldSum + embs[0, t, d]) / _nSilFrames);
-                }
-            }
+            silCount++;
+            for (int d = 0; d < D; d++)
+                silSum[d] += embs[0, t, d];
         }
+        if (silCount == 0)
+            return;
+
+        var meanSilEmb = _meanSilEmb!;
+        int updatedN = _nSilFrames + silCount;
+        for (int d = 0; d < D; d++)
+            meanSilEmb[d] = (float)(((double)meanSilEmb[d] * _nSilFrames + silSum[d])
+                                    / Math.Max(updatedN, 1));
+        _nSilFrames = updatedN;
     }
 
     // ── Quality scoring ───────────────────────────────────────────────────────
@@ -341,10 +357,29 @@ public sealed class SortformerStreamer : IDisposable
                 scores[t, s] = lp - lo;
                 logOneSum += lo;
             }
-            float adj = logOneSum - (float)Math.Log(Math.Sqrt(2));
+            // NeMo's _get_log_pred_scores ends `+ log_1_probs_sum - math.log(0.5)`.
+            // This subtracted log(sqrt(2)) instead, leaving every score 1.0397 too low
+            // (-log(0.5) = +0.693 vs -log(sqrt 2) = -0.347). A constant offset is harmless
+            // to a pure ranking, but _disable_low_scores tests `scores > 0`, so the offset
+            // moved that threshold and changed which frames were disabled -- and therefore
+            // which survived compression.
+            float adj = logOneSum - (float)Math.Log(0.5);
             for (int s = 0; s < S; s++)
                 scores[t, s] += adj;
         }
+
+        // ⚠ ORDER MATTERS. NeMo masks non-speech to -inf FIRST, then counts positives:
+        //     is_speech = preds > 0.5
+        //     scores = where(is_speech, scores, -inf)
+        //     is_pos = scores > 0
+        //     is_nonpos_replace = ~is_pos & is_speech & (is_pos.sum(dim=1) >= min_pos)
+        // Counting before the mask (as this did) lets a non-speech frame with a positive
+        // raw score inflate the count, which flips the `>= minPosPerSpk` gate and disables
+        // a speaker's non-positive frames that NeMo keeps.
+        for (int t = 0; t < T; t++)
+            for (int s = 0; s < S; s++)
+                if (preds2d[t, s] <= 0.5f)
+                    scores[t, s] = float.NegativeInfinity;
 
         var posCount = new int[S];
         for (int t = 0; t < T; t++)
@@ -353,12 +388,8 @@ public sealed class SortformerStreamer : IDisposable
 
         for (int t = 0; t < T; t++)
             for (int s = 0; s < S; s++)
-            {
-                if (preds2d[t, s] <= 0.5f)
+                if (preds2d[t, s] > 0.5f && scores[t, s] <= 0f && posCount[s] >= minPosPerSpk)
                     scores[t, s] = float.NegativeInfinity;
-                else if (scores[t, s] <= 0f && posCount[s] >= minPosPerSpk)
-                    scores[t, s] = float.NegativeInfinity;
-            }
 
         return scores;
     }
@@ -367,7 +398,15 @@ public sealed class SortformerStreamer : IDisposable
     {
         int T = scores.GetLength(0);
         int S = scores.GetLength(1);
-        float logHalf = 0.5f * (float)Math.Log(2.0);
+
+        // NeMo's _boost_topk_scores, with its default offset=0.5:
+        //     scores[..., topk_indices, ...] -= scale_factor * math.log(offset)
+        // log(0.5) is NEGATIVE, so that ADDS 0.693 * scale_factor -- it boosts, as the name
+        // says. This computed `0.5 * log(2)` (= +0.347) and SUBTRACTED it, so the method
+        // penalised exactly the frames it was supposed to promote: wrong sign, and half the
+        // magnitude. Both strong and weak boosting are affected, which is how a speaker's
+        // best frames were being pushed out of the compressed cache.
+        float boost = scaleFactor * (float)Math.Log(0.5);
 
         for (int s = 0; s < S; s++)
         {
@@ -378,8 +417,9 @@ public sealed class SortformerStreamer : IDisposable
             for (int i = 0; i < Math.Min(nBoostPerSpk, T); i++)
             {
                 int t = col[i].t;
+                // -inf stays -inf under this arithmetic anyway; the guard just makes it explicit.
                 if (!float.IsNegativeInfinity(scores[t, s]))
-                    scores[t, s] -= scaleFactor * logHalf;
+                    scores[t, s] -= boost;
             }
         }
     }
@@ -398,23 +438,47 @@ public sealed class SortformerStreamer : IDisposable
 
         var preds2d = Slice3DTo2D(spkcachePreds, T, S);
 
-        int cachePerSpk       = Config.SpeakerCacheLength / S - 3;
+        int cachePerSpk       = Config.SpeakerCacheLength / S - Config.SpeakerCacheSilenceFrames;
         int strongBoostPerSpk = (int)(cachePerSpk * 0.75);
         int weakBoostPerSpk   = (int)(cachePerSpk * 1.5);
         int minPosPerSpk      = (int)(cachePerSpk * 0.5);
 
         float[,] scores = SpeakerQualityScores(preds2d, minPosPerSpk);
+
+        // NeMo boosts frames newly appended to the cache before the boosts below:
+        //     if self.scores_boost_latest > 0:
+        //         scores[:, self.spkcache_len:, :] += self.scores_boost_latest
+        // Everything past SpeakerCacheLength is what this pop just promoted out of the
+        // FIFO. Without it those frames compete against already-established ones on raw
+        // score alone and are evicted almost immediately, so the cache stops refreshing.
+        //
+        // This was missing entirely. On 90 s of real speech it is the single largest
+        // divergence from NeMo's streaming: frame-level speaker agreement 89.6% -> 97.3%.
+        // It is invisible on synthetic tones, which is why it survived earlier checks.
+        for (int t = Config.SpeakerCacheLength; t < T; t++)
+            for (int s2 = 0; s2 < S; s2++)
+                scores[t, s2] += Config.ScoresBoostLatest;
+
         Boost(scores, strongBoostPerSpk, 2.0f);
         Boost(scores, weakBoostPerSpk,   1.0f);
 
-        int silRows   = 3 * S;
+        // NeMo appends spkcache_sil_frames_per_spk rows at +inf, so each speaker's block in
+        // the flattened score matrix carries that many guaranteed picks and the compressed
+        // cache always reserves S * that many slots for the mean silence embedding:
+        //     pad = torch.full((batch, self.spkcache_sil_frames_per_spk, n_spk), float('inf'))
+        //
+        // This was 3 * S rows at NEGATIVE infinity -- four times as many rows, and a sign
+        // that meant they were only ever picked by tying with masked frames under an
+        // unstable sort, so the cache held essentially no silence frames. cachePerSpk
+        // already subtracts SpeakerCacheSilenceFrames on the assumption they are spoken for.
+        int silRows   = Config.SpeakerCacheSilenceFrames;
         var extScores = new float[T + silRows, S];
         for (int t = 0; t < T; t++)
             for (int s = 0; s < S; s++)
                 extScores[t, s] = scores[t, s];
         for (int t = T; t < T + silRows; t++)
             for (int s = 0; s < S; s++)
-                extScores[t, s] = float.NegativeInfinity;
+                extScores[t, s] = float.PositiveInfinity;
 
         int extT  = T + silRows;
         int total = extT * S;
@@ -423,10 +487,42 @@ public sealed class SortformerStreamer : IDisposable
             for (int s = 0; s < S; s++)
                 flat[t * S + s] = (extScores[t, s], t, s);
 
-        Array.Sort(flat, (a, b) => b.score.CompareTo(a.score));
+        // ⚠ TIES ARE NOT RESOLVED THE WAY torch.topk RESOLVES THEM, and cannot be here.
+        // Sortformer's float32 sigmoid saturates to exactly 1.0 for logits above ~16.6, so
+        // a confidently single-speaker stream produces bit-identical preds rows and hence
+        // bit-identical scores; which of them the top-k keeps is then arbitrary on both
+        // sides. Array.Sort is an unstable introsort, so without a tie rule this was also
+        // arbitrary between runs. Falling back to the speaker-major flattened index at
+        // least makes the port deterministic and keeps it in step with the Python mirror.
+        // It does not guarantee agreement with NeMo on saturated audio -- see #165.
+        Array.Sort(flat, (a, b) =>
+        {
+            int byScore = b.score.CompareTo(a.score);
+            if (byScore != 0) return byScore;
+            return (a.sIdx * extT + a.tIdx).CompareTo(b.sIdx * extT + b.tIdx);
+        });
 
-        int keep     = Config.SpeakerCacheLength;
-        var selected = flat[..keep].OrderBy(x => x.sIdx).ThenBy(x => x.tIdx).ToArray();
+        int keep = Config.SpeakerCacheLength;
+
+        // NeMo's _get_topk_indices replaces any picked entry whose score is -inf with
+        // max_index, which marks it DISABLED: _gather_spkcache_and_preds then substitutes
+        // the mean silence embedding and zero preds, and the huge index sorts it last.
+        // This treated only the silence pad (t >= T) as disabled, so a -inf pick kept its
+        // real embedding and real preds at its natural position. It fires whenever fewer
+        // than `keep` frames survive the -inf masking -- sparse or low-confidence audio,
+        // and the early stream.
+        // NeMo sorts the picked entries by their SPEAKER-MAJOR flattened index, after
+        // substituting max_index for any -inf pick -- so -inf picks land at the very end
+        // while the silence pad keeps its natural place at the tail of its speaker's block.
+        // Ordering both alike is not equivalent and measurably worse.
+        var selected = flat[..keep]
+            .Select(x => (
+                x.tIdx,
+                x.sIdx,
+                disabled: float.IsNegativeInfinity(x.score) || x.tIdx >= T,
+                order: float.IsNegativeInfinity(x.score) ? int.MaxValue : x.sIdx * extT + x.tIdx))
+            .OrderBy(x => x.order)
+            .ToArray();
 
         var newEmbs  = new float[1, keep, Config.EmbeddingDimension];
         var newPreds = new float[1, keep, S];
@@ -435,8 +531,9 @@ public sealed class SortformerStreamer : IDisposable
         for (int i = 0; i < keep; i++)
         {
             int t = selected[i].tIdx;
-            if (t >= T)
+            if (selected[i].disabled)
             {
+                // mean silence embedding, and preds left at zero
                 for (int d = 0; d < Config.EmbeddingDimension; d++)
                     newEmbs[0, i, d] = meanSilEmb[d];
                 continue;
@@ -642,13 +739,35 @@ public sealed class SortformerStreamer : IDisposable
             var spkcacheCurrent = _spkcache!;
             _spkcache = Concat3DAxis1(spkcacheCurrent, popEmbs);
 
-            if (_spkcachePreds is null)
-                _spkcachePreds = popPreds;
-            else
+            // NeMo appends only when spkcache_preds already exists, and DEFERS the first
+            // seed until compression actually needs it:
+            //     if spkcache_preds is not None: spkcache_preds = cat([spkcache_preds, pop_out_preds])
+            //     if spkcache.shape[1] > spkcache_len:
+            //         if spkcache_preds is None:
+            //             spkcache_preds = cat([preds[:, :spkcache_len], pop_out_preds])
+            //
+            // The deferral is the point: it seeds from THIS pass's predictions for the
+            // frames already in the cache. Seeding on the first pop instead (as this did)
+            // leaves those rows carrying the previous chunk's preds, and CompressCache
+            // scores exactly those -- so the first compression picked a different 188
+            // frames and every later cache inherited it.
+            if (_spkcachePreds is not null)
                 _spkcachePreds = Concat3DAxis1(_spkcachePreds, popPreds);
 
             if (_spkcache.GetLength(1) > Config.SpeakerCacheLength)
+            {
+                if (_spkcachePreds is null)
+                {
+                    // preds rows [0, cacheT) are this pass's output for the frames that
+                    // were already in the cache before popEmbs was appended.
+                    var scFresh = new float[cacheT, S];
+                    for (int t = 0; t < cacheT; t++)
+                        for (int s2 = 0; s2 < S; s2++)
+                            scFresh[t, s2] = predsFlat[t * S + s2];
+                    _spkcachePreds = Concat3DAxis1(Wrap2DIn3D(scFresh, cacheT, S), popPreds);
+                }
                 CompressCache();
+            }
         }
 
         // Return a copy since the buffer will be reused for the next chunk
