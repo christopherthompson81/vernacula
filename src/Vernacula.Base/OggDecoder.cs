@@ -109,10 +109,24 @@ public static class OggDecoder
         var samples = new float[OpusRate * channels];  // one second, then grow
         int count = 0;
 
+        // ⚠ A BOUND ON EMPTY PACKETS, BECAUSE THE LOOP CONDITION IS NOT OURS. HasNextPacket
+        // belongs to the Ogg reader, and DecodeNextPacket returning null is how it reports a
+        // packet it could not use. Trusting it to always advance would make a malformed or
+        // truncated file — which is to say, a file a user could plausibly hand us — able to
+        // spin this thread forever with no output and no error. A run of empty packets this
+        // long is a broken stream either way, so stop and let the caller fall back to FFmpeg.
+        const int maxConsecutiveEmpty = 64;
+        int emptyRun = 0;
+
         while (ogg.HasNextPacket)
         {
             short[] pcm = ogg.DecodeNextPacket();
-            if (pcm is null || pcm.Length == 0) continue;   // a page we cannot use; keep going
+            if (pcm is null || pcm.Length == 0)
+            {
+                if (++emptyRun > maxConsecutiveEmpty) break;
+                continue;
+            }
+            emptyRun = 0;
 
             if (count + pcm.Length > samples.Length)
                 Array.Resize(ref samples, Math.Max(samples.Length * 2, count + pcm.Length));

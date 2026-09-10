@@ -44,14 +44,19 @@ public class AudioFormatIngestionTests : IDisposable
     private static void RequireFfmpeg()
     {
         if (!FfmpegAudioDecoder.IsAvailable)
-            Assert.Skip("ffmpeg/ffprobe not on PATH.");
+            Assert.Skip("ffmpeg not found on PATH or in the managed directory.");
     }
 
     /// <summary>Synthesise a 440 Hz tone in the requested container/codec.</summary>
     private string MakeFixture(string fileName, params string[] extraArgs)
     {
         string path = Path.Combine(_dir, fileName);
-        var psi = new ProcessStartInfo("ffmpeg")
+        // ⚠ RESOLVE IT THE WAY THE CODE UNDER TEST DOES. RequireFfmpeg above asks
+        // FfmpegAudioDecoder, which since #176's follow-up also finds a copy the desktop app
+        // downloaded into the managed directory. A bare "ffmpeg" here would disagree with
+        // that gate on exactly those machines: the skip would not fire and every fixture
+        // build would throw Win32Exception instead.
+        var psi = new ProcessStartInfo(FfmpegBinaries.ResolveExecutable("ffmpeg"))
         {
             RedirectStandardOutput = true,
             RedirectStandardError = true,

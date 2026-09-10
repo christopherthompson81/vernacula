@@ -76,6 +76,22 @@ internal sealed class FfmpegProvisioningService
         Timeout = TimeSpan.FromMinutes(30),
     };
 
+    /// <summary>
+    /// ⚠ ONE DOWNLOAD AT A TIME. Adding a folder of M4As calls TryEnsureAsync once per file,
+    /// and the UI can start an enqueue while another is in flight. Without this, two callers
+    /// that both saw "not installed" would each fetch 111 MB and then race to File.Move the
+    /// same two executables into place.
+    /// </summary>
+    private readonly SemaphoreSlim _gate = new(1, 1);
+
+    /// <summary>
+    /// Set once FFmpeg has been seen working. Probing costs two process spawns, and the gate
+    /// above serialises callers, so a bulk add of fifty files would otherwise spend a hundred
+    /// spawns re-answering a question whose answer cannot go from true to false while the app
+    /// runs — short of someone deleting FFmpeg mid-session, which the decode error covers.
+    /// </summary>
+    private static volatile bool _known;
+
     /// <summary>True when ffmpeg AND ffprobe can both be launched. Both are needed.</summary>
     /// <remarks>
     /// ⚠ BOTH, NOT JUST ffmpeg. The desktop app probes multi-stream files with ffprobe, and a
@@ -83,8 +99,16 @@ internal sealed class FfmpegProvisioningService
     /// video files failing at enqueue time while audio decodes fine — a confusing half-working
     /// state that reads as a Vernacula bug.
     /// </remarks>
-    public static bool IsInstalled =>
-        FfmpegBinaries.IsAvailable("ffmpeg") && FfmpegBinaries.IsAvailable("ffprobe");
+    public static bool IsInstalled
+    {
+        get
+        {
+            if (_known) return true;
+            bool present = FfmpegBinaries.IsAvailable("ffmpeg") && FfmpegBinaries.IsAvailable("ffprobe");
+            if (present) _known = true;
+            return present;
+        }
+    }
 
     /// <summary>
     /// True where a download is offered. Windows only, deliberately: Linux and macOS have
@@ -111,8 +135,13 @@ internal sealed class FfmpegProvisioningService
         if (IsInstalled) return true;
         if (!CanDownload) return false;
 
+        await _gate.WaitAsync(ct);
         try
         {
+            // Re-check inside the gate: while this caller waited, the one ahead of it may
+            // have finished the download, and this would otherwise fetch it a second time.
+            if (IsInstalled) return true;
+
             await DownloadAsync(progress, ct);
             return IsInstalled;
         }
@@ -124,6 +153,10 @@ internal sealed class FfmpegProvisioningService
         {
             Console.WriteLine($"[FFmpeg] provisioning failed: {ex}");
             return false;
+        }
+        finally
+        {
+            _gate.Release();
         }
     }
 

@@ -380,6 +380,11 @@ internal partial class MainViewModel : ObservableObject
             Dispatcher.UIThread.Post(() => Home.ModelStatusText = text);
         };
 
+        // Put the line back to whatever it should say, rather than leaving it stuck on the
+        // last byte count. CheckModelsAsync recomputes it from scratch.
+        queue.FfmpegDownloadFinished += () =>
+            Dispatcher.UIThread.Post(async () => await Home.CheckModelsAsync());
+
         queue.JobStatusChanged += (jobId, status, error, runTimeSecs) =>
         {
             Console.WriteLine($"[MainVM] JobStatusChanged event: jobId={jobId} status={status}");

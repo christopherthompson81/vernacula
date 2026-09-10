@@ -29,6 +29,17 @@ internal sealed class JobQueueService
     /// </summary>
     public event Action<DownloadProgress>? FfmpegDownloadProgressed;
 
+    /// <summary>
+    /// Fired on any thread once a download ends, however it ended.
+    /// <para>
+    /// ⚠ THE PROGRESS EVENT ALONE LEAVES THE UI LYING. Its last report is "111 / 111 MB",
+    /// and nothing else on the Home screen recomputes that status line, so without this the
+    /// app sits there claiming to be downloading FFmpeg for the rest of the session — and
+    /// says it just as loudly when the download failed.
+    /// </para>
+    /// </summary>
+    public event Action? FfmpegDownloadFinished;
+
     // ⚠ NOT Progress<T>: it captures and posts to the SynchronizationContext it was built on,
     // which would make this the one event in this class that arrives on the UI thread. Every
     // other one fires wherever the work happened and says so; keep that uniform.
@@ -125,8 +136,17 @@ internal sealed class JobQueueService
         // decode raises the actionable "install FFmpeg or convert the file" error. Failing
         // here instead would turn a missing optional dependency into a file that cannot even
         // be added to the queue.
-        if (FfmpegProvisioningService.NeedsFfmpeg(filePath))
-            await _ffmpeg.TryEnsureAsync(FfmpegDownloadProgress);
+        if (FfmpegProvisioningService.NeedsFfmpeg(filePath) && !FfmpegProvisioningService.IsInstalled)
+        {
+            try
+            {
+                await _ffmpeg.TryEnsureAsync(FfmpegDownloadProgress);
+            }
+            finally
+            {
+                FfmpegDownloadFinished?.Invoke();
+            }
+        }
 
         if (FFmpegDecoder.VideoExtensions.Contains(Path.GetExtension(filePath)))
         {
