@@ -82,3 +82,17 @@ dotnet publish -c Release -f net10.0-windows -p:EP=Cuda -p:Platform=x64 \
 ```
 
 For a Linux end-user install, the `install.sh` script at the repo root runs a self-contained publish and registers the `.desktop` entry for you — see [Installation](installation.md).
+
+On macOS, `./package-macos.sh` builds `dist/Vernacula.app`: a real bundle, so it gets a
+Dock icon, the right name in the menu bar, and a double-click launcher. It defaults to a
+self-contained publish, because a framework-dependent bundle launched from Finder inherits
+no `PATH` and fails to find .NET on machines where it came from Homebrew.
+
+```bash
+./package-macos.sh                      # dist/Vernacula.app
+./package-macos.sh --framework-dependent  # smaller; needs .NET where Finder can see it
+cp -R dist/Vernacula.app /Applications/  # -R, not -r: -r mangles bundles
+```
+
+Running unbundled (`dotnet run`) still shows the right Dock icon — the app sets it at
+startup through AppKit, since a bare executable has no bundle to read one from.

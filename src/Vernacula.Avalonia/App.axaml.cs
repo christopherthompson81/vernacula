@@ -121,6 +121,12 @@ public partial class App : Application
     {
         base.OnFrameworkInitializationCompleted();
 
+        // macOS reads an app's Dock icon from its .app bundle, and this is a bare
+        // executable, so `dotnet run` would otherwise show the generic .NET rocket.
+        // No-op everywhere else.
+        if (OperatingSystem.IsMacOS())
+            MacDockIcon.Set("avares://Vernacula.Avalonia/Assets/AppIcon.png");
+
         try
         {
             Settings.Load();
