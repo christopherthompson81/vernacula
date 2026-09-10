@@ -17,8 +17,24 @@
        each csproj body, so the version below is decided first: a project that sets EP in its own
        PropertyGroup would be setting it too late and would restore, say, a DirectML package at the
        CUDA version, which does not exist. Pass EP on the command line, or set it in this file. -->
+  <!-- ⚠ THE EP DEFAULT HAS TO KNOW THE ARCHITECTURE, so the arch is worked out first. Defaulting
+       to Cuda unconditionally made `dotnet run` fail on Apple Silicon with "EP=Cuda is x64-only
+       ... use -p:EP=Cpu": an error telling the developer to type the one value the build could
+       have worked out for itself, on every single build. There is no CUDA runtime for arm64 at all, so
+       Cuda is never a possible default there; it is only a sensible one on x64.
+
+       Note the runtime identifier wins over the host when publishing cross-platform, since the
+       host architecture says nothing about the target then. RuntimeIdentifier set in a csproj BODY
+       arrives too late to be seen here and falls back to the host, which is correct for a local
+       build and why the guard below re-checks at execution time. -->
   <PropertyGroup>
-    <EP Condition="'$(EP)' == ''">Cuda</EP>
+    <_OrtTargetArch Condition="'$(RuntimeIdentifier)' != ''">$(RuntimeIdentifier.Substring($([MSBuild]::Add($(RuntimeIdentifier.LastIndexOf('-')), 1))))</_OrtTargetArch>
+    <_OrtTargetArch Condition="'$(_OrtTargetArch)' == ''">$([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString().ToLowerInvariant())</_OrtTargetArch>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <EP Condition="'$(EP)' == '' AND '$(_OrtTargetArch)' == 'x64'">Cuda</EP>
+    <EP Condition="'$(EP)' == ''">Cpu</EP>
     <OnnxRuntimeVersion Condition="'$(EP)' == 'DirectML'">1.24.4</OnnxRuntimeVersion>
     <OnnxRuntimeVersion Condition="'$(OnnxRuntimeVersion)' == ''">1.29.0</OnnxRuntimeVersion>
   </PropertyGroup>
@@ -93,10 +109,7 @@
 
        The runtime identifier wins when publishing cross-platform, since the host architecture says
        nothing about the target then. -->
-  <PropertyGroup>
-    <_OrtTargetArch Condition="'$(RuntimeIdentifier)' != ''">$(RuntimeIdentifier.Substring($([MSBuild]::Add($(RuntimeIdentifier.LastIndexOf('-')), 1))))</_OrtTargetArch>
-    <_OrtTargetArch Condition="'$(_OrtTargetArch)' == ''">$([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString().ToLowerInvariant())</_OrtTargetArch>
-  </PropertyGroup>
+  <!-- _OrtTargetArch is computed near the top of this file, because the EP default needs it. -->
 
   <Target Name="RejectCudaOffX64"
           Condition="'$(EP)' == 'Cuda' AND '$(_OrtTargetArch)' != 'x64'">
