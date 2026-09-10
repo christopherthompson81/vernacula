@@ -203,15 +203,63 @@ public static class OrtSessionBuilder
             if (!info.Exists)
                 return null;
 
-            string token =
-                $"{Path.GetFileNameWithoutExtension(modelPath)}-{info.Length:x}-{info.LastWriteTimeUtc.Ticks:x}";
-            string dir = Path.Combine(root, token);
+            // The prefix identifies the model FILE (path), the suffix its CONTENT version.
+            // Splitting them that way is what lets the prune below remove previous versions
+            // of this file without touching a different model that happens to share a
+            // basename -- two model roots each holding a diar_..._coreml.onnx, say.
+            string prefix = $"{StableHash(info.FullName):x8}-{Path.GetFileNameWithoutExtension(modelPath)}";
+            string token  = $"{prefix}-{info.Length:x}-{info.LastWriteTimeUtc.Ticks:x}";
+            string dir    = Path.Combine(root, token);
             Directory.CreateDirectory(dir);
+
+            PruneStaleVersions(root, prefix, keep: token);
             return dir;
         }
         catch
         {
             return null;
+        }
+    }
+
+    /// <summary>
+    /// Deletes compiled caches for previous versions of one model file.
+    /// </summary>
+    /// <remarks>
+    /// Namespacing the cache per content version fixed stale-graph reuse, but on its own it
+    /// turns re-exports into an unbounded pile: each is ~1 GB for a model this size and
+    /// nothing reclaims the last one. Only directories under our own cache root whose prefix
+    /// marks them as an older version of THIS file are removed.
+    ///
+    /// Best-effort by design. A concurrent session may still hold an old directory open; the
+    /// delete fails, is swallowed, and the worst outcome is that ORT recompiles later.
+    /// </remarks>
+    private static void PruneStaleVersions(string root, string prefix, string keep)
+    {
+        try
+        {
+            foreach (string dir in Directory.EnumerateDirectories(root, prefix + "-*"))
+            {
+                if (string.Equals(Path.GetFileName(dir), keep, StringComparison.Ordinal))
+                    continue;
+                try { Directory.Delete(dir, recursive: true); }
+                catch { /* in use, or gone already */ }
+            }
+        }
+        catch { /* the root vanished; nothing to prune */ }
+    }
+
+    /// <summary>FNV-1a over the string, for a short stable directory prefix. Not a digest.</summary>
+    private static uint StableHash(string value)
+    {
+        unchecked
+        {
+            uint h = 2166136261;
+            foreach (char c in value)
+            {
+                h ^= c;
+                h *= 16777619;
+            }
+            return h;
         }
     }
 
