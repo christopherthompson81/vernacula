@@ -248,25 +248,47 @@ looking here — the fix is Technique 5.
 warm load *worse* (18.6 → 27.5 s). It is an inference lever, and a
 double-edged one — see below.
 
-## fp16: unresolved
+## fp16: the accuracy question is answered, the speed question is per-EP
 
 fp16 gave the fastest inference measured — **22.3 ms** on
-`MLComputeUnits=CPUAndGPU` (vs 51 ms fp32) — but at a real accuracy cost:
+`MLComputeUnits=CPUAndGPU` (vs 51 ms fp32) — at an apparent accuracy cost:
 
 ```
 fp32:  preds max=3.58E-07   embs max=0.00E+00
 fp16:  preds max=1.26E-03   embs max=9.77E-02
 ```
 
-`preds` at 1e-3 is likely fine for thresholded diarization logits. `embs` at
-9.8e-2 is not obviously safe, because `chunk_pre_encode_embs` feeds back into
-the spkcache/FIFO for later chunks — a feedback loop, exactly the structure this
-codebase already documents error-compounding through (the TF32/OmniVoice note in
-`OrtSessionBuilder.cs`). **A single-chunk parity check cannot see compounding.**
-Validate with end-to-end DER on real audio before shipping fp16.
+`embs` at 9.8e-2 looked unsafe because `chunk_pre_encode_embs` feeds back into the
+spkcache/FIFO for later chunks — a feedback loop, exactly the structure this codebase
+already documents error-compounding through (the TF32/OmniVoice note in
+`OrtSessionBuilder.cs`) — and a single-chunk parity check cannot see compounding.
 
-Also note `onnxconverter-common` fights graphs containing explicit `Cast` nodes;
-expect to patch mixed-dtype boundaries by hand.
+**Measured end to end (#172): it does not compound.** Fidelity DER against NeMo is
+**0.000%** on three 90 s real-speech samples. The error does grow through the feedback path
+— 6.7e-04 on one chunk becomes 1.1e-02 to 3.4e-02 over a recording — but the per-chunk trace
+wanders rather than trending, and only 3 frames in 3378 flip their binarized speaker set,
+all isolated enough for the median filter to absorb. So the caveat was right to demand the
+check and wrong about the outcome.
+
+**What decides fp16 now is throughput, and it is not uniform:**
+
+| EP | fp32 | fp16 |
+|---|---|---|
+| CPU (x86-64) | 333.0 ms | **415.3 ms** — 25% slower |
+| CUDA (3090) | 17.6 ms | **10.6 ms** — 1.66× faster |
+| CoreML (M-series) | 51 ms | 22.3 ms *(unre-measured; see below)* |
+
+There are no native fp16 CPU kernels, so ORT casts up and back around every op. fp16 is an
+**EP-gated variant**, never a replacement — shipping it as the default slows down every CPU
+user. The CoreML figure predates the reproducible converter and should be re-measured before
+it is relied on.
+
+`scripts/nemo_export/fp16_convert_sortformer.py` produces the model. Note that a bare
+`convert_float_to_float16` call does not: the graph needs its length arithmetic held in
+fp32 (it is a frame count, not an activation), its explicit `Cast` nodes reconciled (the
+converter rewrites tensor types but not `to` attributes), internal consumers of
+`keep_io_types`-cast outputs rewired, and `ScatterElements` held back because the CPU EP has
+no fp16 kernel for it. See `docs/investigations/sortformer_fp16_investigation.md`.
 
 ## Should we bypass ONNX and call CoreML directly from C#?
 
