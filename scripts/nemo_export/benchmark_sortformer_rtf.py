@@ -301,12 +301,19 @@ class SortformerPipelineBase:
         chunk_embs = embs[:, : min(valid_frames, emb_t_out)]
 
         self._fifo = np.concatenate([self._fifo, chunk_embs], axis=1)
-        self._fifo_preds = np.concatenate([self._fifo_preds, fp if fp.shape[1] > 0 else chunk_preds], axis=1)
+        # NeMo: fifo_preds = fp (fresh preds for the frames already in fifo), then append
+        # chunk_preds. The old expression kept the previous pass's preds and appended fp,
+        # leaving popped embeddings paired with the wrong predictions. See Sortformer.cs.
+        self._fifo_preds = (np.concatenate([fp, chunk_preds], axis=1)
+                            if fp.shape[1] > 0 else chunk_preds)
 
         new_fifo_t = self._fifo.shape[1]
         if new_fifo_t > FIFO_LENGTH:
             pop_len = SPEAKER_CACHE_UPDATE_PERIOD
-            pop_len = max(pop_len, (new_fifo_t - FIFO_LENGTH) + new_fifo_t)
+            # NeMo: max(period, max_chunk_len - max_fifo_len + fifo_len), where fifo_len is
+            # the length BEFORE the chunk was appended. The old expression clamped popLen to
+            # the whole FIFO, draining it to 0 on every pop. See Sortformer.cs for the trace.
+            pop_len = max(pop_len, CHUNK_LENGTH - FIFO_LENGTH + fifo_t)
             pop_len = min(pop_len, new_fifo_t)
 
             pop_embs = self._fifo[:, :pop_len]

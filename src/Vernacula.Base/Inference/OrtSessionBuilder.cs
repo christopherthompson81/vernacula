@@ -24,8 +24,9 @@ public static class OrtSessionBuilder
     public static SessionOptions Create(
         ExecutionProvider ep,
         GraphOptimizationLevel optLevel = GraphOptimizationLevel.ORT_ENABLE_ALL,
-        bool enableProfiling = false)
-        => Create(ep, optLevel, enableProfiling, out _);
+        bool enableProfiling = false,
+        string? coreMlModelPath = null)
+        => Create(ep, optLevel, enableProfiling, out _, coreMlModelPath: coreMlModelPath);
 
     /// <inheritdoc cref="Create(ExecutionProvider, GraphOptimizationLevel, bool)"/>
     /// <param name="usedCuda">True when the CUDA execution provider was
@@ -36,7 +37,8 @@ public static class OrtSessionBuilder
         GraphOptimizationLevel optLevel,
         bool enableProfiling,
         out bool usedCuda,
-        bool disableTf32 = false)
+        bool disableTf32 = false,
+        string? coreMlModelPath = null)
     {
         var opts = new SessionOptions { GraphOptimizationLevel = optLevel };
         if (enableProfiling)
@@ -117,7 +119,7 @@ public static class OrtSessionBuilder
                 break;
 
             case ExecutionProvider.CoreML:
-                try { AppendCoreML(opts); }
+                try { AppendCoreML(opts, coreMlModelPath); }
                 catch (Exception ex)
                 {
                     throw new InvalidOperationException(
@@ -146,12 +148,98 @@ public static class OrtSessionBuilder
     // GPU and ANE. Note that CoreML silently declines any node whose shape has an
     // unbounded dimension, so graphs with a dynamic time axis end up heavily
     // partitioned; measure before preferring this over CPU.
-    private static void AppendCoreML(SessionOptions opts)
-        => opts.AppendExecutionProvider("CoreML", new Dictionary<string, string>
+    private static void AppendCoreML(SessionOptions opts, string? modelPath = null)
+    {
+        var cfg = new Dictionary<string, string>
         {
             ["ModelFormat"] = "MLProgram",
             ["MLComputeUnits"] = "ALL",
-        });
+        };
+
+        // Without this the EP recompiles the CoreML model on EVERY session creation.
+        // Measured on the Sortformer steady-state graph, session load drops 2.99 s -> 0.85 s,
+        // and TranscriptionService builds a streamer per transcription, so it is ~2 s of
+        // per-run latency for a directory. Best-effort -- if the cache dir cannot be
+        // created, drop the option rather than fail the session.
+        //
+        // ⚠ IT IS NOT SMALL AND NOTHING PRUNES IT. The compiled .mlmodelc for the 527 MB
+        // Sortformer variant alone is ~1.0 GB, and ORT keys entries by graph, so every model
+        // and every re-export of one adds another. Trading ~2 s per run for unbounded disk
+        // is the right default for a desktop app, but it wants a cap or a cleanup path.
+        string? dir = CoreMLCacheDirectoryFor(modelPath);
+        if (dir is not null)
+            cfg["ModelCacheDirectory"] = dir;
+
+        opts.AppendExecutionProvider("CoreML", cfg);
+    }
+
+    /// <summary>
+    /// A cache directory private to this exact model file, or null to cache nothing.
+    /// </summary>
+    /// <remarks>
+    /// ⚠ ORT DERIVES ITS CACHE KEY FROM THE MODEL PATH, NOT ITS CONTENT. Verified: the same
+    /// bytes at two paths compile twice and produce two entries, so an in-place replacement
+    /// at ONE path -- exactly what ModelManagerService does when it re-downloads a changed
+    /// asset to the same filename -- would silently reuse the previous export's compiled
+    /// bundle. Wrong outputs, or a hard failure if the export's fixed dims moved.
+    ///
+    /// So the directory is namespaced by (length, last-write-time) of the file, which both
+    /// change when it is replaced and cost no hashing of a half-gigabyte model. Callers that
+    /// do not name a model get no cache rather than a shared one: a stale compiled graph is
+    /// a correctness bug, and ~2 s of compile is not worth risking it.
+    /// </remarks>
+    private static string? CoreMLCacheDirectoryFor(string? modelPath)
+    {
+        if (string.IsNullOrEmpty(modelPath))
+            return null;
+
+        string? root = CoreMLCacheRoot.Value;
+        if (root is null)
+            return null;
+
+        try
+        {
+            var info = new FileInfo(modelPath);
+            if (!info.Exists)
+                return null;
+
+            string token =
+                $"{Path.GetFileNameWithoutExtension(modelPath)}-{info.Length:x}-{info.LastWriteTimeUtc.Ticks:x}";
+            string dir = Path.Combine(root, token);
+            Directory.CreateDirectory(dir);
+            return dir;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Where the CoreML EP caches compiled `.mlmodelc` bundles, or null if it cannot be
+    /// created. Lazy because every model-init site asks and those run in parallel.
+    /// </summary>
+    private static readonly Lazy<string?> CoreMLCacheRoot = new(() =>
+    {
+        try
+        {
+            // ⚠ On Unix this returns "" when neither XDG_DATA_HOME nor HOME is set (launchd
+            // agents, some sandboxes). Path.Combine would then yield the RELATIVE
+            // "Vernacula/coreml-cache", CreateDirectory would succeed, and ORT would write
+            // a multi-GB cache into whatever the process CWD happens to be.
+            string root = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+            if (string.IsNullOrEmpty(root))
+                return null;
+
+            string dir = Path.Combine(root, "Vernacula", "coreml-cache");
+            Directory.CreateDirectory(dir);
+            return dir;
+        }
+        catch
+        {
+            return null;
+        }
+    });
 
     // The short names AppendExecutionProvider takes, and the long names
     // GetAvailableProviders reports. They are not the same strings.
@@ -231,13 +319,14 @@ public static class OrtSessionBuilder
     /// A false return means "nothing macOS-specific applies" -- the caller should run its
     /// ordinary CUDA/DirectML path, which lands on CPU here.
     /// </remarks>
-    public static bool TryAppendPlatformAccelerator(SessionOptions opts, ExecutionProvider ep)
+    public static bool TryAppendPlatformAccelerator(
+        SessionOptions opts, ExecutionProvider ep, string? coreMlModelPath = null)
     {
         switch (ep)
         {
             case ExecutionProvider.CoreML:
                 RequireProvider(CoreMLProviderName, "CoreML");
-                AppendCoreML(opts);
+                AppendCoreML(opts, coreMlModelPath);
                 return true;
 
             case ExecutionProvider.WebGpu:
