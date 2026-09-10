@@ -63,6 +63,14 @@
          timestamps. tests/fixtures carries 8 kHz and 16 kHz fixtures so a downgrade fails
          loudly instead. -->
     <PackageReference Include="NLayer"            Version="3.0.0" />
+    <!-- Ogg Vorbis (NVorbis under an NAudio 3 wrapper) and Ogg Opus (Concentus, the managed
+         port of libopus). Both pure managed and permissively licensed — MIT and BSD-3 — so,
+         like NLayer, they carry no native assets into the projects that reference Base.
+         Together with NLayer and NAudio.Core's own WAV/AIFF readers they are what lets
+         ReadAudio decode the common audio formats with no FFmpeg installed at all. -->
+    <PackageReference Include="NAudio.Vorbis"     Version="3.0.0" />
+    <PackageReference Include="Concentus"         Version="2.2.2" />
+    <PackageReference Include="Concentus.OggFile" Version="1.0.7" />
     <!-- Note: NemoNfaAligner uses an in-house SimpleSpTokenizer (greedy LPM
          over vocab.txt). Microsoft.ML.Tokenizers 2.0.0's
          SentencePieceTokenizer.Create throws IndexOutOfRangeException on

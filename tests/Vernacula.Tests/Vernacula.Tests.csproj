@@ -18,11 +18,11 @@
     <PackageReference Include="xunit.runner.visualstudio" Version="3.0.0" />
   </ItemGroup>
 
-  <!-- The MP3 fixtures are committed rather than synthesised, because the property they
+  <!-- The audio fixtures are committed rather than synthesised, because the property they
        guard is "decodes with no ffmpeg present" and a synthesised fixture cannot exist on
        such a machine. tests/fixtures/README.md has the generating commands. -->
   <ItemGroup>
-    <None Include="..\fixtures\*.mp3"
+    <None Include="..\fixtures\tone_*.*"
           Link="fixtures\%(Filename)%(Extension)"
           CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>

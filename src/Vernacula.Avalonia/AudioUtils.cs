@@ -14,6 +14,11 @@ namespace Vernacula.App;
 
 internal static class AudioUtils
 {
+    /// <summary>
+    /// Compressed audio the Windows build can decode with MediaFoundation but the net10.0
+    /// build cannot decode at all. Deliberately excludes everything in
+    /// <see cref="ManagedAudioDecoders"/>, which is handled before this is consulted.
+    /// </summary>
     private static readonly HashSet<string> CrossPlatformFfmpegAudioExtensions =
         new(StringComparer.OrdinalIgnoreCase)
         {
@@ -246,21 +251,25 @@ internal static class AudioUtils
     {
         string ext = Path.GetExtension(path);
 
-        // ⚠ MP3 GOES TO THE MANAGED DECODER ON BOTH TARGET FRAMEWORKS, INCLUDING WINDOWS,
-        // where AudioFileReader could still decode it. One decoder means one behaviour to
-        // test and one to reason about, and the Windows-only route is the one that quietly
-        // disappeared under NAudio 3 and took MP3 support with it (#176). streamIndex is
-        // respected first: that means "pick stream N of a multi-stream file", which is
-        // FFmpeg's job and not something an MP3 ever needs.
-        if (streamIndex < 0 && string.Equals(ext, ".mp3", StringComparison.OrdinalIgnoreCase))
+        // ⚠ THE MANAGED TABLE IS CONSULTED FIRST, AND IT IS THE SAME TABLE THE CLI USES.
+        // Vernacula.Base.ManagedAudioDecoders owns the question "does this format need
+        // FFmpeg?", so the app and the CLI cannot answer it differently — which they did for
+        // MP3, for the two days between #156 and #176. It applies on both target frameworks,
+        // including Windows, where AudioFileReader could still decode some of these: one
+        // decoder means one behaviour to test, and the Windows-only route is the one that
+        // quietly disappeared under NAudio 3 in the first place.
+        //
+        // streamIndex wins over it: that means "pick stream N of a multi-stream file", which
+        // is FFmpeg's job and not something these single-stream audio formats ever need.
+        if (streamIndex < 0 && ManagedAudioDecoders.TryGet(ext, out var managed))
         {
             try
             {
-                return Mp3Decoder.Decode(path);
+                return managed.Decode(path);
             }
-            catch (Exception ex) when (ex is InvalidDataException or FormatException)
+            catch (Exception ex) when (ManagedAudioDecoders.IsFormatRejection(ex))
             {
-                // Not MPEG audio despite the name. FFmpeg sniffs content, so let it try.
+                // The bytes do not match the extension. FFmpeg sniffs content, so let it try.
                 return FFmpegDecoder.DecodeStream(path, 0);
             }
         }

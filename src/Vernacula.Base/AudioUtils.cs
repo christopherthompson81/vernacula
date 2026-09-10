@@ -216,13 +216,13 @@ public static class AudioUtils
 
     /// <summary>
     /// Read an audio file. Returns interleaved float samples in [-1, 1], the sample rate,
-    /// and the channel count, all in the file's native layout.
+    /// and the channel count, all in the decoder's native layout.
     /// <para>
-    /// PCM and IEEE-float WAV are read in-process by NAudio, and MP3 in-process by NLayer
-    /// (<see cref="Mp3Decoder"/>). Everything else — FLAC, M4A, AAC, OGG, Opus, non-PCM WAV
-    /// (mu-law, A-law, ADPCM), video containers — is decoded by shelling out to FFmpeg via
-    /// <see cref="FfmpegAudioDecoder"/>, which needs FFmpeg on PATH (already a documented
-    /// prerequisite; see README.md).
+    /// WAV, MP3, AIFF, Ogg Vorbis and Ogg Opus are decoded in-process, on every platform,
+    /// with no FFmpeg installed. Everything else — FLAC, M4A, AAC, WMA, non-PCM WAV (mu-law,
+    /// A-law, ADPCM) and every video container — is decoded by shelling out to FFmpeg via
+    /// <see cref="FfmpegAudioDecoder"/>. <see cref="ManagedAudioDecoders"/> is the one table
+    /// that decides which is which.
     /// </para>
     /// <para>
     /// ⚠ THE FFMPEG PATH IS NOT A WINDOWS FALLBACK — IT IS THE ONLY PATH FOR THOSE FORMATS
@@ -235,13 +235,12 @@ public static class AudioUtils
     /// Windows-only one.
     /// </para>
     /// <para>
-    /// ⚠ MP3 IS THE EXCEPTION, BECAUSE #156's ANSWER REGRESSED IT ON WINDOWS (#176). MP3 is
-    /// the one format in that list an ASR user is likely to arrive with, and sending it to
-    /// FFmpeg made a working Windows install stop reading MP3 until FFmpeg was installed —
-    /// something it had never needed. <see cref="Mp3Decoder"/> is pure managed code, so it
-    /// restores that on Windows and adds it on Linux and macOS, where MP3 never worked
-    /// in-process at all. FFmpeg stays as the fallback for a file whose bytes turn out not
-    /// to be MPEG audio whatever the extension says.
+    /// ⚠ AND #156's ANSWER IS WHY THE MANAGED TABLE EXISTS. Routing MP3 to FFmpeg made a
+    /// working Windows install stop reading MP3 until FFmpeg was installed — something it
+    /// had never needed (#176). Every format with a maintained pure-managed decoder is now
+    /// in the table instead, which both restores Windows and adds Linux and macOS, where
+    /// several of them never worked in-process at all. FFmpeg remains the fallback for a
+    /// file whose bytes turn out not to match its extension.
     /// </para>
     /// <para>
     /// To pick a specific audio stream out of a multi-stream file, call
@@ -250,86 +249,36 @@ public static class AudioUtils
     /// </summary>
     public static (float[] samples, int sampleRate, int channels) ReadAudio(string path)
     {
-        string ext = Path.GetExtension(path);
+        if (!ManagedAudioDecoders.TryGet(Path.GetExtension(path), out var decoder))
+            return FfmpegAudioDecoder.Decode(path);
 
-        if (string.Equals(ext, ".mp3", StringComparison.OrdinalIgnoreCase))
+        try
         {
+            return decoder.Decode(path);
+        }
+        catch (Exception ex) when (ManagedAudioDecoders.IsFormatRejection(ex))
+        {
+            // The bytes do not match the extension — a renamed file, a .wav that is really
+            // mu-law or ADPCM, an .ogg carrying Speex. FFmpeg sniffs content rather than
+            // trusting the name, so it gets the last word.
             try
             {
-                return Mp3Decoder.Decode(path);
+                return FfmpegAudioDecoder.Decode(path);
             }
-            catch (Exception ex) when (ex is InvalidDataException or FormatException)
+            catch (Exception ffmpegEx)
             {
-                // The bytes aren't MPEG audio despite the extension — an AAC or WAV file
-                // someone renamed, most often. FFmpeg sniffs content rather than trusting
-                // the name, so it gets the last word here as it does for a non-PCM .wav.
-                // A missing file is deliberately NOT caught: it is not a format question,
-                // and FileNotFoundException is what callers already handle.
-                try
-                {
-                    return FfmpegAudioDecoder.Decode(path);
-                }
-                catch (Exception ffmpegEx)
-                {
-                    throw new InvalidOperationException(
-                        $"Could not read '{Path.GetFileName(path)}'. It was rejected as MP3 "
-                        + $"({ex.GetType().Name}: {ex.Message}), and the FFmpeg fallback also "
-                        + $"failed: {ffmpegEx.Message}", ffmpegEx);
-                }
+                // ⚠ CARRY THE MANAGED FAILURE FORWARD. This catch is deliberately wide
+                // enough to include the exceptions a *corrupt or truncated* file of the
+                // right format raises, not just a mislabelled one. Reporting only the
+                // FFmpeg error there would hide that the file was rejected as its own
+                // format first, which is usually the real diagnosis — and on Windows it
+                // sends the user off installing FFmpeg for a file that is simply broken.
+                throw new InvalidOperationException(
+                    $"Could not read '{Path.GetFileName(path)}'. It was rejected as "
+                    + $"{decoder.Name} ({ex.GetType().Name}: {ex.Message}), and the FFmpeg "
+                    + $"fallback also failed: {ffmpegEx.Message}", ffmpegEx);
             }
         }
-
-        if (string.Equals(ext, ".wav", StringComparison.OrdinalIgnoreCase))
-        {
-            try
-            {
-                return ReadPcmWav(path);
-            }
-            catch (Exception ex) when (ex is NotSupportedException or FormatException or InvalidDataException)
-            {
-                // A .wav that isn't PCM/IEEE-float — mu-law, A-law, ADPCM, or an MP3 in a
-                // WAV container. Decoding those is ACM's job and the cross-platform NAudio
-                // has no ACM, so hand it to FFmpeg like any other compressed format.
-                try
-                {
-                    return FfmpegAudioDecoder.Decode(path);
-                }
-                catch (Exception ffmpegEx)
-                {
-                    // ⚠ CARRY THE NAUDIO FAILURE FORWARD. This catch is deliberately wide
-                    // enough to include FormatException/InvalidDataException, which a
-                    // *corrupt or truncated* PCM WAV raises too — not just a non-PCM one.
-                    // Reporting only the ffmpeg error there would hide the fact that the
-                    // file was rejected as a WAV first, which is usually the real diagnosis.
-                    throw new InvalidOperationException(
-                        $"Could not read '{Path.GetFileName(path)}'. NAudio rejected it as WAV "
-                        + $"({ex.GetType().Name}: {ex.Message}), and the FFmpeg fallback also "
-                        + $"failed: {ffmpegEx.Message}", ffmpegEx);
-                }
-            }
-        }
-
-        return FfmpegAudioDecoder.Decode(path);
-    }
-
-    private static (float[] samples, int sampleRate, int channels) ReadPcmWav(string path)
-    {
-        using var reader = new AudioFileReader(path);
-        int sampleRate = reader.WaveFormat.SampleRate;
-        int channels   = reader.WaveFormat.Channels;
-
-        var list   = new List<float>(sampleRate * channels * 10);
-        var buffer = new float[8192];
-        int read;
-        // ⚠ THROUGH THE INTERFACE, DELIBERATELY. AudioFileReader carries both
-        // Read(Span<float>) (ISampleProvider) and Read(Span<byte>) (WaveStream) in NAudio 3;
-        // going through the interface pins the float overload rather than leaving it to
-        // overload resolution on a call whose failure mode is a silent byte-wise read.
-        ISampleProvider readerSamples = reader;
-        while ((read = readerSamples.Read(buffer)) > 0)
-            for (int i = 0; i < read; i++) list.Add(buffer[i]);
-
-        return (list.ToArray(), sampleRate, channels);
     }
 
     /// <summary>ASR target sample rate (same as Config.SampleRate, exposed for external callers).</summary>
