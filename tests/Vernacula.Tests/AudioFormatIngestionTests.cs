@@ -5,16 +5,27 @@ using Xunit;
 namespace Vernacula.Tests;
 
 /// <summary>
-/// Format coverage for <see cref="AudioUtils.ReadAudio"/> (issue #156).
+/// Format coverage for <see cref="AudioUtils.ReadAudio"/> (issues #156 and #176).
 ///
 /// The regression these lock down: NAudio 3's cross-platform build decodes only
 /// PCM/IEEE-float WAV, so everything else — MP3, FLAC, M4A, non-PCM WAV — threw
 /// NotSupportedException out of the CLI surface on every platform. Reading those
-/// now goes through FFmpeg.
+/// now goes through FFmpeg, except MP3, which goes through NLayer in-process.
 ///
 /// Fixtures are synthesised with ffmpeg rather than committed, so there is no
 /// binary test data in the repo and every case is generated from the same
 /// known-good source tone. Skips when ffmpeg is absent, as on a hosted runner.
+///
+/// ⚠ MP3 IS THE ONE EXCEPTION, AND IT HAS TO BE. #176 is "MP3 stopped working on
+/// Windows", and the machine it broke on is precisely the machine with no ffmpeg —
+/// where a synthesised fixture cannot be built and a skipping test proves nothing.
+/// Those cases read committed fixtures from tests/fixtures/ instead, and assert that
+/// the decode never reached the subprocess. See tests/fixtures/README.md.
+///
+/// ⚠ EVERY AUDIO DECODE IN THIS ASSEMBLY LIVES IN THIS ONE CLASS, DELIBERATELY. The
+/// routing assertions watch process-wide decode counters, so a second test class
+/// decoding audio in parallel would make them flap; xunit runs the tests within a
+/// single class sequentially. Add audio cases here rather than in a new class.
 /// </summary>
 public class AudioFormatIngestionTests : IDisposable
 {
@@ -150,8 +161,10 @@ public class AudioFormatIngestionTests : IDisposable
 
     // ── The formats #156 is about: these all threw NotSupportedException before ──
 
+    // MP3 is deliberately absent from this theory: it decodes in-process now, and the cases
+    // below assert that it does. Leaving it here would keep passing either way, since this
+    // theory only checks that the tone came back.
     [Theory]
-    [InlineData("tone.mp3", new[] { "-acodec", "libmp3lame" })]
     [InlineData("tone.flac", new[] { "-acodec", "flac" })]
     [InlineData("tone.ogg", new[] { "-acodec", "libvorbis" })]
     [InlineData("tone.m4a", new[] { "-c:a", "aac" })]
@@ -205,6 +218,216 @@ public class AudioFormatIngestionTests : IDisposable
         Assert.True(FfmpegAudioDecoder.DecodeInvocations > before,
             "a non-PCM .wav should have fallen through to ffmpeg");
         AssertDecodedTone(got);
+    }
+
+    // ── MP3 (#176): in-process, on every platform, with no ffmpeg anywhere near it ──
+
+    private const string MonoMp3   = "tone_mono_44100.mp3";
+    private const string StereoMp3 = "tone_stereo_48000.mp3";
+    private const string Lsf16kMp3 = "tone_mono_16000.mp3";
+    private const string Mpeg25Mp3 = "tone_mono_8000.mp3";
+
+    /// <summary>Committed fixture, copied next to the test assembly by the csproj.</summary>
+    private static string Fixture(string name)
+    {
+        string path = Path.Combine(AppContext.BaseDirectory, "fixtures", name);
+        Assert.True(File.Exists(path),
+            $"missing committed fixture '{name}' at {path} — check the <None Include=\"..\\fixtures\\*.mp3\"> "
+            + "item in Vernacula.Tests.csproj");
+        return path;
+    }
+
+    /// <summary>
+    /// Run <paramref name="read"/> and assert MP3 took the managed decoder, not ffmpeg.
+    /// <para>
+    /// ⚠ BOTH COUNTERS, NOT JUST ONE. "ffmpeg wasn't called" would also hold if ReadAudio
+    /// threw before reaching it, and "NLayer was called" would hold if ReadAudio then fell
+    /// through to ffmpeg anyway. #176 is the second shape: MP3 decoded fine, through the
+    /// wrong route, on a machine that happened to have ffmpeg installed.
+    /// </para>
+    /// </summary>
+    private static (float[] samples, int sampleRate, int channels)
+        ReadAssertingManagedMp3(Func<(float[], int, int)> read)
+    {
+        int ffmpegBefore = FfmpegAudioDecoder.DecodeInvocations;
+        int nlayerBefore = Mp3Decoder.DecodeInvocations;
+
+        var got = read();
+
+        Assert.True(FfmpegAudioDecoder.DecodeInvocations == ffmpegBefore,
+            $"MP3 must not need ffmpeg, but it was invoked "
+            + $"{FfmpegAudioDecoder.DecodeInvocations - ffmpegBefore} time(s)");
+        Assert.True(Mp3Decoder.DecodeInvocations == nlayerBefore + 1,
+            "MP3 should have gone through the in-process NLayer decoder exactly once");
+        return got;
+    }
+
+    /// <summary>
+    /// Goertzel magnitude at <paramref name="hz"/>. Used to check the decoder produced the
+    /// tone rather than any plausible-looking buffer of the right size.
+    /// </summary>
+    private static double EnergyAt(float[] mono, int sampleRate, double hz)
+    {
+        double coeff = 2.0 * Math.Cos(2.0 * Math.PI * hz / sampleRate);
+        double s1 = 0.0, s2 = 0.0;
+        foreach (float x in mono)
+        {
+            double s0 = x + coeff * s1 - s2;
+            s2 = s1;
+            s1 = s0;
+        }
+        return s1 * s1 + s2 * s2 - coeff * s1 * s2;
+    }
+
+    /// <summary>The fixtures are 440 Hz sines; assert that is still what came out.</summary>
+    private static void AssertIs440HzTone((float[] samples, int sampleRate, int channels) got)
+    {
+        float[] mono = AudioUtils.DownmixToMono(got.samples, got.channels);
+        double at440 = EnergyAt(mono, got.sampleRate, 440);
+        foreach (double other in new[] { 220.0, 660.0, 880.0, 1320.0, 2000.0 })
+        {
+            double elsewhere = EnergyAt(mono, got.sampleRate, other);
+            Assert.True(at440 > 10 * elsewhere,
+                $"decoded audio does not look like a 440 Hz tone: energy at {other} Hz "
+                + $"({elsewhere:G3}) rivals 440 Hz ({at440:G3})");
+        }
+    }
+
+    /// <summary>
+    /// The #176 case itself: an MP3 must read on a machine with no ffmpeg installed, at its
+    /// own rate and channel count, in full.
+    ///
+    /// <para>
+    /// ⚠ ALL FOUR RATES, BECAUSE THEY ARE THREE DIFFERENT DECODERS. 44.1/48 kHz are MPEG-1;
+    /// 16 kHz is MPEG-2 (LSF, 576 samples per frame rather than 1152); 8 kHz is MPEG-2.5.
+    /// NLayer 1.16.0 returns roughly half of any file at or below 24 kHz while still
+    /// reporting the full duration, so a suite testing only 44.1 kHz would pass against a
+    /// decoder that silently drops half of every 16 kHz voice memo — the shape an ASR tool
+    /// is most often handed. The length assertion in <see cref="AssertDecodedTone"/> is what
+    /// catches that, so keep its lower bound well above half.
+    /// </para>
+    /// </summary>
+    [Theory]
+    [InlineData(MonoMp3, 44100, 1)]     // MPEG-1
+    [InlineData(StereoMp3, 48000, 2)]   // MPEG-1, stereo
+    [InlineData(Lsf16kMp3, 16000, 1)]   // MPEG-2 LSF
+    [InlineData(Mpeg25Mp3, 8000, 1)]    // MPEG-2.5
+    public void Mp3_ReadsWithoutFfmpegAtItsNativeLayout(string fixture, int rate, int channels)
+    {
+        var got = ReadAssertingManagedMp3(() => AudioUtils.ReadAudio(Fixture(fixture)));
+
+        Assert.Equal(channels, got.channels);
+        Assert.Equal(rate, got.sampleRate);
+        AssertDecodedTone(got, expectedChannels: channels);
+        AssertIs440HzTone(got);
+    }
+
+    /// <summary>
+    /// Real-world MP3s carry tags, and a tag is bytes that are not MPEG frames sitting where
+    /// the decoder looks for a frame sync. Wrapping a known-good fixture in both tag formats
+    /// must change nothing about what comes out.
+    /// <para>
+    /// The ID3v2 payload here is 4 KB of 0xFF, which is the hostile case on purpose: 0xFF is
+    /// the first byte of an MPEG frame sync, so a decoder that scanned for a sync instead of
+    /// honouring the tag's declared length would start decoding garbage.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void TaggedMp3_DecodesToTheSameSamples()
+    {
+        var plain = ReadAssertingManagedMp3(() => AudioUtils.ReadAudio(Fixture(MonoMp3)));
+
+        byte[] audio = File.ReadAllBytes(Fixture(MonoMp3));
+        const int payload = 4096;
+
+        // ID3v2.3 header: "ID3", version, flags, then a 4-byte syncsafe size (7 bits per byte)
+        // covering everything after the 10-byte header.
+        var tagged = new List<byte>(payload + audio.Length + 138);
+        tagged.AddRange("ID3"u8.ToArray());
+        tagged.AddRange([3, 0, 0]);
+        tagged.AddRange([
+            (byte)((payload >> 21) & 0x7F), (byte)((payload >> 14) & 0x7F),
+            (byte)((payload >> 7)  & 0x7F), (byte)( payload        & 0x7F),
+        ]);
+        tagged.AddRange(Enumerable.Repeat((byte)0xFF, payload));
+        tagged.AddRange(audio);
+        // ID3v1 trailer: the last 128 bytes of the file, starting "TAG".
+        tagged.AddRange("TAG"u8.ToArray());
+        tagged.AddRange(Enumerable.Repeat((byte)0x20, 125));
+
+        string path = Path.Combine(_dir, "tagged.mp3");
+        File.WriteAllBytes(path, tagged.ToArray());
+
+        var got = ReadAssertingManagedMp3(() => AudioUtils.ReadAudio(path));
+
+        Assert.Equal(plain.sampleRate, got.sampleRate);
+        Assert.Equal(plain.channels, got.channels);
+        Assert.Equal(plain.samples.Length, got.samples.Length);
+        Assert.Equal(plain.samples, got.samples);
+    }
+
+    /// <summary>
+    /// <see cref="Mp3Decoder"/> is the public entry point behind that routing, and it reports
+    /// the file's own layout rather than anything resampled.
+    /// </summary>
+    [Fact]
+    public void Mp3Decoder_ReturnsTheFilesNativeLayout()
+    {
+        var got = Mp3Decoder.Decode(Fixture(StereoMp3));
+
+        Assert.Equal(48000, got.sampleRate);
+        Assert.Equal(2, got.channels);
+        Assert.Equal(0, got.samples.Length % 2);
+        AssertDecodedTone(got, expectedChannels: 2);
+    }
+
+    /// <summary>
+    /// An .mp3 whose bytes are not MPEG audio — a renamed WAV — still has to read. The
+    /// extension picks the decoder to try first; the content decides what actually works.
+    /// </summary>
+    [Fact]
+    public void RenamedNonMp3_FallsBackToFfmpeg()
+    {
+        RequireFfmpeg();
+        string wav = MakeFixture("actually_a_wav.wav", "-acodec", "pcm_s16le");
+        string path = Path.Combine(_dir, "renamed.mp3");
+        File.Copy(wav, path);
+
+        int before = FfmpegAudioDecoder.DecodeInvocations;
+        var got = AudioUtils.ReadAudio(path);
+
+        Assert.True(FfmpegAudioDecoder.DecodeInvocations > before,
+            "an .mp3 that is really a WAV should have fallen through to ffmpeg");
+        AssertDecodedTone(got);
+    }
+
+    /// <summary>
+    /// And when neither decoder can read it, the error names both attempts. Reporting only
+    /// the ffmpeg failure would send a Windows user off installing ffmpeg for a file that is
+    /// simply corrupt — the exact wrong conclusion, and the one #176 made easy to reach.
+    /// </summary>
+    [Fact]
+    public void UnreadableMp3_ErrorNamesBothDecoders()
+    {
+        string path = Path.Combine(_dir, "corrupt.mp3");
+        File.WriteAllText(path, "this is not an audio file");
+
+        var ex = Assert.ThrowsAny<InvalidOperationException>(() => AudioUtils.ReadAudio(path));
+        Assert.Contains("corrupt.mp3", ex.Message);
+        Assert.Contains("MP3", ex.Message);
+        Assert.Contains("FFmpeg", ex.Message);
+    }
+
+    /// <summary>A missing .mp3 is a missing file, not a format problem, and must not spawn ffmpeg.</summary>
+    [Fact]
+    public void MissingMp3_ThrowsFileNotFoundWithoutFfmpeg()
+    {
+        int before = FfmpegAudioDecoder.DecodeInvocations;
+
+        Assert.Throws<FileNotFoundException>(
+            () => AudioUtils.ReadAudio(Path.Combine(_dir, "nope.mp3")));
+
+        Assert.Equal(before, FfmpegAudioDecoder.DecodeInvocations);
     }
 
     // ── Failure modes should say something useful ──

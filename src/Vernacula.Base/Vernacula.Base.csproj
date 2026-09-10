@@ -37,9 +37,10 @@
                       PrivateAssets="all" />
   </ItemGroup>
 
-  <!-- FfmpegAudioDecoder.DecodeInvocations is a test seam: it lets the audio-format
-       tests assert that PCM WAV stays on the in-process NAudio path instead of only
-       asserting that it decoded somehow. -->
+  <!-- FfmpegAudioDecoder.DecodeInvocations and Mp3Decoder.DecodeInvocations are test seams:
+       they let the audio-format tests assert that PCM WAV stays on the in-process NAudio path
+       and MP3 on the in-process NLayer path, instead of only asserting that each decoded
+       somehow — which is what a regression to the ffmpeg subprocess would still pass (#176). -->
   <ItemGroup>
     <InternalsVisibleTo Include="Vernacula.Tests" />
   </ItemGroup>
@@ -47,6 +48,21 @@
   <ItemGroup>
     <PackageReference Include="NAudio"            Version="3.1.0" />
     <PackageReference Include="MathNet.Numerics"  Version="5.0.0" />
+    <!-- ⚠ NLayer IS THE MP3 DECODER NAudio 3 NO LONGER SHIPS HERE, not an optimisation.
+         NAudio 3 hands Mp3FileReader's ACM/MediaFoundation P/Invokes to a Windows target
+         framework only, so this net10.0 project cannot decode MP3 with NAudio on ANY host —
+         see Mp3Decoder.cs. NLayer is pure managed (net8.0/netstandard2.0, MIT, same authors
+         as NAudio), brings no native assets, and so lands harmlessly in every CLI and test
+         project that references Base.
+
+         ⚠ 3.x, NOT 1.16.0, AND THE DIFFERENCE IS SILENT DATA LOSS. NLayer 1.16.0 decodes
+         only about half of any MPEG-2 / MPEG-2.5 file — every sample rate at or below
+         24 kHz — and reports the full duration while doing it. A 16 kHz mono voice memo,
+         which is exactly the shape an ASR tool is handed, came back at half length with no
+         error anywhere: the transcript was simply missing half the words, at plausible
+         timestamps. tests/fixtures carries 8 kHz and 16 kHz fixtures so a downgrade fails
+         loudly instead. -->
+    <PackageReference Include="NLayer"            Version="3.0.0" />
     <!-- Note: NemoNfaAligner uses an in-house SimpleSpTokenizer (greedy LPM
          over vocab.txt). Microsoft.ML.Tokenizers 2.0.0's
          SentencePieceTokenizer.Create throws IndexOutOfRangeException on

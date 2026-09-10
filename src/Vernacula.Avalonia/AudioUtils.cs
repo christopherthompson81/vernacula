@@ -17,7 +17,7 @@ internal static class AudioUtils
     private static readonly HashSet<string> CrossPlatformFfmpegAudioExtensions =
         new(StringComparer.OrdinalIgnoreCase)
         {
-            ".aac", ".flac", ".m4a", ".mp3",
+            ".aac", ".flac", ".m4a",
         };
 
     // ── Mel filterbank (computed once) ───────────────────────────────────────
@@ -237,19 +237,39 @@ internal static class AudioUtils
     /// <para>
     /// When <paramref name="streamIndex"/> is ≥ 0, or the file extension
     /// belongs to a video container or an FFmpeg-only audio format, decoding
-    /// is delegated to <see cref="FFmpegDecoder"/>.  All other files are read
-    /// via NAudio (the existing behaviour).
+    /// is delegated to <see cref="FFmpegDecoder"/>.  MP3 is decoded in-process
+    /// by <see cref="Mp3Decoder"/>, and all other files via NAudio.
     /// </para>
     /// </summary>
     public static (float[] samples, int sampleRate, int channels)
         ReadAudio(string path, int streamIndex = -1)
     {
         string ext = Path.GetExtension(path);
+
+        // ⚠ MP3 GOES TO THE MANAGED DECODER ON BOTH TARGET FRAMEWORKS, INCLUDING WINDOWS,
+        // where AudioFileReader could still decode it. One decoder means one behaviour to
+        // test and one to reason about, and the Windows-only route is the one that quietly
+        // disappeared under NAudio 3 and took MP3 support with it (#176). streamIndex is
+        // respected first: that means "pick stream N of a multi-stream file", which is
+        // FFmpeg's job and not something an MP3 ever needs.
+        if (streamIndex < 0 && string.Equals(ext, ".mp3", StringComparison.OrdinalIgnoreCase))
+        {
+            try
+            {
+                return Mp3Decoder.Decode(path);
+            }
+            catch (Exception ex) when (ex is InvalidDataException or FormatException)
+            {
+                // Not MPEG audio despite the name. FFmpeg sniffs content, so let it try.
+                return FFmpegDecoder.DecodeStream(path, 0);
+            }
+        }
+
 #if WINDOWS
         // The Windows build's NAudio carries MediaFoundation, which decodes these directly.
         bool preferFfmpegForCompressedAudio = false;
 #else
-        // ⚠ COMPILE-TIME, NOT OperatingSystem.IsWindows(). MP3/FLAC/M4A/AAC decoding lives in
+        // ⚠ COMPILE-TIME, NOT OperatingSystem.IsWindows(). FLAC/M4A/AAC decoding lives in
         // MediaFoundation, which NAudio 3 ships only to a Windows target framework. The
         // net10.0 build has none of it on ANY host, so it has to route these to ffmpeg even
         // when it happens to be running on Windows — asking the OS would send them to an

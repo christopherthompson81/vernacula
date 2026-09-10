@@ -218,20 +218,30 @@ public static class AudioUtils
     /// Read an audio file. Returns interleaved float samples in [-1, 1], the sample rate,
     /// and the channel count, all in the file's native layout.
     /// <para>
-    /// PCM and IEEE-float WAV are read in-process by NAudio. Everything else — MP3, FLAC,
-    /// M4A, AAC, OGG, Opus, non-PCM WAV (mu-law, A-law, ADPCM), video containers — is
-    /// decoded by shelling out to FFmpeg via <see cref="FfmpegAudioDecoder"/>, which needs
-    /// FFmpeg on PATH (already a documented prerequisite; see README.md).
+    /// PCM and IEEE-float WAV are read in-process by NAudio, and MP3 in-process by NLayer
+    /// (<see cref="Mp3Decoder"/>). Everything else — FLAC, M4A, AAC, OGG, Opus, non-PCM WAV
+    /// (mu-law, A-law, ADPCM), video containers — is decoded by shelling out to FFmpeg via
+    /// <see cref="FfmpegAudioDecoder"/>, which needs FFmpeg on PATH (already a documented
+    /// prerequisite; see README.md).
     /// </para>
     /// <para>
-    /// ⚠ THE FFMPEG PATH IS NOT A WINDOWS FALLBACK — IT IS THE ONLY PATH FOR THESE FORMATS
-    /// ON EVERY PLATFORM. The MP3/FLAC/M4A/AAC and non-PCM-WAV decoders are MediaFoundation
-    /// and ACM P/Invokes living in NAudio.WinMM/NAudio.Wasapi, which NAudio 3 ships only to
-    /// a Windows target framework. This project is net10.0, so it has none of them on any
+    /// ⚠ THE FFMPEG PATH IS NOT A WINDOWS FALLBACK — IT IS THE ONLY PATH FOR THOSE FORMATS
+    /// ON EVERY PLATFORM. The FLAC/M4A/AAC and non-PCM-WAV decoders are MediaFoundation and
+    /// ACM P/Invokes living in NAudio.WinMM/NAudio.Wasapi, which NAudio 3 ships only to a
+    /// Windows target framework. This project is net10.0, so it has none of them on any
     /// host. Under NAudio 2.3.0 a net10.0 resolve still received those assemblies, so these
     /// formats worked here on Windows and threw on Linux; that asymmetry is what #156
     /// removed, by giving both platforms the FFmpeg route rather than restoring a
     /// Windows-only one.
+    /// </para>
+    /// <para>
+    /// ⚠ MP3 IS THE EXCEPTION, BECAUSE #156's ANSWER REGRESSED IT ON WINDOWS (#176). MP3 is
+    /// the one format in that list an ASR user is likely to arrive with, and sending it to
+    /// FFmpeg made a working Windows install stop reading MP3 until FFmpeg was installed —
+    /// something it had never needed. <see cref="Mp3Decoder"/> is pure managed code, so it
+    /// restores that on Windows and adds it on Linux and macOS, where MP3 never worked
+    /// in-process at all. FFmpeg stays as the fallback for a file whose bytes turn out not
+    /// to be MPEG audio whatever the extension says.
     /// </para>
     /// <para>
     /// To pick a specific audio stream out of a multi-stream file, call
@@ -240,7 +250,36 @@ public static class AudioUtils
     /// </summary>
     public static (float[] samples, int sampleRate, int channels) ReadAudio(string path)
     {
-        if (string.Equals(Path.GetExtension(path), ".wav", StringComparison.OrdinalIgnoreCase))
+        string ext = Path.GetExtension(path);
+
+        if (string.Equals(ext, ".mp3", StringComparison.OrdinalIgnoreCase))
+        {
+            try
+            {
+                return Mp3Decoder.Decode(path);
+            }
+            catch (Exception ex) when (ex is InvalidDataException or FormatException)
+            {
+                // The bytes aren't MPEG audio despite the extension — an AAC or WAV file
+                // someone renamed, most often. FFmpeg sniffs content rather than trusting
+                // the name, so it gets the last word here as it does for a non-PCM .wav.
+                // A missing file is deliberately NOT caught: it is not a format question,
+                // and FileNotFoundException is what callers already handle.
+                try
+                {
+                    return FfmpegAudioDecoder.Decode(path);
+                }
+                catch (Exception ffmpegEx)
+                {
+                    throw new InvalidOperationException(
+                        $"Could not read '{Path.GetFileName(path)}'. It was rejected as MP3 "
+                        + $"({ex.GetType().Name}: {ex.Message}), and the FFmpeg fallback also "
+                        + $"failed: {ffmpegEx.Message}", ffmpegEx);
+                }
+            }
+        }
+
+        if (string.Equals(ext, ".wav", StringComparison.OrdinalIgnoreCase))
         {
             try
             {
