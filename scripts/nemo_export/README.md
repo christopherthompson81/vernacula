@@ -14,6 +14,7 @@ It now covers both models in your pipeline:
 - `export_sortformer_nemo_to_onnx.py`: exports streaming Sortformer `.nemo` to the same six-input / three-output ONNX contract used by Vernacula's inference code.
 - `export_silero_vad_to_onnx.py`: exports Silero VAD to ONNX.
 - `benchmark_sortformer_rtf.py`: benchmarks Sortformer NeMo-vs-ONNX diarization RTF on CPU or CUDA.
+- `fp16_convert_sortformer.py`: converts an exported Sortformer ONNX to fp16 — one that loads and runs, which a bare `convert_float_to_float16` call does not produce (issue #172).
 - `sortformer_compress_parity.py`: compares speaker-cache compression against NeMo's stage by stage on a fixture with a controlled saturated fraction — the reproduction for #171. `--probe-topk-ties` characterizes `torch.topk`'s tie behaviour on the current build (run this first on a new machine or torch version), `--tie-incidence` reports when a tie can actually decide a pick.
 - `coreml_partition_probe.py`: reports what an execution provider does with a static Sortformer graph — partition count, load and inference time, parity against the dynamic graph. This is the measurement that decides whether a CoreML variant is worth shipping, and it has to run on Apple Silicon.
 - `compare_sortformer_chunk_outputs.py`: compares two Sortformer backends chunk-by-chunk to locate streaming parity drift.
@@ -315,6 +316,37 @@ Caveats:
   model, at 51.5 ms vs 171.8 ms for stock-on-CPU. Re-validate on any further ORT change;
   see
   [docs/investigations/sortformer_coreml_publish_investigation.md](../../docs/investigations/sortformer_coreml_publish_investigation.md).
+
+### fp16
+
+```bash
+python scripts/nemo_export/fp16_convert_sortformer.py \
+  --input  ~/models/diar_streaming_sortformer_4spk-v2.1.onnx \
+  --output ~/models/diar_streaming_sortformer_4spk-v2.1.fp16.onnx \
+  --compare
+```
+
+492 MB -> 247 MB, loading at every optimization level. A bare
+`onnxconverter_common.float16.convert_float_to_float16` call does **not** get there; four
+things have to be handled, and the script's docstring covers each:
+
+1. The conv output-length arithmetic stays fp32. Those nodes compute a **frame count**, not
+   an activation, and fp16 is exact on integers only to 2048.
+2. Explicit `Cast` nodes get their `to` attribute reconciled — the converter rewrites tensor
+   types but leaves 27 `Cast`s declaring the old one.
+3. `chunk_pre_encode_embs` is both a graph output and an internal input, so `keep_io_types`
+   hands its internal consumer an fp32 tensor it cannot use. Those consumers are rewired to
+   the pre-cast fp16 source.
+4. `ScatterElements` is held in fp32: the model otherwise loads and then dies on the first
+   inference, because the CPU EP has no fp16 kernel for it at opset 16.
+
+Inputs and outputs stay float32 by default (`--io-fp16` to change that), so the result is a
+drop-in for `Sortformer.cs`.
+
+**Accuracy is fine; throughput is not uniform.** Fidelity DER against NeMo is 0.000% on real
+speech, but fp16 is **1.66x faster on CUDA and 25% slower on CPU** — there are no native
+fp16 CPU kernels. Treat it as an execution-provider-gated variant, never a replacement. See
+[docs/investigations/sortformer_fp16_investigation.md](../../docs/investigations/sortformer_fp16_investigation.md).
 
 For a safer structure-only experiment that keeps dynamic time dimensions but
 specializes the graph to batch size 1, use:

@@ -144,9 +144,14 @@ only in the packaged app.
    1.29.0 gives 1 partition and `4.470E-07`. Set the CoreML EP's `ModelCacheDirectory` or
    every load pays the 2.2 s compile instead of 0.16 s.
 
-`fp16` was measured faster still (22.3 ms) but is **not** shipped: `chunk_pre_encode_embs`
-diverges to 9.8e-02 there and those embeddings feed back into the speaker cache and FIFO,
-so it needs an end-to-end DER check rather than a single-chunk comparison.
+`fp16` was measured faster still (22.3 ms) and is **not** shipped, though no longer for the
+original reason. `chunk_pre_encode_embs` does diverge to 9.8e-02, and those embeddings feed
+back into the speaker cache and FIFO — but the end-to-end check that was missing has since
+been run, and fidelity DER against NeMo is **0.000%** on real speech (3 frames in 3378 flip
+their binarized speaker set, all absorbed by the median filter). What holds fp16 back now is
+throughput: it is **1.66× faster on CUDA but 25% slower on CPU**, since there are no native
+fp16 CPU kernels, so it can only ever be an execution-provider-gated variant rather than a
+replacement.
 
 Reproduce it with:
 
