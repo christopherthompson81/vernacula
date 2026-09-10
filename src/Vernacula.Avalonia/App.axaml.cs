@@ -163,6 +163,12 @@ public partial class App : Application
         TtsRunner     = new TtsJobRunner(Settings);
         JobQueue      = new JobQueueService(Transcription, TtsRunner, ControlDb, Settings);
 
+        // Reclaim what a previous version left behind — retired model files and, far more
+        // importantly, their compiled CoreML bundles at ~4.4 GB each. Nothing else reclaims
+        // those once a model stops being used, and the affected users already have every
+        // model on disk, so they would never hit the download path that also does this.
+        _ = ModelManager.RemoveRetiredAssetsAsync();
+
         // Warm up Sortformer model on a background thread so the first
         // transcription starts without the usual ONNX Runtime initialisation
         // delay (graph optimisation, CUDA/DML provider setup, memory alloc).

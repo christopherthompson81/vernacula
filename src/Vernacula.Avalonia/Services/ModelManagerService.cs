@@ -840,7 +840,7 @@ internal class ModelManagerService
     {
         string dir = _settings.GetModelsDir();
         Directory.CreateDirectory(dir);
-        RemoveRetiredAssets(dir);
+        await RemoveRetiredAssetsAsync();
 
         var missing = DownloadableFiles()
             .Where(asset => !File.Exists(Path.Combine(dir, asset.LocalRelativePath)))
@@ -850,11 +850,23 @@ internal class ModelManagerService
 
     /// <summary>
     /// Deletes model files this version no longer uses, and the compiled CoreML bundles
-    /// they left behind. Best-effort and silent: reclaiming disk must never be the reason a
-    /// download fails.
+    /// they left behind. Best-effort and silent: reclaiming disk must never be the reason
+    /// something else fails.
     /// </summary>
-    private static void RemoveRetiredAssets(string modelsDir)
+    /// <remarks>
+    /// ⚠ Call this on STARTUP, not only from the download path. The users carrying the
+    /// orphaned bundles are exactly the ones who already have every model on disk and
+    /// therefore never press "Download models" — reclaiming only on a download pass means
+    /// the pass never happens for them, and ~17.6 GB sits there indefinitely.
+    ///
+    /// Off the calling thread because it is not cheap: it stats every file of up to four
+    /// ~4.4 GB bundles to report what it freed, then deletes them. On the UI thread that is
+    /// a visible freeze.
+    /// </remarks>
+    public Task<long> RemoveRetiredAssetsAsync() => Task.Run(() =>
     {
+        long reclaimed = 0;
+        string modelsDir = _settings.GetModelsDir();
         foreach (var (subDir, filePrefix) in RetiredAssets)
         {
             try
@@ -864,17 +876,18 @@ internal class ModelManagerService
                 {
                     foreach (string f in Directory.EnumerateFiles(bundleDir, filePrefix + "*"))
                     {
-                        try { File.Delete(f); } catch { }
+                        try { reclaimed += new FileInfo(f).Length; File.Delete(f); } catch { }
                     }
                 }
 
                 // The compiled bundles are the big half: ~4.4 GB apiece against ~25 MB of
                 // graph, and nothing else ever reclaims them once the model stops being used.
-                OrtSessionBuilder.ForgetCoreMLCacheFor(filePrefix);
+                reclaimed += OrtSessionBuilder.ForgetCoreMLCacheFor(filePrefix);
             }
-            catch { /* retiring is opportunistic; never let it break a download */ }
+            catch { /* retiring is opportunistic; never let it break anything else */ }
         }
-    }
+        return reclaimed;
+    });
 
     public async Task DownloadMissingDiariZenModelsAsync(
         IProgress<DownloadProgress> progress,

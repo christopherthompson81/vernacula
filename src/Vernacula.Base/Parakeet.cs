@@ -25,7 +25,11 @@ public sealed class Parakeet : IDisposable
     private readonly int[] _stateShape1;
     private readonly int[] _stateShape2;
 
-    /// <summary>Wall-clock milliseconds spent inside the encoder, whichever graph ran it.</summary>
+    /// <summary>
+    /// Wall-clock milliseconds spent inside the encoder, accumulated over this instance's
+    /// lifetime. Never reset: callers build a Parakeet per run and report once, so a running
+    /// total is what they want — anything reusing an instance across reports must diff it.
+    /// </summary>
     public double EncoderMs { get; private set; }
 
     /// <summary>
@@ -216,7 +220,6 @@ public sealed class Parakeet : IDisposable
 
     private (float[,,] encoderOut, long[] encoderLens) EncodeInner(float[,,] features, long[] lens)
     {
-
         int B = features.GetLength(0);
         int D = features.GetLength(1);
         int T = features.GetLength(2);

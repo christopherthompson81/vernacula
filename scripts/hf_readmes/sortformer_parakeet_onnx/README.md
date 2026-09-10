@@ -34,7 +34,6 @@ co-located here so a single download brings up the full pipeline.
 - **DFT-basis mel frontend replaces `torch.stft`.** ORT's STFT op diverged from NeMo (cosine ≈ 0.23 on first inspection); the replacement uses precomputed cos/sin basis matrices as Conv1D weights, with center-padded windows and standard ops only. Restored bit-for-bit parity to the NeMo reference.
 - **Streaming Sortformer 6→3 ONNX contract.** NeMo's `concat_and_pad()` isn't ONNX-traceable; the custom exporter replaces dynamic per-batch slicing with fixed-shape ops at 992 chunk frames (124 subsampled at 8× downsampling). Inputs: `chunk, chunk_lengths, spkcache, spkcache_lengths, fifo, fifo_lengths`. Outputs: `spkcache_fifo_chunk_preds, chunk_pre_encode_embs, chunk_pre_encode_lengths`.
 - **CoreML-compilable Sortformer variant for Apple Silicon.** The stock diarization graph cannot be compiled by ONNX Runtime's CoreML EP at all (`Failed to create MLModel … error code: -14`), so the Neural Engine was unreachable on macOS. `diar_streaming_sortformer_4spk-v2.1.coreml.onnx` is a fully static re-export plus four value-preserving graph rewrites that compile as a **single** CoreML partition — 51.5 ms/chunk vs 171.8 ms on CPU (M5, ORT 1.29.0). It is a **steady-state-only** graph with a different input contract; read [Sortformer CoreML variant](#sortformer-coreml-variant) before using it.
-- **CoreML-compilable Parakeet encoder for Apple Silicon.** The stock encoder cannot be compiled by the CoreML EP either (same `error code: -14`, 84 partitions). `encoder-model.coreml-<frames>.onnx` are static-shape buckets that take the padding mask as an **input** (`pad_keep`) rather than baking a constant length, so they compile as a **single** partition and stay exact at any true length ≤ the bucket — 58.2 ms vs 146.9 ms on CPU at a 10 s bucket, ~2.5× at every size. They reuse the existing `encoder-model.onnx.data`, so they add no weight download. Different input contract; read [Parakeet CoreML encoder buckets](#parakeet-coreml-encoder-buckets) first.
 - **Dynamic-batch encoder + dynamic-batch joint decoder** for Parakeet TDT (preprocessor still batch-1 post-export). INT8 variants of encoder, decoder-joint, and Sortformer ship for CPU-only inference.
 - **Chunk-by-chunk parity diagnostic** ([`compare_sortformer_chunk_outputs.py`](https://github.com/christopherthompson81/vernacula/blob/main/scripts/nemo_export/compare_sortformer_chunk_outputs.py)) compares NeMo vs ONNX state evolution across streaming chunks to localise drift to either model output or carry-state.
 - **Preprocessor export sweep** ([`tune_nemo128_export.py`](https://github.com/christopherthompson81/vernacula/blob/main/scripts/nemo_export/tune_nemo128_export.py)) scores wrapper / custom / DFT modes against a legacy reference with feature-level and encoder-output deltas — the tooling that picked the DFT path in the first bullet.
@@ -52,7 +51,6 @@ co-located here so a single download brings up the full pipeline.
 | `diar_streaming_sortformer_4spk-v2.1.onnx` | [`nvidia/diar_streaming_sortformer_4spk-v2.1`](https://huggingface.co/nvidia/diar_streaming_sortformer_4spk-v2.1) | Streaming 4-speaker diarization |
 | `diar_streaming_sortformer_4spk-v2.1_int8.onnx` | (quantized) | INT8-quantized diarization |
 | `diar_streaming_sortformer_4spk-v2.1.coreml.onnx` | Sortformer | Static steady-state diarization graph for the CoreML EP — **different contract**, see below |
-| `encoder-model.coreml-{400,1000,2000,3000}.onnx` | Parakeet TDT v3 | Static-shape encoder buckets for the CoreML EP — **different contract**, reuse `encoder-model.onnx.data`, see below |
 | `sortformer/diar_streaming_sortformer_4spk-v2.1.onnx` | Sortformer | Same graph in subdir layout for legacy clients |
 | `silero_vad.onnx` | [snakers4/silero-vad](https://github.com/snakers4/silero-vad) | Voice activity detection |
 | `config.json`, `manifest.json` | Vernacula | Runtime config + per-file MD5 hashes |
@@ -173,96 +171,26 @@ python scripts/nemo_export/coreml_optimize_sortformer.py \
 The techniques generalize; see
 [`docs/coreml_onnx_playbook.md`](https://github.com/christopherthompson81/vernacula/blob/main/docs/coreml_onnx_playbook.md).
 
-## Parakeet CoreML encoder buckets
+## A note on the Parakeet encoder and CoreML
 
-`encoder-model.coreml-{400,1000,2000,3000}.onnx` are static-shape re-exports of the
-Parakeet encoder that ONNX Runtime's CoreML EP compiles as a **single partition**. The
-stock `encoder-model.onnx` cannot be compiled by it at all — `Failed to create MLModel …
-error code: -14`, 84 partitions — so the Neural Engine was unreachable for ASR on macOS.
+Static-shape CoreML re-exports of the Parakeet **encoder** were built, published here, and
+then withdrawn. They worked — single CoreML partition, exact to the stock graph, and a real
+1.56× on inference — but a bucket session costs ~2.9 s to open and a static-shape design
+needs several of them, so the Neural Engine's win went straight back into loading. On a
+10-minute recording the encoder took 19.5 s through the buckets against **10.8 s on the CPU
+EP** and **7.1 s on WebGPU**, which runs the stock `encoder-model.onnx` unmodified.
 
-**These four files add no weight download.** Their external weights are byte-identical to
-the `encoder-model.onnx.data` already in this repo (md5 `2f53c7ed168d73ea305ac2f53bdac097`)
-and every bucket points at that same file, so each bucket costs only its own graph:
-10 / 24 / 48 / 71 MiB. Keep `encoder-model.onnx.data` beside them.
+They also cost ~4.4 GB of compiled CoreML cache *each*, and real speech segments fill a
+bucket only about half way.
 
-### Contract — different from `encoder-model.onnx`
+So for ASR on Apple Silicon, use `encoder-model.onnx` with the **WebGPU** execution
+provider: dynamic shapes, no re-export, no bucketing. The diarization variant above is
+different — its shapes really are fixed, and it is a clear win on the Neural Engine.
 
-| | |
-|---|---|
-| in | `audio_signal [1, 128, F]` — mel features, zero-padded to the bucket's `F` |
-| in | `pad_keep [1, F]` — `1.0` for a real mel frame, `0.0` for padding |
-| out | `outputs [1, 1024, T]` |
-
-`F` is 400 / 1000 / 2000 / 3000 mel frames (4 / 10 / 20 / 30 s at a 10 ms hop);
-`T` is 50 / 125 / 250 / 375.
-
-Two caller obligations, **both of which fail silently rather than loudly**:
-
-1. **`pad_keep` must reflect the true frame count.** Passing all-ones for a short
-   segment is exactly the "bake the length" behaviour this export exists to avoid; it
-   moves the encoder output by 0.17–0.24 on valid frames and changes the transcript by
-   2–4% WER on 8–20 s segments, worse on short ones.
-2. **There is no `encoded_lengths` output**, because there is no `length` input. Compute
-   it yourself by folding the subsampler geometry —
-   `out = (in + pad0 + pad1 - kernel) // stride + 1`, three ×2 stages with kernel 3 and
-   padding 1+1 for this checkpoint — and ignore output frames past it.
-
-Within those, the graph is **exact at any true length ≤ the bucket**: the padding mask is
-an input rather than a baked constant, so nothing is approximated.
-
-### Why a mask input rather than the Sortformer recipe
-
-The Sortformer variant above reaches one partition by making every length a graph
-constant. Parakeet's segment lengths are arbitrary, so a constant length would be wrong
-for essentially every call, with no one-inference-per-file escape hatch. Instead the mask
-leaves the graph and becomes an input. Note the length feeds masking at **four**
-resolutions in NeMo's conformer — `MaskedConvSequential` re-masks between every strided
-conv in the subsampler, on top of the attention and conv-module masks — and all four are
-exact stride-2 decimations of the mel-rate mask, so one input drives them all.
-
-### Measured (M5, ORT 1.29.0)
-
-| | partitions | inference | CPU EP, same graph |
-|---|---|---|---|
-| stock `encoder-model.onnx` on CoreML | *fails to compile*, 84 | — | — |
-| bucket 400 (4 s) | **1** | **34.9 ms** | 87.2 ms |
-| bucket 1000 (10 s) | **1** | **58.2 ms** | 146.9 ms |
-| bucket 2000 (20 s) | **1** | **110.9 ms** | 279.4 ms |
-| bucket 3000 (30 s) | **1** | **165.2 ms** | 445.7 ms |
-
-≈ **2.5× the CPU EP at every size** (stock graph on CPU at 1000 frames: 143.6 ms).
-Parity against the stock encoder is 2e-7…6e-6 on real speech with identical transcripts
-through the full TDT decode; the mask rewrite itself is bit-exact (`0.000E+00`) in PyTorch.
-
-Unlike the Sortformer variant these need **no** post-processing pass and carry **no**
-load-level restriction — they load at any `GraphOptimizationLevel`.
-
-⚠ **Budget for the compiled cache: ~4.4 GB per bucket**, because the EP stores the weights
-twice (once in the `.mlpackage`, once in the compiled `.mlmodelc`). That, not download
-size, is what should decide how many buckets you deploy.
-
-⚠ **Retired: Vernacula does not ship these.** They were wired into the app, measured end
-to end, and removed. The graphs are exact and the ANE genuinely wins the inference
-(1.56×) — but a bucket session costs ~2.9 s to open, a static-shape design needs several,
-and that hands the win straight back. On the same 10-minute recording the encoder took
-19.5 s through the buckets (10.1 s inference + 9.4 s loading) against **10.8 s on the CPU
-EP** and **7.1 s on WebGPU**, which runs the stock `encoder-model.onnx` unmodified with no
-bucketing at all.
-
-They remain here for anyone reproducing the work or targeting the Neural Engine
-specifically, where they are still the only route to it. Two things to budget for if you
-do: each bucket compiles to a **~4.4 GB** CoreML bundle that nothing reclaims once you
-stop using it, and real speech segments fill a bucket only about half way, so roughly half
-the padded work is wasted.
-
-Built with
-[`export_parakeet_coreml_encoder.py`](https://github.com/christopherthompson81/vernacula/blob/main/scripts/nemo_export/export_parakeet_coreml_encoder.py):
-
-```bash
-python scripts/nemo_export/export_parakeet_coreml_encoder.py \
-  --nemo parakeet-tdt-0.6b-v3.nemo --output-dir out \
-  --frames 400 --frames 1000 --frames 2000 --frames 3000
-```
+Method and measurements:
+[`docs/coreml_onnx_playbook.md`](https://github.com/christopherthompson81/vernacula/blob/main/docs/coreml_onnx_playbook.md)
+(Technique 6) and
+[the investigation log](https://github.com/christopherthompson81/vernacula/blob/main/docs/investigations/parakeet_coreml_encoder_investigation.md).
 
 ## Export provenance
 
@@ -272,7 +200,7 @@ in the [Vernacula](https://github.com/christopherthompson81/vernacula) repo, whi
 - `export_parakeet_nemo_to_onnx.py` — Parakeet `.nemo` → split ONNX with TDT decoder state wired explicitly
 - `export_sortformer_nemo_to_onnx.py` — Streaming Sortformer `.nemo` → six-input / three-output ONNX contract
 - `export_silero_vad_to_onnx.py` — Silero VAD → ONNX
-- `export_parakeet_coreml_encoder.py` — Parakeet encoder → static-shape CoreML buckets with the padding mask hoisted to an input
+- `export_parakeet_coreml_encoder.py` — Parakeet encoder → static-shape CoreML buckets with the padding mask hoisted to an input (kept for reference; the artifacts it makes are not shipped, see above)
 
 The Parakeet export traces the RNNT/TDT decoder loop into a separate joint
 graph so each step is a fixed-shape ORT call. Sortformer is exported as a

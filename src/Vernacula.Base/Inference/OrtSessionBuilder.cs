@@ -244,24 +244,6 @@ public static class OrtSessionBuilder
     }
 
     /// <summary>
-    /// Deletes compiled caches for previous versions of one model file.
-    /// </summary>
-    /// <remarks>
-    /// Namespacing the cache per content version fixed stale-graph reuse, but on its own it
-    /// turns re-exports into an unbounded pile: each is ~1 GB for a model this size and
-    /// nothing reclaims the last one. Only directories under our own cache root whose prefix
-    /// marks them as an older version of THIS file are removed.
-    ///
-    /// ⚠ NOT SAFE AGAINST A CONCURRENT SESSION ON THE OLD VERSION. On APFS an unlink is not
-    /// refused because a file is open, so this does not merely "fail and recompile" the way
-    /// it would on Windows: a live session's compiled bundle can be removed underneath it.
-    /// Mapped pages survive, but anything CoreML re-opens by path afterwards does not. The
-    /// exposure is narrow -- it needs the model replaced in place AND a second session
-    /// opening the new version while the first still runs -- and it is bounded by only
-    /// pruning when a new version's directory is first created. Prune at process start
-    /// instead if that ever stops being narrow enough.
-    /// </remarks>
-    /// <summary>
     /// Deletes every cached CoreML bundle for models whose file name starts with
     /// <paramref name="fileNamePrefix"/>. Returns the bytes reclaimed.
     /// </summary>
@@ -277,6 +259,13 @@ public static class OrtSessionBuilder
     /// </remarks>
     public static long ForgetCoreMLCacheFor(string fileNamePrefix)
     {
+        // ⚠ Ask about the root only on macOS. CoreMLCacheRoot's factory CREATES the
+        // directory, so calling this on Windows or Linux -- which RemoveRetiredAssets does,
+        // unconditionally -- would mint an empty coreml-cache for a provider that build
+        // cannot use.
+        if (!OperatingSystem.IsMacOS())
+            return 0;
+
         string? root = CoreMLCacheRoot.Value;
         if (root is null || !Directory.Exists(root))
             return 0;
@@ -315,6 +304,24 @@ public static class OrtSessionBuilder
         catch { return 0; }
     }
 
+    /// <summary>
+    /// Deletes compiled caches for previous versions of one model file.
+    /// </summary>
+    /// <remarks>
+    /// Namespacing the cache per content version fixed stale-graph reuse, but on its own it
+    /// turns re-exports into an unbounded pile: each is ~1 GB for a model this size and
+    /// nothing reclaims the last one. Only directories under our own cache root whose prefix
+    /// marks them as an older version of THIS file are removed.
+    ///
+    /// ⚠ NOT SAFE AGAINST A CONCURRENT SESSION ON THE OLD VERSION. On APFS an unlink is not
+    /// refused because a file is open, so this does not merely "fail and recompile" the way
+    /// it would on Windows: a live session's compiled bundle can be removed underneath it.
+    /// Mapped pages survive, but anything CoreML re-opens by path afterwards does not. The
+    /// exposure is narrow -- it needs the model replaced in place AND a second session
+    /// opening the new version while the first still runs -- and it is bounded by only
+    /// pruning when a new version's directory is first created. Prune at process start
+    /// instead if that ever stops being narrow enough.
+    /// </remarks>
     private static void PruneStaleVersions(string root, string prefix, string keep, string modelPath)
     {
         try

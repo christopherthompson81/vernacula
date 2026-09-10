@@ -17,6 +17,7 @@ using CommunityToolkit.Mvvm.Input;
 using NAudio.Wave;
 using SoundTouch;
 using Vernacula.Base;
+using Vernacula.Base.Models;
 using Vernacula.App.Models;
 using Vernacula.App.Services;
 using ParakeetAsr = Vernacula.Base.Parakeet;
@@ -1070,7 +1071,8 @@ internal partial class TranscriptEditorViewModel : ObservableObject, IDisposable
             int parakeetBeamWidth = 1,
             string? parakeetLmPath = null,
             float parakeetLmWeight = 0.3f,
-            float parakeetLmLengthPenalty = 0.6f)
+            float parakeetLmLengthPenalty = 0.6f,
+            ExecutionProvider ep = ExecutionProvider.Auto)
     {
         if (index < 0 || index >= Segments.Count || _dbPath is null || _fullAudio is null)
             return null;
@@ -1170,8 +1172,11 @@ internal partial class TranscriptEditorViewModel : ObservableObject, IDisposable
             // Run ASR — the slice starts at t=0, so pass a 0-based time range
             bool lmActive = !string.IsNullOrWhiteSpace(parakeetLmPath) && File.Exists(parakeetLmPath);
             int  effectiveBeam = lmActive && parakeetBeamWidth < 2 ? 4 : parakeetBeamWidth;
+            // The user's provider choice has to reach here too. Batch transcription honours
+            // it; without this, re-running ASR on one segment silently built sessions on
+            // Auto instead -- reintroducing whatever the setting exists to avoid.
             using var parakeet = new ParakeetAsr(parakeetModelsDir, encoderFile, decoderJointFile,
-                beamWidth: effectiveBeam);
+                ep: ep, beamWidth: effectiveBeam);
             if (lmActive)
             {
                 parakeet.LmScorer        = KenLmScorer.LoadArpa(parakeetLmPath!);

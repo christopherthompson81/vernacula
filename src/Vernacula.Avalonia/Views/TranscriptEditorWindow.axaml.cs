@@ -1335,7 +1335,8 @@ public partial class TranscriptEditorWindow : Window
                                              App.Current.Settings.Current,
                                              App.Current.Settings.GetKenLmParakeetDir()),
                 parakeetLmWeight:        App.Current.Settings.Current.ParakeetLmWeight,
-                parakeetLmLengthPenalty: App.Current.Settings.Current.ParakeetLmLengthPenalty));
+                parakeetLmLengthPenalty: App.Current.Settings.Current.ParakeetLmLengthPenalty,
+                ep:                      App.Current.Settings.Current.ResolvedExecutionProvider));
             if (result is null)
             {
                 SetCardStatus(card, "Redo ASR did not produce a result.");

@@ -25,9 +25,22 @@ namespace Vernacula.Tests;
 /// </remarks>
 public class SharedSessionOptionsTests
 {
+    /// <summary>
+    /// A local, field or property holding a SessionOptions. Fields matter as much as
+    /// locals: `_opts = OrtSessionBuilder.Create(ep);` used by two sessions in two different
+    /// methods is the same bug, and the likeliest way it comes back.
+    /// </summary>
     private static readonly Regex OptionsDecl = new(
         @"\b(?:var|SessionOptions)\s+(\w+)\s*=\s*(?:OrtSessionBuilder\.Create|new\s+SessionOptions)\b",
         RegexOptions.Compiled);
+
+    /// <summary>
+    /// A SessionOptions passed to a session — in ANY argument position. Requiring it to be
+    /// the last argument missed `new InferenceSession(path, opts, prepackedWeights)`.
+    /// </summary>
+    private static Regex UseOf(string name) => new(
+        @"new\s+InferenceSession\s*\([^;]*?\b" + Regex.Escape(name) + @"\b[^;]*?\)",
+        RegexOptions.Singleline);
 
     /// <summary>Walks up from the test binary to the repo root.</summary>
     private static DirectoryInfo RepoRoot()
@@ -71,18 +84,29 @@ public class SharedSessionOptionsTests
             if (!source.Contains("InferenceSession"))
                 continue;
 
+            // Locals are scoped to their method; a field is not, so its uses have to be
+            // counted across the whole file. Doing both is what catches the field case the
+            // first version of this test walked straight past.
             foreach (string block in Blocks(source))
                 foreach (Match decl in OptionsDecl.Matches(block))
                 {
                     string name = decl.Groups[1].Value;
-                    int uses = Regex.Matches(
-                        block,
-                        @"new\s+InferenceSession\s*\([^;]*?\b" + Regex.Escape(name) + @"\b\s*\)",
-                        RegexOptions.Singleline).Count;
+                    int uses = UseOf(name).Matches(block).Count;
                     if (uses > 1)
                         offenders.Add($"{Path.GetRelativePath(root.FullName, file)}: " +
                                       $"'{name}' backs {uses} sessions");
                 }
+
+            foreach (Match decl in Regex.Matches(
+                         source,
+                         @"\b(?:private|internal|protected|public)\s+(?:readonly\s+)?SessionOptions\s+(\w+)\b"))
+            {
+                string name = decl.Groups[1].Value;
+                int uses = UseOf(name).Matches(source).Count;
+                if (uses > 1)
+                    offenders.Add($"{Path.GetRelativePath(root.FullName, file)}: " +
+                                  $"field '{name}' backs {uses} sessions");
+            }
         }
 
         Assert.True(offenders.Count == 0,
