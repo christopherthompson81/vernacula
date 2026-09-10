@@ -222,6 +222,22 @@ So the port's obligations are the ones it can meet — deterministic, unbiased, 
 and the residual row counts in #171 should not be treated as a defect to drive to zero. The
 one real finding worth acting on was the *port's own* speaker-slot bias (Run 3), now fixed.
 
+## Review pass — 2026-09-09
+
+Self-review of the change turned up four things, all fixed:
+
+* `gather_outputs` in the new harness was never called and would have thrown if it were —
+  it reads `flat_scores`, bound to `None` on the line above. Deleted; `interchangeable`
+  already answers what it was for.
+* The harness handed NeMo `torch.from_numpy(preds)`, which **aliases** the fixture that is
+  read again afterwards. Now a copy. Checked afterwards whether it had actually mattered —
+  it had not, NeMo does not mutate `preds` at either saturation level — so **the row counts
+  in Runs 2–3 stand**; the copy is hardening, not a correction.
+* The per-speaker mix table in Run 3 was only reproducible from a scratch script. The
+  shipped harness prints it for both sides now.
+* `SelectCacheFrames` validates `keep` against the array length. `CompressCache` satisfies
+  it by construction, but the method is independently reachable now.
+
 Still open, and cheap for whoever is next on the Apple Silicon machine:
 
 ```bash
