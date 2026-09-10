@@ -306,7 +306,10 @@ class SortformerPipelineBase:
         new_fifo_t = self._fifo.shape[1]
         if new_fifo_t > FIFO_LENGTH:
             pop_len = SPEAKER_CACHE_UPDATE_PERIOD
-            pop_len = max(pop_len, (new_fifo_t - FIFO_LENGTH) + new_fifo_t)
+            # NeMo: max(period, max_chunk_len - max_fifo_len + fifo_len), where fifo_len is
+            # the length BEFORE the chunk was appended. The old expression clamped popLen to
+            # the whole FIFO, draining it to 0 on every pop. See Sortformer.cs for the trace.
+            pop_len = max(pop_len, CHUNK_LENGTH - FIFO_LENGTH + fifo_t)
             pop_len = min(pop_len, new_fifo_t)
 
             pop_embs = self._fifo[:, :pop_len]

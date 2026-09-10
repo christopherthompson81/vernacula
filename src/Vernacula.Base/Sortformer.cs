@@ -504,15 +504,7 @@ public sealed class SortformerStreamer : IDisposable
         //     inputs do not even match until steady state is reached.
         //
         // Anything that is not exactly steady state goes to the stock graph.
-        //
-        // ⚠ In practice this fires on only every OTHER chunk, not on all of them after
-        // warm-up. The FIFO pop below clamps popLen to the whole FIFO -- it computes
-        // (newFifoT - FifoLength) + newFifoT, which always exceeds newFifoT -- so _fifo
-        // is drained to 0 on every pop and fifoT alternates 124, 0, 124, 0. The measured
-        // routing over a 5-minute file is "...S.S.S.S..." Correct, but it leaves roughly
-        // half the available speedup on the table. That formula predates this change and
-        // altering it would move diarization output for every backend, so it is tracked
-        // separately rather than fixed here.
+
         bool steadyState =
             _steadySession is not null
             && currentLen == chunkStride
@@ -610,8 +602,20 @@ public sealed class SortformerStreamer : IDisposable
         int newFifoT = _fifo.GetLength(1);
         if (newFifoT > Config.FifoLength)
         {
+            // NeMo's SortformerModules.streaming_update, verbatim:
+            //     pop_out_len = self.spkcache_update_period
+            //     pop_out_len = max(pop_out_len, max_chunk_len - max_fifo_len + fifo_len)
+            //     pop_out_len = min(pop_out_len, fifo_len + chunk_len)
+            // where fifo_len is the length BEFORE the chunk was appended (fifoT here) and
+            // fifo_len + chunk_len is the length after (newFifoT).
+            //
+            // This previously read `(newFifoT - FifoLength) + newFifoT`, i.e. 2*newFifoT-124,
+            // which exceeds newFifoT for every newFifoT > 124 -- so popLen always clamped to
+            // the whole FIFO and _fifo drained to 0 on every pop, alternating 124, 0, 124, 0
+            // instead of holding at 124. Measured against NeMo's own forward_streaming on
+            // identical features, the corrected trajectory matches the reference.
             int popLen = Config.SpeakerCacheUpdatePeriod;
-            popLen = Math.Max(popLen, (newFifoT - Config.FifoLength) + newFifoT);
+            popLen = Math.Max(popLen, Config.ChunkLength - Config.FifoLength + fifoT);
             popLen = Math.Min(popLen, newFifoT);
 
             var popEmbs  = SliceFront3D(_fifo,     popLen, D);
