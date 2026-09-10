@@ -77,7 +77,7 @@ var base_ = Run(ExecutionProvider.Cpu);
 Console.WriteLine($"stock-only (Cpu)   : variantLoaded={base_.loaded,-5} steady={base_.steady,-3} stock={base_.stock,-3} chunks={base_.preds.Count} {base_.ms:F0} ms");
 
 var auto = Run(ExecutionProvider.Auto);
-Console.WriteLine($"stock-only (Auto)  : variantLoaded={auto.loaded,-5} steady={auto.steady,-3} stock={auto.stock,-3} chunks={auto.preds.Count} {auto.ms:F0} ms");
+Console.WriteLine($"auto-detect        : variantLoaded={auto.loaded,-5} steady={auto.steady,-3} stock={auto.stock,-3} chunks={auto.preds.Count} {auto.ms:F0} ms");
 
 var routed = Run(ExecutionProvider.CoreML);
 Console.WriteLine($"routed (CoreML)    : variantLoaded={routed.loaded,-5} steady={routed.steady,-3} stock={routed.stock,-3} chunks={routed.preds.Count} {routed.ms:F0} ms");

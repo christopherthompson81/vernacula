@@ -168,7 +168,21 @@ public sealed class SortformerStreamer : IDisposable
     /// </remarks>
     private static InferenceSession? TryOpenSteadyStateSession(string modelPath, ExecutionProvider ep)
     {
-        if (ep != ExecutionProvider.CoreML)
+        // Detected, not configured. CoreML suits a model only when that model has been
+        // built for it, and here that is a checkable fact rather than a preference: the
+        // steady-state artifact sits beside the stock model and either declares the exact
+        // three-input signature this class feeds or it does not. Presence plus
+        // SignatureMatchesSteadyStateContract IS the per-model evidence OrtSessionBuilder's
+        // Auto case declines to assume, so Auto may act on it.
+        //
+        // Asking a user to choose would be asking them to answer a question the artifact
+        // already answers. An explicit --ep still forces the matter either way: Cpu or
+        // WebGpu opts out even when the variant is present.
+        bool wanted = ep == ExecutionProvider.CoreML
+                      || (ep == ExecutionProvider.Auto
+                          && OperatingSystem.IsMacOS()
+                          && OrtSessionBuilder.CoreMLProviderAvailable);
+        if (!wanted)
             return null;
 
         string path = Config.GetSortformerCoreMLModelPath(modelPath);
@@ -178,8 +192,11 @@ public sealed class SortformerStreamer : IDisposable
         InferenceSession? sess = null;
         try
         {
+            // Always CoreML here, never the caller's `ep`: under Auto that would build a
+            // WebGPU session for a graph exported specifically for CoreML.
             var opts = OrtSessionBuilder.Create(
-                ep, GraphOptimizationLevel.ORT_ENABLE_BASIC, coreMlModelPath: path);
+                ExecutionProvider.CoreML, GraphOptimizationLevel.ORT_ENABLE_BASIC,
+                coreMlModelPath: path);
             sess = new InferenceSession(path, opts);
 
             // ⚠ THE FILENAME IS NOT THE CONTRACT. An export made before
