@@ -15,3 +15,6 @@ samples/
 *.lscache
 # Local app data if the app is ever launched with the repo as its working directory
 Vernacula/
+
+# macOS app bundles from package-macos.sh — build output, not source.
+dist/
