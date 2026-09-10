@@ -224,7 +224,6 @@ if (audioPath is null)
 // Resolve diarization default based on ASR backend
 diarization ??= asrBackend is "vibevoice" or "vibevoice-streaming" ? "vibevoice-asr-builtin" : "sortformer";
 
-// Validate that vibevoice-asr-builtin is only used with vibevoice ASR
 // --ep, resolved once. Diarization is the only consumer today; the ASR backends still
 // take Auto (#165 item 1 asks for the flag, this is the diarization half of it).
 ExecutionProvider diarizationEp = ExecutionProvider.Auto;
@@ -246,6 +245,7 @@ if (epFlag is not null)
     }
 }
 
+// Validate that vibevoice-asr-builtin is only used with vibevoice ASR
 if (diarization == "vibevoice-asr-builtin" && asrBackend is not ("vibevoice" or "vibevoice-streaming"))
 {
     Console.Error.WriteLine("Error: --diarization vibevoice-asr-builtin requires --asr vibevoice or vibevoice-streaming.");

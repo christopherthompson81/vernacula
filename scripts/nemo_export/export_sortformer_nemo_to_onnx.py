@@ -450,12 +450,18 @@ def main() -> None:
             "data-dependent. Callers must pass full-size, zero-padded buffers."
         )
     if args.coreml_const_lengths:
+        # The "chunk_lengths is still a live input" clause is only true WITHOUT
+        # --coreml-const-chunk-length; with it, the next note says the opposite. This
+        # report is the artifact's authoritative contract, so it must not say both.
+        chunk_len_clause = (
+            "chunk_lengths is still a live input. "
+            if not args.coreml_const_chunk_length else ""
+        )
         metadata.notes.append(
             f"spkcache_lengths={args.fixed_spkcache_frames} and fifo_lengths="
             f"{args.fixed_fifo_frames} are baked in as graph constants; both inputs remain in "
             "the signature but are ignored, and may be pruned from it after folding. "
-            "chunk_lengths is still a live input. This graph is valid only for a full cache "
-            "and fifo."
+            f"{chunk_len_clause}This graph is valid only for a full cache and fifo."
         )
     if args.coreml_const_chunk_length:
         metadata.notes.append(

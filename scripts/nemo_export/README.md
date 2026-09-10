@@ -288,10 +288,12 @@ full set of techniques and how to apply them to other models.
 
 Caveats:
 
-* The graph assumes a full cache and FIFO, which `Sortformer.cs` always supplies,
-  and constant folding prunes the baked `*_lengths` from the signature -- so with
-  all three baked the graph takes **three** inputs (`chunk`, `spkcache`, `fifo`),
-  not six. Without `--coreml-const-chunk-length` it takes four.
+* The graph assumes a genuinely full cache and FIFO. `Sortformer.cs` does NOT always
+  supply that -- `ResetState` starts both buffers at length 0 and they grow -- so the
+  caller has to route warm-up chunks to the stock graph too, not just the short tail
+  chunk. Constant folding prunes the baked `*_lengths` from the signature, so with all
+  three baked the graph takes **three** inputs (`chunk`, `spkcache`, `fifo`), not six.
+  Without `--coreml-const-chunk-length` it takes four.
 * **The steady-state graph must never see the final chunk of a recording.**
   `ProcessChunk` passes `min(start + chunkStride, totalFrames) - start`, which is
   short for the last chunk of every file, and a baked `chunk_lengths` lets that
@@ -303,9 +305,11 @@ Caveats:
   `AddInitializedOrtValue Attempt to replace the existing tensor`
   (`MatMulAddFusion`). `OrtSessionBuilder.Create` defaults to `ORT_ENABLE_ALL`.
 * **CoreML partitioning is ORT-version dependent, and the table above is 1.24.4.**
-  An Apple Silicon build of Vernacula ships **1.29.0**, where the same graph is
-  reported to split into 194 partitions and diverge at ~1e-2. Re-validate there
-  before relying on any of these numbers; see
+  An Apple Silicon build of Vernacula ships **1.29.0**. That was once believed to split
+  this graph into 194 partitions and diverge at ~1e-2; **it does not** -- measured on an
+  M5 under 1.29.0 the graph reaches **1 partition** and `4.470E-07` against the stock
+  model, at 51.5 ms vs 171.8 ms for stock-on-CPU. Re-validate on any further ORT change;
+  see
   [docs/investigations/sortformer_coreml_publish_investigation.md](../../docs/investigations/sortformer_coreml_publish_investigation.md).
 
 For a safer structure-only experiment that keeps dynamic time dimensions but

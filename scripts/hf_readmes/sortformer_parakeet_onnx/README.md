@@ -61,9 +61,10 @@ co-located here so a single download brings up the full pipeline.
 execution provider is the only route to the Apple Neural Engine, and the stock graph
 cannot be compiled by it at all — it slices by tensor *values*, which makes every
 downstream shape data-dependent, and CoreML's MIL runtime rejects unbounded dimensions
-outright. The variant fixes the shapes at export time and applies four rewrites (delete
-51 all-False `Where` masks, rewrite 34 constant zero `Pad`s as `Concat`s, pre-transpose
-180 `Gemm` weights) to reach a single CoreML partition instead of 71.
+outright. The variant fixes the shapes at export time and applies four rewrites
+(constant-fold at `ORT_ENABLE_BASIC`, delete 51 all-False `Where` masks, rewrite 34
+constant zero `Pad`s as `Concat`s, pre-transpose 180 `Gemm` weights) to reach a single
+CoreML partition instead of 71.
 
 Measured on an M5 (Mac17,3, macOS 26.6.2), **ORT 1.29.0** — the version Vernacula builds
 against — chunk=992 / spkcache=188 / fifo=124:
@@ -76,7 +77,8 @@ against — chunk=992 / spkcache=188 / fifo=124:
 | **CoreML variant** | **CoreML** | **51.5 ms** | **2.2 s** | **0.16 s** |
 
 **3.34× vs the stock graph on CPU.** The CoreML EP takes the whole graph as a single
-partition (1751 of 1751 nodes), measured at `ORT_ENABLE_BASIC` (see note 3). Outputs match the stock graph to `4.470E-07` (`preds`,
+partition (1751 of 1751 nodes -- the file holds 1788, and ORT's BASIC fold trims it to
+1751 at load), measured at `ORT_ENABLE_BASIC` (see note 3). Outputs match the stock graph to `4.470E-07` (`preds`,
 rms 7.616E-08) running CoreML against stock-on-CPU, and to `3.576E-07` CPU-to-CPU. The
 static shapes alone also make it ~10% faster on plain CPU, so it is not purely a macOS
 artifact.
@@ -101,9 +103,15 @@ only in the packaged app.
 | `spkcache_fifo_chunk_preds` | `[batch, time_out, 4]` | `[1, 436, 4]` |
 | graph optimization level | any | **`ORT_ENABLE_BASIC` or lower** |
 
-1. **All three lengths are baked in, so this graph is steady-state only.** Pass full-size,
-   zero-padded buffers. Zero-filled `spkcache`/`fifo` during warm-up are fine — the stock
-   runtime already passes those two lengths as the full buffer size on every call.
+1. **All three lengths are baked in, so this graph is steady-state only.** Pass full-size
+   buffers whose real content fills them: `spkcache` genuinely 188 frames, `fifo` genuinely
+   124, `chunk` genuinely 992.
+
+   ⚠ **Warm-up is NOT safe to send here**, contrary to what an earlier version of this note
+   said. A streaming runtime builds the cache and FIFO up from empty, and the baked lengths
+   claim all 188 / 124 frames are real, so zero-padding them makes the graph attend to
+   padding as audio — the same failure as note 2, in a different input. Vernacula's own
+   caller routes every chunk to the stock graph until both buffers are genuinely full.
 2. **Never feed it the final, short chunk of a recording.** With `chunk_lengths` baked to
    992 the graph attends to that chunk's zero-padded tail as real audio, which moves its
    speaker probabilities by up to **0.54** (rms 0.24) on a 0..1 scale — enough to flip

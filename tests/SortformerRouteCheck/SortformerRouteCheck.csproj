@@ -1,16 +1,32 @@
 <Project Sdk="Microsoft.NET.Sdk">
+
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <TargetFramework>net10.0</TargetFramework>
-    <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
     <AssemblyName>sortformer-routecheck</AssemblyName>
-    <RootNamespace>SortformerRouteCheck</RootNamespace>
+    <RootNamespace>Vernacula.Tests.SortformerRouteCheck</RootNamespace>
+    <!-- CPU-only harness: it references the plain ONNX Runtime on purpose, so the
+         Directory.Build.targets guard against the CPU package under a GPU EP does not
+         apply. Without this, `dotnet run` without -p:EP=Cpu trips the guard, because
+         EP defaults to Cuda in Directory.Build.props. -->
+    <AllowCpuOnnxRuntime>true</AllowCpuOnnxRuntime>
   </PropertyGroup>
+
   <ItemGroup>
     <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="$(OnnxRuntimeVersion)" />
   </ItemGroup>
+
   <ItemGroup>
-    <ProjectReference Include="../../src/Vernacula.Base/Vernacula.Base.csproj" />
+    <ProjectReference Include="..\..\src\Vernacula.Base\Vernacula.Base.csproj">
+      <Private>true</Private>
+      <!-- This harness is CPU-only (AllowCpuOnnxRuntime above), so Base must be built for
+           the CPU provider or its GPU native would land here and the build guard in
+           Directory.Build.targets would reject it. -->
+      <SetConfiguration>EP=Cpu</SetConfiguration>
+    </ProjectReference>
   </ItemGroup>
+
 </Project>

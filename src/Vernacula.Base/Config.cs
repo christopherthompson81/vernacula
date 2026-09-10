@@ -324,9 +324,19 @@ public static class Config
     {
         string stock = GetSortformerModelPath(modelDir);
         string? dir  = Path.GetDirectoryName(stock);
-        return string.IsNullOrEmpty(dir)
-            ? SortformerCoreMLFile
-            : Path.Combine(dir, SortformerCoreMLFile);
+        if (!string.IsNullOrEmpty(dir))
+        {
+            string beside = Path.Combine(dir, SortformerCoreMLFile);
+            if (File.Exists(beside))
+                return beside;
+        }
+
+        // ⚠ BESIDE THE STOCK MODEL IS NOT ENOUGH. GetSortformerModelPath prefers
+        // <modelDir>/sortformer/, but the HuggingFace bundle publishes the variant at the
+        // repo ROOT -- so someone who pulls the whole repo into a layout with the
+        // subdirectory resolves the stock model from there and would never find the
+        // variant beside it. Fall back to the root before giving up.
+        return Path.Combine(modelDir, SortformerCoreMLFile);
     }
 
     public static int GetDiariZenSegmentationIntraOpThreads()

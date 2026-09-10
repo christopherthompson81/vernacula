@@ -327,7 +327,12 @@ def verify(original: str, optimized: str, static_src: str, tol: float) -> bool:
 
     feed = {i.name: synth(i) for i in src_sess.get_inputs()}
     for i in ref_sess.get_inputs():
-        feed.setdefault(i.name, synth(i))
+        # NOT setdefault: its argument is evaluated eagerly, so every shared input
+        # (chunk / spkcache / fifo -- the three big ones) would be synthesized a second
+        # time and thrown away. Values stay correct either way; the waste is ~500 MB of
+        # transient allocation on a script already holding two 527 MB sessions.
+        if i.name not in feed:
+            feed[i.name] = synth(i)
 
     ref = run(ref_sess, {i.name: feed[i.name] for i in ref_sess.get_inputs()})
 

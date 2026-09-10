@@ -175,17 +175,63 @@ public sealed class SortformerStreamer : IDisposable
         if (!File.Exists(path))
             return null;
 
+        InferenceSession? sess = null;
         try
         {
             var opts = OrtSessionBuilder.Create(ep, GraphOptimizationLevel.ORT_ENABLE_BASIC);
-            return new InferenceSession(path, opts);
+            sess = new InferenceSession(path, opts);
+
+            // ⚠ THE FILENAME IS NOT THE CONTRACT. An export made before
+            // --coreml-const-chunk-length existed lands at this exact path with FOUR
+            // inputs (chunk_lengths still live), and one made with different
+            // --fixed-*-frames has the wrong fixed dims. Both load fine and then throw
+            // out of ProcessChunk on the first steady chunk -- turning a graceful
+            // fall-back into a failed run. Check the signature, not the name.
+            if (!SignatureMatchesSteadyStateContract(sess))
+            {
+                sess.Dispose();
+                return null;
+            }
+            return sess;
         }
         catch
         {
             // Missing provider, a graph this ORT will not take, anything: fall back to
             // stock-only rather than failing diarization outright.
+            sess?.Dispose();
             return null;
         }
+    }
+
+    /// <summary>
+    /// Whether a candidate graph is the steady-state variant this class knows how to feed:
+    /// exactly the three tensors <see cref="ProcessChunk"/> sends, at exactly the shapes it
+    /// sends them, with every <c>*_lengths</c> input folded away.
+    /// </summary>
+    private static bool SignatureMatchesSteadyStateContract(InferenceSession sess)
+    {
+        var expected = new (string Name, int[] Dims)[]
+        {
+            ("chunk",    new[] { 1, Config.ChunkLength * Config.Subsampling, Config.NMels }),
+            ("spkcache", new[] { 1, Config.SpeakerCacheLength,               Config.EmbeddingDimension }),
+            ("fifo",     new[] { 1, Config.FifoLength,                       Config.EmbeddingDimension }),
+        };
+
+        var meta = sess.InputMetadata;
+        if (meta.Count != expected.Length)
+            return false;
+
+        foreach (var (name, dims) in expected)
+        {
+            if (!meta.TryGetValue(name, out var m))
+                return false;
+            if (m.Dimensions.Length != dims.Length)
+                return false;
+            for (int i = 0; i < dims.Length; i++)
+                if (m.Dimensions[i] != dims[i])   // a dynamic axis is negative here, so it fails too
+                    return false;
+        }
+        return true;
     }
 
     /// <summary>
@@ -458,6 +504,15 @@ public sealed class SortformerStreamer : IDisposable
         //     inputs do not even match until steady state is reached.
         //
         // Anything that is not exactly steady state goes to the stock graph.
+        //
+        // ⚠ In practice this fires on only every OTHER chunk, not on all of them after
+        // warm-up. The FIFO pop below clamps popLen to the whole FIFO -- it computes
+        // (newFifoT - FifoLength) + newFifoT, which always exceeds newFifoT -- so _fifo
+        // is drained to 0 on every pop and fifoT alternates 124, 0, 124, 0. The measured
+        // routing over a 5-minute file is "...S.S.S.S..." Correct, but it leaves roughly
+        // half the available speedup on the table. That formula predates this change and
+        // altering it would move diarization output for every backend, so it is tracked
+        // separately rather than fixed here.
         bool steadyState =
             _steadySession is not null
             && currentLen == chunkStride

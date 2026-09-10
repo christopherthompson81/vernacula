@@ -353,19 +353,19 @@ never going near CoreML — it is bit-exact and costs nothing.
 
 ## Caveats
 
-- **⚠ Every number here was measured on ORT 1.24.4, which the macOS build does not
-  ship.** `Directory.Build.props` pins 1.24.4 only for DirectML; an Apple Silicon
-  build is `-p:EP=Cpu` and takes the default, **1.29.0** — where the one data point
-  we have says this same graph splits into **194** partitions and diverges at
-  **~1e-2**. Until that is re-run on 1.29.0, the speedup below is a property of a
-  runtime no user of the shipped build is holding. This is the open question, and it
-  gates shipping the variant at all; see
+- **The numbers in the table below were measured on ORT 1.24.4; 1.29.0 is what ships
+  and has since been measured too.** `Directory.Build.props` pins 1.24.4 only for
+  DirectML; an Apple Silicon build is `-p:EP=Cpu` and takes the default, **1.29.0**. It
+  was once believed 1.29.0 split this graph into 194 partitions and diverged at ~1e-2 —
+  **that does not reproduce.** On an M5 under 1.29.0 the graph reaches **1 partition**
+  and `4.470E-07` against the stock model, at **51.5 ms** vs 171.8 ms for stock-on-CPU.
+  The variant shipped on that basis; see
   `docs/investigations/sortformer_coreml_publish_investigation.md`.
-- **Steady-state only.** The static graph assumes full cache/FIFO and a
-  full-length chunk. Warm-up chunks must be zero-padded to full size — free, since
-  the runtime already reports those two lengths as the full buffer size — but the
-  final short chunk of each recording must go to the unspecialized graph instead
-  (Technique 2's warning).
+- **Steady-state only.** The static graph assumes a genuinely full cache/FIFO and a
+  full-length chunk. Zero-padding a partly-filled buffer is **not** free: the baked
+  lengths claim every frame is real, so padding gets attended to as audio. Both the
+  warm-up chunks (cache/FIFO still filling) and the final short chunk of each recording
+  must go to the unspecialized graph instead (Technique 2's warning).
 - **Contract changes.** Folding prunes the now-unused `*_lengths`, so the graph
   takes three inputs, not six, at fixed shapes. Callers need a variant path.
 - **Load level is part of the contract**, not a tuning knob: `ORT_ENABLE_BASIC` or

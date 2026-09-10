@@ -21,7 +21,9 @@
 using Vernacula.Base;
 using Vernacula.Base.Models;
 
-string modelsRoot = Path.Combine(
+// Optional arg: models root (default ~/models). Used to point at a deliberately
+// mismatched variant when checking that the signature guard rejects it.
+string modelsRoot = args.Length > 0 ? args[0] : Path.Combine(
     Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "models");
 
 // ~5 minutes of structured synthetic audio: alternating tone pairs over noise, so the
@@ -48,6 +50,7 @@ var mel = AudioUtils.LogMelSpectrogram(audio);
     sload.Stop();
     var (totalFrames, chunkStride, numChunks) = s.GetPredParams(mel);
     var all = new List<float[,]>();
+    var pattern  = new System.Text.StringBuilder();
     var steadyMs = new List<double>();
     var stockMs  = new List<double>();
     int prevSteady = 0;
@@ -55,7 +58,9 @@ var mel = AudioUtils.LogMelSpectrogram(audio);
     foreach (var (_, idx, p) in s.GetPreds(mel, totalFrames, chunkStride, numChunks))
     {
         double el = sw.Elapsed.TotalMilliseconds;
-        (s.SteadyStateChunkCount > prevSteady ? steadyMs : stockMs).Add(el);
+        bool wasSteady = s.SteadyStateChunkCount > prevSteady;
+        (wasSteady ? steadyMs : stockMs).Add(el);
+        pattern.Append(wasSteady ? 'S' : '.');
         prevSteady = s.SteadyStateChunkCount;
         sw.Restart();
         all.Add(p);
@@ -63,6 +68,7 @@ var mel = AudioUtils.LogMelSpectrogram(audio);
     static double Med(List<double> v)
     { if (v.Count == 0) return 0; var c = new List<double>(v); c.Sort(); return c[c.Count / 2]; }
     Console.WriteLine($"   load {sload.Elapsed.TotalSeconds:F2} s | per-chunk median: steady {Med(steadyMs):F1} ms, stock {Med(stockMs):F1} ms");
+    Console.WriteLine($"   routing (S=steady . =stock): {pattern}");
     return (all, s.SteadyStateChunkCount, s.StockChunkCount, s.UsesSteadyStateGraph,
             steadyMs.Sum() + stockMs.Sum());
 }

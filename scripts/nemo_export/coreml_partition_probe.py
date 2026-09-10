@@ -223,9 +223,13 @@ def main() -> None:
         t0 = time.perf_counter()
         got = sess.run(None, feed)
         times.append((time.perf_counter() - t0) * 1e3)
-    print(f"\ninference over {args.runs} runs")
-    print(f"  median          {statistics.median(times):.1f} ms")
-    print(f"  min / max       {min(times):.1f} / {max(times):.1f} ms")
+    if times:
+        print(f"\ninference over {args.runs} runs")
+        print(f"  median          {statistics.median(times):.1f} ms")
+        print(f"  min / max       {min(times):.1f} / {max(times):.1f} ms")
+    else:
+        # --runs 0 is a legitimate way to ask only for the partition count.
+        print("\ninference skipped (--runs 0)")
 
     if args.reference:
         ref_so = build_options(ort, "basic", False)
