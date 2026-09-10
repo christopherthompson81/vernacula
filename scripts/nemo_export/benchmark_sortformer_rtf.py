@@ -264,7 +264,11 @@ class SortformerPipelineBase:
             for s_idx in range(NUM_SPEAKERS):
                 flat.append((float(ext_scores[t_idx, s_idx]), t_idx, s_idx))
 
-        flat.sort(key=lambda item: item[0], reverse=True)
+        # Deterministic tie-break on the speaker-major flattened index, matching
+        # Sortformer.cs. Does not guarantee agreement with torch.topk on saturated
+        # (exactly-1.0) predictions -- see #165.
+        ext_t_sort = ext_scores.shape[0]
+        flat.sort(key=lambda item: (-item[0], item[2] * ext_t_sort + item[1]))
         # NeMo marks -inf picks DISABLED (mean silence embedding, zero preds) and sorts
         # them last via max_index. See Sortformer.cs.
         ext_t = ext_scores.shape[0]

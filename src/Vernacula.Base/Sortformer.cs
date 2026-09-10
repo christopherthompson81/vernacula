@@ -303,23 +303,39 @@ public sealed class SortformerStreamer : IDisposable
     private void UpdateSilenceProfile(float[,,] embs, float[,,] preds)
     {
         int T = embs.GetLength(1);
+        int D = Config.EmbeddingDimension;
+
+        // NeMo's _get_silence_profile sums the WHOLE chunk's silence frames and divides
+        // once:
+        //     sil_emb_sum = sum(emb_seq * is_sil)
+        //     upd_mean    = (mean_sil_emb * n_sil_frames + sil_emb_sum) / max(upd_n, 1)
+        // This re-divided and rounded to float on every frame, which drifts. It went
+        // unnoticed while the -inf silence pad kept _meanSilEmb out of the cache; now that
+        // the pad is +inf it populates S * SpeakerCacheSilenceFrames rows on every
+        // compression, so the difference reaches the model.
+        int silCount = 0;
+        var silSum = new double[D];
         for (int t = 0; t < T; t++)
         {
             float probSum = 0f;
             for (int s = 0; s < Config.NumSpeakers; s++)
                 probSum += preds[0, t, s];
+            if (probSum >= Config.SilThreshold)
+                continue;
 
-            if (probSum < Config.SilThreshold)
-            {
-                _nSilFrames++;
-                var meanSilEmb = _meanSilEmb!;
-                for (int d = 0; d < Config.EmbeddingDimension; d++)
-                {
-                    double oldSum = meanSilEmb[d] * (_nSilFrames - 1);
-                    meanSilEmb[d] = (float)((oldSum + embs[0, t, d]) / _nSilFrames);
-                }
-            }
+            silCount++;
+            for (int d = 0; d < D; d++)
+                silSum[d] += embs[0, t, d];
         }
+        if (silCount == 0)
+            return;
+
+        var meanSilEmb = _meanSilEmb!;
+        int updatedN = _nSilFrames + silCount;
+        for (int d = 0; d < D; d++)
+            meanSilEmb[d] = (float)(((double)meanSilEmb[d] * _nSilFrames + silSum[d])
+                                    / Math.Max(updatedN, 1));
+        _nSilFrames = updatedN;
     }
 
     // ── Quality scoring ───────────────────────────────────────────────────────
@@ -471,7 +487,20 @@ public sealed class SortformerStreamer : IDisposable
             for (int s = 0; s < S; s++)
                 flat[t * S + s] = (extScores[t, s], t, s);
 
-        Array.Sort(flat, (a, b) => b.score.CompareTo(a.score));
+        // ⚠ TIES ARE NOT RESOLVED THE WAY torch.topk RESOLVES THEM, and cannot be here.
+        // Sortformer's float32 sigmoid saturates to exactly 1.0 for logits above ~16.6, so
+        // a confidently single-speaker stream produces bit-identical preds rows and hence
+        // bit-identical scores; which of them the top-k keeps is then arbitrary on both
+        // sides. Array.Sort is an unstable introsort, so without a tie rule this was also
+        // arbitrary between runs. Falling back to the speaker-major flattened index at
+        // least makes the port deterministic and keeps it in step with the Python mirror.
+        // It does not guarantee agreement with NeMo on saturated audio -- see #165.
+        Array.Sort(flat, (a, b) =>
+        {
+            int byScore = b.score.CompareTo(a.score);
+            if (byScore != 0) return byScore;
+            return (a.sIdx * extT + a.tIdx).CompareTo(b.sIdx * extT + b.tIdx);
+        });
 
         int keep = Config.SpeakerCacheLength;
 
