@@ -59,9 +59,12 @@ public sealed class IndicConformer : IDisposable
         _preprocessor = new InferenceSession(
             Path.Combine(modelPath, Config.PreprocessorFile), cpuOpts);
 
-        var gpuOpts = OrtSessionBuilder.Create(ep);
-        _encoder    = new InferenceSession(Path.Combine(modelPath, encoderFile),    gpuOpts);
-        _ctcDecoder = new InferenceSession(Path.Combine(modelPath, ctcDecoderFile), gpuOpts);
+        // ⚠ ONE SessionOptions PER SESSION -- sharing one across sessions segfaults the
+        // process on the WebGPU EP, in webgpu::BufferManager::Release under the second
+        // Dispose. It dies at teardown, after the work and before the caller writes its
+        // output, so the symptom is a crash and a missing result rather than a wrong one.
+        _encoder    = new InferenceSession(Path.Combine(modelPath, encoderFile),    OrtSessionBuilder.Create(ep));
+        _ctcDecoder = new InferenceSession(Path.Combine(modelPath, ctcDecoderFile), OrtSessionBuilder.Create(ep));
 
         _vocab     = LoadFlatVocab(Path.Combine(modelPath, Config.VocabFile));
         _langSpans = LoadLanguageSpans(Path.Combine(modelPath, Config.IndicConformerLanguageSpansFile));

@@ -936,8 +936,11 @@ try
             return 1;
         }
 
+        // ⚠ `selectedEp` used to stop at diarization: Parakeet was built with the
+        // default Auto no matter what --ep said, so --ep coreml never reached the ASR
+        // encoder. Same class of miss as #164's.
         using var parakeet = new ParakeetAsr(parakeetDir,
-            encoderFile, decoderJointFile, beamWidth: effectiveBeam);
+            encoderFile, decoderJointFile, ep: selectedEp, beamWidth: effectiveBeam);
 
         if (parakeetLmPath != null)
         {
@@ -964,6 +967,12 @@ try
 
         Console.WriteLine();
         swAsr.Stop();
+
+        // Report the encoder's own share. "A provider was requested" and "it ran there" are
+        // different claims, and without a number the only symptom of a silent fallback is a
+        // time that did not improve.
+        if (showBenchmark)
+            Console.WriteLine($"Encoder          : {parakeet.EncoderMs:F0}ms");
     }
 
     // Sort by start time (Recognize may return results in batch order)

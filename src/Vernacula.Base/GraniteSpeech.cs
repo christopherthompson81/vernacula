@@ -161,11 +161,14 @@ public sealed class GraniteSpeech : IDisposable
 
     public GraniteSpeech(string modelPath, ExecutionProvider ep = ExecutionProvider.Auto)
     {
-        var opts = OrtSessionBuilder.Create(ep);
-        _mel       = new InferenceSession(Path.Combine(modelPath, MelFile),       opts);
-        _encoder   = new InferenceSession(Path.Combine(modelPath, EncoderFile),   opts);
-        _projector = new InferenceSession(Path.Combine(modelPath, ProjectorFile), opts);
-        _decoder   = new InferenceSession(Path.Combine(modelPath, DecoderFile),   opts);
+        // ⚠ ONE SessionOptions PER SESSION -- sharing one across sessions segfaults the
+        // process on the WebGPU EP, in webgpu::BufferManager::Release under the second
+        // Dispose. It dies at teardown, after the work and before the caller writes its
+        // output, so the symptom is a crash and a missing result rather than a wrong one.
+        _mel       = new InferenceSession(Path.Combine(modelPath, MelFile),       OrtSessionBuilder.Create(ep));
+        _encoder   = new InferenceSession(Path.Combine(modelPath, EncoderFile),   OrtSessionBuilder.Create(ep));
+        _projector = new InferenceSession(Path.Combine(modelPath, ProjectorFile), OrtSessionBuilder.Create(ep));
+        _decoder   = new InferenceSession(Path.Combine(modelPath, DecoderFile),   OrtSessionBuilder.Create(ep));
 
         (_idToToken, _addedTokens) = LoadTokenizerVocab(Path.Combine(modelPath, TokenizerFile));
         _byteLevelDecode = BuildByteLevelDecodeTable();
