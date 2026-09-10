@@ -111,11 +111,17 @@ Result: `scripts/nemo_export/fp16_convert_sortformer.py`, 492 MB → 247 MB, loa
 optimization level and running. Single-chunk parity against fp32 on the CPU EP:
 
 ```
-spkcache_fifo_chunk_preds  maxAbs=6.711E-04  rms=1.395E-04
-chunk_pre_encode_embs      maxAbs=9.766E-02  rms=8.630E-03
+spkcache_fifo_chunk_preds  maxAbs=9.825E-04  rms=1.970E-04
+chunk_pre_encode_embs      maxAbs=9.764E-02  rms=8.629E-03
 ```
 
-`embs` at **9.766e-02** reproduces the model card's 9.8e-02 to three digits, so this is the
+(Both sessions run at `ORT_ENABLE_BASIC`. An earlier `--compare` left the reference at ORT's
+default `ENABLE_ALL` while the candidate ran at `DISABLE_ALL`, which folded ORT's own fusions
+into the difference and read `preds` as 6.7e-04. Same level on both sides makes the gap
+attributable to the dtype — and it is also what lets `--compare` run at all on the CoreML
+variant, which cannot be re-optimized above BASIC.)
+
+`embs` at **9.764e-02** reproduces the model card's 9.8e-02 to three digits, so this is the
 same artifact the original caveat was about — the card's number is now reproducible rather
 than folklore.
 
@@ -153,8 +159,8 @@ chunk:
 
 Per-chunk maxAbs, sample 01: `7.6E-4  4.7E-3  3.9E-3  1.3E-3  9.3E-3  4.6E-3  1.5E-2  2.2E-2  9.6E-3  8.9E-3`
 
-Two things worth separating. The error **does** grow through the feedback path — 6.7e-04 on
-a single chunk becomes 1.1e-02 to 3.4e-02 over a recording, a factor of 30-50. But it
+Two things worth separating. The error **does** grow through the feedback path — 9.8e-04 on
+a single chunk becomes 1.1e-02 to 3.4e-02 over a recording, a factor of 10-35. But it
 **wanders rather than accumulating**: the per-chunk trace rises and falls, and does not
 trend. Bounded, not compounding.
 
@@ -174,7 +180,7 @@ silent semantic change dressed as a dtype tidy-up.
 Restricted to casts that are fp16 → fp32, which is the `keep_io_types` signature. Rewired
 edges drop 4 → 2, i.e. **two of the four were the int64 lengths output.**
 
-Every measured number is byte-identical before and after (`6.711E-04` / `9.766E-02`, DER
+Every measured number is byte-identical before and after (`9.8E-04` / `9.76E-02`, DER
 0.000%, the same drift table), so the bug was latent — a downstream cast evidently absorbed
 it. Recorded because "the numbers didn't change" is exactly the argument that would have let
 it ship, and the next graph it ran on might not be so forgiving.

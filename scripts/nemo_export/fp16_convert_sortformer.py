@@ -7,7 +7,7 @@ ONNX Runtime refuses:
     Type Error: Type parameter (T) of Optype (Mul) bound to different types
     (tensor(float16) and tensor(float)) in node (/pre_encode/conv/Mul_3)
 
-Three things are wrong with the naive conversion, and each needs a different answer.
+Four things are wrong with the naive conversion, and each needs a different answer.
 
 1. THE LENGTH ARITHMETIC MUST NOT BE CONVERTED.
    `torch.onnx.export` emits the conv output-length formula -- floor((L + 2p - k)/s) + 1,
@@ -15,8 +15,8 @@ Three things are wrong with the naive conversion, and each needs a different ans
    are not activations; they compute a FRAME COUNT. Rounding a frame count through fp16 is
    wrong on its own terms (fp16 integers are exact only to 2048, and the intermediate
    divisions are not integers), and it is where the mixed-type errors start. They are held
-   in fp32 by name, found by walking back from `chunk_pre_encode_lengths` rather than
-   hardcoded, so this keeps working if the exporter's node names change.
+   in fp32, found by walking back from `chunk_pre_encode_lengths` rather than by a
+   hardcoded name list, so this keeps working if the exporter renames nodes.
 
 2. THE CONVERTER DOES NOT UPDATE `Cast` NODES.
    The graph has 141 explicit `Cast`s. The converter rewrites tensor types but leaves each
@@ -29,15 +29,26 @@ Three things are wrong with the naive conversion, and each needs a different ans
    that fp32 tensor while expecting fp16 -- the `Mul` in the error above. Internal consumers
    are rewired back to the pre-cast fp16 tensor, so the cast serves only the graph output.
 
+4. SOME OPS HAVE NO fp16 CPU KERNEL.
+   `ScatterElements` with `reduction='add'` is unimplemented for fp16 on the CPU EP at
+   opset 16, so the converted model LOADS and then dies on the first inference. Held in
+   fp32 (see UNSUPPORTED_FP16_OPS). A model that loads is not a model that runs.
+
 `keep_io_types` is deliberate: the C# caller feeds float32 and reads float32, so the fp16
 model is a drop-in for the fp32 one and `Sortformer.cs` needs no variant path.
 
-⚠ A model that loads is not a model that is correct. fp16 was measured fastest on the
-CoreML EP (22.3 ms/chunk vs 51 ms) but `chunk_pre_encode_embs` diverged to 9.8e-02, and
-those embeddings feed back into the speaker cache and FIFO across chunks -- so a
-single-chunk comparison cannot see the compounding. The go/no-go is end-to-end:
+WHAT THIS MODEL IS AND IS NOT GOOD FOR (measured, #172):
 
-    python scripts/nemo_export/sortformer_fidelity_der.py --onnx <this model> ...
+  * Accuracy is fine. `chunk_pre_encode_embs` diverges 9.8e-02 on a single chunk and those
+    embeddings feed back into the speaker cache and FIFO, which is why the original caveat
+    demanded an end-to-end check -- but fidelity DER against NeMo is 0.000% on real speech.
+    The error grows through the feedback path (9.8e-04 on a chunk becomes 1.1e-02 to
+    3.4e-02 over a recording) yet wanders rather than trending, so it is bounded rather
+    than compounding, and 3 frames in 3378 flip their binarized speaker set. Re-check with
+    `--drift` and `sortformer_fidelity_der.py` after any change here.
+  * Speed is NOT uniform, and this is what keeps fp16 from being the default: 1.66x faster
+    on CUDA, 25% SLOWER on CPU (there are no native fp16 CPU kernels, so ORT casts up and
+    back around every op). Treat it as an execution-provider-gated variant.
 
 See issue #172 and docs/investigations/sortformer_fp16_investigation.md.
 """
@@ -167,19 +178,42 @@ def convert(src: str, dst: str, keep_io_types: bool = True) -> None:
     print(f"[4/4] wrote {dst} ({os.path.getsize(dst) / 1e6:.0f} MB)")
 
 
-def check_loads(path: str) -> bool:
-    """A model that loads at one optimization level can fail at another; check all three."""
+LOAD_LEVELS = ("ORT_DISABLE_ALL", "ORT_ENABLE_BASIC", "ORT_ENABLE_ALL")
+
+
+def _loads_at(path: str, level: str) -> str | None:
+    """None if it loads, else the error's last line."""
     import onnxruntime as ort
+    so = ort.SessionOptions()
+    so.graph_optimization_level = getattr(ort.GraphOptimizationLevel, level)
+    try:
+        ort.InferenceSession(path, so, providers=["CPUExecutionProvider"])
+        return None
+    except Exception as exc:
+        return str(exc).strip().splitlines()[-1]
+
+
+def check_loads(path: str, baseline: str) -> bool:
+    """A model that loads at one optimization level can fail at another, so check all three.
+
+    Compared against the SOURCE model at the same level, because not every failure is this
+    script's doing: the CoreML variant already cannot load at ORT_ENABLE_ALL (ORT re-running
+    MatMulAddFusion over an already-optimized graph), and reporting that as an fp16 defect
+    would send the reader after the wrong thing. Only a level the source loads at and the
+    fp16 model does not is a regression.
+    """
     ok = True
-    for level in ("ORT_DISABLE_ALL", "ORT_ENABLE_BASIC", "ORT_ENABLE_ALL"):
-        so = ort.SessionOptions()
-        so.graph_optimization_level = getattr(ort.GraphOptimizationLevel, level)
-        try:
-            ort.InferenceSession(path, so, providers=["CPUExecutionProvider"])
+    for level in LOAD_LEVELS:
+        err = _loads_at(path, level)
+        if err is None:
             print(f"  {level:18} loads")
-        except Exception as exc:
-            print(f"  {level:18} FAILS: {str(exc).strip().splitlines()[-1][:150]}")
-            ok = False
+            continue
+        if _loads_at(baseline, level) is not None:
+            print(f"  {level:18} fails -- but so does the fp32 source, so not from this "
+                  f"conversion")
+            continue
+        print(f"  {level:18} FAILS: {err[:150]}")
+        ok = False
     return ok
 
 
@@ -189,14 +223,39 @@ def compare(fp32_path: str, fp16_path: str, seed: int = 7) -> None:
     import onnxruntime as ort
 
     rng = np.random.default_rng(seed)
-    ref = ort.InferenceSession(fp32_path, providers=["CPUExecutionProvider"])
-    got = ort.InferenceSession(fp16_path, providers=["CPUExecutionProvider"])
+    # BASIC on both sides, not ORT's default of ENABLE_ALL. Two reasons: an already-optimized
+    # graph (the CoreML variant) cannot be re-optimized above BASIC and would throw here
+    # before comparing anything, and running the two models at the same level is what makes
+    # the difference attributable to the dtype rather than to ORT's fusions.
+    so = ort.SessionOptions()
+    so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_BASIC
+    ref = ort.InferenceSession(fp32_path, so, providers=["CPUExecutionProvider"])
+    got = ort.InferenceSession(fp16_path, so, providers=["CPUExecutionProvider"])
 
-    shapes = {"chunk": (1, 992, 128), "spkcache": (1, 188, 512), "fifo": (1, 124, 512)}
+    # Defaults for the dynamic export, which declares no concrete shape; a static graph
+    # (the CoreML variant) carries its own and those win, so this is not tied to one frame
+    # configuration.
+    DEFAULTS = {"chunk": (1, 992, 128), "spkcache": (1, 188, 512), "fifo": (1, 124, 512)}
+    shapes = {}
+    for i in ref.get_inputs():
+        if i.type == "tensor(int64)":
+            continue
+        declared = tuple(d for d in i.shape)
+        if all(isinstance(d, int) for d in declared):
+            shapes[i.name] = declared
+        elif i.name in DEFAULTS:
+            shapes[i.name] = DEFAULTS[i.name]
+        else:
+            raise SystemExit(
+                f"--compare cannot size input {i.name}: shape {i.shape} is dynamic and "
+                "there is no default for it.")
+
     feed = {}
     for i in ref.get_inputs():
         if i.type == "tensor(int64)":
-            buf = i.name[: -len("_lengths")]
+            buf = i.name[: -len("_lengths")] if i.name.endswith("_lengths") else None
+            if buf not in shapes:
+                raise SystemExit(f"--compare cannot infer a value for {i.name}")
             feed[i.name] = np.array([shapes[buf][1]], np.int64)
         else:
             feed[i.name] = rng.standard_normal(shapes[i.name]).astype(np.float32)
@@ -284,7 +343,7 @@ def main() -> int:
     src, dst = os.path.expanduser(args.input), os.path.expanduser(args.output)
     convert(src, dst, keep_io_types=not args.io_fp16)
     print("\nload check:")
-    ok = check_loads(dst)
+    ok = check_loads(dst, src)
     if args.compare:
         compare(src, dst)
     if args.drift:

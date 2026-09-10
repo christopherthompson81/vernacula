@@ -265,7 +265,7 @@ already documents error-compounding through (the TF32/OmniVoice note in
 
 **Measured end to end (#172): it does not compound.** Fidelity DER against NeMo is
 **0.000%** on three 90 s real-speech samples. The error does grow through the feedback path
-— 6.7e-04 on one chunk becomes 1.1e-02 to 3.4e-02 over a recording — but the per-chunk trace
+— 9.8e-04 on one chunk becomes 1.1e-02 to 3.4e-02 over a recording — but the per-chunk trace
 wanders rather than trending, and only 3 frames in 3378 flip their binarized speaker set,
 all isolated enough for the median filter to absorb. So the caveat was right to demand the
 check and wrong about the outcome.
