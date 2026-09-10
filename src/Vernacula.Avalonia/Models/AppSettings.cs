@@ -69,13 +69,11 @@ public class AppSettings
     /// "coreml" or "webgpu". Empty or unrecognised means Auto.
     /// </summary>
     /// <remarks>
-    /// ⚠ NO UI CONTROL YET (#165 item 7). This is honoured when set in settings.json, and
-    /// the CLI has --ep, but the settings window does not expose it -- adding the ComboBox,
-    /// its view-model collection and the save path is the remaining half of that item.
-    ///
-    /// It matters most on macOS: "coreml" is what opts Sortformer into the steady-state
-    /// variant, and Auto deliberately never selects CoreML because whether CoreML beats the
-    /// alternatives is a per-model property.
+    /// No UI control, and by design there no longer needs to be one for the case that
+    /// motivated it: Sortformer's CoreML variant is DETECTED under Auto -- present beside
+    /// the stock model, signature verified -- so a macOS user gets it without choosing
+    /// anything. This setting is the override: "cpu" or "webgpu" opts out, "cuda" forces
+    /// CUDA. settings.json is a reasonable home for an override nobody normally needs.
     /// </remarks>
     public string             ExecutionProvider   { get; set; } = "";
 

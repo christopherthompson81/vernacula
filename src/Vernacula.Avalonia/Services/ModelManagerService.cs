@@ -75,11 +75,39 @@ internal class ModelManagerService
     private const string WhisperTurboRepoBase =
         "https://huggingface.co/onnx-community/whisper-large-v3-turbo/resolve/main";
 
-    private static readonly ModelAsset[] CoreDiarizationFiles =
-        [
+    private static readonly ModelAsset[] CoreDiarizationFiles = BuildCoreDiarizationFiles();
+
+    /// <summary>
+    /// The diarization assets to fetch. The CoreML Sortformer variant is included ONLY on
+    /// Apple Silicon.
+    /// </summary>
+    /// <remarks>
+    /// It is another ~527 MB, and it is inert anywhere else: it is a CoreML-specific export
+    /// and <see cref="SortformerStreamer"/> only opens it when the CoreML EP is present. On
+    /// Apple Silicon it is worth the download -- 27 of 31 chunks route to it and a 5-minute
+    /// file goes 3709 ms -> 1959 ms.
+    ///
+    /// ⚠ WITHOUT THIS THE VARIANT IS UNREACHABLE IN THE APP. Detection keys on the file
+    /// being present beside the stock model, and nothing else puts it there; publishing it
+    /// to HuggingFace and listing it in manifest.json is not enough on its own.
+    /// </remarks>
+    private static ModelAsset[] BuildCoreDiarizationFiles()
+    {
+        var assets = new List<ModelAsset>
+        {
             new(Path.Combine(Config.SortformerSubDir, Config.SortformerFile), Config.SortformerFile),
             new(Path.Combine(Config.VadSubDir, Config.VadFile), Config.VadFile),
-        ];
+        };
+
+        if (OperatingSystem.IsMacOS() && RuntimeInformation.OSArchitecture == Architecture.Arm64)
+        {
+            assets.Add(new(
+                Path.Combine(Config.SortformerSubDir, Config.SortformerCoreMLFile),
+                Config.SortformerCoreMLFile));
+        }
+
+        return assets.ToArray();
+    }
 
     private static readonly ModelAsset[] DiariZenFiles =
         [

@@ -214,8 +214,9 @@ if (epFlag is not null)
         case "cpu":    selectedEp = ExecutionProvider.Cpu;       break;
         case "cuda":   selectedEp = ExecutionProvider.Cuda;      break;
         // macOS accelerators. Both need an osx-arm64 build (-p:EP=Cpu); the plain package
-        // is the one whose native carries them. coreml additionally opts Sortformer into
-        // the steady-state variant when that file is present beside the stock model.
+        // is the one whose native carries them. Neither is needed to GET the CoreML
+        // Sortformer variant -- Auto detects that -- so these are overrides: webgpu opts
+        // out of it entirely, coreml additionally moves the stock fallback graph.
         case "coreml": selectedEp = ExecutionProvider.CoreML;    break;
         case "webgpu": selectedEp = ExecutionProvider.WebGpu;    break;
         default:
@@ -1372,7 +1373,7 @@ static void PrintUsage()
     Console.WriteLine("  --diarization <backend>            Diarization backend: sortformer, diarizen, vad, vibevoice-asr-builtin");
     Console.WriteLine("                                     (default: sortformer, or vibevoice-asr-builtin when --asr vibevoice)");
     Console.WriteLine("  --ep <provider>                    Execution provider: auto, cpu, cuda, coreml, webgpu");
-    Console.WriteLine("                                     coreml uses the steady-state Sortformer variant when present (macOS, arm64)");
+    Console.WriteLine("                                     (auto already uses the CoreML Sortformer variant on Apple Silicon when present)");
     Console.WriteLine("  --vad                              Use VAD instead of diarization (deprecated)");
     Console.WriteLine("  --asr <parakeet|cohere|qwen3asr|vibevoice|vibevoice-streaming|whisper|granite>");
     Console.WriteLine("                                     ASR backend (default: parakeet)");

@@ -61,7 +61,12 @@ public static class OrtSessionBuilder
                 // choice for ANY graph, including the stock dynamic-shape exports
                 // that CoreML cannot compile at all. CoreML is faster once a model
                 // has been through docs/coreml_onnx_playbook.md, but that is a
-                // per-model property, so selecting it is left explicit.
+                // per-model property, so it is not selected for a graph in general.
+                //
+                // A caller that can PROVE the property for its own model may still opt in
+                // under Auto -- see SortformerStreamer, which only uses CoreML for an
+                // artifact whose input signature it has verified. That is evidence, not an
+                // assumption, which is why it does not belong behind a user setting.
                 if (OperatingSystem.IsMacOS())
                 {
                     // Gated on the provider actually being in this build: Auto is what the
@@ -386,6 +391,13 @@ public static class OrtSessionBuilder
           + "arm64 only, and comes from the plain Microsoft.ML.OnnxRuntime package -- build with "
           + "-p:EP=Cpu on Apple Silicon. A Cuda or DirectML build carries no macOS accelerator.");
     }
+
+    /// <summary>
+    /// Whether this ONNX Runtime build carries the CoreML EP. Lets a caller that has its
+    /// own evidence a model suits CoreML -- a validated CoreML-specific artifact, say --
+    /// opt into it under Auto without hard-coding a platform assumption.
+    /// </summary>
+    public static bool CoreMLProviderAvailable => ProviderAvailable(CoreMLProviderName);
 
     private static bool ProviderAvailable(string name)
     {
