@@ -250,6 +250,69 @@ after it is not a CoreML variant of anything — it is the decoder's 40%, which 
 batched greedy decoding across segments (NeMo's label-looping decoder) or int8, both
 outside this line of work.
 
+## Run 9 — wired into the app, and the answer changes
+
+The runtime path now exists: `Config` carries the ladder and the encoded-length formula,
+`Parakeet` opens buckets lazily with a signature check, `ModelManagerService` fetches them
+on Apple Silicon only, and the CLI reports which graph each segment ran on.
+
+**Correctness: confirmed.** On a 90 s clip (32 VAD segments) and the full 10-minute file
+(132 Sortformer segments), `--ep coreml` produces transcripts **byte-identical** to
+`--ep cpu`, with 32/32 and 131/132 segments routed to buckets (the one exception is a
+33.9 s segment, longer than the largest bucket, which correctly falls through to the stock
+graph).
+
+**Two things found on the way that were not on anyone's list.**
+
+*Parakeet on the WebGPU EP segfaults on macOS.* `webgpu::BufferManager::Release` under
+`~InferenceSession`, so the process dies at teardown — **after** transcription and
+**before** the caller writes the file. The symptom is a crash and a missing transcript, not
+a wrong one. It reproduces on the tree before any of this work, with plain `--ep auto`
+(Auto resolves to WebGPU on macOS), so the default macOS ASR path was already broken. VAD
+or diarization alone on WebGPU is fine; it takes the Parakeet sessions. Worked around by
+routing those two sessions to the CPU EP on macOS unless WebGPU is named explicitly; the
+ORT bug itself is untouched.
+
+*The `ep` argument never reached Parakeet.* All three call sites — CLI, `TranscriptionService`,
+`TranscriptEditorViewModel` — constructed it with the default `Auto` regardless of the
+user's choice, so `--ep coreml` had never reached the ASR encoder. Same class of miss as
+the one #164 left in `Sortformer.cs`.
+
+**Performance: the variant does not pay yet.** 10-minute file, 132 segments, warm cache:
+
+| | CPU EP | CoreML buckets |
+|---|---|---|
+| encoder inference | 13.6 s | **8.7 s** (1.56×) |
+| opening buckets | — | **11.7 s** |
+| encoder total | **13.6 s** | 20.4 s |
+| diarization (Sortformer) | 13.1 s | **6.6 s** (2.0×) |
+| whole pipeline | **31.4 s** | 32.0 s |
+
+Two independent reasons, both invisible from the per-inference benchmark:
+
+1. **Bucket sessions cost ~2.9 s each to open, warm**, charged per bucket per `Parakeet`
+   instance, and the app builds one per transcription. Four buckets is 11.7 s against an
+   inference saving of 4.9 s.
+2. **Real segments are much shorter than the buckets.** p50 is 2.3 s against a 4 s smallest
+   bucket; mean fill ~47%, so the padded work is 2.02× the real audio. Run 6's 2.5× assumed
+   a full bucket.
+
+Modelling ladders from one to four buckets against the measured distribution puts the best
+at **~16.5 s**, still behind the CPU's 13.6 s — fewer buckets means less loading but more
+padding and more fall-through. There is no ladder that wins without first removing the
+load cost.
+
+Context for why the bar is high: the CPU EP encoder does 10 minutes in 13.6 s here, within
+about 2× of an RTX 3090 (~7 s). The baseline is strong, so a 1.56× on the ANE is only
+~5 s — the same order as session setup.
+
+**So `Auto` deliberately does NOT select the buckets** (unlike the Sortformer variant,
+where Auto does). An explicit `--ep coreml` still gets them. The gate can be reopened when
+the load cost is hidden — opening buckets concurrently with diarization, or holding them
+across files — or when the ladder is re-cut for the observed distribution.
+
+Diarization is unaffected and is a clear win: 13.1 s → 6.6 s on the same file.
+
 ## Where this leaves the variant
 
 Done and validated as an artifact. **Not yet consumable from the app**, and the
@@ -258,14 +321,12 @@ remaining work is all on the C# side or is a product decision:
 1. **The bucket ladder is unchosen.** It should come from the segment-length
    distribution the diarizer and VAD actually produce, weighed against 4.4 GB of
    cache per bucket. Nothing in `Config.cs` caps segment length today.
-2. **`Parakeet.cs` has no CoreML path.** It batches up to 32 segments padded to the
-   batch max and reads `encoded_lengths` off the model. The CoreML path is batch-1,
-   picks a bucket per segment, builds `pad_keep`, and computes the encoded length
-   itself (`calc_encoded_length`, folding the `subsampler_stages` the export report
-   records -- three ×2 stages for this checkpoint).
-   Dropping batching costs nothing — Run 8 shows batch-1 is the best CPU case anyway
-   — and the expected end-to-end gain is **1.88×**, not 2.5×, because the decoder is
-   then 40% of the pipeline.
+2. ~~**`Parakeet.cs` has no CoreML path.**~~ Built in Run 9, and behind an explicit
+   `--ep coreml` rather than on by default: the ANE wins the inference and the bucket
+   session loads hand it straight back. The open item is now **hiding the load cost**
+   (open buckets concurrently with diarization, or hold them across files) or **re-cutting
+   the ladder** for the measured segment distribution — p50 2.3 s against a 4 s smallest
+   bucket. Note Run 8's 1.88× projection was itself optimistic: it counted inference only.
 3. **fp16 is untested here** and would halve both the sidecar and the 4.4 GB cache.
    The playbook's fp16 section is Sortformer-specific; on CoreML it was the fastest
    variant measured there.

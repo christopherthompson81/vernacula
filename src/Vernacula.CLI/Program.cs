@@ -936,8 +936,11 @@ try
             return 1;
         }
 
+        // ⚠ `selectedEp` used to stop at diarization: Parakeet was built with the
+        // default Auto no matter what --ep said, so --ep coreml never reached the ASR
+        // encoder. Same class of miss as #164's.
         using var parakeet = new ParakeetAsr(parakeetDir,
-            encoderFile, decoderJointFile, beamWidth: effectiveBeam);
+            encoderFile, decoderJointFile, ep: selectedEp, beamWidth: effectiveBeam);
 
         if (parakeetLmPath != null)
         {
@@ -964,6 +967,15 @@ try
 
         Console.WriteLine();
         swAsr.Stop();
+
+        // Say where the encoding actually ran. "CoreML was requested" and "CoreML ran" are
+        // different claims -- a missing bucket, a signature mismatch or a segment longer
+        // than the largest bucket all fall back silently and correctly, and without this
+        // the only symptom is a number that did not improve.
+        if (parakeet.CoreMLSegmentCount > 0 || parakeet.StockSegmentCount > 0)
+            Console.WriteLine($"Encoder routing  : {parakeet.CoreMLSegmentCount} segment(s) on CoreML buckets, "
+                              + $"{parakeet.StockSegmentCount} on the stock graph, "
+                              + $"{parakeet.EncoderMs:F0}ms in the encoder ({parakeet.CoreMLLoadMs:F0}ms of it opening buckets)");
     }
 
     // Sort by start time (Recognize may return results in batch order)

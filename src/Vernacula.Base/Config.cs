@@ -293,6 +293,43 @@ public static class Config
     public const string VocabFile            = "vocab.txt";
     public const string AsrConfigFile        = "config.json";
 
+    /// <summary>
+    /// Mel-frame sizes of the CoreML encoder buckets, ascending. 100 frames = 1 s.
+    /// </summary>
+    /// <remarks>
+    /// The stock encoder cannot compile under the CoreML EP at all (unbounded dimensions;
+    /// `error code: -14`), so reaching the Neural Engine means static shapes, and static
+    /// shapes mean a segment is padded up to the next bucket. Each bucket is a separate
+    /// compiled model: ~4.4 GB of CoreML cache apiece, built lazily on first use, which is
+    /// why this ladder is short rather than fine-grained.
+    ///
+    /// A segment longer than the largest bucket routes to the stock encoder instead, so
+    /// this list caps padding waste, not segment length.
+    /// </remarks>
+    public static readonly int[] ParakeetCoreMLEncoderFrames = [400, 1000, 2000, 3000];
+
+    /// <summary>The CoreML encoder bucket for <paramref name="melFrames"/> mel frames.</summary>
+    public static string ParakeetCoreMLEncoderFile(int melFrames) =>
+        $"encoder-model.coreml-{melFrames}.onnx";
+
+    /// <summary>
+    /// Encoder output frames for <paramref name="melFrames"/> mel frames of input.
+    /// </summary>
+    /// <remarks>
+    /// ⚠ The CoreML buckets have NO <c>encoded_lengths</c> output -- they have no
+    /// <c>length</c> input for one to be derived from -- so the caller has to compute this
+    /// itself. It is NeMo's `calc_length` for this checkpoint's subsampler: three strided
+    /// convs, kernel 3, stride 2, padding 1 each side. `coreml-encoder-report.json` beside
+    /// the export records the geometry it was actually built with.
+    /// </remarks>
+    public static int ParakeetEncodedFrames(int melFrames)
+    {
+        int length = melFrames;
+        for (int i = 0; i < 3; i++)
+            length = (length + 1 + 1 - 3) / 2 + 1;
+        return length;
+    }
+
     // ── ASR (IndicConformer) ────────────────────────────────────────────────
     public const string IndicConformerSubDir             = "indicconformer";
     public const string CtcDecoderFile                   = "ctc_decoder-model.onnx";

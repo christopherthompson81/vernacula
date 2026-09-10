@@ -122,15 +122,45 @@ internal class ModelManagerService
             new(Path.Combine("diarizen", Config.DiariZenLdaDir, "plda_tr.bin"), $"{Config.DiariZenLdaDir}/plda_tr.bin"),
         ];
 
-    private static readonly ModelAsset[] AsrFilesFp32 =
-        [
+    private static readonly ModelAsset[] AsrFilesFp32 = BuildAsrFilesFp32();
+
+    /// <summary>
+    /// The fp32 ASR assets to fetch. The CoreML encoder buckets are included ONLY on
+    /// Apple Silicon.
+    /// </summary>
+    /// <remarks>
+    /// They are ~153 MB for all four and inert anywhere else — CoreML-specific exports that
+    /// <see cref="Parakeet"/> only opens when the CoreML EP is present. They add no weight
+    /// download: their external weights ARE <c>encoder-model.onnx.data</c>, already in this
+    /// list, which is why each bucket is only its own graph.
+    ///
+    /// ⚠ WITHOUT THIS THE BUCKETS ARE UNREACHABLE IN THE APP. Detection keys on the files
+    /// being present beside the stock encoder, and nothing else puts them there; publishing
+    /// them to HuggingFace and listing them in manifest.json is not enough on its own.
+    /// </remarks>
+    private static ModelAsset[] BuildAsrFilesFp32()
+    {
+        var assets = new List<ModelAsset>
+        {
             new(Path.Combine(Config.ParakeetSubDir, Config.PreprocessorFile), Config.PreprocessorFile),
             new(Path.Combine(Config.ParakeetSubDir, Config.EncoderFile), Config.EncoderFile),
             new(Path.Combine(Config.ParakeetSubDir, $"{Config.EncoderFile}.data"), $"{Config.EncoderFile}.data"),
             new(Path.Combine(Config.ParakeetSubDir, Config.DecoderJointFile), Config.DecoderJointFile),
             new(Path.Combine(Config.ParakeetSubDir, Config.VocabFile), Config.VocabFile),
             new(Path.Combine(Config.ParakeetSubDir, Config.AsrConfigFile), Config.AsrConfigFile)
-        ];
+        };
+
+        if (OperatingSystem.IsMacOS() && RuntimeInformation.OSArchitecture == Architecture.Arm64)
+        {
+            foreach (int frames in Config.ParakeetCoreMLEncoderFrames)
+            {
+                string file = Config.ParakeetCoreMLEncoderFile(frames);
+                assets.Add(new(Path.Combine(Config.ParakeetSubDir, file), file));
+            }
+        }
+
+        return assets.ToArray();
+    }
 
     private static readonly ModelAsset[] CohereFiles =
         [

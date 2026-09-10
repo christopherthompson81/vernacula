@@ -509,7 +509,7 @@ capability question (can we express this at all?) rather than a performance one.
 | model | outlook |
 |---|---|
 | Sortformer | **Done.** Axes constant at runtime; ideal case. |
-| Parakeet encoder | **Done, via Technique 6.** One partition, 2.5× over CPU at every bucket, bit-exact. Baking the length (the Sortformer recipe) was measured and rejected — 2–4% WER. |
+| Parakeet encoder | **Technique 6 works; shipping it does not pay yet.** One partition, 2.5× per inference, bit-exact. But end to end in the app the ANE's win is ~5 s on a 10-minute file and opening the bucket sessions costs ~11.7 s, so it is a wash — see "the win has to survive the session" below. Baking the length (the Sortformer recipe) was separately measured and rejected — 2–4% WER. |
 | Parakeet TDT decoder | **Measured, and not worth it** — and not a `Loop` graph, as recorded here previously. It is 42 nodes with two `LSTM`s, stepped from C#. With its shapes frozen (they are all constant in the greedy path) it puts **23 of 27 nodes on CoreML**, only `LSTM` declining — and runs at **0.652 ms vs 0.643 ms on CPU**. The work per call is too small to pay for two partition boundaries. See "when not to bother" below. |
 | `nemo128` preprocessor | **No.** 6 partitions, 31/89 nodes, and CoreML is *slower*: 2.95 ms vs 1.71 ms. `Parakeet.cs` already pins it to CPU, correctly. It is 1% of pipeline time. |
 | Silero VAD | **Cannot.** Fails to compile outright — `Error compiling model: Failed to parse the model specification`; it carries three `If` subgraphs. Costs 2.0 ms per second of audio (1.2 s for a 10-minute recording), once per recording. |
@@ -534,6 +534,26 @@ ten segments, timing each ORT session separately:
 A 2.5× on the encoder is **1.88× end to end**. Everything else in the stack was
 either slower on CoreML or unable to compile, so that is the whole prize — and it is
 worth knowing before, not after.
+
+**Does the win survive the session?** A partition count is measured on a loaded session;
+a user pays to load it. Parakeet's buckets are ~2.9 s each to open even with a warm
+`ModelCacheDirectory`, charged per bucket per instance, and a static-shape design needs
+several. Measured end to end on a 10-minute recording, 132 segments, warm cache:
+
+| | CPU EP | CoreML buckets |
+|---|---|---|
+| encoder inference | 13.6 s | **8.7 s** (1.56×) |
+| opening buckets | 0.0 s | **11.7 s** |
+| encoder total | **13.6 s** | 20.4 s |
+
+The ANE genuinely wins the compute and then hands it all back. Modelling every ladder from
+one to four buckets against the real segment distribution puts the best at ~16.5 s, still
+behind the CPU: fewer buckets is less loading but more padding waste and more segments
+falling through to the stock graph. Note also how far off the per-inference figure is as a
+predictor — real segments are much shorter than the buckets (p50 2.3 s against a 4 s
+smallest bucket, ~47% mean fill), so half the padded work is wasted before loading is even
+counted. **Bucket a variable-length model only where the segments actually cluster, and
+count the loads.**
 
 **Is the per-call work big enough to pay for the boundary?** A partition boundary
 costs a copy and a sync each way. `decoder_joint` reaches 23/27 nodes on the EP and
