@@ -56,6 +56,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 from collections import deque
 
 import numpy as np
@@ -81,7 +82,7 @@ def length_path_nodes(graph) -> list[str]:
     prod = {o: n for n in graph.node for o in n.output}
     init = {i.name for i in graph.initializer}
     gin = {i.name for i in graph.input}
-    names, seen, q = set(), set(), deque([LENGTH_OUTPUT])
+    names, seen, unnamed, q = set(), set(), 0, deque([LENGTH_OUTPUT])
     while q:
         name = q.popleft()
         if name in seen or name in init or name in gin:
@@ -92,7 +93,18 @@ def length_path_nodes(graph) -> list[str]:
             continue
         if node.name:
             names.add(node.name)
+        else:
+            # `node_block_list` matches on name, so an unnamed node cannot be held back --
+            # its frame-count arithmetic would be silently converted while the caller is
+            # told N nodes are protected. torch.onnx.export names everything today, but the
+            # exporter has a --dynamo path and onnxscript makes no such guarantee.
+            unnamed += 1
         q.extend(node.input)
+    if unnamed:
+        raise SystemExit(
+            f"{unnamed} node(s) on the {LENGTH_OUTPUT} path have no name, so they cannot be "
+            "held in fp32 and their frame-count arithmetic would be converted silently. "
+            "Re-export with named nodes, or name them before converting.")
     return sorted(names)
 
 
@@ -193,12 +205,30 @@ def _loads_at(path: str, level: str) -> str | None:
         return str(exc).strip().splitlines()[-1]
 
 
+def _same_failure(a: str, b: str) -> bool:
+    """Do two ORT load errors have the same cause?
+
+    Compared on the message with paths and addresses stripped, because "the source fails
+    here too" is not on its own evidence that the conversion is innocent -- an fp16 type
+    error surfacing only at a level the source independently fails at would otherwise be
+    waved through.
+    """
+    def norm(msg: str) -> str:
+        msg = re.sub(r"/\S+?\.onnx", "<model>", msg)
+        msg = re.sub(r"0x[0-9a-fA-F]+", "<addr>", msg)
+        return re.sub(r"\s+", " ", msg).strip()
+
+    return norm(a) == norm(b)
+
+
 def check_loads(path: str, baseline: str) -> bool:
     """A model that loads at one optimization level can fail at another, so check all three.
 
     Compared against the SOURCE model at the same level, because not every failure is this
     script's doing: the CoreML variant already cannot load at ORT_ENABLE_ALL (ORT re-running
-    MatMulAddFusion over an already-optimized graph), and reporting that as an fp16 defect
+    it surfaces as `AddInitializedOrtValue Attempt to replace the existing tensor`, thrown
+    by MatMulAddFusion re-running over an already-optimized graph -- see #171), and
+    reporting that as an fp16 defect
     would send the reader after the wrong thing. Only a level the source loads at and the
     fp16 model does not is a regression.
     """
@@ -208,9 +238,16 @@ def check_loads(path: str, baseline: str) -> bool:
         if err is None:
             print(f"  {level:18} loads")
             continue
-        if _loads_at(baseline, level) is not None:
-            print(f"  {level:18} fails -- but so does the fp32 source, so not from this "
-                  f"conversion")
+        base_err = _loads_at(baseline, level)
+        if base_err is not None and _same_failure(err, base_err):
+            print(f"  {level:18} fails -- identically to the fp32 source, so not from "
+                  f"this conversion")
+            continue
+        if base_err is not None:
+            print(f"  {level:18} FAILS DIFFERENTLY from the fp32 source")
+            print(f"      fp16: {err[:110]}")
+            print(f"      fp32: {base_err[:110]}")
+            ok = False
             continue
         print(f"  {level:18} FAILS: {err[:150]}")
         ok = False
@@ -260,9 +297,17 @@ def compare(fp32_path: str, fp16_path: str, seed: int = 7) -> None:
         else:
             feed[i.name] = rng.standard_normal(shapes[i.name]).astype(np.float32)
 
-    a = dict(zip([o.name for o in ref.get_outputs()], ref.run(None, feed)))
-    b = dict(zip([o.name for o in got.get_outputs()],
-                 got.run(None, {k: feed[k] for k in [i.name for i in got.get_inputs()]})))
+    # The converted graph's inputs are fp16 under --io-fp16, so feed each session the dtype
+    # it declares rather than handing both the same fp32 dict.
+    def typed(session):
+        out = {}
+        for i in session.get_inputs():
+            arr = feed[i.name]
+            out[i.name] = arr.astype(np.float16) if i.type == "tensor(float16)" else arr
+        return out
+
+    a = dict(zip([o.name for o in ref.get_outputs()], ref.run(None, typed(ref))))
+    b = dict(zip([o.name for o in got.get_outputs()], got.run(None, typed(got))))
     print("\nsingle-chunk fp16 vs fp32 (CPU EP, steady state):")
     for key in ("spkcache_fifo_chunk_preds", "chunk_pre_encode_embs"):
         x, y = a[key].astype(np.float32), b[key].astype(np.float32)
@@ -294,9 +339,19 @@ def drift(fp32_path: str, fp16_path: str, audio_paths, max_seconds: float) -> No
         pipe.reset_state()
         return [pipe.process_chunk(i, stride, total, mel)[0] for i in range(n_chunks)]
 
+    import onnxruntime as ort
+    if any(i.type == "tensor(float16)"
+           for i in ort.InferenceSession(fp16_path,
+                                         providers=["CPUExecutionProvider"]).get_inputs()):
+        raise SystemExit(
+            "--drift needs an fp32-io model: it runs through OnnxSortformerPipeline, which "
+            "builds float32 chunk/spkcache/fifo buffers exactly as Sortformer.cs does. "
+            "Convert without --io-fp16 to measure drift.")
+
     for path in audio_paths:
         path = Path(path)
-        frames = int(max_seconds * 16000) if max_seconds else -1
+        # `inf` means the whole file; soundfile takes -1 for that.
+        frames = -1 if max_seconds == float("inf") else int(max_seconds * 16000)
         audio, sr = sf.read(str(path), dtype="float32",
                             frames=frames if frames > 0 else -1)
         if sr != 16000:
@@ -306,6 +361,10 @@ def drift(fp32_path: str, fp16_path: str, audio_paths, max_seconds: float) -> No
         mel = B.log_mel_spectrogram(audio)
         stride = B.CHUNK_LENGTH * B.SUBSAMPLING
         n_chunks = (mel.shape[1] + stride - 1) // stride
+        if n_chunks == 0:
+            print(f"\n{path.stem}: too short to produce a single chunk "
+                  f"({len(audio)} samples); skipped")
+            continue
 
         a = run(fp32_path, mel, n_chunks, stride, mel.shape[1])
         b = run(fp16_path, mel, n_chunks, stride, mel.shape[1])
@@ -337,18 +396,26 @@ def main() -> int:
                          "posterior divergence -- whether the fp16 error compounds through "
                          "the spkcache/FIFO feedback. This is what DER is too coarse to say.")
     ap.add_argument("--max-seconds", type=float, default=90.0,
-                    help="Truncate each --drift file (default 90).")
+                    help="Truncate each --drift file (default 90). Pass a positive number; "
+                         "use --max-seconds inf for whole files.")
     args = ap.parse_args()
+
+    if args.drift and not (args.max_seconds > 0):
+        raise SystemExit("--max-seconds must be positive (use `inf` for whole files).")
 
     src, dst = os.path.expanduser(args.input), os.path.expanduser(args.output)
     convert(src, dst, keep_io_types=not args.io_fp16)
     print("\nload check:")
     ok = check_loads(dst, src)
+    if not ok:
+        print("\nSkipping --compare/--drift: the model does not load cleanly, and running it "
+              "anyway would bury the diagnostic above under an ONNX Runtime traceback.")
+        return 1
     if args.compare:
         compare(src, dst)
     if args.drift:
         drift(src, dst, args.drift, args.max_seconds)
-    return 0 if ok else 1
+    return 0
 
 
 if __name__ == "__main__":

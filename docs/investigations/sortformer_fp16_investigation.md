@@ -204,6 +204,37 @@ half the size.
 So fp16 is not a replacement for the fp32 model; it is an **execution-provider-gated
 variant**. Shipping it as the default would slow down every CPU user.
 
+## Review pass — 2026-09-09
+
+A `/code-review high` pass confirmed the shipped graph is structurally clean — 0 nodes with
+mixed float input types, 0 `Cast.to` vs `value_info` disagreements, `chunk_pre_encode_embs`
+with no internal consumers left, all three `ScatterElements` in fp32 with converter-inserted
+casts either side — and reproduced the headline numbers exactly. Six findings on the script
+around it, all fixed:
+
+* **`--io-fp16` made both verification modes unusable.** `--compare` built one fp32 feed and
+  handed it to both sessions, so the fp16-io graph threw `Unexpected input data type`. Each
+  session is now fed the dtype it declares. `--drift` cannot work under `--io-fp16` at all —
+  it runs through `OnnxSortformerPipeline`, which builds float32 buffers exactly as
+  `Sortformer.cs` does — so it now says that instead of throwing from inside ORT.
+* **`check_loads` absolved by the *presence* of a baseline failure, not its cause.** Any
+  level where the fp32 source also failed was waved through, so an fp16-introduced type
+  error surfacing only at `ORT_ENABLE_ALL` on the CoreML variant would have been reported as
+  inherited. It now compares the normalized error text and says "identically to the fp32
+  source", or flags a differing failure.
+* **`length_path_nodes` silently dropped unnamed nodes.** `node_block_list` matches on name,
+  so an unnamed length-path node would have had its frame-count arithmetic converted while
+  the caller was told N nodes were protected — the exact failure the pass exists to prevent.
+  `torch.onnx.export` names everything today, but the exporter has a `--dynamo` path and
+  onnxscript makes no such guarantee. It now refuses rather than under-protecting.
+* **`--max-seconds 0`** (or a negative) fell through to "decode the whole file" rather than
+  erroring. Validated; `inf` is the explicit way to ask for whole files.
+* **`--compare`/`--drift` ran even after the load check had declared a regression**, burying
+  the diagnostic under an ORT traceback, and their outcome never reached the exit code.
+  Gated.
+* **`--drift` on a sub-chunk recording** died inside `np.concatenate` without naming the
+  file. Skipped with a message.
+
 ## Where this leaves #172
 
 1. **A valid fp16 export exists.** `fp16_convert_sortformer.py`, three graph passes plus one
@@ -219,7 +250,10 @@ rather than work:
 * **The CoreML number needs re-measuring on the Apple Silicon machine**, against the fp16
   build of the CoreML variant (the converter handles it — verified, 264 MB, loads at
   `ORT_DISABLE_ALL` and `ORT_ENABLE_BASIC`; its `ORT_ENABLE_ALL` failure is the
-  `MatMulAddFusion` one that variant already has, not an fp16 problem). If 22.3 ms holds
+  failure that variant already has -- the message is `AddInitializedOrtValue Attempt to
+  replace the existing tensor`, thrown by `MatMulAddFusion` re-running over an
+  already-optimized graph, bisected in #171 -- and not an fp16 problem; the load check
+  confirms it by matching the fp32 source's error text, not merely by seeing one). If 22.3 ms holds
   there, fp16-on-CoreML is the fastest path on that platform by a wide margin.
 * **Shipping it means EP-gated model selection** — CUDA and possibly CoreML get the fp16
   file, CPU keeps fp32 — which is the same shape of runtime work as the CoreML variant's
