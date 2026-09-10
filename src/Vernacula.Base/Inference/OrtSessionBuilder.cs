@@ -162,10 +162,12 @@ public static class OrtSessionBuilder
         // per-run latency for a directory. Best-effort -- if the cache dir cannot be
         // created, drop the option rather than fail the session.
         //
-        // ⚠ IT IS NOT SMALL AND NOTHING PRUNES IT. The compiled .mlmodelc for the 527 MB
-        // Sortformer variant alone is ~1.0 GB, and ORT keys entries by graph, so every model
-        // and every re-export of one adds another. Trading ~2 s per run for unbounded disk
-        // is the right default for a desktop app, but it wants a cap or a cleanup path.
+        // ⚠ IT IS NOT SMALL. The compiled .mlmodelc for the 527 MB Sortformer variant alone
+        // is ~1.0 GB. Superseded versions of the SAME model file are reclaimed
+        // (PruneStaleVersions below), but the root still grows with the number of DISTINCT
+        // models cached, and a model deleted from disk is never reclaimed at all, because
+        // the prune only runs when a new session opens that same file. A global cap is
+        // still wanted.
         string? dir = CoreMLCacheDirectoryFor(modelPath);
         if (dir is not null)
             cfg["ModelCacheDirectory"] = dir;
@@ -207,12 +209,27 @@ public static class OrtSessionBuilder
             // Splitting them that way is what lets the prune below remove previous versions
             // of this file without touching a different model that happens to share a
             // basename -- two model roots each holding a diar_..._coreml.onnx, say.
-            string prefix = $"{StableHash(info.FullName):x8}-{Path.GetFileNameWithoutExtension(modelPath)}";
-            string token  = $"{prefix}-{info.Length:x}-{info.LastWriteTimeUtc.Ticks:x}";
-            string dir    = Path.Combine(root, token);
-            Directory.CreateDirectory(dir);
+            // ⚠ THE SIDECAR COUNTS TOO. A model with external initializers can have its
+            // weights swapped under an untouched .onnx, which would be a silent stale-graph
+            // hit -- the same hazard CachedModelPath guards against further down this file.
+            // Nothing routed through CoreML today uses external data, but Create(...,
+            // coreMlModelPath:) is a general entry point.
+            var sidecar = new FileInfo(modelPath + "_data");
+            string sidecarKey = sidecar.Exists
+                ? $"-{sidecar.Length:x}-{sidecar.LastWriteTimeUtc.Ticks:x}"
+                : string.Empty;
 
-            PruneStaleVersions(root, prefix, keep: token);
+            string prefix = $"{StableHash(info.FullName):x8}-{Path.GetFileNameWithoutExtension(modelPath)}";
+            string token  = $"{prefix}-{info.Length:x}-{info.LastWriteTimeUtc.Ticks:x}{sidecarKey}";
+            string dir    = Path.Combine(root, token);
+
+            // Prune only when this version is NEW. Re-pruning on every session would keep
+            // re-entering the race described on PruneStaleVersions for no benefit.
+            bool isNewVersion = !Directory.Exists(dir);
+            Directory.CreateDirectory(dir);
+            if (isNewVersion)
+                PruneStaleVersions(root, prefix, keep: token, modelPath: modelPath);
+
             return dir;
         }
         catch
@@ -230,10 +247,16 @@ public static class OrtSessionBuilder
     /// nothing reclaims the last one. Only directories under our own cache root whose prefix
     /// marks them as an older version of THIS file are removed.
     ///
-    /// Best-effort by design. A concurrent session may still hold an old directory open; the
-    /// delete fails, is swallowed, and the worst outcome is that ORT recompiles later.
+    /// ⚠ NOT SAFE AGAINST A CONCURRENT SESSION ON THE OLD VERSION. On APFS an unlink is not
+    /// refused because a file is open, so this does not merely "fail and recompile" the way
+    /// it would on Windows: a live session's compiled bundle can be removed underneath it.
+    /// Mapped pages survive, but anything CoreML re-opens by path afterwards does not. The
+    /// exposure is narrow -- it needs the model replaced in place AND a second session
+    /// opening the new version while the first still runs -- and it is bounded by only
+    /// pruning when a new version's directory is first created. Prune at process start
+    /// instead if that ever stops being narrow enough.
     /// </remarks>
-    private static void PruneStaleVersions(string root, string prefix, string keep)
+    private static void PruneStaleVersions(string root, string prefix, string keep, string modelPath)
     {
         try
         {
@@ -241,11 +264,29 @@ public static class OrtSessionBuilder
             {
                 if (string.Equals(Path.GetFileName(dir), keep, StringComparison.Ordinal))
                     continue;
-                try { Directory.Delete(dir, recursive: true); }
-                catch { /* in use, or gone already */ }
+                TryDelete(dir);
+            }
+
+            // Caches written before the prefix carried a path hash: "{basename}-{len}-{ticks}".
+            // The pattern above cannot match those, so without this sweep anyone who ran a
+            // build between the namespacing change and this one keeps an orphaned ~1 GB
+            // directory forever -- the exact population this prune exists for.
+            string legacy = Path.GetFileNameWithoutExtension(modelPath);
+            foreach (string dir in Directory.EnumerateDirectories(root, legacy + "-*"))
+            {
+                string name = Path.GetFileName(dir);
+                if (name.StartsWith(prefix, StringComparison.Ordinal))
+                    continue;               // current scheme, handled above
+                TryDelete(dir);
             }
         }
         catch { /* the root vanished; nothing to prune */ }
+    }
+
+    private static void TryDelete(string dir)
+    {
+        try { Directory.Delete(dir, recursive: true); }
+        catch { /* gone already, or refused */ }
     }
 
     /// <summary>FNV-1a over the string, for a short stable directory prefix. Not a digest.</summary>

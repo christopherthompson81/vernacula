@@ -23,7 +23,7 @@ Inference figures are from an idle machine; load figures are stable.
 | `+ `Pad` → `Concat`` | **1** | 51.3 ms | 101.0 s | 20.8 s | 1.49 GB |
 | `+ Gemm pre-transpose` | **1** | 52.3 ms | **2.1 s** | **0.2 s** | **0.00 GB** |
 
-Reference on the same machine: **CPU 163.5 ms, WebGPU 94.0 ms.** ⚠ The model card for this bundle records **196.3 ms / 113.0 ms** for the same machine and ORT; the two have never been reconciled and one of them is mislabelled. Measured on an M5 under ORT 1.29.0, the stock graph runs at **171.8 ms** on the CPU EP, which sits between them and settles nothing. Treat both 1.24.4 baselines as indicative (#165 item 8).
+Reference on the same machine: **CPU 163.5 ms, WebGPU 94.0 ms.** ⚠ The model card for this bundle records **196.3 ms / 113.0 ms** for the same machine and ORT; the two have never been reconciled. Measured on an M5 under ORT 1.29.0, the stock graph runs at **171.8 ms** on the CPU EP, which sits between them and settles nothing. Treat both 1.24.4 baselines as indicative (#165 item 8).
 Outputs match the original dynamic model to `3.6e-07` (preds) and `0.0` (embeddings).
 
 Net: **3.2× vs CPU, 1.8× vs WebGPU, and load went from 101 s to 2.1 s.**
