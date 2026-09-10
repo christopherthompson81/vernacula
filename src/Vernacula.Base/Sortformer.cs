@@ -97,7 +97,9 @@ public sealed class SortformerStreamer : IDisposable
         // ExecutionProvider.CoreML and .WebGpu fell through the switch below with no
         // matching case and Auto appended nothing on macOS, silently running every
         // diarization on the CPU EP. See OrtSessionBuilder.TryAppendPlatformAccelerator.
-        if (!OrtSessionBuilder.TryAppendPlatformAccelerator(opts, stockEp))
+        string resolvedModelPath = Config.GetSortformerModelPath(modelPath);
+
+        if (!OrtSessionBuilder.TryAppendPlatformAccelerator(opts, stockEp, resolvedModelPath))
         {
             switch (stockEp)
             {
@@ -122,8 +124,6 @@ public sealed class SortformerStreamer : IDisposable
                     break;
             }
         }
-
-        string resolvedModelPath = Config.GetSortformerModelPath(modelPath);
 
         // Cache the graph-optimised model on disk so that subsequent loads skip
         // the expensive ORT graph optimisation step (typically 10-30 s).
@@ -178,7 +178,8 @@ public sealed class SortformerStreamer : IDisposable
         InferenceSession? sess = null;
         try
         {
-            var opts = OrtSessionBuilder.Create(ep, GraphOptimizationLevel.ORT_ENABLE_BASIC);
+            var opts = OrtSessionBuilder.Create(
+                ep, GraphOptimizationLevel.ORT_ENABLE_BASIC, coreMlModelPath: path);
             sess = new InferenceSession(path, opts);
 
             // ⚠ THE FILENAME IS NOT THE CONTRACT. An export made before
@@ -591,13 +592,25 @@ public sealed class SortformerStreamer : IDisposable
                 fp[t, s] = predsFlat[(fpStart + t) * S + s];
 
         var fifoCurrent = _fifo!;
-        var fifoPredsCurrent = _fifoPreds!;
         _fifo = Concat3DAxis1(fifoCurrent, Wrap2DIn3D(chunkEmbs, ceLen, D));
 
-        if (fpLen > 0)
-            _fifoPreds = Concat3DAxis1(fifoPredsCurrent, Wrap2DIn3D(fp, fpLen, S));
-        else
-            _fifoPreds = Wrap2DIn3D(chunkPreds, cpLen, S);
+        // NeMo ASSIGNS fifo_preds from this pass's output, then appends the chunk's:
+        //     streaming_state.fifo_preds = preds[:, spkcache_len : spkcache_len + fifo_len]
+        //     streaming_state.fifo_preds = cat([fifo_preds, chunk_preds], dim=1)
+        // i.e. cat(fp, chunkPreds). `fp` is the FRESH prediction for the frames already in
+        // _fifo, so it REPLACES the old preds for those frames; chunkPreds belongs to the
+        // embeddings just appended.
+        //
+        // This previously read cat(_fifoPreds, fp): it kept the previous pass's preds and
+        // appended the fresh ones, so _fifoPreds[0..fifoT) described the chunk BEFORE the
+        // one sitting in _fifo[0..fifoT), and chunkPreds was never stored except when the
+        // FIFO was empty. popEmbs/popPreds were therefore mismatched pairs, and they feed
+        // both UpdateSilenceProfile and _spkcachePreds -- which CompressCache scores to
+        // decide which frames survive. It never crashed because the lengths agree in
+        // steady state; it only ever produced wrong pairings.
+        _fifoPreds = fpLen > 0
+            ? Concat3DAxis1(Wrap2DIn3D(fp, fpLen, S), Wrap2DIn3D(chunkPreds, cpLen, S))
+            : Wrap2DIn3D(chunkPreds, cpLen, S);
 
         int newFifoT = _fifo.GetLength(1);
         if (newFifoT > Config.FifoLength)

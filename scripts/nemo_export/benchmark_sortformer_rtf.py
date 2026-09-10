@@ -301,7 +301,11 @@ class SortformerPipelineBase:
         chunk_embs = embs[:, : min(valid_frames, emb_t_out)]
 
         self._fifo = np.concatenate([self._fifo, chunk_embs], axis=1)
-        self._fifo_preds = np.concatenate([self._fifo_preds, fp if fp.shape[1] > 0 else chunk_preds], axis=1)
+        # NeMo: fifo_preds = fp (fresh preds for the frames already in fifo), then append
+        # chunk_preds. The old expression kept the previous pass's preds and appended fp,
+        # leaving popped embeddings paired with the wrong predictions. See Sortformer.cs.
+        self._fifo_preds = (np.concatenate([fp, chunk_preds], axis=1)
+                            if fp.shape[1] > 0 else chunk_preds)
 
         new_fifo_t = self._fifo.shape[1]
         if new_fifo_t > FIFO_LENGTH:

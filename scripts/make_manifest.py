@@ -117,9 +117,16 @@ def main() -> None:
 
         added = [k for k in manifest["files"] if k not in base["files"]]
         replaced = [k for k in manifest["files"] if k in base["files"]]
+        # Keys that describe the FILE's content. On an entry being replaced these belong
+        # to the previous build, so carrying them over would pair an old size with a new
+        # md5. Non-content keys (anything a publisher added for its own bookkeeping) are
+        # preserved.
+        content_keys = {"md5", "size", "sha256"}
         for rel, entry in manifest["files"].items():
-            # Preserve any extra keys already on an entry being replaced (e.g. "size").
-            merged = dict(base["files"].get(rel, {}))
+            prior = base["files"].get(rel)
+            merged = {} if prior is None else {
+                k: v for k, v in prior.items() if k not in content_keys
+            }
             merged.update(entry)
             base["files"][rel] = merged
         base["files"] = dict(sorted(base["files"].items()))
