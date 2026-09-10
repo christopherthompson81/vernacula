@@ -204,6 +204,26 @@ if (runLid)
     return RunLidAction(audioPath, modelsRoot);
 }
 
+// --ep, resolved once, for every model this CLI loads (#165 item 1).
+ExecutionProvider selectedEp = ExecutionProvider.Auto;
+if (epFlag is not null)
+{
+    switch (epFlag)
+    {
+        case "auto":   selectedEp = ExecutionProvider.Auto;      break;
+        case "cpu":    selectedEp = ExecutionProvider.Cpu;       break;
+        case "cuda":   selectedEp = ExecutionProvider.Cuda;      break;
+        // macOS accelerators. Both need an osx-arm64 build (-p:EP=Cpu); the plain package
+        // is the one whose native carries them. coreml additionally opts Sortformer into
+        // the steady-state variant when that file is present beside the stock model.
+        case "coreml": selectedEp = ExecutionProvider.CoreML;    break;
+        case "webgpu": selectedEp = ExecutionProvider.WebGpu;    break;
+        default:
+            Console.Error.WriteLine($"--ep must be auto, cpu, cuda, coreml or webgpu (got \"{epFlag}\").");
+            return 2;
+    }
+}
+
 if (runWhisperCheck)
 {
     if (audioPath is null)
@@ -211,7 +231,7 @@ if (runWhisperCheck)
         Console.Error.WriteLine("Error: --whisper-check requires --audio <file>.");
         return 1;
     }
-    return RunWhisperCheckAction(audioPath, modelsRoot);
+    return RunWhisperCheckAction(audioPath, modelsRoot, selectedEp);
 }
 
 if (audioPath is null)
@@ -223,27 +243,6 @@ if (audioPath is null)
 
 // Resolve diarization default based on ASR backend
 diarization ??= asrBackend is "vibevoice" or "vibevoice-streaming" ? "vibevoice-asr-builtin" : "sortformer";
-
-// --ep, resolved once. Diarization is the only consumer today; the ASR backends still
-// take Auto (#165 item 1 asks for the flag, this is the diarization half of it).
-ExecutionProvider diarizationEp = ExecutionProvider.Auto;
-if (epFlag is not null)
-{
-    switch (epFlag)
-    {
-        case "auto":   diarizationEp = ExecutionProvider.Auto;      break;
-        case "cpu":    diarizationEp = ExecutionProvider.Cpu;       break;
-        case "cuda":   diarizationEp = ExecutionProvider.Cuda;      break;
-        // macOS accelerators. Both need an osx-arm64 build (-p:EP=Cpu); the plain package
-        // is the one whose native carries them. coreml additionally opts Sortformer into
-        // the steady-state variant when that file is present beside the stock model.
-        case "coreml": diarizationEp = ExecutionProvider.CoreML;    break;
-        case "webgpu": diarizationEp = ExecutionProvider.WebGpu;    break;
-        default:
-            Console.Error.WriteLine($"--ep must be auto, cpu, cuda, coreml or webgpu (got \"{epFlag}\").");
-            return 2;
-    }
-}
 
 // Validate that vibevoice-asr-builtin is only used with vibevoice ASR
 if (diarization == "vibevoice-asr-builtin" && asrBackend is not ("vibevoice" or "vibevoice-streaming"))
@@ -429,7 +428,7 @@ try
 
             var sw1 = Stopwatch.StartNew();
             Console.Write("Loading Sortformer model... ");
-            using var sortformer = new SortformerStreamer(modelsRoot, diarizationEp);
+            using var sortformer = new SortformerStreamer(modelsRoot, selectedEp);
             Console.WriteLine($"DONE ({sw1.ElapsedMilliseconds,6} ms)");
 
             var sw2 = Stopwatch.StartNew();
@@ -482,7 +481,7 @@ try
         else
         {
             Console.Write("Diarizing (Sortformer)... ");
-            using var sortformer = new SortformerStreamer(modelsRoot, diarizationEp);
+            using var sortformer = new SortformerStreamer(modelsRoot, selectedEp);
             segs = sortformer.Diarize(audio,
                 (idx, total) => Console.Write($"\r  Diarizing chunk {idx}/{total}..."));
             swDiar.Stop();
@@ -520,7 +519,7 @@ try
         // In built-in whole-recording mode the encoder is created and disposed
         // inside each Transcribe() call so its VRAM is freed before the long decode.
         bool persistEncoder = diarization != "vibevoice-asr-builtin";
-        using var vibevoice = new VibeVoiceAsr(vibevoiceDir, persistEncoder: persistEncoder,
+        using var vibevoice = new VibeVoiceAsr(vibevoiceDir, ep: selectedEp, persistEncoder: persistEncoder,
             profileOutputDir: profileOutputDir);
 
         if (diarization == "vibevoice-asr-builtin")
@@ -654,7 +653,7 @@ try
             Console.WriteLine($"Hotwords: {hotwords} ({hotwordIds.Length} token(s))");
         }
 
-        using var streaming = new VibeVoiceStreamingAsr(dir);
+        using var streaming = new VibeVoiceStreamingAsr(dir, selectedEp);
         Console.WriteLine($"Transcribing (VibeVoice-ASR-Streaming, {streaming.HopSamples / (double)streaming.SampleRate:F2}s chunks)...");
         // Print each chunk as the model emits it: this backend is meant to produce text while
         // the audio is still arriving, and hiding that until the end would misrepresent it.
@@ -757,7 +756,7 @@ try
             return 1;
         }
 
-        using var granite = new GraniteSpeech(graniteDir);
+        using var granite = new GraniteSpeech(graniteDir, selectedEp);
         int totalSegs = segs.Count;
         int completed = 0;
 
@@ -796,6 +795,7 @@ try
                                     File.Exists(Path.Combine(qwen3AsrDir, Qwen3Asr.DecoderInitBatchedFile)));
             using var qwen3Asr = new Qwen3Asr(
                 qwen3AsrDir,
+                ep: selectedEp,
                 preferBatched: hasBatchedFiles,
                 optimizationLevel: qwen3AsrOrtOptLevel);
             int totalSegs = segs.Count;
@@ -864,7 +864,7 @@ try
             }
         }
 
-        using var whisper = new WhisperTurbo(whisperDir);
+        using var whisper = new WhisperTurbo(whisperDir, selectedEp);
         int totalSegs = segs.Count;
         int completed = 0;
 
@@ -1223,7 +1223,7 @@ static int RunLidAction(string audioPath, string modelsRoot)
 /// the ONNX export loads and produces sensible activations before building
 /// out the decode loop.
 /// </summary>
-static int RunWhisperCheckAction(string audioPath, string modelsRoot)
+static int RunWhisperCheckAction(string audioPath, string modelsRoot, ExecutionProvider selectedEp)
 {
     string whisperDir = Path.Combine(modelsRoot, Config.WhisperTurboSubDir);
 
@@ -1252,7 +1252,7 @@ static int RunWhisperCheckAction(string audioPath, string modelsRoot)
 
     Console.WriteLine($"[whisper-check] loading whisper-turbo from {whisperDir}");
     var swLoad = Stopwatch.StartNew();
-    using var whisper = new WhisperTurbo(whisperDir);
+    using var whisper = new WhisperTurbo(whisperDir, selectedEp);
     swLoad.Stop();
     Console.WriteLine($"[whisper-check] loaded in {swLoad.ElapsedMilliseconds} ms");
 
@@ -1371,7 +1371,7 @@ static void PrintUsage()
     Console.WriteLine("  --output <path>                    Override output file path");
     Console.WriteLine("  --diarization <backend>            Diarization backend: sortformer, diarizen, vad, vibevoice-asr-builtin");
     Console.WriteLine("                                     (default: sortformer, or vibevoice-asr-builtin when --asr vibevoice)");
-    Console.WriteLine("  --ep <provider>                    Execution provider for diarization: auto, cpu, cuda, coreml, webgpu");
+    Console.WriteLine("  --ep <provider>                    Execution provider: auto, cpu, cuda, coreml, webgpu");
     Console.WriteLine("                                     coreml uses the steady-state Sortformer variant when present (macOS, arm64)");
     Console.WriteLine("  --vad                              Use VAD instead of diarization (deprecated)");
     Console.WriteLine("  --asr <parakeet|cohere|qwen3asr|vibevoice|vibevoice-streaming|whisper|granite>");

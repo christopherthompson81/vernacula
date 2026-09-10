@@ -63,6 +63,35 @@ public class AppSettings
     public string             IndicConformerLanguage { get; set; } = "hi";
     public PlaybackMode       EditorPlaybackMode  { get; set; } = PlaybackMode.Continuous;
     public string             ModelsDir           { get; set; } = "";
+
+    /// <summary>
+    /// Execution provider for the ASR/diarization models: "", "auto", "cpu", "cuda",
+    /// "coreml" or "webgpu". Empty or unrecognised means Auto.
+    /// </summary>
+    /// <remarks>
+    /// ⚠ NO UI CONTROL YET (#165 item 7). This is honoured when set in settings.json, and
+    /// the CLI has --ep, but the settings window does not expose it -- adding the ComboBox,
+    /// its view-model collection and the save path is the remaining half of that item.
+    ///
+    /// It matters most on macOS: "coreml" is what opts Sortformer into the steady-state
+    /// variant, and Auto deliberately never selects CoreML because whether CoreML beats the
+    /// alternatives is a per-model property.
+    /// </remarks>
+    public string             ExecutionProvider   { get; set; } = "";
+
+    /// <summary>
+    /// <see cref="ExecutionProvider"/> as the enum, falling back to Auto for empty or
+    /// unrecognised values -- a bad settings.json string must not break model loading.
+    /// Accepts the same spellings as the CLI's --ep.
+    /// </summary>
+    public ExecutionProvider ResolvedExecutionProvider => ExecutionProvider?.Trim().ToLowerInvariant() switch
+    {
+        "cpu"    => Vernacula.Base.Models.ExecutionProvider.Cpu,
+        "cuda"   => Vernacula.Base.Models.ExecutionProvider.Cuda,
+        "coreml" => Vernacula.Base.Models.ExecutionProvider.CoreML,
+        "webgpu" => Vernacula.Base.Models.ExecutionProvider.WebGpu,
+        _        => Vernacula.Base.Models.ExecutionProvider.Auto,
+    };
     public string             DiariZenModelsDir   { get; set; } = "";
     public bool               DiariZenNoticeAccepted { get; set; } = false;
 
