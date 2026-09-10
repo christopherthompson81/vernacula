@@ -10,6 +10,7 @@ It now covers both models in your pipeline:
 ## Files
 
 - `export_parakeet_nemo_to_onnx.py`: exports Parakeet `.nemo` to the split ONNX package used by Vernacula.
+- `export_parakeet_coreml_encoder.py`: exports the Parakeet encoder as static-shape buckets that the CoreML EP compiles as a single partition, with the padding mask hoisted to a `pad_keep` input instead of baked to a constant. 2.5× over the CPU EP and bit-exact — see below.
 - `export_nfa_ctc_to_onnx.py`: exports a NeMo CTC ASR `.nemo` (pure CTC or hybrid RNNT+CTC with the CTC head selected) to the ONNX bundle the C# Viterbi forced aligner consumes (issue #36 / Chatterbox Stage 1 #9).
 - `export_sortformer_nemo_to_onnx.py`: exports streaming Sortformer `.nemo` to the same six-input / three-output ONNX contract used by Vernacula's inference code.
 - `export_silero_vad_to_onnx.py`: exports Silero VAD to ONNX.
@@ -105,6 +106,53 @@ Batching notes:
 - `nemo128.onnx` currently exports successfully on this toolchain, but in practice still behaves
   like a batch-1 preprocessor export. That means post-diarization encoder batching is available
   today, while full waveform-to-text batching still needs more export work.
+
+### Apple CoreML encoder buckets
+
+The shipped `encoder-model.onnx` cannot compile under the CoreML EP at all
+(`error -14`: unbounded dimensions). This produces graphs that can.
+
+```bash
+python scripts/nemo_export/export_parakeet_coreml_encoder.py \
+  --nemo ~/models/parakeet-tdt-0.6b-v3/parakeet-tdt-0.6b-v3.nemo \
+  --output-dir ~/models/parakeet_coreml \
+  --frames 400 --frames 1000 --frames 2000 --frames 3000
+```
+
+Contract, per bucket of `F` mel frames:
+
+| | |
+|---|---|
+| in | `audio_signal [1, 128, F]` — mel features, zero-padded to `F` |
+| in | `pad_keep [1, F]` — 1.0 for a real frame, 0.0 for padding |
+| out | `outputs [1, 1024, T]`, `T = calc_encoded_length(F, stages)` |
+
+Two caller obligations, both of which fail silently rather than loudly:
+
+* **`pad_keep` must be honest.** All-ones on a short segment is exactly the
+  bake-the-length behaviour this export exists to avoid — worth 2–4% WER.
+* **There is no `encoded_lengths` output**, because there is no length input. Compute
+  it by folding the `subsampler_stages` the report records
+  (`out = (in + pad0 + pad1 - kernel) // stride + 1` per strided stage; three ×2
+  stages for this checkpoint) and ignore output frames past it. The stages are
+  reported rather than hardcoded because a different checkpoint's geometry would
+  otherwise trim the output at the wrong frame with no failure signal.
+
+Unlike the Sortformer CoreML variant this needs **no** post-processing pass and has
+no load-level contract term: the raw export is already a single partition and loads
+at every optimization level. Measured on an M5 under ORT 1.29.0 — 2.5× the CPU EP at
+every bucket from 4 s to 30 s, parity 2e-7…6e-6, identical transcripts.
+
+All buckets share one weight sidecar, byte-identical to the published
+`encoder-model.onnx.data`, so the buckets add no weight download. The script verifies
+that by digest and prints the md5 to compare against the manifest.
+
+Costs to budget for: the CoreML cache is **~4.4 GB per bucket** (the EP stores the
+weights twice), and the `.onnx` grows with the bucket because `linear_pos(pos_emb)`
+folds to a per-layer constant.
+
+Background and measurements: `docs/coreml_onnx_playbook.md` (Technique 6) and
+`docs/investigations/parakeet_coreml_encoder_investigation.md`.
 
 ## NFA (CTC) Export
 
