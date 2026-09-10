@@ -47,6 +47,16 @@ internal static class MacDockIcon
     [DllImport("/usr/lib/libSystem.dylib", EntryPoint = "dlopen", CharSet = CharSet.Ansi)]
     private static extern IntPtr LoadLibrary(string path, int mode);
 
+    // This runs from OnFrameworkInitializationCompleted, BEFORE the NSApp run loop starts,
+    // so there is no autorelease pool in place yet: without pushing one, every autoreleased
+    // object here makes the runtime print "objc[NNN]: ... autoreleased with no pool in
+    // place - just leaking" to stderr on each launch.
+    [DllImport(Objc, EntryPoint = "objc_autoreleasePoolPush")]
+    private static extern IntPtr PoolPush();
+
+    [DllImport(Objc, EntryPoint = "objc_autoreleasePoolPop")]
+    private static extern void PoolPop(IntPtr pool);
+
     /// <summary>
     /// Points the Dock tile at <paramref name="assetUri"/>, an <c>avares://</c> image.
     /// Silently does nothing off macOS or if anything along the way is unavailable.
@@ -63,12 +73,17 @@ internal static class MacDockIcon
                 return;
 
             // NSImage reads a file path, and the asset is embedded in the assembly rather
-            // than on disk, so it has to be spilled somewhere first. Keyed by name so
-            // repeated launches reuse one file instead of littering the temp directory.
+            // than on disk, so it has to be spilled somewhere first.
+            //
+            // ⚠ A UNIQUE NAME, not a predictable one. A fixed path in the temp directory is
+            // two bugs: two instances launching together have the second truncate the file
+            // while the first's NSImage still holds it, and when TMPDIR is unset
+            // GetTempPath() is world-writable /tmp, where File.Create happily follows a
+            // symlink someone else planted at that name. Deleted again in the finally below.
             string path = Path.Combine(Path.GetTempPath(),
-                                       "vernacula-dock-" + Path.GetFileName(uri.AbsolutePath));
+                                       "vernacula-dock-" + Path.GetRandomFileName() + ".png");
             using (var src = AssetLoader.Open(uri))
-            using (var dst = File.Create(path))
+            using (var dst = new FileStream(path, FileMode.CreateNew, FileAccess.Write))
                 src.CopyTo(dst);
 
             // AppKit is already loaded in an Avalonia process; this is belt and braces for
@@ -81,15 +96,29 @@ internal static class MacDockIcon
             if (nsString == IntPtr.Zero || nsImage == IntPtr.Zero || nsApplication == IntPtr.Zero)
                 return;
 
-            IntPtr pathObj = SendString(nsString, Selector("stringWithUTF8String:"), path);
-            IntPtr image = Send(Send(nsImage, Selector("alloc")),
-                                Selector("initWithContentsOfFile:"), pathObj);
-            if (image == IntPtr.Zero)
-                return;
+            IntPtr pool = PoolPush();
+            try
+            {
+                IntPtr pathObj = SendString(nsString, Selector("stringWithUTF8String:"), path);
+                IntPtr image = Send(Send(nsImage, Selector("alloc")),
+                                    Selector("initWithContentsOfFile:"), pathObj);
+                if (image == IntPtr.Zero)
+                    return;
 
-            IntPtr app = Send(nsApplication, Selector("sharedApplication"));
-            if (app != IntPtr.Zero)
-                Send(app, Selector("setApplicationIconImage:"), image);
+                IntPtr app = Send(nsApplication, Selector("sharedApplication"));
+                if (app != IntPtr.Zero)
+                    Send(app, Selector("setApplicationIconImage:"), image);
+
+                // setApplicationIconImage: retains it, so this balances the alloc rather
+                // than freeing the Dock's copy.
+                Send(image, Selector("release"));
+            }
+            finally
+            {
+                PoolPop(pool);
+                // NSImage read the file eagerly, so nothing needs it on disk any more.
+                try { File.Delete(path); } catch { }
+            }
         }
         catch
         {

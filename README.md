@@ -83,6 +83,7 @@ Windows audio backend (`WaveOut`) only to a Windows target framework, so `net10.
 is what carries native playback; `net10.0` is the portable build and uses `ffplay`.
 
 On Linux, `./install.sh` from the repo root builds a self-contained package and registers a `.desktop` entry.
+On macOS, `./package-macos.sh` builds `dist/Vernacula.app`, ready to copy into `/Applications`.
 
 **Run the CLI:**
 

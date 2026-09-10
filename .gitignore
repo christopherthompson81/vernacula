@@ -18,3 +18,7 @@ Vernacula/
 
 # macOS app bundles from package-macos.sh — build output, not source.
 dist/
+
+# macOS Finder metadata — `git add -A` picks these up from any browsed directory.
+.DS_Store
+**/.DS_Store
