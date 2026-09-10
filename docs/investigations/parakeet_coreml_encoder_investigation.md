@@ -264,14 +264,28 @@ graph).
 
 **Two things found on the way that were not on anyone's list.**
 
-*Parakeet on the WebGPU EP segfaults on macOS.* `webgpu::BufferManager::Release` under
-`~InferenceSession`, so the process dies at teardown — **after** transcription and
-**before** the caller writes the file. The symptom is a crash and a missing transcript, not
-a wrong one. It reproduces on the tree before any of this work, with plain `--ep auto`
-(Auto resolves to WebGPU on macOS), so the default macOS ASR path was already broken. VAD
-or diarization alone on WebGPU is fine; it takes the Parakeet sessions. Worked around by
-routing those two sessions to the CPU EP on macOS unless WebGPU is named explicitly; the
-ORT bug itself is untouched.
+*Parakeet on the WebGPU EP segfaults on macOS — and the cause is ours.*
+`webgpu::BufferManager::Release` under `~InferenceSession`, so the process dies at
+teardown — **after** transcription and **before** the caller writes the file. The symptom
+is a crash and a missing transcript, not a wrong one. It reproduces on the tree before any
+of this work, with plain `--ep auto` (Auto resolves to WebGPU on macOS), so the default
+macOS ASR path was already losing output.
+
+⚠ **First diagnosed here as an ORT teardown bug and worked around by keeping macOS on the
+CPU EP. That was wrong**, and the workaround silently cost macOS the WebGPU speedup. The
+cause is `Parakeet`'s constructor building **one `SessionOptions` and handing it to both
+sessions**; on WebGPU the second `Dispose` frees already-freed buffers. Reduced to two
+sessions and one shared options object with nothing else involved: shared → SIGSEGV, one
+options object each → clean, `exit=0`. Fixed at the constructor.
+
+The lesson generalises past this bug: "reproduces before my change" establishes that
+something is pre-existing, not that it is someone else's. The stack trace named the EP
+because that is where the free happens, not where the mistake is.
+
+⚠ **The same pattern is in at least four other backends** — `WhisperTurbo` (one options
+object across 3 sessions), `CohereTranscribe` (3), `GraniteSpeech` (4),
+`IndicConformer` (2). Each is the same latent crash on the macOS default path. Not fixed
+here.
 
 *The `ep` argument never reached Parakeet.* All three call sites — CLI, `TranscriptionService`,
 `TranscriptEditorViewModel` — constructed it with the default `Auto` regardless of the
@@ -287,6 +301,19 @@ the one #164 left in `Sortformer.cs`.
 | encoder total | **13.6 s** | 20.4 s |
 | diarization (Sortformer) | 13.1 s | **6.6 s** (2.0×) |
 | whole pipeline | **31.4 s** | 32.0 s |
+
+And with the teardown crash fixed, the option that was invisible while WebGPU could not
+finish a run turns out to beat both — same 10-minute file, 159 VAD segments:
+
+| encoder | CPU EP | CoreML buckets | **WebGPU** |
+|---|---|---|---|
+| | 10.8 s | 19.5 s (10.1 inference + 9.4 load) | **7.1 s** |
+
+WebGPU takes the **stock dynamic graph unmodified**: no buckets, no padding waste, no
+per-bucket weight blob, no compiled cache. It reaches the GPU rather than the ANE, so its
+ceiling is lower than the buckets' per-inference 2.5× — but it collects its win instead of
+spending it on loading. Verified numerically against the CPU EP at arbitrary
+non-bucket-aligned lengths (200/517/1000/2311 frames): 4e-7 … 3.6e-6.
 
 Two independent reasons, both invisible from the per-inference benchmark:
 

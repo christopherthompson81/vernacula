@@ -98,9 +98,20 @@ public sealed class Parakeet : IDisposable
         // largest bucket, and everything when the buckets are absent. Asking for CoreML
         // here would throw -- the stock graph cannot compile under that EP (see
         // TryOpenCoreMLEncoder) -- so it needs some other provider.
-        var gpuOpts = OrtSessionBuilder.Create(StockEncoderProvider(ep));
-        _encoder      = new InferenceSession(Path.Combine(modelPath, encoderFile),      gpuOpts);
-        _decoderJoint = new InferenceSession(Path.Combine(modelPath, decoderJointFile), gpuOpts);
+        // ⚠ ONE SessionOptions PER SESSION. Handing the same options object to two sessions
+        // segfaults the process on the WebGPU EP: the second Dispose lands in
+        // `webgpu::BufferManager::Release` on already-freed buffers. It kills the process at
+        // teardown -- AFTER transcription and BEFORE the caller writes anything out -- so
+        // the symptom is a crash and a missing transcript rather than a bad one.
+        //
+        // Reproduced down to two sessions and one shared options object, with nothing else
+        // involved: shared -> SIGSEGV, one options object each -> clean. This was previously
+        // recorded here as an ORT teardown bug to route around; it is ours.
+        ExecutionProvider stockEp = StockEncoderProvider(ep);
+        _encoder      = new InferenceSession(Path.Combine(modelPath, encoderFile),
+                                             OrtSessionBuilder.Create(stockEp));
+        _decoderJoint = new InferenceSession(Path.Combine(modelPath, decoderJointFile),
+                                             OrtSessionBuilder.Create(stockEp));
 
         // Only fp32 has CoreML buckets. An int8 request is an explicit ask for the
         // quantized graph; silently serving fp32 from the ANE would change precision
@@ -254,25 +265,18 @@ public sealed class Parakeet : IDisposable
     /// caller asked for.
     /// </summary>
     /// <remarks>
-    /// ⚠ <b>Parakeet on the WebGPU EP segfaults on macOS at session teardown</b>, in
-    /// `webgpu::BufferManager::Release` under `~InferenceSession`. It kills the process
-    /// after transcription but *before* the caller writes anything out, so the symptom is
-    /// a crash and a silently missing transcript rather than a bad one. Reproduced on ORT
-    /// 1.29.0 / M5, on this code and on the tree before CoreML bucketing existed, with
-    /// `--ep webgpu` and with plain `--ep auto` (Auto resolves to WebGPU on macOS). VAD or
-    /// diarization alone on WebGPU is fine — it takes the Parakeet sessions.
+    /// A CoreML request cannot go to these sessions: the stock graph does not compile under
+    /// that EP at all (see <see cref="TryOpenCoreMLEncoder"/>), so it resolves to Auto — the
+    /// best remaining provider, which is WebGPU on macOS.
     ///
-    /// So macOS gets the CPU EP for these two sessions unless WebGPU is asked for by name.
-    /// That is not much of a loss: the CoreML buckets carry every segment up to 30 s, and
-    /// this path is the rare long-segment fallback. An explicit WebGPU request is still
-    /// honoured — it is the only way to reproduce the bug once it is fixed upstream.
+    /// This briefly returned the CPU EP on macOS to dodge a teardown segfault. That was the
+    /// wrong fix for a correctly-observed crash: the cause was one `SessionOptions` shared
+    /// between two sessions, not the WebGPU EP, and it is fixed at the constructor. Keeping
+    /// the dodge would have cost macOS the ~1.5× WebGPU gives the stock encoder over the CPU
+    /// EP (7.1 s vs 10.8 s over a 10-minute recording).
     /// </remarks>
-    private static ExecutionProvider StockEncoderProvider(ExecutionProvider ep)
-    {
-        if (ep == ExecutionProvider.CoreML || (ep == ExecutionProvider.Auto && OperatingSystem.IsMacOS()))
-            return ExecutionProvider.Cpu;
-        return ep;
-    }
+    private static ExecutionProvider StockEncoderProvider(ExecutionProvider ep) =>
+        ep == ExecutionProvider.CoreML ? ExecutionProvider.Auto : ep;
 
     /// <summary>The smallest bucket that fits <paramref name="melFrames"/>, or -1.</summary>
     private static int BucketFor(long melFrames)
