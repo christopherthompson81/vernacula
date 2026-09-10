@@ -24,16 +24,36 @@ rm -f /path/to/models/*.opt.*
 
 The first run after that is slower while the graphs are rebuilt.
 
+## Execution provider (`-p:EP=`)
+
+`EP` selects which ONNX Runtime package is restored: `Cuda`, `Cpu` or `DirectML`.
+
+**It defaults to whatever the architecture can actually run** — `Cuda` on x64, `Cpu`
+everywhere else — so on Apple Silicon (and any other arm64 host) a plain `dotnet build` or
+`dotnet run` is correct and needs no flag. There is no CUDA build of ONNX Runtime for
+arm64, so `Cuda` was never a possible default there; it only ever produced a build error
+telling you to pass the one value the build could work out for itself.
+
+Pass `EP` explicitly to override: a CPU-only build on an x64 machine, or DirectML on
+Windows. `-p:EP=Cuda` on arm64 is still rejected, with an error saying why.
+
+⚠ On macOS, `Cpu` is also the build that carries the **CoreML and WebGPU** natives — the
+plain `osx-arm64` ONNX Runtime package is the one that ships them. "CPU" names the package,
+not the providers you end up with.
+
 ## Vernacula.CLI
 
 ```bash
 cd src/Vernacula.CLI
 
-# GPU (CUDA)
+# GPU (CUDA) — the default on x64
 dotnet build -c Release -p:EP=Cuda -p:Platform=x64
 
 # CPU only
 dotnet build -c Release -p:EP=Cpu -p:Platform=x64
+
+# Apple Silicon: no flag needed
+dotnet build -c Release
 ```
 
 ## Vernacula.Avalonia
