@@ -141,10 +141,13 @@ public sealed class CohereTranscribe : IDisposable
         var cpuOpts = new SessionOptions();
         _mel = new InferenceSession(Path.Combine(modelPath, MelFile), cpuOpts);
 
-        var gpuOpts = OrtSessionBuilder.Create(ep);
-        _encoder     = new InferenceSession(Path.Combine(modelPath, EncoderFile),     gpuOpts);
-        _decoderInit = new InferenceSession(Path.Combine(modelPath, DecoderInitFile), gpuOpts);
-        _decoderStep = new InferenceSession(Path.Combine(modelPath, DecoderStepFile), gpuOpts);
+        // ⚠ ONE SessionOptions PER SESSION -- sharing one across sessions segfaults the
+        // process on the WebGPU EP, in webgpu::BufferManager::Release under the second
+        // Dispose. It dies at teardown, after the work and before the caller writes its
+        // output, so the symptom is a crash and a missing result rather than a wrong one.
+        _encoder     = new InferenceSession(Path.Combine(modelPath, EncoderFile),     OrtSessionBuilder.Create(ep));
+        _decoderInit = new InferenceSession(Path.Combine(modelPath, DecoderInitFile), OrtSessionBuilder.Create(ep));
+        _decoderStep = new InferenceSession(Path.Combine(modelPath, DecoderStepFile), OrtSessionBuilder.Create(ep));
 
         // Load vocab
         string vocabJson = File.ReadAllText(Path.Combine(modelPath, VocabFile));

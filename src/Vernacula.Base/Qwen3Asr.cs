@@ -282,8 +282,16 @@ public sealed class Qwen3Asr : IDisposable
         _eosTokenIds = specialTokens.GetProperty("eos_token_ids").EnumerateArray().Select(e => e.GetInt32()).ToArray();
         _eosTokenIdSet = [.. _eosTokenIds];
 
-        var encoderOpts = OrtSessionBuilder.Create(ep, optimizationLevel, enableProfiling: false, out bool encoderUsesCuda);
-        var decoderOpts = OrtSessionBuilder.Create(ep, optimizationLevel, enableProfiling: false, out bool decoderUsesCuda);
+        // ⚠ ONE SessionOptions PER SESSION -- sharing one across sessions segfaults the
+        // process on the WebGPU EP, in webgpu::BufferManager::Release under the second
+        // Dispose. It dies at teardown, after the work and before the caller writes its
+        // output, so the symptom is a crash and a missing result rather than a wrong one.
+        // The split paths below build two decoder sessions, which is how this bit here.
+        bool encoderUsesCuda = false, decoderUsesCuda = false;
+        SessionOptions EncoderOpts() =>
+            OrtSessionBuilder.Create(ep, optimizationLevel, enableProfiling: false, out encoderUsesCuda);
+        SessionOptions DecoderOpts() =>
+            OrtSessionBuilder.Create(ep, optimizationLevel, enableProfiling: false, out decoderUsesCuda);
 
         bool hasUnified       = File.Exists(Path.Combine(modelPath, DecoderFile));
         bool hasBatchedEncoder = File.Exists(Path.Combine(modelPath, EncoderBatchedFile));
@@ -301,17 +309,17 @@ public sealed class Qwen3Asr : IDisposable
                 // contract to be unambiguously single-decoder. The batched
                 // path drives its own KV handling via RecognizeUnifiedContinuousBatched
                 // (CPU-side compaction) and does not use the serial IOBinding path.
-                _decoder = new InferenceSession(Path.Combine(modelPath, DecoderFile), decoderOpts);
+                _decoder = new InferenceSession(Path.Combine(modelPath, DecoderFile), DecoderOpts());
                 _encoder        = null!;
-                _encoderBatched = new InferenceSession(Path.Combine(modelPath, EncoderBatchedFile), encoderOpts);
+                _encoderBatched = new InferenceSession(Path.Combine(modelPath, EncoderBatchedFile), EncoderOpts());
                 _decoderInitBatched = null;
                 _decoderStep = null;
                 _useCudaIoBinding   = false;
             }
             else
             {
-                _decoder        = new InferenceSession(Path.Combine(modelPath, DecoderFile), decoderOpts);
-                _encoder        = new InferenceSession(Path.Combine(modelPath, EncoderFile), encoderOpts);
+                _decoder        = new InferenceSession(Path.Combine(modelPath, DecoderFile), DecoderOpts());
+                _encoder        = new InferenceSession(Path.Combine(modelPath, EncoderFile), EncoderOpts());
                 _encoderBatched = null;
                 _decoderInitBatched = null;
                 _decoderStep = null;
@@ -327,18 +335,18 @@ public sealed class Qwen3Asr : IDisposable
             _decoder             = null;
             _encoder             = null!;
             _decoderInit         = null!;
-            _encoderBatched      = new InferenceSession(Path.Combine(modelPath, EncoderBatchedFile),     encoderOpts);
-            _decoderInitBatched  = new InferenceSession(Path.Combine(modelPath, DecoderInitBatchedFile), decoderOpts);
-            _decoderStep         = new InferenceSession(Path.Combine(modelPath, DecoderStepFile),        decoderOpts);
+            _encoderBatched      = new InferenceSession(Path.Combine(modelPath, EncoderBatchedFile),     EncoderOpts());
+            _decoderInitBatched  = new InferenceSession(Path.Combine(modelPath, DecoderInitBatchedFile), DecoderOpts());
+            _decoderStep         = new InferenceSession(Path.Combine(modelPath, DecoderStepFile),        DecoderOpts());
             _useCudaIoBinding    = false;
         }
         else
         {
             // Serial split path: encoder + decoder_init + decoder_step.
             _decoder         = null;
-            _encoder         = new InferenceSession(Path.Combine(modelPath, EncoderFile),     encoderOpts);
-            _decoderInit     = new InferenceSession(Path.Combine(modelPath, DecoderInitFile), decoderOpts);
-            _decoderStep     = new InferenceSession(Path.Combine(modelPath, DecoderStepFile), decoderOpts);
+            _encoder         = new InferenceSession(Path.Combine(modelPath, EncoderFile),     EncoderOpts());
+            _decoderInit     = new InferenceSession(Path.Combine(modelPath, DecoderInitFile), DecoderOpts());
+            _decoderStep     = new InferenceSession(Path.Combine(modelPath, DecoderStepFile), DecoderOpts());
             _encoderBatched     = null;
             _decoderInitBatched = null;
             _useCudaIoBinding   = encoderUsesCuda && decoderUsesCuda;
@@ -1370,10 +1378,11 @@ public sealed class Qwen3Asr : IDisposable
         double serialEncoderMs = 0;
         double serialPrefillMs = 0;
         {
-            var encoderOpts = OrtSessionBuilder.Create(ep, optimizationLevel, enableProfiling: false, out _);
-            var decoderOpts = OrtSessionBuilder.Create(ep, optimizationLevel, enableProfiling: false, out _);
-            using var encoder = new InferenceSession(Path.Combine(modelPath, EncoderFile), encoderOpts);
-            using var decoderInit = new InferenceSession(Path.Combine(modelPath, DecoderInitFile), decoderOpts);
+            // One SessionOptions per session; see the constructor.
+            using var encoder = new InferenceSession(Path.Combine(modelPath, EncoderFile),
+                OrtSessionBuilder.Create(ep, optimizationLevel, enableProfiling: false, out _));
+            using var decoderInit = new InferenceSession(Path.Combine(modelPath, DecoderInitFile),
+                OrtSessionBuilder.Create(ep, optimizationLevel, enableProfiling: false, out _));
             foreach (var segment in prepared)
             {
                 var sw = Stopwatch.StartNew();
@@ -1395,14 +1404,18 @@ public sealed class Qwen3Asr : IDisposable
         double batchedEncoderMs = 0;
         double batchedPrefillMs = 0;
         {
-            var encoderOpts = OrtSessionBuilder.Create(ep, optimizationLevel, enableProfiling: false, out _);
-            var decoderOpts = OrtSessionBuilder.Create(ep, optimizationLevel, enableProfiling: false, out _);
-            using var encoderBatched = new InferenceSession(Path.Combine(modelPath, EncoderBatchedFile), encoderOpts);
+            // One SessionOptions per session; see the constructor. The two decoder ternaries
+            // below are mutually exclusive today, so only one ever built a session -- but
+            // that is a runtime accident, not something the next edit here will preserve.
+            using var encoderBatched = new InferenceSession(Path.Combine(modelPath, EncoderBatchedFile),
+                OrtSessionBuilder.Create(ep, optimizationLevel, enableProfiling: false, out _));
             using var decoder = hasUnifiedDecoder
-                ? new InferenceSession(Path.Combine(modelPath, DecoderFile), decoderOpts)
+                ? new InferenceSession(Path.Combine(modelPath, DecoderFile),
+                    OrtSessionBuilder.Create(ep, optimizationLevel, enableProfiling: false, out _))
                 : null;
             using var decoderInitBatched = !hasUnifiedDecoder && hasDecoderInitBatched
-                ? new InferenceSession(Path.Combine(modelPath, DecoderInitBatchedFile), decoderOpts)
+                ? new InferenceSession(Path.Combine(modelPath, DecoderInitBatchedFile),
+                    OrtSessionBuilder.Create(ep, optimizationLevel, enableProfiling: false, out _))
                 : null;
             long freeGpuMemoryMb = HardwareInfo.GetGpuMemoryMb().FreeMb;
 
