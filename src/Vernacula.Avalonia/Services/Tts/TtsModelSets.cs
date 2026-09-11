@@ -126,9 +126,13 @@ internal static class TtsModelSets
             new("conditional_decoder_loop.onnx_data",  "conditional_decoder_loop.onnx_data"),
         ];
 
+    // ⚠ The repo also still holds the batch=1 `kokoro.onnx`, for app builds older than the
+    // batched graph, but a current build fetches ONLY kokoro_batched.onnx — it supersedes the
+    // other at every batch size (1.08x faster even at B=1) and is the same ~326 MB, so there is
+    // no reason to pull both. docs/kokoro_onnx_investigation.md Runs 26-38.
     private static readonly ModelAsset[] KokoroFiles =
         [
-            new("kokoro.onnx", "kokoro.onnx"),
+            new("kokoro_batched.onnx", "kokoro_batched.onnx"),
             .. KokoroVoices.Select(v => new ModelAsset(Path.Combine("voices", $"{v}.bin"), $"voices/{v}.bin")),
         ];
 
