@@ -1084,3 +1084,25 @@ warm synthesis   4863 ms -> 2570 ms   1.89x
 ⚠ Both arms already carry the cuDNN fix, so **1.89x is batching's marginal gain**; against what
 ships today (EXHAUSTIVE, unbatched) the combined figure is ~2.9x, not the 3.8x Run 37's uniform-
 length measurement suggested.
+
+## Run 39 — 2026-09-11 — Published
+
+`kokoro_batched.onnx` is on the Hub at `christopherthompson81/kokoro-82m-onnx`, manifest and model
+card updated. Verified from the Hub: the manifest lists 30 files with both graphs, and the batched
+graph resolves at 326,362,013 bytes, matching local.
+
+⚠ `kokoro.onnx` was deliberately **kept** in the repo. App builds older than the batched graph ask
+for it by name and would 404 otherwise. A current build fetches only `kokoro_batched.onnx`
+(`TtsModelSets.KokoroFiles`), so nobody downloads both — the repo carries 636 MB, each client
+pulls ~326 MB. Uploading `kokoro.onnx` again was unnecessary: its md5 was unchanged
+(`dffe999d…`), so only the new graph, the manifest and the card went up.
+
+Dropping the file into the model directory is the whole install step — `Kokoro` prefers
+`kokoro_batched.onnx` and falls back. The same directory and the same 37-paragraph document:
+
+```
+holding only kokoro.onnx          4863 ms
+after adding kokoro_batched.onnx  2715 ms    1.79x
+```
+
+with paragraph count, word count, word text and word timings (0.000 ms delta) all unchanged.
