@@ -45,7 +45,12 @@ public sealed class Kokoro : IDisposable
     /// </summary>
     public Kokoro(string onnxDir, ExecutionProvider ep, SessionLoadObserver? onLoad = null)
     {
-        _session = SessionLoader.LoadAndReport(Path.Combine(onnxDir, "kokoro.onnx"), ep, onLoad);
+        // cudnn_conv_algo_search=DEFAULT. Every synthesis call is a different chunk length, so
+        // ORT's EXHAUSTIVE default re-benchmarks the decoder's convs on each new shape and never
+        // amortizes the tuning. Measured 1.47x end-to-end (ORT 1.29 / RTX 3090) with output at the
+        // noise floor. See OrtSessionBuilder.AppendCuda and docs/kokoro_onnx_investigation.md Run 24.
+        _session = SessionLoader.LoadAndReport(
+            Path.Combine(onnxDir, "kokoro.onnx"), ep, onLoad, cudnnConvAlgoSearch: "DEFAULT");
         _voicesDir = Path.Combine(onnxDir, "voices");
     }
 

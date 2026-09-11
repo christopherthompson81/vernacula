@@ -38,7 +38,8 @@ public static class OrtSessionBuilder
         bool enableProfiling,
         out bool usedCuda,
         bool disableTf32 = false,
-        string? coreMlModelPath = null)
+        string? coreMlModelPath = null,
+        string? cudnnConvAlgoSearch = null)
     {
         var opts = new SessionOptions { GraphOptimizationLevel = optLevel };
         if (enableProfiling)
@@ -83,7 +84,7 @@ public static class OrtSessionBuilder
                 {
                     try
                     {
-                        AppendCuda(opts, disableTf32);
+                        AppendCuda(opts, disableTf32, cudnnConvAlgoSearch);
                         usedCuda = true;
                     }
                     catch { }
@@ -94,7 +95,7 @@ public static class OrtSessionBuilder
             case ExecutionProvider.Cuda:
                 try
                 {
-                    AppendCuda(opts, disableTf32);
+                    AppendCuda(opts, disableTf32, cudnnConvAlgoSearch);
                     usedCuda = true;
                 }
                 // ⚠ BEFORE THE BROAD CATCH. EntryPointNotFoundException means the binary has no
@@ -512,17 +513,37 @@ public static class OrtSessionBuilder
     // Append the CUDA EP, optionally forcing full-fp32 matmul (use_tf32=0). TF32's ~1e-2
     // error is fine for one-shot models but COMPOUNDS catastrophically through OmniVoice's
     // iterative diffusion loop (audible noise) — see docs/omnivoice_onnx_investigation.md.
-    private static void AppendCuda(SessionOptions opts, bool disableTf32)
+    //
+    // convAlgoSearch sets cudnn_conv_algo_search. ORT defaults it to EXHAUSTIVE, which benchmarks
+    // every cuDNN algorithm the first time it sees a conv input SHAPE. That is the right trade for
+    // a fixed-shape model called repeatedly — the tuning amortizes. It is the wrong one for a model
+    // whose every call is a new shape: a TTS chunk, an ASR window, anything length-varying re-tunes
+    // on each call and never amortizes. Kokoro measured 1.47x faster on "DEFAULT" (ORT 1.29, 3090,
+    // 8 chunks of 26-78 tokens: 1249 ms -> 851 ms) at a log-spec L1 of 0.13 against EXHAUSTIVE —
+    // the model's own CPU-vs-CUDA nondeterminism band, i.e. no change. Pass it per caller rather
+    // than globally: which setting wins depends on shape stability, not on the model.
+    // ⚠ "DEFAULT" makes ORT log "Conv(...) running in Fallback mode. May be extremely slow." for
+    // every decoder conv. Measured, that path is the FAST one here; the warning is not a defect
+    // signal for this graph. docs/kokoro_onnx_investigation.md Run 24.
+    private static void AppendCuda(SessionOptions opts, bool disableTf32, string? convAlgoSearch = null)
     {
-        if (!disableTf32)
+        // Escape hatch for measuring the alternatives without a rebuild.
+        convAlgoSearch = Environment.GetEnvironmentVariable("VERNACULA_ORT_CONV_ALGO") is { Length: > 0 } env
+            ? env : convAlgoSearch;
+
+        if (!disableTf32 && convAlgoSearch is null)
         {
             opts.AppendExecutionProvider_CUDA(0);
             return;
         }
+        var providerOptions = new Dictionary<string, string> { ["device_id"] = "0" };
+        if (disableTf32) providerOptions["use_tf32"] = "0";
+        if (convAlgoSearch is not null) providerOptions["cudnn_conv_algo_search"] = convAlgoSearch;
+
         using var cuda = new OrtCUDAProviderOptions();
-        cuda.UpdateOptions(new Dictionary<string, string> { ["device_id"] = "0", ["use_tf32"] = "0" });
+        cuda.UpdateOptions(providerOptions);
         if (Environment.GetEnvironmentVariable("VERNACULA_ORT_VERBOSE") == "1")
-            Console.Error.WriteLine($"[OrtSessionBuilder] CUDA use_tf32=0 -> {cuda.GetOptions()}");
+            Console.Error.WriteLine($"[OrtSessionBuilder] CUDA {string.Join(" ", providerOptions.Select(kv => $"{kv.Key}={kv.Value}"))} -> {cuda.GetOptions()}");
         opts.AppendExecutionProvider_CUDA(cuda);
     }
 
@@ -620,7 +641,8 @@ public static class OrtSessionBuilder
         out bool usedCuda,
         GraphOptimizationLevel optLevel = GraphOptimizationLevel.ORT_ENABLE_ALL,
         long externalInitializersMinBytes = 1024 * 1024,
-        bool disableTf32 = false)
+        bool disableTf32 = false,
+        string? cudnnConvAlgoSearch = null)
     {
         cacheHit = false;
         usedCuda = false;
@@ -704,7 +726,7 @@ public static class OrtSessionBuilder
             // Cache hit: load pre-optimized graph with optimization DISABLED
             // (the graph is already optimized; re-running passes is wasted work
             // and may hit unsupported-op errors on a fused graph).
-            var hitOpts = Create(ep, GraphOptimizationLevel.ORT_DISABLE_ALL, enableProfiling: false, out var hitUsedCuda, disableTf32);
+            var hitOpts = Create(ep, GraphOptimizationLevel.ORT_DISABLE_ALL, enableProfiling: false, out var hitUsedCuda, disableTf32, cudnnConvAlgoSearch: cudnnConvAlgoSearch);
             try
             {
                 var session = new InferenceSession(activeCachePath, hitOpts);
@@ -777,7 +799,7 @@ public static class OrtSessionBuilder
         // optimize, optionally save the result for next time.
         SessionOptions BuildWriteOptions(out bool cudaUsed)
         {
-            var o = Create(ep, optLevel, enableProfiling: false, out cudaUsed, disableTf32);
+            var o = Create(ep, optLevel, enableProfiling: false, out cudaUsed, disableTf32, cudnnConvAlgoSearch: cudnnConvAlgoSearch);
             if (bypassCache || cacheDisabled)
                 return o;
             o.OptimizedModelFilePath = useOrtFormat ? cachePathOrt : cachePathOnnx;

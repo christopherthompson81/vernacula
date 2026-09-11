@@ -541,3 +541,320 @@ broken in this venv (cuDNN version mismatch), so the GPU batching speedup couldn
 Against an already-27×-real-time baseline that streams far ahead of playback, the ROI is poor.
 `batched_forward.py` is kept as the record (it correctly batches equal-frame items). If more speed
 is ever wanted, fp16 quantization (Run 14's deferred phase 3) is the far better lever.
+
+## Run 20 — 2026-09-11 — Batching, revisited: the two facts Run 19's verdict rested on
+
+Run 19 closed batching as "not worth pursuing" on two supports: (a) the upside was **unproven** —
+PyTorch CUDA was broken in the venv, so the speedup was never measured; (b) correct variable-length
+batching would need "re-architecting the vocoder's normalization." Both are re-examined here,
+because support (a) has since evaporated: `requirements.txt` now pins `nvidia-cudnn-cu13==9.23.0.39`
+to match the system libcudnn9, and `torch 2.10.0+cu128` runs conv on the 3090 without complaint.
+
+### The upside, finally measured (RTX 3090, fp32, equal-length batch — the case Run 19 got right)
+
+136 tokens/item, 8.43 s audio/item:
+
+```
+B=1  sequential   107.4 ms/item   RTF  78.4x
+B=2               73.7 ms/item    RTF 114.4x   speedup 1.46x
+B=4               52.7 ms/item    RTF 159.8x   speedup 2.04x
+B=8               43.1 ms/item    RTF 195.4x   speedup 2.49x
+B=16              40.7 ms/item    RTF 207.0x   speedup 2.64x
+B=32              38.5 ms/item    RTF 218.8x   speedup 2.79x
+```
+
+**Saturates at ~2.6x by B=8** — not linear. The graph is already wide enough to fill the GPU at
+B=1, so batching recovers launch overhead and little else. Any real workload pays a further
+fill-efficiency tax on top (a 4-item mixed-length batch below is 64%/64%/0%/52% padding, so ~55% of
+the batched work is spent on padding). Realistic expectation is well under 2x, not 8x.
+
+### Where the time goes (answers "isn't the decoder the cheap part that could go on CPU?")
+
+```
+total 109.5 ms/call     decoder 51.75 ms (47.3%)   bert 11.40 ms (10.4%)
+                        text_encoder 6.33 ms (5.8%)   bert_encoder 0.09 ms (0.1%)
+```
+
+The decoder is the **expensive** half, not the cheap part — it is the iSTFTNet vocoder upsampling to
+24 kHz. (The absent `predictor` row is a hook artifact: `forward_with_tokens` calls its submodules
+directly rather than `predictor.forward`, so that stage is the residual ~36%.) Offloading it to CPU
+runs the wrong way: whole-model CPU is 4x RTF against 78x on CUDA (Run 14).
+
+### The blocker is 70 copies of one module, not a re-architecture
+
+All time-axis norms are the same class behind the same attribute:
+
+```
+70  InstanceNorm1d   (affine=True, track_running_stats=False, eps=1e-5)  ← all at AdaIN's `.norm`
+ 3  AdaLayerNorm     ← normalizes over CHANNELS per frame; padding cannot pollute it
+ 6  LayerNorm
+```
+
+So masked instance-norm is one class plus a swap loop, not 70 edits. The decoder changes the frame
+rate (stride/upsample), so the mask is rebuilt at each site from the per-item real **fraction**
+against whatever length the tensor has there.
+
+### Masking helps, packing reverses sign, neither closes the gap
+
+2x2 over AdaIN masking and packing the frame-level `F0Ntrain.shared` LSTM, log-spec L1 vs sequential:
+
+```
+AdaIN mask   F0N packed |  item0 (61% padded)   item1 (unpadded)
+     False        False |        0.8367                0.1398     ← Run 19's number, reproduced
+     False         True |        1.0133                0.1424     ← Run 19 saw this get worse. It does.
+      True        False |        0.5432                0.1391
+      True         True |        0.4634                0.1433     ← best
+```
+
+⚠ Packing the frame-LSTM **helps once the norms are masked** (0.54 → 0.46) and **hurts when they
+are not** (0.84 → 1.01). Run 19 tested it in the unmasked condition and concluded it was harmful;
+that conclusion was conditional on a variable it did not hold fixed.
+
+⚠ Calibration the earlier runs lacked: this reimplementation at **zero** padding scores **0.128**
+against the true `forward_with_tokens`. So 0.12–0.14 is the **noise floor**, not "parity" — the same
+band Run 14 measured for CPU-vs-CUDA and the user judged "basically identical."
+
+### Padding reach is pad-amount-independent — which rules out statistic dilution
+
+B=1 with forced extra frames, isolating padding from batching entirely:
+
+```
+extra pad   mask |  mean logspec
+        5  False |  0.6773       5 frames of padding does as much damage as 200
+        5   True |  0.5603
+      200  False |  0.8961
+      200   True |  0.5509
+```
+
+Five padding frames against 92 real ones cannot move an instance-norm mean by that much. So the
+dominant mechanism is **not** dilution of the AdaIN statistics. Stage-by-stage diff, padded vs
+unpadded, over the real-frame region only:
+
+```
+en     0.000000     ← length regulator exact
+asr    0.000000     ← text path exact
+F0     0.019337     ← ~2%
+N      0.021402     ← ~2%
+audio  1.237422     ← 124%
+```
+
+**The decoder amplifies a 2% F0/N perturbation into a 124% waveform difference.** That is expected
+behaviour for a harmonic vocoder, not corruption: a slightly different F0 moves every harmonic and
+drifts the excitation phase cumulatively. It predicts the observed error profile exactly — the first
+decile of the item is clean at 0.056, the middle sits at ~0.45, the last decile is 0.997 (error
+growing with elapsed time = accumulated drift), and it explains why 5 frames of padding suffices.
+
+**This puts the metric itself in question.** Log-spec L1 is hypersensitive to F0 drift, and Run 19's
+entire verdict rested on it. A 2% F0 error is ~0.34 semitones — measurable, near-inaudible. Whether
+the residual is audible is not a question log-spec L1 can answer, so it went to the ear (Run 20e:
+A = sequential, B = masked+packed, C = unfixed, on the most-padded item of a mixed-length batch).
+
+Pending: the listening verdict. It decides between "masking makes batching viable" and "the residual
+is real," and no further surgery is worth designing until it lands.
+
+### Run 20e — the listening verdict
+
+User, on the most-padded item (64% padding) of a mixed-length batch: **"C sounds different, but
+not wrong, per se."** C is the *unfixed* batched render — the 0.82 log-spec condition Run 19
+described as corrupted throughout. It is audibly acceptable. B (masked+packed, 0.46) sits between
+C and sequential, so it is acceptable by implication.
+
+**This retires Run 19's verdict.** Log-spec L1 was measuring F0/phase drift, which the stage diff
+above shows is the dominant term and which a harmonic vocoder produces from any F0 perturbation at
+all. The number was real; the conclusion drawn from it was not.
+
+What survives from it is a *different* concern the metric was standing in for: the audio is a
+function of **batch composition**. The same sentence renders differently depending on its
+neighbours. For a tool that caches generations and whose TTS bugs are diagnosed by re-exporting and
+comparing clips, non-reproducibility is a real cost even when each individual render is fine.
+
+## Run 21 — 2026-09-11 — The no-surgery alternative, and why it doesn't generalize
+
+Padding is the sole cause of *both* the drift and the wasted work, so the obvious dodge is to not
+pad: concatenate sentences into one longer chunk. Four sentences, same content:
+
+```
+4 separate chunks : 245 tokens  15.35s audio  205.1 ms  RTF  74.8x
+1 joined chunk    : 242 tokens  14.55s audio  107.8 ms  RTF 135.0x     joining = 1.90x
+```
+
+1.90x for free — no surgery, no batch axis, no composition dependence. But it does not generalize:
+`ChunkForSynthesis` only ever splits *down* to `PackBudgetTokens` (460); it never packs *up* across
+paragraphs, and it must not — `ParagraphChunker` output is the unit the app emits per-paragraph
+segments and WAVs for (PR #128). Within a paragraph, chunks are already packed. Across paragraphs,
+joining is forbidden by the segment contract.
+
+So joining only pays on short paragraphs, which are exactly the ones that may not be merged.
+**Batching is the only lever that crosses a paragraph boundary** — which is also where it is most
+natural, since paragraphs are already independent output units.
+
+### Fill efficiency: Run 19's "no cheap bucketing key" is wrong
+
+Run 19 dismissed bucketing because frame counts vary continuously. But the key does not have to
+*predict* frame count, only correlate with it. Pooled chunk lengths from 2 real export jobs (90
+chunks), fill = useful work / padded work:
+
+```
+B=4    natural order 69.3%    length-sorted 96.2%
+B=8    natural order 59.2%    length-sorted 91.5%
+B=16   natural order 53.2%    length-sorted 86.3%
+```
+
+Effective speedup = raw x fill: **~2.0x at B=4, ~2.3x at B=8**. Unsorted it would be ~1.1x, which
+is the number Run 19 was implicitly assuming. Export is a bulk path with every paragraph known up
+front, so sorting is free there; it is not available to an interactive/streaming path.
+
+## Run 22 — 2026-09-11 — It exports, and the first export was silently wrong
+
+Legacy exporter, dynamic `batch` *and* `tokens` axes, masked instance-norm written in plain reduce
+ops. Exports clean at 326 MB and loads in ORT with `['batch','tokens']` inputs.
+
+⚠ **The first attempt dropped `pack_padded_sequence` as ONNX-hostile and was wrong at B>1** — and
+the export gave no sign of it. Caught only by running in ORT at batch sizes it was not traced with
+and comparing per-item frame counts:
+
+```
+                item0 frames:  B=1    B=3    B=4
+  unpacked                     142    137    125     ← pred_dur shifts with batch composition
+  packed                       142    142    142     ← matches the solo run exactly
+```
+
+The reasoning error: "packing was only worth 0.54 → 0.46" conflated **two different LSTMs**.
+That figure is for `F0Ntrain.shared` (frame-level, optional). The one dropped was
+`predictor.lstm` — token-level, bidirectional, and the exact site Run 19 flagged, whose backward
+pass reads padding and corrupts `pred_dur`. Packing it is **not optional**, and `torch.onnx` does
+export it (ONNX's LSTM op carries a native `sequence_lens` input).
+
+Duration stability matters beyond audio: `pred_dur` drives word-level alignment (Run 15), so stable
+durations mean karaoke timing is identical to the sequential render.
+
+```
+packed graph, ORT:  B=1 [142]                     logspec 0.139
+                    B=3 [142,143,156]             0.575 0.562 0.133
+                    B=4 [142,143,156,189]         0.584 0.549 0.599 0.128
+```
+
+Padded items land at ~0.55-0.60 — better than the 0.82 the user judged "not wrong" — and unpadded
+items sit at the 0.13 noise floor.
+
+## Run 23 — 2026-09-11 — ⚠ The first ORT benchmark measured nothing (CPU fallback)
+
+The export venv has **CPU-only `onnxruntime` 1.27** (`available: ['Azure','CPU']`), so
+`providers=["CUDAExecutionProvider",…]` was silently ignored and the "CUDA" benchmark ran on CPU.
+Piping through `| tail` buffered the `batched EP:` line that would have said so at once.
+
+⚠ Two process lessons, both cheap: **assert the provider** (`assert
+sess.get_providers()[0]=="CUDAExecutionProvider"`) rather than requesting it, and don't pipe a
+long-running benchmark through `tail` — it hides the diagnostic line until exit. Redone with a
+venv that has the CUDA EP (`.venv-chatterbox-export`), feeding pre-captured inputs from an `.npz`
+so the GPU venv needs only numpy + ORT.
+
+### The number, and why one baseline is not trustworthy
+
+8 sentences, 30.3 s audio, interleaved reps so contention drift hits both arms equally:
+
+```
+sequential loop (8 Runs)             1238.7 ms   RTF  24.5x
+batched B=4  (2 Runs)                 348.3 ms   RTF  87.1x   3.56x
+batched B=8  (1 Run)                  279.6 ms   RTF 108.5x   4.43x
+sum of shape-warmed single calls      413.6 ms             -> batching vs this floor 1.48x
+```
+
+⚠ Those two baselines disagree by 3x on identical work. Per-call latency measured in isolation is
+23–69 ms at RTF 66–85x — consistent with Run 14 — yet the same 8 calls in a loop take 1239 ms.
+Batching's honest range is therefore **1.5x–4.4x depending on which baseline is fair**, and
+resolving that mattered more than the headline.
+
+⚠ Length-sorting did **not** show its predicted benefit here (B=8: 5.25x sorted vs 5.24x natural)
+— with 8 items at B=8 there is only one batch, so sorting has nothing to do. Run 21's fill
+numbers stand as arithmetic but are **unvalidated end-to-end**; a corpus of many chunks is needed.
+
+## Run 24 — 2026-09-11 — The 3x gap is cuDNN algo search, and it is a one-line fix
+
+The user, watching nvtop: *"it gradually uses more GPU, eventually hits 100."* A staircase ramp
+during a loop over cached shapes is ORT re-tuning per shape. ORT's CUDA EP defaults
+`cudnn_conv_algo_search` to **EXHAUSTIVE**, which re-runs on every new conv input shape — and every
+chunk the app synthesizes is a different length, hence a different shape.
+
+```
+cudnn_conv_algo_search=EXHAUSTIVE (ORT default)   1231.3 ms   RTF 24.6x
+cudnn_conv_algo_search=HEURISTIC                  1224.4 ms   RTF 24.8x
+cudnn_conv_algo_search=DEFAULT                     755.4 ms   RTF 40.1x    ← 1.63x, no model change
+```
+
+Also 9,360 `OP Conv(/decoder/…) running in Fallback mode. May be extremely slow.` warnings, all on
+decoder convs — consistent with Run 20's finding that the decoder is 47% of runtime.
+
+**The app is paying this.** `OrtSessionBuilder.cs:523` appends CUDA with only `device_id` and
+`use_tf32`; `cudnn_conv_algo_search` is never set, so every CUDA session in Vernacula — not just
+Kokoro — inherits EXHAUSTIVE. Conv-heavy models (the iSTFTNet decoder, DiariZen, Sortformer,
+the vocoder) are the ones that would pay most.
+
+**Not yet verified, and required before changing anything:** this was measured on ORT **1.23.2**
+(the chatterbox venv) while the app ships ORT **1.29** — the default and the tuning both may have
+moved. DEFAULT being faster is also workload-specific; it must be measured per model, not applied
+globally on this one result.
+
+### Where this leaves batching
+
+1.63x for a one-line EP option, against ~1.5–4.4x for a batched graph that needs masked
+instance-norm in 70 sites, `pack_padded` on the token LSTM, a new 4-input export, batch-aware
+scheduling in `KokoroTts`, and output that varies with batch composition. **The EP option should be
+measured and landed first** — it is nearly free, it helps every model, and it shrinks the remaining
+gap that batching would have to justify.
+
+## Run 25 — 2026-09-11 — Confirmed on ORT 1.29, and the harness was measuring the wrong workload
+
+C# probe using the app's own ORT 1.29 and the exact provider options `OrtSessionBuilder` passes:
+
+```
+cudnn_conv_algo_search=(unset = app today)   1249.2 ms   RTF 24.3x
+cudnn_conv_algo_search=EXHAUSTIVE            1278.3 ms   RTF 23.7x    ← unset == EXHAUSTIVE, confirmed
+cudnn_conv_algo_search=HEURISTIC             1394.8 ms   RTF 21.7x
+cudnn_conv_algo_search=DEFAULT                851.0 ms   RTF 35.6x    ← 1.47x
+```
+
+`cudnn_conv_use_max_workspace` made no difference (0 vs 1: 791 vs 788 ms).
+
+⚠ The 9,360 `Conv(...) running in Fallback mode. May be extremely slow.` warnings come from
+**DEFAULT**; EXHAUSTIVE emits **zero**. The path ORT warns about is the fast one for this graph.
+The warning is not a defect signal here.
+
+**Correctness.** Output lengths identical (durations unchanged). Waveform relRMS 7-9%, which looks
+alarming but is the vocoder's F0/phase sensitivity again — log-spec L1 is **0.126-0.142 on all 8
+items**, the same noise floor as CPU-vs-CUDA. User on the A/B pair: **"They are indistinguishable."**
+
+### ⚠ KokoroPerf said the opposite, and the harness is wrong for this question
+
+```
+                 med_ms DEFAULT   med_ms EXHAUSTIVE
+short  (11 ph)        39.2               19.9        ← EXHAUSTIVE 2x faster
+medium (47 ph)        64.4               42.2
+long  (146 ph)       197.1              164.7
+```
+
+The harness times `iters` repetitions of **one** utterance, so the shape never changes. Resolving
+the contradiction — same call count, only whether the shape varies between calls:
+
+```
+algo           repeat 1 shape    cycle 8 shapes    penalty for variety
+EXHAUSTIVE          434.3 ms          1270.6 ms          2.93x
+DEFAULT             568.2 ms           789.3 ms          1.39x
+```
+
+**ORT's cuDNN algo cache does not retain every shape — EXHAUSTIVE re-tunes on every shape CHANGE.**
+So EXHAUSTIVE wins only when one shape repeats, which is what KokoroPerf does and what the app
+never does: a document export is a sequence of differently-sized chunks. On that workload DEFAULT
+wins 789 vs 1271 (1.61x). The harness's own `warm_ms` (first call on a cold shape) already agreed —
+medium 86 ms DEFAULT vs 185 ms EXHAUSTIVE — only the repeated-shape `med_ms` column dissents.
+
+⚠ This also reframes Run 14's CUDA figures: they came from this harness, so they are the
+amortized-EXHAUSTIVE best case on a repeated shape, not what a real export sees.
+
+**Shipped:** `cudnn_conv_algo_search` is now a per-caller option on `AppendCuda`/`Create`/
+`CreateCachedSession`/`SessionLoader`, defaulting to null (unchanged) everywhere except `Kokoro`,
+which passes `"DEFAULT"`. Per-caller rather than global because the right setting depends on shape
+stability, not on the model. `VERNACULA_ORT_CONV_ALGO` overrides for measurement.
+
+**Left open:** other conv-heavy CUDA sessions (DiariZen, Sortformer, the vocoder, ASR encoders)
+were not measured. Any with varying input shapes are likely paying the same 2.93x re-tune penalty.
