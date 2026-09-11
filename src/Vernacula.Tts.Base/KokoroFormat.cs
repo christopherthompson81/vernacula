@@ -56,6 +56,20 @@ public static class KokoroFormat
         // ᵻ (U+1D7B) is deliberately unmapped: it is Kokoro vocab id 177, not out-of-vocab.
     ];
 
+    // A flap whose following vowel is WORD-FINAL and unstressed, realised as the tap ɾ (vocab 125)
+    // rather than the flap token T (vocab 36). Kokoro's duration predictor over-allocates T in this
+    // position — measured at 75ms against a 50ms vowel, where a word-INTERNAL flap gets 50ms — and a
+    // word-final vowel has no following segment to prop it up, so the vowel ends up shorter than the
+    // consonant before it and detaches from the word ("data" heard as "date" plus a stray schwa).
+    // ⚠ The guard is the LOOKAHEAD, and it is load-bearing: word-internal flaps (writer, meeting,
+    // better, related) must keep T, because T is what preserves the underlying /t/ — mapping them to
+    // d instead would merge writer/rider, latter/ladder, metal/medal at the token level. A stressed
+    // final vowel never matches either, since its stress mark sits between the T and the nucleus.
+    // Scope is ~1,356 lexicon words: the -a nouns (data, beta, meta) and, far more numerous, the
+    // -ity/-y family (city, quality, activity). docs/investigations/kokoro_word_final_flap_investigation.md.
+    private static readonly Regex WordFinalFlapRe =
+        new(@"T([əɐaeiouɑɔɛɪʊʌæɜAIOWYᵻ])(?=[ ,.;:!?…—]|$)", RegexOptions.Compiled);
+
     // A punctuation token the phonemizer emitted on its own, with the space that precedes it.
     // Kokoro's training data attaches punctuation to the word before it (`wˈɜɹld.`), and the
     // word-alignment code counts a run of non-space tokens as one word, so it must not stand alone.
@@ -88,6 +102,8 @@ public static class KokoroFormat
 
         ps = ps.Replace("o", "ɔ");         // misaki: espeak < 1.52 compatibility; O is already consumed
         ps = DetachedPunctRe.Replace(ps, "$1");
+        // en-us only: flapping is American, and en-GB never produces the T token.
+        if (!british) ps = WordFinalFlapRe.Replace(ps, "ɾ$1");   // after punctuation, so the lookahead sees it
         return ps;
     }
 }

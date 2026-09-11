@@ -26,6 +26,29 @@ public class KokoroFormatTests
         => Assert.Equal(expected, KokoroFormat.Render(ipa));
 
     [Theory]
+    // A word-FINAL unstressed vowel after a flap takes the tap ɾ, not T: Kokoro's duration predictor
+    // over-allocates T there and the vowel detaches from the word.
+    [InlineData("ðə dˈeᶦt̬ə ɹᵻkwˈaᶦɚd", "ðə dˈAɾə ɹᵻkwˈIəɹd")]
+    // …including before a clause mark, which the punctuation pass has already attached by then.
+    [InlineData("ðə bˈeᶦt̬ə , ðə d̬ˈeᶦt̬ə .", "ðə bˈAɾə, ðə dˈAɾə.")]
+    // the -ity/-y family is the bulk of the rule's scope
+    [InlineData("ðə sˈɪt̬i hæz kwˈɑːlᵻt̬i", "ðə sˈɪɾi hæz kwˈɑlᵻɾi")]
+    // ⚠ word-INTERNAL flaps keep T — it is what preserves the underlying /t/, so writer stays
+    // distinct from rider. Mapping these to d would merge the pair at the token level.
+    [InlineData("ɹˈaᶦt̬ɚ ɹˈaᶦd̬ɚ lˈæt̬ɚ lˈæd̬ɚ", "ɹˈITəɹ ɹˈIdəɹ lˈæTəɹ lˈædəɹ")]
+    [InlineData("mˈiːt̬ɪŋ bˈɛt̬ɚ ɹᵻlˈeᶦt̬ᵻd lˈɪmᵻt̬ᵻd", "mˈiTɪŋ bˈɛTəɹ ɹᵻlˈATᵻd lˈɪmᵻTᵻd")]
+    public void WordFinalFlapBecomesATap(string ipa, string expected)
+        => Assert.Equal(expected, KokoroFormat.Render(ipa));
+
+    [Fact]
+    public void TheTapIsAKokoroToken()
+    {
+        var ps = KokoroFormat.Render("ðə dˈeᶦt̬ə");
+        Assert.Contains('ɾ', ps);
+        foreach (var ch in ps) Assert.True(KokoroVocab.Contains(ch), $"'{ch}' is not a Kokoro token");
+    }
+
+    [Theory]
     // GOAT is Q, length marks stay, SQUARE is ɛː, NEAR stays ɪə
     [InlineData("həlˈəᶷ wˈɜːɫd . ðˈɛə hˈɪə", "həlˈQ wˈɜːld. ðˈɛː hˈɪə")]
     [InlineData("ɡˈəᶷ hˈəᶷm nˈaᶷ !", "ɡˈQ hˈQm nˈW!")]
