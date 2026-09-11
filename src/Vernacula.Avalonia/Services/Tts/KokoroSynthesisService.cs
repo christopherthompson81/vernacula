@@ -75,8 +75,42 @@ public sealed class KokoroSynthesisService : ITtsBackend
                 return SegmentedSynthesis.Join(parts, SampleRate);
             }
 
+            // Batched path: flatten every segment's chunks into ONE ONNX call, then regroup.
+            // Chunk counts differ per segment (a long paragraph splits), so the mapping back is
+            // by offset, not by index.
+            IReadOnlyList<(float[], IReadOnlyList<AlignedWord>)> SynthesizeSegments(
+                IReadOnlyList<Vernacula.Tts.Base.Markdown.TextSegment> segs, Action<string> warn)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var flat = new List<string>();
+                var counts = new int[segs.Count];
+                for (var i = 0; i < segs.Count; i++)
+                {
+                    var chunks = tts.ChunkForSynthesis(segs[i].Text, british);
+                    counts[i] = chunks.Count;
+                    flat.AddRange(chunks);
+                }
+                var spoken = tts.SpeakAlignedBatch(flat, voice, speed, british);
+                var outs = new List<(float[], IReadOnlyList<AlignedWord>)>(segs.Count);
+                var at = 0;
+                for (var i = 0; i < segs.Count; i++)
+                {
+                    var parts = new List<(float[], IReadOnlyList<(string, double, double)>)>(counts[i]);
+                    for (var k = 0; k < counts[i]; k++, at++)
+                        parts.Add((spoken[at].Audio,
+                                   spoken[at].Words.Select(w => (w.Text, w.StartSec, w.EndSec)).ToList()));
+                    outs.Add(SegmentedSynthesis.Join(parts, SampleRate));
+                }
+                return outs;
+            }
+
+            // Throughput saturates around 8-16 items and VRAM never binds; 8 keeps the working
+            // set near 1.4 GB. docs/kokoro_onnx_investigation.md Run 33.
+            const int BatchSegments = 8;
             return SegmentedSynthesis.Run(request, SampleRate, "kokoro_duration",
-                SynthesizeSegment, onChunkProduced, onProgress, cancellationToken);
+                SynthesizeSegment, onChunkProduced, onProgress, cancellationToken,
+                tts.SupportsBatching ? SynthesizeSegments : null,
+                tts.SupportsBatching ? BatchSegments : 1);
         }, cancellationToken).ConfigureAwait(false);
     }
 

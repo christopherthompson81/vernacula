@@ -18,6 +18,11 @@ internal static class SegmentedSynthesis
     /// <summary>Renders one segment: audio at the engine's sample rate + words timed from the segment's start.</summary>
     public delegate (float[] Audio, IReadOnlyList<AlignedWord> Words) SegmentSynthesizer(TextSegment segment, Action<string> warn);
 
+    /// <summary>Renders several segments in one engine call, in order. Engines that gain nothing
+    /// from batching simply do not supply one.</summary>
+    public delegate IReadOnlyList<(float[] Audio, IReadOnlyList<AlignedWord> Words)> SegmentBatchSynthesizer(
+        IReadOnlyList<TextSegment> segments, Action<string> warn);
+
     public static SynthesisResult Run(
         TtsRequest request,
         int sampleRate,
@@ -25,7 +30,9 @@ internal static class SegmentedSynthesis
         SegmentSynthesizer synthesize,
         Action<ChunkProducedEvent>? onChunkProduced,
         Action<ProgressEvent>? onProgress,
-        CancellationToken ct)
+        CancellationToken ct,
+        SegmentBatchSynthesizer? synthesizeBatch = null,
+        int batchSize = 1)
     {
         var extract = MarkdownTextExtractor.Extract(request.Text);
         if (string.IsNullOrWhiteSpace(extract.Text))
@@ -41,14 +48,39 @@ internal static class SegmentedSynthesis
         var allWords = new List<AlignedWord>();
         int sampleCursor = 0;
 
+        // Batched engines render a GROUP of segments per call. The first segment is still done
+        // alone, so the time-to-first-audio the user hears is unchanged; only the tail batches.
+        // Results are emitted strictly in order either way, so streaming order never changes.
+        var useBatch = synthesizeBatch is not null && batchSize > 1 && total > 2;
+        var ready = new Dictionary<int, (float[] Audio, IReadOnlyList<AlignedWord> Words)>();
+
         for (int idx = 0; idx < total; idx++)
         {
             ct.ThrowIfCancellationRequested();
             var seg = segments[idx];
             onProgress?.Invoke(new ProgressEvent("synthesizing", idx + 1, total));
 
-            var (audio, localWords) = synthesize(seg,
-                msg => onProgress?.Invoke(new ProgressEvent(msg, idx + 1, total)));
+            float[] audio;
+            IReadOnlyList<AlignedWord> localWords;
+            if (ready.Remove(idx, out var done))
+            {
+                (audio, localWords) = done;
+            }
+            else if (useBatch && idx > 0)
+            {
+                var take = Math.Min(batchSize, total - idx);
+                var group = new List<TextSegment>(take);
+                for (var k = 0; k < take; k++) group.Add(segments[idx + k]);
+                var rendered = synthesizeBatch!(group,
+                    msg => onProgress?.Invoke(new ProgressEvent(msg, idx + 1, total)));
+                for (var k = 1; k < take && k < rendered.Count; k++) ready[idx + k] = rendered[k];
+                (audio, localWords) = rendered[0];
+            }
+            else
+            {
+                (audio, localWords) = synthesize(seg,
+                    msg => onProgress?.Invoke(new ProgressEvent(msg, idx + 1, total)));
+            }
 
             double startSec = sampleCursor / (double)sampleRate;
             double endSec   = (sampleCursor + audio.Length) / (double)sampleRate;

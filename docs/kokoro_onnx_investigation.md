@@ -990,3 +990,40 @@ original graph, 8 chunks sequential    795.4 ms   38.1x
 batched graph B=1                      735.5 ms   41.2x   1.08x
 batched graph B=8                      350.8 ms   86.5x   2.27x
 ```
+
+## Run 37 — 2026-09-11 — Wired end-to-end, and the bug only an end-to-end test would find
+
+C# side: `Kokoro.SynthesizeBatch`, `KokoroTts.SpeakAlignedBatch` (alignment extracted into a
+shared `Align` so the single and batched paths cannot drift), an optional
+`SegmentBatchSynthesizer` on `SegmentedSynthesis.Run`, and `KokoroSynthesisService` flattening
+every segment's chunks into one call and regrouping by offset.
+
+`Kokoro` prefers `kokoro_batched.onnx` when the model directory has one and falls back to
+`kokoro.onnx`, so existing model downloads keep working.
+
+⚠ **The batched graph broke every single-item caller** — `Speak`, `SpeakAligned`, the CLI:
+
+```
+[ErrorCode:Fail] Non-zero status code returned while running Unsqueeze node.
+Status Message: Missing Input: input_lengths
+```
+
+Loading the batched graph makes `SynthesizeWithDurations` fail, because it does not supply
+`input_lengths` and does not expect a leading batch axis. Testing only the new batch API would
+have shipped this. `SynthesizeWithDurations` now routes through `SynthesizeBatch` as a batch of
+one when the batched graph is loaded.
+
+Streaming semantics are preserved deliberately: the FIRST segment is still rendered alone, so
+time-to-first-audio is unchanged and only the tail batches. Results are emitted strictly in order
+either way.
+
+End-to-end through the shipping classes (RTX 3090, 8 chunks, CUDA):
+
+```
+durations + audio lengths vs one-at-a-time : identical for all 8 items
+empty item spliced at its own index        : yes
+sequential   697.1 ms   RTF 38.8x
+batched      299.6 ms   RTF 90.2x   2.33x
+```
+
+Against the 24.0x that ships today, that is **3.8x**.

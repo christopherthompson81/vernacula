@@ -36,6 +36,11 @@ public sealed class KokoroTts : IDisposable
     /// <summary>Output sample rate (24 kHz).</summary>
     public int SampleRate => Kokoro.SampleRate;
 
+    /// <summary>True when the loaded graph renders a whole batch in one ONNX call
+    /// (<c>kokoro_batched.onnx</c>). Callers use this to decide whether grouping work into
+    /// <see cref="SpeakAlignedBatch"/> is worth the regrouping it costs them.</summary>
+    public bool SupportsBatching => _kokoro.SupportsBatching;
+
     /// <summary>
     /// Synthesize 24 kHz mono float32 audio from <paramref name="text"/> using the
     /// given <paramref name="voice"/> (e.g. "af_heart"). Set <paramref name="british"/>
@@ -55,7 +60,42 @@ public sealed class KokoroTts : IDisposable
     public KokoroSpeech SpeakAligned(string text, string voice, float speed = 1.0f, bool british = false)
     {
         var (phonemes, groupSourceWords) = _g2p.Phonemize(text, british);
-        var o = _kokoro.SynthesizeWithDurations(phonemes, voice, speed);
+        return Align(text, groupSourceWords, _kokoro.SynthesizeWithDurations(phonemes, voice, speed));
+    }
+
+    /// <summary>
+    /// <see cref="SpeakAligned"/> for several texts in one ONNX call. Word timings come from
+    /// <c>pred_dur</c>, which is bit-identical to the solo render regardless of batch composition,
+    /// so alignment is unaffected by which texts share a batch.
+    ///
+    /// <para>Only faster when the loaded graph is <c>kokoro_batched.onnx</c>
+    /// (<see cref="Kokoro.SupportsBatching"/>); otherwise it loops and matches
+    /// <see cref="SpeakAligned"/> exactly. Padding is wasted compute, so pass texts of similar
+    /// length together where the caller is free to choose the grouping.</para>
+    /// </summary>
+    public IReadOnlyList<KokoroSpeech> SpeakAlignedBatch(
+        IReadOnlyList<string> texts, string voice, float speed = 1.0f, bool british = false)
+    {
+        ArgumentNullException.ThrowIfNull(texts);
+        if (texts.Count == 0) return [];
+        var ph = new KokoroPhonemization[texts.Count];
+        var phonemes = new string[texts.Count];
+        for (var i = 0; i < texts.Count; i++)
+        {
+            ph[i] = _g2p.Phonemize(texts[i], british);
+            phonemes[i] = ph[i].Phonemes;
+        }
+        var outs = _kokoro.SynthesizeBatch(phonemes, voice, speed);
+        var results = new KokoroSpeech[texts.Count];
+        for (var i = 0; i < texts.Count; i++)
+            results[i] = Align(texts[i], ph[i].GroupSourceWords, outs[i]);
+        return results;
+    }
+
+    /// <summary>Map one synthesis result onto per-word timings. Shared by the single and
+    /// batched paths so they cannot drift apart.</summary>
+    private static KokoroSpeech Align(string text, IReadOnlyList<int>? groupSourceWords, KokoroOutput o)
+    {
         if (o.Audio.Length == 0)
             return new KokoroSpeech([], []);
 
