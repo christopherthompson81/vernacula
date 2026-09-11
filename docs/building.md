@@ -74,11 +74,16 @@ dotnet build -c Release -p:EP=Cuda -p:Platform=x64
 dotnet publish -c Release -f net10.0 -p:EP=Cuda -p:Platform=x64 \
   -r linux-x64 --self-contained true \
   -o ~/apps/vernacula-desktop
+```
 
-# The same on Windows
-dotnet publish -c Release -f net10.0-windows -p:EP=Cuda -p:Platform=x64 \
-  -r win-x64 --self-contained true \
-  -o %USERPROFILE%/apps/vernacula-desktop
+The same on Windows, in PowerShell — the line continuation is a backtick, not `\`:
+
+```powershell
+cd src/Vernacula.Avalonia
+
+dotnet publish -c Release -f net10.0-windows -p:EP=Cuda -p:Platform=x64 `
+  -r win-x64 --self-contained true `
+  -o "$env:USERPROFILE/apps/vernacula-desktop"
 ```
 
 For a Linux end-user install, the `install.sh` script at the repo root runs a self-contained publish and registers the `.desktop` entry for you — see [Installation](installation.md).
