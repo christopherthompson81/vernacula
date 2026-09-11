@@ -115,9 +115,9 @@ public class TtsModelSetTableTests : IDisposable
         var settings = NewSettings();
         TtsModelSets.Kokoro.SetOverride(settings.Current, _dir);
 
-        Assert.Equal(["kokoro.onnx", "voices/*.bin"], TtsModelSets.Kokoro.MissingFiles(settings));
+        Assert.Equal(["kokoro_batched.onnx", "voices/*.bin"], TtsModelSets.Kokoro.MissingFiles(settings));
 
-        File.WriteAllText(Path.Combine(_dir, "kokoro.onnx"), "");
+        File.WriteAllText(Path.Combine(_dir, "kokoro_batched.onnx"), "");
         Assert.Equal(["voices/*.bin"], TtsModelSets.Kokoro.MissingFiles(settings));
 
         Directory.CreateDirectory(Path.Combine(_dir, "voices"));
@@ -125,6 +125,20 @@ public class TtsModelSetTableTests : IDisposable
         Assert.Empty(TtsModelSets.Kokoro.MissingFiles(settings));   // one voice is enough to run
         // ...but a download would still fetch every voice the repo holds.
         Assert.Equal(TtsModelSets.KokoroVoices.Length + 1, TtsModelSets.Kokoro.Downloadable.Count());
+    }
+
+    [Fact]
+    public void AModelDirectoryFromBeforeTheBatchedGraphStillCounts()
+    {
+        // A download now fetches only kokoro_batched.onnx, but Kokoro falls back to the older
+        // kokoro.onnx, so an install predating the batched graph must not be reported as
+        // missing — gating presence on the file we no longer ship did exactly that.
+        var settings = NewSettings();
+        TtsModelSets.Kokoro.SetOverride(settings.Current, _dir);
+        File.WriteAllText(Path.Combine(_dir, "kokoro.onnx"), "");
+        Directory.CreateDirectory(Path.Combine(_dir, "voices"));
+        File.WriteAllText(Path.Combine(_dir, "voices", "af_heart.bin"), "");
+        Assert.Empty(TtsModelSets.Kokoro.MissingFiles(settings));
     }
 
     [Fact]
