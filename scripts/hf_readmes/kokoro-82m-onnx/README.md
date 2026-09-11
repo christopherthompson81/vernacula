@@ -47,31 +47,19 @@ layout, for use as the Kokoro text-to-speech engine in
   naive padding corrupts the shorter items — AdaIN normalises over time, so padding frames
   pollute the per-item statistics, and the bidirectional LSTMs read padding backwards into real
   tokens and shift the predicted durations. Masking the statistics, packing the LSTMs and
-  re-zeroing the padding after each `AdaIN1d` closes all three. It supersedes `kokoro.onnx`,
-  being faster even at batch 1.
+  re-zeroing the padding after each `AdaIN1d` closes all three. It replaces the old single-item
+  graph outright — at batch 1 it is ~1.08x faster than that graph was, so there is nothing to
+  trade off.
 
 ## Contents
 
 | File | Purpose |
 |---|---|
-| `kokoro_batched.onnx` | **Preferred.** The whole model with a dynamic batch axis: renders a padded batch of different-length texts in one call (fp32, ~311 MB, weights inlined) |
-| `kokoro.onnx` | The original batch=1 graph, kept for older clients: token ids + style vector + speed → 24 kHz waveform (fp32, ~310 MB, weights inlined) |
+| `kokoro_batched.onnx` | The whole model, with a dynamic batch axis: token ids + style vectors + speed → 24 kHz waveforms (fp32, ~311 MB, weights inlined). Batch 1 is just the `batch=1` case, and is faster than the old single-item graph, so this is the only model here |
 | `voices/<name>.bin` | One voice pack per voice: `510 × 256` float32, little-endian — row *n* is the style vector for a phoneme string of length *n + 1* |
 | `manifest.json` | Per-file MD5 hashes for integrity checks |
 
 ### ONNX contract
-
-| Name | Shape | dtype | Description |
-|---|---|---|---|
-| `input_ids` (in) | `[1, tokens]` | int64 | Padded token ids: `[0, *ids, 0]` |
-| `style` (in) | `[1, 256]` | float32 | Style/voice vector (`ref_s`) |
-| `speed` (in) | `[1]` | float32 | Speech-rate multiplier (1.0 = natural) |
-| `audio` (out) | `[samples]` | float32 | 24 kHz waveform |
-
-`tokens` and `samples` are dynamic. The context window is 510 tokens; split longer text
-on sentence boundaries first.
-
-### ONNX contract — `kokoro_batched.onnx`
 
 | Name | Shape | dtype | Description |
 |---|---|---|---|
@@ -81,6 +69,9 @@ on sentence boundaries first.
 | `input_lengths` (in) | `[batch]` | int64 | Real token count per item — **required**; padding is masked from it |
 | `audio` (out) | `[batch, samples]` | float32 | 24 kHz waveform, padded to the batch's longest item |
 | `pred_dur` (out) | `[batch, tokens]` | int64 | Per-token frames, 0 on padded tokens |
+
+`tokens`, `batch` and `samples` are dynamic. The context window is 510 tokens per item; split
+longer text on sentence boundaries first.
 
 Each item is valid for its **own** `pred_dur.sum() * 600` samples; the rest of its row is batch
 padding, so trim before use. `pred_dur` is identical to what the item gets rendered alone, at any
@@ -129,7 +120,7 @@ from huggingface_hub import snapshot_download
 import numpy as np, onnxruntime as ort
 
 path = snapshot_download(repo_id="christopherthompson81/kokoro-82m-onnx")
-sess = ort.InferenceSession(f"{path}/kokoro.onnx")   # or kokoro_batched.onnx, see above
+sess = ort.InferenceSession(f"{path}/kokoro_batched.onnx")
 
 # ids: Kokoro vocabulary ids for the phoneme string (see upstream / misaki)
 ids = np.array([[0, *phoneme_ids, 0]], dtype=np.int64)

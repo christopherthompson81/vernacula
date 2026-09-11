@@ -1106,3 +1106,48 @@ after adding kokoro_batched.onnx  2715 ms    1.79x
 ```
 
 with paragraph count, word count, word text and word timings (0.000 ms delta) all unchanged.
+
+## Run 40 — 2026-09-11 — Would a bigger GPU get more than 1.89x?
+
+Cannot test Blackwell. But batching's gain is filling idle capacity, and "a bigger GPU on this
+workload" points the same way as "a smaller workload on this GPU". Sweeping item size, B=1 against
+B=16 per item:
+
+```
+case      tok   B=1 ms   B=16/item   headroom
+tiny       16     68.0       12.26      5.55x
+short      32     69.0       16.82      4.10x
+med        56     74.2       25.13      2.95x
+long      164    114.9       65.96      1.74x
+```
+
+⚠ **At B=1 this graph is latency-bound, not compute-bound.** A 16-token item and a 56-token item
+both cost ~68-74 ms — four times the work for the same wall clock. The time is kernel-launch
+overhead plus LSTM steps that are sequential over time, and the GPU sits mostly idle.
+
+That is what predicts the answer. A faster GPU shrinks the compute-bound batched case but barely
+touches launch overhead or sequential LSTM steps, so the *ratio* grows. Evidence in the same
+direction: the 3090 does not saturate at the hardcoded cap of 16 for ordinary paragraph sizes —
+
+```
+per-item, medium (~56-token) items
+  B=1     72.05 ms   1.00x
+  B=8     27.35 ms   2.63x   1.21 GB
+  B=16    25.09 ms   2.87x   1.84 GB   ← current cap
+  B=32    23.94 ms   3.01x   3.09 GB
+  B=64    22.97 ms   3.14x   5.58 GB
+  B=128   22.70 ms   3.17x  10.57 GB
+```
+
+Run 33's "saturates at 8-16" was measured on 136-token items; smaller items saturate later, and
+paragraphs are usually smaller than that.
+
+**But the app-level figure will not scale with the raw headroom.** Three things cap it and none of
+them improve with a faster GPU: padding fill (~65-70% even after length-sorting), the first
+paragraph rendered solo to protect time-to-first-audio, and the sequential share of the graph. So
+expect a much faster card to move the end-to-end 1.89x to roughly 2.5-3x, not to the 5.5x that the
+tiny-item headroom alone would suggest.
+
+⚠ `MaxBatchItems = 16` is tuned to this 3090 and is already ~5% short of its own optimum for
+typical paragraphs. It is a VRAM-vs-throughput trade (1.84 GB at 16, 3.09 GB at 32), and the right
+value is hardware-dependent — a candidate for a setting rather than a constant.
