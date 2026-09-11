@@ -85,11 +85,58 @@ public sealed class KokoroTts : IDisposable
             ph[i] = _g2p.Phonemize(texts[i], british);
             phonemes[i] = ph[i].Phonemes;
         }
-        var outs = _kokoro.SynthesizeBatch(phonemes, voice, speed);
         var results = new KokoroSpeech[texts.Count];
-        for (var i = 0; i < texts.Count; i++)
-            results[i] = Align(texts[i], ph[i].GroupSourceWords, outs[i]);
+        foreach (var group in BucketByLength(phonemes))
+        {
+            var outs = _kokoro.SynthesizeBatch([.. group.Select(i => phonemes[i])], voice, speed);
+            for (var g = 0; g < group.Count; g++)
+            {
+                var i = group[g];
+                results[i] = Align(texts[i], ph[i].GroupSourceWords, outs[g]);
+            }
+        }
         return results;
+    }
+
+    // A batch is padded to its longest item, so mixing a heading with a long paragraph spends
+    // most of the GPU on padding — measured at 37% fill on an ordinary document, which wipes the
+    // batching win out entirely (0.98x, i.e. slower than sequential). Sorting by phoneme length
+    // and cutting a new batch when the spread gets too wide keeps each batch close to square.
+    //
+    // ⚠ This is purely a THROUGHPUT concern. Fidelity does not depend on how items are grouped:
+    // the padding error is a step function (two frames of padding cost as much as two hundred)
+    // and it is masked out either way. So grouping is free to optimise for fill.
+    private const int MaxBatchItems = 16;      // throughput saturates around 8-16 (Run 33)
+    private const double MaxLengthSpread = 1.5; // start a new batch past this longest/shortest ratio
+
+    /// <summary>Indices of <paramref name="phonemes"/> grouped into batches of similar length.
+    /// Groups are returned in no particular order; each carries the original indices.</summary>
+    private static List<List<int>> BucketByLength(IReadOnlyList<string> phonemes)
+    {
+        var order = Enumerable.Range(0, phonemes.Count)
+                              .Where(i => phonemes[i].Length > 0)
+                              .OrderBy(i => phonemes[i].Length)
+                              .ToArray();
+        var groups = new List<List<int>>();
+        var current = new List<int>();
+        var shortest = 0;
+        foreach (var i in order)
+        {
+            var len = phonemes[i].Length;
+            if (current.Count > 0 && (current.Count >= MaxBatchItems || len > shortest * MaxLengthSpread))
+            {
+                groups.Add(current);
+                current = [];
+            }
+            if (current.Count == 0) shortest = len;
+            current.Add(i);
+        }
+        if (current.Count > 0) groups.Add(current);
+
+        // Empty strings never reach the model; hand them back so every index gets a result.
+        var empties = Enumerable.Range(0, phonemes.Count).Where(i => phonemes[i].Length == 0).ToList();
+        if (empties.Count > 0) groups.Add(empties);
+        return groups;
     }
 
     /// <summary>Map one synthesis result onto per-word timings. Shared by the single and

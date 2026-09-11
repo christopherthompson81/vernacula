@@ -90,6 +90,7 @@ public sealed class KokoroSynthesisService : ITtsBackend
                     counts[i] = chunks.Count;
                     flat.AddRange(chunks);
                 }
+                // SpeakAlignedBatch buckets by length internally; order out matches order in.
                 var spoken = tts.SpeakAlignedBatch(flat, voice, speed, british);
                 var outs = new List<(float[], IReadOnlyList<AlignedWord>)>(segs.Count);
                 var at = 0;
@@ -104,9 +105,13 @@ public sealed class KokoroSynthesisService : ITtsBackend
                 return outs;
             }
 
-            // Throughput saturates around 8-16 items and VRAM never binds; 8 keeps the working
-            // set near 1.4 GB. docs/kokoro_onnx_investigation.md Run 33.
-            const int BatchSegments = 8;
+            // How many paragraphs to hand KokoroTts at once. It sorts them by length internally
+            // and cuts them into similar-length batches, so a WIDER window gives it more to work
+            // with — an ordinary document mixes one-line headings with long paragraphs, and a
+            // batch is padded to its longest item. 16 keeps the burst well under the audio
+            // already queued for playback, so streaming never starves.
+            // docs/kokoro_onnx_investigation.md Runs 33, 38.
+            const int BatchSegments = 16;
             return SegmentedSynthesis.Run(request, SampleRate, "kokoro_duration",
                 SynthesizeSegment, onChunkProduced, onProgress, cancellationToken,
                 tts.SupportsBatching ? SynthesizeSegments : null,

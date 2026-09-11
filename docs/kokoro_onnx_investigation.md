@@ -1027,3 +1027,60 @@ batched      299.6 ms   RTF 90.2x   2.33x
 ```
 
 Against the 24.0x that ships today, that is **3.8x**.
+
+## Run 38 — 2026-09-11 — Real paragraphs are not uniform, and that halves the win
+
+⚠ **Correction to Run 37's 2.33x.** That was measured on eight phoneme strings of similar
+length. Driving the actual Avalonia path (`KokoroSynthesisService` → `ParagraphSegmenter`) on a
+markdown document gave **1.21x**, and the raw synthesis call on the same paragraphs gave **0.99x —
+slower than sequential.** Phonemization was not the cause (7 ms against 760 ms, 1%).
+
+The cause is length variance. A batch is padded to its longest item, and an ordinary document
+mixes one-line headings with long paragraphs:
+
+```
+phoneme lengths: 17, 96, 23, 173, 13, 54, 55, 87    max/mean 2.67
+fill if run as ONE batch of 8: 37%    <- 63% of the GPU work is padding
+```
+
+Run 21's fill-efficiency arithmetic was right and was under-weighted here because Run 23's
+8-item test had only one batch, where sorting cannot help. With enough items it is the whole game.
+36 paragraphs, phoneme length 7/50/173 (38% fill as one batch):
+
+```
+sequential                              3398.6 ms      -
+fixed 16, document order                2963.5 ms   1.16x
+fixed 16, length-sorted                 2188.5 ms   1.55x
+fixed  8, length-sorted                 1929.4 ms   1.76x
+fixed  4, length-sorted                 1967.3 ms   1.49x
+adaptive sorted, max/min<=1.25, cap 16  1899.4 ms   1.79x
+adaptive sorted, max/min<=1.50, cap 16  1852.0 ms   1.84x   ← taken
+adaptive sorted, max/min<=2.00, cap 16  2005.0 ms   1.70x
+```
+
+Sorting is worth more than batch size: document-order batching never beats 1.21x at any size,
+while sorted adaptive grouping reaches 1.84x. Too tight a spread (1.25) fragments into batches too
+small to fill the GPU; too loose (2.0) reintroduces padding.
+
+**This is a throughput decision only.** Fidelity does not depend on grouping — the padding error
+is a step function and is masked out either way (Run 27-31) — so grouping is free to optimise for
+fill. Implemented inside `KokoroTts.SpeakAlignedBatch`, which already phonemizes and so knows the
+lengths; callers just hand it work and get results back in input order.
+
+### End to end, the real Avalonia path
+
+37-paragraph markdown document (headings + paragraphs), RTX 3090, CUDA:
+
+```
+streaming order        identical (0..36)
+paragraph count        identical
+word count             identical, 0 text mismatches
+max word-timing delta  0.000 ms
+wav bytes              17664058 / 17664058  (identical)
+
+warm synthesis   4863 ms -> 2570 ms   1.89x
+```
+
+⚠ Both arms already carry the cuDNN fix, so **1.89x is batching's marginal gain**; against what
+ships today (EXHAUSTIVE, unbatched) the combined figure is ~2.9x, not the 3.8x Run 37's uniform-
+length measurement suggested.
