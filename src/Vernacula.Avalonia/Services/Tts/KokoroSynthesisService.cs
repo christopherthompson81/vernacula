@@ -75,8 +75,47 @@ public sealed class KokoroSynthesisService : ITtsBackend
                 return SegmentedSynthesis.Join(parts, SampleRate);
             }
 
+            // Batched path: flatten every segment's chunks into ONE ONNX call, then regroup.
+            // Chunk counts differ per segment (a long paragraph splits), so the mapping back is
+            // by offset, not by index.
+            IReadOnlyList<(float[], IReadOnlyList<AlignedWord>)> SynthesizeSegments(
+                IReadOnlyList<Vernacula.Tts.Base.Markdown.TextSegment> segs, Action<string> warn)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var flat = new List<string>();
+                var counts = new int[segs.Count];
+                for (var i = 0; i < segs.Count; i++)
+                {
+                    var chunks = tts.ChunkForSynthesis(segs[i].Text, british);
+                    counts[i] = chunks.Count;
+                    flat.AddRange(chunks);
+                }
+                // SpeakAlignedBatch buckets by length internally; order out matches order in.
+                var spoken = tts.SpeakAlignedBatch(flat, voice, speed, british);
+                var outs = new List<(float[], IReadOnlyList<AlignedWord>)>(segs.Count);
+                var at = 0;
+                for (var i = 0; i < segs.Count; i++)
+                {
+                    var parts = new List<(float[], IReadOnlyList<(string, double, double)>)>(counts[i]);
+                    for (var k = 0; k < counts[i]; k++, at++)
+                        parts.Add((spoken[at].Audio,
+                                   spoken[at].Words.Select(w => (w.Text, w.StartSec, w.EndSec)).ToList()));
+                    outs.Add(SegmentedSynthesis.Join(parts, SampleRate));
+                }
+                return outs;
+            }
+
+            // How many paragraphs to hand KokoroTts at once. It sorts them by length internally
+            // and cuts them into similar-length batches, so a WIDER window gives it more to work
+            // with — an ordinary document mixes one-line headings with long paragraphs, and a
+            // batch is padded to its longest item. 16 keeps the burst well under the audio
+            // already queued for playback, so streaming never starves.
+            // docs/kokoro_onnx_investigation.md Runs 33, 38.
+            const int BatchSegments = 16;
             return SegmentedSynthesis.Run(request, SampleRate, "kokoro_duration",
-                SynthesizeSegment, onChunkProduced, onProgress, cancellationToken);
+                SynthesizeSegment, onChunkProduced, onProgress, cancellationToken,
+                tts.SupportsBatching ? SynthesizeSegments : null,
+                tts.SupportsBatching ? BatchSegments : 1);
         }, cancellationToken).ConfigureAwait(false);
     }
 

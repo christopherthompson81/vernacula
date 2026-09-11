@@ -126,9 +126,12 @@ internal static class TtsModelSets
             new("conditional_decoder_loop.onnx_data",  "conditional_decoder_loop.onnx_data"),
         ];
 
+    // kokoro_batched.onnx is the only graph the repo carries: batch 1 is just its B=1 case, and
+    // it is ~1.08x faster there than the old single-item graph, so that one was removed rather
+    // than kept beside it. docs/kokoro_onnx_investigation.md Runs 26-39.
     private static readonly ModelAsset[] KokoroFiles =
         [
-            new("kokoro.onnx", "kokoro.onnx"),
+            new("kokoro_batched.onnx", "kokoro_batched.onnx"),
             .. KokoroVoices.Select(v => new ModelAsset(Path.Combine("voices", $"{v}.bin"), $"voices/{v}.bin")),
         ];
 
@@ -159,7 +162,7 @@ internal static class TtsModelSets
     public static readonly TtsModelSet Kokoro = new()
     {
         Name        = "Kokoro-82M",
-        Description = "kokoro.onnx + voices/*.bin from scripts/kokoro_export. English voices; fast, light.",
+        Description = "kokoro_batched.onnx + voices/*.bin from scripts/kokoro_export. English voices; fast, light.",
         SubDir      = Config.KokoroSubDir,
         GetOverride = a => a.KokoroModelDir,
         SetOverride = (a, v) => a.KokoroModelDir = v,
@@ -169,7 +172,13 @@ internal static class TtsModelSets
         Missing     = (dir, _) =>
         {
             var missing = new List<string>();
-            if (!File.Exists(Path.Combine(dir, "kokoro.onnx"))) missing.Add("kokoro.onnx");
+            // Either graph runs. Kokoro prefers kokoro_batched.onnx and falls back to
+            // kokoro.onnx, so a model directory populated before the batched graph existed
+            // still counts as installed — but a fresh download only brings the batched one,
+            // and gating on kokoro.onnx would report Kokoro missing right after it succeeded.
+            if (!File.Exists(Path.Combine(dir, "kokoro_batched.onnx")) &&
+                !File.Exists(Path.Combine(dir, "kokoro.onnx")))
+                missing.Add("kokoro_batched.onnx");
             // Any voice pack will do to run; the download fills in the full set.
             string voices = Path.Combine(dir, "voices");
             if (!Directory.Exists(voices) || !Directory.EnumerateFiles(voices, "*.bin").Any())

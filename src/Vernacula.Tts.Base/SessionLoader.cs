@@ -26,12 +26,12 @@ internal static class SessionLoader
     /// returned <see cref="InferenceSession"/>.</param>
     public static InferenceSession LoadAndReport(
         string path, ExecutionProvider ep, SessionLoadObserver? onLoad, out bool usedCuda,
-        bool disableTf32 = false)
+        bool disableTf32 = false, string? cudnnConvAlgoSearch = null)
     {
         var sw = Stopwatch.StartNew();
         var session = OrtSessionBuilder.CreateCachedSession(
             path, ep, out var hit, out usedCuda,
-            GraphOptimizationLevel.ORT_ENABLE_ALL, 1024 * 1024, disableTf32);
+            GraphOptimizationLevel.ORT_ENABLE_ALL, 1024 * 1024, disableTf32, cudnnConvAlgoSearch);
         sw.Stop();
         onLoad?.Invoke(new SessionLoadEvent(
             Path.GetFileName(path), sw.ElapsedMilliseconds, hit, usedCuda,
@@ -44,6 +44,7 @@ internal static class SessionLoader
     /// (i.e. classes that don't dispatch on CUDA-only paths like IoBinding).
     /// </summary>
     public static InferenceSession LoadAndReport(
-        string path, ExecutionProvider ep, SessionLoadObserver? onLoad, bool disableTf32 = false)
-        => LoadAndReport(path, ep, onLoad, out _, disableTf32);
+        string path, ExecutionProvider ep, SessionLoadObserver? onLoad, bool disableTf32 = false,
+        string? cudnnConvAlgoSearch = null)
+        => LoadAndReport(path, ep, onLoad, out _, disableTf32, cudnnConvAlgoSearch);
 }

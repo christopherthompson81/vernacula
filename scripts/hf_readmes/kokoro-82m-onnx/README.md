@@ -42,12 +42,20 @@ layout, for use as the Kokoro text-to-speech engine in
   rendered into Kokoro's vocabulary, so the same frontend serves every engine.
 - **Voice packs as flat float32**, indexed by phoneme-string length, readable without a
   tensor library.
+- **A variable-length batched graph** (`kokoro_batched.onnx`) that renders several texts of
+  *different* lengths in one call, at the model's own fidelity. Kokoro is batch=1 upstream, and
+  naive padding corrupts the shorter items — AdaIN normalises over time, so padding frames
+  pollute the per-item statistics, and the bidirectional LSTMs read padding backwards into real
+  tokens and shift the predicted durations. Masking the statistics, packing the LSTMs and
+  re-zeroing the padding after each `AdaIN1d` closes all three. It replaces the old single-item
+  graph outright — at batch 1 it is ~1.08x faster than that graph was, so there is nothing to
+  trade off.
 
 ## Contents
 
 | File | Purpose |
 |---|---|
-| `kokoro.onnx` | The whole model: token ids + style vector + speed → 24 kHz waveform (fp32, ~310 MB, weights inlined) |
+| `kokoro_batched.onnx` | The whole model, with a dynamic batch axis: token ids + style vectors + speed → 24 kHz waveforms (fp32, ~311 MB, weights inlined). Batch 1 is just the `batch=1` case, and is faster than the old single-item graph, so this is the only model here |
 | `voices/<name>.bin` | One voice pack per voice: `510 × 256` float32, little-endian — row *n* is the style vector for a phoneme string of length *n + 1* |
 | `manifest.json` | Per-file MD5 hashes for integrity checks |
 
@@ -55,13 +63,25 @@ layout, for use as the Kokoro text-to-speech engine in
 
 | Name | Shape | dtype | Description |
 |---|---|---|---|
-| `input_ids` (in) | `[1, tokens]` | int64 | Padded token ids: `[0, *ids, 0]` |
-| `style` (in) | `[1, 256]` | float32 | Style/voice vector (`ref_s`) |
-| `speed` (in) | `[1]` | float32 | Speech-rate multiplier (1.0 = natural) |
-| `audio` (out) | `[samples]` | float32 | 24 kHz waveform |
+| `input_ids` (in) | `[batch, tokens]` | int64 | Right-padded token ids, one row per text |
+| `ref_s` (in) | `[batch, 256]` | float32 | Style vector per item (each indexed by *its own* phoneme-string length) |
+| `speed` (in) | `[1]` | float32 | Speech-rate multiplier, shared by the batch |
+| `input_lengths` (in) | `[batch]` | int64 | Real token count per item — **required**; padding is masked from it |
+| `audio` (out) | `[batch, samples]` | float32 | 24 kHz waveform, padded to the batch's longest item |
+| `pred_dur` (out) | `[batch, tokens]` | int64 | Per-token frames, 0 on padded tokens |
 
-`tokens` and `samples` are dynamic. The context window is 510 tokens; split longer text
-on sentence boundaries first.
+`tokens`, `batch` and `samples` are dynamic. The context window is 510 tokens per item; split
+longer text on sentence boundaries first.
+
+Each item is valid for its **own** `pred_dur.sum() * 600` samples; the rest of its row is batch
+padding, so trim before use. `pred_dur` is identical to what the item gets rendered alone, at any
+batch size — so word alignment never depends on which texts share a batch.
+
+A batch is padded to its longest item, so grouping texts of **similar length** matters for
+throughput: an unsorted mix of one-line headings and long paragraphs fills only ~37% of the batch
+and is no faster than rendering one at a time. Sorting by phoneme length first roughly doubles it.
+Fidelity does not depend on the grouping — the padding error is a step function (two frames of
+padding cost as much as two hundred) and is masked out either way.
 
 ### Voices
 
@@ -100,7 +120,7 @@ from huggingface_hub import snapshot_download
 import numpy as np, onnxruntime as ort
 
 path = snapshot_download(repo_id="christopherthompson81/kokoro-82m-onnx")
-sess = ort.InferenceSession(f"{path}/kokoro.onnx")
+sess = ort.InferenceSession(f"{path}/kokoro_batched.onnx")
 
 # ids: Kokoro vocabulary ids for the phoneme string (see upstream / misaki)
 ids = np.array([[0, *phoneme_ids, 0]], dtype=np.int64)
