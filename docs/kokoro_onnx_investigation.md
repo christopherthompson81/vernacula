@@ -858,3 +858,135 @@ stability, not on the model. `VERNACULA_ORT_CONV_ALGO` overrides for measurement
 
 **Left open:** other conv-heavy CUDA sessions (DiariZen, Sortformer, the vocoder, ASR encoders)
 were not measured. Any with varying input shapes are likely paying the same 2.93x re-tune penalty.
+
+## Run 26 — 2026-09-11 — The model is nondeterministic, so "exact" has a floor
+
+Before chasing fidelity, calibrate the target. Same input, twice, CPU, eval mode:
+
+```
+dur_equal=True   max|diff| = 1.095e-01   logspecL1 = 0.129265
+```
+
+**Kokoro does not reproduce itself.** `SourceModuleHnNSF` draws `torch.randn_like` for the
+harmonic-plus-noise excitation on every call (`noise_amp = uv*0.003 + (1-uv)*0.1/3`). So the
+0.11–0.20 band Run 14 called "the model's own nondeterminism" is literally that, and the
+reimplementation's 0.132 is indistinguishable from running the real model twice.
+
+⚠ Consequence for every earlier run in this log: **0.13 is the floor, not a pass mark.** A batched
+render must reach 0.13 to be "no fidelity cost"; 0.46 was real excess, not measurement noise.
+
+## Run 27-31 — 2026-09-11 — Making padding invisible
+
+With `torch.randn_like` stubbed to zeros the model is deterministic (solo vs solo = **0.00000**),
+which makes the padding effect measurable on its own.
+
+**Controls first** — batching itself is not the problem:
+
+```
+B=1 through the batched code vs solo        0.128   (floor)
+batch of 4 IDENTICAL items vs solo          0.141   (floor, 0% padding)
+same batch run twice                        0.142   (floor)
+batch with 40% padding vs solo              0.273   EXCESS
+```
+
+⚠ **The error is a step function in padding, not a gradient.** Sweeping padding on one item, noise
+off:
+
+```
+pad frames   pad %   logspec   F0 mean abs err (Hz)
+         2    1.4%    0.2634                 0.0455
+        20   12.3%    0.2633                 0.0455
+       160   53.0%    0.2658                 0.0455
+```
+
+Two frames of padding do exactly as much damage as 160. **This kills length-bucketing as a fidelity
+strategy** (Run 21's fill numbers remain a throughput argument only): padding must be eliminated,
+not minimized.
+
+**Where it enters.** Stage diff, batched vs solo, real region only: `bert`, the duration encoder,
+`pred_dur`, `en` and `asr` are all at float noise (~1e-6) — only `F0` (3.2e-4) and `N` (1.2e-3)
+diverge. That looks negligible until you follow it: `F0_conv` 5e-4 → decoder `encode` 2e-2 →
+`generator` 4.4e-1. Each AdaIN divides by a std, so relative error compounds through the stack.
+
+⚠ The masking was incomplete in a way that is easy to miss. `AdaIN1d.forward` is
+`(1 + gamma) * self.norm(x) + beta` — re-zeroing inside the InstanceNorm is **undone by the
+`+ beta` outside it**, so the padding region carries `beta` into every downstream conv.
+
+```
+                                           logspec   F0 err (Hz)
+masked statistics only                      0.2634     0.1363
++ re-zero after the whole AdaIN1d           0.1514     0.0060
++ re-zero after ALL convs                   0.2189→1.0239 (worse with more padding)   0.0000
++ re-zero after PREDICTOR convs only        0.0877     0.0000    ← taken
+```
+
+⚠ Re-zeroing every conv makes F0 exact but wrecks the audio, and worse the more padding there is:
+the generator mixes `[B, T, 1]` layouts and an iSTFT, where a last-dim mask is simply wrong. The
+predictor's frame axis is the last dim throughout, so masking is well defined there. Final recipe:
+**masked AdaIN statistics + packed `predictor.lstm` and `F0Ntrain.shared` + re-zero after every
+`AdaIN1d` + re-zero after predictor convs.** F0 becomes bit-exact and the deterministic residual
+(0.0877) sits *below* the model's own run-to-run variance.
+
+## Run 32 — 2026-09-11 — Verified, noise on, worst-case padding
+
+Batch of 8 in natural order (46–77% padding — deliberately not length-sorted):
+
+```
+item  tok  pad%   batched vs solo    floor
+   0   58   60%            0.1585   0.1382
+   2  142    0%            0.1443   0.1494
+   4   26   77%            0.1558   0.1234
+   7   56   59%            0.1554   0.1266
+```
+
+Durations identical to solo for every item. User on the A/B of the worst case (77% padded):
+**"Indistinguishable."** Compare where this started: 0.82.
+
+## Run 33 — 2026-09-11 — Scaling: compute saturates long before VRAM
+
+RTX 3090, length-sorted, full-fidelity path:
+
+```
+   B   per-item ms      RTF   speedup   VRAM GB
+   1         74.1     47.9x         -         -
+   8         33.9    117.3x     2.19x      1.40
+  16         32.3    123.0x     2.29x      2.22
+  64         29.7    133.9x     2.50x      7.09
+ 128         29.5    134.7x     2.51x     13.60
+```
+
+**Throughput saturates at B≈8–16; VRAM never binds** (13.6 GB of 24 at B=128). The graph fills the
+GPU by B=8, so ~2.5x is the architectural ceiling here, and B=16 captures nearly all of it at
+2.2 GB. Batching beyond 16 buys ~2% for 6x the memory.
+
+## Run 34-36 — 2026-09-11 — Exported, and the two wins overlap
+
+Exported with the full-fidelity recipe (forward hooks are captured by tracing): 326.4 MB, dynamic
+`batch` and `tokens` axes. In ORT, durations match the solo render at B=1, 2, 3 and 5, and fidelity
+holds at the floor.
+
+⚠ **The cuDNN fix (#190) and batching are not additive — they overlap almost completely**, because
+a batched Run is *one* Run and therefore has no shape changes to re-tune:
+
+```
+batch=1 graph, sequential, EXHAUSTIVE   1264.1 ms   24.0x   ← what ships today
+batch=1 graph, sequential, DEFAULT       818.1 ms   37.1x   ← #190
+batched graph B=8, EXHAUSTIVE            347.6 ms   87.2x
+batched graph B=8, DEFAULT               350.6 ms   86.5x   ← setting is irrelevant once batched
+
+cuDNN fix alone                  1.55x
+batching MARGINAL on fixed base  2.33x
+both together                    3.61x        (24.0x -> 86.5x)
+```
+
+#190 still earns its place: it is what the B=1 path gets, and it applies to every other CUDA
+session in the app.
+
+**The batched graph replaces the batch=1 graph rather than shipping beside it** — at B=1 it is
+1.08x *faster* than the current one, so there is no dual-model distribution cost:
+
+```
+original graph, 8 chunks sequential    795.4 ms   38.1x
+batched graph B=1                      735.5 ms   41.2x   1.08x
+batched graph B=8                      350.8 ms   86.5x   2.27x
+```
