@@ -23,7 +23,8 @@ public sealed class KokoroTts : IDisposable
     private readonly Kokoro _kokoro;
     private readonly KokoroPhonemizer _g2p;
 
-    /// <param name="onnxDir">Directory holding kokoro.onnx and voices/.</param>
+    /// <param name="onnxDir">Directory holding kokoro_batched.onnx (or the older kokoro.onnx)
+    /// and voices/.</param>
     /// <param name="phonemizerDataDir">The vernacula-phonemizer <c>data/</c> root, or null to
     /// resolve it (VERNACULA_DATA_DIR, then the submodule — see <see cref="PhonemizerData"/>).</param>
     public KokoroTts(string onnxDir, string? phonemizerDataDir, ExecutionProvider ep,

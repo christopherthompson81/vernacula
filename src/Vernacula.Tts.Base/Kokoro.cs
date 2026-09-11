@@ -15,7 +15,8 @@ public sealed record KokoroOutput(float[] Audio, long[] PredDur, long[] InputIds
 
 /// <summary>
 /// hexgrad/Kokoro-82M TTS inference over the Vernacula-exported
-/// <c>kokoro.onnx</c> graph (StyleTTS2 / iSTFTNet, 24 kHz mono).
+/// <c>kokoro_batched.onnx</c> graph (StyleTTS2 / iSTFTNet, 24 kHz mono), or the older
+/// batch=1 <c>kokoro.onnx</c> if that is what the model directory holds.
 ///
 /// The graph entry point is <c>forward_with_tokens</c> — the G2P frontend is
 /// outside the graph. Callers supply a Kokoro-alphabet phoneme string (from
@@ -43,7 +44,8 @@ public sealed class Kokoro : IDisposable
     private readonly Dictionary<string, float[]> _voiceCache = new(StringComparer.Ordinal);
 
     /// <summary>
-    /// Load <c>kokoro.onnx</c> from <paramref name="onnxDir"/>. Voice packs are
+    /// Load the graph from <paramref name="onnxDir"/> — <c>kokoro_batched.onnx</c> when it is
+    /// there, else <c>kokoro.onnx</c>. Voice packs are
     /// read lazily from <c>&lt;onnxDir&gt;/voices/&lt;name&gt;.bin</c> (produced by
     /// scripts/kokoro_export/export_voices.py).
     /// </summary>

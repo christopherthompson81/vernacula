@@ -73,7 +73,12 @@ internal static class SegmentedSynthesis
                 for (var k = 0; k < take; k++) group.Add(segments[idx + k]);
                 var rendered = synthesizeBatch!(group,
                     msg => onProgress?.Invoke(new ProgressEvent(msg, idx + 1, total)));
-                for (var k = 1; k < take && k < rendered.Count; k++) ready[idx + k] = rendered[k];
+                // The delegate's contract is one result per segment, in order. Say so plainly
+                // rather than letting a short return surface as an IndexOutOfRange below.
+                if (rendered.Count != take)
+                    throw new InvalidOperationException(
+                        $"Batch synthesizer returned {rendered.Count} results for {take} segments.");
+                for (var k = 1; k < take; k++) ready[idx + k] = rendered[k];
                 (audio, localWords) = rendered[0];
             }
             else

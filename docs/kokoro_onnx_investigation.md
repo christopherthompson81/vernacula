@@ -1151,3 +1151,25 @@ tiny-item headroom alone would suggest.
 ⚠ `MaxBatchItems = 16` is tuned to this 3090 and is already ~5% short of its own optimum for
 typical paragraphs. It is a VRAM-vs-throughput trade (1.84 GB at 16, 3.09 GB at 32), and the right
 value is hardware-dependent — a candidate for a setting rather than a constant.
+
+## Run 41 — 2026-09-11 — Removed the old graph, and the review finding that mattered
+
+⚠ **Correction to Run 39.** `kokoro.onnx` was kept "for older clients" — but the repo has no
+releases and no tags, so no build in the wild asks for it by name. It was removed from the Hub:
+29 files now, `kokoro_batched.onnx` the only graph, and `kokoro.onnx` 404s. Batch 1 is simply its
+B=1 case and is ~1.08x faster there than the old graph, so nothing was traded away.
+
+⚠ **Review found a shipping bug that the end-to-end probes could not.** `TtsModelSets.Kokoro`'s
+readiness check still gated on the file the app no longer downloads:
+
+```csharp
+if (!File.Exists(Path.Combine(dir, "kokoro.onnx"))) missing.Add("kokoro.onnx");
+```
+
+A user who downloaded successfully would have been told Kokoro was still missing. The probes all
+constructed `Kokoro`/`KokoroTts` against a directory directly, so none of them went through the
+Settings readiness path. It now accepts either graph, matching `Kokoro`'s own fallback — a model
+directory populated before the batched graph still counts as installed.
+
+Also corrected: the user-visible Settings description, `Config.KokoroSubDir`'s summary, the
+`KokoroTts`/`Kokoro` doc comments and the CLI header, all of which still named `kokoro.onnx`.

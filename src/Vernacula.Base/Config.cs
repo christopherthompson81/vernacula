@@ -237,7 +237,7 @@ public static class Config
     // ── Text-to-speech (relative to the models dir) ─────────────────────────
     /// <summary>Chatterbox ONNX bundle: speech_encoder / embed_tokens / language_model / vocoder graphs.</summary>
     public const string ChatterboxSubDir        = "chatterbox";
-    /// <summary>Kokoro-82M: kokoro.onnx + voices/*.bin (scripts/kokoro_export).</summary>
+    /// <summary>Kokoro-82M: kokoro_batched.onnx + voices/*.bin (scripts/kokoro_export).</summary>
     public const string KokoroSubDir            = "kokoro";
     /// <summary>OmniVoice: base transformer, Higgs codec graphs, the IPA fine-tune diff, tokenizer.json.</summary>
     public const string OmniVoiceSubDir         = "omnivoice";

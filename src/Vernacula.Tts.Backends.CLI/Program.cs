@@ -36,7 +36,7 @@ bool    verbose       = false;
 bool?   useIoBinding  = null;
 float   exaggeration  = ChatterboxConstants.DefaultExaggeration;
 // Kokoro backend (--backend kokoro): --voice is a voice name (af_heart), --onnx-dir is
-// the kokoro model dir (kokoro.onnx + voices/), --data-dir the vernacula-phonemizer data/
+// the kokoro model dir (kokoro_batched.onnx + voices/), --data-dir the vernacula-phonemizer data/
 // (optional: resolved from the submodule when omitted).
 string  backend       = "chatterbox";
 string? dataDir       = null;
