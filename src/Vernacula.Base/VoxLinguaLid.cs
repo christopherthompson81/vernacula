@@ -32,6 +32,8 @@ namespace Vernacula.Base;
 /// </summary>
 public sealed class VoxLinguaLid : IDisposable
 {
+    private const string ConvAlgoSearch = "DEFAULT";   // see the CUDA branch below
+
     public const int SampleRate = 16_000;
     public const int NumClasses = 107;
     public const int EmbeddingDim = 256;
@@ -297,14 +299,19 @@ public sealed class VoxLinguaLid : IDisposable
                 case ExecutionProvider.Auto:
                     if (HardwareInfo.CanProbeCudaExecutionProvider())
                     {
-                        try { opts.AppendExecutionProvider_CUDA(0); }
+                        // cudnn_conv_algo_search=DEFAULT: every clip is a different number of
+                        // samples, so ORT's EXHAUSTIVE default re-benchmarks the convs on each
+                        // call and never amortizes. 1.75x measured (161 ms -> 92 ms over five
+                        // lengths, RTX 3090 / ORT 1.29), logits unchanged (cosine 1.000000000).
+                        // docs/investigations/cudnn_conv_algo_investigation.md.
+                        try { OrtSessionBuilder.AppendCuda(opts, disableTf32: false, ConvAlgoSearch); }
                         catch { /* fall through to CPU */ }
                     }
                     try { opts.AppendExecutionProvider_DML(0); }
                     catch { /* not available */ }
                     break;
                 case ExecutionProvider.Cuda:
-                    try { opts.AppendExecutionProvider_CUDA(0); }
+                    try { OrtSessionBuilder.AppendCuda(opts, disableTf32: false, ConvAlgoSearch); }
                     catch (EntryPointNotFoundException)
                     { throw new InvalidOperationException(HardwareInfo.CudaUnavailableMessage(providerMissing: true)); }
                     break;

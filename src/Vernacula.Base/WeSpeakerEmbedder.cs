@@ -85,6 +85,13 @@ public sealed class WeSpeakerEmbedder : IDisposable
     /// <summary>Maximum audio (in seconds) taken from the centre of a region for embedding.</summary>
     public const int MaxEmbedWindowSec  = 5;
 
+    // Every embedding call is a different number of frames, so ORT's EXHAUSTIVE default
+    // re-benchmarks the convs on each one and never amortizes the tuning. Measured 3.09x
+    // (277 ms -> 90 ms over five varying lengths, RTX 3090 / ORT 1.29) with the embedding
+    // unchanged — cosine 0.999996 against EXHAUSTIVE, far inside what clustering cares about.
+    // docs/investigations/cudnn_conv_algo_investigation.md.
+    private const string ConvAlgoSearch = "DEFAULT";
+
     // ── Construction ───────────────────────────────────────────────────────
 
     /// <summary>
@@ -137,12 +144,12 @@ public sealed class WeSpeakerEmbedder : IDisposable
                 case ExecutionProvider.Auto:
                     if (HardwareInfo.CanProbeCudaExecutionProvider())
                     {
-                        try { opts.AppendExecutionProvider_CUDA(0); } catch { }
+                        try { OrtSessionBuilder.AppendCuda(opts, disableTf32: false, ConvAlgoSearch); } catch { }
                     }
                     try { opts.AppendExecutionProvider_DML(0); }  catch { }
                     break;
                 case ExecutionProvider.Cuda:
-                    opts.AppendExecutionProvider_CUDA(0);
+                    OrtSessionBuilder.AppendCuda(opts, disableTf32: false, ConvAlgoSearch);
                     break;
                 case ExecutionProvider.DirectML:
                     opts.AppendExecutionProvider_DML(0);
