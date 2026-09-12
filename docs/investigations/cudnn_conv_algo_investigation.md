@@ -90,3 +90,47 @@ than this.
 ⚠ Measured with random inputs. That is sound for throughput and for the conv-algorithm delta, but
 it is not a quality check on real audio. The two changes taken are one-shot graphs whose outputs
 were compared directly; anything iterative needs the real thing.
+
+## Run 4 — 2026-09-11 18:20 — Chatterbox (#193): the merged graph says the opposite
+
+#192 measured the **split** vocoder graphs and deliberately refused to act on them, because the
+path that normally runs is the merged `conditional_decoder_loop.onnx` (`supports_batched=true`,
+so the split graphs never load). That caution was correct.
+
+Driven through the real pipeline — a real voice prompt, four utterances of differing length, the
+speech tokens generated **once** and fed to both vocoder instances so the acoustic LM cannot
+confound the comparison. Only the vocoder's session option differs. RTX 3090 / ORT 1.29:
+
+```
+speech token counts: 321, 375, 283, 370
+  EXHAUSTIVE   2154.1 ms
+  DEFAULT      2602.1 ms    0.83x   ← SLOWER
+```
+
+⚠ **The merged graph prefers EXHAUSTIVE, while its own components preferred DEFAULT**
+(`cfm_estimator` 2.17x, `mel2wav` 1.39x, `flow_encoder` 1.17x). Wrapping the CFM ODE in an ONNX
+`Loop` changes which shapes the convs see and how often they change, so a component microbenchmark
+does not predict the assembled graph. Acting on the split-graph numbers would have made Chatterbox
+synthesis ~20% slower.
+
+### The compounding was real too
+
+Same speech tokens, both settings, audio out:
+
+```
+utt0  len  68160   max|diff| 2.40e-02   relRMS 1.67e-02
+utt1  len 120000   max|diff| 1.72e-01   relRMS 4.05e-02
+utt2  len  31680   max|diff| 3.68e-02   relRMS 2.45e-02
+utt3  len 115200   max|diff| 3.48e-02   relRMS 1.59e-02
+```
+
+A single `cfm_estimator` step differed by rel L2 **1.07e-3** (Run 3). Integrated over the ~32 ODE
+steps the output differs by **1.6e-2 to 4.1e-2** — roughly 40x amplification, which is exactly the
+compounding the TF32/OmniVoice precedent warned about. So even had DEFAULT been faster here, it
+would have needed a listening test rather than a numeric wave-through.
+
+**Verdict: no change.** Chatterbox keeps ORT's EXHAUSTIVE default, which is already what it gets.
+
+The general lesson, now measured twice in this log: **a conv-algorithm setting is a property of the
+assembled graph and its shape traffic, not of a model or a layer type.** Component benchmarks
+(Run 2's split graphs) and degenerate shapes (Run 1) both produced confident wrong answers.
