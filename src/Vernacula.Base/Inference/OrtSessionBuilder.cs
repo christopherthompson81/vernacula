@@ -510,6 +510,17 @@ public static class OrtSessionBuilder
         }
     }
 
+    /// <summary>
+    /// Append the CUDA EP to <paramref name="opts"/>. Public because several sessions build their
+    /// own <see cref="SessionOptions"/> rather than going through <see cref="Create"/> and still
+    /// need these settings; prefer <see cref="Create"/> where you can.
+    /// </summary>
+    /// <param name="disableTf32">Force full-fp32 matmul. Needed wherever error compounds through
+    /// an iterative loop — see the note below.</param>
+    /// <param name="convAlgoSearch">cuDNN conv algorithm search strategy, or null for ORT's
+    /// default (EXHAUSTIVE). Which value wins depends on whether the graph's input SHAPE varies
+    /// per call, not on the model — measured per session in
+    /// docs/investigations/cudnn_conv_algo_investigation.md.</param>
     // Append the CUDA EP, optionally forcing full-fp32 matmul (use_tf32=0). TF32's ~1e-2
     // error is fine for one-shot models but COMPOUNDS catastrophically through OmniVoice's
     // iterative diffusion loop (audible noise) — see docs/omnivoice_onnx_investigation.md.
