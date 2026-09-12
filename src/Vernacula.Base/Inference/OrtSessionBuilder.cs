@@ -525,7 +525,7 @@ public static class OrtSessionBuilder
     // ⚠ "DEFAULT" makes ORT log "Conv(...) running in Fallback mode. May be extremely slow." for
     // every decoder conv. Measured, that path is the FAST one here; the warning is not a defect
     // signal for this graph. docs/kokoro_onnx_investigation.md Run 24.
-    private static void AppendCuda(SessionOptions opts, bool disableTf32, string? convAlgoSearch = null)
+    public static void AppendCuda(SessionOptions opts, bool disableTf32, string? convAlgoSearch = null)
     {
         // Escape hatch for measuring the alternatives without a rebuild.
         convAlgoSearch = Environment.GetEnvironmentVariable("VERNACULA_ORT_CONV_ALGO") is { Length: > 0 } env

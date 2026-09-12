@@ -97,6 +97,13 @@ public sealed class WeSpeakerEmbedder : IDisposable
     /// When supplied, embeddings are projected 256→128 before clustering.
     /// </param>
     /// <param name="ep">ONNX execution provider.</param>
+    // Every embedding call is a different number of frames, so ORT's EXHAUSTIVE default
+    // re-benchmarks the convs on each one and never amortizes the tuning. Measured 3.09x
+    // (277 ms -> 90 ms over five varying lengths, RTX 3090 / ORT 1.29) with the embedding
+    // unchanged — cosine 0.999996 against EXHAUSTIVE, far inside what clustering cares about.
+    // docs/investigations/cudnn_conv_algo_investigation.md.
+    private const string ConvAlgoSearch = "DEFAULT";
+
     public WeSpeakerEmbedder(string modelPath, string? ldaDir = null,
         ExecutionProvider ep = ExecutionProvider.Auto)
     {
@@ -137,12 +144,12 @@ public sealed class WeSpeakerEmbedder : IDisposable
                 case ExecutionProvider.Auto:
                     if (HardwareInfo.CanProbeCudaExecutionProvider())
                     {
-                        try { opts.AppendExecutionProvider_CUDA(0); } catch { }
+                        try { OrtSessionBuilder.AppendCuda(opts, disableTf32: false, ConvAlgoSearch); } catch { }
                     }
                     try { opts.AppendExecutionProvider_DML(0); }  catch { }
                     break;
                 case ExecutionProvider.Cuda:
-                    opts.AppendExecutionProvider_CUDA(0);
+                    OrtSessionBuilder.AppendCuda(opts, disableTf32: false, ConvAlgoSearch);
                     break;
                 case ExecutionProvider.DirectML:
                     opts.AppendExecutionProvider_DML(0);
