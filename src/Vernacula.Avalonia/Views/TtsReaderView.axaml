@@ -107,6 +107,7 @@
                                              Text="{Binding EditText, Mode=TwoWay}"
                                              AcceptsReturn="True"
                                              TextWrapping="Wrap"
+                                             Initialized="BlockEditor_Initialized"
                                              LostFocus="BlockEditor_LostFocus"
                                              KeyDown="BlockEditor_KeyDown"
                                              Background="Transparent"
@@ -206,11 +207,9 @@
                                     <!-- ⚠ CLICKING A WORD SEEKS, and still does in Listening. This
                                          overlay exists ONLY in editing mode, where it covers the
                                          words and takes the click to open the card instead. -->
-                                    <Button IsVisible="{Binding ShowEditOverlay}"
+                                    <Button Classes="card-overlay"
+                                            IsVisible="{Binding ShowEditOverlay}"
                                             Command="{Binding RequestEditCommand}"
-                                            Background="Transparent"
-                                            BorderThickness="0"
-                                            Padding="0"
                                             Cursor="Ibeam"
                                             HorizontalAlignment="Stretch"
                                             VerticalAlignment="Stretch" />
@@ -367,6 +366,22 @@
 
     <UserControl.Styles>
         <!-- Word buttons: borderless, transparent, click-to-seek. -->
+        <!-- ⚠ TRANSPARENT IN EVERY STATE. This button is an invisible click target over a whole
+             card, so the default Button's hover and pressed backgrounds would flash the entire
+             paragraph as the pointer crosses it. The cursor is the only affordance it needs. -->
+        <Style Selector="Button.card-overlay">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Padding" Value="0" />
+            <Setter Property="MinHeight" Value="0" />
+        </Style>
+        <Style Selector="Button.card-overlay:pointerover /template/ ContentPresenter">
+            <Setter Property="Background" Value="Transparent" />
+        </Style>
+        <Style Selector="Button.card-overlay:pressed /template/ ContentPresenter">
+            <Setter Property="Background" Value="Transparent" />
+        </Style>
+
         <Style Selector="Button.word">
             <Setter Property="Background" Value="Transparent" />
             <Setter Property="BorderBrush" Value="Transparent" />

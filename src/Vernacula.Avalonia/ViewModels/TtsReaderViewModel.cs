@@ -810,6 +810,15 @@ internal sealed partial class TtsReaderViewModel : ObservableObject, IDisposable
     private async Task ReRenderAsync(JobRecord job, CancellationToken outer)
     {
         if (_sidecar is null || job.TtsSettings is null) return;
+
+        // ⚠ AN OPEN CARD IS COMMITTED FIRST, AND THAT ORDER IS LOAD-BEARING. A successful re-render
+        // ends in LoadCompleted, which REBUILDS DisplayBlocks — every card object is replaced. A card
+        // left open across that rebuild loses whatever was being typed into it, silently, and the
+        // window for it is ordinary: edit one paragraph, start on the next, and the first one's clock
+        // runs out while you are still typing. Committing folds the open card into EditableText, so
+        // nothing is lost and this render includes it.
+        await Dispatcher.UIThread.InvokeAsync(CommitOpenBlock);
+
         string text = EditableText;
         var previous = _sidecar;
 

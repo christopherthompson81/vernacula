@@ -52,4 +52,25 @@ public partial class TtsReaderView : UserControl
             e.Handled = true;
         }
     }
+
+    /// <summary>
+    /// ⚠ OPENING A CARD MUST PUT THE CARET IN IT. Without this the card turns into a text box and
+    /// then waits for a SECOND click before it will accept a keystroke, which reads as the editor
+    /// being broken. The box is always in the tree and only toggles IsVisible, so there is no Loaded
+    /// event to hang this on — it watches its own visibility instead.
+    /// </summary>
+    private void BlockEditor_Initialized(object? sender, System.EventArgs e)
+    {
+        if (sender is not Avalonia.Controls.TextBox box) return;
+        box.PropertyChanged += (_, args) =>
+        {
+            if (args.Property != Avalonia.Visual.IsVisibleProperty || !box.IsVisible) return;
+            // Posted: the box is not yet laid out at the moment visibility flips.
+            Avalonia.Threading.Dispatcher.UIThread.Post(() =>
+            {
+                box.Focus();
+                box.CaretIndex = box.Text?.Length ?? 0;
+            });
+        };
+    }
 }

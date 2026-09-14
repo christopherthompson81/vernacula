@@ -99,4 +99,39 @@ public class MarkdownSegmentSpansTests
 
     [Fact]
     public void AnEmptyDocumentHasNoSpans() => Assert.Empty(MarkdownSegmentSpans.For(""));
+
+    /// <summary>
+    /// ⚠ SEQUENTIAL EDITS MUST COMPOSE, because that is how the reader uses this: every card commit
+    /// recomputes the spans from the CURRENT document, so an edit that changes a paragraph's length
+    /// has to leave the later spans correct. Editing card 0 to something much longer and then editing
+    /// card 2 is the case that breaks if spans were cached from the original text.
+    /// </summary>
+    [Fact]
+    public void EditsComposeWhenAnEarlierCardChangesLength()
+    {
+        string md = "Short.\n\nMiddle para.\n\nLast para.";
+        md = EditCard(md, 0, "A very much longer opening paragraph than before.");
+        md = EditCard(md, 2, "Rewritten last.");
+        Assert.Equal("A very much longer opening paragraph than before.\n\nMiddle para.\n\nRewritten last.", md);
+    }
+
+    /// <summary>…and shortening works the same way.</summary>
+    [Fact]
+    public void EditsComposeWhenAnEarlierCardShrinks()
+    {
+        string md = "A fairly long first paragraph here.\n\nMiddle.\n\nLast.";
+        md = EditCard(md, 0, "Tiny.");
+        md = EditCard(md, 1, "Changed middle.");
+        Assert.Equal("Tiny.\n\nChanged middle.\n\nLast.", md);
+    }
+
+    /// <summary>A card whose text is unchanged splices to a byte-identical document — the reader
+    /// relies on this to skip work when a card is opened and closed without a change.</summary>
+    [Fact]
+    public void ReplacingACardWithItsOwnTextIsAnIdentity()
+    {
+        const string md = "# Title\n\nOne.\n\n- a\n- b";
+        foreach (var span in MarkdownSegmentSpans.For(md))
+            Assert.Equal(md, MarkdownSegmentSpans.Splice(md, span, MarkdownSegmentSpans.TextOf(md, span)));
+    }
 }
