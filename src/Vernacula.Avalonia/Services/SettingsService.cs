@@ -204,6 +204,17 @@ internal class SettingsService
     /// is cached process-wide on the first call, so the two call sites
     /// always agree within a single run.
     /// </summary>
+    /// <summary>
+    /// Where audio.cpp's own model manager installs its packages.
+    /// </summary>
+    /// <remarks>
+    /// A sibling of the ONNX model directories rather than a subdirectory of
+    /// one: these are GGUF and safetensors packages laid out the way audio.cpp
+    /// expects, and mixing them into a directory Vernacula's own downloader
+    /// manages would make either tool's cleanup delete the other's weights.
+    /// </remarks>
+    public string GetAudioCppModelsDir() => Path.Combine(GetModelsDir(), "audiocpp");
+
     public string GetGraniteSpeechModelsDir()
     {
         string bf16Dir = Path.Combine(GetModelsDir(), Config.GraniteSpeechBf16SubDir);

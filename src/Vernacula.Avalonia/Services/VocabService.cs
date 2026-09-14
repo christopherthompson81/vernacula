@@ -14,7 +14,7 @@ namespace Vernacula.App.Services;
 /// </summary>
 internal class VocabService
 {
-    internal enum VocabKind { Parakeet, Cohere, Qwen3Asr, VibeVoice, IndicConformer, GraniteSpeech, WhisperTurbo }
+    internal enum VocabKind { Parakeet, Cohere, Qwen3Asr, VibeVoice, IndicConformer, GraniteSpeech, WhisperTurbo, AudioCpp }
 
     /// <summary>
     /// Maps an <see cref="AsrBackend"/> to the <see cref="VocabKind"/> the
@@ -33,6 +33,9 @@ internal class VocabService
         AsrBackend.IndicConformer => VocabKind.IndicConformer,
         AsrBackend.GraniteSpeech  => VocabKind.GraniteSpeech,
         AsrBackend.WhisperTurbo   => VocabKind.WhisperTurbo,
+        // audio.cpp reports words, not sub-word ids, so there is no vocabulary
+        // file to load and the runs come from the text itself.
+        AsrBackend.AudioCpp       => VocabKind.AudioCpp,
         _ => throw new ArgumentOutOfRangeException(nameof(backend),
             $"VocabService has no VocabKind mapping for {backend}. "
             + "Add a case to KindOfBackend and a constructor branch."),
@@ -89,6 +92,13 @@ internal class VocabService
         {
             _kind = VocabKind.IndicConformer;
             _vocab = LoadIndicConformerVocab(Path.Combine(modelsDir, Config.IndicConformerSubDir, Config.VocabFile));
+        }
+        else if (string.Equals(asrModel, "audiocpp/parakeet-tdt-0.6b-v3", StringComparison.Ordinal))
+        {
+            // No vocabulary file: audio.cpp reports words, and the runs are
+            // rebuilt from the stored text. The branch exists so a recognised
+            // model name does not trip the unknown-name warning below.
+            _kind = VocabKind.AudioCpp;
         }
         else if (string.Equals(asrModel, "ibm-granite/granite-speech-4.1-2b", StringComparison.Ordinal))
         {
@@ -233,6 +243,13 @@ internal class VocabService
             VocabKind.WhisperTurbo   => DecodeQwen3AsrTokens(tokens),
             VocabKind.Parakeet       => DecodeParakeetTokens(tokens),
             VocabKind.IndicConformer => DecodeParakeetTokens(tokens),
+            // There are no ids to decode: the words are the text. Callers that
+            // want the text already have it, so returning empty here would be a
+            // silent wrong answer -- this path is not reachable for AudioCpp and
+            // says so rather than pretending.
+            VocabKind.AudioCpp       => throw new InvalidOperationException(
+                "audio.cpp transcripts have no token ids to decode; "
+                + "use the stored text, or GetTokenRuns for per-word runs."),
             _ => throw new InvalidOperationException(
                 $"VocabService.DecodeTokens has no case for {_kind}; "
                 + "see docs/dev/asr_backend_dispatch.md."),
@@ -292,6 +309,8 @@ internal class VocabService
             return GetVibeVoiceTokenRuns(tokens, logprobs, targetText);
         if (_kind == VocabKind.GraniteSpeech)
             return GetGraniteSpeechTokenRuns(tokens, logprobs);
+        if (_kind == VocabKind.AudioCpp)
+            return GetAudioCppTokenRuns(logprobs, targetText);
 
         var runs = new List<(string text, float logprob)>(tokens.Count);
         for (int i = 0; i < tokens.Count; i++)
@@ -303,6 +322,34 @@ internal class VocabService
         // The word-start marker on the first token becomes a leading space; DecodeTokens trims
         // it and so must these, or the card renders a space its content does not have.
         TrimRunEdges(runs);
+        return runs;
+    }
+
+    /// <summary>
+    /// Runs for an audio.cpp transcript, where the recognition unit is a word.
+    /// </summary>
+    /// <remarks>
+    /// Every other backend decodes sub-word ids against a vocabulary file.
+    /// audio.cpp reports words, so the runs are the words of the stored text and
+    /// the token ids are only a count. Splitting the text -- rather than storing
+    /// the word list separately -- keeps the runs identical to what the card
+    /// renders, which is the property the editor actually depends on.
+    ///
+    /// The trailing space is kept on every run but the last so the concatenation
+    /// of run texts equals the content, as it does for the vocabulary backends.
+    /// </remarks>
+    private static IReadOnlyList<(string text, float logprob)> GetAudioCppTokenRuns(
+        IReadOnlyList<float> logprobs, string? targetText)
+    {
+        if (string.IsNullOrEmpty(targetText)) return [];
+
+        var words = targetText.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        var runs  = new List<(string text, float logprob)>(words.Length);
+        for (int i = 0; i < words.Length; i++)
+        {
+            string text = i < words.Length - 1 ? words[i] + " " : words[i];
+            runs.Add((text, i < logprobs.Count ? logprobs[i] : 0f));
+        }
         return runs;
     }
 

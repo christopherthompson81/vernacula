@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>Vernacula.AudioCpp</RootNamespace>
+    <AssemblyName>Vernacula.AudioCpp</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- The bindings are a pinned submodule rather than a package: the ABI they
+         wrap is still moving, and a recorded commit says which one this was
+         built against. See docs/investigations/audiocpp_backend_investigation.md.
+
+         Deliberately NOT referencing Vernacula.Base: this project exists to keep
+         the audio.cpp path off the ONNX Runtime stack entirely, so that what is
+         being tested is the ABI and not a hybrid. -->
+    <ProjectReference
+      Include="../../external/AudioCpp-Bindings/src/AudioCpp/AudioCpp.csproj" />
+  </ItemGroup>
+
+</Project>

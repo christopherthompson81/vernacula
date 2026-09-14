@@ -12,7 +12,7 @@ public enum PlaybackMode { Single, AutoAdvance, Continuous }
 /// </summary>
 public enum VibeVoiceStreamingSize { Small1_5B, Large7B }
 
-public enum AsrBackend { Parakeet, Cohere, Qwen3Asr, VibeVoice, IndicConformer, WhisperTurbo, GraniteSpeech, VibeVoiceStreaming }
+public enum AsrBackend { Parakeet, Cohere, Qwen3Asr, VibeVoice, IndicConformer, WhisperTurbo, GraniteSpeech, VibeVoiceStreaming, AudioCpp }
 
 public class AppSettings
 {

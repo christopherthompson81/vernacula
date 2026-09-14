@@ -167,6 +167,10 @@ public static class AsrLanguageSupport
         AsrBackend.IndicConformer => IndicConformerLangs,
         AsrBackend.WhisperTurbo   => WhisperTurboLangs,
         AsrBackend.GraniteSpeech  => GraniteSpeechLangs,
+        // Same weights as Parakeet, run through audio.cpp instead of ONNX
+        // Runtime, so the language set is the same set -- deliberately shared
+        // rather than copied, because a divergence here would be a bug.
+        AsrBackend.AudioCpp       => ParakeetLangs,
         _ => throw new ArgumentOutOfRangeException(nameof(backend),
             $"AsrLanguageSupport.Get has no language set for {backend}. "
             + "See docs/dev/asr_backend_dispatch.md."),
@@ -264,6 +268,7 @@ public static class AsrLanguageSupport
         AsrBackend.IndicConformer => "IndicConformer",
         AsrBackend.WhisperTurbo   => "Whisper Turbo",
         AsrBackend.GraniteSpeech  => "Granite Speech 4.1",
+        AsrBackend.AudioCpp       => "Parakeet via audio.cpp",
         _ => throw new ArgumentOutOfRangeException(nameof(backend),
             $"AsrLanguageSupport.DisplayName has no UI label for {backend}. "
             + "See docs/dev/asr_backend_dispatch.md."),
@@ -283,6 +288,7 @@ public static class AsrLanguageSupport
         "ai4bharat/indic-conformer-600m-multilingual"  => AsrBackend.IndicConformer,
         "openai/whisper-large-v3-turbo"                => AsrBackend.WhisperTurbo,
         "ibm-granite/granite-speech-4.1-2b"            => AsrBackend.GraniteSpeech,
+        "audiocpp/parakeet-tdt-0.6b-v3"                => AsrBackend.AudioCpp,
         _                                              => (AsrBackend?)null,
     };
 
@@ -297,6 +303,10 @@ public static class AsrLanguageSupport
         AsrBackend.IndicConformer => "ai4bharat/indic-conformer-600m-multilingual",
         AsrBackend.WhisperTurbo   => "openai/whisper-large-v3-turbo",
         AsrBackend.GraniteSpeech  => "ibm-granite/granite-speech-4.1-2b",
+        // Not a Hugging Face repo: it names the engine as well as the weights,
+        // because the same weights through a different engine is exactly what
+        // this backend is for, and the two must not collide in the round trip.
+        AsrBackend.AudioCpp       => "audiocpp/parakeet-tdt-0.6b-v3",
         _ => throw new ArgumentOutOfRangeException(nameof(backend)),
     };
 

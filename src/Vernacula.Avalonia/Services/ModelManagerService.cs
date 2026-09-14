@@ -378,6 +378,15 @@ internal class ModelManagerService
                     new AssetRepo(CoreRepoBase, CoreManifestUrl, CoreDiarizationFiles),
                     new AssetRepo(GraniteSpeechFp32RepoBase, GraniteSpeechFp32ManifestUrl, GraniteSpeechFp32Files),
                 ],
+            // audio.cpp brings its own weights through its own model manager, so
+            // there is no ASR repo to fetch here -- but the pipeline around it is
+            // still Vernacula's, and the VAD and diarization models are still
+            // ours to download. Core alone, therefore: the ASR arm is absent on
+            // purpose, not forgotten.
+            AsrBackend.AudioCpp =>
+                [
+                    new AssetRepo(CoreRepoBase, CoreManifestUrl, CoreDiarizationFiles),
+                ],
             // VibeVoice and VibeVoice Streaming are both handled by the early-returns at the
             // top of the
             // method (it can be the segmentation backend even when the

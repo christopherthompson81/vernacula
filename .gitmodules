@@ -1,3 +1,6 @@
 [submodule "external/vernacula-phonemizer"]
 	path = external/vernacula-phonemizer
 	url = https://github.com/christopherthompson81/vernacula-phonemizer.git
+[submodule "external/AudioCpp-Bindings"]
+	path = external/AudioCpp-Bindings
+	url = https://github.com/christopherthompson81/AudioCpp-Bindings.git
