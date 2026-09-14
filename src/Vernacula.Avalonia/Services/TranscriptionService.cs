@@ -1302,12 +1302,32 @@ internal class TranscriptionService
                         "No audio.cpp Parakeet package under " + audioCppModelsDir
                         + ". Install it with audio.cpp's model manager.");
 
+                // ⚠ Auto is the DEFAULT and it is not Cuda. An earlier version read
+                // `== Cuda ? "cuda" : "cpu"`, so every install that had never set an
+                // execution provider explicitly -- which is the out-of-the-box state --
+                // ran audio.cpp on the CPU while the ONNX backends took CUDA through the
+                // same Auto. It transcribed correctly and looked merely slow.
+                //
+                // The engine's backends are not ONNX Runtime's, so this maps rather than
+                // casts, and Auto becomes an ordered list: whether CUDA is registered
+                // depends on how the engine was built, which nothing here can see.
+                string[] backends = _settings.Current.ResolvedExecutionProvider switch
+                {
+                    ExecutionProvider.Cpu    => ["cpu"],
+                    ExecutionProvider.Cuda   => ["cuda", "cpu"],
+                    ExecutionProvider.CoreML => ["metal", "cpu"],
+                    // No WebGPU in the engine; Vulkan is the nearest portable GPU
+                    // backend it does have, and CPU catches a build without either.
+                    ExecutionProvider.WebGpu => ["vulkan", "cpu"],
+                    _                        => ["cuda", "metal", "vulkan", "cpu"],
+                };
+
                 using var audiocpp = new Vernacula.AudioCpp.AudioCppAsr(
                     audioCppModelPath,
                     familyHint: "parakeet_tdt",
-                    backend: _settings.Current.ResolvedExecutionProvider == ExecutionProvider.Cuda
-                        ? "cuda" : "cpu",
+                    backends: backends,
                     threads: Environment.ProcessorCount);
+                Console.WriteLine($"[audio.cpp] backend={audiocpp.Backend} threads={Environment.ProcessorCount}");
 
                 foreach (var result in audiocpp.RecognizeDetailed(
                     segsSubset, audio, forceLanguage, ct))

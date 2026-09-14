@@ -63,7 +63,7 @@ public sealed class AudioCppAsr : IDisposable
 
     private readonly AudioCppRegistry _registry;
     private readonly AudioCppModel    _model;
-    private readonly AudioCppSession  _session;
+    private readonly AudioCppSession? _session;
 
     /// <param name="modelPath">A GGUF or a package directory, as the engine takes it.</param>
     /// <param name="familyHint">
@@ -72,14 +72,47 @@ public sealed class AudioCppAsr : IDisposable
     /// guess surfaces as an unsupported-family failure at load rather than as a
     /// bad transcript later.
     /// </param>
-    public AudioCppAsr(string modelPath, string familyHint, string backend = "cpu", int threads = 1)
+    /// <summary>The backend the session actually opened on.</summary>
+    public string Backend { get; } = "";
+
+    /// <param name="backends">
+    /// Backends to try, in order, taking the first that opens. More than one is
+    /// how "auto" is expressed: whether the engine has CUDA registered is a
+    /// property of how it was BUILT, which no caller can see, and the only
+    /// reliable test is to ask it.
+    /// </param>
+    public AudioCppAsr(string modelPath, string familyHint,
+                       IReadOnlyList<string> backends, int threads = 1)
     {
+        ArgumentOutOfRangeException.ThrowIfZero(backends.Count);
         _registry = AudioCppRegistry.Create();
         try
         {
-            _model   = _registry.Load(modelPath, new ModelConfig(familyHint));
-            _session = _model.CreateSession("asr", "offline",
-                                            new BackendConfig(backend, 0, threads));
+            _model = _registry.Load(modelPath, new ModelConfig(familyHint));
+
+            AudioCppException? last = null;
+            for (int i = 0; i < backends.Count; i++)
+            {
+                try
+                {
+                    _session = _model.CreateSession("asr", "offline",
+                                                    new BackendConfig(backends[i], 0, threads));
+                    Backend  = backends[i];
+                    break;
+                }
+                catch (AudioCppException failure) when (i < backends.Count - 1)
+                {
+                    // A backend the engine was not built with fails at session
+                    // create with a typed error naming what IS available. That
+                    // is the signal to try the next one; anything else, and the
+                    // last candidate's failure, propagates.
+                    last = failure;
+                }
+            }
+            if (_session is null)
+                throw (Exception?)last
+                      ?? new InvalidOperationException(
+                          "no backend opened and none reported why");
         }
         catch
         {
@@ -90,6 +123,10 @@ public sealed class AudioCppAsr : IDisposable
             throw;
         }
     }
+
+    /// <summary>Convenience for a caller that knows exactly which backend it wants.</summary>
+    public AudioCppAsr(string modelPath, string familyHint, string backend = "cpu", int threads = 1)
+        : this(modelPath, familyHint, [backend], threads) { }
 
     /// <summary>The language the engine reported for the last segment, if any.</summary>
     public IEnumerable<AudioCppRecognition> RecognizeDetailed(
@@ -123,7 +160,7 @@ public sealed class AudioCppAsr : IDisposable
             if (!string.IsNullOrWhiteSpace(forceLanguage))
                 request.SetOption("language", forceLanguage);
 
-            using var result = _session.Run(request);
+            using var result = _session!.Run(request);
 
             var text  = result.Text?.Text ?? "";
             var lang  = result.Text?.Language;
@@ -191,7 +228,7 @@ public sealed class AudioCppAsr : IDisposable
 
     public void Dispose()
     {
-        _session.Dispose();
+        _session?.Dispose();
         _model.Dispose();
         _registry.Dispose();
     }

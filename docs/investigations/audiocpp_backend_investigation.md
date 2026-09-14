@@ -303,3 +303,58 @@ job list loads.
 not a scratch one, because this app reads `LocalApplicationData` directly. It
 only listed existing jobs, but a check that starts the app should redirect its
 data directory, and this one did not.
+
+## Run 7 — 2026-09-14 14:05 — a real job, and why it ran on the CPU
+
+A first end-to-end job through the GUI: Sortformer segments, recognition through
+audio.cpp, 88 s total, and it ran on the CPU.
+
+**Did it actually use the backend?** Yes, and the database says so rather than
+inference:
+
+```
+job 198: model='audiocpp/parakeet-tdt-0.6b-v3'  run=88s
+job 197: model='nvidia/parakeet-tdt-0.6b-v3'    run=6s
+```
+
+⚠ **Those are different audio files** (different sha256), so 88 s against 6 s is
+not a comparison and must not be read as one. Checking that was the difference
+between a datum and a wrong conclusion.
+
+**Why the CPU — a bug of mine.** The branch chose the engine backend with
+
+```csharp
+ResolvedExecutionProvider == ExecutionProvider.Cuda ? "cuda" : "cpu"
+```
+
+`ResolvedExecutionProvider` returns **`Auto`** for an unset execution provider,
+which is the out-of-the-box state and is what this machine has
+(`ExecutionProvider: ''`). `Auto != Cuda`, so every default install ran audio.cpp
+on the CPU while the ONNX backends took CUDA through that same `Auto`. It
+transcribed correctly and merely looked slow, which is the worst shape for a
+bug of this kind.
+
+**Fix:** the engine's backends are not ONNX Runtime's, so the setting is mapped
+rather than compared, and `Auto` becomes an ordered list. Whether CUDA is
+registered depends on how the engine was *built*, which nothing in the app can
+see, so the only reliable test is to ask the engine: `AudioCppAsr` now takes a
+list and takes the first backend that opens a session, catching the typed
+failure for all but the last.
+
+| setting | tried, in order |
+|---|---|
+| Cpu | cpu |
+| Cuda | cuda, cpu |
+| CoreML | metal, cpu |
+| WebGpu | vulkan, cpu |
+| **Auto** | **cuda, metal, vulkan, cpu** |
+
+Verified with the Auto list on this machine: `AUTO resolved to: cuda`. The
+selected backend is now printed at the start of a run, so "which backend did
+that job use" stops being a question answered by reading the database.
+
+**Still open — the pipeline, not the backend.** Recognition is one segment at a
+time through a single session. That is deliberate (a session per segment would
+reload the weights) but it leaves the GPU idle between segments, and Sortformer
+can produce a great many short segments. Batching, or a small pool of sessions,
+is the obvious next thing and has not been attempted.
