@@ -75,7 +75,7 @@
                      quotes), each a wrapping flow of word buttons. Click-to-seek; the .current
                      class is the highlight while the audio is on that word. FlowDirection per
                      block is what lays an Arabic or Persian block out right to left. -->
-                <ScrollViewer IsVisible="{Binding !ShowRawMarkdown}">
+                <ScrollViewer IsVisible="{Binding !ShowRawMarkdown}" IsEnabled="{Binding !IsEditing}">
                     <ItemsControl ItemsSource="{Binding DisplayBlocks}">
                         <ItemsControl.ItemsPanel>
                             <ItemsPanelTemplate>
@@ -202,6 +202,70 @@
                                          Foreground="{DynamicResource TextBrush}"
                                          TextWrapping="Wrap" />
                 </ScrollViewer>
+
+                <!-- EDITING MODE: the markdown itself, editable. Covers both reading views, so the
+                     toggle is a real mode rather than a third pane competing with Raw Markdown. -->
+                <TextBox IsVisible="{Binding IsEditing}"
+                         Text="{Binding EditableText, Mode=TwoWay}"
+                         AcceptsReturn="True"
+                         AcceptsTab="True"
+                         TextWrapping="Wrap"
+                         FontFamily="{Binding TextFontFamily}"
+                         Background="Transparent"
+                         BorderThickness="0"
+                         FlowDirection="{Binding TextFlowDirection}" />
+
+                <!-- The corner indicator. Pulses while edits wait out the debounce, spins while the
+                     changed paragraphs re-render, then rests on a short message. -->
+                <Border IsVisible="{Binding IsEditing}"
+                        HorizontalAlignment="Right" VerticalAlignment="Top"
+                        Background="{DynamicResource BgBrush}"
+                        BorderBrush="{DynamicResource SecondaryBrush}"
+                        BorderThickness="1"
+                        CornerRadius="12"
+                        Padding="10,5"
+                        Margin="0,-6,-6,0">
+                    <StackPanel Orientation="Horizontal" Spacing="7">
+                        <!-- Pending: a pulsing dot. -->
+                        <Ellipse Width="9" Height="9" VerticalAlignment="Center"
+                                 Fill="{DynamicResource AccentBrush}"
+                                 IsVisible="{Binding IsEditPending}">
+                            <Ellipse.Styles>
+                                <Style Selector="Ellipse">
+                                    <Style.Animations>
+                                        <Animation Duration="0:0:1.4" IterationCount="INFINITE">
+                                            <KeyFrame Cue="0%"><Setter Property="Opacity" Value="0.25" /></KeyFrame>
+                                            <KeyFrame Cue="50%"><Setter Property="Opacity" Value="1.0" /></KeyFrame>
+                                            <KeyFrame Cue="100%"><Setter Property="Opacity" Value="0.25" /></KeyFrame>
+                                        </Animation>
+                                    </Style.Animations>
+                                </Style>
+                            </Ellipse.Styles>
+                        </Ellipse>
+                        <!-- Working: a spinning arc. -->
+                        <Ellipse Width="12" Height="12" VerticalAlignment="Center"
+                                 Stroke="{DynamicResource AccentBrush}"
+                                 StrokeThickness="2"
+                                 StrokeDashArray="3,2"
+                                 IsVisible="{Binding IsReRendering}"
+                                 RenderTransformOrigin="50%,50%">
+                            <Ellipse.Styles>
+                                <Style Selector="Ellipse">
+                                    <Style.Animations>
+                                        <Animation Duration="0:0:1" IterationCount="INFINITE">
+                                            <KeyFrame Cue="0%"><Setter Property="RotateTransform.Angle" Value="0" /></KeyFrame>
+                                            <KeyFrame Cue="100%"><Setter Property="RotateTransform.Angle" Value="360" /></KeyFrame>
+                                        </Animation>
+                                    </Style.Animations>
+                                </Style>
+                            </Ellipse.Styles>
+                        </Ellipse>
+                        <TextBlock Text="{Binding EditStatus}"
+                                   VerticalAlignment="Center"
+                                   FontSize="11"
+                                   Foreground="{DynamicResource SubtextBrush}" />
+                    </StackPanel>
+                </Border>
             </Panel>
         </Border>
 
@@ -223,8 +287,18 @@
                        Text="{Binding PositionLabel}"
                        Foreground="{DynamicResource SubtextBrush}"
                        VerticalAlignment="Center" />
+            <ToggleSwitch Grid.Column="3"
+                          x:Name="EditModeToggle"
+                          IsChecked="{Binding IsEditing}"
+                          IsVisible="{Binding CanEdit}"
+                          OffContent="{local:Loc tts_listening_mode}"
+                          OnContent="{local:Loc tts_editing_mode}"
+                          HorizontalAlignment="Right"
+                          Foreground="{DynamicResource TextBrush}"
+                          Margin="0,0,14,0" />
             <CheckBox Grid.Column="4"
                       x:Name="RawMarkdownCheck"
+                      IsEnabled="{Binding !IsEditing}"
                       Content="{local:Loc tts_raw_markdown}"
                       IsChecked="{Binding ShowRawMarkdown}"
                       Foreground="{DynamicResource TextBrush}"

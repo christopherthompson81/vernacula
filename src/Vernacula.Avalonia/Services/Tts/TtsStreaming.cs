@@ -55,8 +55,13 @@ public sealed record ProgressEvent(string Phase, int? ChunkIndex = null, int? To
 /// </summary>
 /// <param name="SegmentsDir">When set, each segment's audio is also written there as
 /// <c>seg_NNNN.wav</c>, so one paragraph can later be re-rendered without touching the rest.</param>
+/// <param name="ReuseFrom">A previous render to take unchanged paragraphs from — the sidecar of the
+/// last run plus the folder its per-segment WAVs live in. Null for a first render. Applied by
+/// <see cref="SegmentedSynthesis"/> for EVERY engine, so paragraph-local re-render is not something
+/// a backend has to opt into or could implement differently.</param>
 public sealed record TtsRequest(string Text, string OutWavPath, string Voice, float Speed = 1.0f,
-                                string? Lang = null, int NumStep = 32, string? SegmentsDir = null);
+                                string? Lang = null, int NumStep = 32, string? SegmentsDir = null,
+                                (AlignmentSidecar Sidecar, string SegmentsDir)? ReuseFrom = null);
 
 /// <summary>
 /// A streaming TTS backend. Implementations lazily load their models on the first call

@@ -37,6 +37,12 @@ internal static class SegmentedSynthesis
         var extract = MarkdownTextExtractor.Extract(request.Text);
         if (string.IsNullOrWhiteSpace(extract.Text))
             throw new InvalidOperationException("Text is empty after markdown extraction.");
+        // ⚠ THE REUSE DECORATOR IS APPLIED HERE, once, for every engine. A re-render after an edit
+        // then goes through exactly this loop — same concatenation, same absolute word timings, same
+        // per-segment files, same sidecar — so a re-render cannot drift from a first render.
+        if (request.ReuseFrom is { } reuse)
+            synthesize = TtsSegmentReuse.Decorate(synthesize, reuse.Sidecar, reuse.SegmentsDir);
+
         var segments = ParagraphSegmenter.Segment(extract);
         int total = segments.Count;
         onProgress?.Invoke(new ProgressEvent($"{total} paragraph{(total == 1 ? "" : "s")}", null, total));
@@ -51,7 +57,13 @@ internal static class SegmentedSynthesis
         // Batched engines render a GROUP of segments per call. The first segment is still done
         // alone, so the time-to-first-audio the user hears is unchanged; only the tail batches.
         // Results are emitted strictly in order either way, so streaming order never changes.
-        var useBatch = synthesizeBatch is not null && batchSize > 1 && total > 2;
+        // ⚠ AND BATCHING IS OFF FOR A REUSING RUN. The batch delegate renders a GROUP in one engine
+        // call and is not decorated, so a batched re-render would send reused paragraphs to the
+        // engine after all — the decorator would be bypassed for everything but the first segment.
+        // Nothing is lost: a re-render after an edit is one or two paragraphs, which is where
+        // batching buys nothing anyway.
+        var useBatch = synthesizeBatch is not null && batchSize > 1 && total > 2
+                       && request.ReuseFrom is null;
         var ready = new Dictionary<int, (float[] Audio, IReadOnlyList<AlignedWord> Words)>();
 
         for (int idx = 0; idx < total; idx++)
