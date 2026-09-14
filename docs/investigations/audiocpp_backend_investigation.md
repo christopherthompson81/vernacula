@@ -456,3 +456,45 @@ finished. A live process at 4% CPU is working, not deadlocked.
 Worth keeping because the workaround had a cost: filtering is what hid the five
 `VocabServiceSmokeTests` failures until Run 4, several runs after they were
 introduced.
+
+## Run 10 — 2026-09-14 15:55 — a real hang, and four hypotheses that were not it
+
+⚠ **Correcting Run 9.** Run 9 concluded "the hang does not exist". That was about
+the *test suite*, and it was then stated as though it covered the application.
+It does not. There is a hang, reported at **job 201, just after VAD and before
+ASR produced output**, on a machine that had not seen one before this backend
+landed.
+
+That window contains exactly three things: `AudioCppRegistry.Create()`, the model
+load, and the first `_session.Run()`.
+
+Four hypotheses, each testable, each dead:
+
+| # | hypothesis | test | result |
+|---|---|---|---|
+| 1 | `ResolveParakeet` walks a symlinked models root with `AllDirectories` and loops | walk the real tree | 26 files, 16 dirs, no symlinks, **15 ms** |
+| 2 | A second registry/session in one process deadlocks | create, dispose, create again | **1467 ms then 870 ms**, both cuda |
+| 3 | ONNX Runtime's CUDA context and ggml's CUDA collide in one process | ORT CUDA session live, then open audio.cpp on cuda | **coexisted**, audio.cpp opened in 1288 ms |
+| 4 | A very short VAD/diarization segment hangs the engine | 0.02 s to 2.00 s segments | all returned, **16–74 ms**, 0 words |
+
+Hypothesis 3 was the strongest — it is the one real structural difference
+between every probe so far and the app, since nothing before had ONNX Runtime in
+the process. It is still not it.
+
+**What this rules out and what it leaves.** Session creation in isolation is
+fine, repeated session creation is fine, coexistence with ORT's CUDA is fine, and
+degenerate segment lengths are fine. What no probe has reproduced is the app's
+actual combination: a GUI process, the transcription running on a background
+thread, a cancellation token in flight, and progress being reported to the UI
+from inside a lazy enumerable that holds a native session.
+
+**Next step is evidence, not another hypothesis.** The instrumentation added in
+Run 8 brackets precisely this window:
+
+```
+[audio.cpp] backend=cuda threads=16 load=NNNms segments=N   <- after the session opens
+[audio.cpp] recognize=NNNms over ...                        <- after the loop
+```
+
+Whether the first line appears splits "session creation" from "first Run()", and
+no probe can answer that question the way one reproduction will.
