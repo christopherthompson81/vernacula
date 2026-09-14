@@ -122,6 +122,7 @@ internal class TranscriptionService
         bool useIndicConformerAsr = string.Equals(asrModelName, "ai4bharat/indic-conformer-600m-multilingual", StringComparison.Ordinal);
         bool useWhisperTurboAsr   = string.Equals(asrModelName, "openai/whisper-large-v3-turbo", StringComparison.Ordinal);
         bool useGraniteSpeechAsr  = string.Equals(asrModelName, "ibm-granite/granite-speech-4.1-2b", StringComparison.Ordinal);
+        bool useAudioCppAsr       = string.Equals(asrModelName, "audiocpp/parakeet-tdt-0.6b-v3", StringComparison.Ordinal);
         var  segmentationMode = _settings.Current.Segmentation;
         bool runVibeVoice     = useVibeVoiceAsr || useVibeVoiceStreaming || segmentationMode == SegmentationMode.VibeVoiceBuiltin;
 
@@ -724,6 +725,7 @@ internal class TranscriptionService
                                 useQwen3Asr          = string.Equals(asrModelName, "Qwen/Qwen3-ASR-1.7B", StringComparison.Ordinal);
                                 useIndicConformerAsr = string.Equals(asrModelName, "ai4bharat/indic-conformer-600m-multilingual", StringComparison.Ordinal);
                                 useGraniteSpeechAsr  = string.Equals(asrModelName, "ibm-granite/granite-speech-4.1-2b", StringComparison.Ordinal);
+                                useAudioCppAsr       = string.Equals(asrModelName, "audiocpp/parakeet-tdt-0.6b-v3", StringComparison.Ordinal);
                                 // Reflect the switch in the results DB so the
                                 // Results view reads the *effective* backend
                                 // (and so the mismatch banner doesn't appear
@@ -1272,6 +1274,84 @@ internal class TranscriptionService
                         asrText,
                         absId,
                         text,
+                        overridePercent));
+                }
+            }
+            else if (useAudioCppAsr)
+            {
+                // The one backend that is not ONNX Runtime. Segmentation,
+                // diarization and LID grouping above are unchanged -- only
+                // recognition crosses into audio.cpp, which is what makes this a
+                // test of the ABI rather than of a second pipeline.
+                //
+                // Word timings are measured here rather than spread evenly: the
+                // ABI reports word boundaries, so unlike the Cohere and Granite
+                // paths this does not need BuildSyntheticTokenTimestamps.
+                string audioCppModelsDir = _settings.GetAudioCppModelsDir();
+                string? forceLanguage =
+                    string.Equals(asrLanguageCode, "auto", StringComparison.OrdinalIgnoreCase) ||
+                    string.IsNullOrWhiteSpace(asrLanguageCode)
+                        ? null
+                        : asrLanguageCode;
+
+                // The ABI loads a model, not a models root: pointing it at the
+                // directory would fail at load rather than transcribe badly, but
+                // it would fail for a reason the message does not explain.
+                string audioCppModelPath = Vernacula.AudioCpp.AudioCppAsr.ResolveParakeet(audioCppModelsDir)
+                    ?? throw new FileNotFoundException(
+                        "No audio.cpp Parakeet package under " + audioCppModelsDir
+                        + ". Install it with audio.cpp's model manager.");
+
+                using var audiocpp = new Vernacula.AudioCpp.AudioCppAsr(
+                    audioCppModelPath,
+                    familyHint: "parakeet_tdt",
+                    backend: _settings.Current.ResolvedExecutionProvider == ExecutionProvider.Cuda
+                        ? "cuda" : "cpu",
+                    threads: Environment.ProcessorCount);
+
+                foreach (var result in audiocpp.RecognizeDetailed(
+                    segsSubset, audio, forceLanguage, ct))
+                {
+                    ct.ThrowIfCancellationRequested();
+                    int rid   = unfilledResultIds[result.SegmentId];
+                    int absId = rid - 1;
+                    completed++;
+
+                    // The stored tokens are an index sequence, not vocabulary
+                    // ids: VocabKind.AudioCpp rebuilds the runs from the text and
+                    // only needs the count to line up with the confidences.
+                    var tokenIndices = Enumerable.Range(0, result.Words.Count).ToList();
+
+                    db.UpdateResult(
+                        resultId:   rid,
+                        asrContent: result.Text,
+                        content:    result.Text,
+                        tokens:     JsonSerializer.Serialize(tokenIndices),
+                        timestamps: JsonSerializer.Serialize(result.StartFrames),
+                        logprobs:   JsonSerializer.Serialize(result.Confidences),
+                        // Only when the engine actually reported one. Parakeet
+                        // through audio.cpp reports none (measured: the field
+                        // comes back empty), and writing that would clear a
+                        // language the LID pass above had already established.
+                        language:   string.IsNullOrWhiteSpace(result.Language)
+                                        ? null : result.Language);
+
+                    onSegmentText(absId, result.Text);
+
+                    string asrText = Loc.Instance.T("progress_recognizing_segment", new() {
+                        ["i"]     = completed.ToString(),
+                        ["count"] = totalSegs.ToString() });
+                    double? overridePercent = ScaleOverallProgress(
+                        diarizationEndPercent,
+                        100,
+                        totalSegs > 0 ? completed / (double)totalSegs : 1);
+                    progress.Report(new TranscriptionProgress(
+                        TranscriptionPhase.Recognizing,
+                        completed,
+                        totalSegs,
+                        asrText,
+                        absId,
+                        result.Text,
                         overridePercent));
                 }
             }

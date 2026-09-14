@@ -109,3 +109,65 @@ test of it.
 **Next:** the four *[manual]* sites the test cannot see — the
 `TranscriptionService` branch (the one that does the actual work), the settings
 radio button, `HomeViewModel`'s missing-weights text, and the transcript editor.
+
+## Run 3 — 2026-09-14 11:40 — a real transcript through the new backend
+
+**Question:** does the seam actually work end to end, and are the word timings
+real?
+
+A harness driving `AudioCppAsr` directly on audio.cpp's own 14 s sample, so the
+recognition seam is isolated from Vernacula's segmentation:
+
+```
+AUDIOCPP_NATIVE_DIR=.../external/audio.cpp/build/bin \
+dotnet run -- assets/resources/sample_16k.wav /mnt/data/models/audiocpp cuda
+```
+
+**Raw result:**
+
+```
+model:   /mnt/data/models/audiocpp/Parakeet-TDT-0.6B-v3-GGUF/parakeet-tdt-0.6b-v3-q8_0.gguf
+backend: cuda
+audio:   225151 samples, 14.07s
+ggml_cuda_init: found 1 CUDA devices ... NVIDIA GeForce RTX 3090
+load:    1381 ms
+run:     95 ms
+lang:
+words:   28, frames: 28, conf: 28
+text:    Some call me Nature. Others call me Mother Nature. I've been here for
+         over four point five billion years twenty two thousand five hundred
+         times longer than you.
+first 8: Some@0.32s  call@0.96s  me@1.36s  Nature.@1.68s  Others@2.80s
+         call@3.44s  me@3.84s  Mother@4.08s
+```
+
+**Findings:**
+
+1. It works. A correct transcript, through Vernacula's own backend class, on
+   CUDA, with no ONNX Runtime involved in the recognition.
+2. Word timings are real and plausible — the gaps track the sentence structure
+   (a 1.1 s pause before "Others", which is where the speaker breathes). This is
+   the thing the Cohere and Granite paths cannot do.
+3. Counts agree three ways: 28 words, 28 frames, 28 confidences. That is the
+   property `VocabKind.AudioCpp`'s runs depend on, so it is worth asserting
+   rather than assuming.
+4. 95 ms for 14.07 s is ~148× realtime on a 3090, after a 1381 ms load. Not a
+   like-for-like benchmark against the ONNX Parakeet — different quantisation
+   (q8_0), and one whole-file segment rather than VAD segments — so it is
+   recorded as a datum, not a comparison.
+
+**Negative result, and a bug it caught:** `lang` came back **empty**. Parakeet
+through audio.cpp reports no language. The first version of the branch passed
+`language: result.Language` straight to `db.UpdateResult`, which would have
+written an empty string over whatever the LID pass had already established —
+silently clearing a correct language on every audio.cpp segment. Now passes null
+when the engine reports nothing, leaving the existing value alone.
+
+That is the second time in this investigation that the interesting outcome was a
+field that came back empty rather than a failure.
+
+**Still open:** the confidence-vs-logprob question from Run 1. The editor colours
+runs by log probability; these are confidences in [0,1] stored as-is. On this
+clip that means every run carries a value the editor will read on a different
+scale than it does for ONNX backends. Needs a decision, and a transcript in the
+editor to decide against.

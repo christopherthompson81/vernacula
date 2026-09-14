@@ -160,6 +160,25 @@ public sealed class AudioCppAsr : IDisposable
         }
     }
 
+    /// <summary>
+    /// Finds the Parakeet weights inside a models root laid out by audio.cpp's
+    /// own model manager, which installs each package into its own directory.
+    /// </summary>
+    /// <remarks>
+    /// A search rather than a fixed path: the package directory and the file
+    /// inside it are named by the engine's catalogue, and a quantisation the
+    /// user chose (q8_0, f16, ...) changes the file name. Returns null rather
+    /// than throwing so the caller can say what it was looking for and where.
+    /// </remarks>
+    public static string? ResolveParakeet(string modelsRoot)
+    {
+        if (!Directory.Exists(modelsRoot)) return null;
+        return Directory
+            .EnumerateFiles(modelsRoot, "parakeet-tdt*.gguf", SearchOption.AllDirectories)
+            .OrderBy(path => path, StringComparer.Ordinal)
+            .FirstOrDefault();
+    }
+
     private static float[] Slice(float[] audio, double start, double end)
     {
         int s   = Math.Clamp((int)(start * SampleRate), 0, audio.Length);
