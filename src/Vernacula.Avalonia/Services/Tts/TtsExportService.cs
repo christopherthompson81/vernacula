@@ -87,6 +87,34 @@ internal static class TtsExportService
                 CsvEscape(r.Text), CsvEscape(r.Phonemes), scheme));
     }
 
+    /// <summary>
+    /// The whole export: the rendered audio and the transcript CSV, written as a PAIR under one
+    /// stem, and the two paths returned.
+    ///
+    /// ⚠ THE AUDIO COPY LIVES HERE, not at the call site, and that is the point of this method. It
+    /// used to be a bare <c>File.Copy</c> in the view model, which is why nothing covered it: every
+    /// other part of the export had a test and the half the user actually wanted had none.
+    ///
+    /// The caller chooses a location and a stem; the extension it comes back with depends on which
+    /// file type the picker was on, so both paths are derived rather than assumed.
+    /// </summary>
+    public static (string AudioPath, string CsvPath) WriteBundle(
+        string chosenPath, string renderedAudioPath, IEnumerable<SentenceRow> rows, string scheme)
+    {
+        string audioPath = Path.ChangeExtension(chosenPath, ".wav");
+        string csvPath   = Path.ChangeExtension(chosenPath, ".csv");
+        WriteCsv(csvPath, rows, scheme);
+        // Exporting on top of the job's own rendered file is a no-op, not an error: File.Copy throws
+        // when source and destination are the same path.
+        if (!PathsEqual(audioPath, renderedAudioPath))
+            File.Copy(renderedAudioPath, audioPath, overwrite: true);
+        return (audioPath, csvPath);
+    }
+
+    private static bool PathsEqual(string a, string b) =>
+        string.Equals(Path.GetFullPath(a), Path.GetFullPath(b),
+            OperatingSystem.IsLinux() ? StringComparison.Ordinal : StringComparison.OrdinalIgnoreCase);
+
     private static string CsvEscape(string s)
     {
         if (s.IndexOfAny([',', '"', '\n', '\r']) < 0) return s;

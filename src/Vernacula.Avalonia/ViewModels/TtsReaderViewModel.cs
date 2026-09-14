@@ -645,12 +645,16 @@ internal sealed partial class TtsReaderViewModel : ObservableObject, IDisposable
         if (_job is null || _sidecar is null || _audioPath is null) return;
         string stem = string.Concat(_job.JobTitle.Split(Path.GetInvalidFileNameChars())).Trim();
         if (stem.Length == 0) stem = "tts-export";
-        var csvPath = await StoragePickers.SaveFileAsync(Loc.Instance["btn_export_tts"], stem + ".csv",
-            StoragePickers.CsvFiles, StoragePickers.AllFiles);
-        if (csvPath is null) return;
-        string wavPath = Path.ChangeExtension(csvPath, ".wav");
+        // ⚠ AUDIO FIRST, AND THE SUGGESTED NAME IS THE .wav. The picker offered only CSV, so the
+        // dialog said "File type: CSV" and there was no way to ask for the audio at all — reported as
+        // "it only shows CSV as an export type". Both files are still written whichever type is on;
+        // the dialog is choosing a LOCATION AND STEM, which is what the title now says.
+        var chosen = await StoragePickers.SaveFileAsync(Loc.Instance["tts_export_title"], stem + ".wav",
+            StoragePickers.AudioClips, StoragePickers.CsvFiles, StoragePickers.AllFiles);
+        if (chosen is null) return;
 
         var job = _job; var sidecar = _sidecar; string audioPath = _audioPath;
+        string wavPath = "", csvPath = "";
         StatusMessage = Loc.Instance["tts_export_running"];
         try
         {
@@ -660,8 +664,7 @@ internal sealed partial class TtsReaderViewModel : ObservableObject, IDisposable
                 var settings = new TtsJobSettings(job.TtsBackend, job.TtsLanguage, job.TtsVoice, job.TtsSpeed, job.TtsNumStep);
                 var sentences = TtsExportService.SplitSentences(sidecar.SourceText ?? _text, sidecar.Words);
                 var rows = TtsExportService.BuildRows(sentences, _settings, settings);
-                TtsExportService.WriteCsv(csvPath, rows, engine.PhonemeScheme);
-                File.Copy(audioPath, wavPath, overwrite: true);
+                (wavPath, csvPath) = TtsExportService.WriteBundle(chosen, audioPath, rows, engine.PhonemeScheme);
             });
             StatusMessage = Loc.Instance.T("tts_export_done", new()
             {
