@@ -218,3 +218,53 @@ iterate a filtered set. The justification is above; if the preference is that
 audio.cpp instead carry a synthetic token vocabulary so the original theories
 apply unchanged, that is a reasonable different call and the change is one
 commit to revert.
+
+## Run 5 — 2026-09-14 12:40 — making it runnable from the GUI
+
+**Question:** can the backend be selected and used from the desktop app without
+setting anything at runtime?
+
+**Two blockers found, both introduced by how the submodule sits:**
+
+1. **The engine was not discoverable.** The binding finds libaudiocpp by walking
+   up from the executable for `external/audio.cpp/build/bin`. That holds in the
+   bindings' own tree; here the engine is a level deeper, under
+   `external/AudioCpp-Bindings/`, so the walk never sees it. Measured: neither
+   `vernacula/external/audio.cpp/build/bin` nor the parent's exists.
+2. **The models path was empty.** `GetAudioCppModelsDir()` resolves to
+   `~/.local/share/Vernacula/models/audiocpp`, which did not exist; the packages
+   live on `/mnt/data/models/audiocpp`.
+
+**Fix for (1):** carry the library as a `CopyToOutputDirectory` item rather than
+copying it in a target. These flow transitively through a `ProjectReference`, so
+it lands beside *the app's* executable where the platform's own default search
+finds it. A target copying into `Vernacula.AudioCpp`'s own `OutputPath` put it
+somewhere nothing looks — that was the first attempt, and it "worked" in the
+sense that the file appeared.
+
+Three roots are tried: `AUDIOCPP_NATIVE_DIR`, the nested submodule build, a
+sibling `AudioCpp-Bindings` checkout. A missing engine is a **warning**, not an
+error: everything except this one backend builds and runs without it.
+
+**A measurement worth keeping:** globbing `libaudiocpp.so*` put **630 MB** in the
+output. `libaudiocpp.so` is a symlink to `.so.0` to `.so.0.1.0` and the copy
+dereferences each one, so three identical 210 MB files were written. The loader
+only needs the plain name, so the glob now excludes the versioned ones.
+
+**Verified — built once with the variable, then run with it unset:**
+
+```
+models:  /home/chris/.local/share/Vernacula/models/audiocpp
+package: .../Parakeet-TDT-0.6B-v3-GGUF/parakeet-tdt-0.6b-v3-q8_0.gguf
+ggml_cuda_init: found 1 CUDA devices ... NVIDIA GeForce RTX 3090
+session: opened with no AUDIOCPP_NATIVE_DIR set
+```
+
+So the environment variable is a **build-time** input, not a runtime one. Once
+an engine has been found at build time the app needs nothing set.
+
+**Decision recorded:** whole-word highlighting is accepted for this stage, so
+the confidence-vs-logprob question from Run 1 is deferred rather than open. The
+runs are words and the editor colours them with the reported confidences; that
+they are on a different scale to the ONNX backends' logprobs is known and
+accepted for now.
