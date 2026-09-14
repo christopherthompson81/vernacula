@@ -245,7 +245,8 @@ internal partial class ProgressViewModel : ObservableObject
 
         string sha256   = await Task.Run(() => AudioUtils.Sha256Checksum(audioPath));
         string dbPath   = Path.Combine(
-            _settings.GetJobsDir(), $"{sha256[..16]}_results.sqlite3");
+            _settings.GetJobsDir(),
+            JobQueueService.AsrResultsFileName(sha256, streamIndex: -1, _settings.Current.AsrBackend));
         string runStamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
         string fileDateStamp = File.GetLastWriteTime(audioPath)
             .ToString("yyyy-MM-dd HH:mm:ss");

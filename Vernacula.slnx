@@ -21,6 +21,9 @@
   <Project Path="src/Vernacula.CLI/Vernacula.CLI.csproj">
     <Platform Project="x64" />
   </Project>
+  <Project Path="src/Vernacula.AudioCpp/Vernacula.AudioCpp.csproj">
+    <Platform Project="x64" />
+  </Project>
   <Project Path="src/Vernacula.Avalonia/Vernacula.Avalonia.csproj">
     <Platform Project="x64" />
   </Project>

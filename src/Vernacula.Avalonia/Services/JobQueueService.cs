@@ -183,11 +183,10 @@ internal sealed class JobQueueService
         string sha256 = await Task.Run(() => AudioUtils.Sha256Checksum(audioPath));
         Console.WriteLine($"[Queue] SHA256 computed: {sha256[..8]}...");
 
-        // Each stream from the same file gets its own results database
-        string dbName = streamIndex >= 0
-            ? $"{sha256[..16]}_s{streamIndex}_results.sqlite3"
-            : $"{sha256[..16]}_results.sqlite3";
-        string dbPath = Path.Combine(_settings.GetJobsDir(), dbName);
+        // Each stream from the same file gets its own results database, and each
+        // ASR backend gets its own too.
+        string dbPath = Path.Combine(_settings.GetJobsDir(),
+            AsrResultsFileName(sha256, streamIndex, _settings.Current.AsrBackend));
         Console.WriteLine($"[Queue] DB path: {dbPath}");
 
         string fileDateStamp = File.GetLastWriteTime(audioPath)
@@ -229,6 +228,32 @@ internal sealed class JobQueueService
         JobStatusChanged?.Invoke(jobId, JobStatus.Queued, null, null);
         _ = TryStartNextAsync();
         return jobId;
+    }
+
+    /// <summary>Results database name for an ASR job.</summary>
+    /// <remarks>
+    /// The backend is part of the key, as it already is for TTS. Without it the
+    /// results file is keyed on the audio alone, and since InsertNewJob returns
+    /// the existing job for an existing results file, and recognition only fills
+    /// rows that are empty, re-adding a file after switching backend does no work
+    /// and shows the FIRST backend's transcript under the second backend's name.
+    /// That is wrong on its own terms, and it is also what makes comparing two
+    /// backends on the same audio impossible from the UI.
+    ///
+    /// ⚠ Parakeet deliberately keeps the historical name. Re-keying it would
+    /// orphan every transcript ever produced by this app, which is the hazard the
+    /// TTS key documents; a suffix only for the backends that did not exist when
+    /// the name was chosen costs nothing and strands nothing.
+    /// </remarks>
+    internal static string AsrResultsFileName(string audioSha256, int streamIndex, AsrBackend backend)
+    {
+        string stream  = streamIndex >= 0 ? $"_s{streamIndex}" : "";
+        // Invariant, and from the enum rather than a display name: this names a
+        // file on disk that must not move when the UI language does.
+        string engine = backend == AsrBackend.Parakeet
+            ? ""
+            : "_" + backend.ToString().ToLowerInvariant();
+        return $"{audioSha256[..16]}{stream}{engine}_results.sqlite3";
     }
 
     /// <summary>Sidecar file name for a TTS job — see <see cref="EnqueueNewTtsJobAsync"/>.</summary>

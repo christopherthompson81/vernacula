@@ -31,7 +31,7 @@ internal partial class SettingsViewModel : ObservableObject
     private SegmentationMode _selectedSegmentation;
 
     [ObservableProperty]
-    [NotifyPropertyChangedFor(nameof(IsAsrParakeet), nameof(IsAsrCohere), nameof(IsAsrQwen3Asr), nameof(IsAsrVibeVoice), nameof(IsAsrVibeVoiceStreaming), nameof(IsAsrIndicConformer), nameof(IsAsrWhisperTurbo), nameof(IsAsrGraniteSpeech), nameof(ShowStandardSegmentationOptions), nameof(ShowVibeVoiceBuiltinSegmentation), nameof(ShowDiariZenInSegmentation), nameof(ShowGatedSegmentationHint), nameof(CanUseVibeVoiceAsr), nameof(VibeVoiceAsrLabel), nameof(VibeVoiceAsrDescription), nameof(CanUseVibeVoiceStreamingAsr), nameof(VibeVoiceStreamingOnCpu), nameof(VibeVoiceStreamingAsrLabel), nameof(VibeVoiceStreamingAsrDescription), nameof(ShowVibeVoiceStreamingSizePicker), nameof(ShowCohereLanguagePicker), nameof(ShowQwen3AsrLanguagePicker), nameof(ShowIndicConformerLanguagePicker), nameof(ShowWhisperTurboLanguagePicker))]
+    [NotifyPropertyChangedFor(nameof(IsAsrParakeet), nameof(IsAsrCohere), nameof(IsAsrQwen3Asr), nameof(IsAsrVibeVoice), nameof(IsAsrVibeVoiceStreaming), nameof(IsAsrIndicConformer), nameof(IsAsrWhisperTurbo), nameof(IsAsrGraniteSpeech), nameof(IsAsrAudioCpp), nameof(ShowStandardSegmentationOptions), nameof(ShowVibeVoiceBuiltinSegmentation), nameof(ShowDiariZenInSegmentation), nameof(ShowGatedSegmentationHint), nameof(CanUseVibeVoiceAsr), nameof(VibeVoiceAsrLabel), nameof(VibeVoiceAsrDescription), nameof(CanUseVibeVoiceStreamingAsr), nameof(VibeVoiceStreamingOnCpu), nameof(VibeVoiceStreamingAsrLabel), nameof(VibeVoiceStreamingAsrDescription), nameof(ShowVibeVoiceStreamingSizePicker), nameof(ShowCohereLanguagePicker), nameof(ShowQwen3AsrLanguagePicker), nameof(ShowIndicConformerLanguagePicker), nameof(ShowWhisperTurboLanguagePicker))]
     private AsrBackend _selectedAsrBackend;
 
     [ObservableProperty]
@@ -148,6 +148,7 @@ internal partial class SettingsViewModel : ObservableObject
     public bool IsAsrIndicConformer => SelectedAsrBackend == AsrBackend.IndicConformer;
     public bool IsAsrWhisperTurbo   => SelectedAsrBackend == AsrBackend.WhisperTurbo;
     public bool IsAsrGraniteSpeech  => SelectedAsrBackend == AsrBackend.GraniteSpeech;
+    public bool IsAsrAudioCpp       => SelectedAsrBackend == AsrBackend.AudioCpp;
     public bool CanUseVibeVoiceAsr  => CudaEpWorking;
 
     /// <summary>

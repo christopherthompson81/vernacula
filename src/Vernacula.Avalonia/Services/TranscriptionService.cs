@@ -122,6 +122,7 @@ internal class TranscriptionService
         bool useIndicConformerAsr = string.Equals(asrModelName, "ai4bharat/indic-conformer-600m-multilingual", StringComparison.Ordinal);
         bool useWhisperTurboAsr   = string.Equals(asrModelName, "openai/whisper-large-v3-turbo", StringComparison.Ordinal);
         bool useGraniteSpeechAsr  = string.Equals(asrModelName, "ibm-granite/granite-speech-4.1-2b", StringComparison.Ordinal);
+        bool useAudioCppAsr       = string.Equals(asrModelName, "audiocpp/parakeet-tdt-0.6b-v3", StringComparison.Ordinal);
         var  segmentationMode = _settings.Current.Segmentation;
         bool runVibeVoice     = useVibeVoiceAsr || useVibeVoiceStreaming || segmentationMode == SegmentationMode.VibeVoiceBuiltin;
 
@@ -724,6 +725,7 @@ internal class TranscriptionService
                                 useQwen3Asr          = string.Equals(asrModelName, "Qwen/Qwen3-ASR-1.7B", StringComparison.Ordinal);
                                 useIndicConformerAsr = string.Equals(asrModelName, "ai4bharat/indic-conformer-600m-multilingual", StringComparison.Ordinal);
                                 useGraniteSpeechAsr  = string.Equals(asrModelName, "ibm-granite/granite-speech-4.1-2b", StringComparison.Ordinal);
+                                useAudioCppAsr       = string.Equals(asrModelName, "audiocpp/parakeet-tdt-0.6b-v3", StringComparison.Ordinal);
                                 // Reflect the switch in the results DB so the
                                 // Results view reads the *effective* backend
                                 // (and so the mismatch banner doesn't appear
@@ -1275,6 +1277,154 @@ internal class TranscriptionService
                         overridePercent));
                 }
             }
+#if AUDIOCPP_BACKEND
+            else if (useAudioCppAsr)
+            {
+                // The one backend that is not ONNX Runtime. Segmentation,
+                // diarization and LID grouping above are unchanged -- only
+                // recognition crosses into audio.cpp, which is what makes this a
+                // test of the ABI rather than of a second pipeline.
+                //
+                // Word timings are measured here rather than spread evenly: the
+                // ABI reports word boundaries, so unlike the Cohere and Granite
+                // paths this does not need BuildSyntheticTokenTimestamps.
+                string audioCppModelsDir = _settings.GetAudioCppModelsDir();
+                string? forceLanguage =
+                    string.Equals(asrLanguageCode, "auto", StringComparison.OrdinalIgnoreCase) ||
+                    string.IsNullOrWhiteSpace(asrLanguageCode)
+                        ? null
+                        : asrLanguageCode;
+
+                // The ABI loads a model, not a models root: pointing it at the
+                // directory would fail at load rather than transcribe badly, but
+                // it would fail for a reason the message does not explain.
+                // AudioCppAsr mirrors this constant rather than referencing
+                // Vernacula.Base, to keep that project off the ONNX stack. The
+                // comment there says the caller checks they agree; this is that
+                // check. A mismatch would slice every segment at the wrong
+                // offset and produce plausible transcripts of the wrong audio.
+                if (Vernacula.AudioCpp.AudioCppAsr.SampleRate != Config.SampleRate)
+                    throw new InvalidOperationException(
+                        $"Sample-rate mismatch: the pipeline uses {Config.SampleRate} Hz and "
+                        + $"the audio.cpp backend assumes {Vernacula.AudioCpp.AudioCppAsr.SampleRate} Hz.");
+
+                string audioCppModelPath = Vernacula.AudioCpp.AudioCppAsr.ResolveParakeet(audioCppModelsDir)
+                    ?? throw new FileNotFoundException(
+                        "No audio.cpp Parakeet package under " + audioCppModelsDir
+                        + ". Install it with audio.cpp's model manager.");
+
+                // ⚠ Auto is the DEFAULT and it is not Cuda. An earlier version read
+                // `== Cuda ? "cuda" : "cpu"`, so every install that had never set an
+                // execution provider explicitly -- which is the out-of-the-box state --
+                // ran audio.cpp on the CPU while the ONNX backends took CUDA through the
+                // same Auto. It transcribed correctly and looked merely slow.
+                //
+                // The engine's backends are not ONNX Runtime's, so this maps rather than
+                // casts, and Auto becomes an ordered list: whether CUDA is registered
+                // depends on how the engine was built, which nothing here can see.
+                string[] backends = _settings.Current.ResolvedExecutionProvider switch
+                {
+                    ExecutionProvider.Cpu    => ["cpu"],
+                    ExecutionProvider.Cuda   => ["cuda", "cpu"],
+                    ExecutionProvider.CoreML => ["metal", "cpu"],
+                    // No WebGPU in the engine; Vulkan is the nearest portable GPU
+                    // backend it does have, and CPU catches a build without either.
+                    ExecutionProvider.WebGpu => ["vulkan", "cpu"],
+                    _                        => ["cuda", "metal", "vulkan", "cpu"],
+                };
+
+                // Load and recognition are timed apart because they answer different
+                // questions. A whole-job number cannot distinguish "the engine is slow"
+                // from "the weights took a second to load and the job was short", and
+                // the two call for opposite work.
+                var loadWatch = System.Diagnostics.Stopwatch.StartNew();
+                using var audiocpp = new Vernacula.AudioCpp.AudioCppAsr(
+                    audioCppModelPath,
+                    familyHint: "parakeet_tdt",
+                    backends: backends,
+                    threads: Environment.ProcessorCount);
+                loadWatch.Stop();
+                Console.WriteLine(
+                    $"[audio.cpp] backend={audiocpp.Backend} threads={Environment.ProcessorCount} "
+                    + $"load={loadWatch.ElapsedMilliseconds}ms segments={segsSubset.Count}");
+
+                var recognizeWatch = System.Diagnostics.Stopwatch.StartNew();
+                double recognizedSeconds = 0;
+
+                foreach (var result in audiocpp.RecognizeDetailed(
+                    segsSubset, audio, forceLanguage, ct))
+                {
+                    ct.ThrowIfCancellationRequested();
+                    int rid   = unfilledResultIds[result.SegmentId];
+                    int absId = rid - 1;
+                    completed++;
+
+                    // The stored tokens are an index sequence, not vocabulary
+                    // ids: VocabKind.AudioCpp rebuilds the runs from the text and
+                    // only needs the count to line up with the confidences.
+                    var tokenIndices = Enumerable.Range(0, result.Words.Count).ToList();
+
+                    db.UpdateResult(
+                        resultId:   rid,
+                        asrContent: result.Text,
+                        content:    result.Text,
+                        tokens:     JsonSerializer.Serialize(tokenIndices),
+                        timestamps: JsonSerializer.Serialize(result.StartFrames),
+                        logprobs:   JsonSerializer.Serialize(result.Confidences),
+                        // Only when the engine actually reported one. Parakeet
+                        // through audio.cpp reports none (measured: the field
+                        // comes back empty), and writing that would clear a
+                        // language the LID pass above had already established.
+                        language:   string.IsNullOrWhiteSpace(result.Language)
+                                        ? null : result.Language);
+
+                    onSegmentText(absId, result.Text);
+
+                    string asrText = Loc.Instance.T("progress_recognizing_segment", new() {
+                        ["i"]     = completed.ToString(),
+                        ["count"] = totalSegs.ToString() });
+                    double? overridePercent = ScaleOverallProgress(
+                        diarizationEndPercent,
+                        100,
+                        totalSegs > 0 ? completed / (double)totalSegs : 1);
+                    progress.Report(new TranscriptionProgress(
+                        TranscriptionPhase.Recognizing,
+                        completed,
+                        totalSegs,
+                        asrText,
+                        absId,
+                        result.Text,
+                        overridePercent));
+
+                    var (segStart, segEnd, _) = segsSubset[result.SegmentId];
+                    recognizedSeconds += Math.Max(segEnd - segStart, 0);
+                }
+                recognizeWatch.Stop();
+
+                // Realtime factor over the audio actually fed to the engine, which is
+                // the segments, not the file: VAD and diarization have already removed
+                // the silence, so quoting it against file duration would flatter it.
+                double recognizeSeconds = recognizeWatch.ElapsedMilliseconds / 1000.0;
+                Console.WriteLine(
+                    $"[audio.cpp] recognize={recognizeWatch.ElapsedMilliseconds}ms "
+                    + $"over {recognizedSeconds:F1}s of speech "
+                    + $"({(recognizeSeconds > 0 ? recognizedSeconds / recognizeSeconds : 0):F1}x realtime), "
+                    + $"avg {(completed > 0 ? recognizeWatch.ElapsedMilliseconds / (double)completed : 0):F0}ms/segment");
+            }
+#else
+            else if (useAudioCppAsr)
+            {
+                // Built without the audio.cpp submodule. The backend is still
+                // selectable -- the enum and every dispatch site are unconditional,
+                // so settings written on a full build stay readable here -- but it
+                // cannot run, and saying so beats a NullReference or, worse, a
+                // silent fall-through to Parakeet under the audio.cpp name.
+                throw new InvalidOperationException(
+                    "This build has no audio.cpp backend. It was compiled without the "
+                    + "AudioCpp-Bindings submodule; check it out and rebuild, or choose a "
+                    + "different ASR backend in Settings.");
+            }
+#endif
             else
             {
                 var (encoderFile, decoderJointFile) =

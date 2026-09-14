@@ -1,0 +1,92 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>Vernacula.AudioCpp</RootNamespace>
+    <AssemblyName>Vernacula.AudioCpp</AssemblyName>
+  </PropertyGroup>
+
+  <!-- The submodule is optional. A clone without it must still build the rest of
+       the app: Vernacula built standalone before this backend existed and has to
+       keep doing so. When the bindings are absent this project compiles to an
+       empty assembly, the app is built without the AUDIOCPP_BACKEND constant,
+       and the one branch that needs the types is compiled out. -->
+  <PropertyGroup>
+    <HasAudioCppBindings Condition="Exists('$(MSBuildThisFileDirectory)../../external/AudioCpp-Bindings/src/AudioCpp/AudioCpp.csproj')">true</HasAudioCppBindings>
+  </PropertyGroup>
+
+  <ItemGroup Condition="'$(HasAudioCppBindings)' != 'true'">
+    <Compile Remove="AudioCppAsr.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The bindings are a pinned submodule rather than a package: the ABI they
+         wrap is still moving, and a recorded commit says which one this was
+         built against. See docs/investigations/audiocpp_backend_investigation.md.
+
+         Deliberately NOT referencing Vernacula.Base: this project exists to keep
+         the audio.cpp path off the ONNX Runtime stack entirely, so that what is
+         being tested is the ABI and not a hybrid. -->
+    <ProjectReference
+      Include="../../external/AudioCpp-Bindings/src/AudioCpp/AudioCpp.csproj"
+      Condition="'$(HasAudioCppBindings)' == 'true'" />
+  </ItemGroup>
+
+  <!-- The managed binding finds libaudiocpp by walking up from the executable
+       looking for external/audio.cpp/build/bin. That works in the bindings' own
+       tree; here the engine is one level deeper, under
+       external/AudioCpp-Bindings/, so the walk never sees it and the app fails
+       at first transcription with "libaudiocpp was not found".
+
+       Carrying it as a CopyToOutputDirectory item, rather than copying it in a
+       target, is what gets it next to the APP: these items flow transitively
+       through a ProjectReference, so the library lands beside
+       Vernacula.Avalonia's executable where the platform's own default search
+       finds it. A target copying into this project's OutputPath would put it
+       somewhere nothing looks.
+
+       Three roots are tried in the order a developer is likeliest to have one.
+       Every pattern is a wildcard on purpose: a literal with no wildcard is
+       included whether or not the file exists, and the copy then fails on the
+       platforms whose name does not apply.
+
+       The Exclude matters more than it looks. libaudiocpp.so is a symlink to
+       .so.0 to .so.0.1.0, and the copy DEREFERENCES each one, so globbing all
+       three put 630 MB of identical engine in the output directory. The loader
+       only needs the plain name, so only the plain name is carried. -->
+  <PropertyGroup>
+    <_AudioCppEngineNested>$(MSBuildThisFileDirectory)../../external/AudioCpp-Bindings/external/audio.cpp/build/bin</_AudioCppEngineNested>
+    <_AudioCppEngineSibling>$(MSBuildThisFileDirectory)../../../AudioCpp-Bindings/external/audio.cpp/build/bin</_AudioCppEngineSibling>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <_AudioCppEngine Include="$(AUDIOCPP_NATIVE_DIR)/libaudiocpp.so*;$(AUDIOCPP_NATIVE_DIR)/libaudiocpp.dylib*;$(AUDIOCPP_NATIVE_DIR)/audiocpp.dll*"
+                     Exclude="$(AUDIOCPP_NATIVE_DIR)/libaudiocpp.so.*;$(AUDIOCPP_NATIVE_DIR)/libaudiocpp.*.dylib"
+                     Condition="'$(AUDIOCPP_NATIVE_DIR)' != ''" />
+    <_AudioCppEngine Include="$(_AudioCppEngineNested)/libaudiocpp.so*;$(_AudioCppEngineNested)/libaudiocpp.dylib*;$(_AudioCppEngineNested)/audiocpp.dll*"
+                     Exclude="$(_AudioCppEngineNested)/libaudiocpp.so.*;$(_AudioCppEngineNested)/libaudiocpp.*.dylib"
+                     Condition="'@(_AudioCppEngine)' == ''" />
+    <_AudioCppEngine Include="$(_AudioCppEngineSibling)/libaudiocpp.so*;$(_AudioCppEngineSibling)/libaudiocpp.dylib*;$(_AudioCppEngineSibling)/audiocpp.dll*"
+                     Exclude="$(_AudioCppEngineSibling)/libaudiocpp.so.*;$(_AudioCppEngineSibling)/libaudiocpp.*.dylib"
+                     Condition="'@(_AudioCppEngine)' == ''" />
+    <None Include="@(_AudioCppEngine)" Link="%(Filename)%(Extension)" Visible="false"
+          CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <Target Name="ReportAudioCppEngine" AfterTargets="Build">
+    <Message Importance="high" Text="audio.cpp engine: %(_AudioCppEngine.FullPath)"
+             Condition="'@(_AudioCppEngine)' != ''" />
+    <!-- A warning, not an error: everything except this one backend builds and
+         runs without an engine present. -->
+    <!-- Two different states, and one message for both would send someone with no
+         submodule hunting for an engine they have nowhere to put. -->
+    <Message Importance="high"
+             Text="Built without the AudioCpp-Bindings submodule: the AudioCpp ASR backend is not in this build. That is supported; run 'git submodule update --init external/AudioCpp-Bindings' and rebuild to include it."
+             Condition="'$(HasAudioCppBindings)' != 'true'" />
+    <Warning Text="No audio.cpp engine found, so the AudioCpp ASR backend will not load (everything else is unaffected). AUDIOCPP_NATIVE_DIR is read at BUILD time, not at run time: rebuild once with it pointing at an AudioCpp-Bindings engine build, e.g. AUDIOCPP_NATIVE_DIR=/path/to/AudioCpp-Bindings/external/audio.cpp/build/bin dotnet build. Or check out and build the pinned engine: git submodule update --init external/AudioCpp-Bindings/external/audio.cpp &amp;&amp; external/AudioCpp-Bindings/scripts/build-engine.sh"
+             Condition="'$(HasAudioCppBindings)' == 'true' And '@(_AudioCppEngine)' == ''" />
+  </Target>
+
+</Project>

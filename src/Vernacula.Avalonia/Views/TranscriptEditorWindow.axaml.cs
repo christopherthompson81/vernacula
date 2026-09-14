@@ -105,6 +105,7 @@ public partial class TranscriptEditorWindow : Window
         bool isIndicConformer = string.Equals(_jobAsrModel, "ai4bharat/indic-conformer-600m-multilingual", StringComparison.Ordinal);
         bool isGraniteSpeech  = string.Equals(_jobAsrModel, "ibm-granite/granite-speech-4.1-2b", StringComparison.Ordinal);
         bool isWhisperTurbo   = string.Equals(_jobAsrModel, "openai/whisper-large-v3-turbo", StringComparison.Ordinal);
+        bool isAudioCpp       = string.Equals(_jobAsrModel, "audiocpp/parakeet-tdt-0.6b-v3", StringComparison.Ordinal);
         _isQwen3Asr = isQwen3Asr;
         // Whisper persists empty timestamps + logprobs (see TranscriptionService
         // Phase 4 Whisper branch); editor falls back to segment-level positioning,
@@ -146,11 +147,16 @@ public partial class TranscriptEditorWindow : Window
             : isWhisperTurbo
                 ? Path.Combine(modelsDir, Config.WhisperTurboSubDir, WhisperTurbo.TokenizerFile)
                 : Path.Combine(parakeetModelsDir, Config.VocabFile);
-        if (vocabPath is not null && File.Exists(vocabPath))
+        // audio.cpp has no vocabulary file at all -- its runs are rebuilt from the
+        // stored text -- so it must not be gated on one existing. Without the
+        // first clause an audio.cpp-only install leaves _vocab null, because the
+        // path falls through to Parakeet's vocab, which such an install has never
+        // downloaded, and the editor null-references on the first transcript.
+        if (isAudioCpp || (vocabPath is not null && File.Exists(vocabPath)))
         {
             _vocab = new VocabService(
                 isCohere || isQwen3Asr || isVibeVoice || isVibeVoiceStreaming || isIndicConformer
-                    || isGraniteSpeech || isWhisperTurbo
+                    || isGraniteSpeech || isWhisperTurbo || isAudioCpp
                     ? App.Current.Settings.GetModelsDir() : parakeetModelsDir,
                 _jobAsrModel);
         }

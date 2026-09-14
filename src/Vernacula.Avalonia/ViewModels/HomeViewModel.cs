@@ -102,6 +102,14 @@ internal partial class HomeViewModel : ObservableObject
             ModelStatusText = HardwareInfo.SupportsBf16Acceleration()
                 ? $"Granite Speech weights are missing. Use Download Missing Models, or place them in {_settings.GetGraniteSpeechModelsDir()} (FP32 sibling: {Config.GraniteSpeechSubDir}/)."
                 : $"Granite Speech weights are missing. Use Download Missing Models, or place them in {_settings.GetGraniteSpeechModelsDir()}.";
+        else if (_settings.Current.AsrBackend == AsrBackend.AudioCpp)
+            // Deliberately does NOT say "Use Download Missing Models": that
+            // button fetches this app's own repos, and audio.cpp's weights come
+            // from audio.cpp's model manager instead. Pointing at the button
+            // would send someone to a control that cannot fix their problem.
+            ModelStatusText =
+                $"audio.cpp weights are missing. Install them with audio.cpp's model manager into {_settings.GetAudioCppModelsDir()}, "
+                + "e.g. python3 tools/model_manager_v2.py install parakeet_tdt_0_6b_v3 --models-root <that directory>.";
         else if (_settings.Current.Segmentation == Vernacula.Base.Models.SegmentationMode.DiariZen)
             ModelStatusText = "DiariZen external weights are missing. Open Settings to review the notice and import or download them.";
         else
