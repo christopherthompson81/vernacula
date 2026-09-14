@@ -75,4 +75,62 @@ public class TtsExportServiceTests
         Assert.False(string.IsNullOrWhiteSpace(rows[0].Phonemes));
         Assert.DoesNotContain("<error", rows[0].Phonemes);
     }
+
+    /// <summary>
+    /// ⚠ THE AUDIO HALF OF THE EXPORT HAD NO TEST AT ALL, because it was a bare File.Copy in the
+    /// view model rather than part of this service. That is exactly the half a user reported missing.
+    /// </summary>
+    [Fact]
+    public void WriteBundleWritesBothTheAudioAndTheCsv()
+    {
+        var dir = Directory.CreateTempSubdirectory("tts-export-test");
+        try
+        {
+            string rendered = Path.Combine(dir.FullName, "job.wav");
+            File.WriteAllBytes(rendered, [1, 2, 3, 4]);
+            var rows = new[] { new TtsExportService.SentenceRow(1, 0, 1.5, "Hello.", "hɛlˈoᶷ") };
+
+            // The picker hands back whichever extension its file type was on; both paths derive.
+            var (audio, csv) = TtsExportService.WriteBundle(
+                Path.Combine(dir.FullName, "out.csv"), rendered, rows, "kokoro");
+
+            Assert.Equal(Path.Combine(dir.FullName, "out.wav"), audio);
+            Assert.Equal(Path.Combine(dir.FullName, "out.csv"), csv);
+            Assert.Equal(new byte[] { 1, 2, 3, 4 }, File.ReadAllBytes(audio));
+            Assert.Contains("Hello.", File.ReadAllText(csv));
+        }
+        finally { dir.Delete(recursive: true); }
+    }
+
+    /// <summary>…and picking the audio type gives the same pair, which is the point of deriving both.</summary>
+    [Fact]
+    public void ChoosingTheAudioTypeProducesTheSamePair()
+    {
+        var dir = Directory.CreateTempSubdirectory("tts-export-test");
+        try
+        {
+            string rendered = Path.Combine(dir.FullName, "job.wav");
+            File.WriteAllBytes(rendered, [9]);
+            var (audio, csv) = TtsExportService.WriteBundle(
+                Path.Combine(dir.FullName, "out.wav"), rendered, [], "kokoro");
+            Assert.True(File.Exists(audio));
+            Assert.True(File.Exists(csv));
+        }
+        finally { dir.Delete(recursive: true); }
+    }
+
+    /// <summary>⚠ Exporting on top of the job's own file is a no-op — File.Copy throws on same-path.</summary>
+    [Fact]
+    public void ExportingOntoTheRenderedFileItselfDoesNotThrow()
+    {
+        var dir = Directory.CreateTempSubdirectory("tts-export-test");
+        try
+        {
+            string rendered = Path.Combine(dir.FullName, "same.wav");
+            File.WriteAllBytes(rendered, [7]);
+            var (audio, _) = TtsExportService.WriteBundle(rendered, rendered, [], "kokoro");
+            Assert.Equal(new byte[] { 7 }, File.ReadAllBytes(audio));
+        }
+        finally { dir.Delete(recursive: true); }
+    }
 }

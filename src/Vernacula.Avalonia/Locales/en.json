@@ -45,6 +45,7 @@
   "btn_cancel_job": "Cancel Job",
   "tts_raw_markdown": "Raw Markdown",
   "btn_export_tts": "Export…",
+  "tts_export_title": "Export audio and transcript…",
   "tts_export_running": "Exporting…",
   "tts_export_done": "Exported {csv} and {wav}.",
   "tts_ipa_annotation": "IPA above each word",
