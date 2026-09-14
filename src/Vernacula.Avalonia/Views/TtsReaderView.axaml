@@ -94,11 +94,28 @@
                                         Classes.listitem="{Binding IsListItem}"
                                         Classes.paragraph="{Binding IsParagraph}"
                                         FlowDirection="{Binding FlowDirection}">
+                                  <Panel>
                                   <StackPanel>
                                     <TextBlock Text="{Binding HeaderLabel}"
                                                Classes="segment-caption"
                                                FlowDirection="LeftToRight" />
-                                    <Grid ColumnDefinitions="Auto,*">
+                                    <!-- EDITING THIS CARD IN PLACE. Only the card's own words are in
+                                         the box: the block's markup (#, -, >) lies outside the
+                                         spliced extent, so editing the words cannot demote a
+                                         heading or unmake a list item. -->
+                                    <TextBox IsVisible="{Binding IsEditingBlock}"
+                                             Text="{Binding EditText, Mode=TwoWay}"
+                                             AcceptsReturn="True"
+                                             TextWrapping="Wrap"
+                                             Initialized="BlockEditor_Initialized"
+                                             LostFocus="BlockEditor_LostFocus"
+                                             KeyDown="BlockEditor_KeyDown"
+                                             Background="Transparent"
+                                             BorderThickness="0,0,0,2"
+                                             Padding="0,2"
+                                             Margin="0,2,0,0" />
+                                    <Grid ColumnDefinitions="Auto,*"
+                                          IsVisible="{Binding !IsEditingBlock}">
                                         <TextBlock Grid.Column="0" Text="•"
                                                    IsVisible="{Binding IsListItem}"
                                                    FontSize="18" Margin="2,2,8,0"
@@ -187,6 +204,16 @@
                                         </ItemsControl>
                                     </Grid>
                                   </StackPanel>
+                                    <!-- ⚠ CLICKING A WORD SEEKS, and still does in Listening. This
+                                         overlay exists ONLY in editing mode, where it covers the
+                                         words and takes the click to open the card instead. -->
+                                    <Button Classes="card-overlay"
+                                            IsVisible="{Binding ShowEditOverlay}"
+                                            Command="{Binding RequestEditCommand}"
+                                            Cursor="Ibeam"
+                                            HorizontalAlignment="Stretch"
+                                            VerticalAlignment="Stretch" />
+                                  </Panel>
                                 </Border>
                             </DataTemplate>
                         </ItemsControl.ItemTemplate>
@@ -195,13 +222,79 @@
 
                 <!-- The source as written. No word highlight here — the raw text carries no
                      alignment; it is for reading and copying the markup itself. -->
-                <ScrollViewer IsVisible="{Binding ShowRawMarkdown}"
+                <ScrollViewer IsVisible="{Binding ShowRawReader}"
                               FlowDirection="{Binding TextFlowDirection}">
                     <SelectableTextBlock Text="{Binding SourceText}"
                                          FontFamily="{Binding TextFontFamily}"
                                          Foreground="{DynamicResource TextBrush}"
                                          TextWrapping="Wrap" />
                 </ScrollViewer>
+
+                <!-- EDITING + RAW: the whole document as markdown. This is the RESTRUCTURING view —
+                     move, split and merge paragraphs, change a paragraph into a heading. With Raw
+                     Markdown unchecked, editing happens on the cards instead, which is the REVISING
+                     view; the two are different jobs, which is why the checkbox stays live here. -->
+                <TextBox IsVisible="{Binding ShowRawEditor}"
+                         Text="{Binding EditableText, Mode=TwoWay}"
+                         AcceptsReturn="True"
+                         AcceptsTab="True"
+                         TextWrapping="Wrap"
+                         FontFamily="{Binding TextFontFamily}"
+                         Background="Transparent"
+                         BorderThickness="0"
+                         FlowDirection="{Binding TextFlowDirection}" />
+
+                <!-- The corner indicator. Pulses while edits wait out the debounce, spins while the
+                     changed paragraphs re-render, then rests on a short message. -->
+                <Border IsVisible="{Binding IsEditing}"
+                        HorizontalAlignment="Right" VerticalAlignment="Top"
+                        Background="{DynamicResource BgBrush}"
+                        BorderBrush="{DynamicResource SecondaryBrush}"
+                        BorderThickness="1"
+                        CornerRadius="12"
+                        Padding="10,5"
+                        Margin="0,-6,-6,0">
+                    <StackPanel Orientation="Horizontal" Spacing="7">
+                        <!-- Pending: a pulsing dot. -->
+                        <Ellipse Width="9" Height="9" VerticalAlignment="Center"
+                                 Fill="{DynamicResource AccentBrush}"
+                                 IsVisible="{Binding IsEditPending}">
+                            <Ellipse.Styles>
+                                <Style Selector="Ellipse">
+                                    <Style.Animations>
+                                        <Animation Duration="0:0:1.4" IterationCount="INFINITE">
+                                            <KeyFrame Cue="0%"><Setter Property="Opacity" Value="0.25" /></KeyFrame>
+                                            <KeyFrame Cue="50%"><Setter Property="Opacity" Value="1.0" /></KeyFrame>
+                                            <KeyFrame Cue="100%"><Setter Property="Opacity" Value="0.25" /></KeyFrame>
+                                        </Animation>
+                                    </Style.Animations>
+                                </Style>
+                            </Ellipse.Styles>
+                        </Ellipse>
+                        <!-- Working: a spinning arc. -->
+                        <Ellipse Width="12" Height="12" VerticalAlignment="Center"
+                                 Stroke="{DynamicResource AccentBrush}"
+                                 StrokeThickness="2"
+                                 StrokeDashArray="3,2"
+                                 IsVisible="{Binding IsReRendering}"
+                                 RenderTransformOrigin="50%,50%">
+                            <Ellipse.Styles>
+                                <Style Selector="Ellipse">
+                                    <Style.Animations>
+                                        <Animation Duration="0:0:1" IterationCount="INFINITE">
+                                            <KeyFrame Cue="0%"><Setter Property="RotateTransform.Angle" Value="0" /></KeyFrame>
+                                            <KeyFrame Cue="100%"><Setter Property="RotateTransform.Angle" Value="360" /></KeyFrame>
+                                        </Animation>
+                                    </Style.Animations>
+                                </Style>
+                            </Ellipse.Styles>
+                        </Ellipse>
+                        <TextBlock Text="{Binding EditStatus}"
+                                   VerticalAlignment="Center"
+                                   FontSize="11"
+                                   Foreground="{DynamicResource SubtextBrush}" />
+                    </StackPanel>
+                </Border>
             </Panel>
         </Border>
 
@@ -223,6 +316,15 @@
                        Text="{Binding PositionLabel}"
                        Foreground="{DynamicResource SubtextBrush}"
                        VerticalAlignment="Center" />
+            <ToggleSwitch Grid.Column="3"
+                          x:Name="EditModeToggle"
+                          IsChecked="{Binding IsEditing}"
+                          IsVisible="{Binding CanEdit}"
+                          OffContent="{local:Loc tts_listening_mode}"
+                          OnContent="{local:Loc tts_editing_mode}"
+                          HorizontalAlignment="Right"
+                          Foreground="{DynamicResource TextBrush}"
+                          Margin="0,0,14,0" />
             <CheckBox Grid.Column="4"
                       x:Name="RawMarkdownCheck"
                       Content="{local:Loc tts_raw_markdown}"
@@ -264,6 +366,22 @@
 
     <UserControl.Styles>
         <!-- Word buttons: borderless, transparent, click-to-seek. -->
+        <!-- ⚠ TRANSPARENT IN EVERY STATE. This button is an invisible click target over a whole
+             card, so the default Button's hover and pressed backgrounds would flash the entire
+             paragraph as the pointer crosses it. The cursor is the only affordance it needs. -->
+        <Style Selector="Button.card-overlay">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Padding" Value="0" />
+            <Setter Property="MinHeight" Value="0" />
+        </Style>
+        <Style Selector="Button.card-overlay:pointerover /template/ ContentPresenter">
+            <Setter Property="Background" Value="Transparent" />
+        </Style>
+        <Style Selector="Button.card-overlay:pressed /template/ ContentPresenter">
+            <Setter Property="Background" Value="Transparent" />
+        </Style>
+
         <Style Selector="Button.word">
             <Setter Property="Background" Value="Transparent" />
             <Setter Property="BorderBrush" Value="Transparent" />

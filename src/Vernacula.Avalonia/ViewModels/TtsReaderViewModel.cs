@@ -52,7 +52,9 @@ internal sealed partial class TtsReaderViewModel : ObservableObject, IDisposable
     // ── View preferences (persisted, not per job) ────────────────────────────
 
     /// <summary>Show the document's source text verbatim instead of the word-by-word view.</summary>
-    [ObservableProperty] private bool _showRawMarkdown;
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(ShowRawEditor), nameof(ShowRawReader))]
+    private bool _showRawMarkdown;
     [ObservableProperty] private bool _showIpaAnnotation;
 
     [ObservableProperty]
@@ -233,6 +235,10 @@ internal sealed partial class TtsReaderViewModel : ObservableObject, IDisposable
             ["words"]    = sidecar.Words.Count.ToString(),
         });
         if (!HasAudio) ErrorMessage = $"Rendered audio not found: {_audioPath}";
+        // Finished jobs only: editing re-renders against a sidecar, and a running job has none yet.
+        CanEdit = true;
+        BeginEditing(job);
+        WireBlockEditing();
     }
 
     // ── Watching a running job ───────────────────────────────────────────────
@@ -389,6 +395,11 @@ internal sealed partial class TtsReaderViewModel : ObservableObject, IDisposable
         _annotationCts?.Cancel();
         _annotationCts?.Dispose();
         _annotationCts = null;
+        // ⚠ Whatever is waiting out the save clock is written NOW. Leaving the reader is exactly when
+        // an edit would otherwise be lost, and it is the moment the user is least expecting that.
+        _ = _saveDebounce?.FlushAsync();
+        EndEditing();
+        IsEditing = false;
     }
 
     // ── Text / display ───────────────────────────────────────────────────────
@@ -631,6 +642,238 @@ internal sealed partial class TtsReaderViewModel : ObservableObject, IDisposable
     {
         Detach();
         NavigateBack?.Invoke();
+    }
+
+    // ── Editing ──────────────────────────────────────────────────────────────
+
+    /// <summary>Listening (the aligned karaoke view) vs Editing (the markdown, editable).</summary>
+    /// <summary>Whether the mode toggle is offered at all — a finished job with a sidecar.</summary>
+    [ObservableProperty] private bool _canEdit;
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(ShowRawEditor), nameof(ShowRawReader))]
+    private bool _isEditing;
+
+    /// <summary>Editing the whole document as markdown — the RESTRUCTURING view (move, split, merge,
+    /// change a paragraph into a heading).</summary>
+    public bool ShowRawEditor => IsEditing && ShowRawMarkdown;
+
+    /// <summary>The source, read-only, as it has always been shown in listening.</summary>
+    public bool ShowRawReader => !IsEditing && ShowRawMarkdown;
+    [ObservableProperty] private string _editableText = "";
+    /// <summary>What the corner indicator says; empty when there is nothing to say.</summary>
+    [ObservableProperty] private string _editStatus = "";
+    /// <summary>A re-render is running — the indicator spins.</summary>
+    [ObservableProperty] private bool _isReRendering;
+    /// <summary>Edits are waiting out the debounce — the indicator pulses.</summary>
+    [ObservableProperty] private bool _isEditPending;
+
+    /// <summary>Idle after the text stops changing before the changed paragraphs are re-rendered.</summary>
+    private static readonly TimeSpan ReRenderIdle = TimeSpan.FromSeconds(10);
+    /// <summary>…and the shorter one for writing the document back to disk. Saving is cheap and
+    /// losing keystrokes is not, so it does not wait for the render clock.</summary>
+    private static readonly TimeSpan SaveIdle = TimeSpan.FromSeconds(3);
+
+    private TtsJobRunner?            _editRunner;
+    private Debouncer?               _saveDebounce;
+    private Debouncer?               _reRenderDebounce;
+    private CancellationTokenSource? _reRenderCts;
+    /// <summary>Set while the VM itself writes EditableText, so a reload does not look like a user edit.</summary>
+    private bool _loadingEditableText;
+    /// <summary>Whether <see cref="EditableText"/> has been filled from the document yet.</summary>
+    private bool _editorSeeded;
+
+    /// <summary>
+    /// ⚠ CALLED ON EVERY LOAD, INCLUDING THE RELOAD AFTER A RE-RENDER, so it must be safe to enter
+    /// while its own debounced work is in flight. Two things follow, and both were bugs first:
+    /// the debouncers are created ONCE (tearing them down here would dispose the very debouncer
+    /// whose action is running), and the editor is seeded ONCE — a reload must never overwrite what
+    /// the user has typed since the render it is reloading began.
+    /// </summary>
+    private void BeginEditing(JobRecord job)
+    {
+        if (_saveDebounce is null)
+        {
+            _editRunner = new TtsJobRunner(_settings);
+            _saveDebounce = new Debouncer(SaveIdle, _ => SaveSourceAsync(job), ReportEditError);
+            _reRenderDebounce = new Debouncer(ReRenderIdle, ct => ReRenderAsync(job, ct), ReportEditError);
+        }
+        if (_editorSeeded) return;
+        _loadingEditableText = true;
+        EditableText = _text;
+        _loadingEditableText = false;
+        _editorSeeded = true;
+    }
+
+    private void EndEditing()
+    {
+        _reRenderCts?.Cancel();
+        _saveDebounce?.Dispose();
+        _reRenderDebounce?.Dispose();
+        _saveDebounce = null;
+        _reRenderDebounce = null;
+        _editRunner = null;
+        _editorSeeded = false;
+    }
+
+    partial void OnEditableTextChanged(string value)
+    {
+        if (_loadingEditableText) return;
+        IsEditPending = true;
+        EditStatus = Loc.Instance["tts_edit_pending"];
+        _saveDebounce?.Bump();
+        _reRenderDebounce?.Bump();
+    }
+
+    partial void OnIsEditingChanged(bool value)
+    {
+        // ⚠ CLICKING A WORD SEEKS, and that must keep being true in Listening. The cards carry this
+        // flag so the editing overlay — which is what takes the click instead — exists only here.
+        foreach (var b in DisplayBlocks) b.CardEditingEnabled = value;
+        if (!value)
+        {
+            CommitOpenBlock();
+            // Leaving the editor writes immediately rather than on the clock — the user has moved on.
+            _ = _saveDebounce?.FlushAsync();
+        }
+    }
+
+    /// <summary>Opens one card for editing, seeded with its own markdown.</summary>
+    private void OnBlockEditRequested(BlockItemViewModel block)
+    {
+        if (!IsEditing) return;
+        CommitOpenBlock();
+        var span = MarkdownSegmentSpans.For(EditableText).FirstOrDefault(s => s.Index == block.Index);
+        if (span is null)
+        {
+            // No mapped extent — leave the card read-only rather than guess at where it lives.
+            EditStatus = Loc.Instance["tts_edit_card_unmapped"];
+            return;
+        }
+        block.EditText = MarkdownSegmentSpans.TextOf(EditableText, span);
+        block.IsEditingBlock = true;
+    }
+
+    /// <summary>
+    /// Splices the card's text back into the document. Setting EditableText is what starts both
+    /// clocks, so a card edit debounces exactly like a raw edit — one path, not two.
+    /// </summary>
+    private void OnBlockEditCommitted(BlockItemViewModel block)
+    {
+        if (!block.IsEditingBlock) return;
+        block.IsEditingBlock = false;
+        var span = MarkdownSegmentSpans.For(EditableText).FirstOrDefault(s => s.Index == block.Index);
+        if (span is null) return;
+        string current = MarkdownSegmentSpans.TextOf(EditableText, span);
+        if (string.Equals(current, block.EditText, StringComparison.Ordinal)) return;
+        EditableText = MarkdownSegmentSpans.Splice(EditableText, span, block.EditText);
+    }
+
+    private static void OnBlockEditCancelled(BlockItemViewModel block) => block.IsEditingBlock = false;
+
+    private void CommitOpenBlock()
+    {
+        foreach (var b in DisplayBlocks)
+            if (b.IsEditingBlock) { OnBlockEditCommitted(b); break; }
+    }
+
+    /// <summary>Gives every freshly built card its editing hooks and the current mode.</summary>
+    private void WireBlockEditing()
+    {
+        foreach (var b in DisplayBlocks)
+        {
+            b.EditRequested = OnBlockEditRequested;
+            b.EditCommitted = OnBlockEditCommitted;
+            b.EditCancelled = OnBlockEditCancelled;
+            b.CardEditingEnabled = IsEditing;
+        }
+    }
+
+    /// <summary>Writes the edited markdown back over the job's own input document.</summary>
+    private async Task SaveSourceAsync(JobRecord job)
+    {
+        string path = job.AudioFilePath;   // for a TTS job this is the input document
+        if (string.IsNullOrWhiteSpace(path)) return;
+        string text = EditableText;
+        await File.WriteAllTextAsync(path, text).ConfigureAwait(false);
+        _text = text;
+        Dispatcher.UIThread.Post(() =>
+        {
+            SourceText = text;
+            if (!IsReRendering) EditStatus = Loc.Instance["tts_edit_saved"];
+        });
+    }
+
+    /// <summary>
+    /// Re-renders only the paragraphs that changed and reloads the view from the new sidecar.
+    /// ⚠ Playback stops first: the run REPLACES the rendered WAV underneath it.
+    /// </summary>
+    private async Task ReRenderAsync(JobRecord job, CancellationToken outer)
+    {
+        if (_sidecar is null || job.TtsSettings is null) return;
+
+        // ⚠ AN OPEN CARD IS COMMITTED FIRST, AND THAT ORDER IS LOAD-BEARING. A successful re-render
+        // ends in LoadCompleted, which REBUILDS DisplayBlocks — every card object is replaced. A card
+        // left open across that rebuild loses whatever was being typed into it, silently, and the
+        // window for it is ordinary: edit one paragraph, start on the next, and the first one's clock
+        // runs out while you are still typing. Committing folds the open card into EditableText, so
+        // nothing is lost and this render includes it.
+        await Dispatcher.UIThread.InvokeAsync(CommitOpenBlock);
+
+        string text = EditableText;
+        var previous = _sidecar;
+
+        var changed = TtsSegmentReuse.ChangedSegments(text, previous);
+        if (changed.Count == 0)
+        {
+            Dispatcher.UIThread.Post(() => { IsEditPending = false; EditStatus = ""; });
+            return;
+        }
+
+        _reRenderCts?.Cancel();
+        _reRenderCts?.Dispose();
+        _reRenderCts = CancellationTokenSource.CreateLinkedTokenSource(outer);
+        var ct = _reRenderCts.Token;
+
+        await Dispatcher.UIThread.InvokeAsync(() =>
+        {
+            _playback.Stop();
+            IsEditPending = false;
+            IsReRendering = true;
+            EditStatus = Loc.Instance.T("tts_edit_rendering", new()
+            {
+                ["count"] = changed.Count.ToString(),
+            });
+        });
+
+        try
+        {
+            var sidecar = await _editRunner!.ReRenderAsync(
+                text, job.ResultsFile, job.TtsSettings, previous,
+                _ => { }, ct).ConfigureAwait(false);
+
+            await Dispatcher.UIThread.InvokeAsync(() =>
+            {
+                _sidecar = sidecar;
+                LoadCompleted(job);
+                IsReRendering = false;
+                EditStatus = Loc.Instance["tts_edit_rendered"];
+            });
+        }
+        catch (OperationCanceledException)
+        {
+            Dispatcher.UIThread.Post(() => { IsReRendering = false; EditStatus = ""; });
+        }
+    }
+
+    private void ReportEditError(Exception ex)
+    {
+        Console.Error.WriteLine($"[TtsReader] edit: {ex}");
+        Dispatcher.UIThread.Post(() =>
+        {
+            IsReRendering = false;
+            IsEditPending = false;
+            EditStatus = Loc.Instance.T("tts_edit_failed", new() { ["error"] = ex.Message });
+        });
     }
 
     // ── Export ───────────────────────────────────────────────────────────────

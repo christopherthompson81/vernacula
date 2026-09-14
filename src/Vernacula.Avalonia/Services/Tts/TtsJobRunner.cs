@@ -63,6 +63,68 @@ internal sealed class TtsJobRunner : IDisposable
     }
 
     /// <summary>
+    /// Re-renders <paramref name="newText"/> reusing every paragraph that did not change, and
+    /// replaces the job's audio, per-segment files and sidecar only once it has all succeeded.
+    ///
+    /// <para>⚠ IT RENDERS ELSEWHERE AND SWAPS, for two independent reasons. The reuse map READS the
+    /// existing `seg_NNNN.wav` files while a run WRITES the same names — inserting a paragraph
+    /// shifts every later index, so a run in place would overwrite the very file the next reused
+    /// segment is about to read. And because this is triggered by a debounce rather than a button,
+    /// a failure or a cancellation midway must leave the previous audio exactly as it was.</para>
+    /// </summary>
+    public async Task<AlignmentSidecar> ReRenderAsync(
+        string                     newText,
+        string                     sidecarPath,
+        TtsJobSettings             tts,
+        AlignmentSidecar           previous,
+        Action<ProgressEvent>      onProgress,
+        CancellationToken          ct)
+    {
+        if (string.IsNullOrWhiteSpace(newText))
+            throw new InvalidOperationException("The document is empty.");
+
+        var backend = EnsureBackend(tts);
+        string liveWav      = Path.ChangeExtension(sidecarPath, ".wav");
+        string liveSegments = AlignmentSidecar.SegmentsDirFor(sidecarPath);
+
+        string stage        = Path.Combine(Path.GetDirectoryName(sidecarPath)!,
+                                           $".rerender_{Guid.NewGuid():N}");
+        string stageSidecar = Path.Combine(stage, Path.GetFileName(sidecarPath));
+        string stageWav     = Path.ChangeExtension(stageSidecar, ".wav");
+        string stageSegments= AlignmentSidecar.SegmentsDirFor(stageSidecar);
+        Directory.CreateDirectory(stage);
+
+        try
+        {
+            var request = TtsEngines.For(tts.Backend)
+                .BuildRequest(newText, stageWav, stageSegments, tts) with
+                {
+                    ReuseFrom = (previous, liveSegments),
+                };
+
+            var result = await backend.SynthesizeStreamingAsync(request, null, onProgress, ct);
+            var sidecar = result.Alignment;
+            sidecar.SourceText = newText;
+            sidecar.AudioPath  = liveWav;
+            sidecar.Save(stageSidecar);
+
+            // ⚠ SWAP ORDER: the SIDECAR IS PUBLISHED LAST, because it is the file that names the
+            // others. Moving it first leaves a window where it points at segment files that have not
+            // arrived yet, and the reader opens the sidecar to find them.
+            File.Move(stageWav, liveWav, overwrite: true);
+            if (Directory.Exists(liveSegments)) Directory.Delete(liveSegments, recursive: true);
+            if (Directory.Exists(stageSegments)) Directory.Move(stageSegments, liveSegments);
+            File.Move(stageSidecar, sidecarPath, overwrite: true);
+            return sidecar;
+        }
+        finally
+        {
+            try { if (Directory.Exists(stage)) Directory.Delete(stage, recursive: true); }
+            catch (Exception ex) { Console.Error.WriteLine($"[TtsJobRunner] stage cleanup: {ex.Message}"); }
+        }
+    }
+
+    /// <summary>
     /// The job's backend, built from the model locations in Settings. Missing prerequisites
     /// are reported here, before any model loads, with the path the user needs to fix.
     /// </summary>
