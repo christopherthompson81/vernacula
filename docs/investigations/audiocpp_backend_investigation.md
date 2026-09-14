@@ -358,3 +358,42 @@ time through a single session. That is deliberate (a session per segment would
 reload the weights) but it leaves the GPU idle between segments, and Sortformer
 can produce a great many short segments. Batching, or a small pool of sessions,
 is the obvious next thing and has not been attempted.
+
+## Run 8 — 2026-09-14 14:35 — 7 s, and what the number does not say
+
+Same audio as the 88 s CPU run, after the Auto fix:
+
+```
+job 198: audiocpp/parakeet-tdt-0.6b-v3  run=88s  (CPU, before the fix)
+job 200: audiocpp/parakeet-tdt-0.6b-v3  run=7s   (CUDA, same sha256)
+```
+
+**12.5x from the backend fix alone, on identical audio.** That comparison is
+sound: same file, same pipeline, one variable.
+
+**The ONNX comparison is not sound, and is not in the data.** Searching every
+job on that sha256 returns only job 200. The 6 s ONNX runs are different
+recordings. So "about the same as ONNX" is currently a coincidence of scale, not
+a measurement — an ONNX run on job 200's audio would settle it in one click.
+
+**The 7 s and the 4.8 s are not the same quantity either.** The direct figure was
+recognition on one whole-file segment; the 7 s is VAD, diarization, model load,
+and per-segment recognition. Comparing them attributes the whole pipeline to the
+engine.
+
+**Instrumentation, so the next run answers this instead of us reasoning about
+it.** Load and recognition are now timed apart, which distinguishes the two
+hypotheses that a single number cannot:
+
+```
+[audio.cpp] backend=cuda threads=16 load=NNNms segments=N
+[audio.cpp] recognize=NNNms over NN.Ns of speech (NN.Nx realtime), avg NNms/segment
+```
+
+Realtime is quoted over the speech actually submitted, not file duration: VAD has
+already removed the silence, and using file duration would flatter it.
+
+If load dominates, the answer is to keep the session across jobs rather than to
+touch the loop. If `avg ms/segment` is high and the segments are short, the
+serialization is the cost and batching is the answer. The two call for opposite
+work, which is why the number was split before anything was optimised.

@@ -1322,12 +1322,23 @@ internal class TranscriptionService
                     _                        => ["cuda", "metal", "vulkan", "cpu"],
                 };
 
+                // Load and recognition are timed apart because they answer different
+                // questions. A whole-job number cannot distinguish "the engine is slow"
+                // from "the weights took a second to load and the job was short", and
+                // the two call for opposite work.
+                var loadWatch = System.Diagnostics.Stopwatch.StartNew();
                 using var audiocpp = new Vernacula.AudioCpp.AudioCppAsr(
                     audioCppModelPath,
                     familyHint: "parakeet_tdt",
                     backends: backends,
                     threads: Environment.ProcessorCount);
-                Console.WriteLine($"[audio.cpp] backend={audiocpp.Backend} threads={Environment.ProcessorCount}");
+                loadWatch.Stop();
+                Console.WriteLine(
+                    $"[audio.cpp] backend={audiocpp.Backend} threads={Environment.ProcessorCount} "
+                    + $"load={loadWatch.ElapsedMilliseconds}ms segments={segsSubset.Count}");
+
+                var recognizeWatch = System.Diagnostics.Stopwatch.StartNew();
+                double recognizedSeconds = 0;
 
                 foreach (var result in audiocpp.RecognizeDetailed(
                     segsSubset, audio, forceLanguage, ct))
@@ -1373,7 +1384,21 @@ internal class TranscriptionService
                         absId,
                         result.Text,
                         overridePercent));
+
+                    var (segStart, segEnd, _) = segsSubset[result.SegmentId];
+                    recognizedSeconds += Math.Max(segEnd - segStart, 0);
                 }
+                recognizeWatch.Stop();
+
+                // Realtime factor over the audio actually fed to the engine, which is
+                // the segments, not the file: VAD and diarization have already removed
+                // the silence, so quoting it against file duration would flatter it.
+                double recognizeSeconds = recognizeWatch.ElapsedMilliseconds / 1000.0;
+                Console.WriteLine(
+                    $"[audio.cpp] recognize={recognizeWatch.ElapsedMilliseconds}ms "
+                    + $"over {recognizedSeconds:F1}s of speech "
+                    + $"({(recognizeSeconds > 0 ? recognizedSeconds / recognizeSeconds : 0):F1}x realtime), "
+                    + $"avg {(completed > 0 ? recognizeWatch.ElapsedMilliseconds / (double)completed : 0):F0}ms/segment");
             }
             else
             {
