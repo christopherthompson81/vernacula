@@ -29,6 +29,32 @@ internal static class VocabFixtures
     /// tokens so the per-token streaming decoders have to carry a partial character.</summary>
     public const string Phrase = "Hello wörld.";
 
+    /// <summary>
+    /// Whether a kind decodes sub-word token ids against a vocabulary file at all.
+    /// </summary>
+    /// <remarks>
+    /// audio.cpp reports words, so there is no vocabulary to write a fixture for
+    /// and no token ids to decode. A fixture invented for it would exercise a
+    /// code path that does not exist in production, and would pass while saying
+    /// nothing.
+    ///
+    /// This is a classification, not an exemption: a new kind must be named here
+    /// to be excluded, and the word-run contract in VocabServiceSmokeTests
+    /// covers the kinds this returns false for. Excluding a kind from both is
+    /// what the switch below makes impossible.
+    /// </remarks>
+    public static bool HasTokenVocabulary(VocabService.VocabKind kind) => kind switch
+    {
+        VocabService.VocabKind.AudioCpp => false,
+        VocabService.VocabKind.Parakeet or VocabService.VocabKind.Cohere
+            or VocabService.VocabKind.Qwen3Asr or VocabService.VocabKind.VibeVoice
+            or VocabService.VocabKind.IndicConformer or VocabService.VocabKind.GraniteSpeech
+            or VocabService.VocabKind.WhisperTurbo => true,
+        _ => throw new ArgumentOutOfRangeException(nameof(kind),
+            $"VocabFixtures.HasTokenVocabulary does not classify {kind}. A new VocabKind must "
+            + "say whether it decodes token ids, so it is covered by one contract or the other."),
+    };
+
     /// <summary>SentencePiece's word-boundary marker (U+2581), which the text loaders turn into a space.</summary>
     private const string WordStart = "▁";
 

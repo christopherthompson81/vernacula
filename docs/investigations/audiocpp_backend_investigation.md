@@ -171,3 +171,50 @@ runs by log probability; these are confidences in [0,1] stored as-is. On this
 clip that means every run carries a value the editor will read on a different
 scale than it does for ONNX backends. Needs a decision, and a transcript in the
 editor to decide against.
+
+## Run 4 — 2026-09-14 12:05 — an eleventh site, and a contract that does not fit
+
+**Question:** does the wider suite agree, once `VocabServiceSmokeTests` is
+included? Runs 2 and 3 filtered to the two classes the dispatch doc names.
+
+**Raw result:** `Failed: 5, Passed: 136, Total: 141`, all five in
+`VocabServiceSmokeTests`, with two distinct causes:
+
+```
+VocabFixtures has no fixture for this kind. Add one alongside the new VocabKind.
+audio.cpp transcripts have no token ids to decode; ...
+```
+
+**Finding 1 — the doc is one site short.** `docs/dev/asr_backend_dispatch.md`
+lists ten sites. `VocabFixtures` is an eleventh, added after the doc was
+written, and nothing cross-checks the two. The doc is now stale in the exact way
+it exists to prevent. Worth fixing in the doc, not just in the code.
+
+**Finding 2 — the contract genuinely does not apply.** Those five theories
+assert a token-id contract: decode ids against a vocabulary file, one run per
+id, runs concatenating to the decoded text. audio.cpp has no vocabulary file and
+no ids. A fixture invented for it would exercise a code path that does not exist
+in production and would pass while asserting nothing.
+
+**Decision:** split the contract rather than fake a vocabulary, and make the
+split typed so it cannot become an exemption:
+
+- `VocabFixtures.HasTokenVocabulary(kind)` classifies each kind and **throws** on
+  one it does not name. A new kind must declare which family it is in.
+- The five token-id theories iterate `TokenVocabBackends`.
+- `WordRunKinds_RebuildTheirRunsFromTheText` and
+  `WordRunKinds_TolerateShortLogprobs` assert, for the other family, the same
+  properties in the unit that family reports: one run per word, runs
+  concatenating to exactly the rendered text, logprobs paired positionally, and
+  a short logprob list tolerated.
+
+A kind cannot fall out of both families without `HasTokenVocabulary` throwing,
+which is the property the original suite had and the one worth preserving.
+
+**After:** `Passed! - Failed: 0, Passed: 138, Total: 138`.
+
+⚠ This modified the test suite rather than only adding to it. Five theories now
+iterate a filtered set. The justification is above; if the preference is that
+audio.cpp instead carry a synthetic token vocabulary so the original theories
+apply unchanged, that is a reasonable different call and the change is one
+commit to revert.

@@ -37,6 +37,21 @@ public class VocabServiceSmokeTests
     public static IEnumerable<object[]> AllBackends =>
         Enum.GetValues<AsrBackend>().Select(b => new object[] { b });
 
+    // The theories below assert a token-id contract: decode ids against a vocab
+    // file, one run per id. audio.cpp has neither, so it is covered by
+    // WordRunKinds_RebuildTheirRunsFromTheText instead. HasTokenVocabulary is
+    // the single place that decides which, and it throws on a kind it does not
+    // classify, so a new kind cannot fall out of both contracts unnoticed.
+    public static IEnumerable<object[]> TokenVocabBackends =>
+        Enum.GetValues<AsrBackend>()
+            .Where(b => VocabFixtures.HasTokenVocabulary(VocabService.KindOfBackend(b)))
+            .Select(b => new object[] { b });
+
+    public static IEnumerable<object[]> WordRunBackends =>
+        Enum.GetValues<AsrBackend>()
+            .Where(b => !VocabFixtures.HasTokenVocabulary(VocabService.KindOfBackend(b)))
+            .Select(b => new object[] { b });
+
     private static VocabService.VocabKind KindOf(AsrBackend backend) => VocabService.KindOfBackend(backend);
 
     private static VocabService Load(AsrBackend backend, string dir) =>
@@ -58,7 +73,7 @@ public class VocabServiceSmokeTests
     // ── Every kind decodes its own fixture ───────────────────────────────────
 
     [Theory]
-    [MemberData(nameof(AllBackends))]
+    [MemberData(nameof(TokenVocabBackends))]
     public void EveryKind_DecodesItsFixtureToTheKnownPhrase(AsrBackend backend)
     {
         using var fixture = VocabFixtures.Write(KindOf(backend));
@@ -67,7 +82,7 @@ public class VocabServiceSmokeTests
     }
 
     [Theory]
-    [MemberData(nameof(AllBackends))]
+    [MemberData(nameof(TokenVocabBackends))]
     public void EveryKind_ProducesOneRunPerToken_ThatConcatenatesToTheDecodedText(AsrBackend backend)
     {
         using var fixture = VocabFixtures.Write(KindOf(backend));
@@ -98,7 +113,7 @@ public class VocabServiceSmokeTests
     }
 
     [Theory]
-    [MemberData(nameof(AllBackends))]
+    [MemberData(nameof(TokenVocabBackends))]
     public void EveryKind_ToleratesShortLogprobsAndUnknownTokens(AsrBackend backend)
     {
         using var fixture = VocabFixtures.Write(KindOf(backend));
@@ -165,7 +180,7 @@ public class VocabServiceSmokeTests
     }
 
     [Theory]
-    [MemberData(nameof(AllBackends))]
+    [MemberData(nameof(TokenVocabBackends))]
     public void EveryKind_EndingMidCharacter_SaysTheSameThingInRunsAsInTheDecode(AsrBackend backend)
     {
         // A segment cut after the first byte of a two-byte character leaves the streaming
@@ -274,7 +289,7 @@ public class VocabServiceSmokeTests
     // ── Missing files ────────────────────────────────────────────────────────
 
     [Theory]
-    [MemberData(nameof(AllBackends))]
+    [MemberData(nameof(TokenVocabBackends))]
     public void EveryKind_SurvivesAMissingVocabFile(AsrBackend backend)
     {
         // Every loader returns an empty vocab for a missing file: the editor opens on a job
@@ -289,5 +304,57 @@ public class VocabServiceSmokeTests
             Assert.Equal(tokens.Length, vocab.GetTokenRuns(tokens, []).Count);
         }
         finally { VocabFixtures.Cleanup(empty); }
+    }
+
+    // ── Kinds whose recognition unit is the word ─────────────────────────────
+
+    [Theory]
+    [MemberData(nameof(WordRunBackends))]
+    public void WordRunKinds_RebuildTheirRunsFromTheText(AsrBackend backend)
+    {
+        // No fixture is written: the point of these kinds is that there is no
+        // vocabulary file, and VocabService must not need one.
+        using var scratch = new TempDir();
+        var vocab = Load(backend, scratch.Dir);
+
+        const string text = "Hello wörld.";
+        var tokens   = new[] { 0, 1 };
+        var logprobs = new[] { -0.25f, -0.5f };
+
+        var runs = vocab.GetTokenRuns(tokens, logprobs, text);
+
+        // One run per word, and the runs concatenate to exactly the text the card
+        // renders -- the same property the token-id theories assert, stated in the
+        // unit this kind actually reports.
+        Assert.Equal(2, runs.Count);
+        Assert.Equal(text, string.Concat(runs.Select(r => r.text)));
+        Assert.Equal(logprobs, runs.Select(r => r.logprob));
+    }
+
+    [Theory]
+    [MemberData(nameof(WordRunBackends))]
+    public void WordRunKinds_TolerateShortLogprobs(AsrBackend backend)
+    {
+        using var scratch = new TempDir();
+        var vocab = Load(backend, scratch.Dir);
+
+        // Fewer confidences than words is what a model reporting text but no
+        // per-word confidence produces; the editor must still get its runs.
+        var runs = vocab.GetTokenRuns(new[] { 0, 1, 2 }, new[] { -0.25f }, "one two three");
+
+        Assert.Equal(3, runs.Count);
+        Assert.Equal("one two three", string.Concat(runs.Select(r => r.text)));
+        Assert.Equal(0f, runs[^1].logprob);
+    }
+
+    private sealed class TempDir : IDisposable
+    {
+        public string Dir { get; } =
+            Directory.CreateTempSubdirectory("vocab-wordrun-").FullName;
+
+        public void Dispose()
+        {
+            try { Directory.Delete(Dir, recursive: true); } catch (IOException) { }
+        }
     }
 }
