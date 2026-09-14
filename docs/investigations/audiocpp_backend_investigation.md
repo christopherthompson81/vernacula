@@ -397,3 +397,62 @@ If load dominates, the answer is to keep the session across jobs rather than to
 touch the loop. If `avg ms/segment` is high and the segments are short, the
 serialization is the cost and batching is the answer. The two call for opposite
 work, which is why the number was split before anything was optimised.
+
+## Run 9 — 2026-09-14 15:20 — the A/B, a dedup bug, and a hang that was not one
+
+### The comparison, at last
+
+The app refuses to redo work on audio it has already transcribed, so producing
+an A/B meant deleting the job and re-running it as ONNX. Both jobs on sha
+`103b4bff42`, same pipeline, same machine:
+
+| | |
+|---|---|
+| audio.cpp through the ABI (job 200) | **7 s** |
+| ONNX Parakeet (job 202) | **8 s** |
+
+**audio.cpp is not slower than ONNX Runtime here; it is marginally ahead.** One
+run each, a second apart, so this is parity rather than a win — repetitions
+would be needed to claim more.
+
+This also dissolves the 4.8 s question. That figure was recognition over a
+single whole-file segment; the 7 s is VAD, diarization, model load and
+per-segment recognition. The gap was the pipeline, never the engine.
+
+### Why the A/B was hard — a real bug, not an inconvenience
+
+The ASR results database is named `{sha16}_results.sqlite3`: **the audio hash
+alone, with no backend in the key.** The TTS path already keys its sidecar on
+backend and voice. Since `InsertNewJob` returns the existing job for an existing
+results file, and recognition only fills rows that are empty, switching backend
+and re-adding a file did no work and displayed the **first** backend's transcript
+under the second backend's name.
+
+That is wrong on its own terms, quite apart from benchmarking, and it is why
+comparing two backends required deleting a job.
+
+Fixed by putting the backend in the key, as TTS does. ⚠ Parakeet keeps the
+historical name deliberately: re-keying it would orphan every transcript this
+app has ever produced — the hazard the TTS key's own comment documents. A suffix
+only for backends that did not exist when the name was chosen strands nothing.
+Verified: `Parakeet -> 103b4bff42f6aaaa_results.sqlite3` (unchanged, and it
+matches the files on disk), `AudioCpp -> ..._audiocpp_results.sqlite3`, all
+backends distinct.
+
+### Negative result: the hang I reported does not exist
+
+For several runs I claimed the unfiltered `AsrBackendCoverage` project hangs, and
+worked around it with `--filter`. Run to completion with a 25-minute budget:
+
+```
+Passed!  - Failed: 0, Passed: 236, Total: 236, Duration: 1 m 2 s
+```
+
+**It takes one minute and passes.** The method was unsound: `dotnet test` writes
+its summary at completion, so a log that stops growing says nothing about
+whether the run is stuck, and I was killing runs on that signal before they
+finished. A live process at 4% CPU is working, not deadlocked.
+
+Worth keeping because the workaround had a cost: filtering is what hid the five
+`VocabServiceSmokeTests` failures until Run 4, several runs after they were
+introduced.
