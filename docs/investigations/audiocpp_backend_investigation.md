@@ -268,3 +268,38 @@ the confidence-vs-logprob question from Run 1 is deferred rather than open. The
 runs are words and the editor colours them with the reported confidences; that
 they are on a different scale to the ONNX backends' logprobs is known and
 accepted for now.
+
+## Run 6 — 2026-09-14 13:15 — a real launch, and a bug the compiler had already reported
+
+**Question:** does the documented run actually work from a clean shell?
+
+It did not, in three ways, and the run is worth recording because two of them
+were mine and one was already on screen.
+
+1. **The run command was wrong.** `Vernacula.Avalonia` multi-targets
+   `net10.0;net10.0-windows`, so `dotnet run` needs `-f net10.0`. This is stated
+   in `docs/building.md`, which I had read earlier in this same investigation.
+
+2. **CS8618 was a real bug, and the build had been reporting it.** The
+   `VocabService` constructor branch for audio.cpp set `_kind` but never
+   assigned `_vocab`, which is non-nullable and which every other branch fills.
+   So `_vocab` was **null for every audio.cpp transcript**. Nothing on this
+   kind's path reads it today, which is precisely why the null would have
+   survived until something did. Now assigned empty.
+
+   The warning was in the output of Run 5's builds. I filtered for errors and
+   "Build succeeded" and did not read the warnings.
+
+3. **The engine warning fires in a shell without `AUDIOCPP_NATIVE_DIR`.** The
+   variable is read at build time; a build in a fresh shell copies nothing. On
+   this machine the app kept working only because a previous build had already
+   left the library in the output directory — a stale file, not a working
+   configuration. The warning text now names the exact commands.
+
+**Verified** under Xvfb with the corrected invocation: the window opens and the
+job list loads.
+
+⚠ That verification ran against the real profile — `~/.local/share/Vernacula` —
+not a scratch one, because this app reads `LocalApplicationData` directly. It
+only listed existing jobs, but a check that starts the app should redirect its
+data directory, and this one did not.

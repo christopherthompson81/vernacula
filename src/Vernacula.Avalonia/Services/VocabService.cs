@@ -98,7 +98,14 @@ internal class VocabService
             // No vocabulary file: audio.cpp reports words, and the runs are
             // rebuilt from the stored text. The branch exists so a recognised
             // model name does not trip the unknown-name warning below.
-            _kind = VocabKind.AudioCpp;
+            //
+            // _vocab is still assigned, empty. It is non-nullable and every
+            // other branch fills it, so leaving it unset here left it null for
+            // every audio.cpp transcript -- CS8618, which the build reported and
+            // I missed. Nothing on this kind's path reads it today, which is
+            // exactly why a null would have survived until something did.
+            _kind  = VocabKind.AudioCpp;
+            _vocab = [];
         }
         else if (string.Equals(asrModel, "ibm-granite/granite-speech-4.1-2b", StringComparison.Ordinal))
         {

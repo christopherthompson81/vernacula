@@ -66,7 +66,7 @@
              Condition="'@(_AudioCppEngine)' != ''" />
     <!-- A warning, not an error: everything except this one backend builds and
          runs without an engine present. -->
-    <Warning Text="No audio.cpp engine found; the AudioCpp ASR backend will not load. Build one in AudioCpp-Bindings (scripts/build-engine.sh), or set AUDIOCPP_NATIVE_DIR and rebuild."
+    <Warning Text="No audio.cpp engine found, so the AudioCpp ASR backend will not load (everything else is unaffected). AUDIOCPP_NATIVE_DIR is read at BUILD time, not at run time: rebuild once with it pointing at an AudioCpp-Bindings engine build, e.g. AUDIOCPP_NATIVE_DIR=/path/to/AudioCpp-Bindings/external/audio.cpp/build/bin dotnet build. Or check out and build the pinned engine: git submodule update --init external/AudioCpp-Bindings/external/audio.cpp &amp;&amp; external/AudioCpp-Bindings/scripts/build-engine.sh"
              Condition="'@(_AudioCppEngine)' == ''" />
   </Target>
 
