@@ -498,3 +498,24 @@ Run 8 brackets precisely this window:
 
 Whether the first line appears splits "session creation" from "first Run()", and
 no probe can answer that question the way one reproduction will.
+
+## Run 11 — 2026-09-14 16:20 — the hang did not recur
+
+The job 201 hang could not be reproduced. Recorded as **transient and
+unexplained**, not as fixed: nothing was changed that would have addressed it,
+so if it returns it is the same bug, not a new one.
+
+What a future occurrence starts from, rather than from scratch:
+
+- The four hypotheses in Run 10 are ruled out by measurement — model search,
+  repeated sessions, ORT/ggml CUDA coexistence, degenerate segment lengths.
+- The window is `AudioCppRegistry.Create()`, the model load, and the first
+  `_session.Run()`, and the Run 8 instrumentation brackets it: whether
+  `[audio.cpp] backend=... load=NNNms segments=N` appears splits session
+  creation from the first inference.
+- The untested difference remains the app's own shape — a GUI process,
+  recognition on a background thread, a cancellation token in flight, progress
+  reported to the UI from inside a lazy enumerable holding a native session.
+- A one-off CUDA initialisation stall under contention from another process
+  would fit the evidence equally well and would be invisible to every probe
+  above. The machine has a single GPU shared with whatever else is running.
