@@ -1298,6 +1298,16 @@ internal class TranscriptionService
                 // The ABI loads a model, not a models root: pointing it at the
                 // directory would fail at load rather than transcribe badly, but
                 // it would fail for a reason the message does not explain.
+                // AudioCppAsr mirrors this constant rather than referencing
+                // Vernacula.Base, to keep that project off the ONNX stack. The
+                // comment there says the caller checks they agree; this is that
+                // check. A mismatch would slice every segment at the wrong
+                // offset and produce plausible transcripts of the wrong audio.
+                if (Vernacula.AudioCpp.AudioCppAsr.SampleRate != Config.SampleRate)
+                    throw new InvalidOperationException(
+                        $"Sample-rate mismatch: the pipeline uses {Config.SampleRate} Hz and "
+                        + $"the audio.cpp backend assumes {Vernacula.AudioCpp.AudioCppAsr.SampleRate} Hz.");
+
                 string audioCppModelPath = Vernacula.AudioCpp.AudioCppAsr.ResolveParakeet(audioCppModelsDir)
                     ?? throw new FileNotFoundException(
                         "No audio.cpp Parakeet package under " + audioCppModelsDir

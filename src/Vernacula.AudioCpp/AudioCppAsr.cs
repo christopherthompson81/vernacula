@@ -205,15 +205,27 @@ public sealed class AudioCppAsr : IDisposable
     /// A search rather than a fixed path: the package directory and the file
     /// inside it are named by the engine's catalogue, and a quantisation the
     /// user chose (q8_0, f16, ...) changes the file name. Returns null rather
-    /// than throwing so the caller can say what it was looking for and where.
+    /// than throwing so the caller can say what it was looking for and where,
+    /// and reports the choice when more than one package matches.
     /// </remarks>
     public static string? ResolveParakeet(string modelsRoot)
     {
         if (!Directory.Exists(modelsRoot)) return null;
-        return Directory
+
+        var found = Directory
             .EnumerateFiles(modelsRoot, "parakeet-tdt*.gguf", SearchOption.AllDirectories)
             .OrderBy(path => path, StringComparer.Ordinal)
-            .FirstOrDefault();
+            .ToList();
+
+        // With two quantisations installed the ordinal sort decides, which means
+        // f16 beats q8_0 for no better reason than the alphabet. Say so rather
+        // than let someone wonder why the model they installed second is the one
+        // being used.
+        if (found.Count > 1)
+            Console.WriteLine($"[audio.cpp] {found.Count} parakeet packages under {modelsRoot}; "
+                              + $"using {Path.GetFileName(found[0])}");
+
+        return found.FirstOrDefault();
     }
 
     private static float[] Slice(float[] audio, double start, double end)
