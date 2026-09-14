@@ -8,6 +8,19 @@
     <AssemblyName>Vernacula.AudioCpp</AssemblyName>
   </PropertyGroup>
 
+  <!-- The submodule is optional. A clone without it must still build the rest of
+       the app: Vernacula built standalone before this backend existed and has to
+       keep doing so. When the bindings are absent this project compiles to an
+       empty assembly, the app is built without the AUDIOCPP_BACKEND constant,
+       and the one branch that needs the types is compiled out. -->
+  <PropertyGroup>
+    <HasAudioCppBindings Condition="Exists('$(MSBuildThisFileDirectory)../../external/AudioCpp-Bindings/src/AudioCpp/AudioCpp.csproj')">true</HasAudioCppBindings>
+  </PropertyGroup>
+
+  <ItemGroup Condition="'$(HasAudioCppBindings)' != 'true'">
+    <Compile Remove="AudioCppAsr.cs" />
+  </ItemGroup>
+
   <ItemGroup>
     <!-- The bindings are a pinned submodule rather than a package: the ABI they
          wrap is still moving, and a recorded commit says which one this was
@@ -17,7 +30,8 @@
          the audio.cpp path off the ONNX Runtime stack entirely, so that what is
          being tested is the ABI and not a hybrid. -->
     <ProjectReference
-      Include="../../external/AudioCpp-Bindings/src/AudioCpp/AudioCpp.csproj" />
+      Include="../../external/AudioCpp-Bindings/src/AudioCpp/AudioCpp.csproj"
+      Condition="'$(HasAudioCppBindings)' == 'true'" />
   </ItemGroup>
 
   <!-- The managed binding finds libaudiocpp by walking up from the executable
@@ -66,8 +80,13 @@
              Condition="'@(_AudioCppEngine)' != ''" />
     <!-- A warning, not an error: everything except this one backend builds and
          runs without an engine present. -->
+    <!-- Two different states, and one message for both would send someone with no
+         submodule hunting for an engine they have nowhere to put. -->
+    <Message Importance="high"
+             Text="Built without the AudioCpp-Bindings submodule: the AudioCpp ASR backend is not in this build. That is supported; run 'git submodule update --init external/AudioCpp-Bindings' and rebuild to include it."
+             Condition="'$(HasAudioCppBindings)' != 'true'" />
     <Warning Text="No audio.cpp engine found, so the AudioCpp ASR backend will not load (everything else is unaffected). AUDIOCPP_NATIVE_DIR is read at BUILD time, not at run time: rebuild once with it pointing at an AudioCpp-Bindings engine build, e.g. AUDIOCPP_NATIVE_DIR=/path/to/AudioCpp-Bindings/external/audio.cpp/build/bin dotnet build. Or check out and build the pinned engine: git submodule update --init external/AudioCpp-Bindings/external/audio.cpp &amp;&amp; external/AudioCpp-Bindings/scripts/build-engine.sh"
-             Condition="'@(_AudioCppEngine)' == ''" />
+             Condition="'$(HasAudioCppBindings)' == 'true' And '@(_AudioCppEngine)' == ''" />
   </Target>
 
 </Project>

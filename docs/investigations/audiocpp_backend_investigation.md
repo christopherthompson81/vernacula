@@ -519,3 +519,46 @@ What a future occurrence starts from, rather than from scratch:
 - A one-off CUDA initialisation stall under contention from another process
   would fit the evidence equally well and would be invisible to every probe
   above. The machine has a single GPU shared with whatever else is running.
+
+## Run 12 — 2026-09-14 16:50 — is any of this optional?
+
+**Question:** must someone building Vernacula link an audio.cpp build?
+
+Two different answers, and only one of them was right.
+
+**The engine: already optional, verified.** No engine gives a warning, not an
+error, the app builds and runs, and only that one backend is unavailable.
+
+**The submodule: was mandatory, and should not have been.** Hiding
+`external/AudioCpp-Bindings` and building:
+
+```
+error CS0246: The type or namespace name 'AudioCpp' could not be found
+```
+
+A clone without `--recurse-submodules` could not build the app **at all**. That
+is a regression this work introduced into a repository that built standalone
+before it, and nobody had asked for it.
+
+**Fix.** The backend project compiles to an empty assembly when the bindings are
+absent (its one source file is removed from `Compile`, its `ProjectReference`
+conditioned away), the app defines `AUDIOCPP_BACKEND` only when they are present,
+and the one branch that needs the types is `#if`-guarded. The enum value and all
+eleven dispatch sites stay unconditional, so a settings file written by a full
+build is still readable by a build without the backend — it just reports that the
+backend is not in this build rather than falling through to Parakeet under the
+audio.cpp name.
+
+The two absent states now say different things, because one message for both
+would send someone with no submodule hunting for an engine they have nowhere to
+put:
+
+| state | build output |
+|---|---|
+| no submodule | *message*: backend not in this build, here is the command to add it |
+| submodule, no engine | *warning*: AUDIOCPP_NATIVE_DIR is read at build time, here are both ways to fix it |
+
+**Verified all three ways:** with submodule and engine, build succeeds and the
+suite passes **236/236**; with submodule and no engine, warning, build succeeds;
+with no submodule at all, informational message, **zero warnings, zero errors**,
+build succeeds.

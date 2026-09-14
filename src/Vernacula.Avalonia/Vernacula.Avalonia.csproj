@@ -54,6 +54,11 @@
     <DisableTransitiveFrameworkReferences>true</DisableTransitiveFrameworkReferences>
   </PropertyGroup>
 
+  <PropertyGroup>
+    <HasAudioCppBindings Condition="Exists('$(MSBuildThisFileDirectory)../../external/AudioCpp-Bindings/src/AudioCpp/AudioCpp.csproj')">true</HasAudioCppBindings>
+    <DefineConstants Condition="'$(HasAudioCppBindings)' == 'true'">$(DefineConstants);AUDIOCPP_BACKEND</DefineConstants>
+  </PropertyGroup>
+
   <ItemGroup>
     <AvaloniaResource Include="Assets\**" />
   </ItemGroup>
@@ -176,6 +181,9 @@
   <ItemGroup>
     <ProjectReference Include="..\Vernacula.Base\Vernacula.Base.csproj" />
     <ProjectReference Include="..\Vernacula.AudioCpp\Vernacula.AudioCpp.csproj" />
+    <!-- The reference stays unconditional: without the submodule that project
+         still builds, just empty. What changes is whether the branch using it
+         is compiled, which AUDIOCPP_BACKEND below decides. -->
     <!-- Text-to-speech: the reader's synthesis backends (Chatterbox, Kokoro, OmniVoice-IPA)
          live in Vernacula.Tts.Base. This is where the standalone Vernacula.Tts.Avalonia reader
          was folded in; TTS jobs share the ASR job queue and history. -->

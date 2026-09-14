@@ -1277,6 +1277,7 @@ internal class TranscriptionService
                         overridePercent));
                 }
             }
+#if AUDIOCPP_BACKEND
             else if (useAudioCppAsr)
             {
                 // The one backend that is not ONNX Runtime. Segmentation,
@@ -1400,6 +1401,20 @@ internal class TranscriptionService
                     + $"({(recognizeSeconds > 0 ? recognizedSeconds / recognizeSeconds : 0):F1}x realtime), "
                     + $"avg {(completed > 0 ? recognizeWatch.ElapsedMilliseconds / (double)completed : 0):F0}ms/segment");
             }
+#else
+            else if (useAudioCppAsr)
+            {
+                // Built without the audio.cpp submodule. The backend is still
+                // selectable -- the enum and every dispatch site are unconditional,
+                // so settings written on a full build stay readable here -- but it
+                // cannot run, and saying so beats a NullReference or, worse, a
+                // silent fall-through to Parakeet under the audio.cpp name.
+                throw new InvalidOperationException(
+                    "This build has no audio.cpp backend. It was compiled without the "
+                    + "AudioCpp-Bindings submodule; check it out and rebuild, or choose a "
+                    + "different ASR backend in Settings.");
+            }
+#endif
             else
             {
                 var (encoderFile, decoderJointFile) =
