@@ -47,6 +47,7 @@
   "btn_export_tts": "Export…",
   "tts_listening_mode": "Listening",
   "tts_editing_mode": "Editing",
+  "tts_edit_card_unmapped": "That paragraph could not be located in the source.",
   "tts_edit_pending": "Edited — waiting…",
   "tts_edit_rendering": "Re-rendering {count} paragraph(s)…",
   "tts_edit_rendered": "Audio updated.",

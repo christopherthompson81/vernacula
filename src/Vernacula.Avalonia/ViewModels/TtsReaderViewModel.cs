@@ -52,7 +52,9 @@ internal sealed partial class TtsReaderViewModel : ObservableObject, IDisposable
     // ── View preferences (persisted, not per job) ────────────────────────────
 
     /// <summary>Show the document's source text verbatim instead of the word-by-word view.</summary>
-    [ObservableProperty] private bool _showRawMarkdown;
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(ShowRawEditor), nameof(ShowRawReader))]
+    private bool _showRawMarkdown;
     [ObservableProperty] private bool _showIpaAnnotation;
 
     [ObservableProperty]
@@ -236,6 +238,7 @@ internal sealed partial class TtsReaderViewModel : ObservableObject, IDisposable
         // Finished jobs only: editing re-renders against a sidecar, and a running job has none yet.
         CanEdit = true;
         BeginEditing(job);
+        WireBlockEditing();
     }
 
     // ── Watching a running job ───────────────────────────────────────────────
@@ -646,7 +649,16 @@ internal sealed partial class TtsReaderViewModel : ObservableObject, IDisposable
     /// <summary>Listening (the aligned karaoke view) vs Editing (the markdown, editable).</summary>
     /// <summary>Whether the mode toggle is offered at all — a finished job with a sidecar.</summary>
     [ObservableProperty] private bool _canEdit;
-    [ObservableProperty] private bool _isEditing;
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(ShowRawEditor), nameof(ShowRawReader))]
+    private bool _isEditing;
+
+    /// <summary>Editing the whole document as markdown — the RESTRUCTURING view (move, split, merge,
+    /// change a paragraph into a heading).</summary>
+    public bool ShowRawEditor => IsEditing && ShowRawMarkdown;
+
+    /// <summary>The source, read-only, as it has always been shown in listening.</summary>
+    public bool ShowRawReader => !IsEditing && ShowRawMarkdown;
     [ObservableProperty] private string _editableText = "";
     /// <summary>What the corner indicator says; empty when there is nothing to say.</summary>
     [ObservableProperty] private string _editStatus = "";
@@ -714,8 +726,66 @@ internal sealed partial class TtsReaderViewModel : ObservableObject, IDisposable
 
     partial void OnIsEditingChanged(bool value)
     {
-        // Leaving the editor writes immediately rather than on the clock — the user has moved on.
-        if (!value) _ = _saveDebounce?.FlushAsync();
+        // ⚠ CLICKING A WORD SEEKS, and that must keep being true in Listening. The cards carry this
+        // flag so the editing overlay — which is what takes the click instead — exists only here.
+        foreach (var b in DisplayBlocks) b.CardEditingEnabled = value;
+        if (!value)
+        {
+            CommitOpenBlock();
+            // Leaving the editor writes immediately rather than on the clock — the user has moved on.
+            _ = _saveDebounce?.FlushAsync();
+        }
+    }
+
+    /// <summary>Opens one card for editing, seeded with its own markdown.</summary>
+    private void OnBlockEditRequested(BlockItemViewModel block)
+    {
+        if (!IsEditing) return;
+        CommitOpenBlock();
+        var span = MarkdownSegmentSpans.For(EditableText).FirstOrDefault(s => s.Index == block.Index);
+        if (span is null)
+        {
+            // No mapped extent — leave the card read-only rather than guess at where it lives.
+            EditStatus = Loc.Instance["tts_edit_card_unmapped"];
+            return;
+        }
+        block.EditText = MarkdownSegmentSpans.TextOf(EditableText, span);
+        block.IsEditingBlock = true;
+    }
+
+    /// <summary>
+    /// Splices the card's text back into the document. Setting EditableText is what starts both
+    /// clocks, so a card edit debounces exactly like a raw edit — one path, not two.
+    /// </summary>
+    private void OnBlockEditCommitted(BlockItemViewModel block)
+    {
+        if (!block.IsEditingBlock) return;
+        block.IsEditingBlock = false;
+        var span = MarkdownSegmentSpans.For(EditableText).FirstOrDefault(s => s.Index == block.Index);
+        if (span is null) return;
+        string current = MarkdownSegmentSpans.TextOf(EditableText, span);
+        if (string.Equals(current, block.EditText, StringComparison.Ordinal)) return;
+        EditableText = MarkdownSegmentSpans.Splice(EditableText, span, block.EditText);
+    }
+
+    private static void OnBlockEditCancelled(BlockItemViewModel block) => block.IsEditingBlock = false;
+
+    private void CommitOpenBlock()
+    {
+        foreach (var b in DisplayBlocks)
+            if (b.IsEditingBlock) { OnBlockEditCommitted(b); break; }
+    }
+
+    /// <summary>Gives every freshly built card its editing hooks and the current mode.</summary>
+    private void WireBlockEditing()
+    {
+        foreach (var b in DisplayBlocks)
+        {
+            b.EditRequested = OnBlockEditRequested;
+            b.EditCommitted = OnBlockEditCommitted;
+            b.EditCancelled = OnBlockEditCancelled;
+            b.CardEditingEnabled = IsEditing;
+        }
     }
 
     /// <summary>Writes the edited markdown back over the job's own input document.</summary>

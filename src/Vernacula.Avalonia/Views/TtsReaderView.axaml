@@ -75,7 +75,7 @@
                      quotes), each a wrapping flow of word buttons. Click-to-seek; the .current
                      class is the highlight while the audio is on that word. FlowDirection per
                      block is what lays an Arabic or Persian block out right to left. -->
-                <ScrollViewer IsVisible="{Binding !ShowRawMarkdown}" IsEnabled="{Binding !IsEditing}">
+                <ScrollViewer IsVisible="{Binding !ShowRawMarkdown}">
                     <ItemsControl ItemsSource="{Binding DisplayBlocks}">
                         <ItemsControl.ItemsPanel>
                             <ItemsPanelTemplate>
@@ -94,11 +94,27 @@
                                         Classes.listitem="{Binding IsListItem}"
                                         Classes.paragraph="{Binding IsParagraph}"
                                         FlowDirection="{Binding FlowDirection}">
+                                  <Panel>
                                   <StackPanel>
                                     <TextBlock Text="{Binding HeaderLabel}"
                                                Classes="segment-caption"
                                                FlowDirection="LeftToRight" />
-                                    <Grid ColumnDefinitions="Auto,*">
+                                    <!-- EDITING THIS CARD IN PLACE. Only the card's own words are in
+                                         the box: the block's markup (#, -, >) lies outside the
+                                         spliced extent, so editing the words cannot demote a
+                                         heading or unmake a list item. -->
+                                    <TextBox IsVisible="{Binding IsEditingBlock}"
+                                             Text="{Binding EditText, Mode=TwoWay}"
+                                             AcceptsReturn="True"
+                                             TextWrapping="Wrap"
+                                             LostFocus="BlockEditor_LostFocus"
+                                             KeyDown="BlockEditor_KeyDown"
+                                             Background="Transparent"
+                                             BorderThickness="0,0,0,2"
+                                             Padding="0,2"
+                                             Margin="0,2,0,0" />
+                                    <Grid ColumnDefinitions="Auto,*"
+                                          IsVisible="{Binding !IsEditingBlock}">
                                         <TextBlock Grid.Column="0" Text="•"
                                                    IsVisible="{Binding IsListItem}"
                                                    FontSize="18" Margin="2,2,8,0"
@@ -187,6 +203,18 @@
                                         </ItemsControl>
                                     </Grid>
                                   </StackPanel>
+                                    <!-- ⚠ CLICKING A WORD SEEKS, and still does in Listening. This
+                                         overlay exists ONLY in editing mode, where it covers the
+                                         words and takes the click to open the card instead. -->
+                                    <Button IsVisible="{Binding ShowEditOverlay}"
+                                            Command="{Binding RequestEditCommand}"
+                                            Background="Transparent"
+                                            BorderThickness="0"
+                                            Padding="0"
+                                            Cursor="Ibeam"
+                                            HorizontalAlignment="Stretch"
+                                            VerticalAlignment="Stretch" />
+                                  </Panel>
                                 </Border>
                             </DataTemplate>
                         </ItemsControl.ItemTemplate>
@@ -195,7 +223,7 @@
 
                 <!-- The source as written. No word highlight here — the raw text carries no
                      alignment; it is for reading and copying the markup itself. -->
-                <ScrollViewer IsVisible="{Binding ShowRawMarkdown}"
+                <ScrollViewer IsVisible="{Binding ShowRawReader}"
                               FlowDirection="{Binding TextFlowDirection}">
                     <SelectableTextBlock Text="{Binding SourceText}"
                                          FontFamily="{Binding TextFontFamily}"
@@ -203,9 +231,11 @@
                                          TextWrapping="Wrap" />
                 </ScrollViewer>
 
-                <!-- EDITING MODE: the markdown itself, editable. Covers both reading views, so the
-                     toggle is a real mode rather than a third pane competing with Raw Markdown. -->
-                <TextBox IsVisible="{Binding IsEditing}"
+                <!-- EDITING + RAW: the whole document as markdown. This is the RESTRUCTURING view —
+                     move, split and merge paragraphs, change a paragraph into a heading. With Raw
+                     Markdown unchecked, editing happens on the cards instead, which is the REVISING
+                     view; the two are different jobs, which is why the checkbox stays live here. -->
+                <TextBox IsVisible="{Binding ShowRawEditor}"
                          Text="{Binding EditableText, Mode=TwoWay}"
                          AcceptsReturn="True"
                          AcceptsTab="True"
@@ -298,7 +328,6 @@
                           Margin="0,0,14,0" />
             <CheckBox Grid.Column="4"
                       x:Name="RawMarkdownCheck"
-                      IsEnabled="{Binding !IsEditing}"
                       Content="{local:Loc tts_raw_markdown}"
                       IsChecked="{Binding ShowRawMarkdown}"
                       Foreground="{DynamicResource TextBrush}"
