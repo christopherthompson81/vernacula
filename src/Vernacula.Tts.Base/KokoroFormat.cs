@@ -75,6 +75,110 @@ public static class KokoroFormat
     // word-alignment code counts a run of non-space tokens as one word, so it must not stand alone.
     private static readonly Regex DetachedPunctRe = new(@" +([,.;:!?…—]+)(?= |$)", RegexOptions.Compiled);
 
+    // ── Everything above this point is ENGLISH ───────────────────────────────
+    // The tables and regexes above encode English phonology, not Kokoro's alphabet, and applying
+    // them to another language is silently destructive rather than merely approximate. Measured
+    // over 60 golden sentences per language:
+    //
+    //   es   x→k ×62 flattens the jota (jamón → kamón); r→ɹ ×59 and ɾ→T ×458 merge the trill
+    //        and the tap, so perro and pero stop contrasting
+    //   fr   the nasalisation tilde stripped ×400 — phonemic in French
+    //   it   r→ɹ ×502
+    //   hi   ʰ stripped ×125 — aspiration is PHONEMIC in Hindi (क vs ख), not allophonic as in
+    //        English; ɾ→T ×450; the tilde ×242
+    //   pt   ɐ→ə ×382 and the tilde ×271, both phonemic
+    //
+    // ⚠ EVERY ONE OF THOSE REWRITES A SYMBOL KOKORO'S VOCABULARY ALREADY CARRIES — r, ɹ, ɾ, x,
+    // ɐ and the combining tilde are all in it. The collapses are English conveniences (English
+    // has no trill, and its ɾ really is an allophone of /t/), not limits of the model.
+    //
+    // So the two paths are kept apart rather than parameterised: the English one is left exactly
+    // as it was, because it is correct and byte-for-byte verified against the goldens, and the
+    // other languages get the alphabet conventions WITHOUT the allophone collapses.
+
+    /// <summary>The Kokoro alphabet's own conventions, which hold whatever the language is.</summary>
+    /// <remarks>
+    /// audio.cpp applies the same tie-collapsing table to every eSpeak language it drives
+    /// (<c>espeak_text()</c>), so these are properties of the alphabet Kokoro was trained on
+    /// rather than of English.
+    /// </remarks>
+    private static readonly (string Old, string New)[] AlphabetConventions =
+    [
+        ("\u0361", ""),       // tie bar: d͡ʒ → dʒ, consumed just below
+        ("oᶷ", "O"), ("eᶦ", "A"), ("aᶦ", "I"), ("aᶷ", "W"), ("ɔᶦ", "Y"),
+        ("ᶦ", "ɪ"), ("ᶷ", "ʊ"),   // an offglide no diphthong claimed
+        ("dʒ", "ʤ"), ("tʃ", "ʧ"),
+        // The voicing diacritic has no token of its own. English reads t̬ as its flap and maps it
+        // to T; everywhere else it simply means "voiced", and the voiced counterpart is the
+        // nearest thing the vocabulary holds. Stripping it instead would leave t, which is the
+        // opposite sound.
+        ("t\u032c", "d"), ("d\u032c", "d"),
+    ];
+
+    /// <summary>
+    /// Per-language collapses, for distinctions Kokoro's alphabet genuinely cannot carry — as
+    /// opposed to ones English happens not to make.
+    /// </summary>
+    private static readonly Dictionary<string, (string Old, string New)[]> LanguageRules = new()
+    {
+        // Hindi writes ह as the VOICED glottal fricative and marks breathy voice and dental
+        // place; Kokoro's alphabet has none of the three. h and ʰ are the nearest it holds, and
+        // the dental bridge has no counterpart at all, so it goes. Aspiration is NOT stripped
+        // here the way it is for English: क/ख is a phonemic contrast, not an allophone.
+        ["hi"] = [("ɦ", "h"), ("ʱ", "ʰ"), ("\u032a", "")],
+    };
+
+    /// <summary>
+    /// Render canonical IPA from vernacula-phonemizer into a Kokoro-vocab phoneme string, for the
+    /// language it was phonemized as. <paramref name="lang"/> is a phonemizer code
+    /// (<c>en</c>, <c>en-GB</c>, <c>es</c>, <c>fr</c>, <c>hi</c>, <c>it</c>, <c>pt-BR</c>).
+    /// </summary>
+    public static string Render(string ipa, string lang)
+    {
+        if (string.IsNullOrEmpty(ipa)) return ipa ?? string.Empty;
+        return lang is "en" or "en-GB" or "en-US" or null
+            ? Render(ipa, british: lang == "en-GB")
+            : RenderNonEnglish(ipa, lang);
+    }
+
+    private static string RenderNonEnglish(string ipa, string lang)
+    {
+        var ps = ipa.Trim();
+        foreach (var (old, neu) in AlphabetConventions) ps = ps.Replace(old, neu);
+        if (LanguageRules.TryGetValue(lang, out var extra))
+            foreach (var (old, neu) in extra) ps = ps.Replace(old, neu);
+
+        ps = DecomposeUnknown(ps);
+        ps = DetachedPunctRe.Replace(ps, "$1");
+        return ps;
+    }
+
+    /// <summary>
+    /// Last resort for a codepoint the vocabulary has no id for: if Unicode decomposes it into
+    /// pieces the vocabulary DOES carry, use those.
+    /// </summary>
+    /// <remarks>
+    /// This is not a nicety — it is the whole of Portuguese. Our IPA writes nasal vowels
+    /// precomposed (õ ĩ ũ ẽ) and Kokoro carries the base vowels plus the combining tilde
+    /// (U+0303, token 17), so the same sound is spelled one way here and another there.
+    /// Decomposing is exact; dropping the character would delete the nasality, and dropping the
+    /// vowel would delete the syllable.
+    /// </remarks>
+    private static string DecomposeUnknown(string ps)
+    {
+        if (ps.All(KokoroVocab.Contains)) return ps;
+        var sb = new System.Text.StringBuilder(ps.Length + 8);
+        foreach (var c in ps)
+        {
+            if (KokoroVocab.Contains(c)) { sb.Append(c); continue; }
+            var decomposed = c.ToString().Normalize(System.Text.NormalizationForm.FormD);
+            // All-or-nothing: half a decomposition is a different sound, not a closer one.
+            if (decomposed.Length > 1 && decomposed.All(KokoroVocab.Contains)) sb.Append(decomposed);
+            else sb.Append(c);   // left in, so the engine's own validation names it
+        }
+        return sb.ToString();
+    }
+
     /// <summary>
     /// Render canonical IPA from vernacula-phonemizer (<c>en</c> or <c>en-GB</c>) into a Kokoro-vocab
     /// phoneme string. Set <paramref name="british"/> for text phonemized as en-GB (lang_code 'b',

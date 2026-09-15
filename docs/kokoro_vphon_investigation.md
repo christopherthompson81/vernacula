@@ -108,3 +108,90 @@ needs only vernacula-phonemizer now — which is the repo being made public.
 
 Not done: `$3.14 → "and … cents"` upstream; a re-listen of the reader's word highlighting with
 the new map (it is exercised by `KokoroPhonemizerTests`, not by ear).
+
+## Cross-language rendering — 2026-09-15
+
+`KokoroFormat.Render` was written for English and applied to English, so nobody
+had asked what it does to the other languages Kokoro speaks. It does damage, and
+the damage is invisible to the obvious check.
+
+### The measurement that missed it
+
+First pass asked "is every rendered symbol in Kokoro's vocabulary?" and reported
+**0.00% out-of-vocab for es, fr, it** — clean. That is membership, not
+correctness, and the two come apart completely: a rule can rewrite one in-vocab
+symbol into another in-vocab symbol and destroy a phonemic contrast while the
+number stays green.
+
+Asking instead which rules FIRE, over 60 golden sentences per language:
+
+| lang | rule | count | what it destroys |
+|---|---|---|---|
+| es | `x→k` | 62 | the jota — *jamón* becomes *kamón* |
+| es | `r→ɹ` / `ɾ→T` | 59 / 458 | trill and tap merge; *perro* and *pero* stop contrasting |
+| fr | strip `̃` | 400 | nasal vowels, phonemic in French |
+| it | `r→ɹ` | 502 | the trill |
+| hi | strip `ʰ` | 125 | aspiration — PHONEMIC in Hindi (क/ख), allophonic in English |
+| pt-BR | `ɐ→ə` / strip `̃` | 382 / 271 | a phonemic vowel, and the nasals |
+
+Plus two unconditional rules further down: `o→ɔ`, which merges Portuguese *avô*
+/o/ with *avó* /ɔ/, and dropping `ː`, which is phonemic length in Hindi.
+
+⚠ **Every one of those rewrites a symbol Kokoro's vocabulary already carries.**
+`r`, `ɹ`, `ɾ`, `x`, `ɐ` and U+0303 are all in it. The collapses are English
+conveniences — English has no trill, and its `ɾ` really is an allophone of /t/ —
+not limits of the model.
+
+### The split
+
+Two paths rather than one parameterised one. The English path is left EXACTLY as
+it was, because it is correct and byte-verified; the other languages get the
+alphabet conventions without the allophone collapses:
+
+- **AlphabetConventions** — tie bar, offglide diphthongs, `dʒ→ʤ`, `tʃ→ʧ`. These
+  are properties of the alphabet Kokoro was trained on, not of English:
+  audio.cpp applies the same tie-collapsing table to every eSpeak language it
+  drives (`espeak_text()`).
+- **LanguageRules** — only what Kokoro's alphabet genuinely cannot carry. Hindi
+  alone so far: `ɦ→h`, `ʱ→ʰ`, and the dental bridge dropped.
+- **DecomposeUnknown** — a codepoint with no id, decomposed if Unicode yields
+  pieces the vocabulary does hold. This is the whole of Portuguese: we write
+  nasal vowels precomposed (õ ĩ ũ ẽ), Kokoro carries base + U+0303. All or
+  nothing, since half a decomposition is a different sound.
+
+Result: **all seven eSpeak-driven languages clean, English byte-identical**
+(114/114 rows on both en and en-GB via the old and new entry points), and the
+contrasts restored:
+
+```
+es    : pˈeɾo el pˈero ... xamˈon.     tap vs trill; jota survives
+it    : kˈorre vˈerso
+fr    : œ̃ bɔ̃ vɛ̃ blˈɑ̃
+pt-BR : o avˈo e a avˈɔ ... estˈɐ̃w̃
+hi    : pˈʊlɪs nˈeː kˈəhaː
+```
+
+### ja and zh are a different problem — NOT done
+
+| lang | out of vocab | missing |
+|---|---|---|
+| ja | 23.96% | `ä`×872, `̞`×1139, `ꜜ`×222, `ʑ`×72 |
+| cmn | 38.71% | tone letters `˥˦˧˨˩`×4348, `ʐ`×180, `ᵘ`/`ⁱ`, `̩` |
+
+These need mapping TABLES, not the removal of collapses. The target is knowable
+exactly rather than guessable — the bundled multilingual GGUF carries the
+engine's own tables, and their output inventories are:
+
+```
+ja : abdehijkmnopstvzçɕɡɨɯɲɸɾʣʥʦʨʲβᵝ   (no ː, and NO pitch-accent marks)
+zh : aefhijklmnopstuwxyŋɔɕəɚɛɤɥɨɻʂʦʨʰ→↓↗↘ꭧ
+     a1 -> a→   a2 -> a↗   a3 -> a↓   a5 -> a
+```
+
+So Mandarin tone letters map onto the arrows Kokoro carries for exactly this,
+and Japanese pitch accent has nowhere to go — Kokoro's Japanese does not encode
+it. Cantonese is irrelevant: Kokoro's `zh` is Mandarin.
+
+**Deferred rather than guessed**, because the tone mapping and the decision to
+drop downstep want an ear on the output, not just an in-vocab count — which is
+the exact mistake this entry began with.
