@@ -497,3 +497,96 @@ installs. And `ResolveKokoro` globs `kokoro-82m*.gguf` and picks ordinal-first
 when it finds several, so two packages under one models root would make the
 choice depend on the alphabet — a reason to keep this one in its own directory
 until somebody decides deliberately.
+
+## Run 10 — 2026-09-15 15:15 — measuring the ENGINE instead of a proxy, and two corrections
+
+The Japanese work (Run 9) was entirely on the G2P-resources side — Japanese
+never reached the vocab encoder, it died at `load_ja()`. It closed a gap worth
+closing but it was never the diagnostic for "do other languages throw". This is.
+
+**Method:** temporarily restore the throw in the patched engine, then run 40 real
+golden sentences per language through the RELEASE package — i.e. ask what a
+normal install actually did before the fix.
+
+```
+en-us   40 ok /  0 THREW
+en-gb   40 ok /  0 THREW
+es      35 ok /  5 THREW   missing phoneme symbol: «
+fr-fr   34 ok /  6 THREW   missing phoneme symbol: «
+hi      40 ok /  0 THREW
+it      39 ok /  1 THREW   missing phoneme symbol: ̪ (U+032A)
+pt-br   40 ok /  0 THREW
+zh  real Chinese    OK 4.05s
+zh  Latin in zh     THREW   missing phoneme symbol: H
+```
+
+### Correction 1 — Chinese was never broken. The test was.
+
+Run 3 reported eight Chinese voices failing on `missing phoneme symbol: H`, and
+Run 8 credited the vocab fix with repairing them. Both wrong. That sweep fed
+`"Hello there."` to every voice, and the Chinese G2P passes unmapped Latin
+through literally — the `H` was from MY TEST STRING. Real Chinese renders fine
+before the fix and after, which the bundled `zh.json` corroborates: its entire
+IPA table is in-vocab.
+
+So **the 41 → 49 jump was an artifact of the probe, not a repair.** Japanese is
+different and genuinely was broken — it throws at load regardless of text.
+
+**The lesson is about the probe, not the engine.** A voice list verified with one
+English sentence tells you the VOICE loads; it says nothing about whether the
+LANGUAGE works. Every language should be probed in its own script.
+
+### Correction 2 — the dominant trigger is `«`, not the syllabic mark
+
+Spanish and French die on U+00AB GUILLEMET, which Kokoro's vocab lacks (it
+carries `(` and `)` but not the guillemets). 5/40 and 6/40 — 12% and 15% of real
+sentences, against English's 0/40 here and roughly 1-in-114 overall. The language
+I originally diagnosed is the LEAST affected of the seven.
+
+So the fix is more valuable than Run 6 claimed, and for a different reason: it
+repairs ordinary Spanish, French and Italian prose, not just English `button`.
+
+### Correction 3 — the espeak-ng CLI was a bad proxy
+
+Run 6 diffed `espeak-ng -q --ipa` against the vocab and predicted French would
+drown in hyphens (3.42%, 507 occurrences). **Zero hyphen throws in practice**,
+and the diff entirely missed the guillemets that actually fail. audio.cpp drives
+espeak through its own caret-tied IPA integration, so the CLI's output is not
+what the engine encodes. Measure the engine.
+
+### Regression gates, against the restored patched engine
+
+| gate | result |
+|---|---|
+| C# model test (bindings) | ran=4 skipped=1 **failures=0** |
+| `audiocpp_c_api_path` / `_exports` | Passed |
+| `audiocpp_c_api_model` (C) | **Passed**, 146 s — once given `-DAUDIOCPP_C_API_MODEL_ROOT` |
+| `audiocpp_c_api_parity` (C API vs CLI) | **PARITY OK across 5 families** |
+
+```
+kokoro_tts  audio  MATCH  cli=79800@24000Hz peak=0.3383  api=79800@24000Hz peak=0.3383
+```
+
+79800 frames at 24 kHz is 3.325 s — byte-identical to what the STOCK engine
+produced for that sentence in Run 4, and identical between the CLI and the C
+API. The fix is inert on text that never had an out-of-vocab symbol, which is
+exactly the property it should have.
+
+### ⚠ Every one of these suites is green by default while skipping its real half
+
+Not caused by these changes, but it is why a vocab throw on `«` in Spanish and
+French shipped:
+
+- `run-tests.sh` aborted at a missing audio-capture binary and still surfaced
+  as exit 0, with the path, model and cross-language stages never running.
+- `ctest` reported "100% tests passed" with 2 of 4 skipped — the two that load
+  models.
+- `audiocpp_c_api_model` skips unless `AUDIOCPP_C_API_MODEL_ROOT` is set at
+  configure time.
+- `audiocpp_c_api_parity` skips unless `audiocpp_cli` exists, and
+  `build-engine.sh` does not build it.
+- The server's TTS/ASR/alignment routes skip unless `AUDIOCPP_TTS_MODEL` and
+  friends are set.
+
+"The tests pass" was largely a statement about the tests that do not touch a
+model.
