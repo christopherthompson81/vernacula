@@ -107,6 +107,27 @@ public class MarkdownSegmentSpansTests
         Assert.Equal("Reworded\n===\n\nA paragraph.", EditCard(md, 0, "Reworded"));
     }
 
+    /// <summary>
+    /// ⚠ THE PREMISE THE READER'S IMMEDIATE REFRESH RESTS ON: editing the marker through the card's
+    /// own extent changes what the segmenter says the block IS. The cards are rebuilt on a commit
+    /// only when this comes out different, so if it ever stopped being true the marker would become
+    /// editable again in name only.
+    /// </summary>
+    [Fact]
+    public void EditingTheMarkerChangesTheSegmentsKindAndLevel()
+    {
+        const string md = "## A heading\n\nA paragraph.";
+        Assert.Equal(BlockKind.Heading, ParagraphSegmenter.Segment(md)[0].Kind);
+        Assert.Equal(2, ParagraphSegmenter.Segment(md)[0].Level);
+
+        Assert.Equal(BlockKind.Paragraph,
+            ParagraphSegmenter.Segment(EditCard(md, 0, "Just words now."))[0].Kind);
+        Assert.Equal(4,
+            ParagraphSegmenter.Segment(EditCard(md, 0, "#### A heading"))[0].Level);
+        Assert.Equal(BlockKind.ListItem,
+            ParagraphSegmenter.Segment(EditCard(md, 0, "- A heading"))[0].Kind);
+    }
+
     /// <summary>Inline markup lies BETWEEN two text runs of one card, so it is inside the extent and
     /// is edited as literal markdown. The intended bargain, pinned so it is not a surprise.</summary>
     [Fact]

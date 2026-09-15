@@ -420,6 +420,9 @@ internal sealed partial class TtsReaderViewModel : ObservableObject, IDisposable
     {
         _settings.Current.TtsShowRawMarkdown = value;
         _settings.Save();
+        // Coming back to the cards from the raw editor: they were built from the document as it was
+        // before those edits, and nothing else rebuilds them until a re-render finishes.
+        if (!value && IsEditing && _editorSeeded) RefreshStructureFromEdit();
     }
 
     partial void OnShowIpaAnnotationChanged(bool value)
@@ -742,6 +745,9 @@ internal sealed partial class TtsReaderViewModel : ObservableObject, IDisposable
     {
         if (!IsEditing) return;
         CommitOpenBlock();
+        // ⚠ Committing the previous card can rebuild the cards, which leaves the one that was just
+        // clicked an orphan — setting IsEditingBlock on it would open nothing. Re-resolve by index.
+        block = DisplayBlocks.FirstOrDefault(b => b.Index == block.Index) ?? block;
         var span = MarkdownSegmentSpans.For(EditableText).FirstOrDefault(s => s.Index == block.Index);
         if (span is null)
         {
@@ -766,6 +772,47 @@ internal sealed partial class TtsReaderViewModel : ObservableObject, IDisposable
         string current = MarkdownSegmentSpans.TextOf(EditableText, span);
         if (string.Equals(current, block.EditText, StringComparison.Ordinal)) return;
         EditableText = MarkdownSegmentSpans.Splice(EditableText, span, block.EditText);
+        RefreshStructureFromEdit();
+    }
+
+    /// <summary>
+    /// Rebuilds the cards from the edited markdown, keeping the timings the current audio still has.
+    ///
+    /// ⚠ STRUCTURE IS A VIEW CONCERN AND MUST NOT WAIT FOR AUDIO. Without this the only thing that
+    /// ever rebuilds the cards is a successful re-render, so changing a card's marker — the edit the
+    /// marker was made editable FOR — showed nothing at all for the ten-second debounce and then a
+    /// synthesis round trip, and showed nothing ever when the edit changed no segment's key (say a
+    /// `-` bullet retyped as `*`). Reported as "cards can change their own kind — doesn't seem to
+    /// work", and from the outside that is indistinguishable from the edit being ignored.
+    ///
+    /// The timings re-attach by running index, so an edit that adds or removes words leaves the
+    /// later ones pointing at the wrong audio until the re-render lands. That is the right trade:
+    /// the alternative is a view that does not reflect what the document says.
+    ///
+    /// ⚠ AND IT REBUILDS ONLY WHEN THE STRUCTURE ACTUALLY CHANGED, which is not an optimization. A
+    /// rebuild replaces every card object, so the card the user is moving TO — they commit one card
+    /// by clicking the next — becomes an orphan mid-click and its button never fires. Paying that on
+    /// the rare marker edit is fine; paying it on every ordinary word edit would cost a click every
+    /// time and read as a second bug.
+    /// </summary>
+    private void RefreshStructureFromEdit()
+    {
+        if (StructureMatchesCards(EditableText)) return;
+        SetText(EditableText);
+        if (_sidecar is not null) AttachTimings(_sidecar);
+        WireBlockEditing();
+    }
+
+    /// <summary>Whether the cards on screen still describe <paramref name="markdown"/> — same
+    /// segments, in the same order, each with the kind and level it is being drawn with.</summary>
+    private bool StructureMatchesCards(string markdown)
+    {
+        var segments = ParagraphSegmenter.Segment(markdown ?? "");
+        if (segments.Count != DisplayBlocks.Count) return false;
+        for (int i = 0; i < segments.Count; i++)
+            if (segments[i].Kind != DisplayBlocks[i].Kind || segments[i].Level != DisplayBlocks[i].Level)
+                return false;
+        return true;
     }
 
     private static void OnBlockEditCancelled(BlockItemViewModel block) => block.IsEditingBlock = false;
@@ -788,10 +835,12 @@ internal sealed partial class TtsReaderViewModel : ObservableObject, IDisposable
         if (IsEditing) CommitOpenBlock();
     }
 
+    /// <summary>⚠ The open card is found BEFORE it is committed, because committing can rebuild
+    /// DisplayBlocks underneath an enumerator.</summary>
     private void CommitOpenBlock()
     {
-        foreach (var b in DisplayBlocks)
-            if (b.IsEditingBlock) { OnBlockEditCommitted(b); break; }
+        if (DisplayBlocks.FirstOrDefault(b => b.IsEditingBlock) is { } open)
+            OnBlockEditCommitted(open);
     }
 
     /// <summary>Gives every freshly built card its editing hooks and the current mode.</summary>
