@@ -73,9 +73,17 @@ internal static class MarkdownSegmentSpans
     /// bold to its last word, so the closing `**` lies past the last text the extractor emitted and
     /// the editor opened on `# **Title` — an opener with nothing to close it, which is worse than
     /// the missing marker it was meant to fix, since saving it changes what the document means.
+    ///
+    /// ⚠ THE INNER CLASS TAKES NO `+`, and that is not style. Written `(?:[*_`~]+|…)*` it is a
+    /// quantifier inside a quantifier over the same characters, and a run of those characters ending
+    /// in one that cannot match costs exponential time to REJECT — 24 of them measured at a second,
+    /// 34 at hours, and this runs on the UI thread on every commit. No input I could construct
+    /// actually reaches it (a long delimiter run is consumed into the extractor's ranges rather than
+    /// left trailing), so this is a latent hazard rather than a live one; the shape is still wrong
+    /// and costs nothing to get right.
     /// </summary>
     private static readonly Regex TrailingInline = new(
-        @"^(?:[*_`~]+|\]\([^()\s]*\))*[ \t]*#*[ \t]*$", RegexOptions.Compiled);
+        @"^(?:[*_`~]|\]\([^()\s]*\))*[ \t]*#*[ \t]*$", RegexOptions.Compiled);
 
     /// <summary>
     /// One entry per segment, in document order, for the segments whose source extent is known. A

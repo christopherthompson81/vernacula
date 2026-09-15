@@ -75,7 +75,7 @@
                      quotes), each a wrapping flow of word buttons. Click-to-seek; the .current
                      class is the highlight while the audio is on that word. FlowDirection per
                      block is what lays an Arabic or Persian block out right to left. -->
-                <ScrollViewer IsVisible="{Binding !ShowRawMarkdown}">
+                <ScrollViewer x:Name="CardScroller" IsVisible="{Binding !ShowRawMarkdown}">
                     <ItemsControl ItemsSource="{Binding DisplayBlocks}">
                         <ItemsControl.ItemsPanel>
                             <ItemsPanelTemplate>
