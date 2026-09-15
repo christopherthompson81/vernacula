@@ -17,8 +17,20 @@ namespace Vernacula.App.Services.Tts;
 /// </summary>
 internal static class TtsExportService
 {
-    /// <summary>One exported row.</summary>
-    public sealed record SentenceRow(int Index, double StartSeconds, double EndSeconds, string Text, string Phonemes);
+    /// <summary>
+    /// One exported row. Two readings, because they are two different things and exporting only the
+    /// second surprised the person who opened the file:
+    ///
+    /// <para><see cref="Ipa"/> is CANONICAL IPA — the same reading the reader draws above each word,
+    /// from the same phonemizer. It is the one that is worth reading.</para>
+    ///
+    /// <para><see cref="EnginePhonemes"/> is the stream the ENGINE was actually handed, in that
+    /// engine's own scheme (Kokoro's is not canonical IPA — no aspiration, no length marks). It is
+    /// what explains a mispronunciation, so it stays; it is just no longer the only column, and no
+    /// longer the one called `phonemes`.</para>
+    /// </summary>
+    public sealed record SentenceRow(int Index, double StartSeconds, double EndSeconds, string Text,
+                                     string Ipa, string EnginePhonemes);
 
     // Terminal punctuation (Latin, ellipsis, CJK) followed by whitespace. Only whitespace
     // boundaries are cut so every sentence is a whole number of whitespace-split words —
@@ -55,36 +67,73 @@ internal static class TtsExportService
         return result;
     }
 
-    /// <summary>Phonemizes each sentence the way the job's engine would read it. Blocking; call off the UI thread.</summary>
+    /// <summary>
+    /// Reads each sentence twice: once as canonical IPA and once the way the job's engine will read
+    /// it. Blocking; call off the UI thread.
+    /// </summary>
+    /// <param name="annotationLanguage">The phonemizer language tag the READER annotates with, so the
+    /// exported IPA and the IPA on screen are the same reading rather than two guesses at it.</param>
     public static List<SentenceRow> BuildRows(
         IReadOnlyList<(string Text, double Start, double End)> sentences,
-        SettingsService settings, TtsJobSettings job)
+        SettingsService settings, TtsJobSettings job, string annotationLanguage)
     {
-        // The engine owns its own text → phonemes path, so the CSV shows what that engine reads.
+        // The engine owns its own text → phonemes path, so the CSV can show what that engine reads.
         var phonemize = TtsEngines.For(job.Backend).CreatePhonemizer(settings, job);
+        var canonical = CanonicalReader(settings, annotationLanguage);
 
         var rows = new List<SentenceRow>(sentences.Count);
         for (int i = 0; i < sentences.Count; i++)
         {
             var (text, start, end) = sentences[i];
-            string phonemes;
-            try { phonemes = phonemize(text); }
-            catch (Exception ex) { phonemes = $"<error: {ex.Message}>"; }
-            rows.Add(new SentenceRow(i + 1, start, end, text, phonemes));
+            rows.Add(new SentenceRow(i + 1, start, end, text, canonical(text), Read(phonemize, text)));
         }
         return rows;
+
+        static string Read(Func<string, string> read, string text)
+        {
+            // One unreadable sentence must not cost the whole export; the cell says what happened.
+            try { return read(text); }
+            catch (Exception ex) { return $"<error: {ex.Message}>"; }
+        }
+    }
+
+    /// <summary>
+    /// Canonical IPA for one sentence, or empty when this build cannot produce it (no phonemizer data,
+    /// a language the phonemizer does not carry). The reader draws nothing in that case either, so an
+    /// empty column is the honest answer rather than an error string in every row.
+    /// </summary>
+    private static Func<string, string> CanonicalReader(SettingsService settings, string lang)
+    {
+        if (PhonemizerData.Resolve(settings.GetPhonemizerDataDir()) is null) return _ => "";
+        try
+        {
+            Registry.EnsureLanguages();
+            // ⚠ PROBED ONCE, because "this language has no phonemizer" throws on every CALL rather
+            // than at construction — so without this the column is not empty, it is the same error
+            // string repeated down every row of the file.
+            global::Vernacula.Phonemizer.Phonemizer.Phonemize("a", lang);
+        }
+        catch (Exception) { return _ => ""; }
+        return text =>
+        {
+            try { return global::Vernacula.Phonemizer.Phonemizer.Phonemize(text, lang); }
+            catch (Exception ex) { return $"<error: {ex.Message}>"; }
+        };
     }
 
     public static void WriteCsv(string path, IEnumerable<SentenceRow> rows, string scheme)
     {
         using var writer = new StreamWriter(path, append: false, new UTF8Encoding(encoderShouldEmitUTF8Identifier: true));
-        writer.WriteLine("index,start_seconds,end_seconds,text,phonemes,phoneme_scheme");
+        // ⚠ THE COLUMNS ARE NAMED FOR WHICH READING THEY HOLD. There used to be one called `phonemes`
+        // carrying the engine's own stream, and it was read as "the IPA" — reasonably, since the
+        // reader shows canonical IPA above every word and that is not what came out of the file.
+        writer.WriteLine("index,start_seconds,end_seconds,text,ipa,engine_phonemes,phoneme_scheme");
         foreach (var r in rows)
             writer.WriteLine(string.Join(',',
                 r.Index.ToString(),
                 r.StartSeconds.ToString("F3", System.Globalization.CultureInfo.InvariantCulture),
                 r.EndSeconds.ToString("F3", System.Globalization.CultureInfo.InvariantCulture),
-                CsvEscape(r.Text), CsvEscape(r.Phonemes), scheme));
+                CsvEscape(r.Text), CsvEscape(r.Ipa), CsvEscape(r.EnginePhonemes), scheme));
     }
 
     /// <summary>What a single export invocation produces.</summary>

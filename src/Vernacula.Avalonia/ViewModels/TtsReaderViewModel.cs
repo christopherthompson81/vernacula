@@ -975,6 +975,9 @@ internal sealed partial class TtsReaderViewModel : ObservableObject, IDisposable
         }
 
         var job = _job; var sidecar = _sidecar; string audioPath = _audioPath;
+        // The SAME language tag the on-screen annotation uses, so the exported IPA is the reading the
+        // reader is showing rather than a second guess at it.
+        string lang = _lang;
         // ⚠ Read on the UI thread: EditableText is what the user has typed, and the export of the
         // markdown is meant to be of the document as it stands, open card and all.
         CommitOpenBlock();
@@ -997,7 +1000,7 @@ internal sealed partial class TtsReaderViewModel : ObservableObject, IDisposable
                     var engine = TtsEngines.For(job);
                     var settings = new TtsJobSettings(job.TtsBackend, job.TtsLanguage, job.TtsVoice, job.TtsSpeed, job.TtsNumStep);
                     var sentences = TtsExportService.SplitSentences(sidecar.SourceText ?? _text, sidecar.Words);
-                    var rows = TtsExportService.BuildRows(sentences, _settings, settings);
+                    var rows = TtsExportService.BuildRows(sentences, _settings, settings, lang);
                     return TtsExportService.WriteTranscript(chosen, rows, engine.PhonemeScheme);
                 }
             });

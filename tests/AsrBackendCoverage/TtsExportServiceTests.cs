@@ -55,25 +55,53 @@ public class TtsExportServiceTests
         string path = Path.Combine(Path.GetTempPath(), $"vernacula-export-{Guid.NewGuid():N}.csv");
         try
         {
-            TtsExportService.WriteCsv(path, [new TtsExportService.SentenceRow(1, 0.5, 1.25, "Hi, \"there\".", "haɪ ðɛɹ")], "ipa");
+            TtsExportService.WriteCsv(path,
+                [new TtsExportService.SentenceRow(1, 0.5, 1.25, "Hi, \"there\".", "hˈaᶦ ðɛɹ", "haɪ ðɛɹ")], "kokoro");
             var lines = File.ReadAllLines(path);
-            Assert.Equal("index,start_seconds,end_seconds,text,phonemes,phoneme_scheme", lines[0]);
-            Assert.Equal("1,0.500,1.250,\"Hi, \"\"there\"\".\",haɪ ðɛɹ,ipa", lines[1]);
+            Assert.Equal("index,start_seconds,end_seconds,text,ipa,engine_phonemes,phoneme_scheme", lines[0]);
+            Assert.Equal("1,0.500,1.250,\"Hi, \"\"there\"\".\",hˈaᶦ ðɛɹ,haɪ ðɛɹ,kokoro", lines[1]);
         }
         finally { File.Delete(path); }
     }
 
+    /// <summary>
+    /// ⚠ BOTH READINGS, AND THEY MUST DIFFER. The export used to carry only the engine's own stream
+    /// under the name `phonemes`, and it was read as "the IPA" — reasonably, since the reader draws
+    /// canonical IPA above every word and that is not what came out of the file. Kokoro's scheme has
+    /// no aspiration and no length marks, so `pʰˈɜɹ ˈɑː` reaches it as `pˈɜɹ ˈɑ`: asserting the two
+    /// columns are not equal is what pins that they are actually two different readings.
+    /// </summary>
     [Fact]
-    public void KokoroRowsCarryKokoroPhonemes()
+    public void RowsCarryCanonicalIpaAndTheEnginesOwnStream()
+    {
+        var settings = new SettingsService(); settings.Load();
+        if (TtsPrerequisites.Describe(TtsBackendKind.Kokoro, settings) is { } missing)
+            Assert.Skip($"Kokoro not available here: {missing}");
+        var rows = TtsExportService.BuildRows([("Percy waited.", 0, 1)], settings,
+            new TtsJobSettings("Kokoro", "", "af_heart"), "en");
+        Assert.Single(rows);
+
+        Assert.False(string.IsNullOrWhiteSpace(rows[0].EnginePhonemes));
+        Assert.DoesNotContain("<error", rows[0].EnginePhonemes);
+        Assert.False(string.IsNullOrWhiteSpace(rows[0].Ipa));
+        Assert.DoesNotContain("<error", rows[0].Ipa);
+        Assert.Contains("ʰ", rows[0].Ipa);                       // canonical marks aspiration
+        Assert.NotEqual(rows[0].Ipa, rows[0].EnginePhonemes);
+    }
+
+    /// <summary>A language the phonemizer does not carry leaves the IPA column EMPTY rather than an
+    /// error string in every row — the reader draws nothing in that case either.</summary>
+    [Fact]
+    public void AnUnknownAnnotationLanguageLeavesTheIpaColumnEmpty()
     {
         var settings = new SettingsService(); settings.Load();
         if (TtsPrerequisites.Describe(TtsBackendKind.Kokoro, settings) is { } missing)
             Assert.Skip($"Kokoro not available here: {missing}");
         var rows = TtsExportService.BuildRows([("Hello world.", 0, 1)], settings,
-            new TtsJobSettings("Kokoro", "", "af_heart"));
+            new TtsJobSettings("Kokoro", "", "af_heart"), "zzz-not-a-language");
         Assert.Single(rows);
-        Assert.False(string.IsNullOrWhiteSpace(rows[0].Phonemes));
-        Assert.DoesNotContain("<error", rows[0].Phonemes);
+        Assert.DoesNotContain("<error", rows[0].Ipa);
+        Assert.False(string.IsNullOrWhiteSpace(rows[0].EnginePhonemes));
     }
 
     /// <summary>
@@ -131,7 +159,7 @@ public class TtsExportServiceTests
         var dir = Directory.CreateTempSubdirectory("tts-export-test");
         try
         {
-            var rows = new[] { new TtsExportService.SentenceRow(1, 0, 1.5, "Hello.", "h\u025bl\u02c8o\u1d76") };
+            var rows = new[] { new TtsExportService.SentenceRow(1, 0, 1.5, "Hello.", "h\u025bl\u02c8o\u1d76", "hɛlˈoʊ") };
             string csv = TtsExportService.WriteTranscript(Path.Combine(dir.FullName, "out.csv"), rows, "kokoro");
             Assert.Equal(Path.Combine(dir.FullName, "out.csv"), csv);
             Assert.Contains("Hello.", File.ReadAllText(csv));
