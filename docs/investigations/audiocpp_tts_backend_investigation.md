@@ -408,3 +408,92 @@ RESULT golden English sentences rendered: 114/114
 before stopped working, and the one that did NOT work before — the "Rustenburg"
 row from Run 6 — now renders. Combined with the voice sweep going 41 → 49, the
 fix only ever turns a throw into audio.
+
+## Run 9 — 2026-09-15 14:45 — closing the Japanese resource gap
+
+Run 3 left five Japanese voices failing on "Kokoro UniDic resources are not
+bundled in this GGUF". That is a fixable state, not a property of the family, so
+it was worth fixing rather than documenting.
+
+**First, a correction to Run 8.** I had said Japanese and Chinese both failed
+for missing resources. Wrong: `tests/kokoro_tts/MULTILINGUAL_GGUF.md` says
+release packages DO ship `g2p/zh.json`, and Chinese needs nothing else. Chinese
+reached the encoder and died on a symbol Kokoro's vocab genuinely lacks — the
+Run 8 fix, not a resource. Only Japanese was a real gap, and it needs two
+separate things: UniDic INSIDE the GGUF and a MeCab library OUTSIDE it.
+
+### MeCab without root
+
+`g2p_multilingual.cpp` dlopens `libmecab.so.2`; the system has no such package
+and `AUDIOCPP_MECAB_LIBRARY` takes an absolute path. The `mecab-python3` wheel
+ships a real one (`mecab_python3.libs/libmecab-eada4a80.so.2.0.0`), extracted to
+`/mnt/data/models/mecab/libmecab.so.2`. `ldd` resolves it against system
+libraries only — no sudo, no build from source.
+
+### Conversion
+
+`.venv-kokoro-gguf` on /mnt/data with the versions the docs name as tested
+(misaki 0.9.4, unidic 1.1.0, torch 2.14 CPU — conversion never infers), plus
+`hexgrad/Kokoro-82M` (config + 327 MB weights + 54 voice packs) and UniDic 3.1.0
+(`sys.dic` 243 MB, `matrix.bin` 481 MB).
+
+```
+tools/prepare_kokoro_gguf.py --source .../Kokoro-82M-source
+  --output-dir /mnt/data/models/kokoro-multilingual
+  --type q8_0 --embed-multilingual-resources --overwrite
+
+{"bytes": 932614784, "tensors": {"F32":360,"Q8_0":111,"BF16":77},
+ "resources": 438, "resource_bytes": 781530455}
+```
+
+⚠ **This package is not a stock conversion.** `--model-spec` defaults to
+`model_specs/kokoro_tts.json`, which in this tree carries the Run 8 `phonemes`
+option — so the build bakes it in, and the probe below confirms it
+(`declared request options: language, seed, phonemes, text_chunk_size`) with no
+`ModelSpecOverride`. That is the answer to the constraint Run 8 raised: a
+converted package carries the option, an already-installed one cannot.
+
+### Result
+
+```
+OK jf_alpha      ja  sec=2.92 peak=0.440     OK af_heart  en-us sec=2.48
+OK jf_gongitsune ja  sec=4.50 peak=0.382     OK bm_george en-gb sec=2.88
+OK jf_nezumi     ja  sec=2.42 peak=0.383     OK ef_dora   es    sec=2.10
+OK jf_tebukuro   ja  sec=2.95 peak=0.441     OK ff_siwis  fr-fr sec=2.45
+OK jm_kumo       ja  sec=3.05 peak=0.595     OK hf_alpha  hi    sec=2.65
+                                             OK if_sara   it    sec=2.08
+RESULT ok=13 fail=0                          OK pf_dora   pt-br sec=1.68
+                                             OK zf_xiaoxiao zh  sec=2.95
+```
+
+All five Japanese voices render, and the other seven languages are unchanged, so
+bundling disturbed nothing. Duration AND peak are both checked: a package that
+loads and emits silence would otherwise pass as working. **54/54 voices are now
+renderable** — 41 at Run 3, 49 after the Run 8 vocab fix, 54 here.
+
+⚠ **Rendering is not the same as reading well.** This establishes that the
+resource gap is closed and the MeCab path executes, which is exactly what the
+error complained about. Whether the Japanese is GOOD Japanese is a judgement by
+ear that these numbers cannot make — samples rendered to WAV for that.
+
+### The cost, which is the reason not to just adopt this
+
+**First load is expensive.** The package extracts all 781 MB of bundled
+resources to a temp directory, then spends minutes pinned at 99.9% CPU on a
+single core before the first request — against roughly two seconds for the
+190 MB release package. For a desktop app that loads a backend per job, that is
+not a detail.
+
+**The temp directory is shared and outlives the process.** Resources land in
+`/tmp/audiocpp-gguf` (994 MB here), reused across loads rather than being
+per-process. The docs say bundled data is "removed when its assets are
+released"; 23 stale `audiocpp-check-*` directories from earlier days, 182 MB,
+were still on disk, so that cleanup does not always happen.
+
+**Implication:** the multilingual package buys 5 voices for ~740 MB of download,
+~1 GB of /tmp, and a first-load cost measured in minutes. Worth having proven
+possible and recorded; NOT obviously worth making the package Vernacula
+installs. And `ResolveKokoro` globs `kokoro-82m*.gguf` and picks ordinal-first
+when it finds several, so two packages under one models root would make the
+choice depend on the alphabet — a reason to keep this one in its own directory
+until somebody decides deliberately.
