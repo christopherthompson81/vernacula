@@ -19,6 +19,7 @@
 
   <ItemGroup Condition="'$(HasAudioCppBindings)' != 'true'">
     <Compile Remove="AudioCppAsr.cs" />
+    <Compile Remove="AudioCppTts.cs" />
   </ItemGroup>
 
   <ItemGroup>

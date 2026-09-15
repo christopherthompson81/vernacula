@@ -250,6 +250,30 @@ internal static class TtsModelSets
         },
     };
 
+#if AUDIOCPP_BACKEND
+    public static readonly TtsModelSet AudioCppKokoro = new()
+    {
+        Name        = "Kokoro-82M (audio.cpp)",
+        Description = "audio.cpp's own Kokoro GGUF, voices baked in. Installed by audio.cpp's model manager, "
+                    + "not by Vernacula: python3 external/AudioCpp-Bindings/external/audio.cpp/tools/model_manager_v2.py "
+                    + "install kokoro_82m_q8_0 --models-root <this folder>",
+        SubDir      = Config.AudioCppSubDir,
+        GetOverride = a => a.AudioCppModelDir,
+        SetOverride = (a, v) => a.AudioCppModelDir = v,
+        // Not hosted by us: these are audio.cpp packages in audio.cpp's own layout, and a
+        // downloader of ours writing into the same tree would make either tool's cleanup delete
+        // the other's weights. RepoBase "" hides the download button and the status line names
+        // the folder to fill, the same convention Qwen3-ASR uses.
+        RepoBase    = "",
+        ManifestUrl = "",
+        Assets      = [],
+        Missing     = (dir, _) =>
+            Vernacula.AudioCpp.AudioCppTts.ResolveKokoro(dir) is null
+                ? ["kokoro-82m-*.gguf (audio.cpp's kokoro_82m package)"]
+                : [],
+    };
+#endif
+
     public static readonly TtsModelSet PhonemizerData = new()
     {
         Name        = "Phonemizer data",
@@ -267,5 +291,12 @@ internal static class TtsModelSets
     };
 
     /// <summary>Every set, in Settings row order.</summary>
-    public static IReadOnlyList<TtsModelSet> All { get; } = [Kokoro, OmniVoice, OmniVoiceVoices, Chatterbox, PhonemizerData];
+    public static IReadOnlyList<TtsModelSet> All { get; } =
+    [
+        Kokoro, OmniVoice, OmniVoiceVoices, Chatterbox,
+#if AUDIOCPP_BACKEND
+        AudioCppKokoro,
+#endif
+        PhonemizerData,
+    ];
 }

@@ -1313,25 +1313,9 @@ internal class TranscriptionService
                         "No audio.cpp Parakeet package under " + audioCppModelsDir
                         + ". Install it with audio.cpp's model manager.");
 
-                // ⚠ Auto is the DEFAULT and it is not Cuda. An earlier version read
-                // `== Cuda ? "cuda" : "cpu"`, so every install that had never set an
-                // execution provider explicitly -- which is the out-of-the-box state --
-                // ran audio.cpp on the CPU while the ONNX backends took CUDA through the
-                // same Auto. It transcribed correctly and looked merely slow.
-                //
-                // The engine's backends are not ONNX Runtime's, so this maps rather than
-                // casts, and Auto becomes an ordered list: whether CUDA is registered
-                // depends on how the engine was built, which nothing here can see.
-                string[] backends = _settings.Current.ResolvedExecutionProvider switch
-                {
-                    ExecutionProvider.Cpu    => ["cpu"],
-                    ExecutionProvider.Cuda   => ["cuda", "cpu"],
-                    ExecutionProvider.CoreML => ["metal", "cpu"],
-                    // No WebGPU in the engine; Vulkan is the nearest portable GPU
-                    // backend it does have, and CPU catches a build without either.
-                    ExecutionProvider.WebGpu => ["vulkan", "cpu"],
-                    _                        => ["cuda", "metal", "vulkan", "cpu"],
-                };
+                // Shared with the audio.cpp TTS engine; the mapping and the reason Auto is
+                // a LIST live in AudioCppBackends.
+                string[] backends = AudioCppBackends.For(_settings.Current.ResolvedExecutionProvider);
 
                 // Load and recognition are timed apart because they answer different
                 // questions. A whole-job number cannot distinguish "the engine is slow"
