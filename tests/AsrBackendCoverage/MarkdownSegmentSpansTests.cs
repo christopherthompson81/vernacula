@@ -67,6 +67,53 @@ public class MarkdownSegmentSpansTests
         Assert.Equal("* changed\n- second", EditCard("- first\n- second", 0, "* changed"));
     }
 
+    /// <summary>
+    /// ⚠ THE REGRESSION THAT MADE THE FEATURE LOOK DEAD. A heading written `# **Title**` puts inline
+    /// markup between the block marker and the first word the extractor emits, so a pattern that
+    /// stopped at the block marker rejected the prefix and widened nothing — the card opened with no
+    /// `# ` in it, exactly as reported. Bare headings are the shape this was first tested with and
+    /// the shape real documents are least likely to use.
+    /// </summary>
+    [Fact]
+    public void AHeadingWhoseTitleIsBoldStillCarriesItsHashes()
+    {
+        const string md = "# **A bold title**\n\nBody text.";
+        Assert.Equal("# **A bold title**", TextOfCard(md, 0));
+        Assert.Equal("### **A bold title**\n\nBody text.", EditCard(md, 0, "### **A bold title**"));
+    }
+
+    /// <summary>…and the same shape in a list, which is how a lead-in is usually written.</summary>
+    [Fact]
+    public void AListItemWithABoldLeadInCarriesItsMarker()
+    {
+        const string md = "1. **Lead-in.** The rest of the item.\n2. **Another.** More.";
+        Assert.Equal("1. **Lead-in.** The rest of the item.", TextOfCard(md, 0));
+        Assert.Equal("2. **Another.** More.", TextOfCard(md, 1));
+    }
+
+    /// <summary>
+    /// ⚠ AND A PARAGRAPH WITH A BOLD LEAD-IN, which has no block marker at all. Its opening `**`
+    /// used to sit outside the extent while the CLOSING one fell inside, so the editor opened on
+    /// text carrying a `**` that closed nothing — an invitation to corrupt the document by editing
+    /// around it. Widening over the opener keeps the pair together.
+    /// </summary>
+    [Fact]
+    public void AParagraphWithABoldLeadInKeepsThePairTogether()
+    {
+        const string md = "**Lead-in.** The rest of the paragraph.";
+        string editor = TextOfCard(md, 0);
+        Assert.Equal(md, editor);
+        Assert.Equal(2, System.Text.RegularExpressions.Regex.Matches(editor, @"\*\*").Count);
+    }
+
+    /// <summary>Backticks and links open the same way and are widened over for the same reason.</summary>
+    [Theory]
+    [InlineData("- `code` then words", "- `code` then words")]
+    [InlineData("## [A link](/x) heading", "## [A link](/x) heading")]
+    [InlineData("> _quiet_ start", "> _quiet_ start")]
+    public void OtherInlineOpenersAfterAMarkerAreWidenedOverToo(string md, string expected) =>
+        Assert.Equal(expected, TextOfCard(md, 0));
+
     /// <summary>An ordered list's number is markup like any other marker.</summary>
     [Fact]
     public void AnOrderedListItemCarriesItsNumber()

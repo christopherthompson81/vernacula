@@ -234,3 +234,47 @@ index for the same reason.
 miss for key-preserving edits, but the reporter may have waited out the
 re-render and seen nothing, which would mean a second cause. Needs their
 observation: whether the marker appeared in the card's editor at all.
+
+## Run 7 — 2026-09-15 14:40 — the real cause: markup between the marker and the first word
+
+**Question.** Run 6's fix explains a delay, but the reporter answered that the
+marker never appeared in the card's editor at all. The synthetic probe widens
+every shape. What is different about a real document?
+
+**Command.** The same probe pointed at the sidecar of an actual finished job,
+printing structure only — kind, level, offsets, and the prefix between the line
+start and the card's first word with letters masked to `a` and digits to `9`, so
+markup survives and content cannot.
+
+**Raw finding.**
+
+```
+[ 0] Heading/1  lineStart=    0 srcStart=    4 prefix=<# **>
+[ 4] ListItem/0 lineStart=  888 srcStart=  893 prefix=<9. **>
+[ 1] Paragraph/0 lineStart=  80 srcStart=   82 prefix=<**>
+```
+
+**Implication.** The document writes its heading as `# **Title**` and its list
+items as `1. **Lead-in** …`. The `**` sits BETWEEN the block marker and the first
+word the extractor emits, so the anchored `BlockMarker` pattern — which allowed
+only marker characters — rejected the prefix and widened nothing. Every document
+written to test the feature had bare headings; none of the real one's did. The
+pattern now allows inline openers after the marker, and the marker itself is
+optional, which also fixes the third row above: a paragraph with a bold lead-in
+had its opening `**` outside the extent while the closing one fell inside, so its
+editor opened on text carrying a `**` that closed nothing.
+
+**Second defect, found by the first test written for the fix.** Widening only
+left leaves the pair broken the other way: `# **Title**` is bold to its last
+word, so the closing `**` lies past the last emitted text and the editor showed
+`# **Title`. The widening is now symmetric, bounded by the next card's first word
+the way the left side is bounded by the previous card's end.
+
+**Third, found by re-probing after that.** The trailing widening swallowed the
+two spaces that end several list items — a markdown HARD LINE BREAK, invisible in
+an editor and easy to delete by accident. Both directions now require the run to
+contain at least one markup character rather than being blank, which also keeps a
+paragraph's indentation out of the box.
+
+**Verified.** Re-probed against the same document: every card carries its marker
+and every inline pair is balanced.
