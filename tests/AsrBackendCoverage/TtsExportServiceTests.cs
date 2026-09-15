@@ -81,43 +81,132 @@ public class TtsExportServiceTests
     /// view model rather than part of this service. That is exactly the half a user reported missing.
     /// </summary>
     [Fact]
-    public void WriteBundleWritesBothTheAudioAndTheCsv()
+    public void WriteAudioCopiesTheRenderedFile()
     {
         var dir = Directory.CreateTempSubdirectory("tts-export-test");
         try
         {
             string rendered = Path.Combine(dir.FullName, "job.wav");
             File.WriteAllBytes(rendered, [1, 2, 3, 4]);
-            var rows = new[] { new TtsExportService.SentenceRow(1, 0, 1.5, "Hello.", "hɛlˈoᶷ") };
 
-            // The picker hands back whichever extension its file type was on; both paths derive.
-            var (audio, csv) = TtsExportService.WriteBundle(
-                Path.Combine(dir.FullName, "out.csv"), rendered, rows, "kokoro");
+            string audio = TtsExportService.WriteAudio(Path.Combine(dir.FullName, "out.wav"), rendered);
 
             Assert.Equal(Path.Combine(dir.FullName, "out.wav"), audio);
-            Assert.Equal(Path.Combine(dir.FullName, "out.csv"), csv);
             Assert.Equal(new byte[] { 1, 2, 3, 4 }, File.ReadAllBytes(audio));
-            Assert.Contains("Hello.", File.ReadAllText(csv));
         }
         finally { dir.Delete(recursive: true); }
     }
 
-    /// <summary>…and picking the audio type gives the same pair, which is the point of deriving both.</summary>
+    /// <summary>
+    /// ⚠ ONE EXPORT WRITES ONE FILE. Asking for the audio must not also drop a CSV beside it — that
+    /// was the reported behaviour ("export types should be done one-at-a-time"), and a stray sibling
+    /// is exactly what it looked like from the file manager.
+    /// </summary>
     [Fact]
-    public void ChoosingTheAudioTypeProducesTheSamePair()
+    public void ExportingOneKindWritesNothingElse()
     {
         var dir = Directory.CreateTempSubdirectory("tts-export-test");
         try
         {
             string rendered = Path.Combine(dir.FullName, "job.wav");
             File.WriteAllBytes(rendered, [9]);
-            var (audio, csv) = TtsExportService.WriteBundle(
-                Path.Combine(dir.FullName, "out.wav"), rendered, [], "kokoro");
-            Assert.True(File.Exists(audio));
-            Assert.True(File.Exists(csv));
+
+            TtsExportService.WriteAudio(Path.Combine(dir.FullName, "out.wav"), rendered);
+            Assert.False(File.Exists(Path.Combine(dir.FullName, "out.csv")));
+            Assert.False(File.Exists(Path.Combine(dir.FullName, "out.md")));
+
+            TtsExportService.WriteTranscript(Path.Combine(dir.FullName, "t.csv"), [], "kokoro");
+            Assert.False(File.Exists(Path.Combine(dir.FullName, "t.wav")));
+
+            TtsExportService.WriteMarkdown(Path.Combine(dir.FullName, "d.md"), "# Doc");
+            Assert.False(File.Exists(Path.Combine(dir.FullName, "d.wav")));
+            Assert.False(File.Exists(Path.Combine(dir.FullName, "d.csv")));
         }
         finally { dir.Delete(recursive: true); }
     }
+
+    [Fact]
+    public void WriteTranscriptWritesTheCsv()
+    {
+        var dir = Directory.CreateTempSubdirectory("tts-export-test");
+        try
+        {
+            var rows = new[] { new TtsExportService.SentenceRow(1, 0, 1.5, "Hello.", "h\u025bl\u02c8o\u1d76") };
+            string csv = TtsExportService.WriteTranscript(Path.Combine(dir.FullName, "out.csv"), rows, "kokoro");
+            Assert.Equal(Path.Combine(dir.FullName, "out.csv"), csv);
+            Assert.Contains("Hello.", File.ReadAllText(csv));
+        }
+        finally { dir.Delete(recursive: true); }
+    }
+
+    /// <summary>The markdown export is of the document as it stands — the edited text, verbatim.</summary>
+    [Fact]
+    public void WriteMarkdownWritesTheDocumentVerbatim()
+    {
+        var dir = Directory.CreateTempSubdirectory("tts-export-test");
+        try
+        {
+            const string doc = "# Title\n\nA paragraph with **bold**.\n\n- item\n";
+            string md = TtsExportService.WriteMarkdown(Path.Combine(dir.FullName, "out.md"), doc);
+            Assert.Equal(doc, File.ReadAllText(md));
+        }
+        finally { dir.Delete(recursive: true); }
+    }
+
+    /// <summary>A picker can hand back a name with no extension, or one left over from a type the
+    /// user then changed; the file is named for what is actually written into it.</summary>
+    [Theory]
+    [InlineData("out", ".wav")]
+    [InlineData("out.csv", ".wav")]
+    public void TheAudioIsNamedForItsContent(string chosen, string expected)
+    {
+        var dir = Directory.CreateTempSubdirectory("tts-export-test");
+        try
+        {
+            string rendered = Path.Combine(dir.FullName, "job.wav");
+            File.WriteAllBytes(rendered, [5]);
+            string audio = TtsExportService.WriteAudio(Path.Combine(dir.FullName, chosen), rendered);
+            Assert.Equal(expected, Path.GetExtension(audio));
+        }
+        finally { dir.Delete(recursive: true); }
+    }
+
+    /// <summary>⚠ .markdown and .txt are kept as chosen rather than forced to .md — the user picked
+    /// the name, and all three are the same bytes.</summary>
+    [Theory]
+    [InlineData("out.md", ".md")]
+    [InlineData("out.markdown", ".markdown")]
+    [InlineData("out.txt", ".txt")]
+    [InlineData("out", ".md")]
+    public void TheMarkdownKeepsAnyMarkdownExtensionItWasGiven(string chosen, string expected)
+    {
+        var dir = Directory.CreateTempSubdirectory("tts-export-test");
+        try
+        {
+            string md = TtsExportService.WriteMarkdown(Path.Combine(dir.FullName, chosen), "x");
+            Assert.Equal(expected, Path.GetExtension(md));
+        }
+        finally { dir.Delete(recursive: true); }
+    }
+
+    /// <summary>The picker hands back a path, not the file type that produced it, so the extension
+    /// is what chooses the export. Anything else is refused rather than guessed at.</summary>
+    [Theory]
+    [InlineData("a.wav",      TtsExportService.ExportKind.Audio)]
+    [InlineData("a.WAV",      TtsExportService.ExportKind.Audio)]
+    [InlineData("a.csv",      TtsExportService.ExportKind.Csv)]
+    [InlineData("a.md",       TtsExportService.ExportKind.Markdown)]
+    [InlineData("a.markdown", TtsExportService.ExportKind.Markdown)]
+    [InlineData("a.txt",      TtsExportService.ExportKind.Markdown)]
+    internal void TheExtensionChoosesTheExport(string path, TtsExportService.ExportKind expected) =>
+        Assert.Equal(expected, TtsExportService.KindOf(path));
+
+    [Theory]
+    [InlineData("a.mp3")]
+    [InlineData("a.pdf")]
+    [InlineData("a")]
+    public void AnUnrecognizedExtensionExportsNothing(string path) =>
+        Assert.Null(TtsExportService.KindOf(path));
 
     /// <summary>⚠ Exporting on top of the job's own file is a no-op — File.Copy throws on same-path.</summary>
     [Fact]
@@ -128,7 +217,7 @@ public class TtsExportServiceTests
         {
             string rendered = Path.Combine(dir.FullName, "same.wav");
             File.WriteAllBytes(rendered, [7]);
-            var (audio, _) = TtsExportService.WriteBundle(rendered, rendered, [], "kokoro");
+            string audio = TtsExportService.WriteAudio(rendered, rendered);
             Assert.Equal(new byte[] { 7 }, File.ReadAllBytes(audio));
         }
         finally { dir.Delete(recursive: true); }

@@ -39,21 +39,72 @@ public class MarkdownSegmentSpansTests
             EditCard(md, 1, "Rewritten entirely."));
     }
 
-    /// <summary>⚠ THE MARKUP IS OUTSIDE THE SPAN. Editing a heading's words cannot demote it, because
-    /// the `##` was never in the extracted text and so is never in the extent.</summary>
+    /// <summary>⚠ THE BLOCK MARKER IS INSIDE THE SPAN, so the card's own kind is editable — the
+    /// reported miss was that a title could not be changed from a title, nor a bullet from a bullet.</summary>
     [Fact]
-    public void AHeadingKeepsItsHashes()
+    public void AHeadingsHashesAreInTheEditableText()
     {
         const string md = "## Some heading\n\nA paragraph.";
-        Assert.Equal("Some heading", TextOfCard(md, 0));
-        Assert.Equal("## New words\n\nA paragraph.", EditCard(md, 0, "New words"));
+        Assert.Equal("## Some heading", TextOfCard(md, 0));
+        Assert.Equal("### New words\n\nA paragraph.", EditCard(md, 0, "### New words"));
+    }
+
+    /// <summary>The whole point: the marker can be changed to a different one, or dropped.</summary>
+    [Fact]
+    public void ACardsKindCanBeChangedFromItsOwnEditor()
+    {
+        Assert.Equal("Just a paragraph now.\n\nA paragraph.",
+            EditCard("## Some heading\n\nA paragraph.", 0, "Just a paragraph now."));
+        Assert.Equal("## Promoted\n- second", EditCard("- first\n- second", 0, "## Promoted"));
     }
 
     [Fact]
-    public void AListItemKeepsItsBulletAndAQuoteItsMarker()
+    public void AListItemAndAQuoteCarryTheirMarkersToo()
     {
-        Assert.Equal("- changed\n- second", EditCard("- first\n- second", 0, "changed"));
-        Assert.Equal("> changed", EditCard("> quoted text", 0, "changed"));
+        Assert.Equal("- first", TextOfCard("- first\n- second", 0));
+        Assert.Equal("- second", TextOfCard("- first\n- second", 1));
+        Assert.Equal("> quoted text", TextOfCard("> quoted text", 0));
+        Assert.Equal("* changed\n- second", EditCard("- first\n- second", 0, "* changed"));
+    }
+
+    /// <summary>An ordered list's number is markup like any other marker.</summary>
+    [Fact]
+    public void AnOrderedListItemCarriesItsNumber()
+    {
+        const string md = "1. first\n2. second";
+        Assert.Equal("1. first", TextOfCard(md, 0));
+        Assert.Equal("2. second", TextOfCard(md, 1));
+    }
+
+    /// <summary>⚠ INDENTATION IS PART OF THE MARKER, because it is what makes the item nested —
+    /// leaving it outside would show an editor that cannot express the nesting it is displaying.</summary>
+    [Fact]
+    public void ANestedListItemCarriesItsIndentation()
+    {
+        const string md = "- top\n  - nested";
+        Assert.Equal("  - nested", TextOfCard(md, 1));
+        Assert.Equal("- top\n    - deeper", EditCard(md, 1, "    - deeper"));
+    }
+
+    /// <summary>⚠ A PLAIN PARAGRAPH HAS NO MARKER TO WIDEN OVER, and must not pick up anything —
+    /// this is the case where a sloppy "extend to the start of the line" would eat real text.</summary>
+    [Fact]
+    public void APlainParagraphSpanIsStillJustItsWords()
+    {
+        const string md = "First para.\n\nSecond para.";
+        Assert.Equal("First para.", TextOfCard(md, 0));
+        Assert.Equal("Second para.", TextOfCard(md, 1));
+    }
+
+    /// <summary>⚠ A SETEXT HEADING'S UNDERLINE IS TRAILING, not leading, so it stays outside the
+    /// extent and the heading survives an edit of its words. A known limit of the marker rule: this
+    /// is the one heading shape whose level the card editor cannot change.</summary>
+    [Fact]
+    public void ASetextUnderlineStaysOutsideTheExtent()
+    {
+        const string md = "Some heading\n===\n\nA paragraph.";
+        Assert.Equal("Some heading", TextOfCard(md, 0));
+        Assert.Equal("Reworded\n===\n\nA paragraph.", EditCard(md, 0, "Reworded"));
     }
 
     /// <summary>Inline markup lies BETWEEN two text runs of one card, so it is inside the extent and

@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using Avalonia.Controls;
+using Avalonia.VisualTree;
 
 namespace Vernacula.App.Views;
 
@@ -9,6 +10,10 @@ public partial class TtsReaderView : UserControl
     {
         InitializeComponent();
         ApplyLocalizedText();
+        // Tunnelling, so the press is seen before whatever it landed on handles it — a word button
+        // in Listening, or a card overlay about to open a different card, both mark it handled.
+        AddHandler(Avalonia.Input.InputElement.PointerPressedEvent, Root_PointerPressed,
+                   Avalonia.Interactivity.RoutingStrategies.Tunnel);
         Loaded += (_, _) => Loc.Instance.PropertyChanged += OnLocalePropertyChanged;
         Unloaded += (_, _) => Loc.Instance.PropertyChanged -= OnLocalePropertyChanged;
     }
@@ -27,6 +32,23 @@ public partial class TtsReaderView : UserControl
         IpaAnnotationCheck.Content  = Loc.Instance["tts_ipa_annotation"];
         CancelJobButton.Content     = Loc.Instance["btn_cancel_job"];
         BackButton.Content          = Loc.Instance["tts_reader_back"];
+    }
+
+    /// <summary>
+    /// A press anywhere that is not inside a text box closes the open card.
+    ///
+    /// ⚠ THIS IS NOT REDUNDANT WITH <see cref="BlockEditor_LostFocus"/>. Most of this view is inert —
+    /// the card's caption, the space between cards, the scroll area — and clicking an inert surface
+    /// moves focus nowhere at all, so the editor keeps focus, never raises LostFocus, and the card
+    /// looks stuck open. The test is "is the press inside SOME text box", not "inside THIS one", so
+    /// clicking from a card into the raw-markdown editor does not fight over the caret.
+    /// </summary>
+    private void Root_PointerPressed(object? sender, Avalonia.Input.PointerPressedEventArgs e)
+    {
+        if (DataContext is not ViewModels.TtsReaderViewModel vm) return;
+        if (e.Source is Avalonia.Visual v &&
+            v.FindAncestorOfType<TextBox>(includeSelf: true) is not null) return;
+        vm.CommitOpenCard();
     }
 
     /// <summary>Blur commits the card — the ordinary way to finish editing one and move on.</summary>

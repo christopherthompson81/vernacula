@@ -68,6 +68,15 @@ internal static class StoragePickers
     public static readonly FilePickerFileType AudioClips =
         new("Audio") { Patterns = ["*.wav", "*.flac", "*.mp3"] };
 
+    /// <summary>⚠ SAVE pickers only, and narrower than <see cref="AudioClips"/> on purpose: what the
+    /// renderer produced is a WAV, so offering to "save as" .mp3 would name a file for something it
+    /// does not contain.</summary>
+    public static readonly FilePickerFileType WavFiles =
+        new("WAV audio") { Patterns = ["*.wav"] };
+
+    public static readonly FilePickerFileType MarkdownFiles =
+        new("Markdown") { Patterns = ["*.md", "*.markdown"] };
+
     public static readonly FilePickerFileType AllFiles =
         new("All files") { Patterns = ["*"] };
 }

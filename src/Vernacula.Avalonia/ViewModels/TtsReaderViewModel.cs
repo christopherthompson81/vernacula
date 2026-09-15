@@ -770,6 +770,19 @@ internal sealed partial class TtsReaderViewModel : ObservableObject, IDisposable
 
     private static void OnBlockEditCancelled(BlockItemViewModel block) => block.IsEditingBlock = false;
 
+    /// <summary>
+    /// Closes whatever card is open, keeping its text. The view calls this when a click lands
+    /// anywhere outside the open editor.
+    ///
+    /// ⚠ LOSING FOCUS IS NOT THE SAME EVENT AS BEING CLICKED AWAY FROM, which is why the text box's
+    /// own LostFocus is not enough. Clicking the card's caption, the gap between cards, the
+    /// scroll area or any other inert surface moves focus NOWHERE — the box keeps it and stays open,
+    /// so the card appears stuck in editing until something focusable is clicked. Reported as
+    /// "clicking outside a currently active editing text box should put it back into the
+    /// non-editing rendered state".
+    /// </summary>
+    public void CommitOpenCard() => CommitOpenBlock();
+
     private void CommitOpenBlock()
     {
         foreach (var b in DisplayBlocks)
@@ -879,8 +892,12 @@ internal sealed partial class TtsReaderViewModel : ObservableObject, IDisposable
     // ── Export ───────────────────────────────────────────────────────────────
 
     /// <summary>
-    /// Writes the rendered WAV and a sentence-by-sentence CSV (text, phonemes, timing) next to
-    /// each other under one chosen name. Finished jobs only: the timing comes from the sidecar.
+    /// Writes ONE file: the rendered WAV, the sentence-by-sentence CSV (text, phonemes, timing), or
+    /// the source markdown. Finished jobs only — the CSV's timing comes from the sidecar.
+    ///
+    /// ⚠ THE PICKER'S FILE TYPE IS THE CHOICE OF WHAT TO WRITE, and it is the only UI this needs.
+    /// The dialog used to be picking a LOCATION AND STEM while both files were written regardless,
+    /// which is not what a file-type dropdown means anywhere else.
     /// </summary>
     [RelayCommand(CanExecute = nameof(CanExport))]
     private async Task Export()
@@ -888,32 +905,49 @@ internal sealed partial class TtsReaderViewModel : ObservableObject, IDisposable
         if (_job is null || _sidecar is null || _audioPath is null) return;
         string stem = string.Concat(_job.JobTitle.Split(Path.GetInvalidFileNameChars())).Trim();
         if (stem.Length == 0) stem = "tts-export";
-        // ⚠ AUDIO FIRST, AND THE SUGGESTED NAME IS THE .wav. The picker offered only CSV, so the
-        // dialog said "File type: CSV" and there was no way to ask for the audio at all — reported as
-        // "it only shows CSV as an export type". Both files are still written whichever type is on;
-        // the dialog is choosing a LOCATION AND STEM, which is what the title now says.
         var chosen = await StoragePickers.SaveFileAsync(Loc.Instance["tts_export_title"], stem + ".wav",
-            StoragePickers.AudioClips, StoragePickers.CsvFiles, StoragePickers.AllFiles);
+            StoragePickers.WavFiles, StoragePickers.CsvFiles, StoragePickers.MarkdownFiles);
         if (chosen is null) return;
 
+        if (TtsExportService.KindOf(chosen) is not { } kind)
+        {
+            // A name typed with no extension at all has none to quote back; name the file instead,
+            // so the message reads the same either way.
+            StatusMessage = Loc.Instance.T("tts_export_unknown_type", new()
+            {
+                ["ext"] = Path.GetExtension(chosen) is { Length: > 0 } ext ? ext : Path.GetFileName(chosen),
+            });
+            return;
+        }
+
         var job = _job; var sidecar = _sidecar; string audioPath = _audioPath;
-        string wavPath = "", csvPath = "";
+        // ⚠ Read on the UI thread: EditableText is what the user has typed, and the export of the
+        // markdown is meant to be of the document as it stands, open card and all.
+        CommitOpenBlock();
+        string markdown = _editorSeeded ? EditableText : _text;
+        string written = "";
         StatusMessage = Loc.Instance["tts_export_running"];
         try
         {
             await Task.Run(() =>
             {
-                var engine = TtsEngines.For(job);
-                var settings = new TtsJobSettings(job.TtsBackend, job.TtsLanguage, job.TtsVoice, job.TtsSpeed, job.TtsNumStep);
-                var sentences = TtsExportService.SplitSentences(sidecar.SourceText ?? _text, sidecar.Words);
-                var rows = TtsExportService.BuildRows(sentences, _settings, settings);
-                (wavPath, csvPath) = TtsExportService.WriteBundle(chosen, audioPath, rows, engine.PhonemeScheme);
+                written = kind switch
+                {
+                    TtsExportService.ExportKind.Audio    => TtsExportService.WriteAudio(chosen, audioPath),
+                    TtsExportService.ExportKind.Markdown => TtsExportService.WriteMarkdown(chosen, markdown),
+                    _ => WriteTranscript(),
+                };
+
+                string WriteTranscript()
+                {
+                    var engine = TtsEngines.For(job);
+                    var settings = new TtsJobSettings(job.TtsBackend, job.TtsLanguage, job.TtsVoice, job.TtsSpeed, job.TtsNumStep);
+                    var sentences = TtsExportService.SplitSentences(sidecar.SourceText ?? _text, sidecar.Words);
+                    var rows = TtsExportService.BuildRows(sentences, _settings, settings);
+                    return TtsExportService.WriteTranscript(chosen, rows, engine.PhonemeScheme);
+                }
             });
-            StatusMessage = Loc.Instance.T("tts_export_done", new()
-            {
-                ["csv"] = Path.GetFileName(csvPath),
-                ["wav"] = Path.GetFileName(wavPath),
-            });
+            StatusMessage = Loc.Instance.T("tts_export_done", new() { ["file"] = Path.GetFileName(written) });
         }
         catch (Exception ex)
         {
