@@ -113,6 +113,11 @@ public static class KokoroFormat
         // nearest thing the vocabulary holds. Stripping it instead would leave t, which is the
         // opposite sound.
         ("t\u032c", "d"), ("d\u032c", "d"),
+        // English symbols that reach other languages through the phonemizer's foreign-run
+        // delegation — an English name inside a Japanese or Chinese sentence is read by English.
+        // Rare (one or two per corpus) but they would otherwise be the only thing out of vocab.
+        // ⚠ NOT ɚ, which is in the vocabulary and which Mandarin needs: er4 is ɚ↘.
+        ("ɫ", "l"), ("ɝ", "ɜɹ"),
     ];
 
     /// <summary>
@@ -121,6 +126,47 @@ public static class KokoroFormat
     /// </summary>
     private static readonly Dictionary<string, (string Old, string New)[]> LanguageRules = new()
     {
+        // ── Mandarin ─────────────────────────────────────────────────────────
+        // Target taken from the engine's own pinyin table (g2p/zh.json), whose inventory is
+        //     a e f h i j k l m n o p s t u w x y ŋ ɔ ɕ ə ɚ ɛ ɤ ɥ ɨ ɻ ʂ ʦ ʨ ʰ → ↓ ↗ ↘ ꭧ
+        // Tone is handled separately below, because it MOVES rather than maps.
+        ["cmn"] =
+        [
+            ("ʈʂ", "ꭧ"),          // zhong1 = ꭧʊ→ŋ
+            ("ts", "ʦ"), ("tɕ", "ʨ"),
+            ("ʐ", "ɻ"),           // ri4 = ɻɨ↘
+            ("ɹ̩", "ɨ"), ("ɹ", "ɨ"),   // the apical vowel: si1 = sɨ→, shi1 = ʂɨ→
+            ("\u0329", ""),        // any syllabic mark the pair above did not consume
+            ("ᵘ", "u"), ("ⁱ", "i"),
+            ("ɑ", "a"), ("æ", "ɛ"),
+        ],
+
+        // ── Japanese ─────────────────────────────────────────────────────────
+        // Target taken from the engine's own kana table (g2p/ja.json in a multilingual GGUF),
+        // whose entire output inventory is
+        //     a b d e h i j k m n o p s t v z ç ɕ ɡ ɨ ɯ ɲ ɸ ɾ ʣ ʥ ʦ ʨ ʲ β ᵝ
+        // Our transcription is narrower than that in three ways, and each one has to go
+        // somewhere Kokoro actually saw during training.
+        ["ja"] =
+        [
+            // Affricates are single ligatures there (つ = ʦɨ, ち = ʨi, じ = ʥi). The tie bar is
+            // already gone by this point, so these are the bare sequences.
+            ("ts", "ʦ"), ("tɕ", "ʨ"), ("dʑ", "ʥ"),
+            // ⚠ ʑ ALONE IS NOT IN KOKORO'S VOCABULARY, though ɕ is. Their table spells じ as the
+            // affricate ʥ, so a bare ʑ goes there rather than to ʒ — matching what the model was
+            // trained on beats matching the IPA more closely.
+            ("ʑ", "ʥ"),
+            // Narrow-transcription detail with no token: centralised ä, the lowering diacritic
+            // under e̞ o̞, and the uvular nasal their table never emits.
+            ("ä", "a"), ("\u031e", ""), ("ɴ", "n"),
+            // ⚠ PITCH ACCENT HAS NOWHERE TO GO. Kokoro's Japanese does not encode it — there is
+            // no downstep, and none of → ↓ ↗ ↘ appears anywhere in its kana table, though the
+            // vocabulary carries them for Mandarin tone. Dropping the mark is lossy and there is
+            // no alternative: inventing a token the model never saw would be worse than losing a
+            // distinction it never learned.
+            ("ꜜ", ""),
+        ],
+
         // Hindi writes ह as the VOICED glottal fricative and marks breathy voice and dental
         // place; Kokoro's alphabet has none of the three. h and ʰ are the nearest it holds, and
         // the dental bridge has no counterpart at all, so it goes. Aspiration is NOT stripped
@@ -148,10 +194,155 @@ public static class KokoroFormat
         if (LanguageRules.TryGetValue(lang, out var extra))
             foreach (var (old, neu) in extra) ps = ps.Replace(old, neu);
 
+        if (lang == "cmn") ps = PlaceMandarinTone(NormalizeMandarinSyllables(ps));
+
         ps = DecomposeUnknown(ps);
         ps = DetachedPunctRe.Replace(ps, "$1");
         return ps;
     }
+
+    /// <summary>
+    /// Brings a Mandarin syllable into the shape the engine's pinyin table writes, before the
+    /// tone is placed.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Scored against that table — 993 syllables taken from the golden corpus, their pinyin from
+    /// pypinyin and their phonemes from g2p/zh.json — rather than reasoned about. Each rule below
+    /// closed a mismatch class the score named; without it these would be plausible guesses that
+    /// land in-vocabulary and sound wrong, which is the failure this whole exercise keeps hitting.
+    /// </para>
+    /// </remarks>
+    private static string NormalizeMandarinSyllables(string ps)
+    {
+        var syllables = ps.Split(' ');
+        for (var i = 0; i < syllables.Length; i++)
+        {
+            var syl = syllables[i];
+            if (syl.Length == 0) continue;
+
+            // A zero-initial syllable whose glide merely duplicates its own vowel is written
+            // without it: yi is i, wu is u, yu is y. ⚠ ONLY when they match — wang is waŋ and yao
+            // is jau, so dropping every initial glide loses the onset outright. Where it IS
+            // dropped, the vowel behind it gets re-glided below if something follows, which turns
+            // our jiou into their jou and our jyɛn into their ɥɛn.
+            if (syl.Length > 1 &&
+                ((syl[0] == 'j' && (syl[1] == 'i' || syl[1] == 'y')) || (syl[0] == 'w' && syl[1] == 'u')))
+                syl = syl[1..];
+
+            // er is r-coloured, not a schwa with an r after it.
+            syl = syl.Replace("ər", "ɚ");
+            // -un after a palatal is y there, where we write a rounded vowel plus a schwa.
+            // ⚠ Keyed on y, not ɥ: the glide conversion happens in the loop below, so at this
+            // point the syllable still spells it y.
+            syl = syl.Replace("yə", "y").Replace("yi", "y");
+
+            var sb = new System.Text.StringBuilder(syl.Length + 2);
+            for (var k = 0; k < syl.Length; k++)
+            {
+                var c = syl[k];
+                var next = k + 1 < syl.Length ? syl[k + 1] : '\0';
+                var prev = sb.Length > 0 ? sb[^1] : '\0';
+
+                // Prenuclear high vowels are glides: ʨia -> ʨja, tuan -> twan, ɕye -> ɕɥe.
+                if (IsMandarinNucleus(next))
+                {
+                    if (c == 'i') { sb.Append('j'); continue; }
+                    if (c == 'u') { sb.Append('w'); continue; }
+                    if (c == 'y') { sb.Append('ɥ'); continue; }
+                }
+                // The apical vowel, which only ever follows a retroflex or sibilant initial. Our
+                // transcription keeps it retroflex (ʂɻ); theirs writes ɨ (ʂɨ, ɻɨ, sɨ). The
+                // aspiration mark sits between the two for chi/ci, so it is looked past.
+                var onset = prev == 'ʰ' && sb.Length > 1 ? sb[^2] : prev;
+                if (c == 'ɻ' && (onset == 'ʂ' || onset == 'ꭧ' || onset == 'ɻ' || onset == 's'))
+                {
+                    sb.Append('ɨ');
+                    continue;
+                }
+                // -ong is ʊŋ there, not oŋ.
+                if (c == 'o' && next == 'ŋ') { sb.Append('ʊ'); continue; }
+                // A labial before o carries a rounded glide: mo is mwo. Only in an open
+                // syllable though — mou stays mou.
+                if (c == 'o' && !IsMandarinNucleus(next) &&
+                    (prev == 'm' || prev == 'p' || prev == 'f' || prev == 'ʰ'))
+                {
+                    sb.Append('w').Append('o');
+                    continue;
+                }
+                // ⚠ AFTER A PALATAL GLIDE THE MID VOWEL'S HEIGHT FOLLOWS THE CODA, which is why
+                // this is not one rule: xie is ɕje with an open syllable, yuan is ɥɛn before the
+                // nasal. Getting it backwards merges different finals.
+                if (c == 'ɛ' && (prev == 'ɥ' || prev == 'j'))
+                {
+                    bool nasalCoda = next == 'n' || next == 'ŋ';
+                    sb.Append(nasalCoda ? 'ɛ' : 'e');
+                    continue;
+                }
+                sb.Append(c);
+            }
+            syllables[i] = sb.ToString();
+        }
+        return string.Join(' ', syllables);
+    }
+
+    private static bool IsMandarinNucleus(char c) => MandarinNuclei.IndexOf(c) >= 0;
+
+    // A run of tone letters, always at the end of a syllable in our transcription.
+    private static readonly Regex ToneRunRe = new(@"[\u02e5-\u02e9]+", RegexOptions.Compiled);
+
+    private const string MandarinNuclei = "aeiouyɛɤəɨʊɔɚ";
+
+    /// <summary>
+    /// Rewrites Mandarin tone from IPA tone letters into the arrows Kokoro carries, and MOVES it
+    /// to where Kokoro puts it.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠ THE ARROW GOES AFTER THE NUCLEUS, NOT AFTER THE SYLLABLE, which is why this cannot be a
+    /// row in the table above. From the engine's own pinyin table: <c>zhong1 = ꭧʊ→ŋ</c> and
+    /// <c>yan1 = jɛ→n</c> — the mark sits before the coda. Our transcription writes the tone
+    /// letters at the end of the whole syllable, so the contour has to be lifted off and
+    /// reinserted after the last vowel.
+    /// </para>
+    /// <para>
+    /// The five contours, read off that table: 55 level → <c>→</c>, 35 rising → <c>↗</c>,
+    /// 214 dipping → <c>↓</c>, 51 falling → <c>↘</c>, and the neutral tone carries no mark at all
+    /// (<c>shi5 = ʂɨ</c>).
+    /// </para>
+    /// </remarks>
+    private static string PlaceMandarinTone(string ps)
+    {
+        var syllables = ps.Split(' ');
+        for (var i = 0; i < syllables.Length; i++)
+        {
+            var match = ToneRunRe.Match(syllables[i]);
+            if (!match.Success) continue;                       // neutral tone: no mark, correctly
+            var arrow = ToneArrow(match.Value);
+            var bare = ToneRunRe.Replace(syllables[i], "");
+            if (arrow.Length == 0) { syllables[i] = bare; continue; }
+
+            var nucleus = bare.LastIndexOfAny(MandarinNuclei.ToCharArray());
+            // A syllable with no vowel we recognise keeps its tone at the end rather than losing
+            // it: wrong position beats absent contour.
+            syllables[i] = nucleus < 0 ? bare + arrow : bare.Insert(nucleus + 1, arrow);
+        }
+        return string.Join(' ', syllables);
+    }
+
+    private static string ToneArrow(string letters) => letters switch
+    {
+        "\u02e5\u02e5" => "→",                       // 55 high level
+        "\u02e7\u02e5" => "↗",                       // 35 rising
+        "\u02e8\u02e9\u02e6" => "↓",                 // 214 dipping
+        "\u02e5\u02e9" => "↘",                       // 51 falling
+        // Anything else: fall back on the contour's own shape, so a transcription variant still
+        // lands on a real tone rather than dropping one.
+        _ => letters.Length < 2 ? ""
+            : letters[^1] > letters[0] ? "↗"
+            : letters[^1] < letters[0] ? "↘"
+            : "→",
+    };
 
     /// <summary>
     /// Last resort for a codepoint the vocabulary has no id for: if Unicode decomposes it into

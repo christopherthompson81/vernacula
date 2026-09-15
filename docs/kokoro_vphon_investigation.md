@@ -192,6 +192,49 @@ So Mandarin tone letters map onto the arrows Kokoro carries for exactly this,
 and Japanese pitch accent has nowhere to go — Kokoro's Japanese does not encode
 it. Cantonese is irrelevant: Kokoro's `zh` is Mandarin.
 
-**Deferred rather than guessed**, because the tone mapping and the decision to
-drop downstep want an ear on the output, not just an in-vocab count — which is
-the exact mistake this entry began with.
+### ja and zh — done, and scored rather than eyeballed
+
+Both now render clean. Japanese was mostly mechanical: affricates become the
+single ligatures their kana table uses (つ = ʦɨ, ち = ʨi, じ = ʥi), the
+centralised ä and the lowering diacritic go, ɴ becomes n, and a bare ʑ — which
+is NOT in the vocabulary although ɕ is — becomes ʥ, because that is how their
+table spells じ. Matching what the model was trained on beats matching the IPA
+more closely.
+
+⚠ Japanese pitch accent is dropped. Kokoro's Japanese does not encode it: no
+downstep anywhere in the kana table, and none of → ↓ ↗ ↘, which the vocabulary
+carries for Mandarin tone. Lossy and deliberate — inventing a token the model
+never saw in Japanese would be worse than losing a distinction it never learned.
+
+Mandarin needed a structural transform, not a table: **the tone mark goes after
+the nucleus, not after the syllable** (`zhong1 = ꭧʊ→ŋ`, `yan1 = jɛ→n`), where
+our transcription writes tone letters at the end. So the contour is lifted off
+and reinserted after the last vowel, with 55 → `→`, 35 → `↗`, 214 → `↓`,
+51 → `↘`, and the neutral tone carrying no mark.
+
+**Scored, because eyeballing is what produced the 0.00%-clean mistake above.**
+993 syllables from the golden corpus, their pinyin from pypinyin and their
+phonemes from the engine's own g2p/zh.json:
+
+| | exact |
+|---|---|
+| first attempt, rules reasoned from the inventory | 627/993 (63.1%) |
+| after the classes the score named | 894/993 (90.0%) |
+| after refining two over-applied rules | 978/993 (98.5%) |
+| after fixing an ordering bug of my own | 991/993 (99.8%) |
+
+Every step came from the score naming a mismatch class, not from thinking
+harder. Two of the four rounds fixed rules I had just written: a glide-dropping
+rule that also ate the onset of `wang`, and a `yə → y` replace keyed on a symbol
+the loop below it had not yet produced. Both were invisible to the in-vocab
+check and obvious to the score.
+
+The last 2 of 993 are `-iong` syllables (穷, 熊), where our transcription differs
+structurally rather than by a symbol. Left alone.
+
+**Result: all nine of Kokoro's languages render clean, English byte-identical.**
+
+```
+en-us 10,905  en-gb 11,143  es 14,351  fr-fr 10,826  hi 15,661
+it    14,809  pt-br 12,320  ja 10,738  zh   13,447      all 0.00%
+```
