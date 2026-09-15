@@ -217,3 +217,100 @@ proportional to length, which is a reasonable prior and is not a measurement.
 A word that is short to write and slow to say will drift. Nothing to do about it
 from this side: the ABI reports no timings and the phonemization happens where
 we cannot see it. It is why the aligner is NAMED in the sidecar.
+
+## Run 6 — 2026-09-15 14:45 — it cannot say "button"
+
+A real document failed in the reader, mid-job:
+
+```
+AudioCpp.AudioCppException: audiocpp_session_run:
+  Kokoro vocab is missing phoneme symbol: ̩ (runtime error)
+```
+
+U+0329, COMBINING VERTICAL LINE BELOW — the syllabic-consonant mark.
+
+**Question:** what input produces it, and how much of English does that cost?
+
+First, what the symbol is attached to. Diffing `espeak-ng -q --ipa -v en-us`
+against Kokoro's own vocab (`KokoroVocab.cs`, 114 entries) over the phonemizer's
+200 English golden sentences found exactly one out-of-vocab codepoint, U+0329,
+in one sentence — "Rustenburg" → `ɹˈʌsʔn̩bˌɜːɡ`. Confirmed against the engine:
+
+```
+FAIL 'Rustenburg'   Kokoro vocab is missing phoneme symbol: ̩
+FAIL 'button'       Kokoro vocab is missing phoneme symbol: ̩
+FAIL 'kitten'       Kokoro vocab is missing phoneme symbol: ̩
+OK   'hidden'       OK 'Wittenberg'
+```
+
+**Finding: it cannot say "button".** eSpeak-ng glottalises /t/ before a syllabic
+nasal, giving `bˈæʔn̩`, and the engine's own encoder then refuses the mark its own
+G2P just produced.
+
+Scale, over the first 40,000 words of `g2p-dict.tsv`:
+
+```
+words that cannot be spoken: 100 / 40000  (0.25%)
+  U+0329 x99      U+026C 'ɬ' x1
+```
+
+0.25% understates it badly, because the failures are not scattered — they are
+the `-tten` / `-tton` family, which is common: beaten, bitten, batten, begotten,
+written, forgotten, gotten, kitten, button, cotton. And **one is enough to kill
+the whole job**: the throw is per paragraph, so a document only has to contain
+one such word anywhere. At the golden corpus's rate of one affected sentence in
+200, a 300-sentence document fails with probability ~78%.
+
+**Where it is.** `external/audio.cpp/src/models/kokoro_tts/frontend.cpp:149`:
+
+```cpp
+const auto it = assets.vocab.find(phonemes.substr(i, width));
+if (it == assets.vocab.end()) {
+    throw std::runtime_error("Kokoro vocab is missing phoneme symbol: " + ...);
+}
+```
+
+**This is a divergence from the reference implementation, not a missing
+feature.** misaki/KModel tokenizes with `filter(None, map(vocab.get, phonemes))`
+— it DROPS phonemes it has no id for. Our own `KokoroVocab` doc comment says so
+in as many words, because the ONNX path had to match it. Dropping U+0329 yields
+`bˈæʔn`, which is a perfectly good reading of "button"; throwing yields no audio
+at all. So the fix upstream is to skip rather than throw, and it is small.
+
+## Run 7 — 2026-09-15 14:52 — can we just hand it our own phonemes?
+
+**Question:** vernacula-phonemizer produces Kokoro-vocab-clean output BY
+CONSTRUCTION — that is what `KokoroFormat.Render` is for, and it is why the ONNX
+Kokoro never hits this. If the ABI would take phonemes instead of text, the bug
+is bypassed entirely and the two engines would also agree on every reading.
+
+Probed every plausible request option:
+
+```
+rejected 'phonemes':       unknown Kokoro TTS request option: phonemes
+rejected 'phoneme_input':  unknown Kokoro TTS request option: phoneme_input
+rejected 'input_phonemes': unknown Kokoro TTS request option: input_phonemes
+rejected 'ipa':            unknown Kokoro TTS request option: ipa
+rejected 'use_phonemes':   unknown Kokoro TTS request option: use_phonemes
+rejected 'g2p':            unknown Kokoro TTS request option: g2p
+```
+
+**Finding: there is no phoneme input, and the door is bolted rather than merely
+shut.** `frontend.cpp` calls `phonemize_text()` unconditionally, and
+`session.cpp` runs `validate_spec_backed_request_options` first, so an
+undeclared option is rejected before anything runs. The family's entire declared
+request surface is `language`, `seed`, `text_chunk_size`.
+
+**Negative result, recorded because it is tempting and should not be taken:**
+their G2P *is* espeak-ng and honours its inline phoneme syntax —
+`"hello [[b'Vtn]] world"` renders fine. So a caller could smuggle phonemes past
+the G2P by rewriting failing words into Kirshenbaum ASCII inside `[[ ]]`. That
+would mean maintaining an IPA→Kirshenbaum converter, against an undocumented
+passthrough, to work around a bug whose real fix is four lines in a file we can
+see. Not worth it. (Passing IPA as bare text does NOT work: `"bˈʌtn"` renders as
+2.52 s of someone reading the characters aloud.)
+
+**Implication:** nothing on Vernacula's side can prevent this failure. What it
+CAN do is stop presenting it as a stack trace: the message names a combining
+codepoint, which tells the reader nothing, when the useful answer is which word
+in their document the engine refused.

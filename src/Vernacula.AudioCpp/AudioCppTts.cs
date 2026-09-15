@@ -195,15 +195,15 @@ public sealed class AudioCppTts : IDisposable
         // that a caller that parallelises paragraphs later gets a slow answer, not a wrong one.
         lock (_gate)
         {
-            using var request = new AudioCppRequest();
-            request.SetText(text, AudioCppKokoroVoices.EngineLanguage(voice));
-            request.SetVoiceId(voice);
-            request.SetSpeakingRate(speed);
-
-            using var result = _session.Run(request);
-            var audio = result.Audio
-                ?? throw new InvalidOperationException(
-                    $"audio.cpp {Family} returned no audio for {text.Length} characters.");
+            AudioBuffer audio;
+            try
+            {
+                audio = Render(text, voice, speed);
+            }
+            catch (AudioCppException failure) when (failure.Message.Contains(UnknownSymbol, StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException(DescribeUnsayable(text, voice, speed, failure), failure);
+            }
 
             // A rate other than 24 kHz would play back at the wrong pitch and the only symptom
             // would be that the voice sounds wrong, so say what happened instead.
@@ -217,6 +217,78 @@ public sealed class AudioCppTts : IDisposable
 
             return audio.Samples;
         }
+    }
+
+    private AudioBuffer Render(string text, string voice, float speed)
+    {
+        using var request = new AudioCppRequest();
+        request.SetText(text, AudioCppKokoroVoices.EngineLanguage(voice));
+        request.SetVoiceId(voice);
+        request.SetSpeakingRate(speed);
+
+        using var result = _session.Run(request);
+        return result.Audio
+            ?? throw new InvalidOperationException(
+                $"audio.cpp {Family} returned no audio for {text.Length} characters.");
+    }
+
+    /// <summary>The engine's own words for "this phoneme has no token id".</summary>
+    private const string UnknownSymbol = "Kokoro vocab is missing phoneme symbol";
+
+    /// <summary>
+    /// Turns the engine's report of an unusable phoneme into the question a reader actually has:
+    /// WHICH WORD did it refuse?
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠ THIS IS A KNOWN DEFECT IN THE ENGINE, not in the text. audio.cpp's Kokoro phonemizes with
+    /// eSpeak-ng and then THROWS on any symbol its vocab has no id for — where the reference
+    /// implementation (misaki/KModel, <c>filter(None, map(vocab.get, phonemes))</c>) drops it and
+    /// carries on. eSpeak glottalises /t/ before a syllabic nasal, so "button" becomes
+    /// <c>bˈæʔn̩</c> and the engine refuses the syllabic mark its own G2P just produced. Dropping
+    /// it would give <c>bˈæʔn</c>, which is a fine reading. See
+    /// docs/investigations/audiocpp_tts_backend_investigation.md Runs 6-7, and
+    /// external/audio.cpp/src/models/kokoro_tts/frontend.cpp:149.
+    /// </para>
+    /// <para>
+    /// Nothing here can prevent it: the family declares no phoneme input, so our own phonemizer —
+    /// whose output is Kokoro-vocab-clean by construction, which is why the ONNX engine never hits
+    /// this — cannot be substituted for theirs.
+    /// </para>
+    /// <para>
+    /// So the words are found by asking, one at a time. That is N more engine calls, which is
+    /// affordable ONLY because this runs on a path that has already failed: the alternative is a
+    /// message naming a combining codepoint, which tells the reader nothing about their document.
+    /// </para>
+    /// </remarks>
+    private string DescribeUnsayable(string text, string voice, float speed, AudioCppException failure)
+    {
+        var offenders = new List<string>();
+        // Distinct, because one bad word usually appears more than once, and ordered as written so
+        // the reader can find the first one in their document.
+        foreach (var word in text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries).Distinct(StringComparer.Ordinal))
+        {
+            if (offenders.Count >= 5) break;      // enough to see the pattern; the rest add noise
+            try { Render(word, voice, speed); }
+            catch (AudioCppException probe) when (probe.Message.Contains(UnknownSymbol, StringComparison.Ordinal))
+            {
+                offenders.Add(word);
+            }
+            catch (AudioCppException) { /* a word that fails for some OTHER reason is not the one */ }
+        }
+
+        string named = offenders.Count > 0
+            ? $"It cannot say: {string.Join(", ", offenders.Select(w => $"\"{w}\""))}."
+            : "The word could not be narrowed down — the paragraph fails as a whole but no single "
+              + "word does.";
+
+        return $"audio.cpp's Kokoro refused a phoneme its own pronunciation produced. {named}\n\n"
+             + "This is a limitation of that engine: it rejects any phoneme missing from Kokoro's "
+             + "vocabulary instead of dropping it the way the reference implementation does, and "
+             + "its eSpeak-ng pronunciation of words like \"button\" and \"written\" produces one. "
+             + "The engine offers no way to supply phonemes, so vernacula-phonemizer cannot stand "
+             + "in for it. Use the ONNX Kokoro engine for this document.\n\n"
+             + $"Engine's own message: {failure.Message}";
     }
 
     /// <summary>
