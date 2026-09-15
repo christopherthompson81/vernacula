@@ -101,7 +101,14 @@ internal abstract class TtsEngine
 internal static class TtsEngines
 {
     public static IReadOnlyList<TtsEngine> All { get; } =
-        [new KokoroEngine(), new OmniVoiceEngine(), new ChatterboxEngine()];
+    [
+        new KokoroEngine(), new OmniVoiceEngine(), new ChatterboxEngine(),
+#if AUDIOCPP_BACKEND
+        // Last, so Default (and therefore the fallback for an unrecognised persisted name) is
+        // the same engine whether or not the submodule is present.
+        new AudioCppKokoroEngine(),
+#endif
+    ];
 
     /// <summary>The default for a new job, and the fallback for anything unrecognised.</summary>
     public static TtsEngine Default => All[0];
@@ -305,3 +312,121 @@ internal sealed class ChatterboxEngine : TtsEngine
     public override string ReadStoredVoice(AppSettings s) => s.ChatterboxVoicePath;
     public override void WriteStoredVoice(AppSettings s, string voice) => s.ChatterboxVoicePath = voice;
 }
+
+#if AUDIOCPP_BACKEND
+// ── Kokoro through audio.cpp ─────────────────────────────────────────────────
+
+/// <summary>
+/// The same model as <see cref="KokoroEngine"/> and a completely different stack: audio.cpp's
+/// C ABI instead of ONNX Runtime, its GGUF package instead of our export, its baked-in preset
+/// voices instead of voices/*.bin, and its own eSpeak-ng phonemization instead of
+/// vernacula-phonemizer.
+///
+/// <para>
+/// ⚠ IT IS NOT A REPLACEMENT FOR THE ONNX KOKORO AND IS NOT MEANT TO BE. The ONNX one reads the
+/// model's own predicted durations, so its word timings are measured and the reader's highlight
+/// follows the voice exactly; this one gets no timings from the ABI at all and estimates them.
+/// What it has instead is five more languages and no phonemizer data to install. Both are
+/// offered because neither dominates.
+/// </para>
+/// </summary>
+internal sealed class AudioCppKokoroEngine : TtsEngine
+{
+    public override TtsBackendKind Kind => TtsBackendKind.AudioCppKokoro;
+    public override string DisplayName => "Kokoro-82M (audio.cpp)";
+    public override string Description =>
+        "The same Kokoro, run on audio.cpp rather than ONNX Runtime. 41 preset voices across "
+        + "English, Spanish, French, Hindi, Italian and Brazilian Portuguese, with phonemization "
+        + "inside the engine. Word timing is estimated, not measured.";
+    public override int SampleRate => Vernacula.AudioCpp.AudioCppTts.SampleRate;
+    // No phonemizer data: this engine phonemizes internally. The reader still annotates in IPA
+    // when that data happens to be present, which is why it is not listed as REQUIRED here —
+    // an annotation is a nicety and a missing one must not block a render.
+    public override TtsModelSet[] RequiredSets => [TtsModelSets.AudioCppKokoro];
+
+    /// <summary>
+    /// The export's phoneme column is our reading of the text, not what the engine consumed —
+    /// audio.cpp phonemizes with eSpeak-ng inside the session and hands nothing back. So the
+    /// scheme says "ipa" and the distinction is on the page, exactly as it is for Chatterbox.
+    /// </summary>
+    public override string PhonemeScheme => "ipa";
+
+    public override bool UsesVoiceList => true;
+    public override bool UsesSpeed => true;
+    // ⚠ NOT UsesLanguage, even though this engine speaks six of them. The language is a function
+    // of the voice — "af_" is American, "ff_" is French — and the engine REJECTS a mismatched
+    // pair outright ("voice bm_george requires lang_code=b but request resolved to a"). Offering
+    // the two as separate controls would be offering the user a way to fail the job.
+
+    public override string CacheKey(SettingsService s) => $"audiocpp-kokoro|{ModelPath(s) ?? ""}"
+        + $"|{string.Join(',', Vernacula.App.Services.AudioCppBackends.For(s.Current.ResolvedExecutionProvider))}";
+
+    public override ITtsBackend CreateBackend(SettingsService s)
+    {
+        string dir = TtsModelSets.AudioCppKokoro.Dir(s);
+        string path = ModelPath(s)
+            ?? throw new FileNotFoundException(
+                $"No audio.cpp Kokoro package under {dir}. Install it with audio.cpp's model "
+                + "manager: model_manager_v2.py install kokoro_82m_q8_0 --models-root " + dir);
+
+        // Threads only matter on the CPU backend, and the engine ignores the value on the
+        // others. Half the cores leaves the machine usable while a document renders.
+        int threads = Math.Max(1, Environment.ProcessorCount / 2);
+        return new AudioCppSynthesisService(
+            path, Vernacula.App.Services.AudioCppBackends.For(s.Current.ResolvedExecutionProvider), threads);
+    }
+
+    private static string? ModelPath(SettingsService s) =>
+        Vernacula.AudioCpp.AudioCppTts.ResolveKokoro(TtsModelSets.AudioCppKokoro.Dir(s));
+
+    public override TtsRequest BuildRequest(string text, string wavPath, string segmentsDir, TtsJobSettings job) =>
+        new(text, wavPath, job.Voice, job.Speed, SegmentsDir: segmentsDir);
+
+    public override string? DescribeJobIssue(SettingsService s, TtsJobSettings job)
+    {
+        if (string.IsNullOrWhiteSpace(job.Voice)) return "No voice selected.";
+        // Caught here rather than at render time: an unknown id fails inside the ABI, after the
+        // document has been queued, with a message about lang_code that explains nothing to
+        // whoever picked it. The one case this rejects and the engine would accept is a voice
+        // from a package with more voices than the one we measured — which is why the message
+        // names the package rather than calling the voice invalid.
+        return Vernacula.AudioCpp.AudioCppKokoroVoices.IsKnown(job.Voice)
+            ? null
+            : $"\"{job.Voice}\" is not one of the voices audio.cpp's kokoro_82m package renders.";
+    }
+
+    /// <summary>
+    /// Our reading of the text, for the export's CSV. The engine's own phonemes are not
+    /// obtainable — eSpeak-ng runs inside the session and the result carries no trace — so this
+    /// is informative rather than a record of what was spoken, in the language the voice implies.
+    /// </summary>
+    public override Func<string, string> CreatePhonemizer(SettingsService s, TtsJobSettings job)
+    {
+        if (PhonemizerData.Resolve(s.GetPhonemizerDataDir()) is null)
+            throw new DirectoryNotFoundException(PhonemizerData.NotFoundMessage());
+        Registry.EnsureLanguages();
+        string lang = Vernacula.AudioCpp.AudioCppKokoroVoices.PhonemizerLanguage(job.Voice);
+        return text => global::Vernacula.Phonemizer.Phonemizer.Phonemize(text, lang);
+    }
+
+    public override string AnnotationLanguage(JobRecord job) =>
+        Vernacula.AudioCpp.AudioCppKokoroVoices.PhonemizerLanguage(job.TtsVoice);
+
+    public override IEnumerable<string> DescribeJob(JobRecord job)
+    {
+        if (!string.IsNullOrWhiteSpace(job.TtsVoice)) yield return job.TtsVoice;
+        yield return $"{job.TtsSpeed:F2}×";
+    }
+
+    /// <summary>
+    /// Shipped data, not a directory listing: the voices are baked into the GGUF and the ABI
+    /// cannot enumerate them. See <see cref="Vernacula.AudioCpp.AudioCppKokoroVoices"/> for how
+    /// that list was arrived at and which thirteen voices it leaves out.
+    /// </summary>
+    public override IReadOnlyList<string> AvailableVoices(SettingsService s) =>
+        Vernacula.AudioCpp.AudioCppKokoroVoices.All;
+
+    public override string ReadStoredVoice(AppSettings s) => s.AudioCppKokoroVoice;
+    public override void WriteStoredVoice(AppSettings s, string voice) => s.AudioCppKokoroVoice = voice;
+}
+#endif

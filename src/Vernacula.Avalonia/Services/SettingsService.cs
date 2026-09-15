@@ -213,7 +213,16 @@ internal class SettingsService
     /// expects, and mixing them into a directory Vernacula's own downloader
     /// manages would make either tool's cleanup delete the other's weights.
     /// </remarks>
-    public string GetAudioCppModelsDir() => Path.Combine(GetModelsDir(), "audiocpp");
+    /// <remarks>
+    /// The user's pick wins, so the Settings → TTS row for the audio.cpp Kokoro package and this
+    /// — which the ASR backend reads — name the same folder whichever way it was set. The two
+    /// agree by construction: same override field, same default subfolder.
+    /// </remarks>
+    public string GetAudioCppModelsDir()
+    {
+        string pick = Current.AudioCppModelDir;
+        return string.IsNullOrWhiteSpace(pick) ? Path.Combine(GetModelsDir(), Config.AudioCppSubDir) : pick;
+    }
 
     public string GetGraniteSpeechModelsDir()
     {

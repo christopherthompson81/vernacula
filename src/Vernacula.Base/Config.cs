@@ -245,6 +245,13 @@ public static class Config
     public const string OmniVoiceVoiceLibSubDir = "omnivoice_voices";
     /// <summary>vernacula-phonemizer data/ tree (core/phonology.jsonc is the sentinel).</summary>
     public const string PhonemizerDataSubDir    = "phonemizer_data";
+    /// <summary>
+    /// audio.cpp's own packages, installed by ITS model manager — GGUF and safetensors in the
+    /// layout that tool expects. A sibling of the ONNX directories rather than a subdirectory of
+    /// one, so neither tool's cleanup can delete the other's weights. Shared by the audio.cpp
+    /// ASR backend and the audio.cpp Kokoro TTS engine: one checkout of the packages serves both.
+    /// </summary>
+    public const string AudioCppSubDir          = "audiocpp";
 
     /// <summary>
     /// Directory (relative to models dir) for the language-ID model.

@@ -125,7 +125,10 @@ internal partial class NewTtsJobViewModel : ObservableObject
             SelectedEngine      = TtsEngines.For(s.TtsBackend);
             ChatterboxVoicePath = s.ChatterboxVoicePath ?? "";
             KokoroSpeed         = s.KokoroSpeed > 0 ? s.KokoroSpeed : 1.0f;
-            KokoroVoice         = s.KokoroVoice ?? "";
+            // The ENGINE's own stored voice, not Kokoro's: there is more than one voice-list
+            // engine now and their lists do not overlap (ONNX Kokoro offers the voice packs on
+            // disk; audio.cpp Kokoro offers the presets baked into its GGUF).
+            KokoroVoice         = SelectedEngine.ReadStoredVoice(s) ?? "";
             RefreshVoiceList();
             OmniVoiceLang       = string.IsNullOrWhiteSpace(s.OmniVoiceLang) ? "en" : s.OmniVoiceLang;
             OmniVoiceLanguage   = LanguageCatalog.ByCode(OmniVoiceLang);
@@ -167,6 +170,10 @@ internal partial class NewTtsJobViewModel : ObservableObject
 
     partial void OnSelectedEngineChanged(TtsEngine value)
     {
+        // Switching to another voice-list engine re-reads ITS last-used voice, because the
+        // previous engine's pick is not a candidate in the new engine's list and
+        // RefreshVoiceList would otherwise fall through to "the first one".
+        if (value.UsesVoiceList) KokoroVoice = value.ReadStoredVoice(_settings.Current) ?? "";
         RefreshVoiceList();
         UpdatePrerequisites();
     }

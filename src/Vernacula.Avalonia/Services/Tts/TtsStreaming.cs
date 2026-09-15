@@ -19,6 +19,24 @@ public enum TtsBackendKind
     /// <summary>OmniVoice IPA fine-tune via vernacula-phonemizer: any of its languages, a stored
     /// voice from the web demo's library, proportional (estimated) word alignment.</summary>
     OmniVoice,
+
+#if AUDIOCPP_BACKEND
+    /// <summary>
+    /// Kokoro-82M again, but through audio.cpp's C ABI rather than ONNX Runtime: the family's
+    /// own preset voices across seven languages, its own eSpeak-ng phonemization, proportional
+    /// (estimated) word alignment because the ABI reports none.
+    ///
+    /// <para>
+    /// ⚠ THE MEMBER ITSELF IS CONDITIONAL, not just the engine behind it. The AudioCpp-Bindings
+    /// submodule is optional and a clone without it must still build, so this exists exactly
+    /// when its engine does — which is what keeps "every kind has an engine" true in both
+    /// builds rather than leaving a member that resolves to the fallback. A job persisted by a
+    /// build that had the submodule is reported as unknown by a build that does not, which is
+    /// the same treatment any unrecognised engine name gets.
+    /// </para>
+    /// </summary>
+    AudioCppKokoro,
+#endif
 }
 
 /// <summary>Final synthesis output: the written WAV path + the alignment sidecar.</summary>

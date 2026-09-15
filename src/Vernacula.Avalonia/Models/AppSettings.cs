@@ -113,6 +113,15 @@ public class AppSettings
     public string             KokoroVoice             { get; set; } = "";
     public float              KokoroSpeed             { get; set; } = 1.0f;
     public string             PhonemizerDataDir       { get; set; } = "";
+    /// <summary>
+    /// Where audio.cpp's model manager put its packages, "" for the default subfolder of the
+    /// models directory. ONE field for both audio.cpp backends — the ASR models and the Kokoro
+    /// TTS package live in the same tree because that tool installs them there together.
+    /// </summary>
+    public string             AudioCppModelDir        { get; set; } = "";
+    /// <summary>A Kokoro preset voice as audio.cpp's kokoro_tts family names them ("af_heart").</summary>
+    public string             AudioCppKokoroVoice     { get; set; } = "";
+
     public string             OmniVoiceOnnxDir        { get; set; } = "";
     public string             OmniVoiceTokenizerJson  { get; set; } = "";
     public string             OmniVoiceVoiceLib       { get; set; } = "";
