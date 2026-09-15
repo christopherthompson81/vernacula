@@ -314,3 +314,97 @@ see. Not worth it. (Passing IPA as bare text does NOT work: `"bˈʌtn"` renders 
 CAN do is stop presenting it as a stack trace: the message names a combining
 codepoint, which tells the reader nothing, when the useful answer is which word
 in their document the engine refused.
+
+## Run 8 — 2026-09-15 15:30 — two changes proposed in a local audio.cpp clone
+
+Filed upstream as 0xShug0/audio.cpp#556. Both changes are on a local branch
+`kokoro-drop-unknown-phonemes` in `external/AudioCpp-Bindings/external/audio.cpp`,
+unpushed, for review before anything goes upstream.
+
+### (1) Skip unknown phonemes instead of throwing — `frontend.cpp`
+
+The minimal correctness fix, matching `KModel`'s
+`filter(None, map(vocab.get, phonemes))`. Rebuilt the engine and re-ran every
+case that failed in Run 6:
+
+```
+OK sec=1.00 'button'      OK sec=1.10 'kitten'       OK sec=1.18 'written'
+OK sec=1.82 'Rustenburg'  OK sec=1.07 'hidden'       OK sec=1.45 'Wittenberg'
+OK sec=3.12 'The button had been written over by then.'
+```
+
+"button" at 1.00 s beside "hidden" at 1.07 s — comparable, so the word is being
+spoken, not truncated to nothing.
+
+**Unexpected finding: the 54-voice sweep went from 41 to 49.** The eight Chinese
+voices, which failed in Run 3 with "Kokoro vocab is missing phoneme symbol: H",
+now render. That is the same fix reaching a different symbol.
+
+⚠ **Do not read that as "Chinese now works."** Dropping a symbol is the right
+call when it is a syllabic diacritic on a consonant that survives; whether it is
+right for whatever `H` carries in the Chinese phoneme set is a question for
+someone who can judge the output by ear. It matches the reference
+implementation's behaviour either way, so this is not a reason to hold the fix —
+but the voice table should not gain eight entries on the strength of "it no
+longer throws".
+
+The five Japanese voices still fail, and correctly so: "UniDic resources are not
+bundled in this GGUF" is a genuinely missing resource, not a vocab gap, and the
+fix does not paper over it.
+
+### (2) A supplied phoneme stream — `phonemes` request option
+
+Because the interesting question is not only "stop throwing" but "let a caller
+with a better G2P use it". vernacula-phonemizer has a lexicon, heteronym
+handling and normalization that eSpeak-ng does not, and `KokoroFormat.Render`
+already emits Kokoro's own alphabet — the ONNX engine consumes exactly that
+stream today.
+
+Verified against the rebuilt engine, feeding our own reading:
+
+```
+declared request options: language, seed, phonemes, text_chunk_size
+
+text      : The button had been written over by then.
+our stream: ðə bˈʌTən hæd bɪn ɹˈɪTən Ovəɹ bI ðˈɛn.
+  supplied phonemes -> 2.77s peak=0.348
+  built-in G2P      -> 2.48s
+
+cache check: same text, two streams -> 34800 vs 35400 samples, identical=False
+overlong: Kokoro phoneme string exceeds 510 symbols; supplied phonemes are not
+          chunked, so split them across requests
+```
+
+The cache check is the one that matters for correctness: the run cache keys on
+text, so without adding the supplied stream to the key, two readings of the same
+words would return the first one twice. The differing sample counts show the key
+change working.
+
+**Finding, and a real constraint on the proposal:** the declared option set is
+embedded in the GGUF at conversion time, not read from `model_specs/` in a
+normal build (`CMakeLists.txt` only compiles the catalogue in for
+`AUDIOCPP_DEPLOYMENT_BUILD`). The probe above only sees `phonemes` because it
+passes `ModelSpecOverride`. So even with this merged upstream, an already-
+installed `kokoro_82m_q8_0` needs `--model-spec-override` or re-conversion
+before it will accept the option — which is something Vernacula would have to
+carry, since `ModelConfig.ModelSpecOverride` is per load.
+
+**Not chunked, deliberately.** Chunking splits the TEXT; nothing in the engine
+knows where the matching cut points in a caller's phoneme stream are — only
+their G2P does. A supplied stream runs whole and the 510-symbol guard tells the
+caller to split it. For Vernacula that is not new work: `ChunkForSynthesis`
+already cuts paragraphs for the ONNX Kokoro's 512-token window.
+
+### Regression check for (1)
+
+Every distinct English sentence in the phonemizer's golden corpus, through the
+patched engine on CUDA:
+
+```
+RESULT golden English sentences rendered: 114/114
+```
+
+114 distinct rows of the 200 (the file repeats sentences). Nothing that worked
+before stopped working, and the one that did NOT work before — the "Rustenburg"
+row from Run 6 — now renders. Combined with the voice sweep going 41 → 49, the
+fix only ever turns a throw into audio.
