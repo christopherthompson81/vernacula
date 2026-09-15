@@ -781,7 +781,12 @@ internal sealed partial class TtsReaderViewModel : ObservableObject, IDisposable
     /// "clicking outside a currently active editing text box should put it back into the
     /// non-editing rendered state".
     /// </summary>
-    public void CommitOpenCard() => CommitOpenBlock();
+    /// <remarks>Called on every press in the view, so it leaves early in Listening rather than
+    /// walking a long document's cards looking for an open one that cannot exist there.</remarks>
+    public void CommitOpenCard()
+    {
+        if (IsEditing) CommitOpenBlock();
+    }
 
     private void CommitOpenBlock()
     {
