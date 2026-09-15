@@ -75,7 +75,7 @@
                      quotes), each a wrapping flow of word buttons. Click-to-seek; the .current
                      class is the highlight while the audio is on that word. FlowDirection per
                      block is what lays an Arabic or Persian block out right to left. -->
-                <ScrollViewer IsVisible="{Binding !ShowRawMarkdown}">
+                <ScrollViewer x:Name="CardScroller" IsVisible="{Binding !ShowRawMarkdown}">
                     <ItemsControl ItemsSource="{Binding DisplayBlocks}">
                         <ItemsControl.ItemsPanel>
                             <ItemsPanelTemplate>
@@ -99,10 +99,10 @@
                                     <TextBlock Text="{Binding HeaderLabel}"
                                                Classes="segment-caption"
                                                FlowDirection="LeftToRight" />
-                                    <!-- EDITING THIS CARD IN PLACE. Only the card's own words are in
-                                         the box: the block's markup (#, -, >) lies outside the
-                                         spliced extent, so editing the words cannot demote a
-                                         heading or unmake a list item. -->
+                                    <!-- EDITING THIS CARD IN PLACE. The block's own marker (#, -,
+                                         >) is IN the box along with the words, so the card's kind
+                                         can be changed here: a heading promoted or demoted, a
+                                         bullet unmade. Everything outside the extent is untouched. -->
                                     <TextBox IsVisible="{Binding IsEditingBlock}"
                                              Text="{Binding EditText, Mode=TwoWay}"
                                              AcceptsReturn="True"

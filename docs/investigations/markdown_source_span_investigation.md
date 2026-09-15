@@ -181,3 +181,100 @@ calls sit immediately after an append to `_sb`, which is only truncated after
 the walk — so output order is monotonic by construction. Block spans are
 recorded as their blocks complete, which is a weaker guarantee, and the list
 is short enough that relying on it buys nothing.
+
+## Run 6 — 2026-09-15 14:10 — "cards can change their own kind" reported not working
+
+**Question.** The card extent was widened over the block marker (PR #203) and
+the unit tests pass, but the feature was reported as not working against a real
+job. Is the span model wrong, or is the failure downstream of it?
+
+**Command.** A throwaway xunit probe dumping every card's editable text for a
+composite document (ATX headings, wrapped and nested bullets, an ordered list,
+a multi-line quote).
+
+**Raw finding.** The model is right on every shape:
+
+```
+segments=10 spans=10
+[0] Heading/1  editor=<# A document title>
+[2] Heading/2  editor=<## A section heading>
+[3] ListItem/0 editor=<- first bullet>
+[4] ListItem/0 editor=<- second bullet that\n  wraps onto another line>
+[5] ListItem/0 editor=<  - a nested bullet>
+[6] ListItem/0 editor=<1. numbered one>
+[8] Quote/0    editor=<> a quoted line\n> continuing the quote>
+[9] Paragraph/0 editor=<A closing paragraph.>
+```
+
+**Implication.** Not the spans. Reading the load path for what rebuilds the
+cards found the actual answer: `BuildDisplayStructure` is reached only from
+`SetText`, and after the initial load the ONLY caller is `LoadCompleted` — which
+runs at the end of a successful re-render. So a committed card edit changes the
+document and nothing on screen, for the ten-second debounce plus a synthesis
+round trip. Worse, `ReRenderAsync` returns early when `ChangedSegments` is
+empty, so an edit that changes no segment key (a `-` bullet retyped as `*`, a
+list item's indentation) never rebuilds the cards at all. From outside, both are
+indistinguishable from the edit being ignored.
+
+**Negative result worth keeping:** two theories were checked and both were
+wrong. (1) That `AlignmentSidecar.SourceText` might hold extracted text rather
+than markdown — it is set from `File.ReadAllText(documentPath)` verbatim, so the
+markers are there. (2) That heading LEVEL might not be drawn, making an H2→H3
+edit invisible by construction — `WordItemViewModel` maps level to font size
+(30/24/20/18/16), so it is drawn.
+
+**Fix.** Rebuild the cards from the edited markdown as soon as a card commits,
+re-attaching timings from the current sidecar. Gated on the structure actually
+having changed: a rebuild replaces every card object, and the card the user is
+moving TO (committing one card by clicking the next) would become an orphan
+mid-click and swallow the click. `OnBlockEditRequested` re-resolves its block by
+index for the same reason.
+
+**⚠ NOT CONFIRMED AGAINST THE REPORT.** This explains a delay and a permanent
+miss for key-preserving edits, but the reporter may have waited out the
+re-render and seen nothing, which would mean a second cause. Needs their
+observation: whether the marker appeared in the card's editor at all.
+
+## Run 7 — 2026-09-15 14:40 — the real cause: markup between the marker and the first word
+
+**Question.** Run 6's fix explains a delay, but the reporter answered that the
+marker never appeared in the card's editor at all. The synthetic probe widens
+every shape. What is different about a real document?
+
+**Command.** The same probe pointed at the sidecar of an actual finished job,
+printing structure only — kind, level, offsets, and the prefix between the line
+start and the card's first word with letters masked to `a` and digits to `9`, so
+markup survives and content cannot.
+
+**Raw finding.**
+
+```
+[ 0] Heading/1  lineStart=    0 srcStart=    4 prefix=<# **>
+[ 4] ListItem/0 lineStart=  888 srcStart=  893 prefix=<9. **>
+[ 1] Paragraph/0 lineStart=  80 srcStart=   82 prefix=<**>
+```
+
+**Implication.** The document writes its heading as `# **Title**` and its list
+items as `1. **Lead-in** …`. The `**` sits BETWEEN the block marker and the first
+word the extractor emits, so the anchored `BlockMarker` pattern — which allowed
+only marker characters — rejected the prefix and widened nothing. Every document
+written to test the feature had bare headings; none of the real one's did. The
+pattern now allows inline openers after the marker, and the marker itself is
+optional, which also fixes the third row above: a paragraph with a bold lead-in
+had its opening `**` outside the extent while the closing one fell inside, so its
+editor opened on text carrying a `**` that closed nothing.
+
+**Second defect, found by the first test written for the fix.** Widening only
+left leaves the pair broken the other way: `# **Title**` is bold to its last
+word, so the closing `**` lies past the last emitted text and the editor showed
+`# **Title`. The widening is now symmetric, bounded by the next card's first word
+the way the left side is bounded by the previous card's end.
+
+**Third, found by re-probing after that.** The trailing widening swallowed the
+two spaces that end several list items — a markdown HARD LINE BREAK, invisible in
+an editor and easy to delete by accident. Both directions now require the run to
+contain at least one markup character rather than being blank, which also keeps a
+paragraph's indentation out of the box.
+
+**Verified.** Re-probed against the same document: every card carries its marker
+and every inline pair is balanced.

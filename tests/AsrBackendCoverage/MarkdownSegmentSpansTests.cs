@@ -39,21 +39,140 @@ public class MarkdownSegmentSpansTests
             EditCard(md, 1, "Rewritten entirely."));
     }
 
-    /// <summary>⚠ THE MARKUP IS OUTSIDE THE SPAN. Editing a heading's words cannot demote it, because
-    /// the `##` was never in the extracted text and so is never in the extent.</summary>
+    /// <summary>⚠ THE BLOCK MARKER IS INSIDE THE SPAN, so the card's own kind is editable — the
+    /// reported miss was that a title could not be changed from a title, nor a bullet from a bullet.</summary>
     [Fact]
-    public void AHeadingKeepsItsHashes()
+    public void AHeadingsHashesAreInTheEditableText()
     {
         const string md = "## Some heading\n\nA paragraph.";
-        Assert.Equal("Some heading", TextOfCard(md, 0));
-        Assert.Equal("## New words\n\nA paragraph.", EditCard(md, 0, "New words"));
+        Assert.Equal("## Some heading", TextOfCard(md, 0));
+        Assert.Equal("### New words\n\nA paragraph.", EditCard(md, 0, "### New words"));
+    }
+
+    /// <summary>The whole point: the marker can be changed to a different one, or dropped.</summary>
+    [Fact]
+    public void ACardsKindCanBeChangedFromItsOwnEditor()
+    {
+        Assert.Equal("Just a paragraph now.\n\nA paragraph.",
+            EditCard("## Some heading\n\nA paragraph.", 0, "Just a paragraph now."));
+        Assert.Equal("## Promoted\n- second", EditCard("- first\n- second", 0, "## Promoted"));
     }
 
     [Fact]
-    public void AListItemKeepsItsBulletAndAQuoteItsMarker()
+    public void AListItemAndAQuoteCarryTheirMarkersToo()
     {
-        Assert.Equal("- changed\n- second", EditCard("- first\n- second", 0, "changed"));
-        Assert.Equal("> changed", EditCard("> quoted text", 0, "changed"));
+        Assert.Equal("- first", TextOfCard("- first\n- second", 0));
+        Assert.Equal("- second", TextOfCard("- first\n- second", 1));
+        Assert.Equal("> quoted text", TextOfCard("> quoted text", 0));
+        Assert.Equal("* changed\n- second", EditCard("- first\n- second", 0, "* changed"));
+    }
+
+    /// <summary>
+    /// ⚠ THE REGRESSION THAT MADE THE FEATURE LOOK DEAD. A heading written `# **Title**` puts inline
+    /// markup between the block marker and the first word the extractor emits, so a pattern that
+    /// stopped at the block marker rejected the prefix and widened nothing — the card opened with no
+    /// `# ` in it, exactly as reported. Bare headings are the shape this was first tested with and
+    /// the shape real documents are least likely to use.
+    /// </summary>
+    [Fact]
+    public void AHeadingWhoseTitleIsBoldStillCarriesItsHashes()
+    {
+        const string md = "# **A bold title**\n\nBody text.";
+        Assert.Equal("# **A bold title**", TextOfCard(md, 0));
+        Assert.Equal("### **A bold title**\n\nBody text.", EditCard(md, 0, "### **A bold title**"));
+    }
+
+    /// <summary>…and the same shape in a list, which is how a lead-in is usually written.</summary>
+    [Fact]
+    public void AListItemWithABoldLeadInCarriesItsMarker()
+    {
+        const string md = "1. **Lead-in.** The rest of the item.\n2. **Another.** More.";
+        Assert.Equal("1. **Lead-in.** The rest of the item.", TextOfCard(md, 0));
+        Assert.Equal("2. **Another.** More.", TextOfCard(md, 1));
+    }
+
+    /// <summary>
+    /// ⚠ AND A PARAGRAPH WITH A BOLD LEAD-IN, which has no block marker at all. Its opening `**`
+    /// used to sit outside the extent while the CLOSING one fell inside, so the editor opened on
+    /// text carrying a `**` that closed nothing — an invitation to corrupt the document by editing
+    /// around it. Widening over the opener keeps the pair together.
+    /// </summary>
+    [Fact]
+    public void AParagraphWithABoldLeadInKeepsThePairTogether()
+    {
+        const string md = "**Lead-in.** The rest of the paragraph.";
+        string editor = TextOfCard(md, 0);
+        Assert.Equal(md, editor);
+        Assert.Equal(2, System.Text.RegularExpressions.Regex.Matches(editor, @"\*\*").Count);
+    }
+
+    /// <summary>Backticks and links open the same way and are widened over for the same reason.</summary>
+    [Theory]
+    [InlineData("- `code` then words", "- `code` then words")]
+    [InlineData("## [A link](/x) heading", "## [A link](/x) heading")]
+    [InlineData("> _quiet_ start", "> _quiet_ start")]
+    public void OtherInlineOpenersAfterAMarkerAreWidenedOverToo(string md, string expected) =>
+        Assert.Equal(expected, TextOfCard(md, 0));
+
+    /// <summary>An ordered list's number is markup like any other marker.</summary>
+    [Fact]
+    public void AnOrderedListItemCarriesItsNumber()
+    {
+        const string md = "1. first\n2. second";
+        Assert.Equal("1. first", TextOfCard(md, 0));
+        Assert.Equal("2. second", TextOfCard(md, 1));
+    }
+
+    /// <summary>⚠ INDENTATION IS PART OF THE MARKER, because it is what makes the item nested —
+    /// leaving it outside would show an editor that cannot express the nesting it is displaying.</summary>
+    [Fact]
+    public void ANestedListItemCarriesItsIndentation()
+    {
+        const string md = "- top\n  - nested";
+        Assert.Equal("  - nested", TextOfCard(md, 1));
+        Assert.Equal("- top\n    - deeper", EditCard(md, 1, "    - deeper"));
+    }
+
+    /// <summary>⚠ A PLAIN PARAGRAPH HAS NO MARKER TO WIDEN OVER, and must not pick up anything —
+    /// this is the case where a sloppy "extend to the start of the line" would eat real text.</summary>
+    [Fact]
+    public void APlainParagraphSpanIsStillJustItsWords()
+    {
+        const string md = "First para.\n\nSecond para.";
+        Assert.Equal("First para.", TextOfCard(md, 0));
+        Assert.Equal("Second para.", TextOfCard(md, 1));
+    }
+
+    /// <summary>⚠ A SETEXT HEADING'S UNDERLINE IS TRAILING, not leading, so it stays outside the
+    /// extent and the heading survives an edit of its words. A known limit of the marker rule: this
+    /// is the one heading shape whose level the card editor cannot change.</summary>
+    [Fact]
+    public void ASetextUnderlineStaysOutsideTheExtent()
+    {
+        const string md = "Some heading\n===\n\nA paragraph.";
+        Assert.Equal("Some heading", TextOfCard(md, 0));
+        Assert.Equal("Reworded\n===\n\nA paragraph.", EditCard(md, 0, "Reworded"));
+    }
+
+    /// <summary>
+    /// ⚠ THE PREMISE THE READER'S IMMEDIATE REFRESH RESTS ON: editing the marker through the card's
+    /// own extent changes what the segmenter says the block IS. The cards are rebuilt on a commit
+    /// only when this comes out different, so if it ever stopped being true the marker would become
+    /// editable again in name only.
+    /// </summary>
+    [Fact]
+    public void EditingTheMarkerChangesTheSegmentsKindAndLevel()
+    {
+        const string md = "## A heading\n\nA paragraph.";
+        Assert.Equal(BlockKind.Heading, ParagraphSegmenter.Segment(md)[0].Kind);
+        Assert.Equal(2, ParagraphSegmenter.Segment(md)[0].Level);
+
+        Assert.Equal(BlockKind.Paragraph,
+            ParagraphSegmenter.Segment(EditCard(md, 0, "Just words now."))[0].Kind);
+        Assert.Equal(4,
+            ParagraphSegmenter.Segment(EditCard(md, 0, "#### A heading"))[0].Level);
+        Assert.Equal(BlockKind.ListItem,
+            ParagraphSegmenter.Segment(EditCard(md, 0, "- A heading"))[0].Kind);
     }
 
     /// <summary>Inline markup lies BETWEEN two text runs of one card, so it is inside the extent and

@@ -420,6 +420,9 @@ internal sealed partial class TtsReaderViewModel : ObservableObject, IDisposable
     {
         _settings.Current.TtsShowRawMarkdown = value;
         _settings.Save();
+        // Coming back to the cards from the raw editor: they were built from the document as it was
+        // before those edits, and nothing else rebuilds them until a re-render finishes.
+        if (!value && IsEditing && _editorSeeded) RefreshStructureFromEdit();
     }
 
     partial void OnShowIpaAnnotationChanged(bool value)
@@ -742,6 +745,9 @@ internal sealed partial class TtsReaderViewModel : ObservableObject, IDisposable
     {
         if (!IsEditing) return;
         CommitOpenBlock();
+        // ⚠ Committing the previous card can rebuild the cards, which leaves the one that was just
+        // clicked an orphan — setting IsEditingBlock on it would open nothing. Re-resolve by index.
+        block = DisplayBlocks.FirstOrDefault(b => b.Index == block.Index) ?? block;
         var span = MarkdownSegmentSpans.For(EditableText).FirstOrDefault(s => s.Index == block.Index);
         if (span is null)
         {
@@ -766,14 +772,75 @@ internal sealed partial class TtsReaderViewModel : ObservableObject, IDisposable
         string current = MarkdownSegmentSpans.TextOf(EditableText, span);
         if (string.Equals(current, block.EditText, StringComparison.Ordinal)) return;
         EditableText = MarkdownSegmentSpans.Splice(EditableText, span, block.EditText);
+        RefreshStructureFromEdit();
+    }
+
+    /// <summary>
+    /// Rebuilds the cards from the edited markdown, keeping the timings the current audio still has.
+    ///
+    /// ⚠ STRUCTURE IS A VIEW CONCERN AND MUST NOT WAIT FOR AUDIO. Without this the only thing that
+    /// ever rebuilds the cards is a successful re-render, so changing a card's marker — the edit the
+    /// marker was made editable FOR — showed nothing at all for the ten-second debounce and then a
+    /// synthesis round trip, and showed nothing ever when the edit changed no segment's key (say a
+    /// `-` bullet retyped as `*`). Reported as "cards can change their own kind — doesn't seem to
+    /// work", and from the outside that is indistinguishable from the edit being ignored.
+    ///
+    /// The timings re-attach by running index, so an edit that adds or removes words leaves the
+    /// later ones pointing at the wrong audio until the re-render lands. That is the right trade:
+    /// the alternative is a view that does not reflect what the document says.
+    ///
+    /// ⚠ AND IT REBUILDS ONLY WHEN THE STRUCTURE ACTUALLY CHANGED, which is not an optimization. A
+    /// rebuild replaces every card object, so the card the user is moving TO — they commit one card
+    /// by clicking the next — becomes an orphan mid-click and its button never fires. Paying that on
+    /// the rare marker edit is fine; paying it on every ordinary word edit would cost a click every
+    /// time and read as a second bug.
+    /// </summary>
+    private void RefreshStructureFromEdit()
+    {
+        if (StructureMatchesCards(EditableText)) return;
+        SetText(EditableText);
+        if (_sidecar is not null) AttachTimings(_sidecar);
+        WireBlockEditing();
+    }
+
+    /// <summary>Whether the cards on screen still describe <paramref name="markdown"/> — same
+    /// segments, in the same order, each with the kind and level it is being drawn with.</summary>
+    private bool StructureMatchesCards(string markdown)
+    {
+        var segments = ParagraphSegmenter.Segment(markdown ?? "");
+        if (segments.Count != DisplayBlocks.Count) return false;
+        for (int i = 0; i < segments.Count; i++)
+            if (segments[i].Kind != DisplayBlocks[i].Kind || segments[i].Level != DisplayBlocks[i].Level)
+                return false;
+        return true;
     }
 
     private static void OnBlockEditCancelled(BlockItemViewModel block) => block.IsEditingBlock = false;
 
+    /// <summary>
+    /// Closes whatever card is open, keeping its text. The view calls this when a click lands
+    /// anywhere outside the open editor.
+    ///
+    /// ⚠ LOSING FOCUS IS NOT THE SAME EVENT AS BEING CLICKED AWAY FROM, which is why the text box's
+    /// own LostFocus is not enough. Clicking the card's caption, the gap between cards, the
+    /// scroll area or any other inert surface moves focus NOWHERE — the box keeps it and stays open,
+    /// so the card appears stuck in editing until something focusable is clicked. Reported as
+    /// "clicking outside a currently active editing text box should put it back into the
+    /// non-editing rendered state".
+    /// </summary>
+    /// <remarks>Called on every press in the view, so it leaves early in Listening rather than
+    /// walking a long document's cards looking for an open one that cannot exist there.</remarks>
+    public void CommitOpenCard()
+    {
+        if (IsEditing) CommitOpenBlock();
+    }
+
+    /// <summary>⚠ The open card is found BEFORE it is committed, because committing can rebuild
+    /// DisplayBlocks underneath an enumerator.</summary>
     private void CommitOpenBlock()
     {
-        foreach (var b in DisplayBlocks)
-            if (b.IsEditingBlock) { OnBlockEditCommitted(b); break; }
+        if (DisplayBlocks.FirstOrDefault(b => b.IsEditingBlock) is { } open)
+            OnBlockEditCommitted(open);
     }
 
     /// <summary>Gives every freshly built card its editing hooks and the current mode.</summary>
@@ -879,8 +946,12 @@ internal sealed partial class TtsReaderViewModel : ObservableObject, IDisposable
     // ── Export ───────────────────────────────────────────────────────────────
 
     /// <summary>
-    /// Writes the rendered WAV and a sentence-by-sentence CSV (text, phonemes, timing) next to
-    /// each other under one chosen name. Finished jobs only: the timing comes from the sidecar.
+    /// Writes ONE file: the rendered WAV, the sentence-by-sentence CSV (text, phonemes, timing), or
+    /// the source markdown. Finished jobs only — the CSV's timing comes from the sidecar.
+    ///
+    /// ⚠ THE PICKER'S FILE TYPE IS THE CHOICE OF WHAT TO WRITE, and it is the only UI this needs.
+    /// The dialog used to be picking a LOCATION AND STEM while both files were written regardless,
+    /// which is not what a file-type dropdown means anywhere else.
     /// </summary>
     [RelayCommand(CanExecute = nameof(CanExport))]
     private async Task Export()
@@ -888,32 +959,49 @@ internal sealed partial class TtsReaderViewModel : ObservableObject, IDisposable
         if (_job is null || _sidecar is null || _audioPath is null) return;
         string stem = string.Concat(_job.JobTitle.Split(Path.GetInvalidFileNameChars())).Trim();
         if (stem.Length == 0) stem = "tts-export";
-        // ⚠ AUDIO FIRST, AND THE SUGGESTED NAME IS THE .wav. The picker offered only CSV, so the
-        // dialog said "File type: CSV" and there was no way to ask for the audio at all — reported as
-        // "it only shows CSV as an export type". Both files are still written whichever type is on;
-        // the dialog is choosing a LOCATION AND STEM, which is what the title now says.
         var chosen = await StoragePickers.SaveFileAsync(Loc.Instance["tts_export_title"], stem + ".wav",
-            StoragePickers.AudioClips, StoragePickers.CsvFiles, StoragePickers.AllFiles);
+            StoragePickers.WavFiles, StoragePickers.CsvFiles, StoragePickers.MarkdownFiles);
         if (chosen is null) return;
 
+        if (TtsExportService.KindOf(chosen) is not { } kind)
+        {
+            // A name typed with no extension at all has none to quote back; name the file instead,
+            // so the message reads the same either way.
+            StatusMessage = Loc.Instance.T("tts_export_unknown_type", new()
+            {
+                ["ext"] = Path.GetExtension(chosen) is { Length: > 0 } ext ? ext : Path.GetFileName(chosen),
+            });
+            return;
+        }
+
         var job = _job; var sidecar = _sidecar; string audioPath = _audioPath;
-        string wavPath = "", csvPath = "";
+        // ⚠ Read on the UI thread: EditableText is what the user has typed, and the export of the
+        // markdown is meant to be of the document as it stands, open card and all.
+        CommitOpenBlock();
+        string markdown = _editorSeeded ? EditableText : _text;
+        string written = "";
         StatusMessage = Loc.Instance["tts_export_running"];
         try
         {
             await Task.Run(() =>
             {
-                var engine = TtsEngines.For(job);
-                var settings = new TtsJobSettings(job.TtsBackend, job.TtsLanguage, job.TtsVoice, job.TtsSpeed, job.TtsNumStep);
-                var sentences = TtsExportService.SplitSentences(sidecar.SourceText ?? _text, sidecar.Words);
-                var rows = TtsExportService.BuildRows(sentences, _settings, settings);
-                (wavPath, csvPath) = TtsExportService.WriteBundle(chosen, audioPath, rows, engine.PhonemeScheme);
+                written = kind switch
+                {
+                    TtsExportService.ExportKind.Audio    => TtsExportService.WriteAudio(chosen, audioPath),
+                    TtsExportService.ExportKind.Markdown => TtsExportService.WriteMarkdown(chosen, markdown),
+                    _ => WriteTranscript(),
+                };
+
+                string WriteTranscript()
+                {
+                    var engine = TtsEngines.For(job);
+                    var settings = new TtsJobSettings(job.TtsBackend, job.TtsLanguage, job.TtsVoice, job.TtsSpeed, job.TtsNumStep);
+                    var sentences = TtsExportService.SplitSentences(sidecar.SourceText ?? _text, sidecar.Words);
+                    var rows = TtsExportService.BuildRows(sentences, _settings, settings);
+                    return TtsExportService.WriteTranscript(chosen, rows, engine.PhonemeScheme);
+                }
             });
-            StatusMessage = Loc.Instance.T("tts_export_done", new()
-            {
-                ["csv"] = Path.GetFileName(csvPath),
-                ["wav"] = Path.GetFileName(wavPath),
-            });
+            StatusMessage = Loc.Instance.T("tts_export_done", new() { ["file"] = Path.GetFileName(written) });
         }
         catch (Exception ex)
         {
