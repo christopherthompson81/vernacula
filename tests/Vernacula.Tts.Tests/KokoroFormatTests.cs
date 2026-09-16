@@ -216,4 +216,42 @@ public class KokoroFormatTests
     [InlineData("ər\u02e5\u02e9", "ɚ↘")]           // 二 er4 — r-coloured, not schwa plus r
     public void MandarinMatchesTheEnginesOwnPinyinTable(string ipa, string expected)
         => Assert.Equal(expected, KokoroFormat.Render(ipa, "cmn"));
+
+    /// <summary>
+    /// THE REDUCED SLOT — both of the phonemizer's spellings become Kokoro's ᵊ (vocab id 42).
+    ///
+    /// ⚠ TWO SPELLINGS, ONE TOKEN, and that is not sloppiness upstream. misaki's ᵊ conflates two
+    /// different facts: in 81% of its slots the sonorant is a CODA and genuinely carries the syllable
+    /// (`able` → ˈeᶦbɫ̩), in 19% it is the ONSET of the next syllable and cannot be syllabic at all
+    /// (`accompany` → əkʰˈʌmpə̆ni). Canonical IPA distinguishes them; Kokoro's alphabet does not.
+    ///
+    /// ⚠ THE SYLLABIC RULE MIRRORS audio.cpp RATHER THAN BEING INVENTED HERE — `syllabic_to_schwa`
+    /// in g2p_multilingual.cpp (#565) is the same `(\S)̩` → `ᵊ$1`. Two frontends, one target
+    /// alphabet: an eSpeak-driven engine and this one have to agree.
+    /// </summary>
+    [Theory]
+    [InlineData("ˈeᶦbɫ̩", "ˈAbᵊl")]                 // syllabic coda l
+    [InlineData("θˈaᶷzn̩d", "θˈWzᵊnd")]             // syllabic coda n
+    [InlineData("əkʰˈʌmpə\u0306ni", "əkˈʌmpᵊni")]   // extra-short schwa, the n is an onset
+    [InlineData("ˈænə\u0306lˌaᶦz", "ˈænᵊlˌIz")]     // same, before an l
+    [InlineData("əbˈɑːmə\u0306nəbɫ̩", "əbˈɑmᵊnəbᵊl")] // one word needing both
+    public void AReducedSlotBecomesTheSchwaKokoroWasTrainedOn(string ipa, string expected)
+        => Assert.Equal(expected, KokoroFormat.Render(ipa));
+
+    /// <summary>A syllabic mark the rule cannot pair with a segment is dropped, not left in — it has
+    /// no vocabulary id. Mirrors the `replace(value, u8"\u0329", "")` line in audio.cpp.</summary>
+    [Fact]
+    public void AnUnpairedSyllabicMarkIsDropped()
+        => Assert.DoesNotContain("\u0329", KokoroFormat.Render("\u0329 ˈeᶦbɫ̩"));
+
+    /// <summary>Every codepoint the reduced slot produces is in the vocabulary.</summary>
+    [Theory]
+    [InlineData("ˈeᶦbɫ̩")]
+    [InlineData("əkʰˈʌmpə\u0306ni")]
+    [InlineData("əbˈɑːmə\u0306nəbɫ̩")]
+    public void TheReducedSlotStaysInVocabulary(string ipa)
+    {
+        foreach (var c in KokoroFormat.Render(ipa))
+            if (c != ' ') Assert.True(KokoroVocab.Contains(c), $"out of vocab: {c} (U+{(int)c:X4})");
+    }
 }
