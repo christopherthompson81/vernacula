@@ -521,3 +521,176 @@ one-condition change this triage billed: the guard was easy, but the derived `ac
 had to be regenerated for it to reach recorded words at all, and the first design — reading the
 stress that survives the clash rule — had to be withdrawn on review because the headline metric
 endorsed it and the flap-specific metric refuted it. Next: the 16 dropped symbols.
+
+## Run 15 — 2026-09-16 15:20 — the syllabic schwa: audible, but not derivable. Not taken.
+
+Run 14 listed `ᵊ` as the largest open item — 7,778 gold words, a trained token (vocab id 42), and we
+emit it zero times in 80,222. Two questions had to be answered before touching it, and they came out
+opposite ways.
+
+### Is it audible? Yes.
+
+A/B'd through the real Kokoro graph, same word, `ə` vs `ᵊ`, in a carrier sentence (`ðə … wˈʌn`), with
+controls and a noise floor.
+
+⚠ **Two metrics had to be thrown away first.** Isolated words showed `able` at 1.375 s versus 1.0 s —
+a 37% swing that turned out to be bare-word padding, and vanished inside a carrier. Whole-utterance
+RMS difference then put `ᵊ` at 0.53–1.51 relative — indistinguishable from controls, because a
+generative decoder re-rolls the entire waveform for any token change. Neither measured the question.
+
+What does: the **local spectral envelope of the changed token only**, aligned by the duration
+predictor's own frame counts.
+
+| | local spectral distance |
+|---|---|
+| identical input (noise floor) | **0.040** |
+| `ᵊ` able / normal / abandoned / technical / measurement | 0.317 / 0.319 / 0.797 / 0.120 / 0.586 |
+| control `ə→ɪ` (audible) | 0.148 |
+| control `ə→ɑ` | 0.583 |
+| control `T→d` | 0.804 |
+
+So `ᵊ` is realised differently, at the magnitude of vowel changes already treated as real — 3–20×
+the floor, and mostly ABOVE the `ə→ɪ` control. It is not a cosmetic token. The duration predictor,
+by contrast, barely reacts: the changed token goes 2→2 frames in four of five cases, and whole
+utterances differ by 0–1 frames.
+
+### Is it derivable? No — and the earlier estimate was too kind.
+
+Run 14 measured context in IPA. The source we actually convert from is ARPABET, so this re-measured
+there, over single-slot words present in both our dictionary and gold:
+
+| ARPABET context | ᵊ | plain | % ᵊ |
+|---|---|---|---|
+| `AH0 L` word-final | 1,301 | 409 | **76.1%** |
+| `AH0 L` non-final | 368 | 1,038 | 26.2% |
+| `AH0 N` non-final | 496 | 1,774 | 21.9% |
+| `AH0 N` word-final | 266 | 1,318 | 16.8% |
+| `IH0 N` word-final | 20 | 66 | 23.3% |
+| `AH0 M` either | 11 | 818 | ~1% |
+
+The BEST context is 76%, which as a rule means 409 words wrong in the one place it half-works; every
+other context is a coin flip or worse. **CMUdict does not encode syllabicity** — `able` and `normal`
+are both `AH0 L` — so the information is not in our input at all. A rule here would not be
+approximating a fact we can see; it would be inventing one.
+
+### Why a lexicon patch is not the escape hatch
+
+Importing gold's assignments would not survive. `accent-lexicon.tsv` is REGENERATED from
+`g2p-dict.tsv` through the converter (`en_rebuild_lexicon.mts`), which is what #1317 relied on and
+what keeps the flat and OOV paths from splitting. Any `ᵊ` written into the IPA layer is wiped by the
+next rebuild. Carrying it properly means extending the ARPABET source — a syllabicity marker across
+117,482 dictionary rows — which is a data project of a different order from a rule fix, and one
+where the reference cannot serve as the oracle either (`legal` plain vs `illegal` syllabic;
+`national` `nˈæʃənᵊl` vs `international` `ˌɪntəɹnˈæʃᵊnəl`, the mark on different syllables).
+
+### ⚠ The "CMUdict doesn't encode it" framing above is wrong, and the correction matters
+
+That is a fact about UPSTREAM CMUdict. `g2p-dict.tsv` is ours, the converter is ours, and
+`KokoroFormat` is ours — we own the whole chain, so nothing external forbids carrying syllabicity.
+The blocker is not architecture.
+
+And the architecture, if it were taken, is not `ᵊ` upstream. `ᵊ` is a Kokoro-alphabet token; the
+canonical-IPA way to say the same thing is the syllabic diacritic — `ˈeᶦbl̩`, not `ˈeᶦbəl`. The
+phonemizer would gain a real distinction it currently lacks, engine-agnostic, and `KokoroFormat`
+would map `l̩ → ᵊl` at the render step. That is the correct seam.
+
+### What actually blocks it: there is no oracle
+
+The repo ships ONE independent English referee — wikipron eng_latn_us broad, human, 4,558 rows —
+and it marks a syllabic consonant on only 60 of them. On the 35 that are also in misaki's gold:
+
+    referee marks syllabic, gold also writes ᵊ     23
+    referee marks syllabic, gold writes plain      12
+    agreement                                     66%
+
+66% on n=35, which is no better than the 76% best-context rule — and the disagreements are
+SYSTEMATIC, not scattered: the referee marks `-tion` as `ʃn̩` (abruption, delation) and `-ism` as
+`zm̩` (cataclysm, Keynesianism) where gold writes a plain schwa.
+
+That pattern is the finding. Whether `-tion` is written `ʃn̩` or `ʃən` is a TRANSCRIPTION
+CONVENTION, not a fact about the sound — both describe the same articulation. So the distinction
+`ᵊ` encodes is substantially notational, and Kokoro learned whichever convention misaki used.
+**Matching a convention means copying the convention**, not deriving it: no rule and no second
+opinion can reconstruct an arbitrary choice.
+
+### So the decision is a values call, not a technical one
+
+misaki is **Apache-2.0**, so importing its 7,778 assignments as the source for a syllabicity marker
+in `g2p-dict.tsv` is legally clean with attribution, and this repo already has the provenance
+machinery for exactly that (`data/LICENSES/`, the `.PROVENANCE.md` convention).
+
+The costs are declarable rather than fatal: it makes the misaki-gold comparison CIRCULAR for this
+feature — which the repo annotates honestly elsewhere ("PARTLY CIRCULAR") — and it covers only the
+words gold has, leaving the OOV tagger with no syllabicity to predict.
+
+**Not taken here.** The engineering is clear and ours; the question is whether we want misaki's
+notation as data. Recorded so that decision is made on the numbers rather than re-derived.
+
+### What is worth taking instead
+
+The `-y` final `IY2` class, already measured in #1317: **199 dictionary rows end `IY2` on a `-y`
+spelling, and gold treats 122 as unstressed against 2 as secondary** (`latchkey`, `turnkey` — real
+compounds where "-key" is a morpheme). That is an 86% clean signal with identifiable exceptions,
+in the layer that actually feeds everything, and it closes two Run 14 defects at once: the 275
+spurious final-vowel secondary stresses, and the flaps those rows currently suppress.
+
+## Run 16 — 2026-09-16 17:10 — the syllabic schwa, implemented after all
+
+Run 15 recorded this as "not taken" and framed the blocker as architectural: "CMUdict does not
+encode syllabicity, so the information is not in our input". **That framing was wrong and the
+correction is the whole reason this got built.** CMUdict is upstream; `g2p-dict.tsv`, the converter
+and `KokoroFormat` are all ours. Nothing external forbade it. What Run 15 measured correctly was
+that no RULE and no ORACLE exists — which makes this a convention import, not a derivation, and
+that is a decision rather than an impossibility.
+
+    exact agreement vs misaki's gold   41.63% → 44.19%   (+2,053 words, 0 lost)
+    words emitting ᵊ                        0 → 3,370    (gold 7,778)
+
+The largest single gain of this series, and the only one with zero regressions.
+
+### The design, and the two errors found while building it
+
+**`ᵊ` is not a syllabicity mark.** The first implementation wrote the syllabic diacritic everywhere
+misaki writes `ᵊ`, which a test caught: `analyze` became `ˈænɫ̩ˌaᶦz`, claiming the `l` is a nucleus
+when it is the onset of `laɪz`. Measured over the 3,264 slots, **617 (18.9%)** are like that. So
+`ᵊ` is a REDUCED SCHWA that misaki happens to write in both positions, and canonical IPA needs two
+spellings where Kokoro has one token:
+
+| | n | canonical IPA | Kokoro |
+|---|---|---|---|
+| sonorant in the coda, carrying the syllable | 2,647 (81%) | `ˈeᶦbɫ̩` | `ˈAbᵊl` |
+| sonorant is the next syllable's onset | 617 (19%) | `əkʰˈʌmpə̆ni` | `əkˈʌmpᵊni` |
+
+Both render to the same stream — the Kokoro output is byte-identical between the two designs — so
+the entire benefit of the second one is that the transcription stops asserting something false.
+`abominable` needs both: `əbˈɑːmə̆nəbɫ̩`.
+
+**It leaked into a language that has no such marks.** Naija nativises English words through the
+English dict, and `nativise` already strips aspiration and the flap diacritic because those are
+General American facts rather than Nigerian Pidgin ones. The reduced-slot marks are the same kind of
+fact, and without a strip at that boundary `people` became *pipl̩* and `analyze` *anălaiz*. Fixed in
+`knownWord` — the shared creole accessor — rather than in Naija, so any future creole gets it right;
+the Naija goldens are byte-identical to main again.
+
+### Three places, because the data has to reach all of them
+
+`english.ts` (the engine), `en_rebuild_lexicon.mts` (the flat lexicon) and the
+`en-lexicon-regenerable` gate each load the table. The gate failing was the useful signal: without
+it the lexicon regenerates plain schwas for exactly the 3,231 words the engine now marks — the
+two-path split that tool's header exists to prevent, appearing in three new places at once.
+
+And the table is a separate file because `g2p-dict.tsv` is regenerated from upstream CMUdict by
+`en_g2p_ngram.ts --emit`, which silently reverts hand edits.
+
+### The test-expectation churn, and a mistake worth recording
+
+56 committed assertions across both ports changed, and the bulk rewrite went wrong twice in the same
+way: a substring replace turned `ɪlˈɛvənθ` ("eleventh", not in the table) into `ɪlˈɛvn̩θ` because
+`ɪlˈɛvən` is a prefix of it, and later turned `ˈiːkwəɫz` ("equals") into `ˈiːkwɫ̩z` because `equal`
+is. Both were caught by the suite rather than by inspection. Re-recording an expectation is only
+safe when the difference IS the change — which means matching whole quoted strings, not substrings,
+and checking every longer word that contains the shorter one.
+
+**Circularity, declared:** this makes any comparison against misaki's lexicon partly circular for
+this feature. `en-syllabic.PROVENANCE.md` says so, alongside the Apache-2.0 attribution and the
+coverage limit (3,231 of 117,482 dictionary words; the OOV tagger predicts no syllabicity at all).

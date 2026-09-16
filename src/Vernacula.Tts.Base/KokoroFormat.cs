@@ -71,6 +71,20 @@ public static class KokoroFormat
     private static readonly Regex WordFinalFlapRe =
         new(@"T([əɐaeiouɑɔɛɪʊʌæɜAIOWYᵻ])(?=[ ,.;:!?…—]|$)", RegexOptions.Compiled);
 
+    // A SYLLABIC CONSONANT — a segment carrying the combining syllabic mark (U+0329). Kokoro's
+    // vocabulary has no id for the mark but does have ᵊ (id 42), and misaki's lexicon writes the
+    // syllable that way: `able` is ˈAbᵊl, not ˈAbəl. So the mark becomes a PRECEDING ᵊ.
+    //
+    // ⚠ THIS MIRRORS audio.cpp's misaki port RATHER THAN BEING INVENTED HERE — `syllabic_to_schwa`
+    // in src/models/kokoro_tts/g2p_multilingual.cpp (#565) is the same rule, `(\S)̩` → `ᵊ$1`,
+    // and it exists because the engine's own eSpeak frontend produces the mark for the -tten/-tton
+    // family. Two frontends, one target alphabet: they have to agree.
+    //
+    // ⚠ AND IT IS A DIFFERENCE KOKORO ACTUALLY RENDERS. A/B'd through the graph, the local spectral
+    // distance at the changed token is 0.12–0.80 against a 0.040 noise floor — above the ə→ɪ control
+    // (0.148) in most cases. docs/investigations/kokoro_vphon_investigation.md Run 15.
+    private static readonly Regex SyllabicRe = new(@"(\S)\u0329", RegexOptions.Compiled);
+
     // A punctuation token the phonemizer emitted on its own, with the space that precedes it.
     // Kokoro's training data attaches punctuation to the word before it (`wˈɜɹld.`), and the
     // word-alignment code counts a run of non-space tokens as one word, so it must not stand alone.
@@ -408,6 +422,13 @@ public static class KokoroFormat
         }
 
         ps = ps.Replace("o", "ɔ");         // misaki: espeak < 1.52 compatibility; O is already consumed
+        // The EXTRA-SHORT schwa: the phonemizer's other spelling of a reduced slot, used where the
+        // sonorant after it is an ONSET and so cannot be syllabic (`accompany` → əkʰˈʌmpə̆ni). Both
+        // spellings are one token here, because misaki's ᵊ conflates them.
+        ps = ps.Replace("ə\u0306", "ᵊ");
+        // AFTER Common, so `ɫ̩` has already become `l` + the mark and the ᵊ lands before a plain l.
+        ps = SyllabicRe.Replace(ps, "ᵊ$1");
+        ps = ps.Replace("\u0329", "");     // a mark the rule could not pair with a segment
         ps = DetachedPunctRe.Replace(ps, "$1");
         // en-us only: flapping is American, and en-GB never produces the T token.
         if (!british) ps = WordFinalFlapRe.Replace(ps, "ɾ$1");   // after punctuation, so the lookahead sees it
