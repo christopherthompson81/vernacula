@@ -5,6 +5,7 @@ using System.Linq;
 using Vernacula.App.Models;
 using Vernacula.App.Services;
 using Vernacula.App.Services.Tts;
+using Vernacula.Tts.Base;
 using Xunit;
 
 namespace Vernacula.Tests.AsrBackendCoverage;
@@ -87,6 +88,56 @@ public class TtsExportServiceTests
         Assert.DoesNotContain("<error", rows[0].Ipa);
         Assert.Contains("ʰ", rows[0].Ipa);                       // canonical marks aspiration
         Assert.NotEqual(rows[0].Ipa, rows[0].EnginePhonemes);
+    }
+
+    /// <summary>
+    /// ⚠ THE IPA COLUMN MUST COME FROM THE NEURAL ENTRY, and nothing else in the suite pins which
+    /// entry produced it — the sync and async paths return the same type and agree on every word the
+    /// dictionary carries, so a regression to <c>Phonemize</c> would pass every other test here.
+    ///
+    /// <para>"auditable" is the probe because it is out-of-dictionary and the two paths disagree
+    /// legibly: the n-gram letter-to-sound engine reads the suffix as FACE
+    /// (<c>ˈɔːd̬it̬ˌeᶦbəɫ</c> — "audit-AY-bul"), the BiLSTM tagger reduces it
+    /// (<c>ˈɔːd̬ət̬əbəɫ</c>). It stands for a class: 28.9% of <c>-able</c>/<c>-ible</c> words the
+    /// dictionary misses against 0.2%, measured over misaki's lexicon in
+    /// docs/investigations/kokoro_vphon_investigation.md Run 13.</para>
+    ///
+    /// <para>⚠ SKIPPED, NOT FAILED, WHEN THE TAGGER IS ABSENT. The phonemizer degrades to the sync
+    /// reading when ONNX Runtime or the model is missing (EnglishTagger.cs returns null and
+    /// EnglishNeural.cs falls through), and it does so SILENTLY — there is no API to ask. So the
+    /// state is probed the only way available: if the two entries agree on the probe word, the
+    /// tagger did not load and there is nothing here to test. That probe is itself the reason this
+    /// investigation went wrong once — a harness with no ONNX Runtime measured the fallback for a
+    /// full sweep and nothing said so.</para>
+    /// </summary>
+    [Fact]
+    public async System.Threading.Tasks.Task TheIpaColumnIsTheNeuralReadingNotTheNGramFallback()
+    {
+        var settings = new SettingsService(); settings.Load();
+        if (TtsPrerequisites.Describe(TtsBackendKind.Kokoro, settings) is { } missing)
+            Assert.Skip($"Kokoro not available here: {missing}");
+
+        const string probe = "auditable";
+        // Resolve the data tree before touching the phonemizer, exactly as CanonicalReader does —
+        // Registry.EnsureLanguages() reads it eagerly and throws from a static initializer otherwise.
+        if (PhonemizerData.Resolve(settings.GetPhonemizerDataDir()) is null)
+            Assert.Skip("no vernacula-phonemizer data tree here");
+        Vernacula.Phonemizer.Registry.EnsureLanguages();
+        var neural = (await Vernacula.Phonemizer.Phonemizer.PhonemizeAsync(probe, "en")).Trim();
+        var ngram  = Vernacula.Phonemizer.Phonemizer.PhonemizeTrace(probe, "en").Ipa.Trim();
+        if (neural == ngram)
+            Assert.Skip("the English neural tagger did not load here, so both entries return the n-gram reading");
+
+        var rows = TtsExportService.BuildRows([($"The report is {probe}.", 0, 1)], settings,
+            new TtsJobSettings("Kokoro", "", "af_heart"), "en");
+        Assert.Single(rows);
+        Assert.DoesNotContain("<error", rows[0].Ipa);
+
+        // Escapes, not literals: an earlier version of this comparison was typo'd one codepoint away
+        // in a lookalike superscript and would have passed while asserting nothing.
+        Assert.Contains("\u0259b\u0259\u026b", rows[0].Ipa);        // əbəɫ — reduced, the neural reading
+        Assert.DoesNotContain("e\u1DA6b\u0259\u026b", rows[0].Ipa); // eᶦbəɫ — FACE, the n-gram reading
+        Assert.Contains(neural, rows[0].Ipa);
     }
 
     /// <summary>A language the phonemizer does not carry leaves the IPA column EMPTY rather than an
