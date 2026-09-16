@@ -20,7 +20,8 @@ namespace Vernacula.Tts.Base;
 ///
 /// Kokoro tolerates slightly different IPA, so byte-exact misaki parity is not the bar; the bar is
 /// that every output codepoint is in <see cref="KokoroVocab"/> and the common words land on the
-/// same tokens misaki would give them. docs/kokoro_vphon_investigation.md has the measurements.
+/// same tokens misaki would give them. The measurements are in
+/// docs/investigations/kokoro_vphon_investigation.md.
 /// </summary>
 public static class KokoroFormat
 {

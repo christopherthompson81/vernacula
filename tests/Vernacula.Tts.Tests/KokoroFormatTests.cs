@@ -5,7 +5,8 @@ namespace Vernacula.Tts.Tests;
 
 /// <summary>
 /// <see cref="KokoroFormat"/> over the IPA vernacula-phonemizer emits. The expected strings are what
-/// misaki's espeak post-processing gives the same words (docs/kokoro_vphon_investigation.md, Run 2).
+/// misaki's espeak post-processing gives the same words
+/// (docs/investigations/kokoro_vphon_investigation.md, Run 2).
 /// </summary>
 public class KokoroFormatTests
 {
