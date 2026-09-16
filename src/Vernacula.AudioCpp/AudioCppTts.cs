@@ -241,19 +241,23 @@ public sealed class AudioCppTts : IDisposable
     /// </summary>
     /// <remarks>
     /// <para>
-    /// ⚠ THIS IS A KNOWN DEFECT IN THE ENGINE, not in the text. audio.cpp's Kokoro phonemizes with
-    /// eSpeak-ng and then THROWS on any symbol its vocab has no id for — where the reference
-    /// implementation (misaki/KModel, <c>filter(None, map(vocab.get, phonemes))</c>) drops it and
-    /// carries on. eSpeak glottalises /t/ before a syllabic nasal, so "button" becomes
-    /// <c>bˈæʔn̩</c> and the engine refuses the syllabic mark its own G2P just produced. Dropping
-    /// it would give <c>bˈæʔn</c>, which is a fine reading. See
-    /// docs/investigations/audiocpp_tts_backend_investigation.md Runs 6-7, and
-    /// external/audio.cpp/src/models/kokoro_tts/frontend.cpp:149.
+    /// ⚠ UNREACHABLE ON THE PINNED ENGINE, AND KEPT ANYWAY. This was a defect in the engine, not
+    /// in the text: audio.cpp's Kokoro phonemizes with eSpeak-ng and then THREW on any symbol its
+    /// vocab had no id for — where the reference implementation (misaki/KModel,
+    /// <c>filter(None, map(vocab.get, phonemes))</c>) drops it and carries on. eSpeak glottalises
+    /// /t/ before a syllabic nasal, so "button" becomes <c>bˈæʔn̩</c> and the engine refused the
+    /// syllabic mark its own G2P had just produced — which made the whole <c>-tten</c>/<c>-tton</c>
+    /// family fatal, one occurrence anywhere in a document being enough.
     /// </para>
     /// <para>
-    /// Nothing here can prevent it: the family declares no phoneme input, so our own phonemizer —
-    /// whose output is Kokoro-vocab-clean by construction, which is why the ONNX engine never hits
-    /// this — cannot be substituted for theirs.
+    /// Fixed upstream in audio.cpp #564 (drop instead of throw) and #565 (the English arm of the
+    /// misaki port, which turns the mark into the <c>ᵊ</c> Kokoro was trained on rather than merely
+    /// dropping it). The bindings pin an engine that has both, so this path does not run there.
+    /// </para>
+    /// <para>
+    /// It stays because the pin is not a guarantee: <c>AUDIOCPP_NATIVE_DIR</c> is read at BUILD
+    /// time and points this at whatever engine someone has, which may predate those fixes. See
+    /// docs/investigations/audiocpp_tts_backend_investigation.md Runs 6-7 and 11.
     /// </para>
     /// <para>
     /// So the words are found by asking, one at a time. That is N more engine calls, which is
@@ -286,8 +290,9 @@ public sealed class AudioCppTts : IDisposable
              + "This is a limitation of that engine: it rejects any phoneme missing from Kokoro's "
              + "vocabulary instead of dropping it the way the reference implementation does, and "
              + "its eSpeak-ng pronunciation of words like \"button\" and \"written\" produces one. "
-             + "The engine offers no way to supply phonemes, so vernacula-phonemizer cannot stand "
-             + "in for it. Use the ONNX Kokoro engine for this document.\n\n"
+             + "It was fixed in audio.cpp 31d00b5c, so the engine this was built against is older "
+             + "than that — rebuild with a current one. Until then, use the ONNX Kokoro engine "
+             + "for this document.\n\n"
              + $"Engine's own message: {failure.Message}";
     }
 
