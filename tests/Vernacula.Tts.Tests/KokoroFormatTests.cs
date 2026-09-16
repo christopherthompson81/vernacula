@@ -194,12 +194,13 @@ public class KokoroFormatTests
     {
         // The coda is what makes this a move rather than an append.
         Assert.Equal("ta↓n", KokoroFormat.Render("tɑ\u02e8\u02e9\u02e6n", "cmn"));
-        Assert.EndsWith("ŋ", KokoroFormat.Render("ʈʂoŋ\u02e5\u02e5", "cmn"));
+        Assert.EndsWith("ŋ", KokoroFormat.Render("ʈʂʊŋ\u02e5\u02e5", "cmn"));
     }
 
     /// <summary>
     /// Scored against the engine's own table rather than reasoned about — 993 syllables, their
-    /// pinyin from pypinyin and their phonemes from g2p/zh.json, at 99.8% exact. These are the
+    /// pinyin from pypinyin and their phonemes from g2p/zh.json, at 100% exact once the
+    /// phonemizer's own -ong/-un/-iong rows were fixed. These are the
     /// classes that score named; each one was a real mismatch before its rule existed.
     /// </summary>
     [Theory]
@@ -210,7 +211,7 @@ public class KokoroFormatTests
     [InlineData("tuɑn\u02e5\u02e9", "twa↘n")]      // 断 duan4 — prenuclear u is a glide
     [InlineData("ji\u02e5\u02e5", "i→")]           // 一 yi1 — a zero-initial glide is dropped...
     [InlineData("wɑŋ\u02e8\u02e9\u02e6", "wa↓ŋ")]  // 往 wang3 — ...but only when it duplicates its vowel
-    [InlineData("ʈʂoŋ\u02e5\u02e5", "ꭧʊ→ŋ")]        // 中 zhong1 — -ong is ʊŋ
+    [InlineData("ʈʂʊŋ\u02e5\u02e5", "ꭧʊ→ŋ")]       // 中 zhong1 — the phonemizer emits ʊŋ now, not oŋ
     [InlineData("ər\u02e5\u02e9", "ɚ↘")]           // 二 er4 — r-coloured, not schwa plus r
     public void MandarinMatchesTheEnginesOwnPinyinTable(string ipa, string expected)
         => Assert.Equal(expected, KokoroFormat.Render(ipa, "cmn"));

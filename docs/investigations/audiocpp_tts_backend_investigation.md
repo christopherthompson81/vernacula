@@ -590,3 +590,67 @@ French shipped:
 
 "The tests pass" was largely a statement about the tests that do not touch a
 model.
+
+## Run 11 — 2026-09-15 19:55 — the backend against the merged engine
+
+Upstream merged both engine fixes: #564 (`10f19390`, skip phonemes the vocab has
+no id for) and #565 (`31d00b5c`, the English arm of the misaki port). Bumped
+`external/AudioCpp-Bindings/external/audio.cpp` from `a4d6ea84` to `31d00b5c`
+and rebuilt.
+
+**Question:** does the backend synthesize a real document now, and is it saying
+the words or merely returning a buffer?
+
+The local #566 option-array patch was dropped from this checkout first. Nothing
+in the Vernacula path calls it — `AudioCppSynthesisService` hands `Speak()` plain
+text and lets audio.cpp phonemize — so this measures the merged engine alone.
+
+First, the throw is gone from the binary outright:
+
+```
+strings libaudiocpp.so.0.1.0 | grep -c "missing phoneme symbol"   ->  0
+```
+
+Synthesis, over the words Run 6 established as fatal:
+
+```
+  ok   button      af_heart  1.38s   ok   Rustenburg  af_heart  1.57s
+  ok   kitten      af_heart  1.38s   ok   written     af_heart  1.43s
+  ok   forgotten   af_heart  1.50s   ok   cotton      af_heart  1.48s
+  ok   beaten      af_heart  1.43s   ok   Llanelli    bf_alice  1.35s   (U+026C)
+  ok   es ef_dora  ok fr ff_siwis  ok it if_sara  ok pt pf_dora  ok hi hf_alpha
+pass=15 fail=0
+```
+
+### ⚠ "No exception and not silent" does NOT separate the two fixes
+
+#564 alone drops U+0329 and returns a perfectly healthy buffer — `button` becomes
+`bˈʌtn`, which is audio, and which is not the word. Only #565's
+`syllabic_to_schwa` restores the `ᵊ`. Distinguishing them needs a readback, so
+synthesize at 24 kHz, resample to 16 kHz, transcribe through Parakeet-TDT:
+
+```
+  ok   af_heart   heard: The button is here.
+  ok   af_heart   heard: The kitten is here.
+  ok   af_heart   heard: It was written down.
+  ok   af_heart   heard: I had forgotten it.
+  ok   af_heart   heard: The cotton is soft.
+  ok   af_heart   heard: The dough was beaten.
+  ok   af_heart   heard: The garden is hidden.          (control, no syllabic nasal)
+  ok   bm_george  heard: The button was forgotten.
+  ok   af_heart   heard: The kitten had forgotten the button on the cotton
+                         coat and had written a note about it.
+pass=9 fail=0
+```
+
+**Finding: the `-tten`/`-tton` family reads back intact in both dialects.** The
+failure mode from Run 6 — where one such word anywhere in a document killed the
+whole job, ~78% of a 300-sentence document — is closed.
+
+ja/zh are not covered here and that is not an omission: this package ships 41
+voices and none of them are Japanese or Mandarin. Those need the bundled
+multilingual GGUF from Run 9.
+
+**Still open:** #566 (list-valued request options) is unmerged, so the
+`SetOptionArray` binding stays uncommitted in AudioCpp-Bindings rather than
+shipping a `DllImport` for a symbol upstream does not export.

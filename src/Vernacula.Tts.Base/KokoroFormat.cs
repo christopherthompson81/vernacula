@@ -232,10 +232,10 @@ public static class KokoroFormat
 
             // er is r-coloured, not a schwa with an r after it.
             syl = syl.Replace("ər", "ɚ");
-            // -un after a palatal is y there, where we write a rounded vowel plus a schwa.
-            // ⚠ Keyed on y, not ɥ: the glide conversion happens in the loop below, so at this
-            // point the syllable still spells it y.
-            syl = syl.Replace("yə", "y").Replace("yi", "y");
+            // ⚠ The -un and -ong repairs that used to sit here are deliberately gone. They were
+            // compensating for defects in vernacula-phonemizer's own syllable table (-ong as oŋ,
+            // -un as yən, bo/po/mo/fo missing the rounded medial); epitran corroborated the
+            // defects and they are fixed at source now. Re-adding them here would double-apply.
 
             var sb = new System.Text.StringBuilder(syl.Length + 2);
             for (var k = 0; k < syl.Length; k++)
@@ -258,16 +258,6 @@ public static class KokoroFormat
                 if (c == 'ɻ' && (onset == 'ʂ' || onset == 'ꭧ' || onset == 'ɻ' || onset == 's'))
                 {
                     sb.Append('ɨ');
-                    continue;
-                }
-                // -ong is ʊŋ there, not oŋ.
-                if (c == 'o' && next == 'ŋ') { sb.Append('ʊ'); continue; }
-                // A labial before o carries a rounded glide: mo is mwo. Only in an open
-                // syllable though — mou stays mou.
-                if (c == 'o' && !IsMandarinNucleus(next) &&
-                    (prev == 'm' || prev == 'p' || prev == 'f' || prev == 'ʰ'))
-                {
-                    sb.Append('w').Append('o');
                     continue;
                 }
                 // ⚠ AFTER A PALATAL GLIDE THE MID VOWEL'S HEIGHT FOLLOWS THE CODA, which is why
