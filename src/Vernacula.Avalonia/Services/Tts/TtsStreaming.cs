@@ -23,7 +23,7 @@ public enum TtsBackendKind
 #if AUDIOCPP_BACKEND
     /// <summary>
     /// Kokoro-82M again, but through audio.cpp's C ABI rather than ONNX Runtime: the family's
-    /// own preset voices across seven languages, its own eSpeak-ng phonemization, proportional
+    /// own preset voices across six languages, its own eSpeak-ng phonemization, proportional
     /// (estimated) word alignment because the ABI reports none.
     ///
     /// <para>
