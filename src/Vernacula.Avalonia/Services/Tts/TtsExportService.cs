@@ -21,8 +21,10 @@ internal static class TtsExportService
     /// One exported row. Two readings, because they are two different things and exporting only the
     /// second surprised the person who opened the file:
     ///
-    /// <para><see cref="Ipa"/> is CANONICAL IPA — the same reading the reader draws above each word,
-    /// from the same phonemizer. It is the one that is worth reading.</para>
+    /// <para><see cref="Ipa"/> is CANONICAL IPA, from the phonemizer's neural entry — the reading the
+    /// synthesizer was built from. It is the one that is worth reading. It matches the IPA the reader
+    /// draws above each word on every word the dictionary carries, and may differ on one it does not;
+    /// <see cref="CanonicalReader"/> says why the two cannot yet be the same call.</para>
     ///
     /// <para><see cref="EnginePhonemes"/> is the stream the ENGINE was actually handed, in that
     /// engine's own scheme (Kokoro's is not canonical IPA — no aspiration, no length marks). It is
@@ -72,7 +74,8 @@ internal static class TtsExportService
     /// it. Blocking; call off the UI thread.
     /// </summary>
     /// <param name="annotationLanguage">The phonemizer language tag the READER annotates with, so the
-    /// exported IPA and the IPA on screen are the same reading rather than two guesses at it.</param>
+    /// exported IPA and the IPA on screen are the same LANGUAGE's reading rather than two guesses at
+    /// it. Same language, same phonemizer; the entry differs — see <see cref="CanonicalReader"/>.</param>
     public static List<SentenceRow> BuildRows(
         IReadOnlyList<(string Text, double Start, double End)> sentences,
         SettingsService settings, TtsJobSettings job, string annotationLanguage)
@@ -102,6 +105,33 @@ internal static class TtsExportService
     /// a language the phonemizer does not carry). The reader draws nothing in that case either, so an
     /// empty column is the honest answer rather than an error string in every row.
     /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠ THIS IS THE NEURAL ENTRY, and it is the one the SYNTHESIZER uses. English routes
+    /// out-of-vocabulary words through its BiLSTM tagger there; the synchronous
+    /// <c>Phonemize</c> falls back to an n-gram letter-to-sound engine for the same words, and the
+    /// two disagree often enough to matter. Measured over the 80,222 single-reading words of
+    /// misaki's lexicon, against that lexicon: on the words the dictionary misses — which is
+    /// exactly the set the two paths can differ on — the neural reading is exact for 31.0% and the
+    /// n-gram for 19.9%. The most legible class is the <c>-able</c>/<c>-ible</c> suffix, which the
+    /// n-gram engine reads as FACE for 28.9% of those words (<c>auditable</c> → <c>ˈɔdiTˌAbəl</c>,
+    /// "audit-AY-bul") against 0.2% for the neural one. docs/investigations/kokoro_vphon_investigation.md
+    /// Run 13.
+    /// </para>
+    /// <para>
+    /// ⚠ SO THIS COLUMN NO LONGER MATCHES THE READER'S ON-SCREEN IPA WORD FOR WORD, and that is
+    /// deliberate. <see cref="IpaAnnotator"/> needs the per-token <c>InputSpan</c>/<c>IpaSpan</c>
+    /// index to attribute a reading to a written word, only <c>PhonemizeTrace</c> reports it, and
+    /// only the synchronous path has a trace — so the annotator cannot have the neural reading
+    /// until the phonemizer grows a traced neural entry. Both readings are the phonemizer's and
+    /// they agree on every word the dictionary carries; where they differ, THIS one is what was
+    /// spoken, which is what an exported file is for.
+    /// </para>
+    /// <para>
+    /// Blocking, like the rest of <see cref="BuildRows"/> — already off the UI thread. The tagger
+    /// is loaded once per process and memoized, and only OOV words reach it.
+    /// </para>
+    /// </remarks>
     private static Func<string, string> CanonicalReader(SettingsService settings, string lang)
     {
         if (PhonemizerData.Resolve(settings.GetPhonemizerDataDir()) is null) return _ => "";
@@ -110,15 +140,19 @@ internal static class TtsExportService
             Registry.EnsureLanguages();
             // ⚠ PROBED ONCE, because "this language has no phonemizer" throws on every CALL rather
             // than at construction — so without this the column is not empty, it is the same error
-            // string repeated down every row of the file.
-            global::Vernacula.Phonemizer.Phonemizer.Phonemize("a", lang);
+            // string repeated down every row of the file. Probed through the SAME entry the rows
+            // use, so a language that only the async path rejects is caught here too.
+            Read("a");
         }
         catch (Exception) { return _ => ""; }
         return text =>
         {
-            try { return global::Vernacula.Phonemizer.Phonemizer.Phonemize(text, lang); }
+            try { return Read(text); }
             catch (Exception ex) { return $"<error: {ex.Message}>"; }
         };
+
+        string Read(string text) =>
+            global::Vernacula.Phonemizer.Phonemizer.PhonemizeAsync(text, lang).GetAwaiter().GetResult();
     }
 
     public static void WriteCsv(string path, IEnumerable<SentenceRow> rows, string scheme)

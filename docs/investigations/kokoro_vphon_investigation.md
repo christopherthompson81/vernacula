@@ -238,3 +238,214 @@ structurally rather than by a symbol. Left alone.
 en-us 10,905  en-gb 11,143  es 14,351  fr-fr 10,826  hi 15,661
 it    14,809  pt-br 12,320  ja 10,738  zh   13,447      all 0.00%
 ```
+
+## Run 12 — 2026-09-16 09:47 — misaki vs our render on a real document, then on misaki's whole lexicon
+
+Every earlier run scored the render against sentences *we* chose. This one starts from a
+document nobody wrote for a test: a business/technical response document in markdown, ~21k
+characters, already run through the app's TTS path (56 blocks — 31 paragraphs, 22 list items,
+3 headings — 1,951 words). Abstracted here on purpose; the content is day-job material and
+none of it belongs in this repo.
+
+Question: where do misaki and `vernacula-phonemizer → KokoroFormat` diverge on ordinary prose,
+and does the divergence name any defect worth fixing?
+
+Setup: misaki 0.9.4 in a venv on /mnt/data, `en.G2P(trf=False, british=False)`. Our side is a
+throwaway console app over `KokoroPhonemizer.Phonemize`, which is exactly what the app calls.
+Both sides get the same per-block text; results are aligned per whitespace-delimited source word
+using misaki's token offsets and our `GroupSourceWords`. All 56 blocks aligned, 1,951 slots.
+
+**First attempt was wrong and the numbers from it are discarded.** I ran misaki with
+`fallback=None`, so every out-of-vocabulary word came back *empty* — 20 of them — and I nearly
+wrote that up as "misaki silently drops unknown words". It does no such thing; Kokoro's real
+pipeline passes `EspeakFallback`, which I had omitted. With the fallback in place the
+misaki-empty class disappears entirely. Lesson: when the reference implementation looks
+catastrophically broken, suspect the harness first.
+
+    word slots 1,951   identical 1,156 (59.3%)   differing 795 (40.7%)
+
+Classified, largest first:
+
+| n | class | example (M = misaki, V = ours) |
+|---|---|---|
+| 149 | stress placement only | `You` M `jˌu` V `ju` |
+| 92 | segmental | `January` M `ʤˈænjəwˌɛɹi` V `ʤˈænjuˌɛɹi` |
+| 71 | `ə`→`ᵻ` | `details` M `dətˈAlz` V `dᵻtˈAlz` |
+| 55 | `æ`→`ə` | `and` M `ænd` V `ənd` |
+| 53 | `ᵊ`→`ə` | `Measurement` M `mˈɛʒəɹmᵊnt` V `mˈɛʒəɹmənt` |
+| 42/17 | `to` unreduced | M `tə`/`tʊ` V `tu` |
+| 40 | `ɐ`→`ə` | `a` M `ɐ` V `ə` |
+| 33 | word count | `2025` M "twenty twenty-five" V "two thousand twenty five" |
+| 20 | grouping | an all-caps initialism, M one group, V three |
+| 14 | `T`→`ɾ` | the word-final flap rule, deliberate |
+| 5 | we emit nothing | `→` M "right arrow" V *(silence)* |
+
+Most of that is prosody or free variation. Three things in it are ours and wrong, and the
+document was too small to size any of them — so the same comparison was re-run against
+misaki's own gold lexicon, which is the thing Kokoro was actually trained on.
+
+### The lexicon sweep
+
+`us_gold.json`, 90,201 entries, 80,222 of them single-reading lowercase words. Our side ran
+over all of them (12 shards in parallel — the first, serial, pass took 5m45 of pure wall time
+for a *seventh* of the words, which was a waste). Both sides normalised the same way before
+comparison, including misaki's own v1.0 rewrite (below).
+
+    80,222 words   exact 27,670 (34.5%)   ignoring stress 36,639 (45.7%)
+
+That is a lexicon-vs-lexicon number, not a quality score — much of the gap is legitimate
+variation, and the reference has its own noise (`legal` plain vs `illegal` syllabic;
+`national` `nˈæʃənᵊl` vs `international` `ˌɪntəɹnˈæʃᵊnəl`, which place the syllabic schwa on
+different syllables; `ɪllˈiɡᵊl` and `ɪmmˈɔɹɾᵊl` carry doubled consonants). What the sweep is
+good for is sizing specific classes.
+
+**1. `-able`/`-ible` read as "-AY-bul" — ⚠ MEASURED ON THE WRONG PATH. See Run 13; the
+numbers below describe the n-gram fallback, which the app does not run.**
+
+    -able/-ible words where gold reduces the suffix   1,183
+       we reduce it too (correct)                       790
+       we read FACE instead                             393  (33.2%)
+
+       of the 393 broken:  0%  are in g2p-dict.tsv
+       of the 790 correct: 53% are in g2p-dict.tsv
+
+Zero versus fifty-three percent. The dictionary is fine; the **letter-to-sound fallback** reads
+a final `-able` as `eᶦbəɫ`.
+
+⚠ The sentence that used to stand here — "`PhonemizeTrace` and `PhonemizeAsync` return the
+identical string, so this is rules, not the BiLSTM guesser" — was true of my harness and false
+of the phonemizer. The two agreed because my console app had **no ONNX Runtime at all**, so the
+tagger silently failed to load and the async entry returned the sync reading. With the tagger
+present the BiLSTM fixes essentially all of this. Run 13 has the corrected numbers.
+
+**2. The syllabic schwa `ᵊ` is never emitted at all.**
+
+    gold entries containing ᵊ            7,778  (9.7%)
+    our outputs containing ᵊ                 0  (of 80,222)
+
+`ᵊ` is Kokoro vocab id **42** — a trained token, not an exotic. In gold it appears only before
+`l` (5,441), `n` (2,449) and `m` (8): the syllabic-consonant slot, where we write plain `ə`.
+Not cleanly derivable, though — neither phonetic context (`l`+word-end is 3,280 syllabic vs
+1,809 plain) nor spelling (`-al` is 1,309 vs 1,157) separates the two, and the reference is
+partly idiosyncratic. So this is worth adopting in the consistent positions, not worth chasing
+to byte parity.
+
+**3. Unstressed initial vowels are not reduced: 664 of 2,365 (28.1%)** where gold opens with
+`ə` — `acceptable` `əksˈɛptəbᵊl` vs our `æksˈɛptəbəl`, `abhorrent` `əbhˈɔɹənt` vs `æbhˈɔɹənt`.
+
+Smaller, still real: **954 words carry a spurious secondary stress on a final vowel**
+(`ability` gold `əbˈɪləTi`, ours `əbˈɪlᵻTˌi`); **45 doubled rhotics** at morpheme seams
+(`underreporting` → `ˈʌndəɹɹɪpˈɔɹTɪŋ`, the `jʊɹɹˈAniəm` shape from Run 1 again); **49 `-ize`
+words** read with KIT for PRICE. And `-ity` takes `ᵻ` where gold takes `ə` in 1,074 of 1,329 —
+systematic, but `ᵻ` is vocab 177 and a near-schwa, so it is a difference rather than an error.
+
+Isolated words and in-sentence readings were checked against each other for the top classes and
+are byte-identical, so none of this is an artifact of probing single words.
+
+### One thing the sweep changed my mind about
+
+misaki's gold lexicon writes the flap as `ɾ` (`sˈɪɾi`, `kəpˈæsəɾi`), but `en.py:710` rewrites
+**every** `ɾ` to `T` unless `version == '2.0'`, and the default is `None`. So Kokoro v1.0's
+English training stream contains `T` in these positions and essentially never `ɾ`, even though
+`ɾ` is vocab 125.
+
+Our word-final flap rule deliberately emits `ɾ` there, and
+kokoro_word_final_flap_investigation.md measured that it sounds better. That measurement
+stands — it was audio, not symbols. But the *reason* may not be the one recorded: `ɾ` may be
+behaving well word-finally because it is a weakly-trained token that the duration predictor
+under-allocates, rather than because it is the right symbol. Worth knowing before that rule is
+extended anywhere else on the theory that `ɾ` is "more correct".
+
+### Where this leaves things
+
+The document comparison was worth doing, but only as a way of finding classes — its 1,951 words
+could not size any of them, and its headline 59.3% is mostly prosody and free variation. The
+lexicon sweep is what turned "`auditable` sounds wrong" into "33.2% of `-able` words, entirely
+in the letter-to-sound fallback, zero of them in the dictionary".
+
+Not fixed here; this run is the measurement. ⚠ The fix list that stood here named the `-able`
+fallback rule first; Run 13 withdraws it. The classes measured on the dictionary — the `ᵊ` gap,
+the spurious final secondary stress, `seasonality`-style stress — are unaffected by that
+correction, because dictionary entries never reach either fallback.
+
+## Run 13 — 2026-09-16 10:15 — the harness had no ONNX Runtime, so Run 12 measured the fallback
+
+Run 12's headline defect is withdrawn. The finding that `-able` words are misread came from a
+console app that shipped **no ONNX Runtime at all**, so the English BiLSTM tagger could not
+load, `PhonemizeAsync` silently degraded to the n-gram sync path, and the two entries returning
+identical strings — which I read as "the neural path agrees, so this is a rule defect" — was
+just both calls landing in the same fallback.
+
+Why the harness was built that way: it referenced `Vernacula.Tts.Base`, which puts
+`ExcludeAssets="native"` on its phonemizer edge and marks its own ORT package
+`PrivateAssets="all"`. Both are deliberate and correct for the app (they are what stops a CPU
+`libonnxruntime.so` landing beside the GPU one, #131). Their combined effect on a *new
+consumer* is that no ORT arrives at all. `find bin/ -name '*onnxruntime*'` returned nothing.
+
+Re-run with a direct project reference so the native ships, over the same 80,222 words:
+
+| | exact vs gold | OOV words only | `-able`/`-ible` read as FACE |
+|---|---|---|---|
+| n-gram (Run 12 measured this) | 34.5% | 19.9% | 393 / 1,359 (28.9%) |
+| **neural (the app runs this)** | **41.1%** | **31.0%** | **3 / 1,359 (0.2%)** |
+
+The BiLSTM fixes every probe word individually too: `auditable` `ˈɔːd̬it̬ˌeᶦbəɫ` → `ˈɔːd̬ət̬əbəɫ`,
+`unlinked` `ənlˈaᶦŋkt` → `ənlˈɪŋkt`, `unlinking` `ənlˈaᶦŋkɪnd͡ʒ` → `ənlˈɪŋkɪŋ`, `totalizer`
+`tʰˈɑːt̬ɑːliʲɚ` → `tʰˈoᶷt̬əlˌaᶦzɚ`, `metadata` `mˈiːt̬əd̬ˌeᶦt̬ə` → `mˈɛt̬əd̬ˌɑːt̬ə`. That last one
+now matches misaki's `mˈɛTədˌATə` exactly. The OOV improvement, 19.9% → 31.0% exact, is the
+tagger's documented "roughly halves OOV error" showing up end-to-end.
+
+`seasonality`, `underreporting` and `evidentiary` are unchanged between the paths, because they
+are **in** `g2p-dict.tsv` — those remain dictionary defects and Run 12's readings of them stand.
+
+### Which path does the app actually take?
+
+Checked every call site rather than assuming. Synthesis is on the neural entry everywhere:
+
+- `KokoroPhonemizer.Phonemize` → `PhonemizeAsync` (Kokoro ONNX backend)
+- `OmniVoiceIpaTts.cs:91` → `PhonemizeAsync`
+- `Vernacula.Tts.CLI/Program.cs:308,311` → `PhonemizeAsync`
+
+Three sync call sites remain, and all three are **annotation, not speech**:
+
+- `TtsEngine.cs:409` — the AudioCpp-Kokoro backend's `CreatePhonemizer`, whose own docstring
+  already says it is "informative rather than a record of what was spoken" (audio.cpp
+  phonemizes internally with eSpeak).
+- `TtsExportService.cs:114,119` — the export CSV's `ipa` column.
+- `IpaAnnotator.cs:53` — `PhonemizeTrace`, which is the only entry that reports spans, so the
+  reader's per-word highlighting needs it.
+
+So nothing *speaks* from the n-gram path. But the IPA shown above a word in the reader, and the
+`ipa` column in an export, are produced by it — which means they can disagree with what was
+synthesised, by about 11 points of OOV accuracy. `KokoroPhonemizer` already handles the
+shape-mismatch case (it falls back to the traced reading when the group counts differ); the
+annotation sites have no such reconciliation because they never see the neural reading at all.
+
+### The part worth fixing
+
+`Languages/English/EnglishTagger.cs:34` and `:43` are bare `catch { return null; }`. The second
+one wraps `Onnx.LoadOrt`, which goes to real trouble to throw a diagnosable error —
+
+    English neural OOV G2P needs the ONNX runtime (Microsoft.ML.OnnxRuntime), whose native
+    library failed to load: <reason>
+
+— and that message is discarded. `PhonemizeEnNeural` then sees `tagger is null` and returns the
+sync path (`EnglishNeural.cs:68`). A caller cannot distinguish "neural reading" from "the model
+never loaded", and neither can a test. The degradation is documented ("silent no-op without a
+model / `onnxruntime-node`") and intentional as a *policy* — the phonemizer should not take an
+utterance down over a missing optional model — but silence about *which* path ran is separable
+from that, and is what cost this investigation a full sweep and a wrong conclusion.
+
+Worth having: something like `EnglishNeural.TaggerAvailable` (or a reason string), so callers
+that care can assert it, the CLIs can say it under `--verbose`, and a test can pin that the
+shipped desktop app really does get the neural path rather than merely referencing a package
+that provides it.
+
+### Standing methodology note
+
+Both times this investigation has gone wrong it was the harness, not the code under test:
+Run 12 opened with misaki looking like it dropped OOV words (I had passed `fallback=None`), and
+closed with our engine looking like it had a rule defect (I had shipped no ONNX Runtime). In
+both cases the reference or the subject looked *implausibly* bad and I wrote it up anyway. The
+check that would have caught both, and costs nothing: before measuring a difference between two
+engines, verify each one is running the configuration you believe it is.
