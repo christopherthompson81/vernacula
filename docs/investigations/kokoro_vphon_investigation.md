@@ -449,3 +449,75 @@ closed with our engine looking like it had a rule defect (I had shipped no ONNX 
 both cases the reference or the subject looked *implausibly* bad and I wrote it up anyway. The
 check that would have caught both, and costs nothing: before measuring a difference between two
 engines, verify each one is running the configuration you believe it is.
+
+## Run 14 — 2026-09-16 12:05 — every divergence re-measured on the neural path, and triaged
+
+Run 12 sized its classes on the n-gram fallback, so **every number in it was measured against a
+path the app does not run** — including the 1,951-word document comparison. Re-run on the neural
+entry, with the fixes from #1315/#1316 in place.
+
+The document barely moves: 59.3% → **59.1%** identical, 12 of 56 blocks changed. Its words are
+mostly in the dictionary, so the OOV path hardly touches it. The lexicon sweep is where the
+classes live.
+
+    80,222 words          exact   ignoring stress
+      all                 41.1%        50.9%
+      in-dictionary       55.9%        66.5%
+      OOV (BiLSTM)        31.0%        40.3%
+
+What the neural path fixed on its own, no work needed: `-able`/`-ible` 393 → **3**; `-ize` with
+KIT 49 → **0**; the spurious trailing secondary stress 954 → 275; the doubled rhotic 45 → 21.
+
+Classes were then found by **aligning gold against ours per word and counting every edit
+operation**, rather than only re-testing the hypotheses Run 12 happened to form. Two of the top
+edits (`insert ɪk`, `delete kᵊ`) turned out to be one alignment artifact of `-ical` (`əkᵊl` vs
+`ɪkəl`) and collapse into the classes below; three were new.
+
+### Defects
+
+| n | class | evidence |
+|---|---|---|
+| ~~1,109~~ **FIXED** | ~~flap before a SECONDARY-stressed vowel~~ — vernacula-phonemizer#1317. Flap errors 2,214 → 1,290, spurious flap tokens 1,785 → 796. The guard now reads the dictionary's own stress digit; `thirty` turned out to be a bad dict row (the only decade written IY2) and was fixed as one. Reading the POST-CLASH stress instead was implemented and rejected: better on whole-word exact, worse on flaps, and it flapped compounds (`sawtooth` → *sˈɔTuθ). docs/investigations/en/en_flap_secondary_stress_investigation.md | we do it 1,112×, gold 47×, and gold agrees with us on **0.4%** of the words. American flapping requires the FOLLOWING vowel to be unstressed. We already never flap before PRIMARY stress (0 occurrences, gold 16) — so the rule has one guard and is missing its twin. 33% dict-sourced, so both the accent lexicon and the rules emit it |
+| **16 symbols** | silently read as nothing where misaki speaks them | `→ ← ↑ ↓ × ∞ µ § ¶ © ® ™ € ¥ √ ∑`. Dropping input is worse than mispronouncing it. (`⇒ ÷ † £ · • ∆` are dropped by BOTH — `£` is a currency gap in each) |
+| 275 | spurious secondary stress on a final vowel | `ability` `əbˈɪlᵻTˌi`, gold `əbˈɪləTi`. 50% dict-sourced |
+| 21 | doubled rhotic at a morpheme seam | `underreporting` `ˈʌndəɹɹɪpˈɔɹTɪŋ`. The `jʊɹɹˈAniəm` shape from Run 1 |
+| a few | dictionary stress rows | `seasonality` has primary and secondary INVERTED against gold; `underreporting` carries two primaries. Unaffected by either fallback — these are `g2p-dict.tsv` rows |
+
+### Intentional — divergence is the point, leave them
+
+| n | class | why |
+|---|---|---|
+| 1,847 | word-final flap emitted as the tap `ɾ`, not `T` | kokoro_word_final_flap_investigation.md, measured on AUDIO. ⚠ Carries Run 13's caveat: misaki v1.0 rewrites every `ɾ` to `T` (en.py:710), so `ɾ` is essentially unseen in Kokoro's English training stream. The audio result stands; the recorded REASON may not |
+| — | `r ɾ x ɐ` and the nasal tilde kept in non-English | KokoroFormat's AlphabetConventions. Kokoro's vocabulary carries all of them; collapsing them is an English convenience that merges `perro`/`pero` and strips phonemic aspiration from Hindi |
+| — | Japanese pitch accent dropped | Kokoro's Japanese never encoded it |
+| — | clause punctuation kept as its own token, re-attached | it is what Kokoro pauses on; reconstructing it from source text was the old engine's problem |
+
+### Open — divergent, defensible both ways, needs a call
+
+| n | class | the tension |
+|---|---|---|
+| **7,778** | the syllabic schwa `ᵊ` is **never emitted** (0 of 80,222; gold uses it in 9.7%) | vocab id **42**, a trained token. But not derivable: neither phonetic context (`l`+word-end is 3,280 syllabic vs 1,809 plain) nor spelling (`-al` splits 1,309/1,157) separates it, and the reference contradicts itself — `legal` plain vs `illegal` syllabic, `national` `nˈæʃənᵊl` vs `international` `ˌɪntəɹnˈæʃᵊnəl` placing it on different syllables. Adopt in the consistent positions or not at all; byte parity is chasing noise |
+| **3,158** | hyphenated compounds SPLIT into two spoken groups | `able-bodied` → `ˈAbəl bˈɑdid`, gold `ˌAbᵊlbˈɑdid`. Ours doubles the primary stress and inserts a word boundary Kokoro reads as a break. But misaki's joining also produces `stˈAtʌvðiˈɑɹt` for "state-of-the-art", which is worse than ours, and our split is what keeps the word→group alignment honest |
+| **1,277** | `-ity` nucleus is `ᵻ` where gold has `ə` (96.1% of -ity words) | `ᵻ` is vocab 177 and a near-schwa. A difference, not obviously an error |
+| 683 | unstressed initial vowel not reduced | `acceptable` `æksˈɛptəbəl` vs gold `əksˈɛptəbᵊl`. 48% dict-sourced. Ours is a citation form; gold is connected speech. Audible |
+| 607 | nasal place assimilation before a velar | `banknote` `bˈæŋknOt` vs gold `bˈænknˌOt`. **Ours is phonetically correct**; gold matches what Kokoro was trained on. Genuinely both ways |
+| ~200/1,951 | function words in citation form | `and` `ənd` vs `ænd`, `to` `tu` vs `tə`/`tʊ`, `a` `ə` vs `ɐ`, `the` `ðə` vs `ði`. Noted as "arguable either way" since Run 2 and still undecided |
+| 33 | number reading | `2025` as "two thousand twenty five" vs misaki's year reading "twenty twenty-five". Context-dependent; a date column wants the year reading, a quantity does not |
+| 20 | initialisms grouped | `VGC` as three groups vs misaki's one. Affects alignment more than sound |
+
+### Note on the reference
+
+misaki's gold is what Kokoro heard, which is why it is the right target — but it is not clean.
+It carries doubled consonants (`ɪllˈiɡᵊl`, `ɪmmˈɔɹɾᵊl`), its own doubled rhotic (`ɡɹˈATəɹɹ` for
+"greater"), and the `ᵊ` inconsistencies above. Several places where we differ, we are simply
+right. The score is a way of FINDING classes, not a target to maximise.
+
+Nothing fixed in this run; it is the triage. Order I would take the defects: the pre-stress flap
+(bounded, one condition, 1,109 words, and the guard it needs already exists for primary stress),
+then the dropped symbols, then the final-vowel stress, then the dictionary stress rows.
+
+**Update — the pre-stress flap is done (vernacula-phonemizer#1317).** It was not quite the
+one-condition change this triage billed: the guard was easy, but the derived `accent-lexicon.tsv`
+had to be regenerated for it to reach recorded words at all, and the first design — reading the
+stress that survives the clash rule — had to be withdrawn on review because the headline metric
+endorsed it and the flap-specific metric refuted it. Next: the 16 dropped symbols.
