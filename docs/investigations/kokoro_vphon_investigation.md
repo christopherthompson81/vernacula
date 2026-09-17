@@ -694,3 +694,65 @@ and checking every longer word that contains the shorter one.
 **Circularity, declared:** this makes any comparison against misaki's lexicon partly circular for
 this feature. `en-syllabic.PROVENANCE.md` says so, alongside the Apache-2.0 attribution and the
 coverage limit (3,231 of 117,482 dictionary words; the OOV tagger predicts no syllabicity at all).
+
+## Run 17 — 2026-09-16 20:40 — a second census, and the direction Run 14 forgot to count
+
+Run 14's triage was built by aligning gold against ours and counting edit operations, which was the
+right method and is why it found classes the hypothesis-testing of Run 12 missed. It counted the
+secondary stresses we ADD. **It never counted the ones we DROP**, and that turned out to be the
+largest remaining class — the single biggest edit operation in the whole census, `delete ˌ`, 8,284
+occurrences.
+
+Re-censused at 44.25% exact (post-#1323), 80,222 words:
+
+    8,284  delete 'ˌ'       gold has a secondary we do not emit
+    5,686  replace ə → ɪ    unreduced vowel, mid-word
+    5,148  replace ˌ → ˈ    stress LEVEL swapped
+    3,150  replace ə → ᵻ    the known -ity class
+    2,862  replace ᵊ → ə    the remaining reduced-slot gap
+    2,649  insert  ' '      hyphenated compounds split (intentional, Run 14)
+      599  replace n → ŋ    nasal assimilation (intentional — ours is phonetically right)
+
+Isolating words whose PHONEMES agree exactly so only stress differs gives **8,053 words, 10% of the
+corpus**: gold has more marks on 6,337, the level is swapped on 1,270, we have more on 446.
+
+### Taken: 372 words were emitting more than one PRIMARY stress — vernacula-phonemizer#1324
+
+Inside the smallest of those three sat something that was not a convention difference: 1,029
+`g2p-dict.tsv` rows carry more than one stress-1 nucleus (CMUdict declining to resolve prefixed forms
+and initialisms), the flat lexicon rendered them verbatim, and **`enforceSinglePrimary` only ever ran
+on the OOV paths**. A guard on one path and not its twin, again.
+
+    exact 43.53% → 43.83%   (+341 / −106, net +235)      malformed output 372 → 0
+
+Two halves, and the second was necessary: demoting alone left `nineteen` as `naᶦntˈiːn` with nothing
+on `nine`, because the demoted `2°` lands exactly where the secondary-stress clash rule deletes it.
+Exempting demoted marks — the clash rule targets a `2°` CMUdict WROTE, not one we derived — was worth
++55 on its own and is what makes the numerals match.
+
+⚠ **THE FIRST VERSION OF THIS SHIPPED A SEAM AND REVIEW CAUGHT IT.** It kept the last primary in the
+converter and the first in the predictor, on the reasoning that the two resolve different things;
+`AA1 R CH B IH1 SH AH0 P` then read `ˈɑːɹt͡ʃbɪʃəp` via the predictor and `ˌɑːɹt͡ʃbˈɪʃəp` via the
+dictionary — in a PR whose own headline was a guard missing from one of two paths. One policy
+everywhere is both seamless and better (+235 against +147). Details in
+`docs/investigations/en/en_multi_primary_investigation.md` Run 4.
+
+### The referee is not always right, and this run says where
+
+`1,270` words have the stress LEVEL swapped against gold, and that class must NOT be treated as a
+defect list. Spot-checking against standard American pronunciation: `abalone` gold `ˈæbəlˌOni`, ours
+`ˌæbəlˈOni` — /ˌæbəˈloʊni/, **ours is right**; `academe` and `absolutely` likewise. `abattoir` gold is
+right. The class is genuinely mixed and needs a referee pass before any of it is actioned.
+
+Where gold IS unanimous it is worth following without hesitation: the teen numerals are seven for
+seven on secondary-then-primary (`nˌIntˈin`, `θˌɜɹtˈin`, `fˌɔɹtˈin`, `ˌAtˈin`), which decided the
+policy above.
+
+### Next, with the lever each one actually needs
+
+| n | class | lever |
+|---|---|---|
+| ~6,300 | gold marks a secondary we do not | **2,102 are the clash rule** (a rule change); **3,466 are OOV** — that half is not a rule at all, it is the BiLSTM's training data or lexicon coverage |
+| 5,686 | `ə` → `ɪ` unreduced vowel | rule or dict; not yet diagnosed |
+| 2,383/4,162 | the clash rule drops a dictionary `2°` gold keeps | re-opening a rule that was deliberately tuned WITHOUT gold. The `EY`/`UW` gap found in #1323 (`airway`, `aircrew`) is part of it |
+| 1,270 | stress level swapped | referee pass first — gold is wrong on a real share of it |
