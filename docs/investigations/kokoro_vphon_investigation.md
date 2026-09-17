@@ -756,3 +756,28 @@ policy above.
 | 5,686 | `ə` → `ɪ` unreduced vowel | rule or dict; not yet diagnosed |
 | 2,383/4,162 | the clash rule drops a dictionary `2°` gold keeps | re-opening a rule that was deliberately tuned WITHOUT gold. The `EY`/`UW` gap found in #1323 (`airway`, `aircrew`) is part of it |
 | 1,270 | stress level swapped | referee pass first — gold is wrong on a real share of it |
+
+## Run 18 — 2026-09-16 22:00 — the two biggest classes left are not defects, and the one that is was at #11
+
+Re-censused after #1325 (46.71%). The largest single edit operation was `replace ə → ɪ` at 6,079 —
+gold writes a schwa where we write `ɪ` — which reads as a failure to reduce.
+
+**It is not.** misaki's gold is what Kokoro heard, not a phonetic authority, and this repo ships an
+independent one. Asking wikipron at exactly the disputed sites, in both directions:
+
+| class | sites | UK referee | US referee | |
+|---|---|---|---|---|
+| gold `ə` / ours `ɪ` | 6,079 | 82.3% **us** | 72.3% **us** | not a defect |
+| gold `ə` / ours `ᵻ` | 3,186 | 78.7% **us** | 68.9% **us** | not a defect |
+| gold `ɪ` / ours `ə` | 1,462 | **87.0% gold** | **82.4% gold** | **defect** |
+
+Two classes totalling 9,265 operations — a fifth of everything left in the census — come off the
+defect list, and the real one was sitting at #11. Taken as vernacula-phonemizer#1326: three suffixes
+(`-ist`, `-sis`, `-age`) where CMUdict writes `AH0` for a vowel that is `/ɪ/`.
+
+    exact 46.71% → 47.11%   (+357 / −3)
+
+⚠ **AND THE LARGEST FAMILY IN THAT CLASS WAS A TRAP.** Gold writes `ɪ` in 375 `-ness` words and 34
+`-less` words; the referee says `ə` at 81.0% and 74.4%, so the schwa we already write is right.
+Following the reference would have regressed 409 words. Details, including two rejected designs that
+differ by 725 words, in `docs/investigations/en/en_suffix_weak_vowel_investigation.md`.
