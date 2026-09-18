@@ -13,7 +13,8 @@ namespace Vernacula.App.Services.Tts;
 /// belongs to those words — see <see cref="BlockMarker"/> and <see cref="TrailingInline"/>.</para>
 ///
 /// <para>⚠ THE EXTENT DELIBERATELY INCLUDES THE BLOCK MARKER — the `## ` of a heading, the `- ` of a
-/// list item, the `&gt; ` of a quote. It did not, once, on the theory that keeping markup out of the
+/// list item, the `&gt; ` of a quote, the opening and closing `|` of a table's first and last rows.
+/// It did not, once, on the theory that keeping markup out of the
 /// box made editing a heading's words safe from demoting it. What that actually bought was a card
 /// whose kind could never be changed: reported as "the per-card editing does not permit editing of
 /// the primary render marker (title level can't be changed from title level, bullet can't be changed
@@ -45,7 +46,8 @@ internal static class MarkdownSegmentSpans
 
     /// <summary>
     /// The leading markup of a block, in full: indentation, then any stack of ATX hashes, bullets,
-    /// ordered-list numbers and quote arrows, and then ANY INLINE OPENERS that follow it. Anchored
+    /// ordered-list numbers, quote arrows and table pipes, and then ANY INLINE OPENERS that follow
+    /// it. Anchored
     /// at both ends, so it only ever matches when the WHOLE run from the line start to the card's
     /// first word is markup — a line that begins with a word the extractor did not emit (which
     /// would mean the index is out of step) fails the test and the span is left alone.
@@ -63,11 +65,12 @@ internal static class MarkdownSegmentSpans
     /// document by editing around it. Widening over the opener keeps the pair together.
     /// </summary>
     private static readonly Regex BlockMarker = new(
-        @"^[ \t]*(?:#{1,6}[ \t]+|[-*+][ \t]+|\d{1,9}[.)][ \t]+|>[ \t]*)*[*_`~\[!]*$", RegexOptions.Compiled);
+        @"^[ \t]*(?:#{1,6}[ \t]+|[-*+][ \t]+|\d{1,9}[.)][ \t]+|>[ \t]*|\|[ \t]*)*[*_`~\[!]*$", RegexOptions.Compiled);
 
     /// <summary>
     /// The mirror of <see cref="BlockMarker"/> on the other end: inline CLOSERS, an optional link
-    /// target, and the closing hashes of an ATX heading, up to the end of the line.
+    /// target, a table row's closing pipe, and the closing hashes of an ATX heading, up to the end
+    /// of the line.
     ///
     /// ⚠ WIDENING ONLY LEFT LEAVES THE PAIR BROKEN THE OTHER WAY. A heading written `# **Title**` is
     /// bold to its last word, so the closing `**` lies past the last text the extractor emitted and
@@ -83,7 +86,7 @@ internal static class MarkdownSegmentSpans
     /// and costs nothing to get right.
     /// </summary>
     private static readonly Regex TrailingInline = new(
-        @"^(?:[*_`~]|\]\([^()\s]*\))*[ \t]*#*[ \t]*$", RegexOptions.Compiled);
+        @"^(?:[*_`~]|\]\([^()\s]*\))*[ \t]*\|?[ \t]*#*[ \t]*$", RegexOptions.Compiled);
 
     /// <summary>
     /// One entry per segment, in document order, for the segments whose source extent is known. A

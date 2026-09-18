@@ -1,12 +1,17 @@
 namespace Vernacula.Tts.Base.Markdown;
 
 /// <summary>
-/// One unit of synthesis: a markdown block (heading, paragraph, list item, quote) as speakable
-/// text. <see cref="Text"/> is the exact slice of the extracted text from the segment's first
-/// word to its last, so splitting it on whitespace yields the same words, in the same order, as
-/// splitting the whole extraction — the invariant the reader's word-by-word alignment rests on.
+/// One unit of synthesis: a markdown block (heading, paragraph, list item, quote, table) as
+/// speakable text. <see cref="Text"/> is the exact slice of the extracted text from the segment's
+/// first word to its last, so splitting it on whitespace yields the same words, in the same order,
+/// as splitting the whole extraction — the invariant the reader's word-by-word alignment rests on.
+///
+/// <para>A whole table is ONE segment, and the only kind whose text spans more than one line: its
+/// rows are separated by a single newline, the way a bulleted list's items already are inside a
+/// long-form chunk. <see cref="Cells"/> carries the grid, and is null for every other kind.</para>
 /// </summary>
-public sealed record TextSegment(int Index, BlockKind Kind, int Level, string Text, int OutputStart, int OutputLength)
+public sealed record TextSegment(int Index, BlockKind Kind, int Level, string Text, int OutputStart, int OutputLength,
+    IReadOnlyList<TableCellSpan>? Cells = null)
 {
     /// <summary>The segment's words, as the aligner counts them.</summary>
     public int WordCount => Text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries).Length;
@@ -32,6 +37,7 @@ public static class ParagraphSegmenter
         int i = 0, curBlock = int.MinValue, segStart = -1, segEnd = -1;
         BlockKind kind = BlockKind.Paragraph;
         int level = 0;
+        IReadOnlyList<TableCellSpan>? cells = null;
         while (i < et.Length)
         {
             while (i < et.Length && char.IsWhiteSpace(et[i])) i++;
@@ -47,6 +53,7 @@ public static class ParagraphSegmenter
                 curBlock = bi;
                 kind  = bi >= 0 ? blocks[bi].Kind  : BlockKind.Paragraph;
                 level = bi >= 0 ? blocks[bi].Level : 0;
+                cells = bi >= 0 ? blocks[bi].Cells : null;
             }
             segEnd = i;
         }
@@ -57,7 +64,7 @@ public static class ParagraphSegmenter
         {
             if (segStart < 0) return;
             segments.Add(new TextSegment(segments.Count, kind, level,
-                et.Substring(segStart, segEnd - segStart), segStart, segEnd - segStart));
+                et.Substring(segStart, segEnd - segStart), segStart, segEnd - segStart, cells));
             segStart = -1;
         }
     }

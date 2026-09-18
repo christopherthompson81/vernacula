@@ -34,12 +34,19 @@ public sealed partial class BlockItemViewModel
 
     /// <summary>This card is the one open for editing.</summary>
     [ObservableProperty]
-    [NotifyPropertyChangedFor(nameof(ShowEditOverlay))]
+    [NotifyPropertyChangedFor(nameof(ShowEditOverlay), nameof(ShowWordFlow), nameof(ShowTableGrid))]
     private bool _isEditingBlock;
 
     /// <summary>⚠ The overlay must GO AWAY once this card is open, or it sits on top of the card's
     /// own text box and swallows every click and keystroke meant for it.</summary>
     public bool ShowEditOverlay => CardEditingEnabled && !IsEditingBlock;
+
+    /// <summary>The ordinary wrapping flow of words — every card but a table's, and not while the
+    /// card is open for editing.</summary>
+    public bool ShowWordFlow => !IsEditingBlock && !IsTable;
+
+    /// <summary>The grid, which replaces the flow for a table card.</summary>
+    public bool ShowTableGrid => !IsEditingBlock && IsTable;
 
     /// <summary>The card's own markdown while it is open — seeded from, and spliced back into, the
     /// document by <see cref="Vernacula.App.Services.Tts.MarkdownSegmentSpans"/>.</summary>

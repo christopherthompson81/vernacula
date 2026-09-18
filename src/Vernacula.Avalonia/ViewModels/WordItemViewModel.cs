@@ -27,6 +27,7 @@ public sealed partial class WordItemViewModel : ObservableObject
     {
         Index = index;
         Text = text;
+        DisplayText = text;
         BlockKind = blockKind;
         HeadingLevel = headingLevel;
         Style = style;
@@ -34,7 +35,27 @@ public sealed partial class WordItemViewModel : ObservableObject
     }
 
     public int Index { get; }
+
+    /// <summary>The word AS SPOKEN — what the engine was given and what the aligner timed.</summary>
     public string Text { get; }
+
+    /// <summary>
+    /// The word AS DRAWN, which is <see cref="Text"/> for all but a table cell's last word.
+    ///
+    /// <para>⚠ A TABLE'S PUNCTUATION IS THE EXTRACTOR'S, NOT THE AUTHOR'S. The comma between two
+    /// cells and the period at the end of a row exist so a row is read as one sentence instead of
+    /// a list of fragments; the document has a grid there, and drawing "Status," in a header cell
+    /// shows the reader machinery rather than the document. So the cell trims back to its own
+    /// span, and the spoken text is left alone.</para>
+    /// </summary>
+    public string DisplayText { get; private set; }
+
+    /// <summary>Draw only the part of this word that lies inside its cell — see
+    /// <see cref="DisplayText"/>.</summary>
+    internal void TrimDisplayTo(int visibleLength) =>
+        DisplayText = visibleLength >= Text.Length ? Text
+            : Text[..Math.Max(0, visibleLength)].TrimEnd();
+
     public BlockKind BlockKind { get; }
     public int HeadingLevel { get; }
     public InlineStyle Style { get; }
@@ -85,7 +106,30 @@ public sealed partial class WordItemViewModel : ObservableObject
         Ipa = ruby?.Ipa;
         Pieces = ruby is null || ruby.Pieces.Count == 0
             ? Array.Empty<RubyPieceViewModel>()
-            : ruby.Pieces.Select(p => new RubyPieceViewModel(this, p.Text, p.Ipa, p.Weight)).ToList();
+            : DrawablePieces(ruby.Pieces);
+    }
+
+    /// <summary>
+    /// The pieces that fall inside <see cref="DisplayText"/>, since the pieces tile the word as
+    /// SPOKEN and the word as DRAWN can be shorter.
+    ///
+    /// <para>⚠ A word written without spaces is drawn piece by piece rather than as one run, so
+    /// the trailing comma the other path already hides would come back as a piece of its own in a
+    /// Japanese or Chinese table. A no-op for every word whose drawn text is its whole text, which
+    /// is nearly all of them.</para>
+    /// </summary>
+    private IReadOnlyList<RubyPieceViewModel> DrawablePieces(IReadOnlyList<RubyPiece> pieces)
+    {
+        var drawable = new List<RubyPieceViewModel>(pieces.Count);
+        int at = 0;
+        foreach (var p in pieces)
+        {
+            int visible = Math.Min(p.Text.Length, DisplayText.Length - at);
+            at += p.Text.Length;
+            if (visible <= 0) continue;
+            drawable.Add(new RubyPieceViewModel(this, p.Text[..visible], p.Ipa, p.Weight));
+        }
+        return drawable;
     }
 
     /// <summary>

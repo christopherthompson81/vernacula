@@ -1,5 +1,6 @@
 using System.Text;
 using Markdig;
+using Markdig.Extensions.Tables;
 using Markdig.Parsers;
 using Markdig.Syntax;
 using Markdig.Syntax.Inlines;
@@ -41,6 +42,7 @@ public enum BlockKind
     Heading,
     ListItem,
     Quote,
+    Table,
 }
 
 public sealed record TextRange(int OutputStart, int OutputLength, int SourceStart, int SourceLength,
@@ -51,7 +53,23 @@ public sealed record TextRange(int OutputStart, int OutputLength, int SourceStar
 /// <paramref name="Level"/> is the heading level for <see cref="BlockKind.Heading"/>, else 0.
 /// Spans are in output order and non-overlapping; block separators fall in the gaps.
 /// </summary>
-public sealed record BlockSpan(BlockKind Kind, int Level, int OutputStart, int OutputLength);
+public sealed record BlockSpan(BlockKind Kind, int Level, int OutputStart, int OutputLength,
+    IReadOnlyList<TableCellSpan>? Cells = null);
+
+/// <summary>
+/// One table cell's span in the output text, with its position in the grid. Present only on a
+/// <see cref="BlockKind.Table"/> block, whose <see cref="BlockSpan.Cells"/> lists every cell that
+/// produced text, in reading order — which is the order the cells are spoken in.
+///
+/// <para>The span stops before the separator the extractor writes between cells, so a word looked
+/// up by its start offset lands in exactly one cell and the trailing comma travels with the last
+/// word of the cell it ends, the way a paragraph's punctuation travels with its word.</para>
+///
+/// <para>A cell that emitted nothing gets no entry: it has no words to place, and the renderer
+/// leaves that grid position blank. <paramref name="Column"/> is therefore the authority on which
+/// column a cell is in — the entries are not dense.</para>
+/// </summary>
+public sealed record TableCellSpan(int Row, int Column, bool IsHeader, int OutputStart, int OutputLength);
 
 /// <summary>
 /// Output of <see cref="MarkdownTextExtractor.Extract"/>: the speakable
@@ -81,7 +99,10 @@ public sealed record MarkdownExtractionResult(string Text, IReadOnlyList<TextRan
 ///       but text nodes between tags survive as ordinary literals (Markdig
 ///       parses them as <c>LiteralInline</c> not <c>HtmlInline</c>). Block
 ///       HTML is filtered at block level.</item>
-/// <item>Fenced code blocks, tables, images, horizontal rules,
+/// <item>Tables — cells in reading order, a comma between cells of a row and a period at the
+///       end of each row, so a row is read as one sentence. The grid positions are kept in
+///       <see cref="BlockSpan.Cells"/> so the reader can lay the table back out.</item>
+/// <item>Fenced code blocks, images, horizontal rules,
 ///       footnotes — <b>skipped entirely.</b></item>
 /// </list>
 ///
@@ -271,12 +292,116 @@ public sealed class MarkdownTextExtractor
                 _contextKind = savedListCtx;
                 return _sb.Length > beforeList;
 
-            // Skipped block kinds: fenced code, tables, HTML, thematic break,
+            case Table table:
+                EmitBlockSeparator(first);
+                return TryEmitTable(table);
+
+            // Skipped block kinds: fenced code, HTML, thematic break,
             // footnote group, link reference definitions, and anything else
             // not enumerated above. The "return false" tells the caller this
             // block didn't move the cursor.
             default:
                 return false;
+        }
+    }
+
+    /// <summary>
+    /// A table as one block: every cell's text in reading order, with the grid positions recorded
+    /// alongside so the reader can rebuild the layout.
+    ///
+    /// <para>⚠ ONE BLOCK, NOT ONE PER CELL, and that is a synthesis decision rather than a layout
+    /// one. A block is the unit the engine renders and stores a single audio file for, so a cell
+    /// per block would turn a ten-row table into forty clips to stitch — and a clip of the word
+    /// "12" carries no prosody worth having. A row read as one sentence does.</para>
+    /// </summary>
+    private bool TryEmitTable(Table table)
+    {
+        int beforeTable = _sb.Length;
+        var cells = new List<TableCellSpan>();
+        int rowIndex = 0;
+        foreach (var rowObject in table)
+        {
+            if (rowObject is not TableRow row) continue;
+            int beforeRow = _sb.Length;
+            int columnIndex = 0;
+            foreach (var cellObject in row)
+            {
+                if (cellObject is not TableCell cell)
+                {
+                    columnIndex++;
+                    continue;
+                }
+                if (_sb.Length > beforeRow) AppendCellSeparator(cells);
+                int beforeCell = _sb.Length;
+                foreach (var child in cell)
+                {
+                    // A cell holds blocks; in practice a single paragraph. Anything else (a nested
+                    // list, a cell holding a fenced block) has no sensible spoken form inside a
+                    // row, so only the inline-bearing paragraphs are taken.
+                    if (child is ParagraphBlock paragraph) EmitInlines(paragraph.Inline);
+                }
+                if (_sb.Length > beforeCell)
+                    cells.Add(new TableCellSpan(rowIndex, columnIndex, row.IsHeader,
+                        beforeCell, _sb.Length - beforeCell));
+                columnIndex++;
+            }
+
+            if (_sb.Length > beforeRow)
+            {
+                // An empty trailing cell leaves the separator dangling; take it back before the
+                // row is closed so the row does not end "..., .".
+                TrimRowTail(beforeRow, cells);
+                AppendTerminalPeriod(beforeRow);
+                // A single newline, as between list items: the chunker splits on BLANK lines, and
+                // a table that split mid-grid would be rendered as unrelated fragments.
+                _sb.Append('\n');
+            }
+            rowIndex++;
+        }
+
+        while (_sb.Length > beforeTable && _sb[^1] == '\n') _sb.Length--;
+        ClampToOutput(cells);
+        if (_sb.Length <= beforeTable) return false;
+        _blocks.Add(new BlockSpan(BlockKind.Table, 0, beforeTable, _sb.Length - beforeTable, cells));
+        return true;
+    }
+
+    /// <summary>A comma-and-space between two cells of a row, unless the cell just closed already
+    /// ended in punctuation that pauses.</summary>
+    private void AppendCellSeparator(List<TableCellSpan> cells)
+    {
+        while (_sb.Length > 0 && char.IsWhiteSpace(_sb[^1])) _sb.Length--;
+        ClampToOutput(cells);
+        if (_sb.Length > 0 && _sb[^1] is not ('.' or '!' or '?' or ':' or ';' or ',')) _sb.Append(',');
+        _sb.Append(' ');
+    }
+
+    /// <summary>Trailing separator whitespace and comma removed from the row just built.</summary>
+    private void TrimRowTail(int rowStart, List<TableCellSpan> cells)
+    {
+        while (_sb.Length > rowStart && (char.IsWhiteSpace(_sb[^1]) || _sb[^1] == ',')) _sb.Length--;
+        ClampToOutput(cells);
+    }
+
+    /// <summary>
+    /// Every index entry cut back to the text that is actually there.
+    ///
+    /// <para>⚠ THE TABLE IS THE ONE PLACE THAT TAKES TEXT BACK AFTER RECORDING IT — a cell whose
+    /// own text ends in a space or a comma has that character trimmed as a separator, leaving the
+    /// entry covering it describing bytes that are gone. Rare, but an index entry that does not
+    /// slice against the output text is a trap for every consumer, so it is clamped at the moment
+    /// of the trim rather than reasoned about. A cell trimmed away entirely loses its entry, like
+    /// any other cell that produced no text.</para>
+    /// </summary>
+    private void ClampToOutput(List<TableCellSpan> cells)
+    {
+        TrimRangesToOutput(_sb.Length);
+        for (int i = cells.Count - 1; i >= 0; i--)
+        {
+            int over = cells[i].OutputStart + cells[i].OutputLength - _sb.Length;
+            if (over <= 0) break;
+            if (over >= cells[i].OutputLength) cells.RemoveAt(i);
+            else cells[i] = cells[i] with { OutputLength = cells[i].OutputLength - over };
         }
     }
 

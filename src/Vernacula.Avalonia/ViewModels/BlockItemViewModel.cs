@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Linq;
@@ -9,10 +10,11 @@ using Vernacula.Tts.Base.Markdown;
 namespace Vernacula.App.ViewModels;
 
 /// <summary>
-/// One markdown block (heading / paragraph / list item / quote) in the structured karaoke
+/// One markdown block (heading / paragraph / list item / quote / table) in the structured karaoke
 /// view, holding the word view models it contains. The AXAML switches layout on the
-/// <see cref="IsHeading"/>/<see cref="IsListItem"/>/<see cref="IsQuote"/> helpers (bullet,
-/// indent, spacing); per-word font/size/style live on <see cref="WordItemViewModel"/>.
+/// <see cref="IsHeading"/>/<see cref="IsListItem"/>/<see cref="IsQuote"/>/<see cref="IsTable"/>
+/// helpers (bullet, indent, spacing, grid); per-word font/size/style live on
+/// <see cref="WordItemViewModel"/>.
 /// </summary>
 public sealed partial class BlockItemViewModel : ObservableObject
 {
@@ -39,6 +41,114 @@ public sealed partial class BlockItemViewModel : ObservableObject
     public bool IsParagraph => Kind == BlockKind.Paragraph;
     public bool IsListItem => Kind == BlockKind.ListItem;
     public bool IsQuote => Kind == BlockKind.Quote;
+    public bool IsTable => Kind == BlockKind.Table;
+
+    // ── A table card ─────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// The grid, for a <see cref="BlockKind.Table"/> block; empty for every other kind. The rows
+    /// hold the same word view models as <see cref="Words"/>, arranged by grid position, so the
+    /// card draws a table while the alignment still walks one flat list of words.
+    /// </summary>
+    public ObservableCollection<TableRowViewModel> Rows { get; } = new();
+
+    // Cell spans in output order (the extractor's reading order), and the cell at each position,
+    // for placing words as they are built.
+    private IReadOnlyList<TableCellSpan> _cellSpans = Array.Empty<TableCellSpan>();
+    private readonly Dictionary<(int Row, int Column), TableCellViewModel> _cellAt = new();
+
+    /// <summary>
+    /// Build the empty grid this block's words will be placed into. The shape comes from the cells
+    /// that produced text, so a table whose last column is blank throughout is a narrower table —
+    /// which is what it looks like, and what it reads as.
+    /// </summary>
+    public void InitTable(IReadOnlyList<TableCellSpan> cells)
+    {
+        Rows.Clear();
+        _cellAt.Clear();
+        _cellSpans = cells;
+        if (cells.Count == 0) return;
+
+        int rowCount = 0, columnCount = 0;
+        foreach (var c in cells)
+        {
+            if (c.Row + 1 > rowCount) rowCount = c.Row + 1;
+            if (c.Column + 1 > columnCount) columnCount = c.Column + 1;
+        }
+        var headerRows = new HashSet<int>();
+        foreach (var c in cells)
+            if (c.IsHeader) headerRows.Add(c.Row);
+
+        for (int r = 0; r < rowCount; r++)
+        {
+            var row = new TableRowViewModel(r, headerRows.Contains(r), columnCount);
+            for (int c = 0; c < columnCount; c++)
+            {
+                var cell = new TableCellViewModel(r, c, row.IsHeader);
+                row.Cells.Add(cell);
+                _cellAt[(r, c)] = cell;
+            }
+            Rows.Add(row);
+        }
+    }
+
+    /// <summary>
+    /// Place a word in the cell whose span contains <paramref name="outputOffset"/>. A word that
+    /// falls between cells — the extractor's row separators are the only text there — belongs to no
+    /// cell and is simply not drawn in the grid; it is still in <see cref="Words"/>, so it is still
+    /// spoken and still timed.
+    /// </summary>
+    public void PlaceWordInCell(int outputOffset, WordItemViewModel word)
+    {
+        int lo = 0, hi = _cellSpans.Count - 1, best = -1;
+        while (lo <= hi)
+        {
+            int mid = (lo + hi) >>> 1;
+            if (_cellSpans[mid].OutputStart <= outputOffset) { best = mid; lo = mid + 1; }
+            else hi = mid - 1;
+        }
+        if (best < 0) return;
+        var span = _cellSpans[best];
+        if (outputOffset >= span.OutputStart + span.OutputLength) return;
+        if (!_cellAt.TryGetValue((span.Row, span.Column), out var cell)) return;
+        cell.Words.Add(word);
+        // The cell span stops before the separator the extractor writes between cells, so what
+        // falls past its end is punctuation this machinery added rather than text the author wrote.
+        word.TrimDisplayTo(span.OutputStart + span.OutputLength - outputOffset);
+    }
+
+    /// <summary>
+    /// One card, built from one segment: its words in spoken order, and — for a table — the same
+    /// words arranged into the grid. <paramref name="firstWordIndex"/> is where this card's words
+    /// start in the document's flat word list, which is the index alignment attaches timing by.
+    /// </summary>
+    public static BlockItemViewModel FromSegment(TextSegment segment, string extractedText,
+        IReadOnlyList<TextRange> ranges, int firstWordIndex, Action<WordItemViewModel>? onWordClicked)
+    {
+        var block = new BlockItemViewModel(segment.Kind, segment.Level) { Index = segment.Index };
+        // A table card holds its words twice over: once flat, for speech and timing, and once by
+        // grid position, for drawing. The grid has to exist before the words are built so each one
+        // can be dropped into its cell as it is made.
+        if (segment.Cells is { Count: > 0 }) block.InitTable(segment.Cells);
+
+        int i = segment.OutputStart, end = segment.OutputStart + segment.OutputLength;
+        while (i < end)
+        {
+            while (i < end && char.IsWhiteSpace(extractedText[i])) i++;
+            if (i >= end) break;
+            int start = i;
+            while (i < end && !char.IsWhiteSpace(extractedText[i])) i++;
+
+            var word = new WordItemViewModel(extractedText[start..i], firstWordIndex + block.Words.Count,
+                segment.Kind, segment.Level, ParagraphSegmenter.StyleAt(ranges, start), onWordClicked)
+            {
+                StartSeconds = double.MaxValue,
+            };
+            block.Words.Add(word);
+            if (block.IsTable) block.PlaceWordInCell(start, word);
+        }
+        return block;
+    }
 
     /// <summary>
     /// Which way this block's words are laid out. A browser reorders inline elements by the
@@ -63,18 +173,32 @@ public sealed partial class BlockItemViewModel : ObservableObject
     /// settles a block that contains both directions.</param>
     public void UpdateFlowDirection(bool? languageIsRtl = null)
     {
-        var rtl = TextDirection.Resolve(string.Join(' ', Words.Select(w => w.Text)), languageIsRtl);
-        FlowDirection = rtl ? FlowDirection.RightToLeft : FlowDirection.LeftToRight;
+        FlowDirection = LayOut(Words, languageIsRtl, Display);
+        // A table's cells are laid out one at a time: a cell is its own run of text, so an English
+        // column beside an Arabic one is not one mixed line but two blocks of prose side by side.
+        foreach (var row in Rows)
+            foreach (var cell in row.Cells)
+                cell.FlowDirection = LayOut(cell.Words, languageIsRtl, cell.Display);
+    }
 
-        Display.Clear();
+    /// <summary>
+    /// Fill <paramref name="display"/> with <paramref name="words"/> in the order a panel must
+    /// place them, and answer the direction that panel must be given.
+    /// </summary>
+    private static FlowDirection LayOut(IReadOnlyList<WordItemViewModel> words, bool? languageIsRtl,
+        ObservableCollection<WordItemViewModel> display)
+    {
+        var rtl = TextDirection.Resolve(string.Join(' ', words.Select(w => w.Text)), languageIsRtl);
+
+        display.Clear();
         var run = new List<WordItemViewModel>();      // an embedded run, awaiting its reversal
         var pending = new List<WordItemViewModel>();  // neutrals whose side is not settled yet
-        foreach (var w in Words)
+        foreach (var w in words)
         {
             var strong = TextDirection.StrongDirectionOf(w.Text);
             if (strong is null)
             {
-                if (run.Count == 0) Display.Add(w);
+                if (run.Count == 0) display.Add(w);
                 else if (TextDirection.IsNumberWord(w.Text))
                 {
                     // A number keeps company with the word before it -- "iPhone 15" stays "iPhone
@@ -93,9 +217,9 @@ public sealed partial class BlockItemViewModel : ObservableObject
                 // it were trailing it -- a full stop after an English phrase still ends the
                 // Persian line -- so they belong to the block.
                 FlushRun();
-                foreach (var n in pending) Display.Add(n);
+                foreach (var n in pending) display.Add(n);
                 pending.Clear();
-                Display.Add(w);
+                display.Add(w);
             }
             else
             {
@@ -107,13 +231,13 @@ public sealed partial class BlockItemViewModel : ObservableObject
             }
         }
         FlushRun();
-        foreach (var n in pending) Display.Add(n);
-        return;
+        foreach (var n in pending) display.Add(n);
+        return rtl ? FlowDirection.RightToLeft : FlowDirection.LeftToRight;
 
         // Reversed, so that the panel mirroring the block puts the run back the right way round.
         void FlushRun()
         {
-            for (var i = run.Count - 1; i >= 0; i--) Display.Add(run[i]);
+            for (var i = run.Count - 1; i >= 0; i--) display.Add(run[i]);
             run.Clear();
         }
     }

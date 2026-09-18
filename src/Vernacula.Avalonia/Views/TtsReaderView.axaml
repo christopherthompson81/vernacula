@@ -9,6 +9,82 @@
     <UserControl.Resources>
         <conv:BoolToVisibilityConverter x:Key="BoolToVis" />
         <conv:BoolToVisibilityConverter x:Key="InvBoolToVis" Invert="True" />
+
+        <!-- ONE word button, shared by the paragraph flow and by every table cell. It lives here
+             rather than inline because a table cell draws exactly the same word — same click-to-
+             seek, same highlight, same ruby reading — and a second copy of it would be a second
+             place to forget. -->
+        <DataTemplate x:Key="WordTemplate" x:DataType="vm:WordItemViewModel">
+            <Button Command="{Binding ClickCommand}"
+                    Classes="word"
+                    FontSize="{Binding FontSize}"
+                    FontWeight="{Binding FontWeight}"
+                    FontStyle="{Binding FontStyle}"
+                    Classes.code="{Binding IsCode}"
+                    Classes.link="{Binding IsLink}"
+                    Classes.current="{Binding IsCurrent}">
+                <!-- Ruby text: the word's IPA above the word,
+                     furigana style; the row collapses when
+                     there is no reading. -->
+                <Panel>
+                    <StackPanel Orientation="Vertical" Spacing="0"
+                                IsVisible="{Binding !HasPieces}">
+                        <TextBlock Text="{Binding Ipa}"
+                                   IsVisible="{Binding HasRubyRow}"
+                                   Height="{Binding IpaLineHeight}"
+                                   LineHeight="{Binding IpaLineHeight}"
+                                   FontSize="{Binding IpaFontSize}"
+                                   FontWeight="Normal"
+                                   FontStyle="Normal"
+                                   Classes="ruby"
+                                   FlowDirection="LeftToRight"
+                                   HorizontalAlignment="Center"
+                                   TextAlignment="Center" />
+                        <TextBlock Text="{Binding DisplayText}"
+                                   FontFamily="{Binding FontFamily}"
+                                   LineHeight="{Binding LineHeight}"
+                                   HorizontalAlignment="Center" />
+                    </StackPanel>
+                    <!-- Written without spaces (Japanese, Chinese):
+                         the phonemizer's own segmentation is drawn
+                         piece by piece, each with its own reading. -->
+                    <ItemsControl ItemsSource="{Binding Pieces}"
+                                  IsVisible="{Binding HasPieces}"
+                                  FlowDirection="{Binding PieceFlowDirection}">
+                        <ItemsControl.ItemsPanel>
+                            <ItemsPanelTemplate>
+                                <WrapPanel Orientation="Horizontal" />
+                            </ItemsPanelTemplate>
+                        </ItemsControl.ItemsPanel>
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate x:DataType="vm:RubyPieceViewModel">
+                                <Border Classes="piece"
+                                        Classes.current="{Binding IsCurrent}">
+                                    <StackPanel Orientation="Vertical" Spacing="0">
+                                        <TextBlock Text="{Binding Ipa}"
+                                                   IsVisible="{Binding Word.HasRubyRow}"
+                                                   Height="{Binding Word.IpaLineHeight}"
+                                                   LineHeight="{Binding Word.IpaLineHeight}"
+                                                   FontSize="{Binding Word.IpaFontSize}"
+                                                   FontWeight="Normal"
+                                                   FontStyle="Normal"
+                                                   Classes="ruby"
+                                                   FlowDirection="LeftToRight"
+                                                   HorizontalAlignment="Center"
+                                                   TextAlignment="Center" />
+                                        <TextBlock Text="{Binding Text}"
+                                                   FontSize="{Binding Word.FontSize}"
+                                                   FontFamily="{Binding Word.FontFamily}"
+                                                   LineHeight="{Binding Word.LineHeight}"
+                                                   HorizontalAlignment="Center" />
+                                    </StackPanel>
+                                </Border>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </Panel>
+            </Button>
+        </DataTemplate>
     </UserControl.Resources>
 
     <Grid>
@@ -115,94 +191,63 @@
                                              Padding="0,2"
                                              Margin="0,2,0,0" />
                                     <Grid ColumnDefinitions="Auto,*"
-                                          IsVisible="{Binding !IsEditingBlock}">
+                                          IsVisible="{Binding ShowWordFlow}">
                                         <TextBlock Grid.Column="0" Text="•"
                                                    IsVisible="{Binding IsListItem}"
                                                    FontSize="18" Margin="2,2,8,0"
                                                    VerticalAlignment="Top" Opacity="0.6" />
                                         <!-- Display, not Words: visual order, which differs from
                                              spoken order where directions mix. -->
-                                        <ItemsControl Grid.Column="1" ItemsSource="{Binding Display}">
+                                        <ItemsControl Grid.Column="1" ItemsSource="{Binding Display}"
+                                                      ItemTemplate="{StaticResource WordTemplate}">
                                             <ItemsControl.ItemsPanel>
                                                 <ItemsPanelTemplate>
                                                     <WrapPanel Orientation="Horizontal" />
                                                 </ItemsPanelTemplate>
                                             </ItemsControl.ItemsPanel>
-                                            <ItemsControl.ItemTemplate>
-                                                <DataTemplate x:DataType="vm:WordItemViewModel">
-                                                    <Button Command="{Binding ClickCommand}"
-                                                            Classes="word"
-                                                            FontSize="{Binding FontSize}"
-                                                            FontWeight="{Binding FontWeight}"
-                                                            FontStyle="{Binding FontStyle}"
-                                                            Classes.code="{Binding IsCode}"
-                                                            Classes.link="{Binding IsLink}"
-                                                            Classes.current="{Binding IsCurrent}">
-                                                        <!-- Ruby text: the word's IPA above the word,
-                                                             furigana style; the row collapses when
-                                                             there is no reading. -->
-                                                        <Panel>
-                                                            <StackPanel Orientation="Vertical" Spacing="0"
-                                                                        IsVisible="{Binding !HasPieces}">
-                                                                <TextBlock Text="{Binding Ipa}"
-                                                                           IsVisible="{Binding HasRubyRow}"
-                                                                           Height="{Binding IpaLineHeight}"
-                                                                           LineHeight="{Binding IpaLineHeight}"
-                                                                           FontSize="{Binding IpaFontSize}"
-                                                                           FontWeight="Normal"
-                                                                           FontStyle="Normal"
-                                                                           Classes="ruby"
-                                                                           FlowDirection="LeftToRight"
-                                                                           HorizontalAlignment="Center"
-                                                                           TextAlignment="Center" />
-                                                                <TextBlock Text="{Binding Text}"
-                                                                           FontFamily="{Binding FontFamily}"
-                                                                           LineHeight="{Binding LineHeight}"
-                                                                           HorizontalAlignment="Center" />
-                                                            </StackPanel>
-                                                            <!-- Written without spaces (Japanese, Chinese):
-                                                                 the phonemizer's own segmentation is drawn
-                                                                 piece by piece, each with its own reading. -->
-                                                            <ItemsControl ItemsSource="{Binding Pieces}"
-                                                                          IsVisible="{Binding HasPieces}"
-                                                                          FlowDirection="{Binding PieceFlowDirection}">
-                                                                <ItemsControl.ItemsPanel>
-                                                                    <ItemsPanelTemplate>
-                                                                        <WrapPanel Orientation="Horizontal" />
-                                                                    </ItemsPanelTemplate>
-                                                                </ItemsControl.ItemsPanel>
-                                                                <ItemsControl.ItemTemplate>
-                                                                    <DataTemplate x:DataType="vm:RubyPieceViewModel">
-                                                                        <Border Classes="piece"
-                                                                                Classes.current="{Binding IsCurrent}">
-                                                                            <StackPanel Orientation="Vertical" Spacing="0">
-                                                                                <TextBlock Text="{Binding Ipa}"
-                                                                                           IsVisible="{Binding Word.HasRubyRow}"
-                                                                                           Height="{Binding Word.IpaLineHeight}"
-                                                                                           LineHeight="{Binding Word.IpaLineHeight}"
-                                                                                           FontSize="{Binding Word.IpaFontSize}"
-                                                                                           FontWeight="Normal"
-                                                                                           FontStyle="Normal"
-                                                                                           Classes="ruby"
-                                                                                           FlowDirection="LeftToRight"
-                                                                                           HorizontalAlignment="Center"
-                                                                                           TextAlignment="Center" />
-                                                                                <TextBlock Text="{Binding Text}"
-                                                                                           FontSize="{Binding Word.FontSize}"
-                                                                                           FontFamily="{Binding Word.FontFamily}"
-                                                                                           LineHeight="{Binding Word.LineHeight}"
-                                                                                           HorizontalAlignment="Center" />
-                                                                            </StackPanel>
-                                                                        </Border>
-                                                                    </DataTemplate>
-                                                                </ItemsControl.ItemTemplate>
-                                                            </ItemsControl>
-                                                        </Panel>
-                                                    </Button>
-                                                </DataTemplate>
-                                            </ItemsControl.ItemTemplate>
                                         </ItemsControl>
                                     </Grid>
+                                    <!-- A table card. Rows of cells, each cell a wrapping flow of
+                                         the SAME word buttons the paragraph flow draws, so a word
+                                         inside a table is clicked, highlighted and annotated like
+                                         any other. UniformGrid, not Grid: the column count is data,
+                                         and every row getting the same equal columns is what makes
+                                         them line up. -->
+                                    <ItemsControl ItemsSource="{Binding Rows}"
+                                                  IsVisible="{Binding ShowTableGrid}">
+                                        <ItemsControl.ItemsPanel>
+                                            <ItemsPanelTemplate>
+                                                <StackPanel Orientation="Vertical" />
+                                            </ItemsPanelTemplate>
+                                        </ItemsControl.ItemsPanel>
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate x:DataType="vm:TableRowViewModel">
+                                                <ItemsControl ItemsSource="{Binding Cells}">
+                                                    <ItemsControl.ItemsPanel>
+                                                        <ItemsPanelTemplate>
+                                                            <UniformGrid Rows="1" Columns="{Binding ColumnCount}" />
+                                                        </ItemsPanelTemplate>
+                                                    </ItemsControl.ItemsPanel>
+                                                    <ItemsControl.ItemTemplate>
+                                                        <DataTemplate x:DataType="vm:TableCellViewModel">
+                                                            <Border Classes="table-cell"
+                                                                    Classes.header="{Binding IsHeader}"
+                                                                    FlowDirection="{Binding FlowDirection}">
+                                                                <ItemsControl ItemsSource="{Binding Display}"
+                                                                              ItemTemplate="{StaticResource WordTemplate}">
+                                                                    <ItemsControl.ItemsPanel>
+                                                                        <ItemsPanelTemplate>
+                                                                            <WrapPanel Orientation="Horizontal" />
+                                                                        </ItemsPanelTemplate>
+                                                                    </ItemsControl.ItemsPanel>
+                                                                </ItemsControl>
+                                                            </Border>
+                                                        </DataTemplate>
+                                                    </ItemsControl.ItemTemplate>
+                                                </ItemsControl>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
                                   </StackPanel>
                                     <!-- ⚠ CLICKING A WORD SEEKS, and still does in Listening. This
                                          overlay exists ONLY in editing mode, where it covers the
@@ -468,6 +513,17 @@
         </Style>
         <Style Selector="Border.quote">
             <Setter Property="Opacity" Value="0.9" />
+        </Style>
+
+        <!-- Table cells. The grid lines are drawn by each cell owning its right and bottom edge,
+             so the table needs no separate frame and a ragged last row still looks right. -->
+        <Style Selector="Border.table-cell">
+            <Setter Property="BorderBrush" Value="{DynamicResource OverlayBrush}" />
+            <Setter Property="BorderThickness" Value="0,0,1,1" />
+            <Setter Property="Padding" Value="7,4,7,4" />
+        </Style>
+        <Style Selector="Border.table-cell.header">
+            <Setter Property="Background" Value="{DynamicResource SurfaceBrush}" />
         </Style>
     </UserControl.Styles>
 </UserControl>

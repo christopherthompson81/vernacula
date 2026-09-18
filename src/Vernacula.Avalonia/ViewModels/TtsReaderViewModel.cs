@@ -452,23 +452,10 @@ internal sealed partial class TtsReaderViewModel : ObservableObject, IDisposable
 
         foreach (var seg in ParagraphSegmenter.Segment(extract))
         {
-            var block = new BlockItemViewModel(seg.Kind, seg.Level) { Index = seg.Index };
+            var block = BlockItemViewModel.FromSegment(seg, et, ranges, Words.Count, SeekToWord);
             DisplayBlocks.Add(block);
-
-            int i = seg.OutputStart, segEnd = seg.OutputStart + seg.OutputLength;
-            while (i < segEnd)
+            foreach (var w in block.Words)
             {
-                while (i < segEnd && char.IsWhiteSpace(et[i])) i++;
-                if (i >= segEnd) break;
-                int start = i;
-                while (i < segEnd && !char.IsWhiteSpace(et[i])) i++;
-
-                var style = ParagraphSegmenter.StyleAt(ranges, start);
-                var w = new WordItemViewModel(et.Substring(start, i - start), Words.Count, seg.Kind, seg.Level, style, SeekToWord)
-                {
-                    StartSeconds = double.MaxValue,
-                };
-                block.Words.Add(w);
                 Words.Add(w);
                 _wordBlock.Add(block);
             }
