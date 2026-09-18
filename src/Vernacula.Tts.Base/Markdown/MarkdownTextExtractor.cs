@@ -318,9 +318,6 @@ public sealed class MarkdownTextExtractor
     {
         int beforeTable = _sb.Length;
         var cells = new List<TableCellSpan>();
-        var savedCtx = _contextKind;
-        _contextKind = BlockKind.Table;
-
         int rowIndex = 0;
         foreach (var rowObject in table)
         {
@@ -334,7 +331,7 @@ public sealed class MarkdownTextExtractor
                     columnIndex++;
                     continue;
                 }
-                if (_sb.Length > beforeRow) AppendCellSeparator();
+                if (_sb.Length > beforeRow) AppendCellSeparator(cells);
                 int beforeCell = _sb.Length;
                 foreach (var child in cell)
                 {
@@ -353,7 +350,7 @@ public sealed class MarkdownTextExtractor
             {
                 // An empty trailing cell leaves the separator dangling; take it back before the
                 // row is closed so the row does not end "..., .".
-                TrimRowTail(beforeRow);
+                TrimRowTail(beforeRow, cells);
                 AppendTerminalPeriod(beforeRow);
                 // A single newline, as between list items: the chunker splits on BLANK lines, and
                 // a table that split mid-grid would be rendered as unrelated fragments.
@@ -362,34 +359,50 @@ public sealed class MarkdownTextExtractor
             rowIndex++;
         }
 
-        _contextKind = savedCtx;
         while (_sb.Length > beforeTable && _sb[^1] == '\n') _sb.Length--;
+        ClampToOutput(cells);
         if (_sb.Length <= beforeTable) return false;
-        // A cell whose own text ended in a comma had that comma taken back by TrimRowTail, which
-        // leaves its recorded span one character long. Clamp rather than reason about it: a cell
-        // span that does not slice against the output text is a trap for every consumer.
-        for (int i = 0; i < cells.Count; i++)
-        {
-            int over = cells[i].OutputStart + cells[i].OutputLength - _sb.Length;
-            if (over > 0) cells[i] = cells[i] with { OutputLength = cells[i].OutputLength - over };
-        }
         _blocks.Add(new BlockSpan(BlockKind.Table, 0, beforeTable, _sb.Length - beforeTable, cells));
         return true;
     }
 
     /// <summary>A comma-and-space between two cells of a row, unless the cell just closed already
     /// ended in punctuation that pauses.</summary>
-    private void AppendCellSeparator()
+    private void AppendCellSeparator(List<TableCellSpan> cells)
     {
         while (_sb.Length > 0 && char.IsWhiteSpace(_sb[^1])) _sb.Length--;
+        ClampToOutput(cells);
         if (_sb.Length > 0 && _sb[^1] is not ('.' or '!' or '?' or ':' or ';' or ',')) _sb.Append(',');
         _sb.Append(' ');
     }
 
     /// <summary>Trailing separator whitespace and comma removed from the row just built.</summary>
-    private void TrimRowTail(int rowStart)
+    private void TrimRowTail(int rowStart, List<TableCellSpan> cells)
     {
         while (_sb.Length > rowStart && (char.IsWhiteSpace(_sb[^1]) || _sb[^1] == ',')) _sb.Length--;
+        ClampToOutput(cells);
+    }
+
+    /// <summary>
+    /// Every index entry cut back to the text that is actually there.
+    ///
+    /// <para>⚠ THE TABLE IS THE ONE PLACE THAT TAKES TEXT BACK AFTER RECORDING IT — a cell whose
+    /// own text ends in a space or a comma has that character trimmed as a separator, leaving the
+    /// entry covering it describing bytes that are gone. Rare, but an index entry that does not
+    /// slice against the output text is a trap for every consumer, so it is clamped at the moment
+    /// of the trim rather than reasoned about. A cell trimmed away entirely loses its entry, like
+    /// any other cell that produced no text.</para>
+    /// </summary>
+    private void ClampToOutput(List<TableCellSpan> cells)
+    {
+        TrimRangesToOutput(_sb.Length);
+        for (int i = cells.Count - 1; i >= 0; i--)
+        {
+            int over = cells[i].OutputStart + cells[i].OutputLength - _sb.Length;
+            if (over <= 0) break;
+            if (over >= cells[i].OutputLength) cells.RemoveAt(i);
+            else cells[i] = cells[i] with { OutputLength = cells[i].OutputLength - over };
+        }
     }
 
     private void EmitBlockSeparator(bool first)

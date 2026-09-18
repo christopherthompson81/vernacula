@@ -289,6 +289,33 @@ public class MarkdownTextExtractorTests
         Assert.Equal("Done? Yes.", r.Text);
     }
 
+    // ⚠ THE ONE PLACE THE EXTRACTOR TAKES TEXT BACK AFTER RECORDING IT. A cell whose own text ends
+    // in a comma has that comma trimmed as a separator, so the entry covering it would describe
+    // bytes that are gone. Both index entries must still slice against the text.
+    [Fact]
+    public void A_cell_ending_in_a_comma_leaves_no_entry_pointing_past_the_text()
+    {
+        var r = MarkdownTextExtractor.Extract("| a | b, |\n|---|---|");
+        Assert.Equal("a, b.", r.Text);
+        foreach (var range in r.Ranges)
+            Assert.True(range.OutputStart + range.OutputLength <= r.Text.Length,
+                        "a range runs past the output text");
+        var cells = Assert.Single(r.Blocks).Cells!;
+        Assert.Equal(new[] { "a", "b" },
+                     cells.Select(c => r.Text.Substring(c.OutputStart, c.OutputLength)));
+    }
+
+    // And a cell that was nothing but punctuation is trimmed away entirely, so it loses its entry
+    // like any other cell that produced no text.
+    [Fact]
+    public void A_cell_trimmed_away_entirely_loses_its_entry()
+    {
+        var r = MarkdownTextExtractor.Extract("| a | , |\n|---|---|");
+        Assert.Equal("a.", r.Text);
+        var cell = Assert.Single(Assert.Single(r.Blocks).Cells!);
+        Assert.Equal("a", r.Text.Substring(cell.OutputStart, cell.OutputLength));
+    }
+
     // Rows are separated by a SINGLE newline, like list items: the chunker splits on blank lines,
     // and a table split mid-grid would be synthesised as unrelated fragments.
     [Fact]

@@ -1,5 +1,7 @@
+using System.Collections.Generic;
 using System.Linq;
 using Vernacula.App.ViewModels;
+using Vernacula.Tts.Base;
 using Vernacula.Tts.Base.Markdown;
 using Xunit;
 
@@ -89,6 +91,38 @@ public class TableCardTests
         var lastInRow = card.Rows[1].Cells[2].Words.Last();
         Assert.Equal("entries.", lastInRow.Text);
         Assert.Equal("entries", lastInRow.DisplayText);
+    }
+
+    /// <summary>
+    /// ⚠ THE SAME LEAK ON THE OTHER DRAWING PATH. A word written without spaces (Japanese,
+    /// Chinese) is drawn piece by piece rather than as one run, so hiding the separator on
+    /// DisplayText alone would let it come back as a piece of its own inside a table.
+    /// </summary>
+    [Fact]
+    public void TheSpokenSeparatorIsNotDrawnAsARubyPieceEither()
+    {
+        var card = CardFor(Grid);
+        var word = card.Rows[0].Cells[1].Words.Single();   // "Status," drawn as "Status"
+        word.SetRuby(new WordRuby("ˈsteɪtəs", new List<RubyPiece>
+        {
+            new("Sta", "ˈsteɪ", 1),
+            new("tus", "təs", 1),
+            new(",", "", 0),
+        }));
+        Assert.Equal(new[] { "Sta", "tus" }, word.Pieces.Select(p => p.Text));
+    }
+
+    /// <summary>A word outside a table keeps every piece, which is nearly every word.</summary>
+    [Fact]
+    public void AnOrdinaryWordKeepsAllItsRubyPieces()
+    {
+        var word = CardFor("Just a sentence with words.").Words.Last();   // "words."
+        word.SetRuby(new WordRuby("wɜːdz", new List<RubyPiece>
+        {
+            new("word", "wɜːd", 1),
+            new("s.", "z", 1),
+        }));
+        Assert.Equal(new[] { "word", "s." }, word.Pieces.Select(p => p.Text));
     }
 
     /// <summary>Everything that is not a table is untouched: one flow of words, no grid.</summary>
