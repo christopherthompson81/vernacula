@@ -7,6 +7,7 @@ using System.Threading.Tasks;
 using Vernacula.App.Models;
 using Vernacula.App.Services;
 using Vernacula.App.Services.Tts;
+using Vernacula.App.ViewModels;
 using Xunit;
 
 namespace Vernacula.Tests.AsrBackendCoverage;
@@ -175,4 +176,25 @@ public class TtsJobRunnerTests
             .Select(Path.GetFileNameWithoutExtension).OrderBy(v => v).First()!;
         return (doc, Path.Combine(dir, "page_tts.json"), new TtsJobSettings("Kokoro", "", voice));
     }
+
+    /// <summary>
+    /// ⚠ THE SLIDER'S TOP STOP MEANS "NEVER", and a slider cannot say so on its own. The setting the
+    /// runner reads is a NEGATIVE number for "keep it"; the end of the track maps to that, so the
+    /// label and the behaviour agree. Without it the top stop would be a ten-minute hold that merely
+    /// looks like forever.
+    /// </summary>
+    [Theory]
+    [InlineData(0, 0)]
+    [InlineData(60, 60)]
+    [InlineData(599, 599)]
+    [InlineData(600, -1)]
+    public void TheSliderTopStopStoresNever(int slider, int stored) =>
+        Assert.Equal(stored, SettingsViewModel.StoredIdleRelease(slider));
+
+    [Theory]
+    [InlineData(0, "as soon as synthesis stops")]
+    [InlineData(60, "after 60 s idle")]
+    [InlineData(600, "never")]
+    public void TheLabelSaysWhatTheSliderDoes(int slider, string expected) =>
+        Assert.Contains(expected, SettingsViewModel.IdleReleaseLabel(slider));
 }

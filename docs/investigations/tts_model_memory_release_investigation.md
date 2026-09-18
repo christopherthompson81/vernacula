@@ -133,3 +133,34 @@ load and dispose.
 **Still not released, and out of scope: the phonemizer's ~450 MB of static lexicon** (Run 1). Nothing
 in this change touches it. After a release the process still holds it, and that is the expected
 number, not a failure of the policy.
+
+## Run 4 — 2026-09-18 22:10 — confirmed in the field, at ~12 GB
+
+**Report.** *"Last one I did before I reported it to you left ~12 GB resident (batching). Ran it
+again, same usage and did not free once the full synthesis was done"* — and then, on the timer,
+*"It did, after the timeout."*
+
+So the policy works on the case that prompted it, and at a scale an order of magnitude past anything
+measured here: **~12 GB**, batched. Two things follow.
+
+**The grace period is the whole user-visible behaviour, and it was invisible.** The gap between "the
+full synthesis was done" and the memory coming back is the 60 s idle window doing exactly what it is
+for — but nothing on screen says so, and the setting existed only in `settings.json`. Someone
+watching 12 GB sit there has no way to know whether it is broken or waiting. The Settings → TTS tab
+now carries the slider, labelled with what the current position means.
+
+⚠ **The slider's top stop is "never", and a slider cannot say that.** The runner reads a NEGATIVE
+value as "keep it for the session"; the end of the track maps to it. Without that the top stop would
+be a ten-minute hold that merely *looks* like forever — and the label would be a lie. The mapping is
+a pure function (`StoredIdleRelease`) precisely so it can be tested without standing up the whole
+settings view model, which needs a live model manager.
+
+**On the default.** 60 s is a compromise struck for the reader's edit loop, and 12 GB is a good
+argument that it is the wrong compromise for a bulk run. It is left at 60 s and made reachable
+instead: the person who just spent an hour synthesising a document knows better than a constant
+whether they are about to edit it or want their GPU back.
+
+**A note on the 12 GB itself.** Kokoro batches 16 paragraphs at a time, padded to the longest in the
+batch, so the ORT arena grows to the batch peak rather than the single-segment peak — which is why a
+batched run is so much larger than Run 2's 826 MB, and why it comes back on the release: the arena
+belongs to the session that is being disposed.

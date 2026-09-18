@@ -56,6 +56,12 @@ internal partial class SettingsViewModel
     [ObservableProperty] private string _omniVoiceTokenizerJson = "";
     [ObservableProperty] private float  _kokoroSpeed            = 1.0f;
     [ObservableProperty] private int    _omniVoiceNumStep       = 32;
+    /// <summary>Seconds of idleness before the loaded TTS model is released. See
+    /// <see cref="AppSettings.TtsModelIdleReleaseSeconds"/>; the slider's 0 means "as soon as the
+    /// work stops" and its maximum means "keep it for the session".</summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(TtsModelIdleReleaseLabel))]
+    private int _ttsModelIdleReleaseSeconds = 60;
 
     partial void OnChatterboxVoicePathChanged(string value)
     {
@@ -82,6 +88,34 @@ internal partial class SettingsViewModel
         _svc.Current.OmniVoiceNumStep = value;
         _svc.Save();
     }
+
+    partial void OnTtsModelIdleReleaseSecondsChanged(int value)
+    {
+        _svc.Current.TtsModelIdleReleaseSeconds = StoredIdleRelease(value);
+        _svc.Save();
+    }
+
+    /// <summary>The slider position that means "keep the model loaded for the session".</summary>
+    public const int KeepModelLoaded = 600;
+
+    /// <summary>
+    /// What the runner stores for a slider position.
+    ///
+    /// <para>⚠ THE TOP STOP IS "NEVER", NOT 600 SECONDS. A slider cannot express "no timeout", and a
+    /// ten-minute hold is indistinguishable from forever within a session — so the end of the track
+    /// stores the NEGATIVE the runner reads as "keep it", which is what makes the label true.</para>
+    /// </summary>
+    public static int StoredIdleRelease(int slider) => slider >= KeepModelLoaded ? -1 : Math.Max(0, slider);
+
+    /// <summary>What a slider position means, in words.</summary>
+    public static string IdleReleaseLabel(int slider) => slider switch
+    {
+        >= KeepModelLoaded => "Release idle TTS model: never — keep it for the session",
+        0                  => "Release idle TTS model: as soon as synthesis stops",
+        var s              => $"Release idle TTS model: after {s} s idle",
+    };
+
+    public string TtsModelIdleReleaseLabel => IdleReleaseLabel(TtsModelIdleReleaseSeconds);
 
     [RelayCommand]
     private async Task PickChatterboxVoice()
@@ -117,6 +151,9 @@ internal partial class SettingsViewModel
         _omniVoiceTokenizerJson = _svc.Current.OmniVoiceTokenizerJson ?? "";
         _kokoroSpeed            = _svc.Current.KokoroSpeed > 0 ? _svc.Current.KokoroSpeed : 1.0f;
         _omniVoiceNumStep       = _svc.Current.OmniVoiceNumStep is > 0 and <= 64 ? _svc.Current.OmniVoiceNumStep : 32;
+        // A negative stored value is "never", which the slider shows at its top stop.
+        _ttsModelIdleReleaseSeconds = _svc.Current.TtsModelIdleReleaseSeconds < 0
+            ? KeepModelLoaded : Math.Min(_svc.Current.TtsModelIdleReleaseSeconds, KeepModelLoaded);
 #pragma warning restore MVVMTK0034
 
         foreach (var engine in TtsEngines.All)
