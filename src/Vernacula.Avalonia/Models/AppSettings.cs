@@ -128,6 +128,20 @@ public class AppSettings
     public string             OmniVoiceLang           { get; set; } = "en";
     public string             OmniVoiceVoice          { get; set; } = "";
     public int                OmniVoiceNumStep        { get; set; } = 32;
+    /// <summary>
+    /// Seconds of idleness after which the loaded TTS model is released, freeing its host memory —
+    /// and, under a GPU execution provider, its VRAM, which another process cannot borrow while it
+    /// is held. 0 releases as soon as the work stops; NEGATIVE keeps the model for the life of the
+    /// session, which is what the app did before this setting existed.
+    ///
+    /// <para>⚠ NOT ZERO BY DEFAULT, and the reason is the reader. Editing a paragraph re-renders it
+    /// through the same backend, and that happens right after a synthesis finishes — releasing the
+    /// instant a job completes would make the first edit pay a full model load, which for Chatterbox
+    /// is tens of seconds. A minute of grace covers the edit loop and still frees the weights long
+    /// before the user notices they are gone.</para>
+    /// </summary>
+    public int                TtsModelIdleReleaseSeconds { get; set; } = 60;
+
     // Reader view preferences (not per job).
     public bool               TtsShowRawMarkdown      { get; set; } = false;
     public bool               TtsShowIpaAnnotation    { get; set; } = false;

@@ -14,15 +14,46 @@ namespace Vernacula.App.Services.Tts;
 /// backend or the model locations in Settings changed. The queue runs one job at a time, so
 /// there is never a job mid-flight when the cache is swapped.
 /// </para>
+/// <para>
+/// ⚠ AND IT IS RELEASED WHEN THE WORK STOPS, which it was not. The cache used to be dropped on
+/// exactly three events — the settings change the key, Settings calls <see cref="Invalidate"/>, or
+/// the app exits — so a finished bulk job left its weights resident for the rest of the session.
+/// Measured on Kokoro, the smallest of the four backends, that is ~400 MB of host memory; OmniVoice
+/// and Chatterbox are multiples of it, and under CUDA it is DEVICE memory, which another process
+/// cannot borrow. See docs/investigations/tts_model_memory_release_investigation.md.
+/// </para>
+/// <para>
+/// The release is on an IDLE TIMER rather than at the end of each job, because the reader re-renders
+/// one paragraph at a time as the user edits (<see cref="ReRenderAsync"/>) and that is exactly when
+/// the model has just finished a job. Dropping it the instant a job completes would make the first
+/// edit after a synthesis pay a full model load. <see cref="AppSettings.TtsModelIdleReleaseSeconds"/>
+/// sets the delay; 0 releases as soon as the work stops and a negative value keeps the old
+/// hold-forever behaviour.
+/// </para>
 /// </summary>
 internal sealed class TtsJobRunner : IDisposable
 {
     private readonly SettingsService _settings;
 
-    private ITtsBackend? _backend;
-    private string?      _backendKey;
+    private readonly object _gate = new();
+    private ITtsBackend?    _backend;
+    private string?         _backendKey;
+    /// <summary>Cancels a release that has been armed but not yet fired. Replaced under
+    /// <see cref="_gate"/> every time the backend is taken or released.</summary>
+    private CancellationTokenSource? _releaseCts;
+    /// <summary>How many runs currently hold the backend. The timer is armed only as the LAST one
+    /// finishes — the queue runs one job at a time by default, but its slot count is configurable
+    /// and the reader's re-render can overlap a queued job.</summary>
+    private int _inUse;
 
     public TtsJobRunner(SettingsService settings) => _settings = settings;
+
+    /// <summary>
+    /// Whether a model is resident right now. The one observable the release policy has — a UI that
+    /// wants to say "models loaded" can read it, and the tests assert the transition on it rather
+    /// than on a memory number, which is not a thing a test can hold still.
+    /// </summary>
+    public bool IsModelLoaded { get { lock (_gate) return _backend is not null; } }
 
     /// <summary>Sample rate of the backend a job with <paramref name="tts"/> will produce.</summary>
     public static int SampleRateFor(TtsJobSettings tts) => TtsEngines.For(tts.Backend).SampleRate;
@@ -46,6 +77,7 @@ internal sealed class TtsJobRunner : IDisposable
             throw new InvalidOperationException($"\"{documentPath}\" is empty.");
 
         var backend = EnsureBackend(tts);
+        using var lease = Lease();
         string wavPath = Path.ChangeExtension(sidecarPath, ".wav");
         string segmentsDir = AlignmentSidecar.SegmentsDirFor(sidecarPath);
         Directory.CreateDirectory(Path.GetDirectoryName(sidecarPath)!);
@@ -84,6 +116,7 @@ internal sealed class TtsJobRunner : IDisposable
             throw new InvalidOperationException("The document is empty.");
 
         var backend = EnsureBackend(tts);
+        using var lease = Lease();
         string liveWav      = Path.ChangeExtension(sidecarPath, ".wav");
         string liveSegments = AlignmentSidecar.SegmentsDirFor(sidecarPath);
 
@@ -132,27 +165,120 @@ internal sealed class TtsJobRunner : IDisposable
     {
         var engine = TtsEngines.For(tts.Backend);
         string key = engine.CacheKey(_settings);
-        if (_backend is not null && _backendKey == key) return _backend;
-
-        _backend?.Dispose();
-        _backend = null;
-        _backendKey = null;
+        lock (_gate)
+        {
+            // ⚠ FIRST, whatever happens next: a release may be armed for a backend we are about to
+            // hand out, and the caller takes its lease AFTER this returns.
+            CancelArmedRelease();
+            if (_backend is not null && _backendKey == key) return _backend;
+            ReleaseBackendLocked("settings changed");
+        }
 
         string? missing = TtsPrerequisites.Describe(engine.Kind, _settings, tts);
         if (missing is not null)
             throw new InvalidOperationException(missing);
 
-        _backend = engine.CreateBackend(_settings);
-        _backendKey = key;
-        return _backend;
+        // ⚠ BUILT OUTSIDE THE LOCK. Loading a model is seconds to tens of seconds of file I/O and
+        // graph optimization, and holding the gate across it would block the release timer's
+        // re-check — and every other caller — for that whole time.
+        var built = engine.CreateBackend(_settings);
+        lock (_gate)
+        {
+            // Another caller may have built the same backend while this one was loading. Keep the
+            // first and drop the duplicate rather than leaking the loser.
+            if (_backend is not null && _backendKey == key)
+            {
+                built.Dispose();
+                return _backend;
+            }
+            ReleaseBackendLocked("replaced");
+            _backend = built;
+            _backendKey = key;
+            return built;
+        }
+    }
+
+    /// <summary>
+    /// A run's hold on the backend. While any lease is open the idle timer is disarmed; the last one
+    /// to close arms it.
+    /// </summary>
+    private IDisposable Lease()
+    {
+        lock (_gate)
+        {
+            _inUse++;
+            CancelArmedRelease();
+        }
+        return new Holder(this);
+    }
+
+    private sealed class Holder(TtsJobRunner owner) : IDisposable
+    {
+        private bool _done;
+        public void Dispose()
+        {
+            if (_done) return;
+            _done = true;
+            owner.EndLease();
+        }
+    }
+
+    private void EndLease()
+    {
+        lock (_gate)
+        {
+            if (--_inUse > 0) return;       // another run still has it
+            if (_backend is null) return;
+            int seconds = _settings.Current.TtsModelIdleReleaseSeconds;
+            // ⚠ NEGATIVE IS "NEVER", and it is the behaviour this class had before the timer existed.
+            // Zero is not the same thing as never — it means release as soon as the work stops.
+            if (seconds < 0) return;
+            CancelArmedRelease();
+            var cts = _releaseCts = new CancellationTokenSource();
+            var token = cts.Token;
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    if (seconds > 0) await Task.Delay(TimeSpan.FromSeconds(seconds), token);
+                    lock (_gate)
+                    {
+                        // ⚠ RE-CHECKED UNDER THE LOCK. A job can start between the delay expiring and
+                        // this running, and disposing a backend mid-synthesis is the one outcome this
+                        // whole mechanism must never produce.
+                        if (token.IsCancellationRequested || _inUse > 0) return;
+                        ReleaseBackendLocked("idle");
+                    }
+                }
+                catch (OperationCanceledException) { /* a new run took the backend */ }
+            }, CancellationToken.None);
+        }
+    }
+
+    private void CancelArmedRelease()
+    {
+        _releaseCts?.Cancel();
+        _releaseCts?.Dispose();
+        _releaseCts = null;
+    }
+
+    private void ReleaseBackendLocked(string why)
+    {
+        if (_backend is null) return;
+        Console.WriteLine($"[TtsJobRunner] releasing {_backendKey} ({why})");
+        _backend.Dispose();
+        _backend = null;
+        _backendKey = null;
     }
 
     /// <summary>Drops the cached backend, e.g. after the model locations change in Settings.</summary>
     public void Invalidate()
     {
-        _backend?.Dispose();
-        _backend = null;
-        _backendKey = null;
+        lock (_gate)
+        {
+            CancelArmedRelease();
+            ReleaseBackendLocked("invalidated");
+        }
     }
 
     public void Dispose() => Invalidate();
