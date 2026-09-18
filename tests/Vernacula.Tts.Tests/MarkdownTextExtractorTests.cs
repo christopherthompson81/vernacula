@@ -9,7 +9,8 @@ namespace Vernacula.Tts.Tests;
 /// Unit tests for <see cref="MarkdownTextExtractor"/>. The behavior
 /// matrix it locks down comes from the PR-confirmed defaults:
 /// headings/paragraphs/lists/quotes/emphasis/links → text only;
-/// fenced code blocks, tables, images, HTML, horizontal rules,
+/// tables → cells in reading order with the grid recorded alongside;
+/// fenced code blocks, images, HTML, horizontal rules,
 /// footnotes → skipped entirely.
 ///
 /// Each test asserts both the output text AND that source-range
@@ -211,12 +212,91 @@ public class MarkdownTextExtractorTests
         Assert.Equal("Look:  at this.", r.Text);
     }
 
+    // ── Tables ────────────────────────────────────────────────────────
+    //
+    // Tables were skipped entirely until they were needed for reviewing real documents, where a
+    // dropped table is not a missing flourish but missing content — silently, with nothing in the
+    // audio or the cards to say so.
+
     [Fact]
-    public void Table_is_skipped_entirely()
+    public void Table_cells_are_read_row_by_row()
     {
         var md = "Intro.\n\n| col1 | col2 |\n|------|------|\n| a    | b    |\n\nOutro.";
         var r = MarkdownTextExtractor.Extract(md);
-        Assert.Equal("Intro.\n\nOutro.", r.Text);
+        Assert.Equal("Intro.\n\ncol1, col2.\na, b.\n\nOutro.", r.Text);
+    }
+
+    [Fact]
+    public void Table_is_one_block_carrying_the_grid_positions()
+    {
+        var md = "| col1 | col2 |\n|------|------|\n| a    | b    |";
+        var r = MarkdownTextExtractor.Extract(md);
+        var block = Assert.Single(r.Blocks);
+        Assert.Equal(BlockKind.Table, block.Kind);
+        Assert.Equal("col1, col2.\na, b.", r.Text[block.OutputStart..(block.OutputStart + block.OutputLength)]);
+
+        var cells = block.Cells!;
+        Assert.Equal(4, cells.Count);
+        Assert.Equal(new[] { (0, 0, true), (0, 1, true), (1, 0, false), (1, 1, false) },
+                     cells.Select(c => (c.Row, c.Column, c.IsHeader)));
+        Assert.Equal(new[] { "col1", "col2", "a", "b" },
+                     cells.Select(c => r.Text.Substring(c.OutputStart, c.OutputLength)));
+    }
+
+    // The separator the extractor writes between cells stays OUT of the cell span, so a word
+    // looked up by its start offset lands in exactly one cell — which is how the reader puts each
+    // word in the right column.
+    [Fact]
+    public void Table_cell_spans_do_not_overlap_and_are_sliceable()
+    {
+        var r = MarkdownTextExtractor.Extract("| a | b |\n|---|---|\n| c | d |");
+        var cells = Assert.Single(r.Blocks).Cells!;
+        int previousEnd = 0;
+        foreach (var c in cells)
+        {
+            Assert.True(c.OutputStart >= previousEnd, "cell spans overlap");
+            Assert.True(c.OutputStart + c.OutputLength <= r.Text.Length, "cell span runs past the text");
+            previousEnd = c.OutputStart + c.OutputLength;
+        }
+    }
+
+    // A blank cell contributes no text and no entry, so the entries are sparse — the Column is the
+    // authority on where a cell sits, not its position in the list.
+    [Fact]
+    public void Empty_cells_get_no_entry_and_do_not_shift_the_columns()
+    {
+        var r = MarkdownTextExtractor.Extract("| a | b | c |\n|---|---|---|\n| x |   | z |");
+        var cells = Assert.Single(r.Blocks).Cells!;
+        Assert.Equal(new[] { 0, 1, 2, 0, 2 }, cells.Select(c => c.Column));
+        Assert.Equal("x, z.", r.Text[^5..]);
+    }
+
+    // Inline markup inside a cell is stripped like anywhere else, and the style survives on the
+    // range index so the reader can still draw it bold.
+    [Fact]
+    public void Inline_markup_inside_a_cell_is_stripped_but_styled()
+    {
+        var r = MarkdownTextExtractor.Extract("| **bold** | `code` |\n|---|---|\n| a | b |");
+        Assert.StartsWith("bold, code.", r.Text);
+        Assert.Equal(InlineStyle.Bold, ParagraphSegmenter.StyleAt(r.Ranges, 0));
+    }
+
+    // A cell already ending in terminal punctuation does not collect a comma on top of it.
+    [Fact]
+    public void A_cell_ending_in_punctuation_keeps_its_own()
+    {
+        var r = MarkdownTextExtractor.Extract("| Done? | Yes |\n|---|---|");
+        Assert.Equal("Done? Yes.", r.Text);
+    }
+
+    // Rows are separated by a SINGLE newline, like list items: the chunker splits on blank lines,
+    // and a table split mid-grid would be synthesised as unrelated fragments.
+    [Fact]
+    public void Table_rows_are_not_a_chunk_boundary()
+    {
+        var md = "| a | b |\n|---|---|\n| c | d |";
+        var r = MarkdownTextExtractor.Extract(md);
+        Assert.DoesNotContain("\n\n", r.Text);
     }
 
     [Fact]
@@ -471,7 +551,7 @@ public class MarkdownTextExtractorTests
         Assert.Contains("Long-form synthesis", r.Text);
         Assert.Contains("Note: GPU recommended", r.Text);
         Assert.DoesNotContain("chatterbox --voice", r.Text);  // code block dropped
-        Assert.DoesNotContain("Batching", r.Text);            // table dropped
+        Assert.Contains("Batching, 50%.", r.Text);            // table read row by row
         Assert.DoesNotContain("README.md", r.Text);           // URL dropped, text kept
         Assert.Contains("README", r.Text);
     }

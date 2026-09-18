@@ -175,6 +175,37 @@ public class MarkdownSegmentSpansTests
             ParagraphSegmenter.Segment(EditCard(md, 0, "- A heading"))[0].Kind);
     }
 
+    /// <summary>
+    /// ⚠ A TABLE IS ONE CARD, AND ITS EXTENT MUST COVER THE WHOLE GRID — the leading `|` of the
+    /// first row, the alignment row, and the trailing `|` of the last. An extent that started at
+    /// the first word would open an editor on a table with its outer pipes shorn off, and saving
+    /// that would stop the block being a table at all.
+    /// </summary>
+    [Fact]
+    public void ATablesExtentIsTheWholeTable()
+    {
+        const string md = "Intro.\n\n| Item | Status |\n|------|--------|\n| Ledger | Open |\n\nOutro.";
+        Assert.Equal("| Item | Status |\n|------|--------|\n| Ledger | Open |", TextOfCard(md, 1));
+    }
+
+    [Fact]
+    public void ATableCanBeEditedWithoutTouchingWhatSurroundsIt()
+    {
+        const string md = "Intro.\n\n| Item | Status |\n|---|---|\n| Ledger | Open |\n\nOutro.";
+        Assert.Equal("Intro.\n\n| Item | Status | Owner |\n|---|---|---|\n| Ledger | Open | AP |\n\nOutro.",
+            EditCard(md, 1, "| Item | Status | Owner |\n|---|---|---|\n| Ledger | Open | AP |"));
+    }
+
+    /// <summary>And the card's kind follows the edit, as it does for every other marker.</summary>
+    [Fact]
+    public void UnmakingATableTurnsTheCardBackIntoProse()
+    {
+        const string md = "| Item | Status |\n|---|---|\n| Ledger | Open |";
+        Assert.Equal(BlockKind.Table, ParagraphSegmenter.Segment(md)[0].Kind);
+        Assert.Equal(BlockKind.Paragraph,
+            ParagraphSegmenter.Segment(EditCard(md, 0, "Just a sentence."))[0].Kind);
+    }
+
     /// <summary>Inline markup lies BETWEEN two text runs of one card, so it is inside the extent and
     /// is edited as literal markdown. The intended bargain, pinned so it is not a surprise.</summary>
     [Fact]

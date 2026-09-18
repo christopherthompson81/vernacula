@@ -108,7 +108,7 @@ public sealed class ChunkRecord
     [JsonPropertyName("word_count")]          public int WordCount { get; set; }
     /// <summary>File name of this segment's own WAV inside the sidecar's segments folder, when written.</summary>
     [JsonPropertyName("audio_file")]          public string? AudioFile { get; set; }
-    /// <summary>BlockKind name: "Paragraph", "Heading", "ListItem", "Quote".</summary>
+    /// <summary>BlockKind name: "Paragraph", "Heading", "ListItem", "Quote", "Table".</summary>
     [JsonPropertyName("block_kind")]          public string? BlockKind { get; set; }
     [JsonPropertyName("block_level")]         public int BlockLevel { get; set; }
 }
