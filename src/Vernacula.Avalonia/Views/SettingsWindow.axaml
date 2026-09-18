@@ -1335,6 +1335,21 @@
                                        FontSize="11" TextWrapping="Wrap" />
                         </StackPanel>
 
+                        <!-- How long a finished model stays loaded. Its own section, not gated on an
+                             engine: every backend pays this, and the bigger the engine the more it
+                             costs — a held Chatterbox is gigabytes of VRAM another process cannot
+                             borrow. See docs/investigations/tts_model_memory_release_investigation.md -->
+                        <StackPanel>
+                            <TextBlock Text="{Binding TtsModelIdleReleaseLabel}"
+                                       FontWeight="SemiBold"
+                                       Foreground="{DynamicResource TextBrush}" />
+                            <Slider Minimum="0" Maximum="600" TickFrequency="30" IsSnapToTickEnabled="True"
+                                    Value="{Binding TtsModelIdleReleaseSeconds}" />
+                            <TextBlock Text="Frees the model's memory once synthesis stops. The grace period is for the reader: editing a paragraph re-renders it through the same model, and that happens right after a job finishes."
+                                       Foreground="{DynamicResource SubtextBrush}"
+                                       FontSize="11" TextWrapping="Wrap" />
+                        </StackPanel>
+
                         <!-- The Qwen3 tokenizer belongs to the phonemizing path, so it is gated on
                              the language capability rather than on diffusion steps: an engine with
                              a language but no steps still needs it. -->

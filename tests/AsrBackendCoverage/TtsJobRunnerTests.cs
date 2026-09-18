@@ -7,6 +7,7 @@ using System.Threading.Tasks;
 using Vernacula.App.Models;
 using Vernacula.App.Services;
 using Vernacula.App.Services.Tts;
+using Vernacula.App.ViewModels;
 using Xunit;
 
 namespace Vernacula.Tests.AsrBackendCoverage;
@@ -81,4 +82,119 @@ public class TtsJobRunnerTests
             try { Directory.Delete(dir, recursive: true); } catch { /* best effort */ }
         }
     }
+
+    /// <summary>
+    /// ⚠ A FINISHED JOB USED TO LEAVE ITS WEIGHTS RESIDENT FOR THE REST OF THE SESSION. The cache was
+    /// dropped only when the settings key changed or the app exited, so a bulk synthesis held its
+    /// model — ~400 MB of host memory for Kokoro, multiples of that for the others, and DEVICE memory
+    /// under a GPU execution provider, which another process cannot borrow while it is held.
+    /// </summary>
+    [Fact]
+    public async Task AnIdleRunnerReleasesItsModel()
+    {
+        var settings = new SettingsService();
+        settings.Load();
+        if (TtsPrerequisites.Describe(TtsBackendKind.Kokoro, settings) is { } missing)
+            Assert.Skip($"Kokoro not available here: {missing}");
+        settings.Current.TtsModelIdleReleaseSeconds = 1;
+
+        string dir = Path.Combine(Path.GetTempPath(), "vernacula-tests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            var (doc, sidecarPath, tts) = await SeedAsync(dir, settings);
+            using var runner = new TtsJobRunner(settings);
+            await runner.RunAsync(doc, sidecarPath, tts, _ => { }, _ => { }, CancellationToken.None);
+
+            // Still held immediately after the job: the reader re-renders a paragraph through the
+            // same backend as soon as the user edits, and that is exactly now.
+            Assert.True(runner.IsModelLoaded);
+
+            var deadline = DateTime.UtcNow.AddSeconds(20);
+            while (runner.IsModelLoaded && DateTime.UtcNow < deadline) await Task.Delay(100);
+            Assert.False(runner.IsModelLoaded);
+        }
+        finally { Directory.Delete(dir, recursive: true); }
+    }
+
+    /// <summary>Zero is not the same as never: it releases as soon as the work stops.</summary>
+    [Fact]
+    public async Task ZeroSecondsReleasesAsSoonAsTheWorkStops()
+    {
+        var settings = new SettingsService();
+        settings.Load();
+        if (TtsPrerequisites.Describe(TtsBackendKind.Kokoro, settings) is { } missing)
+            Assert.Skip($"Kokoro not available here: {missing}");
+        settings.Current.TtsModelIdleReleaseSeconds = 0;
+
+        string dir = Path.Combine(Path.GetTempPath(), "vernacula-tests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            var (doc, sidecarPath, tts) = await SeedAsync(dir, settings);
+            using var runner = new TtsJobRunner(settings);
+            await runner.RunAsync(doc, sidecarPath, tts, _ => { }, _ => { }, CancellationToken.None);
+
+            var deadline = DateTime.UtcNow.AddSeconds(10);
+            while (runner.IsModelLoaded && DateTime.UtcNow < deadline) await Task.Delay(50);
+            Assert.False(runner.IsModelLoaded);
+        }
+        finally { Directory.Delete(dir, recursive: true); }
+    }
+
+    /// <summary>⚠ And a negative value keeps the behaviour the app had before the timer existed, so
+    /// a user who would rather spend the memory than the reload can say so.</summary>
+    [Fact]
+    public async Task ANegativeValueKeepsTheModelLoaded()
+    {
+        var settings = new SettingsService();
+        settings.Load();
+        if (TtsPrerequisites.Describe(TtsBackendKind.Kokoro, settings) is { } missing)
+            Assert.Skip($"Kokoro not available here: {missing}");
+        settings.Current.TtsModelIdleReleaseSeconds = -1;
+
+        string dir = Path.Combine(Path.GetTempPath(), "vernacula-tests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            var (doc, sidecarPath, tts) = await SeedAsync(dir, settings);
+            using var runner = new TtsJobRunner(settings);
+            await runner.RunAsync(doc, sidecarPath, tts, _ => { }, _ => { }, CancellationToken.None);
+
+            await Task.Delay(2000);
+            Assert.True(runner.IsModelLoaded);
+        }
+        finally { Directory.Delete(dir, recursive: true); }
+    }
+
+    private static async Task<(string Doc, string Sidecar, TtsJobSettings Tts)> SeedAsync(
+        string dir, SettingsService settings)
+    {
+        string doc = Path.Combine(dir, "page.md");
+        await File.WriteAllTextAsync(doc, "One short sentence.\n");
+        string voice = Directory.EnumerateFiles(Path.Combine(settings.GetKokoroModelsDir(), "voices"), "*.bin")
+            .Select(Path.GetFileNameWithoutExtension).OrderBy(v => v).First()!;
+        return (doc, Path.Combine(dir, "page_tts.json"), new TtsJobSettings("Kokoro", "", voice));
+    }
+
+    /// <summary>
+    /// ⚠ THE SLIDER'S TOP STOP MEANS "NEVER", and a slider cannot say so on its own. The setting the
+    /// runner reads is a NEGATIVE number for "keep it"; the end of the track maps to that, so the
+    /// label and the behaviour agree. Without it the top stop would be a ten-minute hold that merely
+    /// looks like forever.
+    /// </summary>
+    [Theory]
+    [InlineData(0, 0)]
+    [InlineData(60, 60)]
+    [InlineData(599, 599)]
+    [InlineData(600, -1)]
+    public void TheSliderTopStopStoresNever(int slider, int stored) =>
+        Assert.Equal(stored, SettingsViewModel.StoredIdleRelease(slider));
+
+    [Theory]
+    [InlineData(0, "as soon as synthesis stops")]
+    [InlineData(60, "after 60 s idle")]
+    [InlineData(600, "never")]
+    public void TheLabelSaysWhatTheSliderDoes(int slider, string expected) =>
+        Assert.Contains(expected, SettingsViewModel.IdleReleaseLabel(slider));
 }
