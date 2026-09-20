@@ -408,9 +408,17 @@ public sealed class PlaybackService : IDisposable
     /// the playback pipeline reading from the file (instead of the
     /// stream) and jumps to <paramref name="seconds"/>. Use this for
     /// scrubbing a finished synthesis where you have the full WAV.</summary>
-    public void SeekIntoFile(string audioPath, double audioDurationSec, double seconds)
+    /// <param name="follow">
+    /// For a file that is still being WRITTEN — the merged WAV of a render in progress. Playback
+    /// otherwise ends at whatever EOF the player saw when it opened, which for a live render is the
+    /// frontier at the moment of the click; with this set, reaching the end re-opens the file if it
+    /// has grown since and carries on from the same position. It stops when the file stops growing,
+    /// so nothing has to tell it the render has finished.
+    /// </param>
+    public void SeekIntoFile(string audioPath, double audioDurationSec, double seconds, bool follow = false)
     {
         Stop();
+        _followPath = follow ? audioPath : null;
         if (!File.Exists(audioPath))
             throw new FileNotFoundException("Audio file not found.", audioPath);
 
@@ -435,7 +443,8 @@ public sealed class PlaybackService : IDisposable
             // Stop() there tore the new playback down within milliseconds.
             _waveOut.PlaybackStopped += (sender, _) => Dispatcher.UIThread.InvokeAsync(() =>
             {
-                if (ReferenceEquals(sender, _waveOut)) Stop();
+                if (!ReferenceEquals(sender, _waveOut)) return;
+                if (!TryFollowGrowingFile()) Stop();
             });
             _waveOut.Play();
         }
@@ -453,8 +462,51 @@ public sealed class PlaybackService : IDisposable
         StartTickTimer();
     }
 
+    /// <summary>The growing file to re-open at EOF, or null. Cleared by any Stop that is not the
+    /// player reaching the end of a file it was following.</summary>
+    private string? _followPath;
+
+    /// <summary>
+    /// The player reached the end of a file it was following. Continue if the render has written
+    /// more since, otherwise fall through to a normal stop.
+    /// </summary>
+    /// <remarks>
+    /// ⚠ THE POSITION IS RE-READ FROM THE FILE, not assumed to be where playback stopped: the
+    /// player exits at the EOF it found, and what matters is whether there is audio beyond it.
+    /// A file that has not grown ends playback, which is also what makes this terminate — the last
+    /// paragraph of a render leaves the file static and the next EOF stops for good.
+    /// </remarks>
+    private bool TryFollowGrowingFile()
+    {
+        if (_followPath is not { } path || !File.Exists(path)) return false;
+
+        double grownTo;
+        try
+        {
+            // ⚠ FileShare.ReadWrite, AND AudioFileReader CANNOT BE USED HERE. The render still
+            // holds this file open for writing; AudioFileReader opens it through File.OpenRead,
+            // i.e. FileShare.Read, which denies the writer that already has it — fine on Linux,
+            // where share modes are advisory, and an IOException on Windows every time. Opening
+            // the stream ourselves is what makes following a growing file work on both.
+            using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+            using var probe  = new WaveFileReader(stream);
+            grownTo = probe.TotalTime.TotalSeconds;
+        }
+        catch { return false; }   // mid-flush, or gone: treat as the end
+
+        var resumeAt = PositionSeconds;
+        // A tenth of a second of slack: the player's own idea of the end and the header's can
+        // differ by a frame or two, and re-opening for that would loop on the final paragraph.
+        if (grownTo <= resumeAt + 0.1) return false;
+
+        SeekIntoFile(path, grownTo, resumeAt, follow: true);
+        return true;
+    }
+
     public void Stop()
     {
+        _followPath = null;
+
         // Allow Stop after Pause too — without IsPaused in this check
         // we'd early-return because the timer was stopped by Pause and
         // IsPlaying is false during pause.
@@ -581,7 +633,11 @@ public sealed class PlaybackService : IDisposable
         // Exited must not stop the new one.
         p.Exited += (sender, _) => Dispatcher.UIThread.InvokeAsync(() =>
         {
-            if (ReferenceEquals(sender, _ffplayProcess)) Stop();
+            if (!ReferenceEquals(sender, _ffplayProcess)) return;
+            // ⚠ FOLLOW BEFORE STOP, and only for the process that is still current. A render in
+            // progress keeps appending to the file this player just reached the end of; without
+            // this, a mid-render seek plays to the frontier the click saw and stops there.
+            if (!TryFollowGrowingFile()) Stop();
         });
         if (!p.Start())
         {

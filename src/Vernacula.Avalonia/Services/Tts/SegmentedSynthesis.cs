@@ -49,7 +49,21 @@ internal static class SegmentedSynthesis
 
         if (request.SegmentsDir is { } segDir) Directory.CreateDirectory(segDir);
 
-        var audios = new float[total][];
+        // ⚠ THE MERGED WAV IS WRITTEN AS THE RUN GOES, not assembled at the end, and that is a
+        // feature rather than a tidiness choice: it is the only seekable copy of the audio that
+        // exists while a document is still rendering. Without it the reader has word timings for
+        // every finished paragraph and nothing to seek INTO, so clicking a word could move the
+        // highlight and not the playhead (PlaybackService.SeekTo says as much). Flushing after each
+        // segment patches the RIFF sizes, so a reader opening it mid-run sees exactly the audio
+        // rendered so far.
+        //
+        // It also stops holding the whole document's audio in RAM to write it once — a ten-minute
+        // render was ~58 MB of float32 kept alive for no other reason.
+        //
+        // A re-render is unaffected: TtsJobRunner.ReRenderAsync renders into a staging path and
+        // swaps at the end, so the growing file there is never the one the reader is reading.
+        using var merged = new WaveFileWriter(
+            request.OutWavPath, WaveFormat.CreateIeeeFloatWaveFormat(sampleRate, 1));
         var records = new List<ChunkRecord>(total);
         var allWords = new List<AlignedWord>();
         int sampleCursor = 0;
@@ -102,7 +116,11 @@ internal static class SegmentedSynthesis
             double startSec = sampleCursor / (double)sampleRate;
             double endSec   = (sampleCursor + audio.Length) / (double)sampleRate;
             sampleCursor += audio.Length;
-            audios[idx] = audio;
+            merged.WriteSamples(audio, 0, audio.Length);
+            // Per segment, not per run: the flush is what makes the header describe the audio that
+            // is actually there, and a reader that opens the file between two segments must not see
+            // a stale length.
+            merged.Flush();
 
             var absWords = new List<AlignedWord>(localWords.Count);
             foreach (var w in localWords)
@@ -137,8 +155,6 @@ internal static class SegmentedSynthesis
             onProgress?.Invoke(new ProgressEvent($"paragraph {idx + 1}/{total} ready", idx + 1, total));
             onChunkProduced?.Invoke(new ChunkProducedEvent(idx, total, audio, seg.Text, startSec, absWords));
         }
-
-        ChatterboxSynthesisService.WriteWavFromChunks(request.OutWavPath, audios, sampleRate);
 
         var sidecar = new AlignmentSidecar
         {
