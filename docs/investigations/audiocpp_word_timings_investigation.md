@@ -213,3 +213,70 @@ The reader's highlight on this backend was a proportional spread — first by sp
 phoneme count. Neither was ever going to be right on a word whose pronunciation is longer than its
 spelling suggests. It is now the same measurement the ONNX engine has always used, through the same
 code.
+
+## Run 7 — 2026-09-20 — review of the engine change, and the bug the measurement never saw
+
+Reviewed the upstream PR at `high` before asking anyone else to read it. Six findings; the two
+that matter are ones none of Run 6's measurements could have caught, for the same reason: every
+sentence in that comparison came from OUR supplied stream, where `KokoroFormat` has already folded
+punctuation onto the preceding word.
+
+**1. The schema change broke an existing unit test.** `typed_rejects_unknown_capability` feeds
+`"capabilities": {"tts": ["word_timestamps"]}` and asserts the validator rejects it — its comment
+reads "ASR timestamp capabilities cannot be attached to TTS", i.e. it exists to enforce exactly the
+rule this change reverses. Confirmed red by stashing the fix and rebuilding:
+
+```
+model_spec_system_test failed: typed_rejects_unknown_capability
+  should reject with: unknown capability 'word_timestamps'
+```
+
+Nothing I ran would have found it — the unit tests are behind `ENGINE_BUILD_TESTS=OFF` and
+`build-engine.sh` does not turn it on, so my whole verification loop was blind to the suite. A
+green cross-engine comparison and a red CI.
+
+**2. A punctuation-only group was reported as a word, which shifts the caller's map.** The engine's
+own G2P spaces a mark that followed a space in the source. Measured on the text path:
+
+```
+before:  "She said “hello” loudly."   words=4 groups=5  [ʃi | sˈɛd | “ | həlˈO” | lˈWdli.]
+after:                                words=4 groups=4  [ʃi | sˈɛd | həlˈO” | lˈWdli.]
+```
+
+Four written words, five groups. A caller joining words to groups in order — which is what this
+whole change is for — is one out from the quote to the end of the chunk.
+
+⚠ **AND OUR OWN PATH COULD NEVER HAVE SHOWN IT.** `KokoroFormat.Render` re-attaches detached
+punctuation to the preceding word, so a supplied stream from this app has no standalone marks in
+it. Run 6's 37 rows and the 260-group multi-chunk check were all correct and all blind. The bug
+lives on the engine's own G2P path, which this repo does not use and which every other caller does.
+That is the argument for reviewing a contribution against its own audience rather than against the
+caller that motivated it.
+
+Fixed in the engine: such a group is skipped, its frames still consumed so the next group starts
+after the pause rather than on top of it.
+
+**3. The token/duration check threw**, which is the wrong severity for a supplementary feature with
+a designed absence — see Run 4's own reasoning, applied one level too aggressively. It reports
+nothing and traces instead.
+
+**4. None of it was testable**: the function sat in an anonymous namespace, so the grouping — the
+part with all the edge cases — could only be reached through a session, a package and a backend.
+Now declared in the header, narrowed to take the vocabulary rather than the whole `KokoroAssets`,
+and covered by `tests/unittests/test_kokoro_word_timings.cpp`. The punctuation case is in there
+because it is the finding a test would have caught.
+
+Two findings were answered in documentation rather than code: a sentence-final mark's pause falls
+inside the last word's span (changing it would make the engine disagree with the reference
+implementation and with our ONNX path at every comma), and the capability/report inconsistency
+against a published package, which is upstream's decision and is now at least stated.
+
+`ctest` 37/37. Cross-engine agreement, speaking rate and the multi-chunk offset all re-verified
+unchanged after the grouping change.
+
+### For next time
+
+`build-engine.sh` builds with `ENGINE_BUILD_TESTS=OFF`, so an engine change verified only through
+this app's probes has not been tested at all in the engine's own terms. A second build tree
+(`cmake -S . -B build-tests -DENGINE_BUILD_TESTS=ON` + `ctest`) is cheap — CPU-only, ~4 seconds to
+run — and belongs in the loop before any upstream push, not after a reviewer asks.

@@ -113,14 +113,22 @@ public sealed class AudioCppSynthesisService : ITtsBackend
                 return (spoken.Audio, Align(seg.Text, supplied, spoken, seconds));
             }
 
-            // ⚠ THE SIDECAR MUST NOT CLAIM A MEASUREMENT IT DID NOT MAKE, and it is one name for
-            // the whole job, so it is decided from what is knowable before any paragraph renders:
-            // an engine that reports timings, plus a language we supply the phonemes for. Anything
-            // that then falls back per paragraph — an untraceable reading, a chunk that would not
-            // phonemize — lands on a job labelled for the better tier, which is the one direction
-            // that misleads. It is also the direction that cannot be fixed without renaming the
-            // aligner mid-job, and the fallbacks are rare enough that a per-segment name would be
-            // noise; whoever reads the sidecar gets the job's intent, not a per-row audit.
+            // ⚠ ONE NAME FOR THE WHOLE JOB, decided before any paragraph renders, so it can be
+            // wrong in both directions and neither is fixable without renaming the aligner mid-job.
+            // Both are accepted, for different reasons:
+            //
+            //   • OVERSTATING — a job labelled audiocpp_duration where some paragraph fell back
+            //     (an untraceable reading, a chunk that produced no phonemes). Rare, and the one
+            //     that misleads, so it is the reason the condition is conservative.
+            //   • UNDERSTATING — a job labelled audiocpp_proportional that was in fact measured.
+            //     This one is live right now and is not hypothetical: the engine populates the
+            //     timings whether or not the PACKAGE's embedded contract declares the capability,
+            //     and every published Kokoro package predates it. So a current engine plus an
+            //     installed package reads ReportsTimings=false, renders with measured timings
+            //     anyway, and says "proportional". It corrects itself when packages are
+            //     regenerated; until then the sidecar understates, which is the safe direction.
+            //
+            // Whoever reads the sidecar gets the job's intent, not a per-row audit.
             var aligner = ours && tts.ReportsTimings && _g2p is not null
                 ? "audiocpp_duration"
                 : "audiocpp_proportional";
