@@ -29,14 +29,21 @@ namespace Vernacula.App.Services.Tts;
 /// </para>
 ///
 /// <para>
-/// ⚠ THE WORD TIMINGS HERE ARE ESTIMATES, and that is a property of the ABI rather than a
-/// shortcut. The <c>kokoro_tts</c> family reports <c>SupportsTimestamps=false</c> and returns no
-/// words, so unlike the ONNX Kokoro — which reads the model's own predicted per-token durations —
-/// there is nothing to measure. Supplying the phonemes does improve the estimate: the phonemizer
-/// reports which source word each phoneme group came from, so a word's share of the segment is
-/// its share of the PHONEMES rather than of the letters, and "through" no longer outlasts
-/// "spa". The sidecar's aligner is named <c>audiocpp_proportional</c> either way, because both
-/// readings are still a proportional spread of one merged buffer.
+/// ⚠ THE WORD TIMINGS ARE MEASURED NOW, AND THEY USED TO BE ESTIMATES. The <c>kokoro_tts</c>
+/// family reported <c>SupportsTimestamps=false</c> and returned no words, so a paragraph's words
+/// had to be spread across its buffer by some proxy for length — first spelling, then, once we
+/// supplied the phonemes, phoneme count. Neither was a measurement. The information was always
+/// there: Kokoro predicts a per-token frame count BEFORE the decoder runs and the decoder
+/// upsamples by exactly those counts, which is the same <c>pred_dur</c> the ONNX path reads. The
+/// engine now reports it per phoneme group, and since the phonemizer already says which source
+/// word each group came from, the join is exact — the same join, in the same code
+/// (<see cref="KokoroAlignment"/>), as the ONNX engine's.
+/// </para>
+///
+/// <para>
+/// The proportional tiers stay as fallbacks, for a non-English voice, a missing phonemizer tree,
+/// or an engine built before the family declared the capability. The sidecar's aligner name says
+/// which was in force: <c>audiocpp_duration</c> against <c>audiocpp_proportional</c>.
 /// </para>
 ///
 /// <para>
@@ -101,16 +108,26 @@ public sealed class AudioCppSynthesisService : ITtsBackend
                 var supplied = ours && _g2p is not null && _chunker is not null
                     ? Supply(_g2p, _chunker, seg.Text, british, warn)
                     : null;
-                var audio = tts.Speak(seg.Text, supplied?.Chunks, voice, speed);
-                var seconds = audio.Length / (double)SampleRate;
-                return (audio, supplied?.PhonemesPerWord is { } weights
-                    ? SpreadByWeight(seg.Text, weights, seconds)
-                    : EstimateWords(seg.Text, seconds));
+                var spoken = tts.SpeakAligned(seg.Text, supplied?.Chunks, voice, speed);
+                var seconds = spoken.Audio.Length / (double)SampleRate;
+                return (spoken.Audio, Align(seg.Text, supplied, spoken, seconds));
             }
+
+            // ⚠ THE SIDECAR MUST NOT CLAIM A MEASUREMENT IT DID NOT MAKE, and it is one name for
+            // the whole job, so it is decided from what is knowable before any paragraph renders:
+            // an engine that reports timings, plus a language we supply the phonemes for. Anything
+            // that then falls back per paragraph — an untraceable reading, a chunk that would not
+            // phonemize — lands on a job labelled for the better tier, which is the one direction
+            // that misleads. It is also the direction that cannot be fixed without renaming the
+            // aligner mid-job, and the fallbacks are rare enough that a per-segment name would be
+            // noise; whoever reads the sidecar gets the job's intent, not a per-row audit.
+            var aligner = ours && tts.ReportsTimings && _g2p is not null
+                ? "audiocpp_duration"
+                : "audiocpp_proportional";
 
             // No batch synthesizer: the ABI takes one request at a time, so there is nothing to
             // batch and offering a delegate that loops would only disable the reuse decorator.
-            return SegmentedSynthesis.Run(request, SampleRate, "audiocpp_proportional",
+            return SegmentedSynthesis.Run(request, SampleRate, aligner,
                 SynthesizeSegment, onChunkProduced, onProgress, cancellationToken);
         }, cancellationToken).ConfigureAwait(false);
     }
@@ -119,7 +136,12 @@ public sealed class AudioCppSynthesisService : ITtsBackend
     /// One segment's phoneme stream: the chunks to send, and — when the phonemizer accounted for
     /// every group — how many phoneme symbols each source word became.
     /// </summary>
-    internal sealed record SuppliedPhonemes(IReadOnlyList<string> Chunks, double[]? PhonemesPerWord);
+    /// <param name="GroupSourceWords">For each phoneme group the engine will render, in order, the
+    /// index of the segment's source word it came from. This is what turns the engine's measured
+    /// group timings into word timings; <see cref="PhonemesPerWord"/> is only the fallback for an
+    /// engine that reports no timings.</param>
+    internal sealed record SuppliedPhonemes(
+        IReadOnlyList<string> Chunks, IReadOnlyList<int>? GroupSourceWords, double[]? PhonemesPerWord);
 
     /// <summary>
     /// Phonemize <paramref name="text"/> into chunks the engine will accept, or null to let the
@@ -140,6 +162,7 @@ public sealed class AudioCppSynthesisService : ITtsBackend
 
         var chunks = new List<string>();
         var weights = new double[sourceWords.Length];
+        var map = new List<int>();
         var weightsUsable = true;
         var wordOffset = 0;
         var dropped = new List<char>();
@@ -175,6 +198,7 @@ public sealed class AudioCppSynthesisService : ITtsBackend
 
             if (groupSourceWords is null || groupSourceWords.Count != groups.Length)
             {
+                map.Clear();
                 // The phonemizer could not account for every group, so no group→word map is
                 // trustworthy; the stream is still good, only the timings lose their weighting.
                 weightsUsable = false;
@@ -184,8 +208,9 @@ public sealed class AudioCppSynthesisService : ITtsBackend
                 for (var g = 0; g < groups.Length; g++)
                 {
                     var word = wordOffset + groupSourceWords[g];
-                    if (word < 0 || word >= weights.Length) { weightsUsable = false; break; }
+                    if (word < 0 || word >= weights.Length) { weightsUsable = false; map.Clear(); break; }
                     weights[word] += groups[g].Length;
+                    map.Add(word);
                 }
             }
             wordOffset += chunkWords;
@@ -202,7 +227,38 @@ public sealed class AudioCppSynthesisService : ITtsBackend
         // is a silently wrong highlight, so it is checked rather than assumed.
         if (wordOffset != sourceWords.Length) weightsUsable = false;
 
-        return new SuppliedPhonemes(chunks, weightsUsable ? weights : null);
+        return new SuppliedPhonemes(chunks, weightsUsable ? map : null, weightsUsable ? weights : null);
+    }
+
+    /// <summary>
+    /// Word timings for one segment, taking the best source available.
+    ///
+    /// <para>
+    /// ⚠ THREE TIERS, AND ONLY THE FIRST IS A MEASUREMENT. When the engine reports per-group
+    /// timings (it predicts the durations the decoder then upsamples by) and the phonemizer said
+    /// which word each group came from, the join is exact and the reader's highlight follows the
+    /// voice the way it does on the ONNX engine. Failing that, the phoneme COUNTS still weight a
+    /// proportional spread. Failing that, word length does. Each tier is a worse answer than the
+    /// one above and a better one than nothing, and the sidecar records which was used.
+    /// </para>
+    /// </summary>
+    internal static IReadOnlyList<AlignedWord> Align(
+        string text, SuppliedPhonemes? supplied, AudioCppSpeech spoken, double seconds)
+    {
+        // The counts must agree: the engine cuts groups at ITS view of the stream, the map was
+        // built from ours, and a silent disagreement would put every word after it on the wrong
+        // audio. Falling back is visibly worse; being one word out is not visible at all.
+        if (supplied?.GroupSourceWords is { } map && spoken.Groups.Count == map.Count && map.Count > 0)
+        {
+            var spans = new KokoroAlignment.GroupSpan[spoken.Groups.Count];
+            for (var i = 0; i < spans.Length; i++)
+                spans[i] = new KokoroAlignment.GroupSpan(spoken.Groups[i].StartSeconds, spoken.Groups[i].EndSeconds);
+            return [.. KokoroAlignment.WordsFromGroups(text, map, spans, seconds)
+                          .Select(w => new AlignedWord { Text = w.Text, StartSeconds = w.StartSec, EndSeconds = w.EndSec })];
+        }
+        return supplied?.PhonemesPerWord is { } weights
+            ? SpreadByWeight(text, weights, seconds)
+            : EstimateWords(text, seconds);
     }
 
     /// <summary>

@@ -91,6 +91,16 @@ public static class AudioCppKokoroVoices
 }
 
 /// <summary>
+/// One phoneme group the engine rendered: the group's phonemes, and where in the returned buffer
+/// it landed. A group is a run between Kokoro's own space tokens — one spoken word — and the
+/// timings are the model's predicted per-token durations, not an estimate over the buffer.
+/// </summary>
+public sealed record AudioCppPhonemeGroup(string Phonemes, double StartSeconds, double EndSeconds);
+
+/// <summary>Audio plus the per-group timings the engine reported, empty when it reported none.</summary>
+public sealed record AudioCppSpeech(float[] Audio, IReadOnlyList<AudioCppPhonemeGroup> Groups);
+
+/// <summary>
 /// Synthesises through audio.cpp's C ABI, the TTS counterpart to <see cref="AudioCppAsr"/>.
 /// </summary>
 /// <remarks>
@@ -133,6 +143,15 @@ public sealed class AudioCppTts : IDisposable
     /// <summary>The backend the session actually opened on.</summary>
     public string Backend { get; } = "";
 
+    /// <summary>
+    /// Whether this engine reports per-group timings. False on an engine built before the
+    /// kokoro_tts family declared <c>word_timestamps</c>, which is a real possibility rather than
+    /// a formality: AUDIOCPP_NATIVE_DIR is read at BUILD time and points this at whatever engine
+    /// someone has. A caller uses it to say up front which kind of alignment a job will get,
+    /// rather than discovering it per paragraph.
+    /// </summary>
+    public bool ReportsTimings { get; }
+
     /// <param name="modelPath">The package's .gguf, as <see cref="ResolveKokoro"/> finds it.</param>
     /// <param name="backends">
     /// Backends to try, in order, taking the first that opens — the same "auto is a list"
@@ -166,6 +185,7 @@ public sealed class AudioCppTts : IDisposable
             _session = session
                 ?? throw (Exception?)last
                 ?? new InvalidOperationException("no backend opened and none reported why");
+            ReportsTimings = _model.SupportsTimestamps;
         }
         catch
         {
@@ -215,6 +235,33 @@ public sealed class AudioCppTts : IDisposable
     /// </para>
     /// </remarks>
     public float[] Speak(string text, IReadOnlyList<string>? phonemes, string voice, float speed)
+        => SpeakAligned(text, phonemes, voice, speed).Audio;
+
+    /// <summary>
+    /// <see cref="Speak(string, IReadOnlyList{string}, string, float)"/>, also returning where each
+    /// phoneme group landed.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠ MEASURED, NOT ESTIMATED, AND THAT IS NEW. This family used to report
+    /// <c>SupportsTimestamps=false</c> and hand back no words, so a caller had to spread a
+    /// paragraph's words across its buffer by some proxy for length. Kokoro's architecture predicts
+    /// a per-token frame count BEFORE the decoder runs and the decoder upsamples by exactly those
+    /// counts, so the information was always there — it simply was not reported. It is now
+    /// (upstream audio.cpp, `word_timestamps` on the kokoro_tts family).
+    /// </para>
+    /// <para>
+    /// ⚠ THE LABEL IS PHONEMIC, because nothing in the engine maps tokens back to written words:
+    /// the built-in G2P keeps no span, and on the supplied-phoneme path there is no text to map
+    /// to. A caller whose own G2P produced the stream knows which of its words became which group
+    /// and can join the two; that is what <c>KokoroAlignment</c> does.
+    /// </para>
+    /// <para>
+    /// An older engine reports nothing here rather than failing, so <see cref="AudioCppSpeech.Groups"/>
+    /// comes back empty and the caller falls back to whatever it did before.
+    /// </para>
+    /// </remarks>
+    public AudioCppSpeech SpeakAligned(string text, IReadOnlyList<string>? phonemes, string voice, float speed)
     {
         ArgumentException.ThrowIfNullOrEmpty(voice);
 
@@ -224,9 +271,10 @@ public sealed class AudioCppTts : IDisposable
         lock (_gate)
         {
             AudioBuffer audio;
+            IReadOnlyList<AudioCppPhonemeGroup> groups;
             try
             {
-                audio = Render(text, phonemes, voice, speed);
+                (audio, groups) = Render(text, phonemes, voice, speed);
             }
             catch (AudioCppException failure) when (failure.Message.Contains(UnknownSymbol, StringComparison.Ordinal))
             {
@@ -247,14 +295,15 @@ public sealed class AudioCppTts : IDisposable
                 throw new InvalidOperationException(
                     $"audio.cpp {Family} returned {audio.Channels} channels; mono is assumed.");
 
-            return audio.Samples;
+            return new AudioCppSpeech(audio.Samples, groups);
         }
     }
 
     private AudioBuffer Render(string text, string voice, float speed)
-        => Render(text, null, voice, speed);
+        => Render(text, null, voice, speed).Audio;
 
-    private AudioBuffer Render(string text, IReadOnlyList<string>? phonemes, string voice, float speed)
+    private (AudioBuffer Audio, IReadOnlyList<AudioCppPhonemeGroup> Groups) Render(
+        string text, IReadOnlyList<string>? phonemes, string voice, float speed)
     {
         using var request = new AudioCppRequest();
         request.SetText(text, AudioCppKokoroVoices.EngineLanguage(voice));
@@ -266,9 +315,20 @@ public sealed class AudioCppTts : IDisposable
         if (phonemes is { Count: > 0 }) request.SetOptionArray(SuppliedPhonemes, phonemes);
 
         using var result = _session.Run(request);
-        return result.Audio
+        var audio = result.Audio
             ?? throw new InvalidOperationException(
                 $"audio.cpp {Family} returned no audio for {text.Length} characters.");
+        // Samples, not seconds, across the ABI — and the rate is the buffer's own, not the
+        // constant, because a buffer at the wrong rate is checked for by the caller and a timing
+        // divided by the wrong rate would silently agree with it.
+        var rate = audio.SampleRate > 0 ? audio.SampleRate : SampleRate;
+        var groups = new AudioCppPhonemeGroup[result.Words.Count];
+        for (var i = 0; i < groups.Length; i++)
+        {
+            var w = result.Words[i];
+            groups[i] = new AudioCppPhonemeGroup(w.Word, w.StartSample / (double)rate, w.EndSample / (double)rate);
+        }
+        return (audio, groups);
     }
 
     /// <summary>The engine's own words for "this phoneme has no token id".</summary>

@@ -157,7 +157,7 @@ public sealed class KokoroTts : IDisposable
 
         // Phoneme groups: maximal token spans between space/pad tokens. Group g aligns to
         // groupSourceWords[g] (1:1 — Render/punctuation re-injection preserve group order/count).
-        var runs = new List<(double Start, double End)>();
+        var runs = new List<KokoroAlignment.GroupSpan>();
         var i = 0;
         while (i < o.InputIds.Length)
         {
@@ -166,44 +166,14 @@ public sealed class KokoroTts : IDisposable
             var first = i;
             while (i < o.InputIds.Length && o.InputIds[i] != KokoroVocab.Space && o.InputIds[i] != KokoroVocab.Pad)
                 i++;
-            runs.Add((cum[first], cum[i]));
+            runs.Add(new KokoroAlignment.GroupSpan(cum[first], cum[i]));
         }
 
-        var sourceWords = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
-        var words = new List<KokoroWord>(sourceWords.Length);
-
-        if (groupSourceWords is not null && runs.Count == groupSourceWords.Count && sourceWords.Length > 0)
-        {
-            // Collect each source word's group span. A word's groups are contiguous and in
-            // time order, so first start / last end gives its [start, end].
-            var hasRun = new bool[sourceWords.Length];
-            var starts = new double[sourceWords.Length];
-            var ends = new double[sourceWords.Length];
-            for (var g = 0; g < runs.Count; g++)
-            {
-                var src = groupSourceWords[g];
-                if (src < 0 || src >= sourceWords.Length) continue;
-                if (!hasRun[src]) { starts[src] = runs[g].Start; hasRun[src] = true; }
-                ends[src] = runs[g].End;
-            }
-            // Emit one word per source word — including unpronounceable words that produced
-            // no groups (zero-length marker at the running cursor), so the display shows every
-            // word and the index stays 1:1 with the source-text whitespace split.
-            var cursor = 0.0;
-            for (var w = 0; w < sourceWords.Length; w++)
-            {
-                if (hasRun[w]) { words.Add(new KokoroWord(sourceWords[w], starts[w], ends[w])); cursor = ends[w]; }
-                else words.Add(new KokoroWord(sourceWords[w], cursor, cursor));
-            }
-        }
-        else
-        {
-            // Defensive fallback: even split (should not happen with the source map intact).
-            var total = o.Audio.Length / (double)Kokoro.SampleRate;
-            for (var w = 0; w < sourceWords.Length; w++)
-                words.Add(new KokoroWord(sourceWords[w],
-                    total * w / sourceWords.Length, total * (w + 1) / sourceWords.Length));
-        }
+        // The join is shared with the audio.cpp backend, which gets its groups from the engine
+        // instead of cutting pred_dur itself — see KokoroAlignment. Only the sentence above this
+        // one differs between the two engines.
+        var words = KokoroAlignment.WordsFromGroups(
+            text, groupSourceWords, runs, o.Audio.Length / (double)Kokoro.SampleRate);
         return new KokoroSpeech(o.Audio, words);
     }
 
