@@ -187,6 +187,34 @@ public sealed class AudioCppTts : IDisposable
     /// for the caller to cut around.
     /// </remarks>
     public float[] Speak(string text, string voice, float speed)
+        => Speak(text, null, voice, speed);
+
+    /// <summary>
+    /// One pass of synthesis from a phoneme stream the CALLER produced, bypassing the engine's
+    /// built-in eSpeak-ng G2P (upstream audio.cpp#577). <paramref name="phonemes"/> is one
+    /// Kokoro-alphabet string per chunk, rendered in order and merged into one buffer; passing
+    /// null or an empty list falls back to the engine's own pronunciation.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠ THE LIST IS THE INTERFACE, not a convenience. On the text path the family chunks on its
+    /// own <c>text_chunk_size</c>; on this one it cannot, because where a phoneme stream may be
+    /// cut is known only to the G2P that produced it. So the caller cuts, one entry per chunk,
+    /// each at most 510 symbols and none of them empty — the engine refuses an empty entry
+    /// rather than quietly speaking the text instead.
+    /// </para>
+    /// <para>
+    /// ⚠ AND THE ENGINE VALIDATES WHAT IT IS GIVEN, where it does not validate its own G2P's
+    /// output: a symbol outside Kokoro's vocabulary fails the run naming the entry. That is the
+    /// right way round — a caller can correct a stream it generated — but it means the caller
+    /// must filter before sending, not after being refused.
+    /// </para>
+    /// <para>
+    /// <paramref name="text"/> is still required and its language must still match the voice:
+    /// it is what the engine reports and caches on, not what it speaks.
+    /// </para>
+    /// </remarks>
+    public float[] Speak(string text, IReadOnlyList<string>? phonemes, string voice, float speed)
     {
         ArgumentException.ThrowIfNullOrEmpty(voice);
 
@@ -198,11 +226,15 @@ public sealed class AudioCppTts : IDisposable
             AudioBuffer audio;
             try
             {
-                audio = Render(text, voice, speed);
+                audio = Render(text, phonemes, voice, speed);
             }
             catch (AudioCppException failure) when (failure.Message.Contains(UnknownSymbol, StringComparison.Ordinal))
             {
-                throw new InvalidOperationException(DescribeUnsayable(text, voice, speed, failure), failure);
+                throw new InvalidOperationException(
+                    phonemes is { Count: > 0 }
+                        ? DescribeRefusedStream(phonemes, failure)
+                        : DescribeUnsayable(text, voice, speed, failure),
+                    failure);
             }
 
             // A rate other than 24 kHz would play back at the wrong pitch and the only symptom
@@ -220,11 +252,18 @@ public sealed class AudioCppTts : IDisposable
     }
 
     private AudioBuffer Render(string text, string voice, float speed)
+        => Render(text, null, voice, speed);
+
+    private AudioBuffer Render(string text, IReadOnlyList<string>? phonemes, string voice, float speed)
     {
         using var request = new AudioCppRequest();
         request.SetText(text, AudioCppKokoroVoices.EngineLanguage(voice));
         request.SetVoiceId(voice);
         request.SetSpeakingRate(speed);
+        // Never an empty list: "set but holding nothing" is a caller error to the engine, and
+        // rightly so, but here it just means this caller had no phonemes to offer for this
+        // paragraph and wants the built-in G2P.
+        if (phonemes is { Count: > 0 }) request.SetOptionArray(SuppliedPhonemes, phonemes);
 
         using var result = _session.Run(request);
         return result.Audio
@@ -234,6 +273,48 @@ public sealed class AudioCppTts : IDisposable
 
     /// <summary>The engine's own words for "this phoneme has no token id".</summary>
     private const string UnknownSymbol = "Kokoro vocab is missing phoneme symbol";
+
+    /// <summary>The request option carrying a caller's phoneme stream (audio.cpp#577).</summary>
+    private const string SuppliedPhonemes = "phonemes";
+
+    /// <summary>
+    /// A refusal of OUR OWN stream is a different bug from a refusal of the engine's, and must
+    /// not borrow the other message: nothing here was pronounced by eSpeak-ng, so there is no
+    /// word to name and no newer engine to recommend.
+    /// </summary>
+    /// <remarks>
+    /// The caller filters its stream against Kokoro's vocabulary before sending, so reaching
+    /// this means the two vocabularies disagree — the package's embedded table has fewer symbols
+    /// than the one the caller filtered against. The engine names the offending entry and symbol
+    /// itself; the useful addition is the entry's CONTENT, which is what identifies the rule
+    /// that emitted it.
+    /// </remarks>
+    private static string DescribeRefusedStream(IReadOnlyList<string> phonemes, AudioCppException failure)
+    {
+        // "Kokoro supplied phoneme entry 7: Kokoro vocab is missing phoneme symbol: R"
+        var entry = Entry(failure.Message) is { } index && index < phonemes.Count
+            ? $"Entry {index} of {phonemes.Count} was: {phonemes[index]}"
+            : $"The entry was not named in the message; {phonemes.Count} were sent.";
+
+        return "audio.cpp's Kokoro refused a phoneme in the stream this app supplied. " + entry
+             + "\n\nThe stream is filtered against Kokoro's vocabulary before it is sent, so a "
+             + "refusal means this package's embedded vocabulary is missing a symbol that "
+             + "filtering kept — the two tables disagree. Use the ONNX Kokoro engine for this "
+             + "document, and report the symbol below.\n\n"
+             + $"Engine's own message: {failure.Message}";
+    }
+
+    /// <summary>The entry index out of "…entry N: …", or null when the message has no such shape.</summary>
+    private static int? Entry(string message)
+    {
+        const string marker = "entry ";
+        var at = message.IndexOf(marker, StringComparison.Ordinal);
+        if (at < 0) return null;
+        var digits = at + marker.Length;
+        var end = digits;
+        while (end < message.Length && char.IsAsciiDigit(message[end])) end++;
+        return end > digits && int.TryParse(message[digits..end], out var index) ? index : null;
+    }
 
     /// <summary>
     /// Turns the engine's report of an unusable phoneme into the question a reader actually has:

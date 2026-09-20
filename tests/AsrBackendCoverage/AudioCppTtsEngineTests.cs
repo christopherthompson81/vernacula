@@ -4,6 +4,8 @@ using System.Linq;
 using Vernacula.App.Models;
 using Vernacula.App.Services.Tts;
 using Vernacula.AudioCpp;
+using Vernacula.Tts.Base;
+using Vernacula.Tts.Base.Alignment;
 using Xunit;
 
 namespace Vernacula.Tests.AsrBackendCoverage;
@@ -163,6 +165,123 @@ public class AudioCppTtsEngineTests
     public void AnEmptySegmentProducesNoWordsRatherThanThrowing()
     {
         Assert.Empty(AudioCppSynthesisService.EstimateWords("   ", 1.0));
+    }
+
+    // ── The supplied phoneme stream ──────────────────────────────────────────
+
+    /// <summary>
+    /// The phonemizer's data tree, or null — the same skip every other phonemizer-backed test
+    /// uses. A checkout without the submodule initialised must still run the suite.
+    /// </summary>
+    private static (KokoroPhonemizer G2p, KokoroChunker Chunker) Phonemizer()
+    {
+        if (PhonemizerData.Resolve(null) is null)
+            Assert.Skip("vernacula-phonemizer data/ not found (submodule not checked out?).");
+        var g2p = new KokoroPhonemizer();
+        return (g2p, new KokoroChunker(g2p));
+    }
+
+    [Fact]
+    public void EveryEntrySentToTheEngineIsNonEmptyAndInKokorosVocabulary()
+    {
+        var (g2p, chunker) = Phonemizer();
+
+        // The two rules audio.cpp validates a supplied stream against, and it refuses rather
+        // than degrades: an empty entry is a caller error, and so is a symbol with no token id.
+        // Both are checked here because the engine's refusal lands after a document is queued.
+        const string text = "The button was forgotten, and it cost $3.14 on 24 March.";
+        var supplied = AudioCppSynthesisService.Supply(g2p, chunker, text, british: false, _ => { });
+
+        Assert.NotNull(supplied);
+        Assert.NotEmpty(supplied!.Chunks);
+        foreach (var entry in supplied.Chunks)
+        {
+            Assert.False(string.IsNullOrWhiteSpace(entry));
+            Assert.InRange(entry.Length, 1, 510);
+            foreach (var ch in entry)
+                Assert.True(KokoroVocab.Contains(ch), $"U+{(int)ch:X4} has no Kokoro token id");
+        }
+    }
+
+    [Fact]
+    public void ALongParagraphIsCutIntoSeveralEntriesRatherThanOneOverLongOne()
+    {
+        var (g2p, chunker) = Phonemizer();
+
+        // The engine chunks TEXT on its own; it cannot chunk a caller's phonemes, because only
+        // the G2P that produced a stream knows where it may be cut. So a paragraph past the
+        // window has to arrive as a list, and that is this repo's chunker doing the cutting.
+        var text = string.Join(' ', Enumerable.Repeat(
+            "The harbour was quiet this morning, and the boats had not yet returned.", 20));
+        var supplied = AudioCppSynthesisService.Supply(g2p, chunker, text, british: false, _ => { });
+
+        Assert.NotNull(supplied);
+        Assert.True(supplied!.Chunks.Count > 1, "a 20-sentence paragraph came back as one entry");
+        Assert.All(supplied.Chunks, entry => Assert.InRange(entry.Length, 1, 510));
+    }
+
+    [Fact]
+    public void WordsAreWeightedByTheirPhonemesNotTheirLetters()
+    {
+        var (g2p, chunker) = Phonemizer();
+
+        // "through" is seven letters and three phonemes; "spa" is three letters and three
+        // phonemes. Letter-weighted, the first outlasts the second by more than twice; from the
+        // phonemes they are close. This is the whole gain of supplying the stream for alignment.
+        const string text = "through spa";
+        var supplied = AudioCppSynthesisService.Supply(g2p, chunker, text, british: false, _ => { });
+        Assert.NotNull(supplied?.PhonemesPerWord);
+
+        var words = AudioCppSynthesisService.SpreadByWeight(text, supplied!.PhonemesPerWord!, 2.0);
+        var letters = AudioCppSynthesisService.EstimateWords(text, 2.0);
+
+        double Span(IReadOnlyList<AlignedWord> w, int i) => w[i].EndSeconds - w[i].StartSeconds;
+        Assert.True(Span(words, 0) / Span(words, 1) < Span(letters, 0) / Span(letters, 1),
+                    "phoneme weighting did not narrow the gap that spelling opened");
+    }
+
+    [Fact]
+    public void AWeightedSpreadCoversTheSegmentInOrderAndInFull()
+    {
+        const string text = "one two three four";
+        var words = AudioCppSynthesisService.SpreadByWeight(text, [1.0, 2.0, 3.0, 4.0], 10.0);
+
+        Assert.Equal(4, words.Count);
+        Assert.Equal(0.0, words[0].StartSeconds, 6);
+        Assert.Equal(10.0, words[^1].EndSeconds, 6);
+        Assert.Equal(1.0, words[0].EndSeconds, 6);          // 1/10 of the ten seconds
+        for (var i = 1; i < words.Count; i++)
+            Assert.Equal(words[i - 1].EndSeconds, words[i].StartSeconds, 6);
+    }
+
+    [Fact]
+    public void AWordThatBecameNoPhonemesGetsAZeroLengthMarkerRatherThanVanishing()
+    {
+        // The reader indexes words by the source-text whitespace split, so an unpronounceable
+        // one still has to appear — the ONNX path does the same with measured durations.
+        var words = AudioCppSynthesisService.SpreadByWeight("hello 🙂 world", [5.0, 0.0, 5.0], 2.0);
+
+        Assert.Equal(3, words.Count);
+        Assert.Equal("🙂", words[1].Text);
+        Assert.Equal(words[1].StartSeconds, words[1].EndSeconds, 6);
+        Assert.Equal(1.0, words[1].StartSeconds, 6);
+        Assert.Equal(2.0, words[^1].EndSeconds, 6);
+    }
+
+    [Fact]
+    public void AWeightMapOfTheWrongLengthIsRefusedRatherThanMisaligned()
+    {
+        // A short map would silently shift every word after the gap, which shows up as a
+        // highlight on the wrong word and nothing else. Better to produce none.
+        Assert.Empty(AudioCppSynthesisService.SpreadByWeight("one two three", [1.0, 1.0], 3.0));
+    }
+
+    [Fact]
+    public void AllZeroWeightsFallBackToTheLengthEstimateRatherThanDividingByZero()
+    {
+        var words = AudioCppSynthesisService.SpreadByWeight("one two", [0.0, 0.0], 2.0);
+        Assert.Equal(2, words.Count);
+        Assert.Equal(2.0, words[^1].EndSeconds, 6);
     }
 
     private static TtsJobSettings Job(string voice, float speed = 1.0f) =>

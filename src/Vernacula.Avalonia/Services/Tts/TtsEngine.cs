@@ -317,10 +317,17 @@ internal sealed class ChatterboxEngine : TtsEngine
 // ── Kokoro through audio.cpp ─────────────────────────────────────────────────
 
 /// <summary>
-/// The same model as <see cref="KokoroEngine"/> and a completely different stack: audio.cpp's
-/// C ABI instead of ONNX Runtime, its GGUF package instead of our export, its baked-in preset
-/// voices instead of voices/*.bin, and its own eSpeak-ng phonemization instead of
-/// vernacula-phonemizer.
+/// The same model as <see cref="KokoroEngine"/> and a mostly different stack: audio.cpp's C ABI
+/// instead of ONNX Runtime, its GGUF package instead of our export, and its baked-in preset
+/// voices instead of voices/*.bin.
+///
+/// <para>
+/// The one part the two now SHARE is the pronunciation. An English voice here is spoken from
+/// vernacula-phonemizer's reading, handed to the engine through upstream audio.cpp#577's
+/// <c>phonemes</c> request option; only the five non-English voices use the engine's own
+/// eSpeak-ng. So a word the user corrects in the dictionary changes on both engines, and
+/// choosing a backend is a choice about the runtime rather than about the accent.
+/// </para>
 ///
 /// <para>
 /// ⚠ IT IS NOT A REPLACEMENT FOR THE ONNX KOKORO AND IS NOT MEANT TO BE. The ONNX one reads the
@@ -336,18 +343,20 @@ internal sealed class AudioCppKokoroEngine : TtsEngine
     public override string DisplayName => "Kokoro-82M (audio.cpp)";
     public override string Description =>
         "The same Kokoro, run on audio.cpp rather than ONNX Runtime. 41 preset voices across "
-        + "English, Spanish, French, Hindi, Italian and Brazilian Portuguese, with phonemization "
-        + "inside the engine. Word timing is estimated, not measured.";
+        + "English, Spanish, French, Hindi, Italian and Brazilian Portuguese. English is spoken "
+        + "from the same pronunciation dictionary as the ONNX engine; the other languages are "
+        + "phonemized inside the engine. Word timing is estimated, not measured.";
     public override int SampleRate => Vernacula.AudioCpp.AudioCppTts.SampleRate;
-    // No phonemizer data: this engine phonemizes internally. The reader still annotates in IPA
-    // when that data happens to be present, which is why it is not listed as REQUIRED here —
-    // an annotation is a nicety and a missing one must not block a render.
+    // Still not REQUIRED, although English now speaks from it. Without the data tree the engine
+    // falls back to its own eSpeak-ng and the document renders in a slightly different accent,
+    // which is not a reason to refuse the job — and the five other languages never needed it.
     public override TtsModelSet[] RequiredSets => [TtsModelSets.AudioCppKokoro];
 
     /// <summary>
-    /// The export's phoneme column is our reading of the text, not what the engine consumed —
-    /// audio.cpp phonemizes with eSpeak-ng inside the session and hands nothing back. So the
-    /// scheme says "ipa" and the distinction is on the page, exactly as it is for Chatterbox.
+    /// The export's phoneme column is our reading of the text. For an English voice that IS what
+    /// the engine consumed — the stream is supplied rather than derived — though the column is
+    /// canonical IPA where the engine was handed Kokoro's alphabet. For the other five it remains
+    /// informative only: eSpeak-ng runs inside the session and hands nothing back.
     /// </summary>
     public override string PhonemeScheme => "ipa";
 
@@ -373,7 +382,8 @@ internal sealed class AudioCppKokoroEngine : TtsEngine
         // others. Half the cores leaves the machine usable while a document renders.
         int threads = Math.Max(1, Environment.ProcessorCount / 2);
         return new AudioCppSynthesisService(
-            path, Vernacula.App.Services.AudioCppBackends.For(s.Current.ResolvedExecutionProvider), threads);
+            path, Vernacula.App.Services.AudioCppBackends.For(s.Current.ResolvedExecutionProvider), threads,
+            s.GetPhonemizerDataDir());
     }
 
     private static string? ModelPath(SettingsService s) =>
@@ -396,9 +406,9 @@ internal sealed class AudioCppKokoroEngine : TtsEngine
     }
 
     /// <summary>
-    /// Our reading of the text, for the export's CSV. The engine's own phonemes are not
-    /// obtainable — eSpeak-ng runs inside the session and the result carries no trace — so this
-    /// is informative rather than a record of what was spoken, in the language the voice implies.
+    /// Our reading of the text, for the export's CSV, in the language the voice implies. For an
+    /// English voice this is the reading the engine was given; for the others it is informative
+    /// only, since eSpeak-ng runs inside the session and the result carries no trace.
     /// </summary>
     public override Func<string, string> CreatePhonemizer(SettingsService s, TtsJobSettings job)
     {

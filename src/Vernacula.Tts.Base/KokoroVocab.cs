@@ -146,6 +146,33 @@ public static class KokoroVocab
     public static bool Contains(char ch) => Map.ContainsKey(ch);
 
     /// <summary>
+    /// Drop every codepoint Kokoro has no id for, reporting which ones went — the same
+    /// filtering <see cref="Encode"/> does on the way to token ids, but on the STRING, for the
+    /// callers that hand Kokoro a phoneme stream rather than tokens.
+    ///
+    /// <para>
+    /// ⚠ NEEDED BECAUSE THE TWO ENGINES DISAGREE ABOUT AN UNKNOWN SYMBOL. The ONNX path never
+    /// sees one: <see cref="Encode"/> skips it, as misaki/KModel does
+    /// (<c>filter(None, map(vocab.get, phonemes))</c>). audio.cpp REFUSES a supplied stream
+    /// carrying one, deliberately — a caller with its own G2P can fix what it sent, and a
+    /// dropped off-glide turns "like" into "lack" with no error to show for it. Both positions
+    /// are right for their caller. Ours is a caller that can fix it, so it filters here and
+    /// tells whoever is listening, rather than letting one stray diacritic anywhere in a
+    /// document fail the whole paragraph.
+    /// </para>
+    /// </summary>
+    public static string KeepKnown(string phonemes, out IReadOnlyList<char> dropped)
+    {
+        List<char>? gone = null;
+        for (var i = 0; i < phonemes.Length; i++)
+            if (!Map.ContainsKey(phonemes[i])) (gone ??= []).Add(phonemes[i]);
+
+        if (gone is null) { dropped = []; return phonemes; }
+        dropped = gone;
+        return string.Concat(phonemes.Where(Map.ContainsKey));
+    }
+
+    /// <summary>
     /// Tokenize a Kokoro-alphabet phoneme string into the padded id sequence
     /// the ONNX graph expects: <c>[Pad, …ids…, Pad]</c>. Unknown codepoints are
     /// skipped (matching KModel). Surrogate pairs are not expected in the Kokoro
