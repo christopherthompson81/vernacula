@@ -96,6 +96,8 @@ public sealed class AudioCppSynthesisService : ITtsBackend
         return await Task.Run(() =>
         {
             var tts = _tts!;
+            // Set by the first segment that actually joins the engine's timings to its words.
+            var measuredAny = false;
 
             (float[] Audio, IReadOnlyList<AlignedWord> Words) SynthesizeSegment(
                 Vernacula.Tts.Base.Markdown.TextSegment seg, Action<string> warn)
@@ -110,33 +112,29 @@ public sealed class AudioCppSynthesisService : ITtsBackend
                     : null;
                 var spoken = tts.SpeakAligned(seg.Text, supplied?.Chunks, voice, speed);
                 var seconds = spoken.Audio.Length / (double)SampleRate;
-                return (spoken.Audio, Align(seg.Text, supplied, spoken, seconds));
+                var aligned = Align(seg.Text, supplied, spoken, seconds, out var measured);
+                measuredAny |= measured;
+                return (spoken.Audio, aligned);
             }
-
-            // ⚠ ONE NAME FOR THE WHOLE JOB, decided before any paragraph renders, so it can be
-            // wrong in both directions and neither is fixable without renaming the aligner mid-job.
-            // Both are accepted, for different reasons:
-            //
-            //   • OVERSTATING — a job labelled audiocpp_duration where some paragraph fell back
-            //     (an untraceable reading, a chunk that produced no phonemes). Rare, and the one
-            //     that misleads, so it is the reason the condition is conservative.
-            //   • UNDERSTATING — a job labelled audiocpp_proportional that was in fact measured.
-            //     This one is live right now and is not hypothetical: the engine populates the
-            //     timings whether or not the PACKAGE's embedded contract declares the capability,
-            //     and every published Kokoro package predates it. So a current engine plus an
-            //     installed package reads ReportsTimings=false, renders with measured timings
-            //     anyway, and says "proportional". It corrects itself when packages are
-            //     regenerated; until then the sidecar understates, which is the safe direction.
-            //
-            // Whoever reads the sidecar gets the job's intent, not a per-row audit.
-            var aligner = ours && tts.ReportsTimings && _g2p is not null
-                ? "audiocpp_duration"
-                : "audiocpp_proportional";
 
             // No batch synthesizer: the ABI takes one request at a time, so there is nothing to
             // batch and offering a delegate that loops would only disable the reuse decorator.
-            return SegmentedSynthesis.Run(request, SampleRate, aligner,
+            var result = SegmentedSynthesis.Run(request, SampleRate, "audiocpp_proportional",
                 SynthesizeSegment, onChunkProduced, onProgress, cancellationToken);
+
+            // ⚠ NAMED FROM WHAT HAPPENED, NOT FROM WHAT WAS INTENDED, and the earlier version
+            // could not be. It decided the name before any paragraph rendered, from a capability
+            // flag — and audio.cpp#626's review removed that flag for this family, so it would now
+            // read "proportional" on every job the engine measured perfectly well. Nothing can
+            // answer the question before a render: the option is opt-in, the family declares no
+            // capability for it, and a published package's contract predates the option, so the
+            // only way to know is to ask and see what came back.
+            //
+            // Which is all this needs. The sidecar is written at the end, so the name can simply
+            // describe the run: measured if any paragraph used the engine's own timings, estimated
+            // otherwise. That also retires the two ways the old name could lie.
+            if (measuredAny) result.Alignment.Aligner = "audiocpp_duration";
+            return result;
         }, cancellationToken).ConfigureAwait(false);
     }
 
@@ -251,8 +249,10 @@ public sealed class AudioCppSynthesisService : ITtsBackend
     /// </para>
     /// </summary>
     internal static IReadOnlyList<AlignedWord> Align(
-        string text, SuppliedPhonemes? supplied, AudioCppSpeech spoken, double seconds)
+        string text, SuppliedPhonemes? supplied, AudioCppSpeech spoken, double seconds,
+        out bool measured)
     {
+        measured = false;
         // The counts must agree: the engine cuts groups at ITS view of the stream, the map was
         // built from ours, and a silent disagreement would put every word after it on the wrong
         // audio. Falling back is visibly worse; being one word out is not visible at all.
@@ -261,6 +261,7 @@ public sealed class AudioCppSynthesisService : ITtsBackend
             var spans = new KokoroAlignment.GroupSpan[spoken.Groups.Count];
             for (var i = 0; i < spans.Length; i++)
                 spans[i] = new KokoroAlignment.GroupSpan(spoken.Groups[i].StartSeconds, spoken.Groups[i].EndSeconds);
+            measured = true;
             return [.. KokoroAlignment.WordsFromGroups(text, map, spans, seconds)
                           .Select(w => new AlignedWord { Text = w.Text, StartSeconds = w.StartSec, EndSeconds = w.EndSec })];
         }

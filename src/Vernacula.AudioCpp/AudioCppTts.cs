@@ -144,13 +144,18 @@ public sealed class AudioCppTts : IDisposable
     public string Backend { get; } = "";
 
     /// <summary>
-    /// Whether this engine reports per-group timings. False on an engine built before the
-    /// kokoro_tts family declared <c>word_timestamps</c>, which is a real possibility rather than
-    /// a formality: AUDIOCPP_NATIVE_DIR is read at BUILD time and points this at whatever engine
-    /// someone has. A caller uses it to say up front which kind of alignment a job will get,
-    /// rather than discovering it per paragraph.
+    /// Whether this engine has accepted a request for timings so far. Starts true and goes false
+    /// only once one has been refused as an unknown option.
+    ///
+    /// <para>
+    /// ⚠ NOT A PRE-RENDER ANSWER, and it used to pretend to be one. It was read off
+    /// <c>SupportsTimestamps</c>, which the engine no longer sets for this family at all, so it
+    /// would now say "no" on an engine that reports timings perfectly well. Nothing can answer
+    /// this before a render — see <see cref="ReturnTimestamps"/> — so callers that need to
+    /// describe what a job actually got should look at what came back instead.
+    /// </para>
     /// </summary>
-    public bool ReportsTimings { get; }
+    public bool ReportsTimings => !_timingsRefused;
 
     /// <param name="modelPath">The package's .gguf, as <see cref="ResolveKokoro"/> finds it.</param>
     /// <param name="backends">
@@ -185,7 +190,6 @@ public sealed class AudioCppTts : IDisposable
             _session = session
                 ?? throw (Exception?)last
                 ?? new InvalidOperationException("no backend opened and none reported why");
-            ReportsTimings = _model.SupportsTimestamps;
         }
         catch
         {
@@ -305,6 +309,30 @@ public sealed class AudioCppTts : IDisposable
     private (AudioBuffer Audio, IReadOnlyList<AudioCppPhonemeGroup> Groups) Render(
         string text, IReadOnlyList<string>? phonemes, string voice, float speed)
     {
+        try
+        {
+            return RenderOnce(text, phonemes, voice, speed);
+        }
+        catch (AudioCppException failure) when (!_timingsRefused && IsUnknownOption(failure, ReturnTimestamps))
+        {
+            // An engine older than #626. Remember it, so this costs one refused request per
+            // session rather than one per paragraph, and render again without asking.
+            Console.WriteLine($"[audio.cpp] this engine does not accept {ReturnTimestamps}; "
+                              + "word timings will be estimated rather than measured.");
+            _timingsRefused = true;
+            return RenderOnce(text, phonemes, voice, speed);
+        }
+    }
+
+    /// <summary>Whether <paramref name="failure"/> is the engine rejecting <paramref name="option"/>
+    /// as one it does not know — as opposed to refusing its VALUE, which is our bug, not its age.</summary>
+    private static bool IsUnknownOption(AudioCppException failure, string option) =>
+        failure.Message.Contains("unknown", StringComparison.OrdinalIgnoreCase)
+        && failure.Message.Contains(option, StringComparison.Ordinal);
+
+    private (AudioBuffer Audio, IReadOnlyList<AudioCppPhonemeGroup> Groups) RenderOnce(
+        string text, IReadOnlyList<string>? phonemes, string voice, float speed)
+    {
         using var request = new AudioCppRequest();
         request.SetText(text, AudioCppKokoroVoices.EngineLanguage(voice));
         request.SetVoiceId(voice);
@@ -313,6 +341,7 @@ public sealed class AudioCppTts : IDisposable
         // rightly so, but here it just means this caller had no phonemes to offer for this
         // paragraph and wants the built-in G2P.
         if (phonemes is { Count: > 0 }) request.SetOptionArray(SuppliedPhonemes, phonemes);
+        if (!_timingsRefused) request.SetOption(ReturnTimestamps, "true");
 
         using var result = _session.Run(request);
         var audio = result.Audio
@@ -336,6 +365,31 @@ public sealed class AudioCppTts : IDisposable
 
     /// <summary>The request option carrying a caller's phoneme stream (audio.cpp#577).</summary>
     private const string SuppliedPhonemes = "phonemes";
+
+    /// <summary>
+    /// The request option asking for per-group timings (audio.cpp#626), which are OPT-IN.
+    /// </summary>
+    /// <remarks>
+    /// ⚠ AND THERE IS NO WAY TO ASK WHETHER THE ENGINE HAS IT. The family declares no capability
+    /// for this — review deliberately removed the one the change originally added, because a
+    /// phoneme-group alignment is not the written-word timeline <c>word_timestamps</c> means
+    /// elsewhere — and the option does not appear in a published package's declared options
+    /// either, since every shipped contract predates it. Measured against the installed package:
+    /// <c>SupportsTimestamps=False</c>, request options <c>language, seed, phonemes,
+    /// text_chunk_size</c>, and the engine serves <c>return_timestamps</c> regardless. So the only
+    /// way to find out is to ask and see what happens, which is what <see cref="_timingsRefused"/>
+    /// records.
+    /// </remarks>
+    private const string ReturnTimestamps = "return_timestamps";
+
+    /// <summary>
+    /// Set once an engine has rejected <see cref="ReturnTimestamps"/> as an unknown option, i.e.
+    /// one built before audio.cpp#626. AUDIOCPP_NATIVE_DIR is read at BUILD time and points this
+    /// at whatever engine someone has, so that is a real configuration and not a formality — and
+    /// an unknown request option is a HARD refusal, not a degraded result, so it has to be caught
+    /// and retried rather than allowed to fail the paragraph.
+    /// </summary>
+    private bool _timingsRefused;
 
     /// <summary>
     /// A refusal of OUR OWN stream is a different bug from a refusal of the engine's, and must

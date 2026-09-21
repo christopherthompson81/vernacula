@@ -299,7 +299,7 @@ public class AudioCppTtsEngineTests
             ["ə ɛkstɹˌɔːɹdənˈɛɹəli"], [0, 1], [9.0, 1.0]);
         var spoken = Spoken(("ə", 0.0, 0.2), ("ɛkstɹˌɔːɹdənˈɛɹəli", 0.2, 2.0));
 
-        var words = AudioCppSynthesisService.Align("a extraordinarily", supplied, spoken, 2.0);
+        var words = AudioCppSynthesisService.Align("a extraordinarily", supplied, spoken, 2.0, out _);
 
         Assert.Equal(2, words.Count);
         Assert.Equal(0.0, words[0].StartSeconds, 6);
@@ -315,7 +315,7 @@ public class AudioCppTtsEngineTests
         var supplied = new AudioCppSynthesisService.SuppliedPhonemes(["x"], [0, 0, 0, 1], [3.0, 1.0]);
         var spoken = Spoken(("θɹˈi", 0.0, 0.5), ("dˈɑləɹz", 0.5, 1.0), ("fˌɔɹtˈin", 1.0, 1.5), ("nˈW", 1.5, 2.0));
 
-        var words = AudioCppSynthesisService.Align("$3.14 now", supplied, spoken, 2.0);
+        var words = AudioCppSynthesisService.Align("$3.14 now", supplied, spoken, 2.0, out _);
 
         Assert.Equal(2, words.Count);
         Assert.Equal(0.0, words[0].StartSeconds, 6);
@@ -332,7 +332,7 @@ public class AudioCppTtsEngineTests
         var supplied = new AudioCppSynthesisService.SuppliedPhonemes(["x"], [0, 1], [1.0, 1.0]);
         var spoken = Spoken(("ə", 0.0, 0.2), ("b", 0.2, 1.0), ("c", 1.0, 2.0));   // three, not two
 
-        var words = AudioCppSynthesisService.Align("one two", supplied, spoken, 2.0);
+        var words = AudioCppSynthesisService.Align("one two", supplied, spoken, 2.0, out _);
 
         Assert.Equal(2, words.Count);
         Assert.Equal(1.0, words[0].EndSeconds, 6);     // the even phoneme-weighted split, not 0.2
@@ -344,7 +344,7 @@ public class AudioCppTtsEngineTests
         // An engine built before the kokoro_tts family declared word_timestamps. AUDIOCPP_NATIVE_DIR
         // is read at BUILD time, so this is a real configuration and not a formality.
         var supplied = new AudioCppSynthesisService.SuppliedPhonemes(["x"], [0, 1], [1.0, 3.0]);
-        var words = AudioCppSynthesisService.Align("one two", supplied, new AudioCppSpeech(new float[24_000], []), 2.0);
+        var words = AudioCppSynthesisService.Align("one two", supplied, new AudioCppSpeech(new float[24_000], []), 2.0, out _);
 
         Assert.Equal(2, words.Count);
         Assert.Equal(0.5, words[0].EndSeconds, 6);     // 1/4 of two seconds
@@ -355,9 +355,38 @@ public class AudioCppTtsEngineTests
     {
         // A non-English voice: the engine phonemized internally, so there is no map to join its
         // groups to even if it reported them.
-        var words = AudioCppSynthesisService.Align("uno dos", null, Spoken(("ˈuno", 0.0, 1.0)), 2.0);
+        var words = AudioCppSynthesisService.Align("uno dos", null, Spoken(("ˈuno", 0.0, 1.0)), 2.0, out _);
         Assert.Equal(2, words.Count);
         Assert.Equal(2.0, words[^1].EndSeconds, 6);
+    }
+
+    [Fact]
+    public void OnlyTheMeasuredPathReportsItselfAsMeasured()
+    {
+        // ⚠ THIS FLAG IS WHAT THE SIDECAR'S ALIGNER NAME IS BUILT FROM, so it has to be true on
+        // exactly the tier that earned it. Nothing can answer "will this job be measured?" before
+        // a render — the engine option is opt-in, the family declares no capability for it, and a
+        // published package's contract predates the option — so the name describes what happened,
+        // and this is the thing it describes.
+        var supplied = new AudioCppSynthesisService.SuppliedPhonemes(["x"], [0, 1], [1.0, 1.0]);
+        var spoken = Spoken(("ə", 0.0, 1.0), ("b", 1.0, 2.0));
+
+        AudioCppSynthesisService.Align("one two", supplied, spoken, 2.0, out var measured);
+        Assert.True(measured, "the engine's groups joined to the word map is the measured tier");
+
+        // No timings from the engine: the phoneme-count spread is not a measurement.
+        AudioCppSynthesisService.Align("one two", supplied, new AudioCppSpeech(new float[24_000], []),
+                                       2.0, out var noTimings);
+        Assert.False(noTimings);
+
+        // Timings, but a group count the map disagrees with: falls back, so not measured.
+        var mismatched = Spoken(("ə", 0.0, 0.5), ("b", 0.5, 1.0), ("c", 1.0, 2.0));
+        AudioCppSynthesisService.Align("one two", supplied, mismatched, 2.0, out var shifted);
+        Assert.False(shifted);
+
+        // A non-English voice: no supplied stream at all, so nothing to join the groups to.
+        AudioCppSynthesisService.Align("uno dos", null, spoken, 2.0, out var noStream);
+        Assert.False(noStream);
     }
 
     private static TtsJobSettings Job(string voice, float speed = 1.0f) =>
