@@ -98,6 +98,51 @@ public class WordSegmentationTests
     }
 
     [Fact]
+    public void MixedScriptJapaneseDoesNotOfferTwoWordsCoveringTheSameCharacters()
+    {
+        // ⚠ THE CASE THE MERGE EXISTS FOR, and ordinary Japanese: PDF, Wi-Fi, CD and latin proper
+        // nouns are everywhere. `PDF` normalizes to ピーディーエフ, and the expansion's provenance
+        // cannot reach back into the original, so all three tokens report the WHOLE sentence as
+        // their input span. One unit per token then gives the reader three clickable words that
+        // light identical text, of which only the first gets any time -- the rest are zero-length
+        // markers. Measured before the merge: 14 of 123 golden rows, every one of them
+        // mixed-script, worst case eight units each covering 30 of 34 characters.
+        const string text = "PDFファイルを開いてください。";
+        var words = Segment(text, "ja");
+
+        // Distinctness is vacuously true of an empty list, so pin that there is something to be
+        // distinct ABOUT. Deliberately not pinning the count: if upstream ever maps the expansion's
+        // sub-spans properly this yields three distinct units and should still pass.
+        Assert.NotEmpty(words);
+        Assert.Equal(words.Count, words.Distinct().Count());
+        // Merging costs granularity and must not cost correctness: what is left still spans text.
+        foreach (var w in words) Assert.InRange(w.End, w.Start + 1, text.Length);
+    }
+
+    [Fact]
+    public void TracedWordsAreOrderedAndNeverOverlap()
+    {
+        // The reader pairs displayed words to sidecar words BY INDEX, and both come from here, so
+        // a unit list that overlaps or runs backwards misattributes audio rather than merely
+        // looking odd. Cheap to assert, and the property the merge is really maintaining.
+        foreach (var text in new[]
+                 {
+                     "科学者たちが発表しました。",
+                     "彼女は新しい本を読んでいます。",
+                     "PDFファイルを開いてください。",
+                     "今天天气很好。",
+                 })
+        {
+            var lang = text.Any(c => c is >= '\u3040' and <= '\u30ff') ? "ja" : "cmn";
+            var words = Segment(text, lang);
+            Assert.NotEmpty(words);   // the loop below is vacuous on an empty or single-unit list
+            for (var i = 1; i < words.Count; i++)
+                Assert.True(words[i].Start >= words[i - 1].End,
+                            $"{lang} \"{text}\": unit {i} starts at {words[i].Start}, inside the previous unit ending at {words[i - 1].End}");
+        }
+    }
+
+    [Fact]
     public void AnUnknownLanguageFallsBackToWhitespaceRatherThanThrowing()
     {
         // The reader builds words when a document is OPENED, which never needed a phonemizer, so

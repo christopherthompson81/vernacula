@@ -38,8 +38,7 @@ public static class WordSegmentation
         if (!NeedsTrace(lang)) return Whitespace(text, start, end);
         try
         {
-            var traced = FromTrace(text, start, end, lang!);
-            return traced.Count > 0 ? traced : Whitespace(text, start, end);
+            return Segment(text, start, end, lang, Trace(text[start..end], lang!));
         }
         catch (Exception)
         {
@@ -47,6 +46,32 @@ public static class WordSegmentation
             // ⚠ THIS IS WHY WHITESPACE STAYS THE FALLBACK. The reader segments when a document is
             // OPENED, which never needed a phonemizer before, so a tree that is absent must cost
             // granularity rather than correctness.
+            return Whitespace(text, start, end);
+        }
+    }
+
+    /// <summary>
+    /// Word spans over <c>text[start..end)</c>, read from a trace the caller already has.
+    /// </summary>
+    /// <remarks>
+    /// ⚠ FOR A CALLER THAT NEEDS BOTH THE WORDS AND THE TRACE, so it cannot end up reading two of
+    /// them. <see cref="KokoroPhonemizer.Phonemize(string, string)"/> builds the group→word map
+    /// from a trace and the words it indexes into from another, and asserted in a comment that the
+    /// two read "the same spans" — an invariant nothing enforced. vernacula-phonemizer#1408 was
+    /// precisely a case of one trace of a text disagreeing with the next, so the assumption had
+    /// already been wrong once. <paramref name="trace"/> must be a trace of <c>text[start..end)</c>.
+    /// </remarks>
+    public static IReadOnlyList<WordSpan> Segment(
+        string text, int start, int end, string? lang, PhonemeTrace trace)
+    {
+        if (!NeedsTrace(lang)) return Whitespace(text, start, end);
+        try
+        {
+            var traced = FromTrace(text, start, end, trace);
+            return traced.Count > 0 ? traced : Whitespace(text, start, end);
+        }
+        catch (Exception)
+        {
             return Whitespace(text, start, end);
         }
     }
@@ -117,18 +142,17 @@ public static class WordSegmentation
     /// count check is the whole safety argument, and a mismatch keeps the token whole.
     /// </para>
     /// </remarks>
-    private static IReadOnlyList<WordSpan> FromTrace(string text, int start, int end, string lang)
+    private static IReadOnlyList<WordSpan> FromTrace(string text, int start, int end, PhonemeTrace trace)
     {
-        var slice = text[start..end];
-        var trace = Trace(slice, lang);
+        var sliceLength = end - start;
         if (!trace.Traced) return [];
 
         var words = new List<WordSpan>();
         foreach (var token in trace.Tokens)
         {
             if (token.InputSpan is not { } span) continue;
-            var from = start + Math.Clamp(span.Start, 0, slice.Length);
-            var to = start + Math.Clamp(span.End, 0, slice.Length);
+            var from = start + Math.Clamp(span.Start, 0, sliceLength);
+            var to = start + Math.Clamp(span.End, 0, sliceLength);
             if (to <= from) continue;
 
             // A token that produced no spoken group is punctuation — the trailing 。of a Japanese
@@ -144,14 +168,71 @@ public static class WordSegmentation
                 // One group per hanzi, and nothing else in the span to have eaten one: safe to
                 // walk them onto the characters.
                 for (var k = from; k < to; k++)
-                    if (IsHan(text[k])) words.Add(new WordSpan(k, k + 1));
+                    if (IsHan(text[k])) Append(words, new WordSpan(k, k + 1));
             }
             else
             {
-                words.Add(new WordSpan(from, to));
+                Append(words, new WordSpan(from, to));
             }
         }
         return words;
+    }
+
+    /// <summary>
+    /// Adds a span, merging it into the previous one when the two overlap.
+    /// </summary>
+    /// <remarks>
+    /// ⚠ TWO UNITS THAT CLAIM THE SAME CHARACTERS ARE ONE UNIT. A rewrite whose match covers more
+    /// than the token it is rewriting stamps that match's span across every token it produced —
+    /// <c>PDFファイルを開いてください</c> traced as three tokens (<c>ピーディーエフ</c>,
+    /// <c>ファイルを</c>, <c>開いてください</c>) all claiming the whole sentence. Emitting one unit per token then offers the reader several clickable words that
+    /// light identical text, and only the first of them receives any time at all, because
+    /// <see cref="KokoroAlignment.WordsFromGroups"/> gives each later duplicate a zero-length marker.
+    ///
+    /// <para>
+    /// Measured over the phonemizer's 200-row <c>ja</c> goldens: 14 of 123 distinct rows carry
+    /// duplicate spans, ALL of them mixed-script (14 of the 49 rows containing latin or digits), and
+    /// the worst offers eight units that each cover 30 of the sentence's 34 characters. ⚠ AND THE
+    /// COUNT CHECK IN THE ALIGNER CANNOT SEE IT — groups and map entries agree, so the measured tier
+    /// engages and trusts them; being degenerate is invisible to a count the way being one out is.
+    /// </para>
+    ///
+    /// <para>
+    /// Merging is the honest answer rather than a workaround: if two tokens cannot say which
+    /// characters are theirs, those characters are one clickable unit whose time is the union of
+    /// their groups. Coarser than the token count suggests, correct at the boundary it reports, and
+    /// the same answer this already gives for an English rewrite where one written word becomes
+    /// several tokens ("$3.14" → three, dollars, fourteen) — which is also why MERGING rather than
+    /// DECLINING is the right response: tokens sharing a span is frequently correct, so a check
+    /// that refused to align on it would throw away good expansions along with bad spans.
+    /// </para>
+    ///
+    /// <para>
+    /// ⚠ AND THE CAUSE WAS NOT THE JAPANESE PATH, which is why this guard is worth keeping even
+    /// after the upstream fix. vernacula-phonemizer#1420: <c>normalizeRomans</c> rewrites on
+    /// <c>\p{L}+</c> and runs over EVERY language, and in a script without spaces there is no word
+    /// break for that match to stop at, so it matched the whole clause and stamped its span across
+    /// the replacement. Its fast path skips text with no Roman letters — so the defect was absent
+    /// from exactly the pure-kana sentences anyone reaches for first when testing Japanese, and
+    /// present in exactly the ones containing a latin letter. The fix takes ja from 14 collapsed
+    /// rows to 3; the residue is numeral/unit overlap ("83 m" and "83 mです"), a smaller and
+    /// different thing that this merge still handles.
+    /// </para>
+    /// </remarks>
+    private static void Append(List<WordSpan> words, WordSpan span)
+    {
+        if (words.Count > 0 && span.Start < words[^1].End)
+        {
+            // ⚠ THE UNION OF BOTH ENDS, not just the later one. The tokens arrive in order today —
+            // measured, zero unordered pairs across the ja and cmn goldens — but keeping the
+            // previous Start would drop the characters ahead of it out of every unit, and a
+            // character belonging to no unit is not clickable and receives no highlight. That is a
+            // silent loss, and it should not rest on an ordering this code does not enforce.
+            var last = words[^1];
+            words[^1] = new WordSpan(Math.Min(last.Start, span.Start), Math.Max(last.End, span.End));
+            return;
+        }
+        words.Add(span);
     }
 
     /// <summary>Space-delimited groups carrying a letter — the phonemizer's stand-alone
