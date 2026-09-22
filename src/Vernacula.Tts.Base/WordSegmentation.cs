@@ -68,14 +68,24 @@ public static class WordSegmentation
     }
 
     /// <summary>
-    /// The one place a trace is taken, so both callers read the same spans.
+    /// The trace the Kokoro word path takes, in one place so its two callers read the same spans.
     /// </summary>
     /// <remarks>
-    /// This carried a retry until 2026-09-22: the first <c>ja</c> trace in a process returned
-    /// every <c>InputSpan</c> null, because <c>Normalize</c>'s static constructor ran a tracked
-    /// rewrite on its own first use — inside the traced window (vernacula-phonemizer#1408, fixed
-    /// in #1417, C# only). Verified cold before removing the retry: one process per language,
-    /// nine of nine populated, and the same probe on the previous pin reports 0 of 3 for `ja`.
+    /// Not the only <c>PhonemizeTrace</c> in the codebase — <see cref="IpaAnnotator"/> and the
+    /// OmniVoice IPA path take their own, for their own purposes. What this shares is narrower and
+    /// load-bearing: <see cref="Segment"/> builds the words and
+    /// <see cref="KokoroPhonemizer.Phonemize(string, string)"/> builds the group→word map onto
+    /// those same words, so the two must be reading one trace's spans and not two.
+    ///
+    /// <para>
+    /// This carried a retry until 2026-09-22: the first <c>ja</c> trace in a process returned every
+    /// <c>InputSpan</c> null, because <c>Normalize</c>'s static constructor ran a tracked rewrite on
+    /// its own first use — inside the traced window (vernacula-phonemizer#1408, fixed in #1417, C#
+    /// only). ⚠ A REGRESSION HERE IS NOT VISIBLE FROM A TEST ASSEMBLY, because the defect is once
+    /// per process and any earlier test warms the language; the gate is upstream's
+    /// <c>csharp/tools/trace-cold</c>, which spawns its own process and swept 189 of 189 clean on
+    /// this pin. See docs/investigations/audiocpp_multilingual_investigation.md, Run 8.
+    /// </para>
     /// </remarks>
     public static PhonemeTrace Trace(string text, string lang)
         => Phonemizer.Phonemizer.PhonemizeTrace(text, lang);

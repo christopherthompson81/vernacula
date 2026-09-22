@@ -331,6 +331,32 @@ c6e26698 (previous) lang=ja tokens=3 withInputSpan=0   POISONED
 Same probe, same shape, only the pin differs — so the OK means the fix and not the probe. Then all
 nine languages this app speaks, one process each: **9 of 9 populated**, `cmn` 1/1, `ja` 3/3.
 
+### Better: run their gate, not my probe
+
+Reviewing the diff turned up that the fix shipped with a tool — `csharp/tools/trace-cold`, spawned
+by `TraceColdInitTests` — so the throwaway probe above is the weaker instrument and nothing in this
+repo should point at it. Run against our exact pin:
+
+```
+dotnet run --project csharp/tools/trace-cold -c Release -- csharp/goldens
+  traced 189 of 189 languages
+  no poisons, every traced language carries input spans          exit=0
+```
+
+189 languages beats my nine, and it is maintained upstream rather than living in a scratch
+directory. ⚠ **But it runs in THEIR suite, not ours** — we consume a pin, not their CI — so what
+protects this repo is the pin bump itself plus whatever they gate before tagging. `WordSegmentation`
+now says so, and so does the `ja` test, which structurally cannot catch a cold-init regression
+because any earlier test in the assembly has already warmed the language.
+
+### One claim in the first draft was wrong
+
+`WordSegmentation.Trace` was documented as "the one place a trace is taken". It is not:
+`IpaAnnotator` and the OmniVoice IPA path each call `PhonemizeTrace` directly. Those were exposed
+to #1408 too and nobody guarded them — moot now, but the honest scope is narrower, and is what the
+comment claims instead: `Segment` builds the words and `KokoroPhonemizer.Phonemize` builds the
+group→word map *onto those same words*, so those two must read one trace and not two.
+
 Full suite after removal: 255 + 23 + 362 pass, 0 fail.
 
 **The peer hit the inverse of this and it is the same lesson.** Their first gate lived in the test
