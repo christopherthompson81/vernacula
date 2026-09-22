@@ -48,6 +48,12 @@ public class WordSegmentationTests
         const string text = "科学者たちが発表しました。";
         var words = Segment(text, "ja");
 
+        // ⚠ THIS CANNOT CATCH A COLD-INIT REGRESSION, and used to hide one. vernacula-phonemizer
+        // #1408 made the FIRST ja trace in a process return every InputSpan null — but the defect
+        // is once per process, so by the time any test runs, another has already warmed the
+        // language and this passes either way. The gate has to spawn its own process, which is
+        // what upstream's csharp/tools/trace-cold does. What is pinned here is the segmentation.
+
         // ⚠ PHRASES, NOT WORDS, and that is what the trace offers. Two units against the one
         // whitespace would give is the whole improvement; this is not morphological segmentation.
         Assert.True(words.Count >= 2, $"expected the trace to split the sentence, got {words.Count}");

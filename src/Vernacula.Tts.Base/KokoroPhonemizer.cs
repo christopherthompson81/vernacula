@@ -79,9 +79,8 @@ public sealed class KokoroPhonemizer
     /// </remarks>
     public KokoroPhonemization Phonemize(string text, string lang)
     {
-        // Through WordSegmentation.Trace, which carries the #1408 retry: this call builds the
-        // group→word map, and it is just as able to be the first `ja` trace in the process as the
-        // segmenter's is.
+        // Through WordSegmentation.Trace, the shared seam: this call builds the group→word map
+        // and the segmenter's builds the words, and they must read the same spans.
         var trace = WordSegmentation.Trace(text, lang);
         var words = WordSegmentation.Segment(text, 0, text.Length, lang);
         var map = GroupSourceWords(trace, text, words);

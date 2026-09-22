@@ -169,6 +169,10 @@ contains the file (`voices/zm_yunxia.bin`, 522,240 bytes). This is the same area
 (a re-encode dropping `voices/*.bin` and exiting 0), so it is either a regression or a second path
 with the same shape. Out of scope here; recorded, and worth its own upstream issue.
 
+> **Wrong — see Run 8.** It is neither: #579 had already fixed it, and the `audiocpp_gguf` binary
+> I ran here was built before that fix landed. Nothing was filed.
+
+
 The measurement went through `--model-spec-override` instead, which is the supported way to load
 the runtime's current contract against an older package and what the bindings' own tests use.
 
@@ -280,3 +284,48 @@ unchanged after the grouping change.
 this app's probes has not been tested at all in the engine's own terms. A second build tree
 (`cmake -S . -B build-tests -DENGINE_BUILD_TESTS=ON` + `ctest`) is cheap — CPU-only, ~4 seconds to
 run — and belongs in the loop before any upstream push, not after a reviewer asks.
+
+## Run 8 — 2026-09-21 — the regeneration bug was mine: a stale binary
+
+Question: is the `audiocpp_gguf` failure from Run 5 real on current upstream, or an artifact of the
+tool I ran? Asked because the user said, of the bug I was about to file, "i fixed that upstream,
+though?"
+
+They had. #579 (`6b59e6e3`) is an ancestor of the pinned `2792c657`, so the fix was in the *source*
+I reproduced against — and its commit message describes my symptoms exactly, down to the sentence
+"54 voices in -> 0 voices out, 28 MB smaller, and every load fails on voices/zm_yunxia.bin".
+
+The tell was one word. #579 also changed the note to carry a count, "because 'reusing the sidecars'
+was true of the old code too" — post-fix it reads `reusing the 59 sidecars embedded in …`. My run
+printed the countless wording. The binary, not the source, was old:
+
+```
+build/bin/audiocpp_gguf   built 2026-09-15 19:53
+6b59e6e3 (#579)           landed 2026-09-16
+```
+
+Built by hand once while the submodule sat at `df0e09ef`, and never rebuilt since, because
+`scripts/build-engine.sh` builds three targets and `audiocpp_gguf` is not one of them. Every later
+engine rebuild refreshed the library and left the tool untouched.
+
+Rebuilt (`cmake --build build --target audiocpp_gguf`) and re-ran the identical re-emit:
+
+| | Run 5 (stale tool) | Run 8 (rebuilt) |
+|---|---|---|
+| note | `reusing the sidecars` | `reusing the 59 sidecars` |
+| size vs source | −28,202,400 bytes | **+480 bytes** (header only) |
+| `embedded_sidecar_count` | *(not reported)* | **59** |
+| `.bin` voices on load | **0** | **54** — the control |
+
+−28,202,400 was 54 × 522,240 within 1,440 bytes: the voice payloads, exactly as #579 said.
+
+**Nothing to file.** The conclusion in Run 5 — "either a regression or a second path with the same
+shape" — was neither. It was one path, already fixed, measured with a tool built before the fix.
+
+**The transferable part is the negative result, not the bug.** I checked that the *source* contained
+the fix (`git merge-base --is-ancestor`) and treated that as checking the build. For a repo whose
+build script compiles a subset of targets, those are different questions, and the artifact's mtime
+answers the one that matters. The reason this survived a careful reading is that the stale tool
+*exited 0 and printed `embedded_sidecars=true`* — it reported success in the old vocabulary, and I
+read the vocabulary as the tool's, not as a version marker. The count in that note is a version
+marker, which is presumably why #579 put it there.
