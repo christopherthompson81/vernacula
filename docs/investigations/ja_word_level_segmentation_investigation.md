@@ -312,3 +312,50 @@ token means a subdivision would have no measured audio boundary behind it, so ex
 would hand this repo an estimate dressed as a boundary. If the audio side ever gains per-mora groups
 the question reopens; until then the answer to "can Japanese highlighting be more word-level" is that
 it already is, and the thing that made it feel otherwise is fixed at both ends.
+
+## Run 7 — 2026-09-22 — taking the upstream fix, and what it actually bought
+
+Pin `ac60b3c4` → `6e2165c7`, five commits. Measured rather than relayed, because the interesting
+number is the one this repo sees rather than the one upstream reports.
+
+**The upstream defect, counted on the raw trace** — the local merge collapses these downstream
+either way, so counting units would have measured our own workaround instead of their fix:
+
+```
+                                       ac60b3c4        6e2165c7 (#1420)
+ja  rows with 2+ tokens sharing a span      14                3
+cmn rows with 2+ tokens sharing a span       3                3
+```
+
+`ja` 14 → 3 reproduces their figure exactly.
+
+⚠ **Mandarin was never affected, and the reason is worth keeping.** The `cmn` trace returns ONE
+token per sentence carrying per-syllable IPA, so a whole-clause `\p{L}+` match has no second token
+to flatten against. The defect needed several tokens to collapse and only `ja` had them — which also
+means the `cmn` residue of 3 was never this bug and is unchanged by its fix.
+
+**What the reader gets**, measured through `KokoroPhonemizer` on the same corpora:
+
+```
+        median chars per unit    median units per sentence
+ja        4.33  ->  4.08              11  ->  12
+cmn       1.00  ->  1.00              35  ->  35
+degenerate / overlapping / out-of-range: 0 throughout
+```
+
+Eleven rows stop being merged into coarser units and get their real boundaries back. Small in the
+median because it is 11 of 123 rows, and those rows were the worst ones.
+
+**The merge is not inert and the residue confirms it.** `ja` keeps 3 rows of numeral/unit overlap
+(`83 m` against `83 mです`), which is overlap rather than collapse. Run 4 predicted the guard would
+stop firing once upstream landed; Run 6 corrected that, and this measures it: still 3 rows relying
+on it.
+
+Cold-trace gate re-run on the new pin: **189 of 189 languages, no poisons**. Full suite:
+95 + 257 + 23 + 362, 0 failures.
+
+**Scope.** Of the five commits, one is core provenance (`Rewriter`, `Provenance`, `JsRegex`, and the
+TypeScript twin) and the rest are English data and lexicon work, including #1418 reverting 26 rows on
+re-arbitrated evidence and #1425 porting code-slot unit guards to C#. So this carries English
+behaviour changes as well as the fix — the same shape as the previous bump, and the reason the
+English goldens are worth a look rather than a nod.
