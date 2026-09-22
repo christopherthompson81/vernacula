@@ -123,7 +123,8 @@ public sealed partial class BlockItemViewModel : ObservableObject
     /// start in the document's flat word list, which is the index alignment attaches timing by.
     /// </summary>
     public static BlockItemViewModel FromSegment(TextSegment segment, string extractedText,
-        IReadOnlyList<TextRange> ranges, int firstWordIndex, Action<WordItemViewModel>? onWordClicked)
+        IReadOnlyList<TextRange> ranges, int firstWordIndex, Action<WordItemViewModel>? onWordClicked,
+        string? lang = null)
     {
         var block = new BlockItemViewModel(segment.Kind, segment.Level) { Index = segment.Index };
         // A table card holds its words twice over: once flat, for speech and timing, and once by
@@ -131,21 +132,22 @@ public sealed partial class BlockItemViewModel : ObservableObject
         // can be dropped into its cell as it is made.
         if (segment.Cells is { Count: > 0 }) block.InitTable(segment.Cells);
 
-        int i = segment.OutputStart, end = segment.OutputStart + segment.OutputLength;
-        while (i < end)
+        // ⚠ THE WORD UNIT COMES FROM THE LANGUAGE, NOT FROM WHITESPACE. This scanned for spaces
+        // itself, which is right for most languages and gives exactly one clickable word per
+        // sentence in Japanese or Chinese — the whole paragraph lighting up at once, and a click
+        // anywhere in it seeking to its start. WordSegmentation returns the same whitespace split
+        // for everything else, so nothing changes where nothing needed to.
+        int end = segment.OutputStart + segment.OutputLength;
+        foreach (var span in WordSegmentation.Segment(extractedText, segment.OutputStart, end, lang))
         {
-            while (i < end && char.IsWhiteSpace(extractedText[i])) i++;
-            if (i >= end) break;
-            int start = i;
-            while (i < end && !char.IsWhiteSpace(extractedText[i])) i++;
-
-            var word = new WordItemViewModel(extractedText[start..i], firstWordIndex + block.Words.Count,
-                segment.Kind, segment.Level, ParagraphSegmenter.StyleAt(ranges, start), onWordClicked)
+            var word = new WordItemViewModel(extractedText[span.Start..span.End],
+                firstWordIndex + block.Words.Count,
+                segment.Kind, segment.Level, ParagraphSegmenter.StyleAt(ranges, span.Start), onWordClicked)
             {
                 StartSeconds = double.MaxValue,
             };
             block.Words.Add(word);
-            if (block.IsTable) block.PlaceWordInCell(start, word);
+            if (block.IsTable) block.PlaceWordInCell(span.Start, word);
         }
         return block;
     }

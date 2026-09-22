@@ -17,11 +17,34 @@ namespace Vernacula.App.Services.Tts;
 /// as it is rendered, per-segment WAVs, one sidecar at the end.
 ///
 /// <para>
-/// ⚠ THE WORD TIMINGS HERE ARE ESTIMATES, and that is a property of the ABI rather than a
-/// shortcut. The <c>kokoro_tts</c> family reports <c>SupportsTimestamps=false</c> and returns no
-/// words, so unlike the ONNX Kokoro — which reads the model's own predicted per-token durations —
-/// there is nothing to measure. The sidecar's aligner is named
-/// <c>audiocpp_proportional</c> so that is legible to whoever reads it later.
+/// ⚠ EVERY VOICE IS SPOKEN FROM OUR OWN PHONEMES, NOT THE ENGINE'S. audio.cpp's Kokoro phonemizes
+/// with eSpeak-ng; upstream audio.cpp#577 added a <c>phonemes</c> request option that takes a
+/// caller's stream instead, and this passes vernacula-phonemizer's reading rendered through
+/// <see cref="KokoroFormat"/> — the same frontend the ONNX Kokoro uses — for all nine languages
+/// the package speaks, each of which renders entirely inside Kokoro's vocabulary. The point is
+/// that the two engines now say a word the SAME WAY: the dictionary the user can see, correct and
+/// re-hear is the one that decides, whichever backend renders it. Only a run where the
+/// phonemizer's data tree is absent falls back to the engine's own G2P; there is no setting,
+/// because "which pronunciation dictionary is in force" is not a thing a reader should have to
+/// choose per document.
+/// </para>
+///
+/// <para>
+/// ⚠ THE WORD TIMINGS ARE MEASURED NOW, AND THEY USED TO BE ESTIMATES. The <c>kokoro_tts</c>
+/// family reported <c>SupportsTimestamps=false</c> and returned no words, so a paragraph's words
+/// had to be spread across its buffer by some proxy for length — first spelling, then, once we
+/// supplied the phonemes, phoneme count. Neither was a measurement. The information was always
+/// there: Kokoro predicts a per-token frame count BEFORE the decoder runs and the decoder
+/// upsamples by exactly those counts, which is the same <c>pred_dur</c> the ONNX path reads. The
+/// engine now reports it per phoneme group, and since the phonemizer already says which source
+/// word each group came from, the join is exact — the same join, in the same code
+/// (<see cref="KokoroAlignment"/>), as the ONNX engine's.
+/// </para>
+///
+/// <para>
+/// The proportional tiers stay as fallbacks, for a non-English voice, a missing phonemizer tree,
+/// or an engine built before the family declared the capability. The sidecar's aligner name says
+/// which was in force: <c>audiocpp_duration</c> against <c>audiocpp_proportional</c>.
 /// </para>
 ///
 /// <para>
@@ -34,15 +57,20 @@ public sealed class AudioCppSynthesisService : ITtsBackend
     private readonly string   _modelPath;
     private readonly string[] _backends;
     private readonly int      _threads;
+    private readonly string?  _dataDir;
 
-    private AudioCppTts? _tts;
+    private AudioCppTts?      _tts;
+    private KokoroPhonemizer? _g2p;       // null when the phonemizer's data tree is not installed
+    private KokoroChunker?    _chunker;
     private readonly object _gate = new();
 
-    public AudioCppSynthesisService(string modelPath, string[] backends, int threads)
+    public AudioCppSynthesisService(string modelPath, string[] backends, int threads,
+                                    string? phonemizerDataDir = null)
     {
         _modelPath = modelPath;
         _backends  = backends;
         _threads   = threads;
+        _dataDir   = phonemizerDataDir;
     }
 
     public int SampleRate => AudioCppTts.SampleRate;
@@ -55,6 +83,14 @@ public sealed class AudioCppSynthesisService : ITtsBackend
     {
         var voice = request.Voice;
         var speed = request.Speed;
+        // ⚠ EVERY LANGUAGE THE PACKAGE SPEAKS, not just English, and the earlier restriction here
+        // was a guess rather than a measurement. KokoroFormat has a render arm per language, and
+        // over the phonemizer's own goldens — 200 rows each — all seven non-English targets land
+        // ENTIRELY inside Kokoro's 114-symbol vocabulary: es, fr, it, pt-BR, hi, ja and cmn all
+        // at 100.0%. Nothing has to be dropped, so the "a symbol we got wrong is a refused
+        // paragraph" risk that justified English-only does not arise.
+        var lang = AudioCppKokoroVoices.PhonemizerLanguage(voice);
+        bool ours = KokoroFormat.CanRender(lang);
 
         onProgress?.Invoke(new ProgressEvent("loading models"));
         await Task.Run(EnsureLoaded, cancellationToken).ConfigureAwait(false);
@@ -63,44 +99,338 @@ public sealed class AudioCppSynthesisService : ITtsBackend
         return await Task.Run(() =>
         {
             var tts = _tts!;
+            // Set by the first segment that actually joins the engine's timings to its words.
+            // ⚠ SEEDED FROM THE RUN BEING REUSED. A re-render that reuses every paragraph never
+            // calls the synthesis delegate at all, so this would stay false and label a sidecar
+            // "proportional" whose every timing came from a measured run.
+            var measuredAny = request.ReuseFrom?.Sidecar.Aligner == "audiocpp_duration";
 
             (float[] Audio, IReadOnlyList<AlignedWord> Words) SynthesizeSegment(
                 Vernacula.Tts.Base.Markdown.TextSegment seg, Action<string> warn)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                // No chunker: the family splits on its own text_chunk_size and joins, so a
-                // paragraph of any length comes back as one buffer (investigation Run 4).
-                var audio = tts.Speak(seg.Text, voice, speed);
-                return (audio, EstimateWords(seg.Text, audio.Length / (double)SampleRate));
+                // No chunker on the text path: the family splits on its own text_chunk_size and
+                // joins, so a paragraph of any length comes back as one buffer (investigation
+                // Run 4). On the phoneme path the split is ours to make, because only this G2P
+                // knows where its own stream may be cut.
+                var supplied = ours && _g2p is not null && _chunker is not null
+                    ? Supply(_g2p, _chunker, seg.Text, lang, warn)
+                    : null;
+                var spoken = tts.SpeakAligned(seg.Text, supplied?.Chunks, voice, speed);
+                var seconds = spoken.Audio.Length / (double)SampleRate;
+                var aligned = Align(seg.Text, lang, supplied, spoken, seconds, out var measured);
+                measuredAny |= measured;
+                return (spoken.Audio, aligned);
             }
 
             // No batch synthesizer: the ABI takes one request at a time, so there is nothing to
             // batch and offering a delegate that loops would only disable the reuse decorator.
-            return SegmentedSynthesis.Run(request, SampleRate, "audiocpp_proportional",
+            var result = SegmentedSynthesis.Run(request, SampleRate, "audiocpp_proportional",
                 SynthesizeSegment, onChunkProduced, onProgress, cancellationToken);
+
+            // ⚠ NAMED FROM WHAT HAPPENED, NOT FROM WHAT WAS INTENDED, and the earlier version
+            // could not be. It decided the name before any paragraph rendered, from a capability
+            // flag — and audio.cpp#626's review removed that flag for this family, so it would now
+            // read "proportional" on every job the engine measured perfectly well. Nothing can
+            // answer the question before a render: the option is opt-in, the family declares no
+            // capability for it, and a published package's contract predates the option, so the
+            // only way to know is to ask and see what came back.
+            //
+            // Which is all this needs. The sidecar is written at the end, so the name can simply
+            // describe the run: measured if any paragraph used the engine's own timings, estimated
+            // otherwise. That also retires the two ways the old name could lie.
+            if (measuredAny) result.Alignment.Aligner = "audiocpp_duration";
+            return result;
         }, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// One segment's phoneme stream: the chunks to send, and — when the phonemizer accounted for
+    /// every group — how many phoneme symbols each source word became.
+    /// </summary>
+    /// <param name="GroupSourceWords">For each phoneme group the engine will render, in order, the
+    /// index of the segment's source word it came from. This is what turns the engine's measured
+    /// group timings into word timings; <see cref="PhonemesPerWord"/> is only the fallback for an
+    /// engine that reports no timings.</param>
+    /// <param name="Words">The word units the map and the weights index into, over the SEGMENT's
+    /// text. Carried so the aligner uses the same segmentation the reader displays rather than
+    /// splitting the text again — which for a language without spaces is one word per paragraph.</param>
+    internal sealed record SuppliedPhonemes(
+        IReadOnlyList<string> Chunks, IReadOnlyList<int>? GroupSourceWords, double[]? PhonemesPerWord,
+        IReadOnlyList<WordSpan> Words);
+
+    /// <summary>
+    /// Phonemize <paramref name="text"/> into chunks the engine will accept, or null to let the
+    /// engine pronounce the text itself.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Every failure here falls back rather than throwing. A paragraph the engine can say in its
+    /// own accent is better than a paragraph that does not render, and the difference between
+    /// the two readings is a pronunciation, not a document.
+    /// </para>
+    /// </remarks>
+    internal static SuppliedPhonemes? Supply(KokoroPhonemizer g2p, KokoroChunker chunker,
+                                            string text, string lang, Action<string> warn)
+    {
+        // One segmentation for the whole segment, in the language being spoken. The per-chunk
+        // maps below are offsets into THIS list, so it has to be computed once over the whole text
+        // rather than per chunk.
+        var sourceWords = WordSegmentation.Segment(text, 0, text.Length, lang);
+        if (sourceWords.Count == 0) return null;
+
+        var chunks = new List<string>();
+        var weights = new double[sourceWords.Count];
+        var map = new List<int>();
+        var weightsUsable = true;
+        var wordOffset = 0;
+        var dropped = new List<char>();
+
+        // ⚠ CHUNKED IN THE LANGUAGE BEING SPOKEN. A comment here used to claim the token count of
+        // a rendered stream does not depend on which language rendered it, which is plainly false:
+        // the budget is in PHONEMES, and the English G2P over kana or hanzi returns a number
+        // unrelated to the ja or cmn render that is actually sent. A paragraph measured in English
+        // could therefore be handed over as one entry far past the engine's 510-symbol cap, and
+        // the engine refuses the whole request rather than degrading.
+        foreach (var chunk in chunker.ChunkForSynthesis(text, lang))
+        {
+            var chunkPhonemes = g2p.Phonemize(chunk, lang);
+            var rendered = chunkPhonemes.Phonemes;
+            var groupSourceWords = chunkPhonemes.GroupSourceWords;
+
+            // Filtered, not sent raw. The engine refuses a symbol its vocabulary has no id for
+            // — deliberately, because a caller with its own G2P can correct one — and the ONNX
+            // Kokoro drops it. Dropping keeps the two engines saying the same thing; refusing
+            // would make one stray diacritic anywhere in a document fatal on one of them only.
+            var stream = KokoroVocab.KeepKnown(rendered, out var gone);
+            if (gone.Count > 0) dropped.AddRange(gone);
+
+            // An entry must not be empty: the engine treats "set but blank" as a caller error
+            // rather than a cue to read the text. A chunk that phonemizes to nothing is real
+            // (a paragraph of bare punctuation), so the whole segment goes back to the engine.
+            if (string.IsNullOrWhiteSpace(stream))
+            {
+                warn("A part of this paragraph produced no phonemes, so audio.cpp's own "
+                     + "pronunciation was used for the whole paragraph.");
+                return null;
+            }
+            chunks.Add(stream);
+
+            // Weights come from the RENDERED stream, before filtering: a dropped diacritic
+            // changes a group's length by one and must not be able to change its group COUNT,
+            // which is what the map is indexed by.
+            var groups = SplitWords(rendered);
+            var chunkWords = chunkPhonemes.Words.Count;
+            if (!weightsUsable) { wordOffset += chunkWords; continue; }
+
+            if (groupSourceWords is null || groupSourceWords.Count != groups.Length)
+            {
+                map.Clear();
+                // The phonemizer could not account for every group, so no group→word map is
+                // trustworthy; the stream is still good, only the timings lose their weighting.
+                weightsUsable = false;
+            }
+            else
+            {
+                for (var g = 0; g < groups.Length; g++)
+                {
+                    var word = wordOffset + groupSourceWords[g];
+                    if (word < 0 || word >= weights.Length) { weightsUsable = false; map.Clear(); break; }
+                    weights[word] += groups[g].Length;
+                    map.Add(word);
+                }
+            }
+            wordOffset += chunkWords;
+        }
+
+        if (chunks.Count == 0) return null;
+
+        if (dropped.Count > 0)
+            warn("Dropped " + dropped.Count + " phoneme symbol(s) Kokoro has no token for ("
+                 + string.Join(", ", dropped.Distinct().Select(c => $"U+{(int)c:X4}")) + ").");
+
+        // The chunker splits at whitespace, so the chunks' words are the segment's words in
+        // order. If that ever stops holding, the map's indices point at the wrong words — which
+        // is a silently wrong highlight, so it is checked rather than assumed.
+        if (wordOffset != sourceWords.Count) weightsUsable = false;
+
+        return new SuppliedPhonemes(chunks, weightsUsable ? map : null, weightsUsable ? weights : null,
+                                    sourceWords);
+    }
+
+    /// <summary>
+    /// Word timings for one segment, taking the best source available.
+    ///
+    /// <para>
+    /// ⚠ THREE TIERS, AND ONLY THE FIRST IS A MEASUREMENT. When the engine reports per-group
+    /// timings (it predicts the durations the decoder then upsamples by) and the phonemizer said
+    /// which word each group came from, the join is exact and the reader's highlight follows the
+    /// voice the way it does on the ONNX engine. Failing that, the phoneme COUNTS still weight a
+    /// proportional spread. Failing that, word length does. Each tier is a worse answer than the
+    /// one above and a better one than nothing, and the sidecar records which was used.
+    /// </para>
+    /// </summary>
+    internal static IReadOnlyList<AlignedWord> Align(
+        string text, string lang, SuppliedPhonemes? supplied, AudioCppSpeech spoken, double seconds,
+        out bool measured)
+    {
+        measured = false;
+
+        // ⚠ ONE SET OF UNITS FOR ALL THREE TIERS. The fallbacks used to split on whitespace while
+        // the measured tier used the phonemizer's units, which agree in English and do not in a
+        // language without spaces — so a single paragraph dropping to a fallback contributed the
+        // wrong NUMBER of words, and the reader pairs sidecar words to displayed words by index,
+        // shifting every word in the rest of the document onto the wrong audio. A worse estimate
+        // is acceptable; a different segmentation is not.
+        var words = supplied?.Words ?? WordSegmentation.Segment(text, 0, text.Length, lang);
+        if (words.Count == 0) return [];
+
+        // The counts must agree: the engine cuts groups at ITS view of the stream, the map was
+        // built from ours, and a silent disagreement would put every word after it on the wrong
+        // audio. Falling back is visibly worse; being one word out is not visible at all.
+        if (supplied?.GroupSourceWords is { } map && spoken.Groups.Count == map.Count && map.Count > 0)
+        {
+            var spans = new KokoroAlignment.GroupSpan[spoken.Groups.Count];
+            for (var i = 0; i < spans.Length; i++)
+                spans[i] = new KokoroAlignment.GroupSpan(spoken.Groups[i].StartSeconds, spoken.Groups[i].EndSeconds);
+            measured = true;
+            return [.. KokoroAlignment.WordsFromGroups(text, words, map, spans, seconds)
+                          .Select(w => new AlignedWord { Text = w.Text, StartSeconds = w.StartSec, EndSeconds = w.EndSec })];
+        }
+        return supplied?.PhonemesPerWord is { } weights && weights.Length == words.Count
+            ? Spread(text, words, weights, seconds)
+            : Spread(text, words, null, seconds);
+    }
+
+    /// <summary>
+    /// Spreads <paramref name="totalSeconds"/> across <paramref name="words"/>, weighted by
+    /// <paramref name="weights"/> when there are any and by written length when there are not.
+    ///
+    /// <para>
+    /// Both fallbacks in one function so they cannot drift into different segmentations again. A
+    /// word with no weight at all — a bare "—", an emoji — gets a zero-length marker where the
+    /// voice has reached, so the reader still shows every word and the indices stay 1:1 with the
+    /// units, exactly as the measured path does.
+    /// </para>
+    /// </summary>
+    internal static IReadOnlyList<AlignedWord> Spread(
+        string text, IReadOnlyList<WordSpan> words, double[]? weights, double totalSeconds)
+    {
+        var aligned = new List<AlignedWord>(words.Count);
+        if (words.Count == 0) return aligned;
+
+        double total = 0;
+        for (var i = 0; i < words.Count; i++)
+            total += weights?[i] ?? (words[i].End - words[i].Start);
+        if (total <= 0)
+        {
+            for (var i = 0; i < words.Count; i++)
+                aligned.Add(new AlignedWord
+                {
+                    Text = text[words[i].Start..words[i].End],
+                    StartSeconds = totalSeconds * i / words.Count,
+                    EndSeconds = totalSeconds * (i + 1) / words.Count,
+                });
+            return aligned;
+        }
+
+        var cursor = 0.0;
+        for (var i = 0; i < words.Count; i++)
+        {
+            var span = totalSeconds * (weights?[i] ?? (words[i].End - words[i].Start)) / total;
+            aligned.Add(new AlignedWord
+            {
+                Text = text[words[i].Start..words[i].End],
+                StartSeconds = cursor,
+                EndSeconds = cursor + span,
+            });
+            cursor += span;
+        }
+        return aligned;
+    }
+
+    /// <summary>
+    /// Spreads <paramref name="totalSeconds"/> across the words of <paramref name="text"/> in
+    /// proportion to <paramref name="phonemesPerWord"/>. A word that became no phonemes at all —
+    /// a bare "—", an emoji — gets a zero-length marker where the voice has reached, so the
+    /// reader still shows every word and the indices stay 1:1 with the source split, exactly as
+    /// the ONNX path does with measured durations.
+    /// </summary>
+    internal static IReadOnlyList<AlignedWord> SpreadByWeight(
+        string text, IReadOnlyList<double> phonemesPerWord, double totalSeconds)
+    {
+        var words = SplitWords(text);
+        if (words.Length == 0 || words.Length != phonemesPerWord.Count) return [];
+
+        double total = 0;
+        foreach (var w in phonemesPerWord) total += w;
+        if (total <= 0) return EstimateWords(text, totalSeconds);
+
+        var aligned = new List<AlignedWord>(words.Length);
+        var cursor = 0.0;
+        for (var i = 0; i < words.Length; i++)
+        {
+            var span = totalSeconds * phonemesPerWord[i] / total;
+            aligned.Add(new AlignedWord { Text = words[i], StartSeconds = cursor, EndSeconds = cursor + span });
+            cursor += span;
+        }
+        return aligned;
     }
 
     /// <summary>
     /// Spreads the segment's words across its duration, weighted by word length.
     ///
     /// <para>
-    /// Reuses OmniVoice's estimator rather than growing a second one. That class is deliberately
-    /// separate from its engine so it can run without a model, and its untraced path — which is
-    /// what an empty <see cref="PhonemeTrace"/> selects — is precisely "weight each word by its
-    /// length", which is all that can be known here: audio.cpp phonemizes inside the engine with
-    /// eSpeak-ng and hands back no trace, no phonemes and no timings.
+    /// The reading used when nothing better is available: a non-English voice, or a run with no
+    /// phonemizer data installed. Reuses OmniVoice's estimator rather than growing a second one.
+    /// That class is deliberately separate from its engine so it can run without a model, and
+    /// its untraced path — which is what an empty <see cref="PhonemeTrace"/> selects — is
+    /// precisely "weight each word by its length", which is all that can be known when the
+    /// phonemes are the engine's own: audio.cpp phonemizes with eSpeak-ng and hands back no
+    /// trace, no phonemes and no timings.
     /// </para>
     /// </summary>
     internal static IReadOnlyList<AlignedWord> EstimateWords(string text, double totalSeconds) =>
         [.. OmniVoiceIpaAlignment.Proportional(text, new PhonemeTrace(), totalSeconds)
                 .Select(w => new AlignedWord { Text = w.Text, StartSeconds = w.StartSec, EndSeconds = w.EndSec })];
 
+    /// <summary>The whitespace split every index here is against — the one the ONNX Kokoro
+    /// aligns on, so a word means the same thing on both engines.</summary>
+    private static string[] SplitWords(string text) =>
+        text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+
     private void EnsureLoaded()
     {
-        if (_tts is not null) return;
         lock (_gate)
         {
+            // ⚠ THE WHOLE BODY IS UNDER THE LOCK NOW. `if (_tts is not null) return;` outside it
+            // let a second caller see the engine published while _g2p was still null, because the
+            // two are written in sequence with no barrier between them -- that caller would then
+            // synthesize without supplying phonemes and get the engine's own accent for one job.
+            if (_tts is not null) return;
+            // The phonemizer first: it is the cheaper failure, and a missing data tree is not a
+            // failure at all here — the engine has a G2P of its own, so an install without the
+            // phonemizer's data renders in eSpeak's accent rather than not rendering.
+            if (_g2p is null)
+            {
+                try
+                {
+                    _g2p = new KokoroPhonemizer(_dataDir);
+                    _chunker = new KokoroChunker(_g2p);
+                }
+                catch (Exception failure)
+                {
+                    // ⚠ ANY failure, not just a missing directory. The contract is that an absent
+                    // or unusable phonemizer costs the ACCENT and not the render, and narrowing
+                    // this to DirectoryNotFoundException meant a present-but-incomplete tree or a
+                    // corrupt data file threw out of Task.Run and failed the whole job -- on a
+                    // path that had no phonemizer dependency at all before this work.
+                    Console.WriteLine($"[audio.cpp] vernacula-phonemizer unavailable ({failure.Message}); "
+                                      + "the engine's own eSpeak-ng will pronounce this job.");
+                    _g2p = null;
+                    _chunker = null;
+                }
+            }
             _tts ??= new AudioCppTts(_modelPath, _backends, _threads);
         }
     }

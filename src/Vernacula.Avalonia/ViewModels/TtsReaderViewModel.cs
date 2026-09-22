@@ -111,7 +111,13 @@ internal sealed partial class TtsReaderViewModel : ObservableObject, IDisposable
     private TtsJobUiState?  _state;
     private string          _text = "";
     private string          _lang = "en";
+    /// <summary>The language whose word units to DISPLAY, or null for the whitespace split.</summary>
+    private string?         _wordLang;
     private string?         _audioPath;
+    /// <summary>The partially-written merged WAV of the job being watched, and how much of it the
+    /// chunks received so far account for. Only a seek uses these; see <see cref="SeekToWord"/>.</summary>
+    private string?         _liveAudioPath;
+    private double          _liveDuration;
     private double          _audioDuration;
     private AlignmentSidecar? _sidecar;
     private int             _sampleRate = ChatterboxConstants.S3GenSr;
@@ -163,7 +169,15 @@ internal sealed partial class TtsReaderViewModel : ObservableObject, IDisposable
         _audioPath    = null;
         _audioDuration = 0;
         _sidecar      = null;
+        _liveAudioPath = null;
+        _liveDuration  = 0;
         _lang         = TtsEngines.For(job).AnnotationLanguage(job);
+        // ⚠ A SEPARATE QUESTION FROM THE ANNOTATION LANGUAGE, and conflating them regressed a
+        // backend this work does not otherwise touch. The reader pairs sidecar words to displayed
+        // words by index, so it may only display the phonemizer's units when the engine that wrote
+        // the sidecar aligned against those same units. OmniVoice's language picker also offers
+        // Japanese, and its aligner splits on whitespace.
+        _wordLang     = TtsEngines.For(job).WordSegmentationLanguage(job);
         _sampleRate   = TtsEngines.For(job).SampleRate;
         lock (_receivedLock) { _receivedAudio.Clear(); _receivedWords.Clear(); }
         _streamWordCursor = 0;
@@ -248,6 +262,13 @@ internal sealed partial class TtsReaderViewModel : ObservableObject, IDisposable
         SetText(ReadDocument(job));
         _watchedJobId = job.JobId;
         IsRunning     = true;
+        // ⚠ THE RENDER WRITES THIS FILE AS IT GOES, so it is seekable long before the job ends
+        // (SegmentedSynthesis flushes it per paragraph). Held separately from _audioPath because
+        // the two are used for different things: _audioPath means "the finished render", and
+        // letting a half-written file answer to that name would make PlayPause abandon the live
+        // stream for a file that stops at the render frontier.
+        _liveAudioPath = job.OutputAudioPath;
+        _liveDuration  = 0;
         StatusMessage = Loc.Instance["tts_status_running"];
 
         // Subscribe to lifecycle first so a transition cannot slip between snapshot and live.
@@ -339,9 +360,13 @@ internal sealed partial class TtsReaderViewModel : ObservableObject, IDisposable
             }
             _streamWordCursor++;
         }
+        var chunkEnd = chunk.AudioStartSeconds + chunk.Audio24k.Length / (double)_sampleRate;
+        // The render frontier: how far into the growing WAV a seek may legitimately go. Taken from
+        // the chunk rather than the file's length so it can never lead what has actually been
+        // flushed — the event is raised after the write.
+        if (chunkEnd > _liveDuration) _liveDuration = chunkEnd;
         if (chunk.ChunkIndex < DisplayBlocks.Count)
-            DisplayBlocks[chunk.ChunkIndex].SetTiming(chunk.AudioStartSeconds,
-                chunk.AudioStartSeconds + chunk.Audio24k.Length / (double)_sampleRate);
+            DisplayBlocks[chunk.ChunkIndex].SetTiming(chunk.AudioStartSeconds, chunkEnd);
         HasAudio = true;
     }
 
@@ -452,7 +477,7 @@ internal sealed partial class TtsReaderViewModel : ObservableObject, IDisposable
 
         foreach (var seg in ParagraphSegmenter.Segment(extract))
         {
-            var block = BlockItemViewModel.FromSegment(seg, et, ranges, Words.Count, SeekToWord);
+            var block = BlockItemViewModel.FromSegment(seg, et, ranges, Words.Count, SeekToWord, _wordLang);
             DisplayBlocks.Add(block);
             foreach (var w in block.Words)
             {
@@ -1010,12 +1035,33 @@ internal sealed partial class TtsReaderViewModel : ObservableObject, IDisposable
         {
             try { _playback.SeekIntoFile(_audioPath, _audioDuration, word.StartSeconds); }
             catch (Exception ex) { StatusMessage = $"Seek failed: {ex.Message}"; }
+            return;
         }
-        else
+
+        // ⚠ MID-RENDER, AND THIS USED TO MOVE THE HIGHLIGHT WITHOUT MOVING THE AUDIO. The merged
+        // WAV is written paragraph by paragraph now, so everything already rendered is seekable —
+        // and a word only has a timing at all once its paragraph has been rendered, so a word the
+        // reader will accept is always inside the file. `follow` keeps playback going into the
+        // paragraphs that land after the click instead of stopping at the frontier the seek saw.
+        if (_liveAudioPath is not null && _liveDuration > 0
+            && word.StartSeconds < _liveDuration && File.Exists(_liveAudioPath))
         {
-            // Mid-render: only the highlight clock can be re-anchored within the streamed buffer.
-            _playback.SeekTo(word.StartSeconds);
+            try
+            {
+                _playback.SeekIntoFile(_liveAudioPath, _liveDuration, word.StartSeconds, follow: true);
+                // ⚠ AFTER, NOT BEFORE. Clearing this first meant that a SeekIntoFile which threw
+                // left the caller worse off than not clicking at all: SeekIntoFile's own first act
+                // is Stop(), so playback was already torn down, and with streaming disabled no
+                // further chunk would be appended either -- neither audio nor highlight moving,
+                // where before the click at least re-anchored the highlight on a running stream.
+                lock (_receivedLock) _streamingPlayback = false;
+                return;
+            }
+            catch (Exception ex) { StatusMessage = $"Seek failed: {ex.Message}"; }
         }
+
+        // Nothing rendered that far yet: the highlight clock is all there is to re-anchor.
+        _playback.SeekTo(word.StartSeconds);
     }
 
     private void OnPlaybackPositionChanged(double posSec)

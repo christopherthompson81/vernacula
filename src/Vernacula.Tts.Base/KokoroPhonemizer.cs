@@ -8,7 +8,12 @@ namespace Vernacula.Tts.Base;
 /// word it came from. <see cref="GroupSourceWords"/> is null when the phonemizer could not account
 /// for every group; callers fall back to an even split.
 /// </summary>
-public sealed record KokoroPhonemization(string Phonemes, IReadOnlyList<int>? GroupSourceWords);
+/// <param name="Words">The word units the map indexes into. Whitespace for most languages, the
+/// trace's own segmentation for the ones that do not space — see <see cref="WordSegmentation"/>.
+/// Carried on the result so a caller aligns against the SAME units the reader displays, rather
+/// than splitting the text a second time and hoping the two agree.</param>
+public sealed record KokoroPhonemization(
+    string Phonemes, IReadOnlyList<int>? GroupSourceWords, IReadOnlyList<WordSpan> Words);
 
 /// <summary>
 /// Kokoro's G2P frontend: text → canonical IPA (vernacula-phonemizer, <c>en</c> / <c>en-GB</c>) →
@@ -38,16 +43,48 @@ public sealed class KokoroPhonemizer
     /// <summary>Text → Kokoro-alphabet phoneme string.</summary>
     public string ToPhonemes(string text, bool british = false) => Phonemize(text, british).Phonemes;
 
+    /// <summary>Text → Kokoro-alphabet phoneme string, in <paramref name="lang"/>.</summary>
+    public string ToPhonemes(string text, string lang) => Phonemize(text, lang).Phonemes;
+
     /// <summary>Inner phoneme-token count (excludes the 2 pad tokens) for <paramref name="text"/>.</summary>
     public int CountTokens(string text, bool british = false)
         => Math.Max(0, KokoroVocab.Encode(ToPhonemes(text, british)).Length - 2);
 
+    /// <summary>The same count, phonemized as <paramref name="lang"/>.</summary>
+    /// <remarks>
+    /// ⚠ THE LANGUAGE MATTERS HERE AND A COMMENT ONCE CLAIMED IT DID NOT. The budget is in
+    /// phonemes, and how many phonemes a paragraph becomes absolutely depends on which G2P read
+    /// it: running the English one over kana or hanzi yields a number unrelated to the ja or cmn
+    /// render that will actually be sent, so a chunk measured in English can be far past the
+    /// engine's 510-symbol entry limit and the engine refuses the whole request.
+    /// </remarks>
+    public int CountTokens(string text, string lang)
+        => Math.Max(0, KokoroVocab.Encode(ToPhonemes(text, lang)).Length - 2);
+
     /// <summary>Text → Kokoro phonemes plus the phoneme-group → source-word map.</summary>
     public KokoroPhonemization Phonemize(string text, bool british = false)
+        => Phonemize(text, Lang(british));
+
+    /// <summary>
+    /// Text → Kokoro phonemes plus the group → source-word map, in <paramref name="lang"/>.
+    /// </summary>
+    /// <remarks>
+    /// ⚠ THE RENDER TARGET IS PER LANGUAGE AND IS NOT A COURTESY. <see cref="KokoroFormat"/> has
+    /// an arm for each — the English one collapses diphthongs into Kokoro's single-symbol
+    /// convention, the others mostly drop notation this repo carries and Kokoro does not (the tie
+    /// bar, the superscript off-glides) and decompose what Kokoro spells apart (Portuguese writes
+    /// a nasal vowel precomposed; Kokoro carries the base vowel plus the combining tilde). Every
+    /// one of the five Kokoro speaks lands entirely inside its 114-symbol vocabulary, measured
+    /// over the phonemizer's own goldens.
+    /// </remarks>
+    public KokoroPhonemization Phonemize(string text, string lang)
     {
-        var lang = Lang(british);
-        var trace = global::Vernacula.Phonemizer.Phonemizer.PhonemizeTrace(text, lang);
-        var map = GroupSourceWords(trace, text);
+        // Through WordSegmentation.Trace, which carries the #1408 retry: this call builds the
+        // group→word map, and it is just as able to be the first `ja` trace in the process as the
+        // segmenter's is.
+        var trace = WordSegmentation.Trace(text, lang);
+        var words = WordSegmentation.Segment(text, 0, text.Length, lang);
+        var map = GroupSourceWords(trace, text, words);
 
         string ipa;
         try
@@ -64,7 +101,7 @@ public sealed class KokoroPhonemizer
         if (map is not null && CountWordGroups(ipa) != map.Count)
             ipa = trace.Ipa;
 
-        return new KokoroPhonemization(KokoroFormat.Render(ipa, british), map);
+        return new KokoroPhonemization(KokoroFormat.Render(ipa, lang), map, words);
     }
 
     /// <summary>
@@ -73,20 +110,27 @@ public sealed class KokoroPhonemizer
     /// as several words). Null when any token is missing a span, since a partial map would assign
     /// the wrong words to every group after the gap.
     /// </summary>
-    private static List<int>? GroupSourceWords(PhonemeTrace trace, string text)
+    private static List<int>? GroupSourceWords(PhonemeTrace trace, string text, IReadOnlyList<WordSpan> words)
     {
-        if (!trace.Traced) return null;
+        if (!trace.Traced || words.Count == 0) return null;
 
-        // Character offset → index of the whitespace-delimited word containing it.
-        var wordAt = new int[text.Length];
-        var w = -1; var inWord = false;
+        // ⚠ CHARACTER OFFSET → WORD INDEX, OVER THE SUPPLIED UNITS RATHER THAN WHITESPACE. This
+        // used to scan for whitespace itself, which meant a language without spaces had exactly
+        // one word and every group mapped to it — the segmentation the trace had just produced was
+        // thrown away one line after it arrived.
+        //
+        // A character between two words (a space, or the 。 that follows a Japanese phrase) takes
+        // the index of the word that FOLLOWS it, which is what the old scan did for whitespace and
+        // is what keeps a token starting on a separator attached to the right side.
+        var wordAt = new int[text.Length + 1];
+        var next = 0;
         for (var i = 0; i < text.Length; i++)
         {
-            if (char.IsWhiteSpace(text[i])) { inWord = false; wordAt[i] = w + 1; continue; }
-            if (!inWord) { w++; inWord = true; }
-            wordAt[i] = w;
+            if (next < words.Count && i >= words[next].End) next++;
+            wordAt[i] = next < words.Count && i >= words[next].Start ? next : Math.Min(next, words.Count - 1);
         }
-        var wordCount = w + 1;
+        wordAt[text.Length] = words.Count - 1;
+        var wordCount = words.Count;
 
         var map = new List<int>();
         (int Start, int End)? lastSpan = null;
@@ -100,13 +144,34 @@ public sealed class KokoroPhonemizer
             else if (tok.Emitted.Count > 0)
                 groups = tok.Emitted.Count;
             else
-                return null;
+                // ⚠ A TOKEN THAT SAYS NOTHING CONTRIBUTES NOTHING, and this used to abandon the
+                // whole map. In English punctuation rides on the word before it and never becomes
+                // a token of its own, so the case never arose; a Japanese sentence ends with 。as
+                // its own token with no IPA at all, which nulled the map for every Japanese
+                // paragraph and sent the aligner to an even split.
+                continue;
+            if (groups == 0) continue;
+
+            var lastInSpan = wordAt[Math.Clamp(input.End - 1, 0, text.Length)];
+            var first = wordAt[input.Start];
+
+            // ⚠ ONE TOKEN CAN COVER SEVERAL WORD UNITS, which is how Mandarin arrives: a single
+            // token spans the sentence and carries one group per syllable, and WordSegmentation
+            // has already cut that span into one unit per hanzi on the same count. Distributing
+            // the groups across them is what makes the two agree — without it all six syllables
+            // mapped to word 0 and the highlight covered the sentence.
+            if (lastSpan != input && groups > 1 && lastInSpan - first + 1 == groups)
+            {
+                for (var g = 0; g < groups; g++) map.Add(first + g);
+                lastSpan = input; lastWord = lastInSpan;
+                continue;
+            }
+
             // Tokens that share one input span came from one normalizer rewrite. When the span is
             // one written word ("$3.14" → three, dollars, fourteen) they all belong to it; when it
             // covers several ("Mr. Smith" → mister, Smith) each successive token takes the next
             // word in the span, so the highlight moves with the speech instead of sticking.
-            var lastInSpan = wordAt[Math.Min(input.End, text.Length) - 1];
-            var word = lastSpan == input ? Math.Min(lastWord + 1, lastInSpan) : wordAt[input.Start];
+            var word = lastSpan == input ? Math.Min(lastWord + 1, lastInSpan) : first;
             if (word >= wordCount) return null;
             for (var g = 0; g < groups; g++) map.Add(word);
             lastSpan = input; lastWord = word;

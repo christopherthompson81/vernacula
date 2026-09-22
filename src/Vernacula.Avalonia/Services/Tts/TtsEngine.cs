@@ -78,6 +78,17 @@ internal abstract class TtsEngine
     // ── Describing a finished job ────────────────────────────────────────────
 
     /// <summary>The language the reader's IPA annotation is read in for this job.</summary>
+    /// <summary>
+    /// The language whose word units the reader should display, or null for the whitespace split.
+    ///
+    /// <para>
+    /// Null by default ON PURPOSE: this is only safe for an engine whose aligner produces the same
+    /// units, because the reader pairs sidecar words to displayed words positionally. See the
+    /// override on the audio.cpp Kokoro engine.
+    /// </para>
+    /// </summary>
+    public virtual string? WordSegmentationLanguage(JobRecord job) => null;
+
     public virtual string AnnotationLanguage(JobRecord job) => "en";
 
     /// <summary>The parts after the engine name in the reader's job line ("af_heart", "1.00×").</summary>
@@ -317,10 +328,24 @@ internal sealed class ChatterboxEngine : TtsEngine
 // ── Kokoro through audio.cpp ─────────────────────────────────────────────────
 
 /// <summary>
-/// The same model as <see cref="KokoroEngine"/> and a completely different stack: audio.cpp's
-/// C ABI instead of ONNX Runtime, its GGUF package instead of our export, its baked-in preset
-/// voices instead of voices/*.bin, and its own eSpeak-ng phonemization instead of
-/// vernacula-phonemizer.
+/// The same model as <see cref="KokoroEngine"/> and a mostly different stack: audio.cpp's C ABI
+/// instead of ONNX Runtime, its GGUF package instead of our export, and its baked-in preset
+/// voices instead of voices/*.bin.
+///
+/// <para>
+/// The two now share the pronunciation outright. EVERY voice here is spoken from
+/// vernacula-phonemizer's reading, handed to the engine through upstream audio.cpp#577's
+/// <c>phonemes</c> request option — all nine languages, not only English, because
+/// <see cref="KokoroFormat"/> renders each of them entirely inside Kokoro's vocabulary. So a word
+/// the user corrects in the dictionary changes on both engines, and choosing a backend is a
+/// choice about the runtime rather than about the accent.
+/// </para>
+///
+/// <para>
+/// ⚠ AND SUPPLYING THE PHONEMES IS WHAT MAKES THE JAPANESE VOICES WORK AT ALL. The package refuses
+/// them on its own G2P — it carries no UniDic resources — while carrying every voice embedding.
+/// No built-in G2P runs on this path, so the refusal has nothing to refuse.
+/// </para>
 ///
 /// <para>
 /// ⚠ IT IS NOT A REPLACEMENT FOR THE ONNX KOKORO AND IS NOT MEANT TO BE. The ONNX one reads the
@@ -335,25 +360,27 @@ internal sealed class AudioCppKokoroEngine : TtsEngine
     public override TtsBackendKind Kind => TtsBackendKind.AudioCppKokoro;
     public override string DisplayName => "Kokoro-82M (audio.cpp)";
     public override string Description =>
-        "The same Kokoro, run on audio.cpp rather than ONNX Runtime. 41 preset voices across "
-        + "English, Spanish, French, Hindi, Italian and Brazilian Portuguese, with phonemization "
-        + "inside the engine. Word timing is estimated, not measured.";
+        "The same Kokoro, run on audio.cpp rather than ONNX Runtime. All 54 preset voices across "
+        + "English, Spanish, French, Hindi, Italian, Brazilian Portuguese, Japanese and Mandarin, "
+        + "every one of them spoken from the same pronunciation dictionary as the ONNX engine. "
+        + "Word timing is measured from the model's own predicted durations.";
     public override int SampleRate => Vernacula.AudioCpp.AudioCppTts.SampleRate;
-    // No phonemizer data: this engine phonemizes internally. The reader still annotates in IPA
-    // when that data happens to be present, which is why it is not listed as REQUIRED here —
-    // an annotation is a nicety and a missing one must not block a render.
+    // Still not REQUIRED, although English now speaks from it. Without the data tree the engine
+    // falls back to its own eSpeak-ng and the document renders in a slightly different accent,
+    // which is not a reason to refuse the job — and the five other languages never needed it.
     public override TtsModelSet[] RequiredSets => [TtsModelSets.AudioCppKokoro];
 
     /// <summary>
-    /// The export's phoneme column is our reading of the text, not what the engine consumed —
-    /// audio.cpp phonemizes with eSpeak-ng inside the session and hands nothing back. So the
-    /// scheme says "ipa" and the distinction is on the page, exactly as it is for Chatterbox.
+    /// The export's phoneme column is our reading of the text, and it IS what the engine consumed
+    /// — for every voice now, since the stream is supplied rather than derived in all nine
+    /// languages. The column is canonical IPA where the engine was handed Kokoro's alphabet, which
+    /// is a difference of notation rather than of reading.
     /// </summary>
     public override string PhonemeScheme => "ipa";
 
     public override bool UsesVoiceList => true;
     public override bool UsesSpeed => true;
-    // ⚠ NOT UsesLanguage, even though this engine speaks six of them. The language is a function
+    // ⚠ NOT UsesLanguage, even though this engine speaks nine of them. The language is a function
     // of the voice — "af_" is American, "ff_" is French — and the engine REJECTS a mismatched
     // pair outright ("voice bm_george requires lang_code=b but request resolved to a"). Offering
     // the two as separate controls would be offering the user a way to fail the job.
@@ -373,7 +400,8 @@ internal sealed class AudioCppKokoroEngine : TtsEngine
         // others. Half the cores leaves the machine usable while a document renders.
         int threads = Math.Max(1, Environment.ProcessorCount / 2);
         return new AudioCppSynthesisService(
-            path, Vernacula.App.Services.AudioCppBackends.For(s.Current.ResolvedExecutionProvider), threads);
+            path, Vernacula.App.Services.AudioCppBackends.For(s.Current.ResolvedExecutionProvider), threads,
+            s.GetPhonemizerDataDir());
     }
 
     private static string? ModelPath(SettingsService s) =>
@@ -396,9 +424,8 @@ internal sealed class AudioCppKokoroEngine : TtsEngine
     }
 
     /// <summary>
-    /// Our reading of the text, for the export's CSV. The engine's own phonemes are not
-    /// obtainable — eSpeak-ng runs inside the session and the result carries no trace — so this
-    /// is informative rather than a record of what was spoken, in the language the voice implies.
+    /// Our reading of the text, for the export's CSV, in the language the voice implies — and the
+    /// reading the engine was actually given, for every voice rather than only the English ones.
     /// </summary>
     public override Func<string, string> CreatePhonemizer(SettingsService s, TtsJobSettings job)
     {
@@ -412,6 +439,20 @@ internal sealed class AudioCppKokoroEngine : TtsEngine
     public override string AnnotationLanguage(JobRecord job) =>
         Vernacula.AudioCpp.AudioCppKokoroVoices.PhonemizerLanguage(job.TtsVoice);
 
+    /// <summary>
+    /// This engine aligns against the phonemizer's own word units, so the reader may display them.
+    /// </summary>
+    /// <remarks>
+    /// ⚠ OPT-IN PER ENGINE, BECAUSE THE UNITS HAVE TO MATCH ON BOTH SIDES. The reader pairs
+    /// <c>sidecar.Words[k]</c> to its k-th displayed word by INDEX, so an engine whose aligner
+    /// splits on whitespace while the reader splits by trace would hand a Japanese document one
+    /// timing for a paragraph of many words — and every word after it in the document lands on the
+    /// wrong audio. Defaulting to null keeps every other backend on whitespace, which is what
+    /// their aligners produce.
+    /// </remarks>
+    public override string? WordSegmentationLanguage(JobRecord job) =>
+        Vernacula.AudioCpp.AudioCppKokoroVoices.PhonemizerLanguage(job.TtsVoice);
+
     public override IEnumerable<string> DescribeJob(JobRecord job)
     {
         if (!string.IsNullOrWhiteSpace(job.TtsVoice)) yield return job.TtsVoice;
@@ -420,8 +461,8 @@ internal sealed class AudioCppKokoroEngine : TtsEngine
 
     /// <summary>
     /// Shipped data, not a directory listing: the voices are baked into the GGUF and the ABI
-    /// cannot enumerate them. See <see cref="Vernacula.AudioCpp.AudioCppKokoroVoices"/> for how
-    /// that list was arrived at and which thirteen voices it leaves out.
+    /// cannot enumerate them. All 54 now — see <see cref="Vernacula.AudioCpp.AudioCppKokoroVoices"/>
+    /// for why the thirteen this used to leave out are usable once the phonemes are supplied.
     /// </summary>
     public override IReadOnlyList<string> AvailableVoices(SettingsService s) =>
         Vernacula.AudioCpp.AudioCppKokoroVoices.All;

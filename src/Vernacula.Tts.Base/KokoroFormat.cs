@@ -190,6 +190,17 @@ public static class KokoroFormat
     };
 
     /// <summary>
+    /// Whether <paramref name="lang"/> has a render target here — i.e. whether this repo can hand
+    /// Kokoro a phoneme stream for it rather than leaving the engine to phonemize the text.
+    /// </summary>
+    /// <remarks>
+    /// Measured over the phonemizer's goldens, 200 rows each: every one of these renders entirely
+    /// inside Kokoro's 114-symbol vocabulary, so a supplied stream needs nothing dropped.
+    /// </remarks>
+    public static bool CanRender(string? lang) =>
+        lang is "en" or "en-GB" or "en-US" or "es" or "fr" or "it" or "pt-BR" or "hi" or "ja" or "cmn";
+
+    /// <summary>
     /// Render canonical IPA from vernacula-phonemizer into a Kokoro-vocab phoneme string, for the
     /// language it was phonemized as. <paramref name="lang"/> is a phonemizer code
     /// (<c>en</c>, <c>en-GB</c>, <c>es</c>, <c>fr</c>, <c>hi</c>, <c>it</c>, <c>pt-BR</c>,
@@ -197,15 +208,15 @@ public static class KokoroFormat
     /// </summary>
     /// <remarks>
     /// <para>
-    /// ⚠ NOTHING IN THE APP CALLS THIS OVERLOAD YET, and that is the current state rather than an
-    /// oversight. The ONNX Kokoro goes through <see cref="Render(string, bool)"/>, and the
-    /// audio.cpp one phonemizes internally with eSpeak-ng and accepts no phonemes at all — so
-    /// this is the render target for a phoneme-input path that does not exist on this side of the
-    /// ABI yet. It is reached only from tests, which is why a mistake in it cannot be caught by
-    /// using the app.
+    /// ⚠ THIS OVERLOAD IS THE SHIPPED PATH NOW. It used to say that nothing called it — that the
+    /// audio.cpp engine phonemized internally and accepted no phonemes at all — which stopped
+    /// being true when the supplied-phoneme path landed. Every language the audio.cpp backend
+    /// speaks goes through here, so a mistake in it IS reachable by using the app.
     /// </para>
     /// <para>
-    /// ⚠ THE <c>cmn</c> ARM REQUIRES A VERNACULA-PHONEMIZER NEWER THAN THE PINNED SUBMODULE.
+    /// ⚠ THE <c>cmn</c> ARM REQUIRED A NEWER PHONEMIZER THAN THE SUBMODULE ONCE PINNED, and the
+    /// pin has since moved well past it, so the repairs below are correctly absent rather than
+    /// missing. Kept as history because re-adding them would double-apply.
     /// Repairs for <c>-ong</c> (oŋ → ʊŋ), <c>-un</c> (yən → yn) and the rounded medial in
     /// bo/po/mo/fo used to live here, compensating for defects in the phonemizer's own
     /// syllable-ipa table. Those defects are fixed at source, so the repairs were removed rather
