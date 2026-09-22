@@ -144,14 +144,54 @@ public static class WordSegmentation
                 // One group per hanzi, and nothing else in the span to have eaten one: safe to
                 // walk them onto the characters.
                 for (var k = from; k < to; k++)
-                    if (IsHan(text[k])) words.Add(new WordSpan(k, k + 1));
+                    if (IsHan(text[k])) Append(words, new WordSpan(k, k + 1));
             }
             else
             {
-                words.Add(new WordSpan(from, to));
+                Append(words, new WordSpan(from, to));
             }
         }
         return words;
+    }
+
+    /// <summary>
+    /// Adds a span, merging it into the previous one when the two overlap.
+    /// </summary>
+    /// <remarks>
+    /// ⚠ TWO UNITS THAT CLAIM THE SAME CHARACTERS ARE ONE UNIT. A normalizer expansion whose
+    /// provenance cannot reach back into the original reports the SAME input span for each token it
+    /// produced — <c>PDFファイルを開いてください</c> traces as three tokens
+    /// (<c>ピーディーエフ</c>, <c>ファイルを</c>, <c>開いてください</c>) all claiming the whole
+    /// sentence. Emitting one unit per token then offers the reader several clickable words that
+    /// light identical text, and only the first of them receives any time at all, because
+    /// <see cref="KokoroAlignment.WordsFromGroups"/> gives each later duplicate a zero-length marker.
+    ///
+    /// <para>
+    /// Measured over the phonemizer's 200-row <c>ja</c> goldens: 14 of 123 distinct rows carry
+    /// duplicate spans, ALL of them mixed-script (14 of the 49 rows containing latin or digits), and
+    /// the worst offers eight units that each cover 30 of the sentence's 34 characters. ⚠ AND THE
+    /// COUNT CHECK IN THE ALIGNER CANNOT SEE IT — groups and map entries agree, so the measured tier
+    /// engages and trusts them; being degenerate is invisible to a count the way being one out is.
+    /// </para>
+    ///
+    /// <para>
+    /// Merging is the honest answer rather than a workaround: if two tokens cannot say which
+    /// characters are theirs, those characters are one clickable unit whose time is the union of
+    /// their groups. Coarser than the token count suggests, correct at the boundary it reports, and
+    /// the same answer this already gives for an English rewrite where one written word becomes
+    /// several tokens ("$3.14" → three, dollars, fourteen). The spans are wrong at the source and
+    /// that is filed upstream; this is what keeps a wrong span from being shown as a confident one.
+    /// </para>
+    /// </remarks>
+    private static void Append(List<WordSpan> words, WordSpan span)
+    {
+        if (words.Count > 0 && span.Start < words[^1].End)
+        {
+            var last = words[^1];
+            words[^1] = new WordSpan(last.Start, Math.Max(last.End, span.End));
+            return;
+        }
+        words.Add(span);
     }
 
     /// <summary>Space-delimited groups carrying a letter — the phonemizer's stand-alone
