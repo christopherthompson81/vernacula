@@ -294,3 +294,58 @@ is why it survived.
 compares IPA strings, and the trace is not in the goldens, so a divergence this visible was
 structurally invisible. Not this repo's to fix, but worth knowing why a defect of this size lasted:
 nothing was looking.
+
+## Run 8 — 2026-09-22 — #1408 fixed upstream, and the retry removed against a control
+
+The phonemizer session fixed it (#1417) and reported the cause, which lands exactly where the
+narrowing pointed: `Normalize`'s **static constructor** builds its digit-kana table by calling
+`ToKatakana("れい")`. A static constructor runs lazily on first use, and for that class first use is
+inside `NormalizeJapanese` — *inside the traced window*. So it called `StartTrack("れい")` while the
+tracked string was the caller's whole sentence, the mismatch rule correctly refused the mapping, and
+the trace came back with every span null. Their `OnPoison` hook named it in one run:
+
+```
+POISON tracked="科学者たちが発表しました。" got="れい"
+  Provenance.StartTrack ← Rewriter.Rewrite ← Normalize.ToKatakana ← Normalize..cctor()
+```
+
+Three copies of that helper exist; only that one goes through the tracked seam, which is why
+TypeScript was always clean. ⚠ **The `Provenance.For` null was never the bug** — the equality check
+was untouched, and the contract it protects ("absent means not known, never identical") is what kept
+this coarse instead of confidently wrong.
+
+**Pin bumped `c6e26698` → `ac60b3c4`** (13 commits; several are the en-GB line descending from
+#1385) and the retry in `WordSegmentation.Trace` deleted.
+
+### The control is the part worth recording
+
+A passing check proves nothing here unless it can fail, and this defect is once per process — so
+anything running inside a test assembly is already warm. The probe is one trace, one language, one
+cold process, run against both pins:
+
+```
+ac60b3c4 (fixed)    lang=ja tokens=3 withInputSpan=3   OK
+c6e26698 (previous) lang=ja tokens=3 withInputSpan=0   POISONED
+```
+
+Same probe, same shape, only the pin differs — so the OK means the fix and not the probe. Then all
+nine languages this app speaks, one process each: **9 of 9 populated**, `cmn` 1/1, `ja` 3/3.
+
+Full suite after removal: 255 + 23 + 362 pass, 0 fail.
+
+**The peer hit the inverse of this and it is the same lesson.** Their first gate lived in the test
+assembly and passed *with the fix reverted*, because another test had already warmed `ja`. The
+correction was a standalone tool spawned in its own process — and one process covers all 189
+languages, since each initializes on its own first trace (~13 s together). My instinct that it had
+to be one process per language was half right; the constraint is the process, not the language.
+
+### Still no parity gate on the trace
+
+Their new gate catches cold-init poisoning, not a port divergence in ordinary spans, and the trace
+is still absent from the goldens the parity harness compares. Unchanged from Run 7 and still not
+this repo's to fix, but this repo now depends on trace spans in two languages, so it is worth
+knowing that the thing we depend on is gated for one failure mode and not the other.
+
+They also flagged that their C# suite had been red for thirteen merges — only ever run under a
+`--filter` — so "C# 189 byte-identical" reports through that stretch were parity-of-engine-output
+claims, not suite-green claims. Nothing that touched this case.
