@@ -388,3 +388,40 @@ English golden rows whose reading differs: 0 of 114
 corpus does not contain. So the honest statement is narrower than the warning *and* narrower than a
 clean bill of health: the English changes are real, aimed at tokens absent from our measurable
 surface, and not detectable from this repo.
+
+## Run 8 — 2026-09-22 — second bump, and the first one that moves a reading we can see
+
+Pin `6e2165c7` → `ed2d400e`, seven commits, **all `fix(en)`** — no core or Japanese changes, so the
+`ja`/`cmn` work above is untouched and the question is entirely what English does.
+
+Run 7 established the method and the caveat: measure the readings, and remember that a zero means
+"not exercised" rather than "unchanged". Kokoro phonemes for every golden row in the five languages
+this app speaks, both pins:
+
+```
+en:  1 of 114        es: 0 of 111        fr: 0 of 99
+ja:  0 of 123        cmn: 0 of 102
+```
+
+**One row, and it is the fix doing what it says.** `re-established` read with `ɹˈA` — *ray*, the note
+of the scale — and now reads `ɹˈi`:
+
+```
+- ... hæv bɪn ɹˈA ɪstˈæblɪʃt bᵻtwin ...
++ ... hæv bɪn ɹˈi ɪstˈæblɪʃt bᵻtwin ...
+```
+
+That is #1433, "a hyphenated `re-` is the prefix, not the note of the scale". A hyphenated `re-` is
+ordinary English prose rather than a niche token, which is why this batch reaches the corpus where
+the previous one did not.
+
+⚠ **The other six are still invisible from here, and that is the same caveat, not a clean result.**
+`TSO`, prime marks as feet and inches, `.5 kg` reading "five king", `°` in a coordinate, an
+enumerated list lead-in — all real changes, aimed at tokens this prose corpus does not contain. One
+visible row out of seven commits is a statement about the corpus, not about the batch.
+
+`ja` and `cmn` unchanged on every column, as expected with no core change in the range: the
+segmentation results in Runs 6 and 7 carry over unmodified.
+
+Cold-trace gate on the new pin: **189 of 189 languages, no poisons**. Suite: 95 + 257 + 23 + 362,
+0 failures.
