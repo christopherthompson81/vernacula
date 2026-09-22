@@ -82,12 +82,15 @@ public sealed class AudioCppSynthesisService : ITtsBackend
     {
         var voice = request.Voice;
         var speed = request.Speed;
-        // The phonemizer covers every language this package speaks, but KokoroFormat is an
-        // English render target: the other five would need their own mapping onto Kokoro's
-        // alphabet, and a symbol we got wrong is a refused paragraph rather than an accent.
+        // ⚠ EVERY LANGUAGE THE PACKAGE SPEAKS, not just English, and the earlier restriction here
+        // was a guess rather than a measurement. KokoroFormat has a render arm per language, and
+        // over the phonemizer's own goldens — 200 rows each — all seven non-English targets land
+        // ENTIRELY inside Kokoro's 114-symbol vocabulary: es, fr, it, pt-BR, hi, ja and cmn all
+        // at 100.0%. Nothing has to be dropped, so the "a symbol we got wrong is a refused
+        // paragraph" risk that justified English-only does not arise.
         var lang = AudioCppKokoroVoices.PhonemizerLanguage(voice);
         bool british = lang == "en-GB";
-        bool ours    = lang is "en" or "en-GB";
+        bool ours    = KokoroFormat.CanRender(lang);
 
         onProgress?.Invoke(new ProgressEvent("loading models"));
         await Task.Run(EnsureLoaded, cancellationToken).ConfigureAwait(false);
@@ -108,7 +111,7 @@ public sealed class AudioCppSynthesisService : ITtsBackend
                 // Run 4). On the phoneme path the split is ours to make, because only this G2P
                 // knows where its own stream may be cut.
                 var supplied = ours && _g2p is not null && _chunker is not null
-                    ? Supply(_g2p, _chunker, seg.Text, british, warn)
+                    ? Supply(_g2p, _chunker, seg.Text, lang, warn)
                     : null;
                 var spoken = tts.SpeakAligned(seg.Text, supplied?.Chunks, voice, speed);
                 var seconds = spoken.Audio.Length / (double)SampleRate;
@@ -161,7 +164,7 @@ public sealed class AudioCppSynthesisService : ITtsBackend
     /// </para>
     /// </remarks>
     internal static SuppliedPhonemes? Supply(KokoroPhonemizer g2p, KokoroChunker chunker,
-                                            string text, bool british, Action<string> warn)
+                                            string text, string lang, Action<string> warn)
     {
         var sourceWords = SplitWords(text);
         if (sourceWords.Length == 0) return null;
@@ -173,9 +176,12 @@ public sealed class AudioCppSynthesisService : ITtsBackend
         var wordOffset = 0;
         var dropped = new List<char>();
 
-        foreach (var chunk in chunker.ChunkForSynthesis(text, british))
+        // ⚠ THE CHUNKER STILL MEASURES IN ENGLISH and that is deliberate: it exists to keep a
+        // chunk inside Kokoro's 512-token window, and the token count of a rendered stream does
+        // not depend on which language rendered it. Only the reading does.
+        foreach (var chunk in chunker.ChunkForSynthesis(text, british: lang == "en-GB"))
         {
-            var (rendered, groupSourceWords) = g2p.Phonemize(chunk, british);
+            var (rendered, groupSourceWords) = g2p.Phonemize(chunk, lang);
 
             // Filtered, not sent raw. The engine refuses a symbol its vocabulary has no id for
             // — deliberately, because a caller with its own G2P can correct one — and the ONNX

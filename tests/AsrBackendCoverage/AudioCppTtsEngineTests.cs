@@ -42,7 +42,7 @@ public class AudioCppTtsEngineTests
     public void EveryShippedVoiceIsDistinctAndHasABakedInLanguage()
     {
         var all = AudioCppKokoroVoices.All;
-        Assert.Equal(41, all.Length);
+        Assert.Equal(54, all.Length);
         Assert.Equal(all.Length, all.Distinct().Count());
         foreach (var voice in all)
         {
@@ -72,26 +72,40 @@ public class AudioCppTtsEngineTests
     }
 
     /// <summary>
-    /// The thirteen voices the family advertises and the installed package will not render: the
-    /// Japanese ones want UniDic resources this GGUF has no copy of, and the Chinese ones hit a
-    /// vocab missing a phoneme symbol. They are left out so the failure cannot land after a
-    /// document has already been queued.
+    /// The thirteen voices this table used to exclude, because the installed package refused
+    /// them.
+    ///
+    /// <para>
+    /// ⚠ BOTH REFUSALS WERE ABOUT THE ENGINE'S OWN G2P, WHICH THIS APP NO LONGER USES. The
+    /// Japanese ones wanted UniDic resources the GGUF has no copy of; the Chinese ones hit a
+    /// vocabulary missing a symbol the engine's own phonemizer produced. Every voice EMBEDDING
+    /// was in the package the whole time — 54 of 54 sidecars — so supplying the phonemes removes
+    /// the only thing that was failing. Measured: jf_alpha renders 2.38 s of audio on the
+    /// supplied path where the text path still refuses outright.
+    /// </para>
     /// </summary>
     [Theory]
-    [InlineData("jf_alpha")]
-    [InlineData("jm_kumo")]
-    [InlineData("zf_xiaoxiao")]
-    [InlineData("zm_yunyang")]
-    public void TheVoicesThisPackageCannotRenderAreNotOffered(string voice)
+    [InlineData("jf_alpha", "ja", "ja")]
+    [InlineData("jm_kumo", "ja", "ja")]
+    [InlineData("zf_xiaoxiao", "zh", "cmn")]
+    [InlineData("zm_yunyang", "zh", "cmn")]
+    public void TheVoicesTheEnginesOwnG2pRefusedAreOfferedNow(string voice, string engineLang, string phonemizerLang)
     {
-        Assert.DoesNotContain(voice, AudioCppKokoroVoices.All);
-        Assert.False(AudioCppKokoroVoices.IsKnown(voice));
+        Assert.Contains(voice, AudioCppKokoroVoices.All);
+        Assert.True(AudioCppKokoroVoices.IsKnown(voice));
+        Assert.Equal(engineLang, AudioCppKokoroVoices.EngineLanguage(voice));
+        // ⚠ `cmn`, not `zh`: the engine's language vocabulary and the phonemizer's are different
+        // sets that merely overlap, which is the reason the two tables exist separately.
+        Assert.Equal(phonemizerLang, AudioCppKokoroVoices.PhonemizerLanguage(voice));
+        // And a render target has to exist, or supplying is not possible and the voice would be
+        // offered only to fail the way it used to.
+        Assert.True(KokoroFormat.CanRender(phonemizerLang));
     }
 
     [Fact]
     public void AVoiceTheTableDoesNotKnowIsRejectedBeforeTheDocumentIsQueued()
     {
-        Assert.NotNull(Engine.DescribeJobIssue(null!, Job("jf_alpha")));
+        Assert.NotNull(Engine.DescribeJobIssue(null!, Job("qq_nobody")));
         Assert.NotNull(Engine.DescribeJobIssue(null!, Job("")));
         // A voice it does know gets past the job check; whether the PACKAGE is on disk is a
         // different question, asked of RequiredSets rather than here.
@@ -190,7 +204,7 @@ public class AudioCppTtsEngineTests
         // than degrades: an empty entry is a caller error, and so is a symbol with no token id.
         // Both are checked here because the engine's refusal lands after a document is queued.
         const string text = "The button was forgotten, and it cost $3.14 on 24 March.";
-        var supplied = AudioCppSynthesisService.Supply(g2p, chunker, text, british: false, _ => { });
+        var supplied = AudioCppSynthesisService.Supply(g2p, chunker, text, "en", _ => { });
 
         Assert.NotNull(supplied);
         Assert.NotEmpty(supplied!.Chunks);
@@ -213,7 +227,7 @@ public class AudioCppTtsEngineTests
         // window has to arrive as a list, and that is this repo's chunker doing the cutting.
         var text = string.Join(' ', Enumerable.Repeat(
             "The harbour was quiet this morning, and the boats had not yet returned.", 20));
-        var supplied = AudioCppSynthesisService.Supply(g2p, chunker, text, british: false, _ => { });
+        var supplied = AudioCppSynthesisService.Supply(g2p, chunker, text, "en", _ => { });
 
         Assert.NotNull(supplied);
         Assert.True(supplied!.Chunks.Count > 1, "a 20-sentence paragraph came back as one entry");
@@ -229,7 +243,7 @@ public class AudioCppTtsEngineTests
         // phonemes. Letter-weighted, the first outlasts the second by more than twice; from the
         // phonemes they are close. This is the whole gain of supplying the stream for alignment.
         const string text = "through spa";
-        var supplied = AudioCppSynthesisService.Supply(g2p, chunker, text, british: false, _ => { });
+        var supplied = AudioCppSynthesisService.Supply(g2p, chunker, text, "en", _ => { });
         Assert.NotNull(supplied?.PhonemesPerWord);
 
         var words = AudioCppSynthesisService.SpreadByWeight(text, supplied!.PhonemesPerWord!, 2.0);

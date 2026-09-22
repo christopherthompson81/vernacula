@@ -38,14 +38,31 @@ public sealed class KokoroPhonemizer
     /// <summary>Text → Kokoro-alphabet phoneme string.</summary>
     public string ToPhonemes(string text, bool british = false) => Phonemize(text, british).Phonemes;
 
+    /// <summary>Text → Kokoro-alphabet phoneme string, in <paramref name="lang"/>.</summary>
+    public string ToPhonemes(string text, string lang) => Phonemize(text, lang).Phonemes;
+
     /// <summary>Inner phoneme-token count (excludes the 2 pad tokens) for <paramref name="text"/>.</summary>
     public int CountTokens(string text, bool british = false)
         => Math.Max(0, KokoroVocab.Encode(ToPhonemes(text, british)).Length - 2);
 
     /// <summary>Text → Kokoro phonemes plus the phoneme-group → source-word map.</summary>
     public KokoroPhonemization Phonemize(string text, bool british = false)
+        => Phonemize(text, Lang(british));
+
+    /// <summary>
+    /// Text → Kokoro phonemes plus the group → source-word map, in <paramref name="lang"/>.
+    /// </summary>
+    /// <remarks>
+    /// ⚠ THE RENDER TARGET IS PER LANGUAGE AND IS NOT A COURTESY. <see cref="KokoroFormat"/> has
+    /// an arm for each — the English one collapses diphthongs into Kokoro's single-symbol
+    /// convention, the others mostly drop notation this repo carries and Kokoro does not (the tie
+    /// bar, the superscript off-glides) and decompose what Kokoro spells apart (Portuguese writes
+    /// a nasal vowel precomposed; Kokoro carries the base vowel plus the combining tilde). Every
+    /// one of the five Kokoro speaks lands entirely inside its 114-symbol vocabulary, measured
+    /// over the phonemizer's own goldens.
+    /// </remarks>
+    public KokoroPhonemization Phonemize(string text, string lang)
     {
-        var lang = Lang(british);
         var trace = global::Vernacula.Phonemizer.Phonemizer.PhonemizeTrace(text, lang);
         var map = GroupSourceWords(trace, text);
 
@@ -64,7 +81,7 @@ public sealed class KokoroPhonemizer
         if (map is not null && CountWordGroups(ipa) != map.Count)
             ipa = trace.Ipa;
 
-        return new KokoroPhonemization(KokoroFormat.Render(ipa, british), map);
+        return new KokoroPhonemization(KokoroFormat.Render(ipa, lang), map);
     }
 
     /// <summary>

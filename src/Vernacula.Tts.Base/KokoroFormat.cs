@@ -215,6 +215,17 @@ public static class KokoroFormat
     /// IPA as literals, and nothing else calls in.
     /// </para>
     /// </remarks>
+    /// <summary>
+    /// Whether <paramref name="lang"/> has a render target here — i.e. whether this repo can hand
+    /// Kokoro a phoneme stream for it rather than leaving the engine to phonemize the text.
+    /// </summary>
+    /// <remarks>
+    /// Measured over the phonemizer's goldens, 200 rows each: every one of these renders entirely
+    /// inside Kokoro's 114-symbol vocabulary, so a supplied stream needs nothing dropped.
+    /// </remarks>
+    public static bool CanRender(string? lang) =>
+        lang is "en" or "en-GB" or "en-US" or "es" or "fr" or "it" or "pt-BR" or "hi" or "ja" or "cmn";
+
     public static string Render(string ipa, string lang)
     {
         if (string.IsNullOrEmpty(ipa)) return ipa ?? string.Empty;

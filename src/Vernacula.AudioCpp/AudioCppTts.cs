@@ -15,21 +15,20 @@ namespace Vernacula.AudioCpp;
 /// convention encodes.
 /// </para>
 /// <para>
-/// ⚠ THIS TABLE IS MEASURED, NOT COPIED. The family advertises 54 preset voices; the package
-/// the catalogue installs (kokoro_82m_q8_0) renders 41 of them. The missing thirteen are two
-/// whole languages, and each fails naming the package rather than the voice:
+/// ⚠ THIS TABLE IS MEASURED, NOT COPIED, AND IT NOW LISTS ALL 54. It used to list 41: the
+/// thirteen Japanese and Chinese voices were excluded because the installed package refused
+/// them, each failure naming the package rather than the voice — "Kokoro UniDic resources are
+/// not bundled in this GGUF" for the five Japanese, "Kokoro vocab is missing phoneme symbol: H"
+/// for the eight Chinese.
 /// </para>
-/// <list type="bullet">
-/// <item>the five Japanese voices — "Kokoro UniDic resources are not bundled in this GGUF;
-/// re-export the model with --embed-multilingual-resources to use Japanese voices";</item>
-/// <item>the eight Chinese voices — "Kokoro vocab is missing phoneme symbol: H".</item>
-/// </list>
 /// <para>
-/// They are left out because a listed voice that fails is worse than an absent one: the failure
-/// lands after a document has been queued. If a multilingual export ever becomes what gets
-/// installed, adding <c>j</c> and <c>z</c> back here and to <see cref="EngineLanguages"/> is the
-/// whole change. The binding cannot enumerate voices, so this cannot be derived at run time —
-/// see docs/investigations/audiocpp_tts_backend_investigation.md Run 3.
+/// ⚠ BOTH REFUSALS WERE ABOUT THE ENGINE'S OWN G2P, WHICH THIS APP NO LONGER USES. Every voice
+/// embedding was in the package all along — 54 of 54 sidecars — and only the grapheme-to-phoneme
+/// resources were missing. Supplying the phonemes means no built-in G2P runs, so the Japanese
+/// refusal simply does not arise: measured, jf_alpha and jm_kumo render 2.38 s and 3.08 s of
+/// audio where the text path still refuses outright. The Chinese one turned out to be stale
+/// besides — that engine defect was fixed upstream, and those voices now work on either path.
+/// See docs/investigations/audiocpp_multilingual_investigation.md.
 /// </para>
 /// </remarks>
 public static class AudioCppKokoroVoices
@@ -39,6 +38,7 @@ public static class AudioCppKokoroVoices
     {
         ['a'] = "en-us", ['b'] = "en-gb", ['e'] = "es", ['f'] = "fr-fr",
         ['h'] = "hi",    ['i'] = "it",    ['p'] = "pt-br",
+        ['j'] = "ja",    ['z'] = "zh",
     };
 
     /// <summary>
@@ -52,6 +52,9 @@ public static class AudioCppKokoroVoices
     {
         ['a'] = "en", ['b'] = "en-GB", ['e'] = "es", ['f'] = "fr",
         ['h'] = "hi", ['i'] = "it",    ['p'] = "pt-BR",
+        // ⚠ `cmn`, NOT `zh`. The engine's language code and the phonemizer's are two different
+        // vocabularies that merely overlap, which is why these tables are separate at all.
+        ['j'] = "ja", ['z'] = "cmn",
     };
 
     /// <summary>Every voice this package renders, grouped by language in the order it lists them.</summary>
@@ -71,6 +74,10 @@ public static class AudioCppKokoroVoices
         "hf_alpha", "hf_beta", "hm_omega", "hm_psi",
         "if_sara", "im_nicola",
         "pf_dora", "pm_alex", "pm_santa",
+        // Japanese (j → ja), Mandarin (z → zh)
+        "jf_alpha", "jf_gongitsune", "jf_nezumi", "jf_tebukuro", "jm_kumo",
+        "zf_xiaobei", "zf_xiaoni", "zf_xiaoxiao", "zf_xiaoyi",
+        "zm_yunjian", "zm_yunxi", "zm_yunxia", "zm_yunyang",
     ];
 
     /// <summary>Whether this build would offer <paramref name="voice"/> at all.</summary>
