@@ -259,3 +259,38 @@ is deleted the day it is fixed upstream. Reported to the phonemizer session with
 
 **The test found this, not the app.** A whitespace fallback that silently produces something
 plausible is exactly the kind of degradation that never surfaces in use.
+
+### Narrowed, and filed upstream as vernacula-phonemizer#1408
+
+The phonemizer session reproduced it and narrowed it four ways that each would have sent a fix
+somewhere else: it is **C# only** (the TypeScript engine is correct cold, so this is a port
+divergence), it is **not about tracing** (a plain untraced `Phonemize` also warms it, so the
+trigger is first-use initialisation on the Japanese path), tracing another language first does not
+help, and it is **not "lazily-loaded languages"** — ten swept, `ja` alone, including among the other
+non-spacing scripts.
+
+Mechanism as far as they took it: `Trace.Stop` resolves spans through `Provenance.For(r.Normalized)`
+which returns the mapping only when `tracked == normalized`, and something in Japanese first-use
+init runs a tracked rewriter over a string that is not the caller's input. ⚠ **Returning null there
+is the CORRECT behaviour** — `InputSpan`'s contract is "absent means not known, never identical" —
+and it is what saved this. A confident wrong offset would have cut Japanese at the wrong characters
+and produced a plausible, silently wrong highlight; the null merely made it coarse.
+
+Two measurements contributed back, one cold process per language:
+
+```
+en en-GB es fr it pt-BR hi cmn    cold=present
+ja                                cold=ALL NULL  retry=present  third=present
+
+ja : 25 golden rows, one cold process · lost spans on 1 (row 0) · retry failed twice on 0
+cmn: 25 rows · lost spans on 0 · hi: 25 rows · lost spans on 0
+```
+
+So it is strictly the first call in a process, it warms globally for the language rather than per
+text, and one retry has always sufficed — the blast radius is exactly one trace per process, which
+is why it survived.
+
+⚠ **AND THE GENERAL GAP IS THAT THE TRACE HAS NO PARITY GATE AT ALL.** The port's parity harness
+compares IPA strings, and the trace is not in the goldens, so a divergence this visible was
+structurally invisible. Not this repo's to fix, but worth knowing why a defect of this size lasted:
+nothing was looking.
