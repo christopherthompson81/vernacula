@@ -17,15 +17,16 @@ namespace Vernacula.App.Services.Tts;
 /// as it is rendered, per-segment WAVs, one sidecar at the end.
 ///
 /// <para>
-/// ⚠ ENGLISH IS SPOKEN FROM OUR OWN PHONEMES, NOT THE ENGINE'S. audio.cpp's Kokoro phonemizes
+/// ⚠ EVERY VOICE IS SPOKEN FROM OUR OWN PHONEMES, NOT THE ENGINE'S. audio.cpp's Kokoro phonemizes
 /// with eSpeak-ng; upstream audio.cpp#577 added a <c>phonemes</c> request option that takes a
-/// caller's stream instead, and for an English voice this passes vernacula-phonemizer's reading
-/// rendered through <see cref="KokoroFormat"/> — the same frontend the ONNX Kokoro uses. The
-/// point is that the two engines now say a word the SAME WAY: the dictionary the user can see,
-/// correct and re-hear is the one that decides, whichever backend renders it. The five
-/// non-English voices keep the engine's own G2P, and so does any run where the phonemizer's data
-/// tree is absent; there is no setting, because "which pronunciation dictionary is in force" is
-/// not a thing a reader should have to choose per document.
+/// caller's stream instead, and this passes vernacula-phonemizer's reading rendered through
+/// <see cref="KokoroFormat"/> — the same frontend the ONNX Kokoro uses — for all nine languages
+/// the package speaks, each of which renders entirely inside Kokoro's vocabulary. The point is
+/// that the two engines now say a word the SAME WAY: the dictionary the user can see, correct and
+/// re-hear is the one that decides, whichever backend renders it. Only a run where the
+/// phonemizer's data tree is absent falls back to the engine's own G2P; there is no setting,
+/// because "which pronunciation dictionary is in force" is not a thing a reader should have to
+/// choose per document.
 /// </para>
 ///
 /// <para>
