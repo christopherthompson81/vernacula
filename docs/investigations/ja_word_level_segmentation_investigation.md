@@ -104,6 +104,11 @@ and are trusted.
 
 ## Where the fix belongs
 
+> **The mechanism in this section is wrong — see Run 6.** The cause is not the Japanese normalizer
+> and not an expansion at all; it is a `\p{L}+` rewrite in `normalizeRomans`, which runs over every
+> language. The *shape* of the diagnosis held, the placement did not. The recommendation to decline
+> on indistinguishable spans is also withdrawn there.
+
 **Upstream**, primarily. `PDF` → `ピーディーエフ` is a normalizer expansion, and provenance cannot map
 the expanded kana back to sub-spans of the original — so it attributes the **whole input** to every
 token. Their own contract says `InputSpan` null means "not known, never identical", and a whole-input
@@ -241,3 +246,69 @@ reverted is part of the control.
 
 Corpora re-measured after all three fixes — `ja` 0 degenerate / 4.33 chars per unit, `cmn` 0
 degenerate / 1.00 — and the full suite is 95 + 257 + 23 + 362, 0 failures.
+
+
+## Run 6 — 2026-09-22 — the cause was one layer up, and not Japanese
+
+The phonemizer session reproduced and fixed it (#1420). **My diagnosis had the right shape and the
+wrong placement**, and the difference matters here because it is not `ja`-specific.
+
+I read it as `PDF` → `ピーディーエフ` being unable to map expanded kana back to sub-spans. They dumped
+the per-character mapping after each stage and it was **correct throughout** — `ピーディーエフ` mapped
+to `[0,3)`, the rest 1:1. Instrumenting the rewriter to report any match of 8+ characters named it
+in one run:
+
+```
+WIDE 15ch  \p{L}+  on "PDFファイルを開いてください"
+  at normalizeRomans (src/core/roman.ts:207)   ← runs over EVERY language
+```
+
+`normalizeRomans` rewrites on `\p{L}+` and returns the token unchanged when it is not a Roman
+numeral. ⚠ **In a script without spaces there is no word break for `\p{L}+` to stop at**, so the
+match is the whole clause, and the rewriter stamped the match's span across every character of the
+replacement even though the replacement *was* the match. Fixed by carrying the original
+per-character mapping through an identical replacement — and only identity is safe, since an
+equal-length but different replacement has no guaranteed correspondence.
+
+**And the fast path explains the 14-of-14 exactly.** `normalizeRomans` returns early when there are
+no Roman letters, so a pure-kana sentence never reaches the rewrite. The defect was absent from
+precisely the sentences anyone reaches for first when testing Japanese, and present in precisely the
+ones with a latin letter. "All 14 mixed-script" was not a correlation to note — it was the mechanism.
+
+```
+ja rows where two tokens share a span:  14 → 3
+fleet-wide (35,021 rows with 2+ spans): 4,639 → 4,262
+```
+
+### Withdrawing the recommendation this document made
+
+Run 3 suggested `Align` should decline the measured tier when spans are indistinguishable. ⚠ **That
+would have been a bug.** Two tokens sharing a span is frequently *correct* — a numeral expansion
+legitimately produces several tokens from one source span, which is what the other 4,262 fleet rows
+are. A blanket decline would throw away good expansions along with bad spans.
+
+Merging, which is what was actually built, does not have that failure: for the two languages that
+reach `FromTrace`, several tokens on one span means one clickable unit whose time is the union of
+their groups, and that is the right answer whether the shared span came from a legitimate expansion
+or from the `\p{L}+` artefact. **The implementation was right and this document's advice was not**,
+which is worth recording precisely because the advice reads more confident than the code.
+
+### What remains after the upstream fix
+
+`ja` keeps a residue of 3, which is numeral/unit coarseness — `83 m` gives one token spanning `83 m`
+and another spanning `83 mです`. That is *overlap*, not collapse: a different and smaller thing, and
+the merge handles it. So the guard stays useful rather than becoming inert, which is not what Run 4
+predicted.
+
+### On granularity, the question that started this
+
+They declined to change the tokenizer, on these numbers: median 4.27 chars per unit with
+`彼女は|新しい|本を|読んで|います` already word-level is not a tokenizer that needs moving. Nothing
+finer is exposed today — `segmentText` works on bunsetsu units, and the readings map it consults does
+hold sub-units, but they are used during longest-match and not retained, so there is no API for them.
+
+⚠ **And the decisive reason is the one from Run 1, which they agreed with:** one IPA group per trace
+token means a subdivision would have no measured audio boundary behind it, so exposing sub-units
+would hand this repo an estimate dressed as a boundary. If the audio side ever gains per-mora groups
+the question reopens; until then the answer to "can Japanese highlighting be more word-level" is that
+it already is, and the thing that made it feel otherwise is fixed at both ends.

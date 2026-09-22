@@ -182,11 +182,10 @@ public static class WordSegmentation
     /// Adds a span, merging it into the previous one when the two overlap.
     /// </summary>
     /// <remarks>
-    /// ⚠ TWO UNITS THAT CLAIM THE SAME CHARACTERS ARE ONE UNIT. A normalizer expansion whose
-    /// provenance cannot reach back into the original reports the SAME input span for each token it
-    /// produced — <c>PDFファイルを開いてください</c> traces as three tokens
-    /// (<c>ピーディーエフ</c>, <c>ファイルを</c>, <c>開いてください</c>) all claiming the whole
-    /// sentence. Emitting one unit per token then offers the reader several clickable words that
+    /// ⚠ TWO UNITS THAT CLAIM THE SAME CHARACTERS ARE ONE UNIT. A rewrite whose match covers more
+    /// than the token it is rewriting stamps that match's span across every token it produced —
+    /// <c>PDFファイルを開いてください</c> traced as three tokens (<c>ピーディーエフ</c>,
+    /// <c>ファイルを</c>, <c>開いてください</c>) all claiming the whole sentence. Emitting one unit per token then offers the reader several clickable words that
     /// light identical text, and only the first of them receives any time at all, because
     /// <see cref="KokoroAlignment.WordsFromGroups"/> gives each later duplicate a zero-length marker.
     ///
@@ -203,8 +202,21 @@ public static class WordSegmentation
     /// characters are theirs, those characters are one clickable unit whose time is the union of
     /// their groups. Coarser than the token count suggests, correct at the boundary it reports, and
     /// the same answer this already gives for an English rewrite where one written word becomes
-    /// several tokens ("$3.14" → three, dollars, fourteen). The spans are wrong at the source and
-    /// that is filed upstream; this is what keeps a wrong span from being shown as a confident one.
+    /// several tokens ("$3.14" → three, dollars, fourteen) — which is also why MERGING rather than
+    /// DECLINING is the right response: tokens sharing a span is frequently correct, so a check
+    /// that refused to align on it would throw away good expansions along with bad spans.
+    /// </para>
+    ///
+    /// <para>
+    /// ⚠ AND THE CAUSE WAS NOT THE JAPANESE PATH, which is why this guard is worth keeping even
+    /// after the upstream fix. vernacula-phonemizer#1420: <c>normalizeRomans</c> rewrites on
+    /// <c>\p{L}+</c> and runs over EVERY language, and in a script without spaces there is no word
+    /// break for that match to stop at, so it matched the whole clause and stamped its span across
+    /// the replacement. Its fast path skips text with no Roman letters — so the defect was absent
+    /// from exactly the pure-kana sentences anyone reaches for first when testing Japanese, and
+    /// present in exactly the ones containing a latin letter. The fix takes ja from 14 collapsed
+    /// rows to 3; the residue is numeral/unit overlap ("83 m" and "83 mです"), a smaller and
+    /// different thing that this merge still handles.
     /// </para>
     /// </remarks>
     private static void Append(List<WordSpan> words, WordSpan span)
