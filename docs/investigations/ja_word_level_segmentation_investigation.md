@@ -354,8 +354,37 @@ on it.
 Cold-trace gate re-run on the new pin: **189 of 189 languages, no poisons**. Full suite:
 95 + 257 + 23 + 362, 0 failures.
 
-**Scope.** Of the five commits, one is core provenance (`Rewriter`, `Provenance`, `JsRegex`, and the
-TypeScript twin) and the rest are English data and lexicon work, including #1418 reverting 26 rows on
-re-arbitrated evidence and #1425 porting code-slot unit guards to C#. So this carries English
-behaviour changes as well as the fix — the same shape as the previous bump, and the reason the
-English goldens are worth a look rather than a nod.
+**Scope, and the part the review actually had to check.** Of the five commits, one is core
+provenance (`Rewriter`, `Provenance`, `JsRegex`, and the TypeScript twin) and the rest are English
+data and lexicon work, including #1418 reverting 26 rows on re-arbitrated evidence and #1425 porting
+code-slot unit guards to C#.
+
+⚠ **The core change touches every language, and our trace coverage outside `ja`/`cmn` is thin** — a
+regression there would show as lost spans or new collapses in languages nothing here asserts on.
+Measured across both pins:
+
+```
+              tokens   withInputSpan   rows with shared spans
+en  ac60b3c4    2593    2593 (100%)             25
+en  6e2165c7    2593    2593 (100%)             23
+es / fr         unchanged on every column
+```
+
+Token counts identical, span coverage 100% on both, English shared-span rows 25 → 23. No spans lost
+and no new collapses. The residual shared-span rows in `en`/`es`/`fr` are the legitimate kind — a
+numeral expansion producing several tokens from one source span — and English does not reach
+`FromTrace` at all, so they do not affect units here either way.
+
+On the English *readings*, the first draft of this entry said the bump "carries English behaviour
+changes", which was vaguer than the evidence supports. Kokoro phonemes for every English golden row,
+both pins:
+
+```
+English golden rows whose reading differs: 0 of 114
+```
+
+⚠ **Zero-diff means "not exercised", not "no change".** Those dictionary rows genuinely changed;
+#1418 and #1425 target specific lexical items (`µin`, `CoCr`, `V6L 2T5`) that the golden prose
+corpus does not contain. So the honest statement is narrower than the warning *and* narrower than a
+clean bill of health: the English changes are real, aimed at tokens absent from our measurable
+surface, and not detectable from this repo.
