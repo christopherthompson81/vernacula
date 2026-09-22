@@ -59,8 +59,8 @@ public sealed class KokoroTts : IDisposable
     /// </summary>
     public KokoroSpeech SpeakAligned(string text, string voice, float speed = 1.0f, bool british = false)
     {
-        var (phonemes, groupSourceWords) = _g2p.Phonemize(text, british);
-        return Align(text, groupSourceWords, _kokoro.SynthesizeWithDurations(phonemes, voice, speed));
+        var spoken = _g2p.Phonemize(text, british);
+        return Align(text, spoken, _kokoro.SynthesizeWithDurations(spoken.Phonemes, voice, speed));
     }
 
     /// <summary>
@@ -92,7 +92,7 @@ public sealed class KokoroTts : IDisposable
             for (var g = 0; g < group.Count; g++)
             {
                 var i = group[g];
-                results[i] = Align(texts[i], ph[i].GroupSourceWords, outs[g]);
+                results[i] = Align(texts[i], ph[i], outs[g]);
             }
         }
         return results;
@@ -141,7 +141,7 @@ public sealed class KokoroTts : IDisposable
 
     /// <summary>Map one synthesis result onto per-word timings. Shared by the single and
     /// batched paths so they cannot drift apart.</summary>
-    private static KokoroSpeech Align(string text, IReadOnlyList<int>? groupSourceWords, KokoroOutput o)
+    private static KokoroSpeech Align(string text, KokoroPhonemization spoken, KokoroOutput o)
     {
         if (o.Audio.Length == 0)
             return new KokoroSpeech([], []);
@@ -173,7 +173,7 @@ public sealed class KokoroTts : IDisposable
         // instead of cutting pred_dur itself — see KokoroAlignment. Only the sentence above this
         // one differs between the two engines.
         var words = KokoroAlignment.WordsFromGroups(
-            text, groupSourceWords, runs, o.Audio.Length / (double)Kokoro.SampleRate);
+            text, spoken.Words, spoken.GroupSourceWords, runs, o.Audio.Length / (double)Kokoro.SampleRate);
         return new KokoroSpeech(o.Audio, words);
     }
 

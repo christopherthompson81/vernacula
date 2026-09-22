@@ -8,7 +8,12 @@ namespace Vernacula.Tts.Base;
 /// word it came from. <see cref="GroupSourceWords"/> is null when the phonemizer could not account
 /// for every group; callers fall back to an even split.
 /// </summary>
-public sealed record KokoroPhonemization(string Phonemes, IReadOnlyList<int>? GroupSourceWords);
+/// <param name="Words">The word units the map indexes into. Whitespace for most languages, the
+/// trace's own segmentation for the ones that do not space — see <see cref="WordSegmentation"/>.
+/// Carried on the result so a caller aligns against the SAME units the reader displays, rather
+/// than splitting the text a second time and hoping the two agree.</param>
+public sealed record KokoroPhonemization(
+    string Phonemes, IReadOnlyList<int>? GroupSourceWords, IReadOnlyList<WordSpan> Words);
 
 /// <summary>
 /// Kokoro's G2P frontend: text → canonical IPA (vernacula-phonemizer, <c>en</c> / <c>en-GB</c>) →
@@ -64,7 +69,8 @@ public sealed class KokoroPhonemizer
     public KokoroPhonemization Phonemize(string text, string lang)
     {
         var trace = global::Vernacula.Phonemizer.Phonemizer.PhonemizeTrace(text, lang);
-        var map = GroupSourceWords(trace, text);
+        var words = WordSegmentation.Segment(text, 0, text.Length, lang);
+        var map = GroupSourceWords(trace, text, words);
 
         string ipa;
         try
@@ -81,7 +87,7 @@ public sealed class KokoroPhonemizer
         if (map is not null && CountWordGroups(ipa) != map.Count)
             ipa = trace.Ipa;
 
-        return new KokoroPhonemization(KokoroFormat.Render(ipa, lang), map);
+        return new KokoroPhonemization(KokoroFormat.Render(ipa, lang), map, words);
     }
 
     /// <summary>
@@ -90,20 +96,27 @@ public sealed class KokoroPhonemizer
     /// as several words). Null when any token is missing a span, since a partial map would assign
     /// the wrong words to every group after the gap.
     /// </summary>
-    private static List<int>? GroupSourceWords(PhonemeTrace trace, string text)
+    private static List<int>? GroupSourceWords(PhonemeTrace trace, string text, IReadOnlyList<WordSpan> words)
     {
-        if (!trace.Traced) return null;
+        if (!trace.Traced || words.Count == 0) return null;
 
-        // Character offset → index of the whitespace-delimited word containing it.
-        var wordAt = new int[text.Length];
-        var w = -1; var inWord = false;
+        // ⚠ CHARACTER OFFSET → WORD INDEX, OVER THE SUPPLIED UNITS RATHER THAN WHITESPACE. This
+        // used to scan for whitespace itself, which meant a language without spaces had exactly
+        // one word and every group mapped to it — the segmentation the trace had just produced was
+        // thrown away one line after it arrived.
+        //
+        // A character between two words (a space, or the 。 that follows a Japanese phrase) takes
+        // the index of the word that FOLLOWS it, which is what the old scan did for whitespace and
+        // is what keeps a token starting on a separator attached to the right side.
+        var wordAt = new int[text.Length + 1];
+        var next = 0;
         for (var i = 0; i < text.Length; i++)
         {
-            if (char.IsWhiteSpace(text[i])) { inWord = false; wordAt[i] = w + 1; continue; }
-            if (!inWord) { w++; inWord = true; }
-            wordAt[i] = w;
+            if (next < words.Count && i >= words[next].End) next++;
+            wordAt[i] = next < words.Count && i >= words[next].Start ? next : Math.Min(next, words.Count - 1);
         }
-        var wordCount = w + 1;
+        wordAt[text.Length] = words.Count - 1;
+        var wordCount = words.Count;
 
         var map = new List<int>();
         (int Start, int End)? lastSpan = null;
@@ -117,13 +130,34 @@ public sealed class KokoroPhonemizer
             else if (tok.Emitted.Count > 0)
                 groups = tok.Emitted.Count;
             else
-                return null;
+                // ⚠ A TOKEN THAT SAYS NOTHING CONTRIBUTES NOTHING, and this used to abandon the
+                // whole map. In English punctuation rides on the word before it and never becomes
+                // a token of its own, so the case never arose; a Japanese sentence ends with 。as
+                // its own token with no IPA at all, which nulled the map for every Japanese
+                // paragraph and sent the aligner to an even split.
+                continue;
+            if (groups == 0) continue;
+
+            var lastInSpan = wordAt[Math.Clamp(input.End - 1, 0, text.Length)];
+            var first = wordAt[input.Start];
+
+            // ⚠ ONE TOKEN CAN COVER SEVERAL WORD UNITS, which is how Mandarin arrives: a single
+            // token spans the sentence and carries one group per syllable, and WordSegmentation
+            // has already cut that span into one unit per hanzi on the same count. Distributing
+            // the groups across them is what makes the two agree — without it all six syllables
+            // mapped to word 0 and the highlight covered the sentence.
+            if (lastSpan != input && groups > 1 && lastInSpan - first + 1 == groups)
+            {
+                for (var g = 0; g < groups; g++) map.Add(first + g);
+                lastSpan = input; lastWord = lastInSpan;
+                continue;
+            }
+
             // Tokens that share one input span came from one normalizer rewrite. When the span is
             // one written word ("$3.14" → three, dollars, fourteen) they all belong to it; when it
             // covers several ("Mr. Smith" → mister, Smith) each successive token takes the next
             // word in the span, so the highlight moves with the speech instead of sticking.
-            var lastInSpan = wordAt[Math.Min(input.End, text.Length) - 1];
-            var word = lastSpan == input ? Math.Min(lastWord + 1, lastInSpan) : wordAt[input.Start];
+            var word = lastSpan == input ? Math.Min(lastWord + 1, lastInSpan) : first;
             if (word >= wordCount) return null;
             for (var g = 0; g < groups; g++) map.Add(word);
             lastSpan = input; lastWord = word;

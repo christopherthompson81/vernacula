@@ -205,3 +205,57 @@ builds its words when a document is opened, which today needs no phonemizer at a
 boundaries from the trace makes the word list depend on it — including for a document that is
 never synthesized — so a missing data tree stops being "renders in a different accent" and starts
 being "the words are wrong". Whitespace has to remain the fallback.
+
+## Run 6 — 2026-09-21 — building it, and two places the map still collapsed
+
+`WordSegmentation` is the shared unit: whitespace for most languages, the trace for the two that
+do not space, and whitespace again whenever the trace cannot do better. The reader, the group→word
+map and the aligner all take it, so the segmentation is produced once instead of three times by
+three whitespace scans that agreed by construction in English and by accident nowhere else.
+
+Wiring it exposed two defects that the whitespace-only world had hidden.
+
+⚠ **A TOKEN THAT SAYS NOTHING WAS NULLING THE WHOLE MAP.** `GroupSourceWords` returned null for any
+token with neither an IPA span nor emitted groups. In English punctuation rides on the preceding
+word and never becomes a token, so the branch never ran; a Japanese sentence ends with 。 as its
+own token with no IPA, which nulled the map for **every Japanese paragraph** and sent the aligner
+to an even split. It contributes nothing now instead of abandoning everything.
+
+⚠ **AND ONE TOKEN COVERING SEVERAL WORD UNITS MAPPED THEM ALL TO THE FIRST.** Mandarin arrives as a
+single token spanning the sentence with one group per syllable. The segmenter had already cut that
+span into one unit per hanzi — but the map assigned every group to `wordAt[input.Start]`, i.e.
+word 0, so all six syllables pointed at 今 and the highlight covered the sentence anyway. When a
+token's span covers exactly as many units as it produced groups, the groups are distributed across
+them; that check is the same count agreement the segmenter used to cut the span in the first place.
+
+After both:
+
+```
+ja   "科学者たちが発表しました。"   2 spans: 科学者たちが | 発表しました    map=0,1        measured
+ja   "今日はいい天気ですね。"       2 spans: 今日はいい | 天気ですね        map=0,1        measured
+cmn  "今天天气很好。"              6 spans: 今|天|天|气|很|好              map=0,…,5      measured
+```
+
+## Run 7 — 2026-09-21 — a cold-call defect in the phonemizer, found by the test
+
+The Japanese test failed at first with one span where two were expected, and the cause was not in
+this repo:
+
+```
+COLD  PhonemizeTrace("科学者たちが発表しました。", "ja")  tokens=3, InputSpan=null, null, null
+WARM  same call again                                      tokens=3, InputSpan=[0,6) [6,12) [12,13)
+```
+
+**The FIRST trace for `ja` in a process returns its tokens with no input spans; every later call
+returns them populated.** Characterised: Japanese only (`cmn` is correct cold), per-language rather
+than global (tracing `en` first does not help), and `IpaSpan` is unaffected — only `InputSpan` is
+missing, which points at whatever records input offsets being initialised *during* the first call.
+
+Untreated this is the worst shape a defect can take: the FIRST Japanese document a session opens
+silently gets whitespace words and every later one gets phrases — correct on the second look. A
+single retry, guarded on the exact signature (tokens present, every `InputSpan` null), makes it
+deterministic; it costs one extra phonemization of one block on the path that is already broken and
+is deleted the day it is fixed upstream. Reported to the phonemizer session with the repro.
+
+**The test found this, not the app.** A whitespace fallback that silently produces something
+plausible is exactly the kind of degradation that never surfaces in use.

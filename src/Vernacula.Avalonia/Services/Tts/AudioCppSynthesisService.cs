@@ -149,8 +149,12 @@ public sealed class AudioCppSynthesisService : ITtsBackend
     /// index of the segment's source word it came from. This is what turns the engine's measured
     /// group timings into word timings; <see cref="PhonemesPerWord"/> is only the fallback for an
     /// engine that reports no timings.</param>
+    /// <param name="Words">The word units the map and the weights index into, over the SEGMENT's
+    /// text. Carried so the aligner uses the same segmentation the reader displays rather than
+    /// splitting the text again — which for a language without spaces is one word per paragraph.</param>
     internal sealed record SuppliedPhonemes(
-        IReadOnlyList<string> Chunks, IReadOnlyList<int>? GroupSourceWords, double[]? PhonemesPerWord);
+        IReadOnlyList<string> Chunks, IReadOnlyList<int>? GroupSourceWords, double[]? PhonemesPerWord,
+        IReadOnlyList<WordSpan> Words);
 
     /// <summary>
     /// Phonemize <paramref name="text"/> into chunks the engine will accept, or null to let the
@@ -166,11 +170,14 @@ public sealed class AudioCppSynthesisService : ITtsBackend
     internal static SuppliedPhonemes? Supply(KokoroPhonemizer g2p, KokoroChunker chunker,
                                             string text, string lang, Action<string> warn)
     {
-        var sourceWords = SplitWords(text);
-        if (sourceWords.Length == 0) return null;
+        // One segmentation for the whole segment, in the language being spoken. The per-chunk
+        // maps below are offsets into THIS list, so it has to be computed once over the whole text
+        // rather than per chunk.
+        var sourceWords = WordSegmentation.Segment(text, 0, text.Length, lang);
+        if (sourceWords.Count == 0) return null;
 
         var chunks = new List<string>();
-        var weights = new double[sourceWords.Length];
+        var weights = new double[sourceWords.Count];
         var map = new List<int>();
         var weightsUsable = true;
         var wordOffset = 0;
@@ -181,7 +188,9 @@ public sealed class AudioCppSynthesisService : ITtsBackend
         // not depend on which language rendered it. Only the reading does.
         foreach (var chunk in chunker.ChunkForSynthesis(text, british: lang == "en-GB"))
         {
-            var (rendered, groupSourceWords) = g2p.Phonemize(chunk, lang);
+            var chunkPhonemes = g2p.Phonemize(chunk, lang);
+            var rendered = chunkPhonemes.Phonemes;
+            var groupSourceWords = chunkPhonemes.GroupSourceWords;
 
             // Filtered, not sent raw. The engine refuses a symbol its vocabulary has no id for
             // — deliberately, because a caller with its own G2P can correct one — and the ONNX
@@ -205,7 +214,7 @@ public sealed class AudioCppSynthesisService : ITtsBackend
             // changes a group's length by one and must not be able to change its group COUNT,
             // which is what the map is indexed by.
             var groups = SplitWords(rendered);
-            var chunkWords = SplitWords(chunk).Length;
+            var chunkWords = chunkPhonemes.Words.Count;
             if (!weightsUsable) { wordOffset += chunkWords; continue; }
 
             if (groupSourceWords is null || groupSourceWords.Count != groups.Length)
@@ -237,9 +246,10 @@ public sealed class AudioCppSynthesisService : ITtsBackend
         // The chunker splits at whitespace, so the chunks' words are the segment's words in
         // order. If that ever stops holding, the map's indices point at the wrong words — which
         // is a silently wrong highlight, so it is checked rather than assumed.
-        if (wordOffset != sourceWords.Length) weightsUsable = false;
+        if (wordOffset != sourceWords.Count) weightsUsable = false;
 
-        return new SuppliedPhonemes(chunks, weightsUsable ? map : null, weightsUsable ? weights : null);
+        return new SuppliedPhonemes(chunks, weightsUsable ? map : null, weightsUsable ? weights : null,
+                                    sourceWords);
     }
 
     /// <summary>
@@ -268,7 +278,7 @@ public sealed class AudioCppSynthesisService : ITtsBackend
             for (var i = 0; i < spans.Length; i++)
                 spans[i] = new KokoroAlignment.GroupSpan(spoken.Groups[i].StartSeconds, spoken.Groups[i].EndSeconds);
             measured = true;
-            return [.. KokoroAlignment.WordsFromGroups(text, map, spans, seconds)
+            return [.. KokoroAlignment.WordsFromGroups(text, supplied!.Words, map, spans, seconds)
                           .Select(w => new AlignedWord { Text = w.Text, StartSeconds = w.StartSec, EndSeconds = w.EndSec })];
         }
         return supplied?.PhonemesPerWord is { } weights

@@ -28,13 +28,25 @@ public static class KokoroAlignment
     /// after the gap on the wrong audio, which shows up as a highlight that is quietly one word out
     /// rather than as anything that looks like a bug.
     /// </param>
+    /// <param name="wordSpans">
+    /// The word units the map indexes into — whitespace for most languages, the phonemizer's own
+    /// segmentation for the ones that do not space.
+    ///
+    /// ⚠ PASSED IN RATHER THAN SPLIT HERE, and that is the point. This used to split the text on
+    /// whitespace itself, so a Japanese sentence was one word and the whole paragraph lit up at
+    /// once — while the reader, splitting separately but identically, agreed with it and made the
+    /// disagreement invisible. One segmentation, produced once, used by both.
+    /// </param>
     public static IReadOnlyList<KokoroWord> WordsFromGroups(
         string text,
+        IReadOnlyList<WordSpan> wordSpans,
         IReadOnlyList<int>? groupSourceWords,
         IReadOnlyList<GroupSpan> groups,
         double totalSeconds)
     {
-        var sourceWords = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+        var sourceWords = new string[wordSpans.Count];
+        for (var i = 0; i < wordSpans.Count; i++)
+            sourceWords[i] = text[wordSpans[i].Start..wordSpans[i].End];
         var words = new List<KokoroWord>(sourceWords.Length);
         if (sourceWords.Length == 0) return words;
 

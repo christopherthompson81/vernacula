@@ -310,7 +310,8 @@ public class AudioCppTtsEngineTests
         // long, and here the ENGINE says so rather than the speller or the phoneme counter. The
         // weights deliberately disagree with the measurement, so a pass proves the measurement won.
         var supplied = new AudioCppSynthesisService.SuppliedPhonemes(
-            ["ə ɛkstɹˌɔːɹdənˈɛɹəli"], [0, 1], [9.0, 1.0]);
+            ["ə ɛkstɹˌɔːɹdənˈɛɹəli"], [0, 1], [9.0, 1.0],
+            WordSegmentation.Whitespace("a extraordinarily", 0, "a extraordinarily".Length));
         var spoken = Spoken(("ə", 0.0, 0.2), ("ɛkstɹˌɔːɹdənˈɛɹəli", 0.2, 2.0));
 
         var words = AudioCppSynthesisService.Align("a extraordinarily", supplied, spoken, 2.0, out _);
@@ -326,7 +327,8 @@ public class AudioCppTtsEngineTests
     {
         // "$3.14" is one written word and several spoken ones; the word takes the union of their
         // spans, exactly as the ONNX path does with measured durations.
-        var supplied = new AudioCppSynthesisService.SuppliedPhonemes(["x"], [0, 0, 0, 1], [3.0, 1.0]);
+        var supplied = new AudioCppSynthesisService.SuppliedPhonemes(["x"], [0, 0, 0, 1], [3.0, 1.0],
+            WordSegmentation.Whitespace("$3.14 now", 0, "$3.14 now".Length));
         var spoken = Spoken(("θɹˈi", 0.0, 0.5), ("dˈɑləɹz", 0.5, 1.0), ("fˌɔɹtˈin", 1.0, 1.5), ("nˈW", 1.5, 2.0));
 
         var words = AudioCppSynthesisService.Align("$3.14 now", supplied, spoken, 2.0, out _);
@@ -343,7 +345,8 @@ public class AudioCppTtsEngineTests
         // The engine cuts groups at ITS view of the stream and the map was built from ours. A
         // disagreement must not be absorbed: every word after it would sit on the wrong audio, and
         // a highlight one word out looks like nothing at all.
-        var supplied = new AudioCppSynthesisService.SuppliedPhonemes(["x"], [0, 1], [1.0, 1.0]);
+        var supplied = new AudioCppSynthesisService.SuppliedPhonemes(["x"], [0, 1], [1.0, 1.0],
+            WordSegmentation.Whitespace("one two", 0, "one two".Length));
         var spoken = Spoken(("ə", 0.0, 0.2), ("b", 0.2, 1.0), ("c", 1.0, 2.0));   // three, not two
 
         var words = AudioCppSynthesisService.Align("one two", supplied, spoken, 2.0, out _);
@@ -357,7 +360,8 @@ public class AudioCppTtsEngineTests
     {
         // An engine built before the kokoro_tts family declared word_timestamps. AUDIOCPP_NATIVE_DIR
         // is read at BUILD time, so this is a real configuration and not a formality.
-        var supplied = new AudioCppSynthesisService.SuppliedPhonemes(["x"], [0, 1], [1.0, 3.0]);
+        var supplied = new AudioCppSynthesisService.SuppliedPhonemes(["x"], [0, 1], [1.0, 3.0],
+            WordSegmentation.Whitespace("one two", 0, "one two".Length));
         var words = AudioCppSynthesisService.Align("one two", supplied, new AudioCppSpeech(new float[24_000], []), 2.0, out _);
 
         Assert.Equal(2, words.Count);
@@ -382,7 +386,8 @@ public class AudioCppTtsEngineTests
         // a render — the engine option is opt-in, the family declares no capability for it, and a
         // published package's contract predates the option — so the name describes what happened,
         // and this is the thing it describes.
-        var supplied = new AudioCppSynthesisService.SuppliedPhonemes(["x"], [0, 1], [1.0, 1.0]);
+        var supplied = new AudioCppSynthesisService.SuppliedPhonemes(["x"], [0, 1], [1.0, 1.0],
+            WordSegmentation.Whitespace("one two", 0, "one two".Length));
         var spoken = Spoken(("ə", 0.0, 1.0), ("b", 1.0, 2.0));
 
         AudioCppSynthesisService.Align("one two", supplied, spoken, 2.0, out var measured);
