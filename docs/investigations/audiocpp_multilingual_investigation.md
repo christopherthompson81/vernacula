@@ -344,10 +344,26 @@ dotnet run --project csharp/tools/trace-cold -c Release -- csharp/goldens
 ```
 
 189 languages beats my nine, and it is maintained upstream rather than living in a scratch
-directory. ⚠ **But it runs in THEIR suite, not ours** — we consume a pin, not their CI — so what
-protects this repo is the pin bump itself plus whatever they gate before tagging. `WordSegmentation`
-now says so, and so does the `ja` test, which structurally cannot catch a cold-init regression
-because any earlier test in the assembly has already warmed the language.
+directory. ⚠ **But it runs in THEIR suite, not ours** — we consume a pin, not their CI.
+`WordSegmentation` now says so, and so does the `ja` test, which structurally cannot catch a
+cold-init regression because any earlier test in the assembly has already warmed the language.
+
+**Corrected after the phonemizer session read this:** the first draft said the protection was the
+pin bump "plus whatever they gate before tagging". There is no tagging — they don't cut releases —
+so it is really *whatever they gate before we choose to bump*, and the protection is the bump being
+deliberate. A weaker guarantee than the phrasing implied, and the distinction is the whole point:
+nothing upstream fires on a schedule we don't control, so a regression reaches us only if we pull it.
+
+They also pointed out the tool takes a goldens directory as an argument and exits non-zero, so it
+can be run against the submodule checkout without depending on their suite at all:
+
+```
+dotnet run --project external/vernacula-phonemizer/csharp/tools/trace-cold -c Release -- \
+    external/vernacula-phonemizer/csharp/goldens
+```
+
+~13 s, its own process, 189 languages. Not wired into anything here — recorded because it is the
+one gate this repo *could* own, and the cost of owning it is known rather than guessed.
 
 ### One claim in the first draft was wrong
 
