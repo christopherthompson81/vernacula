@@ -38,8 +38,7 @@ public static class WordSegmentation
         if (!NeedsTrace(lang)) return Whitespace(text, start, end);
         try
         {
-            var traced = FromTrace(text, start, end, lang!);
-            return traced.Count > 0 ? traced : Whitespace(text, start, end);
+            return Segment(text, start, end, lang, Trace(text[start..end], lang!));
         }
         catch (Exception)
         {
@@ -47,6 +46,32 @@ public static class WordSegmentation
             // ⚠ THIS IS WHY WHITESPACE STAYS THE FALLBACK. The reader segments when a document is
             // OPENED, which never needed a phonemizer before, so a tree that is absent must cost
             // granularity rather than correctness.
+            return Whitespace(text, start, end);
+        }
+    }
+
+    /// <summary>
+    /// Word spans over <c>text[start..end)</c>, read from a trace the caller already has.
+    /// </summary>
+    /// <remarks>
+    /// ⚠ FOR A CALLER THAT NEEDS BOTH THE WORDS AND THE TRACE, so it cannot end up reading two of
+    /// them. <see cref="KokoroPhonemizer.Phonemize(string, string)"/> builds the group→word map
+    /// from a trace and the words it indexes into from another, and asserted in a comment that the
+    /// two read "the same spans" — an invariant nothing enforced. vernacula-phonemizer#1408 was
+    /// precisely a case of one trace of a text disagreeing with the next, so the assumption had
+    /// already been wrong once. <paramref name="trace"/> must be a trace of <c>text[start..end)</c>.
+    /// </remarks>
+    public static IReadOnlyList<WordSpan> Segment(
+        string text, int start, int end, string? lang, PhonemeTrace trace)
+    {
+        if (!NeedsTrace(lang)) return Whitespace(text, start, end);
+        try
+        {
+            var traced = FromTrace(text, start, end, trace);
+            return traced.Count > 0 ? traced : Whitespace(text, start, end);
+        }
+        catch (Exception)
+        {
             return Whitespace(text, start, end);
         }
     }
@@ -117,18 +142,17 @@ public static class WordSegmentation
     /// count check is the whole safety argument, and a mismatch keeps the token whole.
     /// </para>
     /// </remarks>
-    private static IReadOnlyList<WordSpan> FromTrace(string text, int start, int end, string lang)
+    private static IReadOnlyList<WordSpan> FromTrace(string text, int start, int end, PhonemeTrace trace)
     {
-        var slice = text[start..end];
-        var trace = Trace(slice, lang);
+        var sliceLength = end - start;
         if (!trace.Traced) return [];
 
         var words = new List<WordSpan>();
         foreach (var token in trace.Tokens)
         {
             if (token.InputSpan is not { } span) continue;
-            var from = start + Math.Clamp(span.Start, 0, slice.Length);
-            var to = start + Math.Clamp(span.End, 0, slice.Length);
+            var from = start + Math.Clamp(span.Start, 0, sliceLength);
+            var to = start + Math.Clamp(span.End, 0, sliceLength);
             if (to <= from) continue;
 
             // A token that produced no spoken group is punctuation — the trailing 。of a Japanese
@@ -187,8 +211,13 @@ public static class WordSegmentation
     {
         if (words.Count > 0 && span.Start < words[^1].End)
         {
+            // ⚠ THE UNION OF BOTH ENDS, not just the later one. The tokens arrive in order today —
+            // measured, zero unordered pairs across the ja and cmn goldens — but keeping the
+            // previous Start would drop the characters ahead of it out of every unit, and a
+            // character belonging to no unit is not clickable and receives no highlight. That is a
+            // silent loss, and it should not rest on an ordering this code does not enforce.
             var last = words[^1];
-            words[^1] = new WordSpan(last.Start, Math.Max(last.End, span.End));
+            words[^1] = new WordSpan(Math.Min(last.Start, span.Start), Math.Max(last.End, span.End));
             return;
         }
         words.Add(span);

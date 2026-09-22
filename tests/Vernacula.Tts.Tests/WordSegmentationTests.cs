@@ -110,6 +110,10 @@ public class WordSegmentationTests
         const string text = "PDFファイルを開いてください。";
         var words = Segment(text, "ja");
 
+        // Distinctness is vacuously true of an empty list, so pin that there is something to be
+        // distinct ABOUT. Deliberately not pinning the count: if upstream ever maps the expansion's
+        // sub-spans properly this yields three distinct units and should still pass.
+        Assert.NotEmpty(words);
         Assert.Equal(words.Count, words.Distinct().Count());
         // Merging costs granularity and must not cost correctness: what is left still spans text.
         foreach (var w in words) Assert.InRange(w.End, w.Start + 1, text.Length);
@@ -131,6 +135,7 @@ public class WordSegmentationTests
         {
             var lang = text.Any(c => c is >= '\u3040' and <= '\u30ff') ? "ja" : "cmn";
             var words = Segment(text, lang);
+            Assert.NotEmpty(words);   // the loop below is vacuous on an empty or single-unit list
             for (var i = 1; i < words.Count; i++)
                 Assert.True(words[i].Start >= words[i - 1].End,
                             $"{lang} \"{text}\": unit {i} starts at {words[i].Start}, inside the previous unit ending at {words[i - 1].End}");

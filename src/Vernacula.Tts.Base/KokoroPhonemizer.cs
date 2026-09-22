@@ -79,10 +79,12 @@ public sealed class KokoroPhonemizer
     /// </remarks>
     public KokoroPhonemization Phonemize(string text, string lang)
     {
-        // Through WordSegmentation.Trace, the shared seam: this call builds the group→word map
-        // and the segmenter's builds the words, and they must read the same spans.
+        // ⚠ ONE TRACE, HANDED TO BOTH. The map indexes into the words, so the two have to have been
+        // read off the same spans — and this used to take a trace here and let Segment take another,
+        // asserting they agreed. #1408 was a case of exactly that assumption failing. Also halves
+        // the phonemization work per paragraph for the two languages that need a trace at all.
         var trace = WordSegmentation.Trace(text, lang);
-        var words = WordSegmentation.Segment(text, 0, text.Length, lang);
+        var words = WordSegmentation.Segment(text, 0, text.Length, lang, trace);
         var map = GroupSourceWords(trace, text, words);
 
         string ipa;

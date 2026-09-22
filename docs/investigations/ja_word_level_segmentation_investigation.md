@@ -190,3 +190,54 @@ also cannot recover the real boundaries, so those 14 rows are coarser than they 
 upstream withholds (null) instead, this repo already degrades correctly; if upstream maps the
 sub-spans properly, the merge simply stops firing. Either outcome is strictly better and neither
 requires a change here.
+
+## Run 5 — 2026-09-22 — review of the change, and a worse bug found by reading it
+
+Three findings, and the third was not what the review was looking for.
+
+**A silent character loss in the merge.** `Append` extended the previous span with
+`Math.Max(last.End, span.End)` and kept `last.Start`. A token arriving with an EARLIER start would
+therefore drop the characters ahead of it out of every unit — and a character in no unit is not
+clickable and never highlights. Measured as unreachable today (zero unordered pairs across both
+corpora) and fixed anyway, to the union of both ends: a silent loss should not rest on an ordering
+this code does not enforce.
+
+**Both new tests passed vacuously on an empty result.** `Distinct().Count() == Count()` is true of an
+empty list and the ordering loop does not execute, so a regression that returned nothing would have
+turned them green. `Assert.NotEmpty` on both. Deliberately still not pinning the unit count for the
+mixed-script row — if upstream maps the expansion's sub-spans properly it becomes three distinct
+units, and the test should keep passing.
+
+### The one worth the review: two traces, assumed to agree
+
+`KokoroPhonemizer.Phonemize` read a trace for the group→word map and called `Segment`, which traced
+the same text AGAIN for the words the map indexes into. Its own comment asserted the two "must read
+the same spans" — an invariant nothing enforced, and **#1408 was precisely a case of one trace of a
+text disagreeing with the next one**. The assumption had already been wrong once, in the exact way
+that would desync a map from its words.
+
+A new `Segment` overload takes the trace the caller already holds, and `Phonemize` hands one trace
+to both. Incidentally halves the phonemization work per paragraph for `ja` and `cmn`, but the reason
+is correctness: the two cannot disagree if there is only one.
+
+⚠ **THIS WAS NOT FOUND BY A TEST AND NO TEST WOULD HAVE FOUND IT** — the traces agree now that #1408
+is fixed, so everything passes either way. It was found by reading a comment that claimed an
+invariant and checking whether anything established it.
+
+### A control that was itself invalid
+
+First attempt at re-confirming the tests could fail stashed only the uncommitted review fixes, while
+the merge itself was already committed — so the "control" ran against the fix and reported green. The
+tests looked vacuous when they were not. Redone against `main`'s segmentation:
+
+```
+Failed  TracedWordsAreOrderedAndNeverOverlap
+Failed  MixedScriptJapaneseDoesNotOfferTwoWordsCoveringTheSameCharacters
+```
+
+Worth recording because it is the same trap one level up: *verifying that a guard can fail is itself
+a procedure that can be performed wrongly and report success.* Checking what the control actually
+reverted is part of the control.
+
+Corpora re-measured after all three fixes — `ja` 0 degenerate / 4.33 chars per unit, `cmn` 0
+degenerate / 1.00 — and the full suite is 95 + 257 + 23 + 362, 0 failures.
