@@ -358,10 +358,15 @@ public sealed class AudioCppTts : IDisposable
         // constant, because a buffer at the wrong rate is checked for by the caller and a timing
         // divided by the wrong rate would silently agree with it.
         var rate = audio.SampleRate > 0 ? audio.SampleRate : SampleRate;
-        var groups = new AudioCppPhonemeGroup[result.Words.Count];
+        // ⚠ HOISTED, BECAUSE `Words` IS A PROPERTY THAT RE-MARSHALS THE WHOLE LIST. Its getter
+        // allocates a fresh array and makes two native calls per word, so indexing it inside the
+        // loop rebuilt everything once per iteration -- quadratic P/Invoke, and a measured
+        // 260-group paragraph is ~68k native calls and 260 array allocations for one paragraph.
+        var reported = result.Words;
+        var groups = new AudioCppPhonemeGroup[reported.Count];
         for (var i = 0; i < groups.Length; i++)
         {
-            var w = result.Words[i];
+            var w = reported[i];
             groups[i] = new AudioCppPhonemeGroup(w.Word, w.StartSample / (double)rate, w.EndSample / (double)rate);
         }
         return (audio, groups);

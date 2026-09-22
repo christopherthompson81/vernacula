@@ -67,6 +67,33 @@ public static class WordSegmentation
         return words;
     }
 
+    /// <summary>
+    /// A trace, with one retry for the cold-call defect in the phonemizer's Japanese path.
+    /// </summary>
+    /// <remarks>
+    /// ⚠ THE FIRST PhonemizeTrace FOR `ja` IN A PROCESS RETURNS EVERY InputSpan NULL, and every
+    /// later call returns them populated — lazy initialisation recording nothing on the call that
+    /// does the loading (vernacula-phonemizer#1408, C# only; the TypeScript engine is correct
+    /// cold). Measured: `ja` alone across the nine languages this app speaks, and one retry has
+    /// never failed twice over 25 rows in a cold process.
+    ///
+    /// <para>
+    /// Without it the FIRST Japanese document a session opens silently gets whitespace words and
+    /// every later one gets phrases — correct on the second look, which is the worst shape a
+    /// defect can take. ⚠ AND IT LIVES HERE RATHER THAN IN THE SEGMENTER so that every caller is
+    /// covered: <see cref="KokoroPhonemizer.Phonemize(string, string)"/> traces for its
+    /// group→word map too, and guarding only one of the two left the map being lost on exactly
+    /// the call the workaround was written to protect. It is deleted the day #1408 is fixed.
+    /// </para>
+    /// </remarks>
+    public static PhonemeTrace Trace(string text, string lang)
+    {
+        var trace = Phonemizer.Phonemizer.PhonemizeTrace(text, lang);
+        if (trace.Tokens.Count > 0 && trace.Tokens.All(t => t.InputSpan is null))
+            trace = Phonemizer.Phonemizer.PhonemizeTrace(text, lang);
+        return trace;
+    }
+
     /// <summary>Han ideographs, which are the characters that map one-to-one onto syllables.</summary>
     private static bool IsHan(char c) => c is >= '一' and <= '鿿' or >= '㐀' and <= '䶿';
 
@@ -97,22 +124,8 @@ public static class WordSegmentation
     private static IReadOnlyList<WordSpan> FromTrace(string text, int start, int end, string lang)
     {
         var slice = text[start..end];
-        var trace = Phonemizer.Phonemizer.PhonemizeTrace(slice, lang);
+        var trace = Trace(slice, lang);
         if (!trace.Traced) return [];
-
-        // ⚠ ONE RETRY, FOR A COLD-CALL DEFECT IN THE PHONEMIZER'S JAPANESE PATH. The FIRST
-        // PhonemizeTrace for `ja` in a process returns its tokens with InputSpan null and every
-        // later call returns them populated — lazy initialisation recording nothing on the call
-        // that does the loading. Measured: cold gives one span for 科学者たちが発表しました。and
-        // warm gives two, it is specific to `ja` (cmn is correct cold), and it is per-language
-        // rather than global (tracing `en` first does not help).
-        //
-        // Without this the FIRST Japanese document a session opens silently gets whitespace words
-        // and every later one gets phrases, which is the worst shape a bug can have: correct on
-        // the second look. The retry costs one extra phonemization of one block, only on the path
-        // that is already broken, and can be deleted the day the defect is fixed upstream.
-        if (trace.Tokens.Count > 0 && trace.Tokens.All(t => t.InputSpan is null))
-            trace = Phonemizer.Phonemizer.PhonemizeTrace(slice, lang);
 
         var words = new List<WordSpan>();
         foreach (var token in trace.Tokens)

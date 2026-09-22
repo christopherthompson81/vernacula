@@ -246,7 +246,7 @@ public class AudioCppTtsEngineTests
         var supplied = AudioCppSynthesisService.Supply(g2p, chunker, text, "en", _ => { });
         Assert.NotNull(supplied?.PhonemesPerWord);
 
-        var words = AudioCppSynthesisService.SpreadByWeight(text, supplied!.PhonemesPerWord!, 2.0);
+        var words = AudioCppSynthesisService.Spread(text, supplied!.Words, supplied.PhonemesPerWord, 2.0);
         var letters = AudioCppSynthesisService.EstimateWords(text, 2.0);
 
         double Span(IReadOnlyList<AlignedWord> w, int i) => w[i].EndSeconds - w[i].StartSeconds;
@@ -258,7 +258,7 @@ public class AudioCppTtsEngineTests
     public void AWeightedSpreadCoversTheSegmentInOrderAndInFull()
     {
         const string text = "one two three four";
-        var words = AudioCppSynthesisService.SpreadByWeight(text, [1.0, 2.0, 3.0, 4.0], 10.0);
+        var words = AudioCppSynthesisService.Spread(text, WordSegmentation.Whitespace(text, 0, text.Length), [1.0, 2.0, 3.0, 4.0], 10.0);
 
         Assert.Equal(4, words.Count);
         Assert.Equal(0.0, words[0].StartSeconds, 6);
@@ -273,7 +273,7 @@ public class AudioCppTtsEngineTests
     {
         // The reader indexes words by the source-text whitespace split, so an unpronounceable
         // one still has to appear — the ONNX path does the same with measured durations.
-        var words = AudioCppSynthesisService.SpreadByWeight("hello 🙂 world", [5.0, 0.0, 5.0], 2.0);
+        var words = AudioCppSynthesisService.Spread("hello 🙂 world", WordSegmentation.Whitespace("hello 🙂 world", 0, "hello 🙂 world".Length), [5.0, 0.0, 5.0], 2.0);
 
         Assert.Equal(3, words.Count);
         Assert.Equal("🙂", words[1].Text);
@@ -287,13 +287,20 @@ public class AudioCppTtsEngineTests
     {
         // A short map would silently shift every word after the gap, which shows up as a
         // highlight on the wrong word and nothing else. Better to produce none.
-        Assert.Empty(AudioCppSynthesisService.SpreadByWeight("one two three", [1.0, 1.0], 3.0));
+        // ⚠ THE OLD BEHAVIOUR HERE WAS TO RETURN NOTHING on a length mismatch, which is no longer
+        // reachable: Spread is handed the units and the weights together, and Align only passes
+        // weights whose length matches. What replaces that guard is Align's own check.
+        var mismatched = AudioCppSynthesisService.Align("one two three", "en",
+            new AudioCppSynthesisService.SuppliedPhonemes(["x"], null, [1.0, 1.0],
+                WordSegmentation.Whitespace("one two three", 0, "one two three".Length)),
+            new AudioCppSpeech(new float[24_000], []), 3.0, out _);
+        Assert.Equal(3, mismatched.Count);
     }
 
     [Fact]
     public void AllZeroWeightsFallBackToTheLengthEstimateRatherThanDividingByZero()
     {
-        var words = AudioCppSynthesisService.SpreadByWeight("one two", [0.0, 0.0], 2.0);
+        var words = AudioCppSynthesisService.Spread("one two", WordSegmentation.Whitespace("one two", 0, "one two".Length), [0.0, 0.0], 2.0);
         Assert.Equal(2, words.Count);
         Assert.Equal(2.0, words[^1].EndSeconds, 6);
     }
@@ -314,7 +321,7 @@ public class AudioCppTtsEngineTests
             WordSegmentation.Whitespace("a extraordinarily", 0, "a extraordinarily".Length));
         var spoken = Spoken(("ə", 0.0, 0.2), ("ɛkstɹˌɔːɹdənˈɛɹəli", 0.2, 2.0));
 
-        var words = AudioCppSynthesisService.Align("a extraordinarily", supplied, spoken, 2.0, out _);
+        var words = AudioCppSynthesisService.Align("a extraordinarily", "en", supplied, spoken, 2.0, out _);
 
         Assert.Equal(2, words.Count);
         Assert.Equal(0.0, words[0].StartSeconds, 6);
@@ -331,7 +338,7 @@ public class AudioCppTtsEngineTests
             WordSegmentation.Whitespace("$3.14 now", 0, "$3.14 now".Length));
         var spoken = Spoken(("θɹˈi", 0.0, 0.5), ("dˈɑləɹz", 0.5, 1.0), ("fˌɔɹtˈin", 1.0, 1.5), ("nˈW", 1.5, 2.0));
 
-        var words = AudioCppSynthesisService.Align("$3.14 now", supplied, spoken, 2.0, out _);
+        var words = AudioCppSynthesisService.Align("$3.14 now", "en", supplied, spoken, 2.0, out _);
 
         Assert.Equal(2, words.Count);
         Assert.Equal(0.0, words[0].StartSeconds, 6);
@@ -349,7 +356,7 @@ public class AudioCppTtsEngineTests
             WordSegmentation.Whitespace("one two", 0, "one two".Length));
         var spoken = Spoken(("ə", 0.0, 0.2), ("b", 0.2, 1.0), ("c", 1.0, 2.0));   // three, not two
 
-        var words = AudioCppSynthesisService.Align("one two", supplied, spoken, 2.0, out _);
+        var words = AudioCppSynthesisService.Align("one two", "en", supplied, spoken, 2.0, out _);
 
         Assert.Equal(2, words.Count);
         Assert.Equal(1.0, words[0].EndSeconds, 6);     // the even phoneme-weighted split, not 0.2
@@ -362,7 +369,7 @@ public class AudioCppTtsEngineTests
         // is read at BUILD time, so this is a real configuration and not a formality.
         var supplied = new AudioCppSynthesisService.SuppliedPhonemes(["x"], [0, 1], [1.0, 3.0],
             WordSegmentation.Whitespace("one two", 0, "one two".Length));
-        var words = AudioCppSynthesisService.Align("one two", supplied, new AudioCppSpeech(new float[24_000], []), 2.0, out _);
+        var words = AudioCppSynthesisService.Align("one two", "en", supplied, new AudioCppSpeech(new float[24_000], []), 2.0, out _);
 
         Assert.Equal(2, words.Count);
         Assert.Equal(0.5, words[0].EndSeconds, 6);     // 1/4 of two seconds
@@ -373,7 +380,7 @@ public class AudioCppTtsEngineTests
     {
         // A non-English voice: the engine phonemized internally, so there is no map to join its
         // groups to even if it reported them.
-        var words = AudioCppSynthesisService.Align("uno dos", null, Spoken(("ˈuno", 0.0, 1.0)), 2.0, out _);
+        var words = AudioCppSynthesisService.Align("uno dos", "es", null, Spoken(("ˈuno", 0.0, 1.0)), 2.0, out _);
         Assert.Equal(2, words.Count);
         Assert.Equal(2.0, words[^1].EndSeconds, 6);
     }
@@ -390,22 +397,78 @@ public class AudioCppTtsEngineTests
             WordSegmentation.Whitespace("one two", 0, "one two".Length));
         var spoken = Spoken(("ə", 0.0, 1.0), ("b", 1.0, 2.0));
 
-        AudioCppSynthesisService.Align("one two", supplied, spoken, 2.0, out var measured);
+        AudioCppSynthesisService.Align("one two", "en", supplied, spoken, 2.0, out var measured);
         Assert.True(measured, "the engine's groups joined to the word map is the measured tier");
 
         // No timings from the engine: the phoneme-count spread is not a measurement.
-        AudioCppSynthesisService.Align("one two", supplied, new AudioCppSpeech(new float[24_000], []),
+        AudioCppSynthesisService.Align("one two", "en", supplied, new AudioCppSpeech(new float[24_000], []),
                                        2.0, out var noTimings);
         Assert.False(noTimings);
 
         // Timings, but a group count the map disagrees with: falls back, so not measured.
         var mismatched = Spoken(("ə", 0.0, 0.5), ("b", 0.5, 1.0), ("c", 1.0, 2.0));
-        AudioCppSynthesisService.Align("one two", supplied, mismatched, 2.0, out var shifted);
+        AudioCppSynthesisService.Align("one two", "en", supplied, mismatched, 2.0, out var shifted);
         Assert.False(shifted);
 
         // A non-English voice: no supplied stream at all, so nothing to join the groups to.
-        AudioCppSynthesisService.Align("uno dos", null, spoken, 2.0, out var noStream);
+        AudioCppSynthesisService.Align("uno dos", "es", null, spoken, 2.0, out var noStream);
         Assert.False(noStream);
+    }
+
+    [Fact]
+    public void EveryTierProducesTheSameWordsSoAFallbackCannotShiftTheDocument()
+    {
+        // ⚠ THE FAILURE THIS PINS IS INVISIBLE, WHICH IS WHY IT NEEDS A TEST. The reader pairs
+        // sidecar words to displayed words BY INDEX, so a paragraph that drops to a fallback and
+        // returns a different NUMBER of words shifts every word in the rest of the document onto
+        // the wrong audio. The fallbacks used to split on whitespace while the measured tier used
+        // the phonemizer's units — identical in English, and not in a language without spaces.
+        const string text = "今天天气很好。";
+        if (PhonemizerData.Resolve(null) is null)
+            Assert.Skip("vernacula-phonemizer data/ not found (submodule not checked out?).");
+
+        var units = WordSegmentation.Segment(text, 0, text.Length, "cmn");
+        Assert.True(units.Count > 1, "the premise of this test is that cmn does not split on whitespace");
+
+        var map = Enumerable.Range(0, units.Count).ToList();
+        var supplied = new AudioCppSynthesisService.SuppliedPhonemes(
+            ["x"], map, [.. Enumerable.Repeat(1.0, units.Count)], units);
+
+        // Tier 1: the engine reported one group per unit.
+        var measuredSpeech = Spoken([.. Enumerable.Range(0, units.Count)
+            .Select(i => ($"g{i}", i * 0.5, (i + 1) * 0.5))]);
+        var tier1 = AudioCppSynthesisService.Align(text, "cmn", supplied, measuredSpeech, 3.0, out var measured);
+        Assert.True(measured);
+
+        // Tier 2: no timings, but the phoneme weights are still there.
+        var tier2 = AudioCppSynthesisService.Align(text, "cmn", supplied,
+            new AudioCppSpeech(new float[24_000], []), 3.0, out _);
+
+        // Tier 3: nothing supplied at all.
+        var tier3 = AudioCppSynthesisService.Align(text, "cmn", null,
+            new AudioCppSpeech(new float[24_000], []), 3.0, out _);
+
+        Assert.Equal(units.Count, tier1.Count);
+        Assert.Equal(units.Count, tier2.Count);
+        Assert.Equal(units.Count, tier3.Count);
+        // And the same words, not merely the same count.
+        Assert.Equal(tier1.Select(w => w.Text), tier2.Select(w => w.Text));
+        Assert.Equal(tier1.Select(w => w.Text), tier3.Select(w => w.Text));
+    }
+
+    [Fact]
+    public void OnlyAnEngineThatAlignsToTraceUnitsMayAskTheReaderToDisplayThem()
+    {
+        // ⚠ OPT-IN PER ENGINE. The reader pairs by index, so an engine whose aligner splits on
+        // whitespace must not be handed trace units — OmniVoice's language picker also offers
+        // Japanese, and a regression there would misalign a whole document for a backend this
+        // work does not otherwise touch.
+        var kokoro = TtsEngines.For(TtsBackendKind.AudioCppKokoro);
+        Assert.Equal("ja", kokoro.WordSegmentationLanguage(Rendered("jf_alpha")));
+        Assert.Equal("cmn", kokoro.WordSegmentationLanguage(Rendered("zf_xiaobei")));
+
+        foreach (var kind in new[] { TtsBackendKind.OmniVoice, TtsBackendKind.Chatterbox, TtsBackendKind.Kokoro })
+            Assert.Null(TtsEngines.For(kind).WordSegmentationLanguage(new JobRecord { Kind = JobKind.Tts }));
     }
 
     private static TtsJobSettings Job(string voice, float speed = 1.0f) =>

@@ -62,6 +62,14 @@ internal static class SegmentedSynthesis
         //
         // A re-render is unaffected: TtsJobRunner.ReRenderAsync renders into a staging path and
         // swaps at the end, so the growing file there is never the one the reader is reading.
+        //
+        // ⚠ A CANCELLED OR FAILED RUN NOW LEAVES A TRUNCATED WAV HERE, AND THAT IS DELIBERATE —
+        // do not "fix" it by writing to a temp path and moving on success, because the partial
+        // file IS the feature: it is what a mid-render click seeks into, and a temp path would put
+        // it somewhere the reader is not looking. Nothing reads the WAV's existence as "this job
+        // finished": the ALIGNMENT SIDECAR is the completion marker (TtsJobRunner saves it only
+        // after synthesis returns, and the reader reports "sidecar not found" without it), which is
+        // the same ordering ReRenderAsync relies on when it publishes the sidecar last.
         using var merged = new WaveFileWriter(
             request.OutWavPath, WaveFormat.CreateIeeeFloatWaveFormat(sampleRate, 1));
         var records = new List<ChunkRecord>(total);

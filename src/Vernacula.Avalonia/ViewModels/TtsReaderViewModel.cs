@@ -111,6 +111,8 @@ internal sealed partial class TtsReaderViewModel : ObservableObject, IDisposable
     private TtsJobUiState?  _state;
     private string          _text = "";
     private string          _lang = "en";
+    /// <summary>The language whose word units to DISPLAY, or null for the whitespace split.</summary>
+    private string?         _wordLang;
     private string?         _audioPath;
     /// <summary>The partially-written merged WAV of the job being watched, and how much of it the
     /// chunks received so far account for. Only a seek uses these; see <see cref="SeekToWord"/>.</summary>
@@ -170,6 +172,12 @@ internal sealed partial class TtsReaderViewModel : ObservableObject, IDisposable
         _liveAudioPath = null;
         _liveDuration  = 0;
         _lang         = TtsEngines.For(job).AnnotationLanguage(job);
+        // ⚠ A SEPARATE QUESTION FROM THE ANNOTATION LANGUAGE, and conflating them regressed a
+        // backend this work does not otherwise touch. The reader pairs sidecar words to displayed
+        // words by index, so it may only display the phonemizer's units when the engine that wrote
+        // the sidecar aligned against those same units. OmniVoice's language picker also offers
+        // Japanese, and its aligner splits on whitespace.
+        _wordLang     = TtsEngines.For(job).WordSegmentationLanguage(job);
         _sampleRate   = TtsEngines.For(job).SampleRate;
         lock (_receivedLock) { _receivedAudio.Clear(); _receivedWords.Clear(); }
         _streamWordCursor = 0;
@@ -469,7 +477,7 @@ internal sealed partial class TtsReaderViewModel : ObservableObject, IDisposable
 
         foreach (var seg in ParagraphSegmenter.Segment(extract))
         {
-            var block = BlockItemViewModel.FromSegment(seg, et, ranges, Words.Count, SeekToWord, _lang);
+            var block = BlockItemViewModel.FromSegment(seg, et, ranges, Words.Count, SeekToWord, _wordLang);
             DisplayBlocks.Add(block);
             foreach (var w in block.Words)
             {
@@ -1040,8 +1048,13 @@ internal sealed partial class TtsReaderViewModel : ObservableObject, IDisposable
         {
             try
             {
-                lock (_receivedLock) _streamingPlayback = false;
                 _playback.SeekIntoFile(_liveAudioPath, _liveDuration, word.StartSeconds, follow: true);
+                // ⚠ AFTER, NOT BEFORE. Clearing this first meant that a SeekIntoFile which threw
+                // left the caller worse off than not clicking at all: SeekIntoFile's own first act
+                // is Stop(), so playback was already torn down, and with streaming disabled no
+                // further chunk would be appended either -- neither audio nor highlight moving,
+                // where before the click at least re-anchored the highlight on a running stream.
+                lock (_receivedLock) _streamingPlayback = false;
                 return;
             }
             catch (Exception ex) { StatusMessage = $"Seek failed: {ex.Message}"; }

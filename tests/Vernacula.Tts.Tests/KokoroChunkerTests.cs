@@ -53,6 +53,41 @@ public class KokoroChunkerTests
     }
 
     [Fact]
+    public void ALongJapaneseParagraphIsSplitWithinTheEngineBudget()
+    {
+        // ⚠ THE BUDGET IS IN PHONEMES AND THE LANGUAGE DECIDES HOW MANY. Measuring a Japanese
+        // paragraph with the English G2P returns a number unrelated to the ja render that is
+        // actually sent, so a chunk could be handed over far past the engine's 510-symbol entry
+        // cap — and the engine refuses the whole request rather than degrading. Worse, the
+        // sentence splitter only knew ASCII terminators, so a 。-terminated paragraph never split
+        // at all and a script without spaces has one "word" to fall back to.
+        var chunker = Chunker();
+        var paragraph = string.Concat(Enumerable.Repeat("今日はいい天気ですね。科学者たちが発表しました。", 30));
+
+        var chunks = chunker.ChunkForSynthesis(paragraph, "ja");
+
+        Assert.True(chunks.Count > 1, "a 30-sentence Japanese paragraph came back as one chunk");
+        foreach (var chunk in chunks)
+            Assert.InRange(chunker.CountTokens(chunk, "ja"), 1, 510);
+    }
+
+    [Fact]
+    public void AMandarinParagraphWithNoSpacesAtAllStillSplits()
+    {
+        // The same, with no sentence marks either: the last resort is characters, which is the
+        // only cut a script without spaces leaves. Entries are merged back into one buffer, so a
+        // seam costs prosody rather than correctness.
+        var chunker = Chunker();
+        var paragraph = string.Concat(Enumerable.Repeat("今天天气很好我们去公园散步", 60));
+
+        var chunks = chunker.ChunkForSynthesis(paragraph, "cmn");
+
+        Assert.True(chunks.Count > 1, "a paragraph with no spaces and no sentence marks did not split");
+        foreach (var chunk in chunks)
+            Assert.InRange(chunker.CountTokens(chunk, "cmn"), 1, 510);
+    }
+
+    [Fact]
     public void KeepKnownDropsOnlyWhatKokoroHasNoTokenFor()
     {
         // ⚠ THE TWO ENGINES DISAGREE ABOUT AN UNKNOWN SYMBOL AND BOTH ARE RIGHT. The ONNX path

@@ -55,7 +55,9 @@ public sealed class PlaybackService : IDisposable
     // it in Stop(). WaveOut.Dispose() does NOT dispose the WaveStream
     // it was given via Init — without holding our own ref, every Play
     // would leak an open file handle (Windows keeps the WAV locked too).
-    private AudioFileReader? _fileReader;
+    private WaveFileReader? _fileReader;
+    /// <summary>The handle <see cref="_fileReader"/> reads through, so it can be opened shareable.</summary>
+    private FileStream? _fileStream;
 #endif
     private Process? _ffplayProcess;
     private Stream? _ffplayStdin;
@@ -426,11 +428,33 @@ public sealed class PlaybackService : IDisposable
         lock (_totalLock) _totalEstimatedSec = audioDurationSec;
         TotalChanged?.Invoke(audioDurationSec);
         seconds = Math.Clamp(seconds, 0, audioDurationSec);
-        _endOfStream = true;
+        // ⚠ NOT THE END OF THE STREAM WHEN FOLLOWING, and this was the whole bug in the
+        // follow-a-growing-file path. `_endOfStream` tells the tick timer that reaching the total
+        // means the audio is over, so it called Stop() the instant wall-clock hit the frontier the
+        // click saw -- and Stop() clears `_followPath` as its first act, so the player's own EOF
+        // handler then found nothing to follow. Playback ended at the paragraph the click landed
+        // in, which is exactly the behaviour following exists to remove, and whether it happened at
+        // all was a race between a 50 ms timer and the player's exit.
+        //
+        // While following, the player's exit is the only authority on whether the audio is over:
+        // the timer freezes the position at the frontier (which is what it already does when the
+        // listener outruns the buffer) and TryFollowGrowingFile decides between continuing and
+        // stopping.
+        _endOfStream = !follow;
 
 #if WINDOWS
         {
-            _fileReader = new AudioFileReader(audioPath)
+            // ⚠ FileShare.ReadWrite, FOR THE SAME REASON TryFollowGrowingFile CANNOT USE
+            // AudioFileReader(path): mid-render this file is open for writing by the renderer, and
+            // AudioFileReader's own path goes through File.OpenRead — FileShare.Read — which denies
+            // the writer that already holds it. Advisory on Linux, ERROR_SHARING_VIOLATION on
+            // Windows every single time, so the feature would have worked on the development
+            // machine and never on Windows.
+            // WaveFileReader rather than AudioFileReader because only the former can be handed a
+            // stream we opened ourselves; the renderer writes 32-bit float mono, which WaveOut
+            // plays directly, so nothing in between is needed.
+            _fileStream = new FileStream(audioPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+            _fileReader = new WaveFileReader(_fileStream)
             {
                 CurrentTime = TimeSpan.FromSeconds(seconds),
             };
@@ -537,6 +561,11 @@ public sealed class PlaybackService : IDisposable
         {
             _fileReader.Dispose();
             _fileReader = null;
+        }
+        if (_fileStream is not null)
+        {
+            _fileStream.Dispose();
+            _fileStream = null;
         }
 #endif
         if (_ffplayProcess is not null)

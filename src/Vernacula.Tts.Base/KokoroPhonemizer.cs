@@ -50,6 +50,17 @@ public sealed class KokoroPhonemizer
     public int CountTokens(string text, bool british = false)
         => Math.Max(0, KokoroVocab.Encode(ToPhonemes(text, british)).Length - 2);
 
+    /// <summary>The same count, phonemized as <paramref name="lang"/>.</summary>
+    /// <remarks>
+    /// ⚠ THE LANGUAGE MATTERS HERE AND A COMMENT ONCE CLAIMED IT DID NOT. The budget is in
+    /// phonemes, and how many phonemes a paragraph becomes absolutely depends on which G2P read
+    /// it: running the English one over kana or hanzi yields a number unrelated to the ja or cmn
+    /// render that will actually be sent, so a chunk measured in English can be far past the
+    /// engine's 510-symbol entry limit and the engine refuses the whole request.
+    /// </remarks>
+    public int CountTokens(string text, string lang)
+        => Math.Max(0, KokoroVocab.Encode(ToPhonemes(text, lang)).Length - 2);
+
     /// <summary>Text → Kokoro phonemes plus the phoneme-group → source-word map.</summary>
     public KokoroPhonemization Phonemize(string text, bool british = false)
         => Phonemize(text, Lang(british));
@@ -68,7 +79,10 @@ public sealed class KokoroPhonemizer
     /// </remarks>
     public KokoroPhonemization Phonemize(string text, string lang)
     {
-        var trace = global::Vernacula.Phonemizer.Phonemizer.PhonemizeTrace(text, lang);
+        // Through WordSegmentation.Trace, which carries the #1408 retry: this call builds the
+        // group→word map, and it is just as able to be the first `ja` trace in the process as the
+        // segmenter's is.
+        var trace = WordSegmentation.Trace(text, lang);
         var words = WordSegmentation.Segment(text, 0, text.Length, lang);
         var map = GroupSourceWords(trace, text, words);
 

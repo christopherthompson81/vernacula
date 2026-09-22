@@ -90,8 +90,7 @@ public sealed class AudioCppSynthesisService : ITtsBackend
         // at 100.0%. Nothing has to be dropped, so the "a symbol we got wrong is a refused
         // paragraph" risk that justified English-only does not arise.
         var lang = AudioCppKokoroVoices.PhonemizerLanguage(voice);
-        bool british = lang == "en-GB";
-        bool ours    = KokoroFormat.CanRender(lang);
+        bool ours = KokoroFormat.CanRender(lang);
 
         onProgress?.Invoke(new ProgressEvent("loading models"));
         await Task.Run(EnsureLoaded, cancellationToken).ConfigureAwait(false);
@@ -101,7 +100,10 @@ public sealed class AudioCppSynthesisService : ITtsBackend
         {
             var tts = _tts!;
             // Set by the first segment that actually joins the engine's timings to its words.
-            var measuredAny = false;
+            // ⚠ SEEDED FROM THE RUN BEING REUSED. A re-render that reuses every paragraph never
+            // calls the synthesis delegate at all, so this would stay false and label a sidecar
+            // "proportional" whose every timing came from a measured run.
+            var measuredAny = request.ReuseFrom?.Sidecar.Aligner == "audiocpp_duration";
 
             (float[] Audio, IReadOnlyList<AlignedWord> Words) SynthesizeSegment(
                 Vernacula.Tts.Base.Markdown.TextSegment seg, Action<string> warn)
@@ -116,7 +118,7 @@ public sealed class AudioCppSynthesisService : ITtsBackend
                     : null;
                 var spoken = tts.SpeakAligned(seg.Text, supplied?.Chunks, voice, speed);
                 var seconds = spoken.Audio.Length / (double)SampleRate;
-                var aligned = Align(seg.Text, supplied, spoken, seconds, out var measured);
+                var aligned = Align(seg.Text, lang, supplied, spoken, seconds, out var measured);
                 measuredAny |= measured;
                 return (spoken.Audio, aligned);
             }
@@ -184,10 +186,13 @@ public sealed class AudioCppSynthesisService : ITtsBackend
         var wordOffset = 0;
         var dropped = new List<char>();
 
-        // ⚠ THE CHUNKER STILL MEASURES IN ENGLISH and that is deliberate: it exists to keep a
-        // chunk inside Kokoro's 512-token window, and the token count of a rendered stream does
-        // not depend on which language rendered it. Only the reading does.
-        foreach (var chunk in chunker.ChunkForSynthesis(text, british: lang == "en-GB"))
+        // ⚠ CHUNKED IN THE LANGUAGE BEING SPOKEN. A comment here used to claim the token count of
+        // a rendered stream does not depend on which language rendered it, which is plainly false:
+        // the budget is in PHONEMES, and the English G2P over kana or hanzi returns a number
+        // unrelated to the ja or cmn render that is actually sent. A paragraph measured in English
+        // could therefore be handed over as one entry far past the engine's 510-symbol cap, and
+        // the engine refuses the whole request rather than degrading.
+        foreach (var chunk in chunker.ChunkForSynthesis(text, lang))
         {
             var chunkPhonemes = g2p.Phonemize(chunk, lang);
             var rendered = chunkPhonemes.Phonemes;
@@ -266,10 +271,20 @@ public sealed class AudioCppSynthesisService : ITtsBackend
     /// </para>
     /// </summary>
     internal static IReadOnlyList<AlignedWord> Align(
-        string text, SuppliedPhonemes? supplied, AudioCppSpeech spoken, double seconds,
+        string text, string lang, SuppliedPhonemes? supplied, AudioCppSpeech spoken, double seconds,
         out bool measured)
     {
         measured = false;
+
+        // ⚠ ONE SET OF UNITS FOR ALL THREE TIERS. The fallbacks used to split on whitespace while
+        // the measured tier used the phonemizer's units, which agree in English and do not in a
+        // language without spaces — so a single paragraph dropping to a fallback contributed the
+        // wrong NUMBER of words, and the reader pairs sidecar words to displayed words by index,
+        // shifting every word in the rest of the document onto the wrong audio. A worse estimate
+        // is acceptable; a different segmentation is not.
+        var words = supplied?.Words ?? WordSegmentation.Segment(text, 0, text.Length, lang);
+        if (words.Count == 0) return [];
+
         // The counts must agree: the engine cuts groups at ITS view of the stream, the map was
         // built from ours, and a silent disagreement would put every word after it on the wrong
         // audio. Falling back is visibly worse; being one word out is not visible at all.
@@ -279,12 +294,59 @@ public sealed class AudioCppSynthesisService : ITtsBackend
             for (var i = 0; i < spans.Length; i++)
                 spans[i] = new KokoroAlignment.GroupSpan(spoken.Groups[i].StartSeconds, spoken.Groups[i].EndSeconds);
             measured = true;
-            return [.. KokoroAlignment.WordsFromGroups(text, supplied!.Words, map, spans, seconds)
+            return [.. KokoroAlignment.WordsFromGroups(text, words, map, spans, seconds)
                           .Select(w => new AlignedWord { Text = w.Text, StartSeconds = w.StartSec, EndSeconds = w.EndSec })];
         }
-        return supplied?.PhonemesPerWord is { } weights
-            ? SpreadByWeight(text, weights, seconds)
-            : EstimateWords(text, seconds);
+        return supplied?.PhonemesPerWord is { } weights && weights.Length == words.Count
+            ? Spread(text, words, weights, seconds)
+            : Spread(text, words, null, seconds);
+    }
+
+    /// <summary>
+    /// Spreads <paramref name="totalSeconds"/> across <paramref name="words"/>, weighted by
+    /// <paramref name="weights"/> when there are any and by written length when there are not.
+    ///
+    /// <para>
+    /// Both fallbacks in one function so they cannot drift into different segmentations again. A
+    /// word with no weight at all — a bare "—", an emoji — gets a zero-length marker where the
+    /// voice has reached, so the reader still shows every word and the indices stay 1:1 with the
+    /// units, exactly as the measured path does.
+    /// </para>
+    /// </summary>
+    internal static IReadOnlyList<AlignedWord> Spread(
+        string text, IReadOnlyList<WordSpan> words, double[]? weights, double totalSeconds)
+    {
+        var aligned = new List<AlignedWord>(words.Count);
+        if (words.Count == 0) return aligned;
+
+        double total = 0;
+        for (var i = 0; i < words.Count; i++)
+            total += weights?[i] ?? (words[i].End - words[i].Start);
+        if (total <= 0)
+        {
+            for (var i = 0; i < words.Count; i++)
+                aligned.Add(new AlignedWord
+                {
+                    Text = text[words[i].Start..words[i].End],
+                    StartSeconds = totalSeconds * i / words.Count,
+                    EndSeconds = totalSeconds * (i + 1) / words.Count,
+                });
+            return aligned;
+        }
+
+        var cursor = 0.0;
+        for (var i = 0; i < words.Count; i++)
+        {
+            var span = totalSeconds * (weights?[i] ?? (words[i].End - words[i].Start)) / total;
+            aligned.Add(new AlignedWord
+            {
+                Text = text[words[i].Start..words[i].End],
+                StartSeconds = cursor,
+                EndSeconds = cursor + span,
+            });
+            cursor += span;
+        }
+        return aligned;
     }
 
     /// <summary>
@@ -339,9 +401,13 @@ public sealed class AudioCppSynthesisService : ITtsBackend
 
     private void EnsureLoaded()
     {
-        if (_tts is not null) return;
         lock (_gate)
         {
+            // ⚠ THE WHOLE BODY IS UNDER THE LOCK NOW. `if (_tts is not null) return;` outside it
+            // let a second caller see the engine published while _g2p was still null, because the
+            // two are written in sequence with no barrier between them -- that caller would then
+            // synthesize without supplying phonemes and get the engine's own accent for one job.
+            if (_tts is not null) return;
             // The phonemizer first: it is the cheaper failure, and a missing data tree is not a
             // failure at all here — the engine has a G2P of its own, so an install without the
             // phonemizer's data renders in eSpeak's accent rather than not rendering.
@@ -352,10 +418,17 @@ public sealed class AudioCppSynthesisService : ITtsBackend
                     _g2p = new KokoroPhonemizer(_dataDir);
                     _chunker = new KokoroChunker(_g2p);
                 }
-                catch (DirectoryNotFoundException)
+                catch (Exception failure)
                 {
-                    Console.WriteLine("[audio.cpp] no vernacula-phonemizer data tree; "
-                                      + "English will be pronounced by the engine's own eSpeak-ng.");
+                    // ⚠ ANY failure, not just a missing directory. The contract is that an absent
+                    // or unusable phonemizer costs the ACCENT and not the render, and narrowing
+                    // this to DirectoryNotFoundException meant a present-but-incomplete tree or a
+                    // corrupt data file threw out of Task.Run and failed the whole job -- on a
+                    // path that had no phonemizer dependency at all before this work.
+                    Console.WriteLine($"[audio.cpp] vernacula-phonemizer unavailable ({failure.Message}); "
+                                      + "the engine's own eSpeak-ng will pronounce this job.");
+                    _g2p = null;
+                    _chunker = null;
                 }
             }
             _tts ??= new AudioCppTts(_modelPath, _backends, _threads);

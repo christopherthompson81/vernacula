@@ -78,6 +78,17 @@ internal abstract class TtsEngine
     // ── Describing a finished job ────────────────────────────────────────────
 
     /// <summary>The language the reader's IPA annotation is read in for this job.</summary>
+    /// <summary>
+    /// The language whose word units the reader should display, or null for the whitespace split.
+    ///
+    /// <para>
+    /// Null by default ON PURPOSE: this is only safe for an engine whose aligner produces the same
+    /// units, because the reader pairs sidecar words to displayed words positionally. See the
+    /// override on the audio.cpp Kokoro engine.
+    /// </para>
+    /// </summary>
+    public virtual string? WordSegmentationLanguage(JobRecord job) => null;
+
     public virtual string AnnotationLanguage(JobRecord job) => "en";
 
     /// <summary>The parts after the engine name in the reader's job line ("af_heart", "1.00×").</summary>
@@ -426,6 +437,20 @@ internal sealed class AudioCppKokoroEngine : TtsEngine
     }
 
     public override string AnnotationLanguage(JobRecord job) =>
+        Vernacula.AudioCpp.AudioCppKokoroVoices.PhonemizerLanguage(job.TtsVoice);
+
+    /// <summary>
+    /// This engine aligns against the phonemizer's own word units, so the reader may display them.
+    /// </summary>
+    /// <remarks>
+    /// ⚠ OPT-IN PER ENGINE, BECAUSE THE UNITS HAVE TO MATCH ON BOTH SIDES. The reader pairs
+    /// <c>sidecar.Words[k]</c> to its k-th displayed word by INDEX, so an engine whose aligner
+    /// splits on whitespace while the reader splits by trace would hand a Japanese document one
+    /// timing for a paragraph of many words — and every word after it in the document lands on the
+    /// wrong audio. Defaulting to null keeps every other backend on whitespace, which is what
+    /// their aligners produce.
+    /// </remarks>
+    public override string? WordSegmentationLanguage(JobRecord job) =>
         Vernacula.AudioCpp.AudioCppKokoroVoices.PhonemizerLanguage(job.TtsVoice);
 
     public override IEnumerable<string> DescribeJob(JobRecord job)
