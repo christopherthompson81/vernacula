@@ -113,14 +113,16 @@ public sealed class KokoroPhonemizer
     private static readonly char[] KokoroVowels = "əɐaeiouɑɔɛɪʊʌæɜAIOWYᵻᵊ".ToCharArray();
 
     /// <summary>
-    /// Renders the reduced vowel of a <c>de-</c>/<c>re-</c>/<c>pre-</c> prefix as ⟨ə⟩ rather than
-    /// ⟨ᵻ⟩, which is what misaki's <c>us_gold</c> — the lexicon Kokoro was trained on — writes there.
+    /// Renders the reduced vowel of a <c>de-</c> or <c>re-</c> prefix as ⟨ə⟩ rather than ⟨ᵻ⟩, which
+    /// is what misaki's <c>us_gold</c> — the lexicon Kokoro was trained on — writes there.
     /// </summary>
     /// <remarks>
     /// ⚠ NOT A DICTIONARY DEFECT AND NOT A PHONEMIZER BUG. Our IPA is already reduced on every path;
     /// this is a divergence between two spellings of the same reduced vowel, and it matters only
     /// because Kokoro was trained on one of them. Measured in gold: the prefix vowel is ⟨ə⟩ 1,057
     /// times against ⟨ᵻ⟩ 9 times, so our ⟨ᵻ⟩ is effectively out of distribution for this position.
+    /// Counted per onset, over the words where our ⟨ᵻ⟩ is itself the first vowel:
+    /// <c>de-</c> ə 468 against 38 others, <c>re-</c> ə 557 against 20.
     /// A/B through Kokoro itself confirmed the model renders the two differently and a listener
     /// preferred ⟨ə⟩ — subtly, in connected reading, which is the size of claim this deserves.
     /// docs/investigations/kokoro_barred_i_investigation.md.
@@ -135,6 +137,24 @@ public sealed class KokoroPhonemizer
     /// <c>deg-</c> and <c>dej-</c> are excluded by spelling and the affricate never arises.
     /// Verified from the lexicon: 0 of the 1,057 target words begin <c>ded-</c>, and 0 of the
     /// keep-words do not.
+    /// </para>
+    ///
+    /// <para>
+    /// ⚠ <c>pre-</c> IS DELIBERATELY EXCLUDED AND WAS BRIEFLY INCLUDED BY MISTAKE. On the same
+    /// count its majority runs the OTHER WAY — gold writes tense <c>i</c> 46 times against ⟨ə⟩ 32
+    /// (<c>precede pɹisˈid</c>, <c>precise pɹisˈIs</c>, <c>predict pɹidˈɪkt</c>) — so the argument
+    /// this rule rests on does not hold there, and applying it moved eight words from one non-gold
+    /// spelling to a different one. It also SPLIT A PARADIGM: <c>prefer</c> was reduced to
+    /// <c>pɹəfˈɜɹ</c> while <c>preferred</c> stayed <c>pɹifˈɜɹd</c>, because only the former has
+    /// ⟨ᵻ⟩ as its first vowel. The listener sample that authorised this rule was
+    /// determine/describe/reduce — all <c>de-</c>/<c>re-</c> — so <c>pre-</c> never had evidence
+    /// behind it in either direction.
+    /// </para>
+    ///
+    /// <para>
+    /// ⚠ <c>be-</c> IS ALSO EXCLUDED, on the opposite kind of evidence: gold is UNANIMOUS there,
+    /// ⟨ə⟩ 160 times with no counterexample. It is excluded only because no listener has heard it,
+    /// and this rule has been driven by synthesis rather than by distribution from the start.
     /// </para>
     ///
     /// <para>
@@ -190,8 +210,7 @@ public sealed class KokoroPhonemizer
         var bare = word.Trim(['.', ',', ';', ':', '!', '?', '"', '\'', '(', ')', '—', '-']);
         if (bare.StartsWith("ded", StringComparison.OrdinalIgnoreCase)) return token;
         if (!bare.StartsWith("de", StringComparison.OrdinalIgnoreCase)
-            && !bare.StartsWith("re", StringComparison.OrdinalIgnoreCase)
-            && !bare.StartsWith("pre", StringComparison.OrdinalIgnoreCase)) return token;
+            && !bare.StartsWith("re", StringComparison.OrdinalIgnoreCase)) return token;
 
         var v = token.IndexOfAny(KokoroVowels);
         return v >= 0 && token[v] == 'ᵻ' ? token[..v] + 'ə' + token[(v + 1)..] : token;

@@ -435,3 +435,70 @@ question "is the thing I am testing for absence actually absent?" needs an answe
 depend on remembering which half is in the index. Reverting a named file to `main` does not.
 
 Suite: 95 + 271 + 23 + 362, 0 failures.
+
+## Run 10 — 2026-09-22 — `pre-` should never have been in the rule
+
+The phonemizer session counted gold's first-vowel spelling per onset, over exactly the words where
+our ⟨ᵻ⟩ is itself the first vowel — i.e. the words this rule can reach:
+
+```
+be-    ə 160
+de-    ə 468   i 30   ɪ 8   ᵻ 7   A 2   ɛ 1
+re-    ə 557   i 12   ɪ 2   ɛ 4   A 1   ʌ 1
+pre-   ə  32   i 46   ɪ 1
+```
+
+⚠ **`pre-` runs the other way, and it shipped in #243.** Gold's majority there is tense `i`, so the
+lexicon argument this rule rests on does not hold for that onset. Verified against our own pipeline
+rather than taken on the counts — the raw render against what the shipped rule produced:
+
+```
+precede      pɹᵻsˈid      -> pɹəsˈid      CHANGED
+precise      pɹᵻsˈIs      -> pɹəsˈIs      CHANGED
+predict      pɹᵻdˈɪkt     -> pɹədˈɪkt     CHANGED
+preclude     pɹᵻklˈud     -> pɹəklˈud     CHANGED
+prevent      pɹᵻvˈɛnt     -> pɹəvˈɛnt     CHANGED
+predominant  pɹᵻdˈɑmənᵊnt -> pɹədˈɑmənᵊnt CHANGED
+precipitate  pɹᵻsˈɪpɪtˌAt -> pɹəsˈɪpɪtˌAt CHANGED
+prefer       pɹᵻfˈɜɹ      -> pɹəfˈɜɹ      CHANGED
+```
+
+Eight words moved from one non-gold spelling to a different non-gold spelling. ⚠ **AND IT SPLIT A
+PARADIGM**, which the counts alone would not have shown:
+
+```
+prefer      pɹᵻfˈɜɹ  -> pɹəfˈɜɹ
+preferred   pɹifˈɜɹd    pɹifˈɜɹd   (untouched: its first vowel is already tense i)
+```
+
+One stem, two prefix vowels, introduced by this rule.
+
+**The listener sample never covered it.** determine, describe, reduce — all `de-`/`re-`. `pre-` was
+carried along because it looks like the same class, which is the entire error: the onsets were
+treated as a group because they are spelled alike, and the evidence was never per-onset until now.
+
+Removed. The rule is `de-`/`re-` only, and the exclusions are pinned by tests that compare against
+the render with no rule applied, so they keep holding if the underlying dictionary reading changes.
+
+### `be-` stays out, on the opposite evidence
+
+Gold is **unanimous** for `be-` — ə 160 times, no counterexample, stronger than either onset in the
+rule. It is excluded anyway, because no listener has heard it and this change has been driven by
+synthesis rather than by distribution from the beginning. ⚠ **Holding it out is the same discipline
+that should have kept `pre-` out**, and it is worth noticing that the discipline was applied to the
+onset with the best evidence and skipped for the one with the worst.
+
+### A correction carried in
+
+Their first pass read gold with a plain-IPA vowel class and missed misaki's compact symbols — `A I O
+W Y` are vowels too, so `regime ɹAʒˈim` scored as tense `i` when its first vowel is `A`. The table
+above is the corrected run, and the error ran in the direction that would have *strengthened* the
+`pre-` case they were making. Said plainly rather than quietly re-run, which is the reason the
+numbers are usable at all.
+
+### An independent confirmation of the carve-out
+
+⟨ᵻ⟩ survives in gold on exactly 7 `de-` words, and they are precisely the `ded-` family — the
+keep-set falling out of a measurement that was not looking for it.
+
+Suite: 95 + 279 + 23 + 362, 0 failures.
