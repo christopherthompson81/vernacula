@@ -1,3 +1,4 @@
+using System.Text;
 using Vernacula.Phonemizer;
 
 namespace Vernacula.Tts.Base;
@@ -102,7 +103,89 @@ public sealed class KokoroPhonemizer
         if (map is not null && CountWordGroups(ipa) != map.Count)
             ipa = trace.Ipa;
 
-        return new KokoroPhonemization(KokoroFormat.Render(ipa, lang), map, words);
+        return new KokoroPhonemization(
+            ReduceEnglishPrefixVowel(KokoroFormat.Render(ipa, lang), text, map, words, lang),
+            map, words);
+    }
+
+    /// <summary>Kokoro-alphabet vowels, for finding a token's first syllable nucleus.</summary>
+    private const string KokoroVowels = "əɐaeiouɑɔɛɪʊʌæɜAIOWYᵻᵊ";
+
+    /// <summary>
+    /// Renders the reduced vowel of a <c>de-</c>/<c>re-</c>/<c>pre-</c> prefix as ⟨ə⟩ rather than
+    /// ⟨ᵻ⟩, which is what misaki's <c>us_gold</c> — the lexicon Kokoro was trained on — writes there.
+    /// </summary>
+    /// <remarks>
+    /// ⚠ NOT A DICTIONARY DEFECT AND NOT A PHONEMIZER BUG. Our IPA is already reduced on every path;
+    /// this is a divergence between two spellings of the same reduced vowel, and it matters only
+    /// because Kokoro was trained on one of them. Measured in gold: the prefix vowel is ⟨ə⟩ 1,057
+    /// times against ⟨ᵻ⟩ 9 times, so our ⟨ᵻ⟩ is effectively out of distribution for this position.
+    /// A/B through Kokoro itself confirmed the model renders the two differently and a listener
+    /// preferred ⟨ə⟩ — subtly, in connected reading, which is the size of claim this deserves.
+    /// docs/investigations/kokoro_barred_i_investigation.md.
+    ///
+    /// <para>
+    /// ⚠ KEYED ON THE SOURCE WORD, WHICH IS THE WHOLE REASON THIS IS SAFE. Earlier drafts tried to
+    /// express it phonologically, and needed a <c>dᵻd</c> key plus a tie-bar guard because
+    /// <c>dᵻd͡ʒ</c> (degeneracy, deject) matches a bare <c>d</c> on half of /d͡ʒ/. All of that was
+    /// manufactured by working at a layer without word identity. <c>PhonemizeTrace</c> is the full
+    /// word → IPA trip and this method already holds its group → word map, so the carve-out is
+    /// orthographic: <c>ded-</c> is exactly the deduce/deduct family plus two surnames, while
+    /// <c>deg-</c> and <c>dej-</c> are excluded by spelling and the affricate never arises.
+    /// Verified from the lexicon: 0 of the 1,057 target words begin <c>ded-</c>, and 0 of the
+    /// keep-words do not.
+    /// </para>
+    ///
+    /// <para>
+    /// ⚠ THE ⟨ᵻ⟩ MUST BE THE FIRST VOWEL, not merely the first ⟨ᵻ⟩. <c>represent</c> is
+    /// <c>ɹˌɛpɹᵻzˈɛnt</c>, whose ⟨ᵻ⟩ sits in the second syllable and is nothing to do with the
+    /// prefix; taking the first ⟨ᵻ⟩ would move it. Gold writes ⟨ᵻ⟩ 2,203 times overall — 1,503 of
+    /// them the inflectional <c>-ed</c>/<c>-es</c> — and every one of those is a position this rule
+    /// must not reach.
+    /// </para>
+    ///
+    /// <para>
+    /// ⚠ AND IT DOES NOTHING WHEN IT CANNOT IDENTIFY THE WORD. A null or mismatched map means the
+    /// groups cannot be tied to words, and a word-keyed rule that has lost the word must leave the
+    /// stream alone rather than guess from the phonemes — which is the failure the phonological
+    /// draft would have shipped as its normal mode of operation.
+    /// </para>
+    /// </remarks>
+    private static string ReduceEnglishPrefixVowel(
+        string rendered, string text, IReadOnlyList<int>? map, IReadOnlyList<WordSpan> words, string lang)
+    {
+        if (lang is not ("en" or "en-GB" or "en-US") || map is null || map.Count == 0) return rendered;
+        if (rendered.IndexOf('ᵻ') < 0 || CountWordGroups(rendered) != map.Count) return rendered;
+
+        var sb = new StringBuilder(rendered.Length);
+        var group = 0;
+        var i = 0;
+        while (i < rendered.Length)
+        {
+            if (char.IsWhiteSpace(rendered[i])) { sb.Append(rendered[i]); i++; continue; }
+            var start = i;
+            while (i < rendered.Length && !char.IsWhiteSpace(rendered[i])) i++;
+            var token = rendered[start..i];
+            if (!token.Any(char.IsLetter)) { sb.Append(token); continue; }
+
+            var w = map[group++];
+            sb.Append(w >= 0 && w < words.Count
+                ? WithPrefixSchwa(token, text[words[w].Start..words[w].End])
+                : token);
+        }
+        return sb.ToString();
+    }
+
+    private static string WithPrefixSchwa(string token, string word)
+    {
+        var bare = word.Trim(['.', ',', ';', ':', '!', '?', '"', '\'', '(', ')', '—', '-']);
+        if (bare.StartsWith("ded", StringComparison.OrdinalIgnoreCase)) return token;
+        if (!bare.StartsWith("de", StringComparison.OrdinalIgnoreCase)
+            && !bare.StartsWith("re", StringComparison.OrdinalIgnoreCase)
+            && !bare.StartsWith("pre", StringComparison.OrdinalIgnoreCase)) return token;
+
+        var v = token.IndexOfAny(KokoroVowels.ToCharArray());
+        return v >= 0 && token[v] == 'ᵻ' ? token[..v] + 'ə' + token[(v + 1)..] : token;
     }
 
     /// <summary>
