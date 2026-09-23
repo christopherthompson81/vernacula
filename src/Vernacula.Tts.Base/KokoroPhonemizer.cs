@@ -109,7 +109,8 @@ public sealed class KokoroPhonemizer
     }
 
     /// <summary>Kokoro-alphabet vowels, for finding a token's first syllable nucleus.</summary>
-    private const string KokoroVowels = "əɐaeiouɑɔɛɪʊʌæɜAIOWYᵻᵊ";
+    /// <remarks>Held as an array because this is scanned once per prefix word per paragraph.</remarks>
+    private static readonly char[] KokoroVowels = "əɐaeiouɑɔɛɪʊʌæɜAIOWYᵻᵊ".ToCharArray();
 
     /// <summary>
     /// Renders the reduced vowel of a <c>de-</c>/<c>re-</c>/<c>pre-</c> prefix as ⟨ə⟩ rather than
@@ -154,7 +155,10 @@ public sealed class KokoroPhonemizer
     private static string ReduceEnglishPrefixVowel(
         string rendered, string text, IReadOnlyList<int>? map, IReadOnlyList<WordSpan> words, string lang)
     {
-        if (lang is not ("en" or "en-GB" or "en-US") || map is null || map.Count == 0) return rendered;
+        // ⚠ null IS ENGLISH HERE, because that is what KokoroFormat.Render decides -- its English
+        // arm is `lang is "en" or "en-GB" or "en-US" or null`. Excluding null would render English
+        // phonemes and then skip the English rule on the same call.
+        if (lang is not ("en" or "en-GB" or "en-US" or null) || map is null || map.Count == 0) return rendered;
         if (rendered.IndexOf('ᵻ') < 0 || CountWordGroups(rendered) != map.Count) return rendered;
 
         var sb = new StringBuilder(rendered.Length);
@@ -168,7 +172,12 @@ public sealed class KokoroPhonemizer
             var token = rendered[start..i];
             if (!token.Any(char.IsLetter)) { sb.Append(token); continue; }
 
-            var w = map[group++];
+            // Bounded even though the count check above should make it impossible: this runs on
+            // every synthesised paragraph, and an index bug here would take the utterance down
+            // rather than degrade it. Out of range means "cannot identify the word", which already
+            // has a defined answer -- leave the token alone.
+            var w = group < map.Count ? map[group] : -1;
+            group++;
             sb.Append(w >= 0 && w < words.Count
                 ? WithPrefixSchwa(token, text[words[w].Start..words[w].End])
                 : token);
@@ -184,7 +193,7 @@ public sealed class KokoroPhonemizer
             && !bare.StartsWith("re", StringComparison.OrdinalIgnoreCase)
             && !bare.StartsWith("pre", StringComparison.OrdinalIgnoreCase)) return token;
 
-        var v = token.IndexOfAny(KokoroVowels.ToCharArray());
+        var v = token.IndexOfAny(KokoroVowels);
         return v >= 0 && token[v] == 'ᵻ' ? token[..v] + 'ə' + token[(v + 1)..] : token;
     }
 

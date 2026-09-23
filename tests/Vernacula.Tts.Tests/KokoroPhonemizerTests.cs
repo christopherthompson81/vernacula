@@ -90,7 +90,12 @@ public class KokoroPhonemizerTests
         var g2p = TryCreate();
         if (g2p is null) Assert.Skip("vernacula-phonemizer data/ not found (submodule not checked out?).");
 
-        Assert.Equal(expected, g2p.Phonemize(word, "en").Phonemes);
+        var rendered = g2p.Phonemize(word, "en").Phonemes;
+        Assert.Equal(expected, rendered);
+        // ⚠ AND STILL IN VOCABULARY. audio.cpp REFUSES a supplied stream carrying a symbol Kokoro
+        // has no id for -- it does not drop it, it rejects the request -- so a rule that emits one
+        // would take out synthesis on that backend while the ONNX path silently skipped it.
+        foreach (var ch in rendered) Assert.True(KokoroVocab.Contains(ch), $"'{ch}' is not in Kokoro's vocabulary");
     }
 
     [Fact]

@@ -391,3 +391,47 @@ holds the measurements either way.
 `be-` (`before`, `become`, `begin`) shows the same ⟨ᵻ⟩ and is **out of scope**: nobody has measured
 gold's spelling for that onset, so it is left alone rather than swept in on the strength of looking
 similar.
+
+## Run 9 — 2026-09-22 — review, and the control trap a second time
+
+Four findings.
+
+**The rule disagreed with `Render` about what English is.** `KokoroFormat.Render`'s English arm is
+`lang is "en" or "en-GB" or "en-US" or null`; my gate omitted `null`. A call with a null language
+would therefore render English phonemes and then skip the English rule on the same call. Aligned to
+`Render`'s own definition rather than to a list I wrote from memory.
+
+**`map[group++]` was unbounded.** The count check above it should make an overrun impossible, but
+this runs on every synthesised paragraph and an index bug would take the utterance *down* rather
+than degrade it. Out of range now means what it already means everywhere else in this rule — cannot
+identify the word, so leave the token alone.
+
+**`KokoroVowels.ToCharArray()` allocated on every prefix word.** Held as a static array.
+
+**The tests did not check the output was still in vocabulary.** ⚠ audio.cpp REFUSES a supplied
+stream carrying a symbol Kokoro has no id for — it does not drop it, it rejects the request — so a
+rule emitting one would take out synthesis on that backend while the ONNX path silently skipped it.
+Every case now asserts it.
+
+### Both engines get this, which was worth confirming rather than assuming
+
+`KokoroTts` (ONNX) calls `Phonemize(text, british)`, and `Lang(british)` returns `"en"`/`"en-GB"`,
+so the rule applies on both backends. If it had applied to only one, the same document would read
+differently depending on the engine — the exact failure `KokoroChunker` exists to prevent.
+
+### ⚠ And the control was invalid, for the second time this week
+
+The first attempt stashed only the uncommitted review fixes while the rule itself was already
+committed, so the "control" ran against the rule and reported 17 green. **I wrote this trap up on
+#240 and then walked into it again.** Redone against `main`:
+
+```
+7 failed, 10 passed
+```
+
+The lesson from #240 was "check what the control actually reverted". The lesson now is stronger:
+*stash is the wrong instrument for this* whenever any part of the change is committed, and the
+question "is the thing I am testing for absence actually absent?" needs an answer that does not
+depend on remembering which half is in the index. Reverting a named file to `main` does not.
+
+Suite: 95 + 271 + 23 + 362, 0 failures.
