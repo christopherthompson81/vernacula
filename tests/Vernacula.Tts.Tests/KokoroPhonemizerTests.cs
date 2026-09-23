@@ -59,7 +59,7 @@ public class KokoroPhonemizerTests
     }
 
     /// <summary>
-    /// The reduced de-/re-/pre- prefix vowel renders as ⟨ə⟩, the spelling Kokoro was trained on.
+    /// The reduced de-/re- prefix vowel renders as ⟨ə⟩, the spelling Kokoro was trained on.
     ///
     /// <para>
     /// ⚠ EVERY CASE HERE IS A BOUNDARY THE RULE MUST NOT CROSS, not a demonstration that it works.
@@ -96,6 +96,35 @@ public class KokoroPhonemizerTests
         // has no id for -- it does not drop it, it rejects the request -- so a rule that emits one
         // would take out synthesis on that backend while the ONNX path silently skipped it.
         foreach (var ch in rendered) Assert.True(KokoroVocab.Contains(ch), $"'{ch}' is not in Kokoro's vocabulary");
+    }
+
+    [Theory]
+    // ⚠ pre- WAS IN THIS RULE FOR ONE COMMIT AND SHOULD NOT HAVE BEEN. Counted over the words where
+    // our ⟨ᵻ⟩ is the first vowel, gold's majority for pre- is TENSE i (46) against ə (32) --
+    // precede pɹisˈid, precise pɹisˈIs, predict pɹidˈɪkt -- so the lexicon argument this rule rests
+    // on runs the other way there, and applying it moved eight words from one non-gold spelling to
+    // a different one.
+    [InlineData("precede")]
+    [InlineData("precise")]
+    [InlineData("predict")]
+    [InlineData("preclude")]
+    // ⚠ AND IT SPLIT A PARADIGM. `prefer` has ⟨ᵻ⟩ as its first vowel and `preferred` has tense i,
+    // so the rule reduced one and not the other -- two spellings of one stem's prefix.
+    [InlineData("prefer")]
+    // be- is unanimous in gold (ə 160, no counterexample) and still excluded: no listener has heard
+    // it, and this rule has been driven by synthesis rather than distribution throughout.
+    [InlineData("before")]
+    [InlineData("become")]
+    [InlineData("begin")]
+    public void AnOnsetWithoutEvidenceIsLeftAlone(string word)
+    {
+        var g2p = TryCreate();
+        if (g2p is null) Assert.Skip("vernacula-phonemizer data/ not found (submodule not checked out?).");
+
+        // Whatever the reading is, the rule must not have touched it: compare against the render
+        // with no rule applied, so this keeps holding if the underlying dictionary reading changes.
+        var ipa = Vernacula.Phonemizer.Phonemizer.PhonemizeAsync(word, "en").GetAwaiter().GetResult();
+        Assert.Equal(KokoroFormat.Render(ipa, "en"), g2p.Phonemize(word, "en").Phonemes);
     }
 
     [Fact]
