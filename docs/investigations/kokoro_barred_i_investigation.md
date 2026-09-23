@@ -502,3 +502,51 @@ numbers are usable at all.
 keep-set falling out of a measurement that was not looking for it.
 
 Suite: 95 + 279 + 23 + 362, 0 failures.
+
+## Run 11 — 2026-09-23 — pin bump, and one of my two arguments for excluding `pre-` retires
+
+Pin `ed2d400e` → `0dc6c9b3`, ten commits. Golden readings across the five languages this app speaks:
+**0 of 114 / 111 / 99 / 123 / 102 changed.** As ever, that is a statement about the corpus — the
+targeted fixes land on words it does not contain.
+
+The words this repo's rule and tests actually depend on, both pins:
+
+```
+                ed2d400e        0dc6c9b3
+prefer          pɹᵻfˈɜɹ         pɹᵻfˈɜɹ
+preferred       pɹifˈɜɹd        pɹᵻfˈɜɹd      <- #1446
+preferring      pɹifˈɜɹɪŋ       pɹᵻfˈɜɹɪŋ     <- #1446
+dedans          dᵻdˈæns         dᵻdˈæns
+determine       dətˈɜɹmən       dətˈɜɹmən
+ξ               ksˈi            zˈI           <- #1455
+```
+
+### ⚠ The paradigm-split argument against `pre-` no longer applies
+
+Run 10 gave two reasons to exclude `pre-`. One was that including it **split the `prefer`
+paradigm** — `prefer` reduced to `pɹəfˈɜɹ` while `preferred` stayed `pɹifˈɜɹd`, because only the
+former had ⟨ᵻ⟩ as its first vowel. **#1446 has since reruled `preferred` and `preferring` as
+reduced**, so the paradigm is now uniformly ⟨ᵻ⟩ and that split would no longer occur. That argument
+is retired rather than quietly left standing.
+
+**The primary argument is untouched and slightly stronger.** Gold's majority for `pre-` is tense `i`
+(46 against ə 32), and the phonemizer session reports gold spells `preferred` tense — so the two
+words that just gained a prefix ⟨ᵻ⟩ join the target set on the side that argues *against* applying
+the rule there. `pre-` stays out, now on one measured reason instead of two.
+
+⚠ **And this is exactly why the exclusion tests compare against the no-rule render** rather than
+pinning literal IPA: `prefer`'s expected reading changed under us in this bump and the tests did not
+notice, because what they assert is that the rule did not touch it.
+
+### The core race fix
+
+`#1443` fixes a greedy-window memo that races and **throws** from `Phonemize()`. Our batch path
+(`KokoroTts.SpeakAlignedBatch`) is a sequential `for`, so this is not a crash we were demonstrably
+hitting — but the app has more than one component that phonemizes, and I have not proven they never
+overlap, so the fix is welcome rather than irrelevant.
+
+Also landed and unused here: `#1456` gives each trace token the **tier that resolved it**. Nothing
+in this repo reads it; noted because the alignment code is the natural consumer if a reading's
+provenance ever matters.
+
+Cold-trace gate on the new pin: **189 of 189, no poisons**. Suite: 95 + 279 + 23 + 362, 0 failures.
