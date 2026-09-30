@@ -107,6 +107,30 @@ public class SortformerProfileTests
         Assert.Contains("fifo_len", ex.Message);
     }
 
+    [Theory]
+    [InlineData("fifo_len", "40.0")]
+    [InlineData("chunk_len", "")]
+    [InlineData("sil_threshold", "0,2")]
+    [InlineData("learnable_sil_emb_f32le_b64", "not base64!")]
+    public void MalformedValue_IsRejected_AsInvalidData_ByName(string key, string value)
+    {
+        // Same exception type as a missing key, so one catch covers "re-export the model".
+        var md = Metadata();
+        md[P + key] = value;
+        var ex = Assert.Throws<InvalidDataException>(() => SortformerProfile.FromMetadata(md));
+        Assert.Contains(key, ex.Message);
+    }
+
+    [Theory]
+    [InlineData("80")]
+    [InlineData("160")]
+    public void MelBinCountOtherThanTheFrontends_IsRejected(string nMels)
+    {
+        var md = Metadata();
+        md[P + "n_mels"] = nMels;
+        Assert.Throws<InvalidDataException>(() => SortformerProfile.FromMetadata(md));
+    }
+
     [Fact]
     public void SilenceEmbeddingOfTheWrongSize_IsRejected()
     {

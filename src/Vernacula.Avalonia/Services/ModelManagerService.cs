@@ -333,12 +333,15 @@ internal class ModelManagerService
         var repos = BackendRepos();
 
         // Nemotron-3-Diarization is ~400 MB, so it is fetched only once it is selected. It
-        // rides on top of the backend's repos rather than replacing the core set: Silero is
-        // still in there, and so is Sortformer v2.1, which the app warms up regardless.
-        if (_settings.Current.Segmentation == SegmentationMode.Nemotron3Diarization
-            && !repos.Any(r => r.RepoBase == VibeVoiceRepoBase
-                            || r.RepoBase == VibeVoiceStreaming1_5BRepoBase
-                            || r.RepoBase == VibeVoiceStreaming7BRepoBase))
+        // rides on top of the backend's repos rather than replacing the core set, which still
+        // brings Silero and Sortformer v2.1 (the fallback if the user switches back).
+        //
+        // Not for a backend that segments for itself: the same rule as
+        // SettingsViewModel.ShowStandardSegmentationOptions, which hides the choice for them --
+        // a Nemotron-3 selection left over from before switching to one must not add a download.
+        bool backendSegmentsItself =
+            _settings.Current.AsrBackend is AsrBackend.VibeVoice or AsrBackend.VibeVoiceStreaming;
+        if (_settings.Current.Segmentation == SegmentationMode.Nemotron3Diarization && !backendSegmentsItself)
         {
             repos = [.. repos, new AssetRepo(Nemotron3DiarizationRepoBase, Nemotron3DiarizationManifestUrl,
                                              Nemotron3DiarizationFiles)];

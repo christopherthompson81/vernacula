@@ -131,11 +131,31 @@ public sealed record SortformerProfile
         string Get(string key) => metadata.TryGetValue(MetadataPrefix + key, out string? v)
             ? v
             : throw new InvalidDataException($"Diarization model metadata is missing '{MetadataPrefix}{key}'.");
-        int I(string key) => int.Parse(Get(key), NumberStyles.Integer, CultureInfo.InvariantCulture);
-        float F(string key) => float.Parse(Get(key), NumberStyles.Float, CultureInfo.InvariantCulture);
+        // Malformed values surface as InvalidDataException too, like a missing key: the caller's
+        // remedy is the same (re-export), and a bare FormatException would not say which key.
+        int I(string key) => int.TryParse(Get(key), NumberStyles.Integer, CultureInfo.InvariantCulture, out int v)
+            ? v
+            : throw new InvalidDataException($"Diarization model metadata '{MetadataPrefix}{key}' is not an integer: '{Get(key)}'.");
+        float F(string key) => float.TryParse(Get(key), NumberStyles.Float, CultureInfo.InvariantCulture, out float v)
+            ? v
+            : throw new InvalidDataException($"Diarization model metadata '{MetadataPrefix}{key}' is not a number: '{Get(key)}'.");
+
+        // ⚠ The mel frontend (AudioUtils.LogMelSpectrogram) is fixed at Config.NMels bins. A graph
+        // wanting more would index past the last bin mid-run; one wanting fewer would silently
+        // get truncated features.
+        int nMels = I("n_mels");
+        if (nMels != Config.NMels)
+            throw new InvalidDataException(
+                $"Diarization model expects {nMels} mel bins; Vernacula's frontend produces {Config.NMels}.");
 
         int emb = I("emb_dim");
-        byte[] silBytes = Convert.FromBase64String(Get("learnable_sil_emb_f32le_b64"));
+        byte[] silBytes;
+        try { silBytes = Convert.FromBase64String(Get("learnable_sil_emb_f32le_b64")); }
+        catch (FormatException)
+        {
+            throw new InvalidDataException(
+                $"Diarization model metadata '{MetadataPrefix}learnable_sil_emb_f32le_b64' is not valid base64.");
+        }
         if (silBytes.Length != emb * sizeof(float))
             throw new InvalidDataException(
                 $"learnable_sil_emb has {silBytes.Length} bytes; expected {emb * sizeof(float)}.");
@@ -147,7 +167,7 @@ public sealed record SortformerProfile
         {
             NumSpeakers              = I("num_speakers"),
             EmbeddingDimension       = emb,
-            NMels                    = I("n_mels"),
+            NMels                    = nMels,
             Subsampling              = I("subsampling"),
             UpsampleFactor           = I("upsample_factor"),
             ChunkLength              = I("chunk_len"),

@@ -452,6 +452,9 @@ internal class TranscriptionService
                     var p = s.GetPredParams(m);
                     return (s, m, p.totalFrames, p.chunkStride, p.numChunks);
                 }, ct).ConfigureAwait(false);
+            // Release the ONNX session (hundreds of MB, plus device memory on a GPU EP) when this
+            // branch ends, cancelled or not, instead of whenever the finalizer gets to it.
+            using var streamerLifetime = streamer;
 
             // Process all chunks and collect predictions (mimics Diarize() with progress).
             var allPreds = new List<float[,]>(numChunks);

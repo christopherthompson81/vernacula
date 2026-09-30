@@ -5,6 +5,9 @@
 //   <stem>.<model>.preds.f32   raw reported probabilities, float32 little-endian [T, S]
 //   <stem>.<model>.rttm        the segments the application would emit
 //
+// It also checks that GetIncrementalSegments emits exactly the batch segments -- no
+// segment emitted early and then re-emitted changed ("equal-as-sets=True").
+//
 // scripts/nemo_export/nemotron3_diarization_fidelity.py compares the Nemotron-3 preds against
 // NeMo's own forward_streaming and scores both models' RTTMs against reference labels.
 //
@@ -59,6 +62,11 @@ foreach (var (model, tag) in models)
         var segs = s.BinarizePredToSegments(n, filtered);
         sw.Stop();
 
+        s.ResetState();
+        var inc = s.GetIncrementalSegments(mel, totalFrames, stride, numChunks).SelectMany(x => x).ToList();
+        var incSet = inc.ToHashSet();
+        Console.WriteLine($"[{tag}] INCREMENTAL: {inc.Count} emitted, {incSet.Count} distinct, batch {segs.Count}, " +
+            $"equal-as-sets={incSet.SetEquals(segs)}, emitted-not-in-batch={inc.Count(x => !segs.Contains(x))}");
         string stem = Path.GetFileNameWithoutExtension(wav);
         int S = s.Profile.NumSpeakers;
         using (var bw = new BinaryWriter(File.Create(Path.Combine(outDir, $"{stem}.{tag}.preds.f32"))))

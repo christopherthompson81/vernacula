@@ -243,3 +243,33 @@ uv pip install -p .venv-nemo3-export/bin/python --no-deps \
 uv pip install -p .venv-nemo3-export/bin/python --prerelease=allow 'lhotse==2.0.0a6'
 ```
 (torch 2.14.1+cpu, transformers 5.18.0, onnxruntime 1.26 at the time of these runs.)
+
+## Run 8 — 2026-09-30 (PR #247 review fixes)
+
+**Question:** do the review's findings hold, and do the fixes keep the validated outputs?
+
+**Findings and dispositions:**
+- *No optimised-graph cache for Nemotron-3* — held. Switched it to `OrtSessionBuilder.CreateCachedSession`
+  (which loads its cache on later runs; v2.1's `OptimizedModelFilePath` only ever writes). CPU load
+  1675 ms cold → 1026 ms on a hit; profile still read from the cached graph's metadata; outputs
+  byte-identical. Costs a second ~400 MB file beside the model (`*.opt.cpu.<key>.onnx` + `_data`).
+  This also makes the startup warm-up worthwhile (it fills the cache).
+- *`GetIncrementalSegments` emits early* — held, and wider than reported: besides an open segment
+  passing `end <= frontier` at Window 1 / PadOffset 0, an emitted segment could later be merged by
+  MinDurOff. New rule: final only if `end + MinDurOff < frontier - PadOnset`. Harness check
+  (incremental set == batch set): old rule, Nemotron-3 emitted 9 / 10 / 3 segments not in the batch
+  output on vox_dev_a / ami_sdm_a / diarization_example (v2.1 happened to be clean); new rule, equal on
+  all six files for both models.
+- *Per-job streamer never disposed* — held (pre-existing); now `using`.
+- *`n_mels` unchecked*, *malformed metadata throws FormatException* — held; both now
+  `InvalidDataException`, with tests.
+- *Repo selection matched VibeVoice URLs* — replaced with the backend rule the Settings view uses.
+- *Duplicate concurrent model checks on a backend switch* — guarded.
+- *Unreachable steady-state guard* — removed; one gate left.
+- *Warm-up shape* — warm-up now includes the right context and resets state afterwards.
+
+**Regression:** full suite 107 / 279 (+4 skipped) / 367 passed. Harness rerun on all six files:
+Nemotron-3 raw probabilities and all v2.1 output byte-identical to Run 4–7; Nemotron-3 RTTMs differ
+only by the MinDurOff = 0.5 decision already recorded in Run 6 (ami_sdm_a 251 → 174 segments).
+Settings UI checked headless (Xvfb): option renders, selection persists (1 ↔ 4), and with the file
+absent it is listed as missing with the download offered.

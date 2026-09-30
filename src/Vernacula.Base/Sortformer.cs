@@ -69,13 +69,6 @@ public sealed class SortformerStreamer : IDisposable
         if (_steadySessionAttempted)
             return _steadySession;
 
-        // The variant is an export of the v2.1 graph at v2.1's fixed shapes; nothing else has one.
-        if (!_p.IsLegacyV21)
-        {
-            _steadySessionAttempted = true;
-            return null;
-        }
-
         _steadySessionAttempted = true;
         _steadySession = TryOpenSteadyStateSession(_modelPath, _ep);
         return _steadySession;
@@ -173,8 +166,9 @@ public sealed class SortformerStreamer : IDisposable
         // result to this path; on subsequent loads it loads the optimised graph
         // directly, bypassing the optimiser entirely.
         //
-        // v2.1 only. The optimised-graph file is named for v2.1 and a second model writing to
-        // it would clobber it.
+        // v2.1 only. Nemotron-3 goes through OrtSessionBuilder.CreateCachedSession instead,
+        // which actually LOADS its cached optimised graph on later runs (keyed by EP, ORT
+        // version and the source file's mtime/size) rather than only writing one.
         if (model == SortformerModel.StreamingSortformerV21)
         {
             if (string.IsNullOrEmpty(OptimisedModelPath))
@@ -183,9 +177,14 @@ public sealed class SortformerStreamer : IDisposable
                 OptimisedModelPath = Path.Combine(dir, "sortformer.optimised.onnx");
             }
             opts.OptimizedModelFilePath = OptimisedModelPath;
+            _session = new InferenceSession(resolvedModelPath, opts);
+        }
+        else
+        {
+            opts.Dispose();
+            _session = OrtSessionBuilder.CreateCachedSession(resolvedModelPath, stockEp);
         }
 
-        _session = new InferenceSession(resolvedModelPath, opts);
         try
         {
             // ⚠ THE GRAPH, NOT THE CALLER, DECIDES THE PROFILE. A v2.1 export carries no
@@ -788,7 +787,7 @@ public sealed class SortformerStreamer : IDisposable
         // Shape test first, THEN open: this is the only place that knows a chunk is
         // actually eligible, and opening costs ~527 MB and up to ~3 s.
         bool steadyShapes =
-            legacyInput
+            legacyInput          // the only gate: the CoreML variant exists for v2.1 alone
             && currentLen == chunkStride
             && chunkStride == Config.ChunkLength * Config.Subsampling
             && cacheT == Config.SpeakerCacheLength
@@ -1061,9 +1060,16 @@ public sealed class SortformerStreamer : IDisposable
 
             var currentSegs = BinarizePredToSegments(numPred, filtered);
 
-            double safeTime = (safeFrames - half) * _p.FrameDuration;
+            // A segment is final only if nothing later can change it. Frames before `frontier`
+            // are settled, so the earliest a NEW segment can start is `frontier - PadOnset`, and
+            // BinarizePredToSegments merges it into this one if the gap is under MinDurOff. A
+            // segment still open at the frontier ends at or past it. Hence the strict test with
+            // both margins: `s.end <= frontier` alone let an open segment through whenever
+            // Window = 1 and PadOffset = 0 (Nemotron-3), and let any segment through that a
+            // later one then merged with -- either way, re-emitted next chunk as a different tuple.
+            double frontier = (safeFrames - half) * _p.FrameDuration;
             var newStable = currentSegs
-                .Where(s => (isLast || s.end <= safeTime) && emitted.Add(s))
+                .Where(s => (isLast || s.end + _p.MinDurOff < frontier - _p.PadOnset) && emitted.Add(s))
                 .ToList();
 
             yield return newStable;
@@ -1328,10 +1334,17 @@ public sealed class SortformerStreamer : IDisposable
     {
         // Create a tiny dummy mel spectrogram — one chunk of zeros is enough
         // to exercise the full inference path without meaningful compute.
+        //
+        // Long enough to carry the right context too, so a profile that uses one (Nemotron-3)
+        // warms the input shape its steady-state chunks actually have, not a shorter one.
         int chunkStride = _p.ChunkStride;
-        var dummyMel = new float[1, chunkStride, _p.NMels];
+        int total       = chunkStride + _p.ChunkRightContext * _p.Subsampling;
+        var dummyMel    = new float[1, total, _p.NMels];
 
-        ProcessChunk(0, chunkStride, chunkStride, dummyMel);
+        ProcessChunk(0, chunkStride, total, dummyMel);
+
+        // Leave the streamer as a caller would expect a fresh one: no warm-up chunk in its cache.
+        ResetState();
     }
 
     // ── IDisposable ───────────────────────────────────────────────────────────

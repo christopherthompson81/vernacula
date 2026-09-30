@@ -559,8 +559,14 @@ internal partial class SettingsViewModel : ObservableObject
         _svc.Save();
         OnSegmentationChanged?.Invoke();
         // Nemotron-3-Diarization is its own download, so the missing-file set changes with it.
-        _ = CheckModelsAsync();
+        // Not when a backend switch caused this change: OnSelectedAsrBackendChanged checks
+        // once when it is done, and two concurrent checks race on the same status fields.
+        if (!_applyingBackendChange)
+            _ = CheckModelsAsync();
     }
+
+    /// <summary>Set while OnSelectedAsrBackendChanged may re-normalise the segmentation mode.</summary>
+    private bool _applyingBackendChange;
 
     partial void OnVibeVoiceStreamingHotwordsChanged(string value)
     {
@@ -592,7 +598,11 @@ internal partial class SettingsViewModel : ObservableObject
         _svc.Current.AsrBackend = value;
         SegmentationMode normalized = NormalizeSegmentationForBackend(SelectedSegmentation, value);
         if (normalized != SelectedSegmentation)
-            SelectedSegmentation = normalized;
+        {
+            _applyingBackendChange = true;
+            try { SelectedSegmentation = normalized; }
+            finally { _applyingBackendChange = false; }
+        }
         else
         {
             _svc.Current.Segmentation = normalized;
