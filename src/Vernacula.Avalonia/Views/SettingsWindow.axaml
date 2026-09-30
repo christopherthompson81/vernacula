@@ -1006,6 +1006,32 @@
                                    IsVisible="{Binding ShowStandardSegmentationOptions,
                                                        Converter={StaticResource BoolToVis}}" />
 
+                        <!-- Nemotron-3-Diarization option -->
+                        <RadioButton GroupName="Segmentation"
+                                     IsChecked="{Binding IsNemotron3Diarization, Mode=OneWay}"
+                                     Command="{Binding SetSegmentationCommand}"
+                                     CommandParameter="Nemotron3Diarization"
+                                     Foreground="{DynamicResource TextBrush}"
+                                     Margin="0,0,0,4"
+                                     IsVisible="{Binding ShowStandardSegmentationOptions,
+                                                         Converter={StaticResource BoolToVis}}">
+                            <StackPanel>
+                                <TextBlock x:Name="SegmentationNemotron3Label"
+                                           Text="{Binding Source={x:Static local:Loc.Instance}, Path=[settings_segmentation_nemotron3]}"
+                                           FontWeight="SemiBold"
+                                           Foreground="{DynamicResource TextBrush}" />
+                                <TextBlock x:Name="SegmentationNemotron3Description"
+                                           Text="{Binding Source={x:Static local:Loc.Instance}, Path=[settings_segmentation_nemotron3_desc]}"
+                                           Foreground="{DynamicResource SubtextBrush}"
+                                           FontSize="11"
+                                           TextWrapping="Wrap" />
+                            </StackPanel>
+                        </RadioButton>
+
+                        <Separator Background="{DynamicResource OverlayBrush}" Margin="0,8,0,8"
+                                   IsVisible="{Binding ShowStandardSegmentationOptions,
+                                                       Converter={StaticResource BoolToVis}}" />
+
                         <TextBlock x:Name="GatedSegmentationHintText"
                                    Text="Additional gated segmentation models can be enabled from Models."
                                    Foreground="{DynamicResource SubtextBrush}"

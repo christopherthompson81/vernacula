@@ -27,6 +27,10 @@ internal class ModelManagerService
     private const string DiariZenRepoBase =
         "https://huggingface.co/christopherthompson81/diarizen_onnx/resolve/main";
 
+    private const string Nemotron3DiarizationRepoBase =
+        "https://huggingface.co/christopherthompson81/nemotron3_diarization_onnx/resolve/main";
+    private const string Nemotron3DiarizationManifestUrl = Nemotron3DiarizationRepoBase + "/manifest.json";
+
     private const string CohereRepoBase =
         "https://huggingface.co/christopherthompson81/cohere-transcribe-03-2026-onnx/resolve/main";
     private const string CohereManifestUrl =
@@ -109,6 +113,17 @@ internal class ModelManagerService
 
         return assets.ToArray();
     }
+
+    /// <summary>
+    /// Nemotron-3-Diarization: one self-describing graph (its streaming schedule and learned
+    /// silence embedding are in the ONNX metadata). Fetched only when it is the selected
+    /// segmentation mode -- see <see cref="ActiveRepos"/>.
+    /// </summary>
+    private static readonly ModelAsset[] Nemotron3DiarizationFiles =
+        [
+            new(Path.Combine(Config.Nemotron3DiarizationSubDir, Config.Nemotron3DiarizationFile),
+                Config.Nemotron3DiarizationFile),
+        ];
 
     private static readonly ModelAsset[] DiariZenFiles =
         [
@@ -314,6 +329,24 @@ internal class ModelManagerService
     public ModelManagerService(SettingsService settings) => _settings = settings;
 
     private AssetRepo[] ActiveRepos()
+    {
+        var repos = BackendRepos();
+
+        // Nemotron-3-Diarization is ~400 MB, so it is fetched only once it is selected. It
+        // rides on top of the backend's repos rather than replacing the core set: Silero is
+        // still in there, and so is Sortformer v2.1, which the app warms up regardless.
+        if (_settings.Current.Segmentation == SegmentationMode.Nemotron3Diarization
+            && !repos.Any(r => r.RepoBase == VibeVoiceRepoBase
+                            || r.RepoBase == VibeVoiceStreaming1_5BRepoBase
+                            || r.RepoBase == VibeVoiceStreaming7BRepoBase))
+        {
+            repos = [.. repos, new AssetRepo(Nemotron3DiarizationRepoBase, Nemotron3DiarizationManifestUrl,
+                                             Nemotron3DiarizationFiles)];
+        }
+        return repos;
+    }
+
+    private AssetRepo[] BackendRepos()
     {
         // Checked before the VibeVoiceBuiltin test below: this backend also forces built-in
         // segmentation, and without this it would match that test and download the

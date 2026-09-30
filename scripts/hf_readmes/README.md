@@ -11,6 +11,7 @@ directory.
 | HF repo | Source folder | License | Status |
 |---|---|---|---|
 | [`sortformer_parakeet_onnx`](https://huggingface.co/christopherthompson81/sortformer_parakeet_onnx) | [`sortformer_parakeet_onnx/`](sortformer_parakeet_onnx/) | mixed (CC-BY-4.0 / NVIDIA OML / MIT / Apache-2.0) | needs upload |
+| [`nemotron3_diarization_onnx`](https://huggingface.co/christopherthompson81/nemotron3_diarization_onnx) | [`nemotron3_diarization_onnx/`](nemotron3_diarization_onnx/) | OpenMDW-1.1 | live |
 | [`diarizen_onnx`](https://huggingface.co/christopherthompson81/diarizen_onnx) | [`diarizen_onnx/`](diarizen_onnx/) | CC-BY-NC-4.0 | needs upload (current repo has no README) |
 | [`cohere-transcribe-03-2026-onnx`](https://huggingface.co/christopherthompson81/cohere-transcribe-03-2026-onnx) | [`cohere-transcribe-03-2026-onnx/`](cohere-transcribe-03-2026-onnx/) | Apache-2.0 | needs upload |
 | [`vibevoice-asr-onnx`](https://huggingface.co/christopherthompson81/vibevoice-asr-onnx) | [`vibevoice-asr-onnx/`](vibevoice-asr-onnx/) | MIT | needs upload |

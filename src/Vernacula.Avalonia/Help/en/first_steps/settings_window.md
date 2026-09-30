@@ -114,6 +114,7 @@ Controls how the audio is divided into segments before speech recognition.
 | Mode | Description |
 |---|---|
 | **Speaker Diarization** | Uses the Sortformer model to identify individual speakers and label each segment. Best for interviews, meetings, and multi-speaker recordings. |
+| **Nemotron-3 Diarization** | Uses NVIDIA's Nemotron-3-Diarization model: identifies up to 8 speakers with 10 ms timing. Best for recordings with many speakers. Selecting it downloads the model (~400 MB). |
 | **Voice Activity Detection** | Uses Silero VAD to detect speech regions only — no speaker labels. Faster than diarization and well-suited to single-speaker audio. |
 
 ## Transcript Editor

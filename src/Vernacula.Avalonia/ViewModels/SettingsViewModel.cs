@@ -26,7 +26,7 @@ internal partial class SettingsViewModel : ObservableObject
     private AppTheme _selectedTheme;
 
     [ObservableProperty]
-    [NotifyPropertyChangedFor(nameof(IsSileroVad), nameof(IsSortformer), nameof(IsDiariZen), nameof(IsVibeVoiceBuiltin))]
+    [NotifyPropertyChangedFor(nameof(IsSileroVad), nameof(IsSortformer), nameof(IsNemotron3Diarization), nameof(IsDiariZen), nameof(IsVibeVoiceBuiltin))]
     [NotifyPropertyChangedFor(nameof(ShowStandardSegmentationOptions), nameof(ShowVibeVoiceBuiltinSegmentation), nameof(ShowDiariZenInSegmentation), nameof(ShowGatedSegmentationHint))]
     private SegmentationMode _selectedSegmentation;
 
@@ -138,6 +138,7 @@ internal partial class SettingsViewModel : ObservableObject
     public bool IsLight             => SelectedTheme == AppTheme.Light;
     public bool IsSileroVad         => SelectedSegmentation == SegmentationMode.SileroVad;
     public bool IsSortformer        => SelectedSegmentation == SegmentationMode.Sortformer;
+    public bool IsNemotron3Diarization => SelectedSegmentation == SegmentationMode.Nemotron3Diarization;
     public bool IsDiariZen          => SelectedSegmentation == SegmentationMode.DiariZen;
     public bool IsVibeVoiceBuiltin  => SelectedSegmentation == SegmentationMode.VibeVoiceBuiltin;
     public bool IsAsrParakeet       => SelectedAsrBackend == AsrBackend.Parakeet;
@@ -557,6 +558,8 @@ internal partial class SettingsViewModel : ObservableObject
         _svc.Current.Segmentation = value;
         _svc.Save();
         OnSegmentationChanged?.Invoke();
+        // Nemotron-3-Diarization is its own download, so the missing-file set changes with it.
+        _ = CheckModelsAsync();
     }
 
     partial void OnVibeVoiceStreamingHotwordsChanged(string value)

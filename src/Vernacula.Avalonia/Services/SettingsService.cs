@@ -162,6 +162,9 @@ internal class SettingsService
     public string GetSortformerModelsDir() =>
         Path.Combine(GetModelsDir(), Config.SortformerSubDir);
 
+    public string GetNemotron3DiarizationModelsDir() =>
+        Path.Combine(GetModelsDir(), Config.Nemotron3DiarizationSubDir);
+
     public string GetSileroModelsDir() =>
         Path.Combine(GetModelsDir(), Config.VadSubDir);
 

@@ -5,4 +5,5 @@ namespace Vernacula.Base.Models;
 // end so previously-serialized ordinals keep their meaning.
 public enum ExecutionProvider { Auto, Cuda, DirectML, Cpu, CoreML, WebGpu }
 public enum ModelPrecision    { Int8, Fp32 }
-public enum SegmentationMode  { SileroVad, Sortformer, DiariZen, VibeVoiceBuiltin }
+// Settings persist this as its ordinal too: append new values, never insert.
+public enum SegmentationMode  { SileroVad, Sortformer, DiariZen, VibeVoiceBuiltin, Nemotron3Diarization }

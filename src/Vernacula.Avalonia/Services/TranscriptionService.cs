@@ -134,6 +134,8 @@ internal class TranscriptionService
         {
             SegmentationMode.SileroVad  => SileroVadDiarizationPercentWeight,
             SegmentationMode.Sortformer => SortformerDiarizationPercentWeight,
+            // Same streaming loop, and measured faster than v2.1 on CPU, so the same share.
+            SegmentationMode.Nemotron3Diarization => SortformerDiarizationPercentWeight,
             SegmentationMode.DiariZen   => DiariZenDiarizationPercentWeight,
             _                           => DiariZenDiarizationPercentWeight,
         };
@@ -413,11 +415,20 @@ internal class TranscriptionService
                 Loc.Instance.T("progress_vad_complete", new() { ["count"] = segs.Count.ToString() }),
                 OverridePercent: SileroVadDiarizationPercentWeight));
         }
-        else if (!db.CheckDiarization() && segmentationMode == SegmentationMode.Sortformer)
+        else if (!db.CheckDiarization()
+                 && segmentationMode is SegmentationMode.Sortformer or SegmentationMode.Nemotron3Diarization)
         {
             // ── Sortformer path (batch diarization — discrete step) ───────────
             // Runs Sortformer to completion, then ASR runs separately in Phase 4.
             // This matches the CLI approach and simplifies the pipeline.
+            //
+            // Nemotron-3-Diarization is a Sortformer too: the same streamer runs it, from the
+            // profile its graph declares (8 speakers, 10 ms frames).
+            bool nemotron3 = segmentationMode == SegmentationMode.Nemotron3Diarization;
+            var sortformerModel = nemotron3 ? SortformerModel.Nemotron3 : SortformerModel.StreamingSortformerV21;
+            string streamerModelsDir = nemotron3
+                ? _settings.GetNemotron3DiarizationModelsDir()
+                : sortformerModelsDir;
             segs = new List<(double, double, string)>();
             var seenSpeakers = new HashSet<string>();
 
@@ -428,12 +439,15 @@ internal class TranscriptionService
             // progress before it so the UI doesn't appear frozen.
             progress.Report(new TranscriptionProgress(
                 TranscriptionPhase.Diarizing, 0, 1,
-                Loc.Instance["progress_loading_sortformer_model"]));
+                Loc.Instance[nemotron3
+                    ? "progress_loading_nemotron3_diarization_model"
+                    : "progress_loading_sortformer_model"]));
 
             var (streamer, melSpec, totalFrames, chunkStride, numChunks) =
                 await Task.Run(() =>
                 {
-                    var s = new SortformerStreamer(sortformerModelsDir, _settings.Current.ResolvedExecutionProvider);
+                    var s = new SortformerStreamer(streamerModelsDir, _settings.Current.ResolvedExecutionProvider,
+                                                   sortformerModel);
                     var m = AudioUtils.LogMelSpectrogram(audio);
                     var p = s.GetPredParams(m);
                     return (s, m, p.totalFrames, p.chunkStride, p.numChunks);
