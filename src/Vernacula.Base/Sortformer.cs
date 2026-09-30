@@ -39,6 +39,13 @@ public sealed class SortformerStreamer : IDisposable
     private readonly string _modelPath;
     private readonly ExecutionProvider _ep;
 
+    /// <summary>The checkpoint's constants: <see cref="SortformerProfile.StreamingSortformerV21"/>,
+    /// or whatever the graph declares in its metadata (Nemotron-3-Diarization).</summary>
+    private readonly SortformerProfile _p;
+
+    /// <inheritdoc cref="_p"/>
+    public SortformerProfile Profile => _p;
+
     /// <summary>
     /// True when the CoreML steady-state graph is loaded alongside the stock one.
     /// Both stay resident (~1 GB combined), which is the cost of the ~3.3x chunk
@@ -103,7 +110,8 @@ public sealed class SortformerStreamer : IDisposable
     /// </summary>
     public string? OptimisedModelPath { get; set; }
 
-    public SortformerStreamer(string modelPath, ExecutionProvider ep = ExecutionProvider.Auto)
+    public SortformerStreamer(string modelPath, ExecutionProvider ep = ExecutionProvider.Auto,
+                              SortformerModel model = SortformerModel.StreamingSortformerV21)
     {
         var opts = new SessionOptions();
 
@@ -124,7 +132,7 @@ public sealed class SortformerStreamer : IDisposable
         // ExecutionProvider.CoreML and .WebGpu fell through the switch below with no
         // matching case and Auto appended nothing on macOS, silently running every
         // diarization on the CPU EP. See OrtSessionBuilder.TryAppendPlatformAccelerator.
-        string resolvedModelPath = Config.GetSortformerModelPath(modelPath);
+        string resolvedModelPath = Config.GetSortformerModelPath(modelPath, model);
 
         if (!OrtSessionBuilder.TryAppendPlatformAccelerator(opts, stockEp, resolvedModelPath))
         {
@@ -157,14 +165,45 @@ public sealed class SortformerStreamer : IDisposable
         // ONNX Runtime will run graph optimisation on first load and save the
         // result to this path; on subsequent loads it loads the optimised graph
         // directly, bypassing the optimiser entirely.
-        if (string.IsNullOrEmpty(OptimisedModelPath))
+        //
+        // v2.1 only. Nemotron-3 goes through OrtSessionBuilder.CreateCachedSession instead,
+        // which actually LOADS its cached optimised graph on later runs (keyed by EP, ORT
+        // version and the source file's mtime/size) rather than only writing one.
+        if (model == SortformerModel.StreamingSortformerV21)
         {
-            string dir  = Path.GetDirectoryName(resolvedModelPath) ?? modelPath;
-            OptimisedModelPath = Path.Combine(dir, "sortformer.optimised.onnx");
+            if (string.IsNullOrEmpty(OptimisedModelPath))
+            {
+                string dir  = Path.GetDirectoryName(resolvedModelPath) ?? modelPath;
+                OptimisedModelPath = Path.Combine(dir, "sortformer.optimised.onnx");
+            }
+            opts.OptimizedModelFilePath = OptimisedModelPath;
+            _session = new InferenceSession(resolvedModelPath, opts);
         }
-        opts.OptimizedModelFilePath = OptimisedModelPath;
+        else
+        {
+            opts.Dispose();
+            _session = OrtSessionBuilder.CreateCachedSession(resolvedModelPath, stockEp);
+        }
 
-        _session = new InferenceSession(resolvedModelPath, opts);
+        try
+        {
+            // ⚠ THE GRAPH, NOT THE CALLER, DECIDES THE PROFILE. A v2.1 export carries no
+            // metadata and gets v2.1's constants; a Nemotron-3 export declares its own. Asking
+            // for Nemotron-3 and getting a graph without the declaration is a wrong file (or an
+            // export from before the metadata existed), and running it with v2.1's constants
+            // would produce plausible-looking garbage -- 4 of 8 speaker columns, no 10 ms head.
+            _p = SortformerProfile.FromMetadata(_session.ModelMetadata.CustomMetadataMap)
+                 ?? (model == SortformerModel.StreamingSortformerV21
+                     ? SortformerProfile.StreamingSortformerV21
+                     : throw new InvalidDataException(
+                         $"{resolvedModelPath} does not declare a Sortformer profile in its metadata; " +
+                         "re-export it with scripts/nemo_export/export_nemotron3_diarization_to_onnx.py."));
+        }
+        catch
+        {
+            _session.Dispose();
+            throw;
+        }
         _modelPath = modelPath;
         _ep = ep;
         ResetState();
@@ -287,11 +326,11 @@ public sealed class SortformerStreamer : IDisposable
     /// </summary>
     public void ResetState()
     {
-        _spkcache      = new float[1, 0, Config.EmbeddingDimension];
+        _spkcache      = new float[1, 0, _p.EmbeddingDimension];
         _spkcachePreds = null;
-        _fifo          = new float[1, 0, Config.EmbeddingDimension];
-        _fifoPreds     = new float[1, 0, Config.NumSpeakers];
-        _meanSilEmb    = new float[Config.EmbeddingDimension];
+        _fifo          = new float[1, 0, _p.EmbeddingDimension];
+        _fifoPreds     = new float[1, 0, _p.NumSpeakers];
+        _meanSilEmb    = new float[_p.EmbeddingDimension];
         _nSilFrames    = 0;
         SteadyStateChunkCount = 0;
         StockChunkCount       = 0;
@@ -349,7 +388,7 @@ public sealed class SortformerStreamer : IDisposable
     private void UpdateSilenceProfile(float[,,] embs, float[,,] preds)
     {
         int T = embs.GetLength(1);
-        int D = Config.EmbeddingDimension;
+        int D = _p.EmbeddingDimension;
 
         // NeMo's _get_silence_profile sums the WHOLE chunk's silence frames and divides
         // once:
@@ -364,9 +403,9 @@ public sealed class SortformerStreamer : IDisposable
         for (int t = 0; t < T; t++)
         {
             float probSum = 0f;
-            for (int s = 0; s < Config.NumSpeakers; s++)
+            for (int s = 0; s < _p.NumSpeakers; s++)
                 probSum += preds[0, t, s];
-            if (probSum >= Config.SilThreshold)
+            if (probSum >= _p.SilThreshold)
                 continue;
 
             silCount++;
@@ -389,7 +428,8 @@ public sealed class SortformerStreamer : IDisposable
     private float[,] SpeakerQualityScores(float[,] preds2d, int minPosPerSpk)
     {
         int T = preds2d.GetLength(0);
-        int S = Config.NumSpeakers;
+        int S = _p.NumSpeakers;
+        float floor = _p.PredScoreThreshold;
         var scores = new float[T, S];
 
         for (int t = 0; t < T; t++)
@@ -398,8 +438,8 @@ public sealed class SortformerStreamer : IDisposable
             for (int s = 0; s < S; s++)
             {
                 float p    = preds2d[t, s];
-                float lp   = (float)Math.Log(Math.Max(p,       0.25f));
-                float lo   = (float)Math.Log(Math.Max(1f - p,  0.25f));
+                float lp   = (float)Math.Log(Math.Max(p,       floor));
+                float lo   = (float)Math.Log(Math.Max(1f - p,  floor));
                 scores[t, s] = lp - lo;
                 logOneSum += lo;
             }
@@ -589,14 +629,15 @@ public sealed class SortformerStreamer : IDisposable
         var spkcachePreds = _spkcachePreds;
 
         int T = spkcache.GetLength(1);
-        int S = Config.NumSpeakers;
+        int S = _p.NumSpeakers;
+        int D = _p.EmbeddingDimension;
 
         var preds2d = Slice3DTo2D(spkcachePreds, T, S);
 
-        int cachePerSpk       = Config.SpeakerCacheLength / S - Config.SpeakerCacheSilenceFrames;
-        int strongBoostPerSpk = (int)(cachePerSpk * 0.75);
-        int weakBoostPerSpk   = (int)(cachePerSpk * 1.5);
-        int minPosPerSpk      = (int)(cachePerSpk * 0.5);
+        int cachePerSpk       = _p.SpeakerCacheLength / S - _p.SpeakerCacheSilenceFrames;
+        int strongBoostPerSpk = (int)(cachePerSpk * _p.StrongBoostRate);
+        int weakBoostPerSpk   = (int)(cachePerSpk * _p.WeakBoostRate);
+        int minPosPerSpk      = (int)(cachePerSpk * _p.MinPosScoresRate);
 
         float[,] scores = SpeakerQualityScores(preds2d, minPosPerSpk);
 
@@ -610,9 +651,9 @@ public sealed class SortformerStreamer : IDisposable
         // This was missing entirely. On 90 s of real speech it is the single largest
         // divergence from NeMo's streaming: frame-level speaker agreement 89.6% -> 97.3%.
         // It is invisible on synthetic tones, which is why it survived earlier checks.
-        for (int t = Config.SpeakerCacheLength; t < T; t++)
+        for (int t = _p.SpeakerCacheLength; t < T; t++)
             for (int s2 = 0; s2 < S; s2++)
-                scores[t, s2] += Config.ScoresBoostLatest;
+                scores[t, s2] += _p.ScoresBoostLatest;
 
         Boost(scores, strongBoostPerSpk, 2.0f);
         Boost(scores, weakBoostPerSpk,   1.0f);
@@ -626,7 +667,7 @@ public sealed class SortformerStreamer : IDisposable
         // that meant they were only ever picked by tying with masked frames under an
         // unstable sort, so the cache held essentially no silence frames. cachePerSpk
         // already subtracts SpeakerCacheSilenceFrames on the assumption they are spoken for.
-        int silRows   = Config.SpeakerCacheSilenceFrames;
+        int silRows   = _p.SpeakerCacheSilenceFrames;
         var extScores = new float[T + silRows, S];
         for (int t = 0; t < T; t++)
             for (int s = 0; s < S; s++)
@@ -642,12 +683,15 @@ public sealed class SortformerStreamer : IDisposable
             for (int s = 0; s < S; s++)
                 flat[t * S + s] = (extScores[t, s], t, s);
 
-        int keep = Config.SpeakerCacheLength;
+        int keep = _p.SpeakerCacheLength;
         var selected = SelectCacheFrames(flat, keep, extT, T);
 
-        var newEmbs  = new float[1, keep, Config.EmbeddingDimension];
+        var newEmbs  = new float[1, keep, D];
         var newPreds = new float[1, keep, S];
-        var meanSilEmb = _meanSilEmb!;
+
+        // Nemotron-3 fills disabled slots with a LEARNED embedding; NeMo's _compress_spkcache
+        // substitutes `learnable_sil_emb` for mean_sil_emb whenever use_learnable_sil_emb is set.
+        var meanSilEmb = _p.LearnableSilenceEmbedding ?? _meanSilEmb!;
 
         for (int i = 0; i < keep; i++)
         {
@@ -655,11 +699,11 @@ public sealed class SortformerStreamer : IDisposable
             if (selected[i].disabled)
             {
                 // mean silence embedding, and preds left at zero
-                for (int d = 0; d < Config.EmbeddingDimension; d++)
+                for (int d = 0; d < D; d++)
                     newEmbs[0, i, d] = meanSilEmb[d];
                 continue;
             }
-            for (int d = 0; d < Config.EmbeddingDimension; d++)
+            for (int d = 0; d < D; d++)
                 newEmbs[0, i, d] = spkcache[0, t, d];
             for (int s = 0; s < S; s++)
                 newPreds[0, i, s] = spkcachePreds[0, t, s];
@@ -674,7 +718,8 @@ public sealed class SortformerStreamer : IDisposable
     /// <summary>
     /// Process one chunk using a pre-computed full-file mel spectrogram.
     /// Slices frames [start, end) directly — no per-chunk FFT computation.
-    /// Returns chunk_preds (validFrames, NumSpeakers).
+    /// Returns the chunk's reported predictions: (validFrames, NumSpeakers) at 80 ms, or
+    /// (the chunk's mel frames, NumSpeakers) at 10 ms for a high-resolution profile.
     /// Uses reusable internal buffers to minimize per-chunk allocations.
     /// </summary>
     public float[,] ProcessChunk(int idx, int chunkStride, int totalFrames, float[,,] melSpec)
@@ -682,25 +727,40 @@ public sealed class SortformerStreamer : IDisposable
         int start      = idx * chunkStride;
         int end        = Math.Min(start + chunkStride, totalFrames);
         int currentLen = end - start;
-        int S          = Config.NumSpeakers;
-        int D          = Config.EmbeddingDimension;
+        int S          = _p.NumSpeakers;
+        int D          = _p.EmbeddingDimension;
+        int nMels      = _p.NMels;
+        int sub        = _p.Subsampling;
         int nMelFrames = melSpec.GetLength(1);
 
-        // Use reusable chunk data buffer
-        EnsureChunkBuffer(chunkStride * Config.NMels);
+        // ── What the graph is fed ────────────────────────────────────────────
+        // v2.1: exactly `chunkStride` rows, zero-padded past `currentLen`, which the fixed-shape
+        // CoreML steady-state graph requires; chunk_lengths masks the padding.
+        //
+        // Everything else: NeMo's streaming_feat_loader -- the chunk plus up to
+        // ChunkRightContext encoder frames of look-ahead, never padded beyond the next multiple
+        // of `sub`. Padding further would be wrong, not just wasteful: Nemotron-3's 10 ms head
+        // is a k=3 conv over the encoder output, so the last valid frame would read the padded
+        // frame's hidden state. The multiple-of-`sub` rows are exactly what FeatureStacking adds
+        // itself; the export relies on the caller doing it (see the export script).
+        bool legacyInput = _p.IsLegacyV21;
+        int rightOffset  = legacyInput ? 0 : Math.Min(_p.ChunkRightContext * sub, totalFrames - end);
+        int inputLen     = currentLen + rightOffset;
+        int inputRows    = legacyInput ? chunkStride : (inputLen + sub - 1) / sub * sub;
+
+        EnsureChunkBuffer(inputRows * nMels);
         var chunkData = _chunkDataBuffer!;
         // Clear only the portion we'll use (important for padding rows)
-        Array.Clear(chunkData, 0, chunkStride * Config.NMels);
+        Array.Clear(chunkData, 0, inputRows * nMels);
 
-        // Slice frames [start, end) from the pre-computed spectrogram.
-        for (int t = 0; t < currentLen; t++)
+        // Slice frames [start, start + inputLen) from the pre-computed spectrogram.
+        for (int t = 0; t < inputLen; t++)
         {
             int srcRow = start + t;
             if (srcRow < nMelFrames)
             {
-                int dstOffset = t * Config.NMels;
-                int srcOffset = srcRow * Config.NMels;
-                for (int m = 0; m < Config.NMels; m++)
+                int dstOffset = t * nMels;
+                for (int m = 0; m < nMels; m++)
                     chunkData[dstOffset + m] = melSpec[0, srcRow, m];
             }
         }
@@ -727,7 +787,8 @@ public sealed class SortformerStreamer : IDisposable
         // Shape test first, THEN open: this is the only place that knows a chunk is
         // actually eligible, and opening costs ~527 MB and up to ~3 s.
         bool steadyShapes =
-            currentLen == chunkStride
+            legacyInput          // the only gate: the CoreML variant exists for v2.1 alone
+            && currentLen == chunkStride
             && chunkStride == Config.ChunkLength * Config.Subsampling
             && cacheT == Config.SpeakerCacheLength
             && fifoT == Config.FifoLength;
@@ -738,8 +799,8 @@ public sealed class SortformerStreamer : IDisposable
         var inputs = new List<NamedOnnxValue>(steadyState ? 3 : 6)
         {
             NamedOnnxValue.CreateFromTensor("chunk",
-                new DenseTensor<float>(chunkData,
-                    new[] { 1, chunkStride, Config.NMels })),
+                new DenseTensor<float>(chunkData.AsMemory(0, inputRows * nMels),
+                    new[] { 1, inputRows, nMels })),
             NamedOnnxValue.CreateFromTensor("spkcache",
                 new DenseTensor<float>(Flatten3D(spkcache, 1, cacheT, D),
                     new[] { 1, cacheT, D })),
@@ -752,7 +813,7 @@ public sealed class SortformerStreamer : IDisposable
             // The steady-state graph does not declare these -- they were folded out of its
             // signature when they became constants, so passing them would be an error.
             inputs.Add(NamedOnnxValue.CreateFromTensor("chunk_lengths",
-                new DenseTensor<long>(new long[] { currentLen }, new[] { 1 })));
+                new DenseTensor<long>(new long[] { inputLen }, new[] { 1 })));
             inputs.Add(NamedOnnxValue.CreateFromTensor("spkcache_lengths",
                 new DenseTensor<long>(new long[] { cacheT }, new[] { 1 })));
             inputs.Add(NamedOnnxValue.CreateFromTensor("fifo_lengths",
@@ -764,6 +825,9 @@ public sealed class SortformerStreamer : IDisposable
         using var results = (steadyState ? steadySession! : _session).Run(inputs);
         var predsT = results.First(r => r.Name == "spkcache_fifo_chunk_preds").AsTensor<float>();
         var embsT  = results.First(r => r.Name == "chunk_pre_encode_embs").AsTensor<float>();
+        var predsHrT = _p.UpsampleFactor > 1
+            ? results.First(r => r.Name == "spkcache_fifo_chunk_preds_hr").AsTensor<float>()
+            : null;
 
         int predsLen  = (int)predsT.Length;
         int embsLen   = (int)embsT.Length;
@@ -778,7 +842,9 @@ public sealed class SortformerStreamer : IDisposable
 
         int predTOut    = predsLen / S;
         int embTOut     = embsLen  / D;
-        int validFrames = (currentLen + Config.Subsampling - 1) / Config.Subsampling;
+        // Encoder frames that belong to this chunk, i.e. excluding the right context. NeMo:
+        // chunk_len = chunk.shape[1] - lc - rc, with rc = ceil(right_offset / sub).
+        int validFrames = (inputLen + sub - 1) / sub - (rightOffset + sub - 1) / sub;
 
         static int SafeEnd(int s, int l, int max) => Math.Min(s + l, max);
 
@@ -835,7 +901,7 @@ public sealed class SortformerStreamer : IDisposable
             : Wrap2DIn3D(chunkPreds, cpLen, S);
 
         int newFifoT = _fifo.GetLength(1);
-        if (newFifoT > Config.FifoLength)
+        if (newFifoT > _p.FifoLength)
         {
             // NeMo's SortformerModules.streaming_update, verbatim:
             //     pop_out_len = self.spkcache_update_period
@@ -849,14 +915,20 @@ public sealed class SortformerStreamer : IDisposable
             // the whole FIFO and _fifo drained to 0 on every pop, alternating 124, 0, 124, 0
             // instead of holding at 124. Measured against NeMo's own forward_streaming on
             // identical features, the corrected trajectory matches the reference.
-            int popLen = Config.SpeakerCacheUpdatePeriod;
-            popLen = Math.Max(popLen, Config.ChunkLength - Config.FifoLength + fifoT);
+            //
+            // chunk_len is THIS chunk's (validFrames), as in NeMo; it differs from the schedule's
+            // only on the final chunk, after which the state is never read again.
+            int popLen = _p.SpeakerCacheUpdatePeriod;
+            popLen = Math.Max(popLen, validFrames - _p.FifoLength + fifoT);
             popLen = Math.Min(popLen, newFifoT);
 
             var popEmbs  = SliceFront3D(_fifo,     popLen, D);
             var popPreds = SliceFront3D(_fifoPreds, popLen, S);
 
-            UpdateSilenceProfile(popEmbs, popPreds);
+            // With a learned silence embedding NeMo never computes the running mean
+            // (streaming_update skips _get_silence_profile), so neither do we.
+            if (_p.LearnableSilenceEmbedding is null)
+                UpdateSilenceProfile(popEmbs, popPreds);
 
             _fifo      = SliceTail3D(_fifo,     popLen, D);
             _fifoPreds = SliceTail3D(_fifoPreds, popLen, S);
@@ -879,7 +951,7 @@ public sealed class SortformerStreamer : IDisposable
             if (_spkcachePreds is not null)
                 _spkcachePreds = Concat3DAxis1(_spkcachePreds, popPreds);
 
-            if (_spkcache.GetLength(1) > Config.SpeakerCacheLength)
+            if (_spkcache.GetLength(1) > _p.SpeakerCacheLength)
             {
                 if (_spkcachePreds is null)
                 {
@@ -895,6 +967,26 @@ public sealed class SortformerStreamer : IDisposable
             }
         }
 
+        if (predsHrT is not null)
+        {
+            // What NeMo reports for a high-resolution model: the 10 ms slice of this chunk,
+            // [(cache + fifo) * U, + chunk * U), taken from the SAME pass whose 80 ms average
+            // drove the state update above. Trimmed to this chunk's mel frames, so the final
+            // chunk does not report past the end of the audio -- NeMo's forward_streaming cuts
+            // total_preds to ceil(n_mel / output_subsampling_factor) the same way.
+            int U       = _p.UpsampleFactor;
+            int hrTOut  = (int)predsHrT.Length / S;
+            int hrStart = (cacheT + fifoT) * U;
+            int hrLen   = Math.Min((currentLen * U + sub - 1) / sub, validFrames * U);
+            hrLen       = Math.Max(Math.Min(hrLen, hrTOut - hrStart), 0);
+
+            var hr = new float[hrLen, S];
+            for (int t = 0; t < hrLen; t++)
+                for (int s = 0; s < S; s++)
+                    hr[t, s] = predsHrT.GetValue((hrStart + t) * S + s);
+            return hr;
+        }
+
         // Return a copy since the buffer will be reused for the next chunk
         var result = new float[cpLen, S];
         for (int t = 0; t < cpLen; t++)
@@ -908,7 +1000,7 @@ public sealed class SortformerStreamer : IDisposable
     private (int numPredFrames, float[,] medFiltered) FilterPredsUpTo(
         List<float[,]> allPreds, int upToFrame)
     {
-        int S = Config.NumSpeakers;
+        int S = _p.NumSpeakers;
         var trimmed = new List<float[,]>();
         int acc = 0;
         foreach (var chunk in allPreds)
@@ -943,7 +1035,7 @@ public sealed class SortformerStreamer : IDisposable
     public IEnumerable<IReadOnlyList<(double start, double end, string spkId)>>
         GetIncrementalSegments(float[,,] melSpec, int totalFrames, int chunkStride, int numChunks)
     {
-        int half = Config.Window / 2;
+        int half = _p.Window / 2;
         var allPreds = new List<float[,]>(numChunks);
         var emitted  = new HashSet<(double start, double end, string spkId)>();
         int accumFrames = 0;
@@ -968,9 +1060,16 @@ public sealed class SortformerStreamer : IDisposable
 
             var currentSegs = BinarizePredToSegments(numPred, filtered);
 
-            double safeTime = (safeFrames - half) * Config.FrameDuration;
+            // A segment is final only if nothing later can change it. Frames before `frontier`
+            // are settled, so the earliest a NEW segment can start is `frontier - PadOnset`, and
+            // BinarizePredToSegments merges it into this one if the gap is under MinDurOff. A
+            // segment still open at the frontier ends at or past it. Hence the strict test with
+            // both margins: `s.end <= frontier` alone let an open segment through whenever
+            // Window = 1 and PadOffset = 0 (Nemotron-3), and let any segment through that a
+            // later one then merged with -- either way, re-emitted next chunk as a different tuple.
+            double frontier = (safeFrames - half) * _p.FrameDuration;
             var newStable = currentSegs
-                .Where(s => (isLast || s.end <= safeTime) && emitted.Add(s))
+                .Where(s => (isLast || s.end + _p.MinDurOff < frontier - _p.PadOnset) && emitted.Add(s))
                 .ToList();
 
             yield return newStable;
@@ -985,7 +1084,7 @@ public sealed class SortformerStreamer : IDisposable
     public (int totalFrames, int chunkStride, int numChunks) GetPredParams(float[,,] melSpec)
     {
         int totalFrames = melSpec.GetLength(1);
-        int chunkStride = Config.ChunkLength * Config.Subsampling;
+        int chunkStride = _p.ChunkStride;
         int numChunks   = (totalFrames + chunkStride - 1) / chunkStride;
         return (totalFrames, chunkStride, numChunks);
     }
@@ -997,7 +1096,7 @@ public sealed class SortformerStreamer : IDisposable
     {
         int paddedLen   = audio.Length + Config.NFft;
         int totalFrames = (paddedLen - Config.NFft) / Config.HopLength + 1;
-        int chunkStride = Config.ChunkLength * Config.Subsampling;
+        int chunkStride = _p.ChunkStride;
         int numChunks   = (totalFrames + chunkStride - 1) / chunkStride;
         return (totalFrames, chunkStride, numChunks);
     }
@@ -1017,7 +1116,7 @@ public sealed class SortformerStreamer : IDisposable
     public (int numPredFrames, float[,] medFiltered) FilterPreds(
         IReadOnlyList<float[,]> allPreds, int totalFrames)
     {
-        int S    = Config.NumSpeakers;
+        int S    = _p.NumSpeakers;
         int totT = allPreds.Sum(p => p.GetLength(0));
         var preds = new float[totT, S];
         int offset = 0;
@@ -1030,11 +1129,11 @@ public sealed class SortformerStreamer : IDisposable
             offset += ct;
         }
 
-        int half     = Config.Window / 2;
+        int half     = _p.Window / 2;
         var filtered = new float[totT, S];
 
         // Single reusable window buffer — avoids allocating one per frame per speaker
-        var window = new float[Config.Window];
+        var window = new float[_p.Window];
 
         for (int spk = 0; spk < S; spk++)
             for (int t = 0; t < totT; t++)
@@ -1053,7 +1152,7 @@ public sealed class SortformerStreamer : IDisposable
     public List<(double start, double end, string spkId)>
         BinarizePredToSegments(int numPredFrames, float[,] medFiltered)
     {
-        int S           = Config.NumSpeakers;
+        int S           = _p.NumSpeakers;
         var allSegments = new List<(double, double, string)>();
 
         for (int spk = 0; spk < S; spk++)
@@ -1065,25 +1164,25 @@ public sealed class SortformerStreamer : IDisposable
             for (int t = 0; t < numPredFrames; t++)
             {
                 float p = medFiltered[t, spk];
-                if (p >= Config.OnsetThreshold && !inSeg)
+                if (p >= _p.OnsetThreshold && !inSeg)
                 {
                     inSeg    = true;
                     segStart = t;
                 }
-                else if (p < Config.OffsetThreshold && inSeg)
+                else if (p < _p.OffsetThreshold && inSeg)
                 {
                     inSeg = false;
-                    double s = Math.Max(segStart * Config.FrameDuration - Config.PadOnset, 0.0);
-                    double e = t * Config.FrameDuration + Config.PadOffset;
-                    if (e - s >= Config.MinDurOn) tempSegs.Add((s, e));
+                    double s = Math.Max(segStart * _p.FrameDuration - _p.PadOnset, 0.0);
+                    double e = t * _p.FrameDuration + _p.PadOffset;
+                    if (e - s >= _p.MinDurOn) tempSegs.Add((s, e));
                 }
             }
 
             if (inSeg)
             {
-                double s = Math.Max(segStart * Config.FrameDuration - Config.PadOnset, 0.0);
-                double e = numPredFrames * Config.FrameDuration + Config.PadOffset;
-                if (e - s >= Config.MinDurOn) tempSegs.Add((s, e));
+                double s = Math.Max(segStart * _p.FrameDuration - _p.PadOnset, 0.0);
+                double e = numPredFrames * _p.FrameDuration + _p.PadOffset;
+                if (e - s >= _p.MinDurOn) tempSegs.Add((s, e));
             }
 
             var merged = new List<(double start, double end)>();
@@ -1094,7 +1193,7 @@ public sealed class SortformerStreamer : IDisposable
                 else
                 {
                     var (ps, pe) = merged[^1];
-                    if (seg.start - pe < Config.MinDurOff)
+                    if (seg.start - pe < _p.MinDurOff)
                         merged[^1] = (ps, seg.end);
                     else
                         merged.Add(seg);
@@ -1235,10 +1334,17 @@ public sealed class SortformerStreamer : IDisposable
     {
         // Create a tiny dummy mel spectrogram — one chunk of zeros is enough
         // to exercise the full inference path without meaningful compute.
-        int chunkStride = Config.ChunkLength * Config.Subsampling;
-        var dummyMel = new float[1, chunkStride, Config.NMels];
+        //
+        // Long enough to carry the right context too, so a profile that uses one (Nemotron-3)
+        // warms the input shape its steady-state chunks actually have, not a shorter one.
+        int chunkStride = _p.ChunkStride;
+        int total       = chunkStride + _p.ChunkRightContext * _p.Subsampling;
+        var dummyMel    = new float[1, total, _p.NMels];
 
-        ProcessChunk(0, chunkStride, chunkStride, dummyMel);
+        ProcessChunk(0, chunkStride, total, dummyMel);
+
+        // Leave the streamer as a caller would expect a fresh one: no warm-up chunk in its cache.
+        ResetState();
     }
 
     // ── IDisposable ───────────────────────────────────────────────────────────

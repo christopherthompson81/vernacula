@@ -13,6 +13,8 @@ It now covers both models in your pipeline:
 - `export_parakeet_coreml_encoder.py`: exports the Parakeet encoder as static-shape buckets that the CoreML EP compiles as a single partition, with the padding mask hoisted to a `pad_keep` input instead of baked to a constant. 2.5× over the CPU EP and bit-exact — see below.
 - `export_nfa_ctc_to_onnx.py`: exports a NeMo CTC ASR `.nemo` (pure CTC or hybrid RNNT+CTC with the CTC head selected) to the ONNX bundle the C# Viterbi forced aligner consumes (issue #36 / Chatterbox Stage 1 #9).
 - `export_sortformer_nemo_to_onnx.py`: exports streaming Sortformer `.nemo` to the same six-input / three-output ONNX contract used by Vernacula's inference code.
+- `export_nemotron3_diarization_to_onnx.py`: exports nvidia/Nemotron-3-Diarization to the Sortformer streaming contract plus a 10 ms output, with its schedule and learned silence embedding in the ONNX metadata. **Needs NeMo `main` in its own venv** (`.venv-nemo3-export`), not this folder's `requirements.txt` — see `docs/investigations/nemotron3_diarization_onnx_investigation.md`.
+- `nemotron3_diarization_reference.py` / `nemotron3_diarization_fidelity.py`: NeMo's own `forward_streaming` as the reference, and the scorer that compares `tests/Nemotron3DiarizationParity` (C#) output against it and against labels.
 - `export_silero_vad_to_onnx.py`: exports Silero VAD to ONNX.
 - `benchmark_sortformer_rtf.py`: benchmarks Sortformer NeMo-vs-ONNX diarization RTF on CPU or CUDA.
 - `fp16_convert_sortformer.py`: converts an exported Sortformer ONNX to fp16 — one that loads and runs, which a bare `convert_float_to_float16` call does not produce (issue #172).

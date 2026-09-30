@@ -7,6 +7,7 @@ using Vernacula.App.Services.Tts;
 using Vernacula.App.ViewModels;
 using Vernacula.App.Views;
 using Vernacula.Base;
+using Vernacula.Base.Models;
 
 namespace Vernacula.App;
 
@@ -182,15 +183,20 @@ public partial class App : Application
         {
             try
             {
-                var sortformerDir = Settings.GetSortformerModelsDir();
+                // Warm whichever Sortformer-family model transcription will actually open.
+                bool nemotron3 = Settings.Current.Segmentation == SegmentationMode.Nemotron3Diarization;
+                var sortformerDir = nemotron3
+                    ? Settings.GetNemotron3DiarizationModelsDir()
+                    : Settings.GetSortformerModelsDir();
                 if (Directory.Exists(sortformerDir))
                 {
                     // Same provider the real transcription will use, or the warm-up
                     // compiles a graph for a provider nothing goes on to use.
                     using var streamer = new SortformerStreamer(
-                        sortformerDir, Settings.Current.ResolvedExecutionProvider);
+                        sortformerDir, Settings.Current.ResolvedExecutionProvider,
+                        nemotron3 ? SortformerModel.Nemotron3 : SortformerModel.StreamingSortformerV21);
                     streamer.Warmup();
-                    Console.WriteLine("[App] Sortformer model warmup complete.");
+                    Console.WriteLine($"[App] {(nemotron3 ? "Nemotron-3-Diarization" : "Sortformer")} model warmup complete.");
                 }
             }
             catch (Exception ex)

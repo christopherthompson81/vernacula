@@ -69,6 +69,16 @@ public static class Config
     public const double MinDurOn        = 0.511;
     public const double MinDurOff       = 0.296;
 
+    // ── Diarization (Nemotron-3-Diarization) ─────────────────────────────────
+    /// <summary>
+    /// nvidia/Nemotron-3-Diarization, run by <see cref="SortformerStreamer"/>. Its streaming
+    /// schedule and learned silence embedding live in the ONNX metadata, not here -- see
+    /// <see cref="SortformerProfile.FromMetadata"/>.
+    /// </summary>
+    public const string Nemotron3DiarizationSubDir = "nemotron3_diarization";
+    public const string Nemotron3DiarizationFile   = "nemotron-3-diarization.onnx";
+    public const string Nemotron3DiarizationModelOverrideEnvVar = "VERNACULA_NEMOTRON3_DIARIZATION_MODEL_FILE";
+
     // ── Diarization (DiariZen) ───────────────────────────────────────────────
     /// <summary>
     /// DiariZen segmentation model file.
@@ -334,6 +344,34 @@ public static class Config
             ? subDirPath
             : Path.Combine(modelDir, SortformerFile);
     }
+
+    /// <summary>
+    /// Nemotron-3-Diarization: <c>&lt;modelDir&gt;/nemotron3_diarization/</c>, else the root,
+    /// with the same env-var override convention as <see cref="GetSortformerModelPath"/>.
+    /// </summary>
+    public static string GetNemotron3DiarizationModelPath(string modelDir)
+    {
+        string? overridePath = Environment.GetEnvironmentVariable(Nemotron3DiarizationModelOverrideEnvVar);
+        if (!string.IsNullOrWhiteSpace(overridePath))
+        {
+            return Path.IsPathRooted(overridePath)
+                ? overridePath
+                : Path.Combine(modelDir, overridePath);
+        }
+
+        string subDirPath = Path.Combine(modelDir, Nemotron3DiarizationSubDir, Nemotron3DiarizationFile);
+        return File.Exists(subDirPath)
+            ? subDirPath
+            : Path.Combine(modelDir, Nemotron3DiarizationFile);
+    }
+
+    /// <summary>The model file a <see cref="SortformerModel"/> resolves to under <paramref name="modelDir"/>.</summary>
+    public static string GetSortformerModelPath(string modelDir, SortformerModel model) => model switch
+    {
+        SortformerModel.StreamingSortformerV21 => GetSortformerModelPath(modelDir),
+        SortformerModel.Nemotron3              => GetNemotron3DiarizationModelPath(modelDir),
+        _ => throw new ArgumentOutOfRangeException(nameof(model), model, null),
+    };
 
     /// <summary>
     /// The CoreML steady-state variant beside whatever <see cref="GetSortformerModelPath"/>

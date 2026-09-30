@@ -121,6 +121,54 @@ public class ModelRepoSelectionTests
         }
     }
 
+    [Fact]
+    public void Nemotron3Segmentation_AddsItsModel_OnTopOfTheBackendsFiles()
+    {
+        using var tmp = new TempDir();
+        var settings = SettingsIn(tmp.Path, s =>
+        {
+            s.AsrBackend = AsrBackend.Parakeet;
+            s.Segmentation = SegmentationMode.Nemotron3Diarization;
+        });
+
+        var paths = RequiredPaths(settings);
+        Assert.Contains(paths, p => p.EndsWith("nemotron-3-diarization.onnx"));
+        // The rest of the pipeline is unchanged: Silero and the ASR model still come along.
+        Assert.Contains(paths, p => p.EndsWith("silero_vad.onnx"));
+        Assert.Contains(paths, p => p.EndsWith("encoder-model.onnx"));
+    }
+
+    [Theory]
+    [InlineData(SegmentationMode.Sortformer)]
+    [InlineData(SegmentationMode.SileroVad)]
+    [InlineData(SegmentationMode.DiariZen)]
+    public void OtherSegmentationModes_DoNotPullNemotron3(SegmentationMode mode)
+    {
+        // ~400 MB: it must be fetched only by the people who chose it.
+        using var tmp = new TempDir();
+        var settings = SettingsIn(tmp.Path, s =>
+        {
+            s.AsrBackend = AsrBackend.Parakeet;
+            s.Segmentation = mode;
+        });
+
+        Assert.DoesNotContain(RequiredPaths(settings), p => p.EndsWith("nemotron-3-diarization.onnx"));
+    }
+
+    [Fact]
+    public void Nemotron3Segmentation_IsIgnored_ByVibeVoicesOwnSegmentation()
+    {
+        // VibeVoice segments for itself; a stale Nemotron-3 selection must not add a download.
+        using var tmp = new TempDir();
+        var settings = SettingsIn(tmp.Path, s =>
+        {
+            s.AsrBackend = AsrBackend.VibeVoice;
+            s.Segmentation = SegmentationMode.Nemotron3Diarization;
+        });
+
+        Assert.DoesNotContain(RequiredPaths(settings), p => p.EndsWith("nemotron-3-diarization.onnx"));
+    }
+
     private sealed class TempDir : IDisposable
     {
         public string Path { get; } =

@@ -62,9 +62,9 @@ for (int i = 0; i < args.Length; i++)
         case "--export-format": exportFormat = args[++i].ToLowerInvariant(); break;
         case "--diarization":
             diarization = args[++i].ToLowerInvariant();
-            if (diarization is not ("sortformer" or "diarizen" or "vad" or "vibevoice-asr-builtin"))
+            if (diarization is not ("sortformer" or "nemotron3" or "diarizen" or "vad" or "vibevoice-asr-builtin"))
             {
-                Console.Error.WriteLine($"Unknown diarization backend: {diarization}. Choose: sortformer, diarizen, vad, vibevoice-asr-builtin.");
+                Console.Error.WriteLine($"Unknown diarization backend: {diarization}. Choose: sortformer, nemotron3, diarizen, vad, vibevoice-asr-builtin.");
                 return 1;
             }
             break;
@@ -408,16 +408,18 @@ try
         swDiar.Stop();
         Console.WriteLine($"\rDiarizing (DiariZen)... {segs.Count} segment(s) ({swDiar.ElapsedMilliseconds}ms)");
     }
-    else // sortformer (default)
+    else // sortformer (default) or nemotron3 -- the same streamer, a different checkpoint
     {
         // Sortformer resolves subdir-or-root itself (Config.GetSortformerModelPath); check the
         // file it settles on, so a models root that was never populated says so rather than
         // surfacing as an ONNX Runtime stack trace. This is the default diarizer, so it is the
         // first thing a zero-flag run touches.
-        string sortformerModel = Config.GetSortformerModelPath(modelsRoot);
+        var sortformerKind = diarization == "nemotron3" ? SortformerModel.Nemotron3 : SortformerModel.StreamingSortformerV21;
+        string sortformerName = sortformerKind == SortformerModel.Nemotron3 ? "Nemotron-3-Diarization" : "Sortformer";
+        string sortformerModel = Config.GetSortformerModelPath(modelsRoot, sortformerKind);
         if (!File.Exists(sortformerModel))
         {
-            Console.Error.WriteLine($"\nError: Sortformer model not found: {sortformerModel}");
+            Console.Error.WriteLine($"\nError: {sortformerName} model not found: {sortformerModel}");
             Console.Error.WriteLine("Download the models with the desktop app, or point at them with --models-dir <dir>.");
             return 1;
         }
@@ -428,8 +430,8 @@ try
             var sw = Stopwatch.StartNew();
 
             var sw1 = Stopwatch.StartNew();
-            Console.Write("Loading Sortformer model... ");
-            using var sortformer = new SortformerStreamer(modelsRoot, selectedEp);
+            Console.Write($"Loading {sortformerName} model... ");
+            using var sortformer = new SortformerStreamer(modelsRoot, selectedEp, sortformerKind);
             Console.WriteLine($"DONE ({sw1.ElapsedMilliseconds,6} ms)");
 
             var sw2 = Stopwatch.StartNew();
@@ -481,12 +483,12 @@ try
         }
         else
         {
-            Console.Write("Diarizing (Sortformer)... ");
-            using var sortformer = new SortformerStreamer(modelsRoot, selectedEp);
+            Console.Write($"Diarizing ({sortformerName})... ");
+            using var sortformer = new SortformerStreamer(modelsRoot, selectedEp, sortformerKind);
             segs = sortformer.Diarize(audio,
                 (idx, total) => Console.Write($"\r  Diarizing chunk {idx}/{total}..."));
             swDiar.Stop();
-            Console.WriteLine($"\rDiarizing (Sortformer)... {segs.Count} segment(s) ({swDiar.ElapsedMilliseconds}ms)");
+            Console.WriteLine($"\rDiarizing ({sortformerName})... {segs.Count} segment(s) ({swDiar.ElapsedMilliseconds}ms)");
         }
     }
 
@@ -1379,7 +1381,7 @@ static void PrintUsage()
     Console.WriteLine("  --segments <path>                  Load pre-computed segments JSON, skip diarization");
     Console.WriteLine("  --export-format <md|txt|json|srt>  Output format (default: md)");
     Console.WriteLine("  --output <path>                    Override output file path");
-    Console.WriteLine("  --diarization <backend>            Diarization backend: sortformer, diarizen, vad, vibevoice-asr-builtin");
+    Console.WriteLine("  --diarization <backend>            Diarization backend: sortformer, nemotron3, diarizen, vad, vibevoice-asr-builtin");
     Console.WriteLine("                                     (default: sortformer, or vibevoice-asr-builtin when --asr vibevoice)");
     Console.WriteLine("  --ep <provider>                    Execution provider: auto, cpu, cuda, coreml, webgpu");
     Console.WriteLine("                                     (auto already uses the CoreML Sortformer variant on Apple Silicon when present)");

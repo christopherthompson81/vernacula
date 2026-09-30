@@ -7,6 +7,7 @@ Models are hosted on HuggingFace under [christopherthompson81](https://huggingfa
 | Repository | Contents | Required? |
 |---|---|---|
 | [sortformer_parakeet_onnx](https://huggingface.co/christopherthompson81/sortformer_parakeet_onnx) | Parakeet TDT v3 ASR + Sortformer diarization + Silero VAD | Core |
+| [nemotron3_diarization_onnx](https://huggingface.co/christopherthompson81/nemotron3_diarization_onnx) | Nemotron-3-Diarization (8 speakers, 10 ms timing) | Optional |
 | [diarizen_onnx](https://huggingface.co/christopherthompson81/diarizen_onnx) | DiariZen higher-accuracy diarization | Optional |
 | [cohere-transcribe-03-2026-onnx](https://huggingface.co/christopherthompson81/cohere-transcribe-03-2026-onnx) | Cohere Transcribe ASR backend | Optional |
 | [vibevoice-asr-onnx](https://huggingface.co/christopherthompson81/vibevoice-asr-onnx) | VibeVoice-ASR (all-in-one transcription + diarization) | Optional, CUDA-only |
@@ -26,6 +27,7 @@ The `--model` argument to `vernacula-cli` points at the directory that holds the
 ## Which model feeds which backend
 
 - **Parakeet TDT v3 / Sortformer / Silero VAD** — all inside `sortformer_parakeet_onnx`. This is the default pipeline.
+- **Nemotron-3-Diarization** — `nemotron3_diarization_onnx`, installed under `nemotron3_diarization/`. Selected via `--diarization nemotron3` or Settings → Segmentation. Runs on the same streaming loop as Sortformer.
 - **DiariZen** — `diarizen_onnx`. Selected via `--diarization diarizen` (see [backends reference](reference/backends.md)).
 - **Cohere Transcribe** — `cohere-transcribe-03-2026-onnx`. Selected via `--asr cohere`.
 - **VibeVoice-ASR** — `vibevoice-asr-onnx`. Selected via `--asr vibevoice`. CUDA only.

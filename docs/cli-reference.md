@@ -61,7 +61,7 @@ Parakeet decoding:
   --lm-length-penalty <p>             Per-token length reward (default: 0.6; offsets LM shortening bias)
 
 Segmentation:
-  --diarization <backend>             sortformer (default), diarizen, vad, vibevoice-asr-builtin
+  --diarization <backend>             sortformer (default), nemotron3, diarizen, vad, vibevoice-asr-builtin
   --segments <path>                   Load pre-computed segments JSON, skip diarization
   --ahc-threshold <float>             DiariZen AHC clustering threshold (default: 0.6)
 

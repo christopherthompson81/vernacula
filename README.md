@@ -47,6 +47,7 @@ Vernacula's models are converted in-house from upstream PyTorch / NeMo / Hugging
 |---|---|---|
 | Parakeet TDT v3 / RNNT | [nvidia/parakeet-tdt-0.6b-v3](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3) | [scripts/nemo_export](scripts/nemo_export) |
 | Sortformer streaming diarization | [nvidia/diar_sortformer_4spk-v2.1](https://huggingface.co/nvidia/diar_sortformer_4spk-v2.1) | [scripts/nemo_export](scripts/nemo_export) |
+| Nemotron-3-Diarization (8 speakers) | [nvidia/Nemotron-3-Diarization](https://huggingface.co/nvidia/Nemotron-3-Diarization) | [scripts/nemo_export](scripts/nemo_export) |
 | Silero VAD | [snakers4/silero-vad](https://github.com/snakers4/silero-vad) | [scripts/nemo_export](scripts/nemo_export) |
 | Qwen3-ASR | [Qwen/Qwen3-ASR-0.6B](https://huggingface.co/Qwen/Qwen3-ASR-0.6B), [Qwen3-ASR-1.7B](https://huggingface.co/Qwen/Qwen3-ASR-1.7B) | [scripts/qwen3asr_export](scripts/qwen3asr_export) |
 | Cohere Transcribe | [CohereLabs/cohere-transcribe-03-2026](https://huggingface.co/CohereLabs/cohere-transcribe-03-2026) | [scripts/cohere_export](scripts/cohere_export) |

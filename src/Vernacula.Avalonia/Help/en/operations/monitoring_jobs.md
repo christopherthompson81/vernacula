@@ -28,7 +28,7 @@ The phases shown depend on the **Segmentation Mode** selected in Settings.
 
 **Speaker Diarization mode** (default):
 
-1. **Audio Analysis** — Sortformer diarization runs over the whole file to identify speaker boundaries. The bar may stay near 0% until this phase completes.
+1. **Audio Analysis** — Sortformer (or Nemotron-3, if selected) diarization runs over the whole file to identify speaker boundaries. The bar may stay near 0% until this phase completes.
 2. **Speech Recognition** — each speaker segment is transcribed. The percentage climbs steadily during this phase.
 
 **Voice Activity Detection mode**:

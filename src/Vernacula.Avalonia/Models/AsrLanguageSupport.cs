@@ -341,6 +341,7 @@ public static class AsrLanguageSupport
     {
         SegmentationMode.SileroVad        => "snakers4/silero-vad",
         SegmentationMode.Sortformer       => "nvidia/diar_streaming_sortformer_4spk-v2.1",
+        SegmentationMode.Nemotron3Diarization => "nvidia/Nemotron-3-Diarization",
         SegmentationMode.DiariZen         => "BUT-FIT/diarizen-wavlm-large-s80-md",
         SegmentationMode.VibeVoiceBuiltin => "vibevoice/vibevoice-asr",
         _ => throw new ArgumentOutOfRangeException(nameof(mode)),

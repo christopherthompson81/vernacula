@@ -89,6 +89,7 @@ Legend: ● = supported · ○ = not supported · 🅛 = KenLM available
 |---|---|---|---|
 | Silero VAD | Fastest | No speaker identity | No |
 | Sortformer v2-stream | Fast | Good | Yes (4-speaker max per chunk) |
+| Nemotron-3-Diarization | Fast | Better on multi-party audio; up to 8 speakers, 10 ms boundaries | Yes (8-speaker max) |
 | DiariZen | Slower | Better | Yes (powerset, 4-speaker max) |
 | VibeVoice built-in | — | Bundled with VibeVoice-ASR | Yes |
 
